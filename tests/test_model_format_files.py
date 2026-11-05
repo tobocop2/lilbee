@@ -551,7 +551,7 @@ class TestPullOfAnInstalledModel:
             mock.patch.object(
                 models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
             ),
-            mock.patch.object(models_mod, "_ensure_vision_projector"),
+            mock.patch.object(models_mod, "ensure_vision_projector", return_value=None),
         ):
             result = models_mod.pull_model_data(ref, ModelSource.NATIVE)
         return result.status, manager.pull.call_count

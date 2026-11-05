@@ -138,6 +138,10 @@ def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, An
     return filtered
 
 
+SERVER_STOPPING_MESSAGE = "The server is stopping."
+"""What a caller reads when a stop of the server ends its wait or its stream."""
+
+
 class ProviderErrorKind(StrEnum):
     """Provider-agnostic category of a failed provider call.
 
@@ -188,6 +192,9 @@ def is_prompt_length_overflow(text: str) -> bool:
     """Whether *text* is the 400 message of a server refusing a prompt past its window."""
     return _PROMPT_LENGTH_OVERFLOW.search(text) is not None
 
+
+# Capability tag for image input. Chat drops every image part, so no chat model reports it.
+VISION_CAPABILITY = "vision"
 
 # Human word per role for the not-configured error ("embedding model", not "embed model").
 _ROLE_WORDS: dict[WorkerRole, str] = {

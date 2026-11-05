@@ -117,6 +117,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
+    searcher.search_unavailable.return_value = False
     searcher.search.return_value = []
     searcher.ask_stream.return_value = _mock_stream("")
     store = MagicMock()
@@ -134,7 +135,9 @@ def mock_svc():
     store.canary_mismatch.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = np.full(768, 0.1, dtype=np.float32)
-    embedder.embed_batch.return_value = []
+    embedder.embed_batch.side_effect = lambda texts, **kw: [
+        np.full(768, 0.1, dtype=np.float32) for _ in texts
+    ]
     services = make_mock_services(searcher=searcher, store=store, embedder=embedder)
     svc_mod.set_services(services)
     yield services
@@ -262,6 +265,32 @@ class TestSync:
         result = runner.invoke(app, ["sync"])
         assert "Failed: 1" in result.output
         assert "bad.txt" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["bad.txt"]),
+    )
+    def test_sync_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "Failed: 1" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["bad.txt"]),
+    )
+    def test_json_sync_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 1
+        assert json.loads(result.output)["failed"] == ["bad.txt"]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
+    def test_sync_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
+        result = runner.invoke(app, ["sync"])
+        assert isinstance(result.exception, TypeError)
+        assert "Expected SyncResult, got str" in str(result.exception)
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
@@ -397,6 +426,52 @@ class TestRebuild:
         assert result.exit_code == 0
         assert "Rebuilt:" in result.output
 
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["ok.txt"], failed=["bad.txt"]),
+    )
+    def test_rebuild_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 1
+        assert "Rebuilt: 1 documents ingested" in result.output
+        assert "Failed: 1" in result.output
+        assert "bad.txt" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["ok.txt"], failed=["bad.txt"]),
+    )
+    def test_json_rebuild_with_a_failed_file_exits_1(self, mock_sync):
+        result = runner.invoke(app, ["--json", "rebuild"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["command"] == "rebuild"
+        assert data["ingested"] == 1
+        assert data["failed"] == ["bad.txt"]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
+    def test_rebuild_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert isinstance(result.exception, TypeError)
+        assert "Expected SyncResult, got str" in str(result.exception)
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_rebuild_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["rebuild", "--max-cpus", "3"])
+        assert result.exit_code == 0
+        assert cfg.ingest_workers == 3
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(added=["ok.txt"], skipped=["slow.pdf"]),
+    )
+    def test_rebuild_with_a_skipped_file_exits_0(self, mock_sync):
+        result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code == 0
+
     def test_rebuild_error_prints_a_bracketed_path_literally(self):
         with mock.patch(
             "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
@@ -486,6 +561,31 @@ class TestAdd:
         result = runner.invoke(app, ["add", str(f1), str(f2)])
         assert result.exit_code == 0
         assert "Registered 2" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["doc.txt"]),
+    )
+    def test_add_with_a_failed_file_exits_1(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 1
+        assert "Failed: 1" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(skipped=["doc.txt"]),
+    )
+    def test_add_with_a_skipped_file_exits_0(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 0
 
     def test_add_nonexistent_fails(self, tmp_path):
         """Adding a nonexistent path fails."""
@@ -3045,6 +3145,19 @@ class TestRebuildJson:
 
 
 class TestAddJson:
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["manual.txt"]),
+    )
+    def test_add_json_with_a_failed_file_exits_1(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "manual.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 1
+        assert json.loads(result.output.strip())["sync"]["failed"] == ["manual.txt"]
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json_suppresses_eager_start(self, mock_sync, isolated_env, tmp_path):
         """Headless json add only needs embed; it must not eager-warm every role."""
@@ -3690,6 +3803,74 @@ class TestEnsureChatModelWiring:
         assert result.exit_code == 1
         assert "lilbee model pull" in result.output
         mock_pull.assert_not_called()
+
+
+class TestAskJsonModelPicker:
+    """With --json and no chat model, the picker prints on stderr and stdout stays JSON."""
+
+    @staticmethod
+    def _run(stdin_text: str, mock_svc):
+        import sys
+
+        from lilbee.modelhub import models as models_mod
+        from lilbee.retrieval.query import AskResult
+
+        def fake_input(prompt: str = "") -> str:
+            # builtins.input writes its prompt to sys.stdout, as the real one does.
+            sys.stdout.write(prompt)
+            line = sys.stdin.readline()
+            if not line:
+                raise EOFError
+            return line.rstrip("\n")
+
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="a", sources=[])
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch("typer.testing._NamedTextIOWrapper.isatty", return_value=True),
+            mock.patch("builtins.input", fake_input),
+            mock.patch.object(models_mod, "get_free_disk_gb", return_value=100.0),
+            mock.patch.object(models_mod, "pull_with_progress"),
+            mock.patch("lilbee.app.settings.apply_settings_update"),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            return runner.invoke(app, ["--json", "ask", "test"], input=stdin_text)
+
+    def test_unanswered_picker_leaves_one_json_error_on_stdout(self, mock_svc):
+        result = self._run("", mock_svc)
+        assert result.exit_code == 1
+        assert "lilbee model pull" in json.loads(result.stdout)["error"]
+        assert "Choice [" in result.stderr
+        assert "Choice [" not in result.stdout
+        assert "Available Models" in result.stderr
+
+    def test_answered_picker_leaves_one_json_answer_on_stdout(self, mock_svc):
+        result = self._run("1\n", mock_svc)
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["answer"] == "a"
+        assert "Choice [" in result.stderr
+
+
+class TestAskWithoutEmbedder:
+    """Ask that cannot ground an answer exits non-zero with the guidance text."""
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_exits_non_zero_with_guidance(self, mock_sync, mock_svc):
+        from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+
+        mock_svc.searcher.search_unavailable.return_value = True
+        result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 1
+        assert " ".join(SEARCH_NEEDS_EMBEDDER.split()) in " ".join(result.output.split())
+        mock_svc.searcher.ask_stream.assert_not_called()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_json_mode_reports_error_and_exits_non_zero(self, mock_sync, mock_svc):
+        mock_svc.searcher.search_unavailable.return_value = True
+        result = runner.invoke(app, ["--json", "ask", "test"])
+        assert result.exit_code == 1
+        assert "embedding model" in json.loads(result.output)["error"]
+        mock_svc.searcher.ask_raw.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4717,6 +4898,30 @@ class TestAddWithUrls:
         output = click.unstyle(result.output)
         assert reason in output
         assert output.index(reason) < output.index("Ingest needs an embedding model")
+
+
+class TestPlainAddReportsBeforeExit:
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(failed=["note.txt"]),
+    )
+    def test_plain_add_prints_the_failed_source_report_before_it_exits(
+        self, mock_sync, mock_avail, isolated_env, tmp_path
+    ):
+        note = tmp_path / "source" / "note.txt"
+        note.parent.mkdir()
+        note.write_text("content", encoding="utf-8")
+        url = "http://127.0.0.1/private"
+        reason = f"{url}: address refused"
+        outcome = _CrawlOutcome(failed=[_FailedSource(url, reason)])
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._crawl_urls_blocking", return_value=outcome
+        ):
+            result = runner.invoke(app, ["add", str(note), url])
+        assert result.exit_code == 1
+        assert reason in click.unstyle(result.output)
 
 
 class TestIsUrl:

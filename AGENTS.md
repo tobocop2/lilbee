@@ -445,6 +445,8 @@ closure. These rules exist because each one shipped a broken artifact once.
   here — a driverless runner never loads the CUDA backend — so read the artifact
   instead: `tools/qa/assert_engine_bundle.py` checks the wheel in the build cells and
   again in `verify-release`, which also asserts every CUDA asset reached the release.
+  Every executable cell runs the same check on the Nuitka tree's `lilbee_engine_llama_cpp/bin`
+  (`--platform`) before the step that deletes the tree.
 - **A ROCm build bundles its ROCm runtime too, discovered not listed.**
   `bundle_rocm_runtime.sh` walks `DT_NEEDED` and keeps what resolves inside the ROCm
   tree, because SONAMEs move between releases. It also carries `rocblas/library`,

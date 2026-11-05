@@ -27,6 +27,8 @@ below).
 4. A `.lilbee/` directory found by walking up from the current directory (per-project libraries).
 5. The platform default: `~/Library/Application Support/lilbee` on macOS, `$XDG_DATA_HOME/lilbee` (default `~/.local/share/lilbee`) on Linux, `%LOCALAPPDATA%\lilbee` on Windows.
 
+**The data root holds the library only.** It holds your documents, the index, `config.toml` and the logs. The models folder (also the Hugging Face cache), the engines folder, the machine engine slot and the gguf metadata cache stay in the platform folders and are shared by every data root. `LILBEE_MODELS_DIR` moves the models folder and the engines folder. `LILBEE_ENGINE_DIR` moves the engine slot. The cache follows `XDG_CACHE_HOME` on Linux and `HOME` on macOS. To isolate a run fully, set `LILBEE_DATA`, `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR`. On Linux, also set the `XDG_*` homes. On macOS, set `HOME`.
+
 Not sure which one you're on? `lilbee status` prints the active data directory.
 
 ## Turning up verbosity

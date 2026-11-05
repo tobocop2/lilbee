@@ -17,7 +17,10 @@ class ReleaseServer:
 
     ``fail_next`` answers that many requests with ``fail_status``. ``reset_next`` sends half
     of the body and then resets the connection. ``close_next`` closes the connection before
-    it sends a status line.
+    it sends a status line. ``silent_next`` accepts a request and sends nothing. ``stall_next``
+    sends the first half of the body and then goes quiet on the open socket, so a resume past
+    the half gets nothing. Both hold the socket until
+    the server stops.
     """
 
     def __init__(self) -> None:
@@ -27,6 +30,9 @@ class ReleaseServer:
         self.fail_status = 503
         self.reset_next = 0
         self.close_next = 0
+        self.silent_next = 0
+        self.stall_next = 0
+        self.stop = threading.Event()
         self.url = ""
 
     def handler(self) -> type[http.server.BaseHTTPRequestHandler]:
@@ -42,6 +48,10 @@ class ReleaseServer:
                     owner.fail_next -= 1
                     self.send_response(owner.fail_status)
                     self.end_headers()
+                    return
+                if owner.silent_next:
+                    owner.silent_next -= 1
+                    owner.stop.wait()
                     return
                 if owner.close_next:
                     owner.close_next -= 1
@@ -62,14 +72,20 @@ class ReleaseServer:
                 self.send_response(206 if start else 200)
                 self.send_header("Content-Length", str(len(body) - start))
                 self.end_headers()
-                if owner.reset_next:
-                    owner.reset_next -= 1
-                    self.wfile.write(body[start : start + (len(body) - start) // 2])
+                if owner.reset_next or owner.stall_next:
+                    reset = bool(owner.reset_next)
+                    owner.reset_next -= reset
+                    owner.stall_next -= not reset
+                    end = start + (len(body) - start) // 2 if reset else len(body) // 2
+                    self.wfile.write(body[start:end])
                     self.wfile.flush()
-                    linger = struct.pack("ii", 1, 0)
-                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
-                    self.close_connection = True
-                    self.connection.close()
+                    if reset:
+                        linger = struct.pack("ii", 1, 0)
+                        self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+                        self.close_connection = True
+                        self.connection.close()
+                    else:
+                        owner.stop.wait()
                     return
                 self.wfile.write(body[start:])
 
@@ -86,6 +102,7 @@ def release_server() -> Iterator[ReleaseServer]:
     try:
         yield owner
     finally:
+        owner.stop.set()
         server.shutdown()
         server.server_close()
         thread.join()

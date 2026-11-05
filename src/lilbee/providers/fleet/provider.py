@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextvars
 import functools
-import json
 import logging
 import re
 import sys
@@ -34,6 +33,7 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import engine_params
 from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
+    SERVER_STOPPING_MESSAGE,
     ProviderError,
     ProviderErrorKind,
     prompt_token_budget,
@@ -68,6 +68,7 @@ from lilbee.providers.fleet.swap_manager import (
     engine_record_exists,
     ensure_engine_reaper,
     find_live_state,
+    kill_engine,
     reap_stale,
     state_is_healthy,
     stop_engine,
@@ -160,15 +161,6 @@ _VISION_REPEAT_LAST_N = 64
 # unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
 _DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
-
-
-def _folder_declares_vision(folder: Path) -> bool:
-    """True when the model folder's ``config.json`` has a ``vision_config`` key."""
-    try:
-        config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return isinstance(config, dict) and "vision_config" in config
 
 
 def _prewarm_key(shard: Path) -> tuple[str, int, int]:
@@ -962,6 +954,8 @@ class FleetProvider:
         # Engine dirs this provider holds membership in (machine slot and/or
         # the private overflow), and the dir each running group lives in.
         self._engine_holds: dict[Path, UserLockHold] = {}
+        # Engine dirs whose start runs now under this process's build lock.
+        self._starting_dirs: set[Path] = set()
         self._group_dirs: dict[SwapGroup, Path] = {}
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
@@ -1111,7 +1105,7 @@ class FleetProvider:
         finished = work.wait_unless_woken(_FLEET_WAIT_S)
         if self._stop_waiting and not finished:
             raise ProviderError(
-                "The server is stopping.",
+                SERVER_STOPPING_MESSAGE,
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.STARTING,
             )
@@ -1310,11 +1304,33 @@ class FleetProvider:
             reap_stale(engine_dir)
             if engine_record_exists(engine_dir):
                 stop_engine(engine_dir)
-            if self._plan_and_spawn(engine_dir):
-                self._hold_membership(engine_dir)
-                _watch_bound_engine(engine_dir)
-                return True
-            return False
+            # Membership comes first: an exit while the start waits on the engine
+            # must still find this engine's hold and stop it as the last user out.
+            # The hold and the registration are one lock hold, so a shutdown either
+            # releases the hold or leaves it to this start, never both.
+            with self._lock:
+                fresh = self._take_user_lock(engine_dir)
+                self._starting_dirs.add(engine_dir)
+            spawned = False
+            try:
+                spawned = self._plan_and_spawn(engine_dir)
+            finally:
+                # Cleared before the build lock is freed, so no peer binds an engine
+                # that the shutdown stops as a start.
+                with self._lock:
+                    self._starting_dirs.discard(engine_dir)
+                    cancelled = self._shut_down
+                if cancelled:
+                    # A cancelled start kills its own engine and drops its own hold.
+                    kill_engine(engine_dir)
+                    self._drop_user_lock(engine_dir, taken=True)
+                elif not spawned:
+                    self._drop_user_lock(engine_dir, fresh)
+            if cancelled or not spawned:
+                return False
+            self._hold_membership(engine_dir)
+            _watch_bound_engine(engine_dir)
+            return True
 
     def _bind_all_in_dir(
         self,
@@ -1385,10 +1401,23 @@ class FleetProvider:
         """
         from lilbee.core.config import cfg
 
-        if engine_dir not in self._engine_holds:
-            self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
+        self._take_user_lock(engine_dir)
         if cfg.keep_engine_warm:
             request_keep_warm(engine_dir, cfg.data_root, cfg.engine_idle_ttl_minutes)
+
+    def _take_user_lock(self, engine_dir: Path) -> bool:
+        """Hold *engine_dir*'s user lock; True when this call took it."""
+        if engine_dir in self._engine_holds:
+            return False
+        self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
+        return True
+
+    def _drop_user_lock(self, engine_dir: Path, taken: bool) -> None:
+        """Release the user lock that a start took and did not keep."""
+        with self._lock:
+            hold = self._engine_holds.pop(engine_dir, None) if taken else None
+        if hold is not None:
+            hold.release_and_check_last()
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
@@ -1425,6 +1454,10 @@ class FleetProvider:
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
+        with self._lock:
+            if self._shut_down:
+                # A shutdown ran while this start planned: spawn nothing for it.
+                return False
         by_group = _launches_by_group(plan)
         started: dict[SwapGroup, SwapManager] = {}
         try:
@@ -1765,6 +1798,10 @@ class FleetProvider:
         with self._lock:
             self._shut_down = True
             work = self._fleet_work
+            # A started engine makes its pending start fail at once when it dies; an
+            # engine whose start never finished holds no state worth a TERM grace.
+            for engine_dir in self._starting_dirs:
+                kill_engine(engine_dir)
         # Bounded, because a wedged engine start would hang process exit. At the bound
         # the teardown proceeds: the loop is a daemon thread that exit never joins, and
         # the next start reaps from the engine dir's state files what it leaves behind.
@@ -1806,8 +1843,15 @@ class FleetProvider:
         from lilbee.core.config import cfg
 
         # Taken in one lock hold, so a signal's shutdown and the lifespan's release once.
+        # A pending start keeps its hold: it holds the build lock this release would
+        # wait on, and it drops the hold itself when it returns.
         with self._lock:
-            holds, self._engine_holds = self._engine_holds, {}
+            holds = self._engine_holds
+            self._engine_holds = {
+                engine_dir: holds.pop(engine_dir)
+                for engine_dir in list(self._starting_dirs)
+                if engine_dir in holds
+            }
         for engine_dir, hold in holds.items():
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
@@ -2229,31 +2273,16 @@ class FleetProvider:
         return read_gguf_metadata(path)
 
     def get_capabilities(self, model: str) -> list[str]:
-        """Detect capabilities from the local model files.
+        """Return the capabilities of the chat model served from the local files.
 
-        Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate);
-        other models report ``"completion"`` plus ``"vision"`` when an mmproj
-        sidecar is present, or for a folder whose config declares vision.
+        Cross-encoder rerank GGUFs report ``["rerank"]`` (they cannot generate).
+        Every other model reports ``["completion"]``.
         """
         from lilbee.catalog import is_rerank_ref
-        from lilbee.providers.engine_params import resolve_model_path
-        from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
         if model and is_rerank_ref(model):
             return ["rerank"]
-        caps = ["completion"]
-        try:
-            path = resolve_model_path(model)
-        except ProviderError:
-            return caps
-        if not needs_sidecar_projector(path):
-            return [*caps, "vision"] if _folder_declares_vision(path) else caps
-        try:
-            find_mmproj_for_model(path)
-            caps.append("vision")
-        except ProviderError:
-            pass
-        return caps
+        return ["completion"]
 
     def supports_tools(self, model_ref: str) -> bool:
         """True iff *model_ref*'s GGUF chat template references tool tokens.

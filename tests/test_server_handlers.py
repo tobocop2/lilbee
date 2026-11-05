@@ -1312,6 +1312,33 @@ class TestChat:
         mock_svc.searcher.direct_messages.assert_called_once()
         assert result.sources == []
 
+    async def test_top_k_zero_answers_without_an_embedder(self, mock_svc, monkeypatch):
+        """A pure-LLM call needs no embedder, so it reaches the model instead of
+        the search-needs-embedder refusal."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="direct")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        mock_svc.searcher.search_unavailable.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        result = await handlers.chat("q", [], top_k=0)
+        assert result.answer == "direct"
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_top_k_none_grounds_normally(self, mock_svc, monkeypatch):
         """Unspecified top_k (None) still runs retrieval -- only an explicit 0 skips."""
         from lilbee.server.chat_dispatch.canonical import (
@@ -1424,6 +1451,26 @@ class TestChatStream:
         mock_svc.searcher.direct_messages.assert_called_once()
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         assert json.loads(sources_event.split("data: ")[1].strip()) == []
+
+    async def test_top_k_zero_streams_without_an_embedder(self, mock_svc, monkeypatch):
+        """A pure-LLM stream needs no embedder, so the model answers instead of
+        the search-needs-embedder refusal token."""
+        from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+
+        mock_svc.searcher.search_unavailable.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["direct"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [], top_k=0)]
+        tokens = [
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        ]
+        assert SEARCH_NEEDS_EMBEDDER not in tokens
+        assert "direct" in "".join(tokens)
+        mock_svc.searcher.direct_messages.assert_called_once()
 
     async def test_reasoning_only_stream_emits_notice(self, mock_svc, monkeypatch):
         """bb-cpu: a reasoning-only stream (no final answer) emits the exhaustion

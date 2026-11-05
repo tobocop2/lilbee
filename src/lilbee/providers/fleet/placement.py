@@ -762,13 +762,15 @@ def placement_from_spec(
     estimate_peak: PeakEstimator,
     plan_auto: AutoPlanner | None = None,
     model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
+    absent_hint: Callable[[], str] | None = None,
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
     ``device_capacity`` is each card's total VRAM (not instantaneous free): the
     plan defines the fleet's full intended residency, so charging it against live
     free VRAM would double-count models already loaded. Every active role must
-    have an entry; every device must exist; each card must fit the sum of the
+    have an entry; every device must exist (*absent_hint* adds a sentence to the
+    refusal for a device the machine lacks); each card must fit the sum of the
     per-device peaks charged to it, within the cfg.usable_vram_fraction headroom.
 
     A role with the auto target is planned last by *plan_auto*, on the capacity
@@ -785,7 +787,7 @@ def placement_from_spec(
     card_roles: list[WorkerRole] = []
     held: dict[int, list[RoomHolder]] = {}
     for role in active_roles:
-        rp = _required_entry(spec, role, device_capacity)
+        rp = _required_entry(spec, role, device_capacity, absent_hint)
         if rp.device_target is RoleTarget.AUTO:
             auto_roles.append(role)
             continue
@@ -920,8 +922,21 @@ def _shifted_toward_roomiest(
     return tuple(shifted)
 
 
+def _listed_devices(indices: Sequence[int]) -> str:
+    """The device indices a machine lists, as a phrase: "devices 0 and 1"."""
+    if not indices:
+        return "no devices"
+    labels = [str(index) for index in sorted(indices)]
+    if len(labels) == 1:
+        return f"only device {labels[0]}"
+    return f"only devices {', '.join(labels[:-1])} and {labels[-1]}"
+
+
 def _required_entry(
-    spec: PlacementSpec, role: WorkerRole, device_capacity: dict[int, int]
+    spec: PlacementSpec,
+    role: WorkerRole,
+    device_capacity: dict[int, int],
+    absent_hint: Callable[[], str] | None = None,
 ) -> RolePlacement:
     """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
     rp = spec.roles.get(role)
@@ -932,10 +947,12 @@ def _required_entry(
         )
     for idx in rp.devices:
         if idx not in device_capacity:
-            raise PlacementError(
-                f"{role.value} pinned to device {idx} but only "
-                f"{len(device_capacity)} GPU(s) detected"
+            reason = (
+                f"{role.value} is pinned to device {idx}, but this machine lists "
+                f"{_listed_devices(list(device_capacity))}."
             )
+            hint = absent_hint() if absent_hint else ""
+            raise PlacementError(f"{reason} {hint}".strip())
     return rp
 
 

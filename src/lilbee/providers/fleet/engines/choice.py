@@ -111,6 +111,23 @@ def host_answer(name: str, host: HostSource) -> HostGate:
     return PASS if adapter is None or adapter.bundled else adapter.host_gate(host())
 
 
+def install_answer(adapter: EngineAdapter, host: HostCaps) -> HostGate:
+    """What the host says about installing *adapter*.
+
+    A pin that needs a cell to find its wheel cannot install on a host whose OS or CPU is
+    unknown. That refusal is unknown, not known, and its reason is the whole sentence.
+    """
+    gate = adapter.host_gate(host)
+    if not gate.ok or (host.os is not None and host.arch is not None):
+        return gate
+    pin = adapter.pin_record()
+    if pin["platforms"] or pin["sha256"] is None:
+        return HostGate(
+            False, f"Engine {adapter.name} has no {pin['backend']} build for this computer.", False
+        )
+    return gate
+
+
 def _is_apple_silicon(caps: HostCaps) -> bool:
     return caps.os is HostOS.MACOS and caps.arch is HostArch.ARM64
 

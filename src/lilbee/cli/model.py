@@ -271,6 +271,8 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         console.print(Text(f"{ref} is already installed."), soft_wrap=True)
     else:
         console.print(Text.assemble("Pulled ", (ref, theme.ACCENT), "."), soft_wrap=True)
+    if final.warning is not None:
+        print_prefixed(console, "Warning: ", final.warning, style=theme.WARNING)
 
 
 @model_app.command("pull")

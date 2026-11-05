@@ -163,17 +163,29 @@ def display_model_picker(
     return recommended
 
 
+NO_CHAT_MODEL_GUIDANCE = (
+    "No chat model is installed. Run 'lilbee model pull <model>' to install one, "
+    "or run 'lilbee' in a terminal to pick from the model catalog."
+)
+
+
 def prompt_model_choice(ram_gb: float) -> ModelInfo:
-    """Prompt the user to pick a model by number. Returns the chosen ModelInfo."""
+    """Prompt the user to pick a model by number. Returns the chosen ModelInfo.
+
+    Raises ``RuntimeError`` when input ends or is interrupted: no one chose.
+    The prompt goes to stderr with the catalog table, so stdout keeps only output.
+    """
     free_disk_gb = get_free_disk_gb(cfg.data_dir)
     recommended = display_model_picker(ram_gb, free_disk_gb)
     default_idx = list(_get_model_catalog()).index(recommended) + 1
 
     while True:
+        sys.stderr.write(f"Choice [{default_idx}]: ")
+        sys.stderr.flush()
         try:
-            raw = input(f"Choice [{default_idx}]: ").strip()
+            raw = input().strip()
         except (EOFError, KeyboardInterrupt):
-            return recommended
+            raise RuntimeError(NO_CHAT_MODEL_GUIDANCE) from None
 
         if not raw:
             return recommended
@@ -207,7 +219,8 @@ def validate_disk_and_pull(
 
 
 def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> None:
-    """Pull a model via model_manager, showing a Rich progress bar."""
+    """Pull a model via model_manager with a progress bar, then check its vision projector."""
+    from lilbee.app.models import ensure_vision_projector
     from lilbee.app.services import get_services
     from lilbee.catalog.types import ModelSource
 
@@ -231,6 +244,9 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
                 progress.update(ptask, total=total, completed=downloaded)
 
         manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
+    warning = ensure_vision_projector(model, warn_unreadable=True)
+    if warning is not None:
+        console.print(f"Warning: {warning}", soft_wrap=True)
     console.print(f"Model '{model}' ready.", soft_wrap=True)
 
 
@@ -251,10 +267,7 @@ def ensure_chat_model() -> str | None:
         return None
 
     if not sys.stdin.isatty():
-        raise RuntimeError(
-            "No chat model is installed. Run 'lilbee model pull <model>' to install one, "
-            "or run 'lilbee' in a terminal to pick from the model catalog."
-        )
+        raise RuntimeError(NO_CHAT_MODEL_GUIDANCE)
 
     ram_gb = get_system_ram_gb()
     free_gb = get_free_disk_gb(cfg.data_dir)

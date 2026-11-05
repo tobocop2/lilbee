@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 def concepts_available() -> bool:
     """Whether the concept-graph dependencies (spacy, graspologic) are installed.
 
-    Fixed for the process lifetime (cached), like :func:`gpu_device_count`.
+    Fixed for the process lifetime (cached).
     Python caches only *successful* imports, so an absent extra re-walks
     ``sys.path`` on every call, and ingest calls this once per file.
 

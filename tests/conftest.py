@@ -193,6 +193,20 @@ def _restore_interactive_intent():
 
 
 @pytest.fixture(autouse=True)
+def _restore_server_stop_flag():
+    """Snapshot the flag that says the server is stopping around every test.
+
+    A serve teardown sets it and only the next serve clears it, so a leak makes
+    a later test's cancelled chat stream end with the stop error.
+    """
+    from lilbee.app import services as services_mod
+
+    before = services_mod._server_exit.stopping
+    yield
+    services_mod._server_exit.stopping = before
+
+
+@pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 
@@ -397,7 +411,7 @@ def _join_fleet_background_threads():
     fire-and-forget daemon threads that end on their own once joined; on a host
     without the engine binary they fail fast, and joining keeps that warning
     inside the test that started them. The child-guard spawner is different: its
-    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    ``fleet-spawner`` thread is a process-lifetime daemon that a join
     never ends (it parks waiting for the next spawn), so any test that ran a real
     probe or launch must close it, or the leak guard flags it against whatever
     test happens to run next.

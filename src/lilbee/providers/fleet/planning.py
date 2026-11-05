@@ -74,7 +74,9 @@ from lilbee.runtime.progress.types import OcrBackendUsed
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+
+    from lilbee.providers.fleet.gpu_select import IcdChoice
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
@@ -1777,6 +1779,45 @@ def _non_chat_reservation(
     return reserved
 
 
+def _reservation_past_the_card(
+    reserved_after_chat: dict[int, int],
+    instances: Sequence[InstancePlan],
+    charged: Mapping[WorkerRole, int],
+    reserved_by_device: Mapping[int, int],
+    capacity: Mapping[int, int],
+) -> dict[int, int]:
+    """The part of *reserved_after_chat* that sits on a card the whole plan does not fit.
+
+    The engine's free memory at chat launch already excludes a role that loaded
+    first, so on a card that holds chat, every other role and the engine margin,
+    the margin alone leaves the later role its room in either load order. A card
+    short of that room keeps the later role's charge. A chat split over several
+    cards keeps the charge on all of them when any one is short, because the
+    engine moves the overflow of the short card onto its siblings.
+    """
+    chat = next((inst for inst in instances if inst.role is WorkerRole.CHAT), None)
+    if chat is None:
+        return reserved_after_chat
+    split_matches = len(chat.tensor_split) == len(chat.devices) and any(chat.tensor_split)
+    weights = chat.tensor_split if split_matches else (1,) * len(chat.devices)
+    chat_by_device = {
+        device: charged[WorkerRole.CHAT] * weight // sum(weights)
+        for device, weight in zip(chat.devices, weights, strict=True)
+    }
+    margin = ENGINE_FIT_MARGIN_MIB * MIB
+
+    def short(device: int) -> bool:
+        needed = chat_by_device.get(device, 0) + reserved_by_device.get(device, 0) + margin
+        return needed > capacity.get(device, 0)
+
+    chat_card_short = any(short(device) for device in chat_by_device)
+    return {
+        device: held
+        for device, held in reserved_after_chat.items()
+        if short(device) or (chat_card_short and device in chat_by_device)
+    }
+
+
 def _charge_by_device(
     chosen: tuple[FleetDevice, ...], ratio: tuple[int, ...], total: int
 ) -> dict[str, int]:
@@ -2043,13 +2084,13 @@ def build_single_role_launch(
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     entry = spec.roles.get(role) if spec is not None else None
     target = entry.device_target if entry is not None else RoleTarget.GPU
-    if spec is not None:
-        refused = _unusable_targets(spec, {role: model_path.as_posix()}, {role: engine})
-        if refused:
-            raise TargetRefusedError(refused)
     binary = engine.binary()
     with _one_engine_per_pass(engine=engine):
         devices = _plan_devices(binary, engine)
+        if spec is not None:
+            refused = _unusable_targets(spec, {role: model_path.as_posix()}, {role: engine})
+            if refused:
+                raise TargetRefusedError(refused)
         by_index = {d.index: d for d in devices}
         # The whole machine, since nothing else is resident during a self-check.
         placed = (min(by_index),) if by_index and target is RoleTarget.GPU else ()
@@ -2086,14 +2127,24 @@ def _warn_gpu_present_but_unenumerated(binary: Path) -> None:
     quietly planned for CPU, and said nothing. The vendor lookup is the same one
     the Vulkan ICD rules use, and it works on Windows as well as Linux.
     """
-    from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
+    from lilbee.providers.fleet.gpu_hardware import (
+        installed_gpu_vendor_ids,
+        undriven_gpu_vendor_ids,
+    )
     from lilbee.providers.fleet.gpu_select import PCIVendorID
 
     present = installed_gpu_vendor_ids()
-    names = sorted(
-        v.name.title() if v.name == "INTEL" else v.name for v in PCIVendorID if v in present
-    )
+    names = sorted(v.label for v in PCIVendorID if v in present)
     if not names:
+        undriven = undriven_gpu_vendor_ids()
+        idle = sorted(v.label for v in PCIVendorID if v in undriven)
+        if idle:
+            log.warning(
+                "The %s GPU on this host has no kernel driver loaded, so the engine "
+                "cannot use it. Placement falls back to shared-memory mode. Load the "
+                "GPU's kernel driver and start lilbee again.",
+                " and ".join(idle),
+            )
         return
     hints = sorted(
         {_VENDOR_VISIBILITY_HINT[name] for name in names if name in _VENDOR_VISIBILITY_HINT}
@@ -3062,6 +3113,8 @@ def _capped_by_device_memory(budget: int, devices: Sequence[FleetDevice]) -> int
 def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> dict[int, int]:
     """Per-device memory placement may charge against, keyed by device index.
 
+    Every listed device is here: a row in the device list is a device a pin can name.
+
     A card's total is what it holds, not what is going spare. A compositor, a
     browser, or a training job sitting on VRAM is invisible in the total, and the
     usable fraction placement applies covers fragmentation and driver overhead
@@ -3078,13 +3131,28 @@ def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> d
     with a tenant keeps a proportional margin rather than being packed to its
     last free byte, where fragmentation is worst.
     """
-    packable = _packable_devices(devices)
     if not charge_against_free:
-        return {d.index: d.total_bytes for d in packable}
-    return {d.index: min(d.total_bytes, d.free_bytes) for d in packable}
+        return {d.index: d.total_bytes for d in devices}
+    return {d.index: min(d.total_bytes, d.free_bytes) for d in devices}
 
 
-def _packable_devices(devices: list[FleetDevice]) -> list[FleetDevice]:
+def _auto_capacity(
+    devices: list[FleetDevice], charge_against_free: bool, named: Collection[int] = ()
+) -> dict[int, int]:
+    """The capacity the auto planner may pack, plus the cards a pin names.
+
+    A pin names any listed device, so :func:`_device_capacity` holds them all. The
+    auto planner keeps to the devices :func:`packable_devices` allows.
+    """
+    packable = {d.index for d in packable_devices(devices)} | set(named)
+    return {
+        index: total
+        for index, total in _device_capacity(devices, charge_against_free).items()
+        if index in packable
+    }
+
+
+def packable_devices(devices: list[FleetDevice]) -> list[FleetDevice]:
     """The devices bin-packing may charge against.
 
     An integrated GPU's memory is the host's. Packing it beside a dedicated card
@@ -3115,6 +3183,7 @@ def _resolve_placement(
     """Resolve a Placement from the manual spec when set, else the auto planner."""
     estimate_peak = _peak_estimator(model_refs, engines)
     capacity = _device_capacity(devices, charge_against_free)
+    auto_cards = _auto_capacity(devices, charge_against_free)
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
     if placement is not None:
         refused = _unusable_targets(placement, model_refs, engines)
@@ -3136,7 +3205,7 @@ def _resolve_placement(
             budget = None if unified_budget is None else max(0, unified_budget - charged)
             placed = _auto_placement(
                 [model for model in inputs if model.role in auto_roles],
-                cards,
+                {index: room for index, room in cards.items() if index in auto_cards},
                 devices,
                 model_refs,
                 engines=engines,
@@ -3158,6 +3227,7 @@ def _resolve_placement(
             estimate_peak=estimate_peak,
             plan_auto=plan_auto,
             model_refs=model_refs,
+            absent_hint=lambda: _hidden_device_hint(devices),
         )
         if _cpu_roles(placement).isdisjoint(model_refs):
             return placed
@@ -3173,7 +3243,7 @@ def _resolve_placement(
         return placed
     return _auto_placement(
         inputs,
-        capacity,
+        auto_cards,
         devices,
         model_refs,
         engines=engines,
@@ -3182,6 +3252,22 @@ def _resolve_placement(
         unpinnable=unpinnable,
         refuse_oversize=_is_mixed(engines),
     )
+
+
+def _hidden_choice(devices: Sequence[FleetDevice]) -> IcdChoice | None:
+    """The driver choice that hides hardware from a Vulkan engine, or ``None``."""
+    from lilbee.providers.fleet.gpu_select import vulkan_icd_choice
+
+    if not any(d.backend == VULKAN_BACKEND for d in devices):
+        return None
+    choice = vulkan_icd_choice()
+    return choice if choice and choice.hidden else None
+
+
+def _hidden_device_hint(devices: Sequence[FleetDevice]) -> str:
+    """The sentence that explains a pin to hardware the launch hides, or empty."""
+    choice = _hidden_choice(devices)
+    return choice.hidden_sentence() if choice else ""
 
 
 def _auto_roles_past_named(
@@ -3370,6 +3456,7 @@ def _roles_on_missing_cards(
     if spec is None or all(entry.target is None for entry in spec.roles.values()):
         return {}
     present = {d.index for d in devices}
+    hint = _hidden_device_hint(devices)
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = spec.roles.get(role)
@@ -3377,11 +3464,12 @@ def _roles_on_missing_cards(
             continue
         missing = [str(idx) for idx in entry.devices if idx not in present]
         if missing:
-            refused[role] = (
+            found = (
                 f"{role.value}: GPU {', '.join(missing)} is not on this machine "
-                f"({len(present)} found). Set the {role.value} devices to a GPU "
-                "that exists, or set its target to cpu."
+                f"({len(present)} found)."
             )
+            fix = f"Set the {role.value} devices to a GPU that exists, or set its target to cpu."
+            refused[role] = " ".join(part for part in (found, hint, fix) if part)
     return refused
 
 
@@ -3495,7 +3583,7 @@ def _placement_or_auto(
         log.warning(
             "The saved GPU placement does not fit this hardware (%s); using automatic "
             "placement instead. Set a new placement to replace it.",
-            exc,
+            str(exc).rstrip("."),
         )
     return _resolve_placement(
         None,
@@ -3582,6 +3670,9 @@ class ResolvedPlacement:
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
     # Configured roles with no engine, left out of the plan (role -> model and notice).
     skipped_no_engine: dict[WorkerRole, NoEngineRole] = field(default_factory=dict)
+    # The hardware the launch hides from the engine, so no row names it. ``None``
+    # when nothing present is hidden.
+    hidden: IcdChoice | None = None
 
 
 def resolve_placement_plan(
@@ -3636,6 +3727,7 @@ def resolve_placement_plan(
         refused_roles=refused_roles,
         tight_roles=dict(resolved.tight_roles),
         engine_backend=reading.backend,
+        hidden=_hidden_choice(devices),
         skipped_no_engine={
             role: NoEngineRole(ref, (no_engine_notices or {}).get(role, ""))
             for role, ref in _roles_without_engine(None, engines).items()
@@ -3905,7 +3997,8 @@ def _planned_launches(
     # Only the clean-box snapshot's free bytes mean "what other tenants hold";
     # a live probe here would also be missing the fleet's own residency.
     charge_against_free = _current_plan_probe(snapshot_engine) is not None
-    capacity = _device_capacity(devices, charge_against_free)
+    named = {index for entry in (spec.roles.values() if spec else ()) for index in entry.devices}
+    capacity = _auto_capacity(devices, charge_against_free, named)
     placement, _spec_applied, refused_roles = _placement_that_runs(
         spec,
         inputs,
@@ -3926,12 +4019,18 @@ def _planned_launches(
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
-    reserved_after_chat = _non_chat_reservation(
-        [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
-        inputs,
-        placement.co_tenants,
-    )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
+    reserved_after_chat = _reservation_past_the_card(
+        _non_chat_reservation(
+            [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
+            inputs,
+            placement.co_tenants,
+        ),
+        placement.instances,
+        charged,
+        reserved_by_device,
+        capacity,
+    )
     tight_fixed_chat = {
         inp.role
         for inp in inputs
@@ -4044,8 +4143,9 @@ def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[Engin
 def _engine_read_error(engine: EngineAdapter, exc: Exception) -> ProviderError:
     """The error for an engine whose device read failed beside other engines."""
     return ProviderError(
-        f"Cannot read the GPUs of the {engine.name} engine: {exc}. "
-        "Check that the engine is installed and works, or pick another engine."
+        f"Cannot read the GPUs of the {engine.name} engine. "
+        "Check that the engine is installed and works, or pick another engine. "
+        f"The error was: {exc}"
     )
 
 

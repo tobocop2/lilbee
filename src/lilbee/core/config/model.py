@@ -167,7 +167,10 @@ class Config(BaseSettings):
         description=(
             "Root directory for this library. Resolved at start from LILBEE_DATA, "
             "then a .lilbee/ directory walked up from the working directory, then "
-            "the platform default. Every other path below hangs off it"
+            "the platform default. The documents, index, config file and logs live "
+            "under it. The models folder (also the Hugging Face cache), the engines "
+            "folder, the machine engine slot and the gguf metadata cache stay in the "
+            "platform folders. LILBEE_MODELS_DIR and LILBEE_ENGINE_DIR move the first three"
         ),
     )
     # Writable so plugin-managed servers can pivot storage to a vault path on

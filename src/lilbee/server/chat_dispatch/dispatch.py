@@ -25,6 +25,7 @@ from lilbee.providers.base import (
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import WorkerRole, configured_model_message
 from lilbee.server.chat_dispatch.canonical import (
+    IMAGES_DROPPED_REASON,
     CanonicalChatRequest,
     CanonicalMessage,
     CanonicalResponse,
@@ -405,9 +406,10 @@ def _log_dropped_images(req: CanonicalChatRequest, model: str) -> None:
     """Log once when the translator dropped image parts from *req*."""
     if req.dropped_images:
         log.warning(
-            "Dropped %d image part(s) from a chat request: lilbee cannot pass images to %s",
+            "Dropped %d image part(s) from a chat request to %s: %s",
             req.dropped_images,
             model,
+            IMAGES_DROPPED_REASON,
         )
 
 

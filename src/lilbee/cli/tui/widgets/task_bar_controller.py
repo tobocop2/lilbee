@@ -33,6 +33,7 @@ _DOWNLOAD_CONCURRENCY = 4
 _BYTES_PER_MB = 1024 * 1024
 # Seconds the running tasks get, together, to unwind and end their workers at app exit.
 _EXIT_STOP_BUDGET_S = 5.0
+_WARNING_TOAST_S = 10.0
 
 
 class TaskOutcome(StrEnum):
@@ -87,6 +88,11 @@ class ProgressReporter:
         self._controller.queue.update_task(
             self._task_id, progress, detail, indeterminate=indeterminate
         )
+
+    def warn(self, message: str) -> None:
+        """Show *message* as a warning toast on the main thread."""
+        app = self._controller.app
+        call_from_thread(app, app.notify, message, severity="warning", timeout=_WARNING_TOAST_S)
 
 
 TaskTarget = Callable[[ProgressReporter], None]
@@ -576,13 +582,15 @@ def _download_target(
         reporter.update(p.percent, f"{model.display_name}: {p.detail}")
 
     try:
-        pull_model_data(
+        result = pull_model_data(
             model.pull_ref,
             ModelSource.NATIVE,
             on_update=_on_progress,
             allow_unsupported=allow_unsupported,
             cancel=reporter,
         )
+        if result.warning is not None:
+            reporter.warn(result.warning)
     except PermissionError as exc:
         raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
     except NoEngineError as exc:

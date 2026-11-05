@@ -17,7 +17,6 @@ from lilbee.providers import engine_params, gguf_meta
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
-from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import Role, prepare_host
 from tests._stated_sizes import state_size
@@ -176,38 +175,6 @@ class TestAPullOfAFolder:
     def test_a_folder_with_no_processor_files_selects_as_before(self) -> None:
         chosen = select_files(ModelFormat.SAFETENSORS, ["config.json", "model.safetensors"])
         assert chosen == ["model.safetensors", "config.json"]
-
-
-class TestCapabilities:
-    def _caps(self, monkeypatch, path: Path) -> list[str]:
-        monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-        _resolve_to(monkeypatch, path)
-        return FleetProvider.get_capabilities(mock.sentinel.provider, _FOLDER_REF)
-
-    def test_a_folder_with_vision_config_reports_vision(
-        self, vision_folder: Path, monkeypatch
-    ) -> None:
-        assert self._caps(monkeypatch, vision_folder) == ["completion", "vision"]
-
-    def test_a_text_folder_beside_a_stray_projector_reports_completion(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        folder = _flat_folder(tmp_path, _TEXT_CONFIG)
-        _sparse(tmp_path / "mmproj-other.gguf", GIB)
-        assert self._caps(monkeypatch, folder) == ["completion"]
-
-    @pytest.mark.parametrize("config", ["{not json", "[]", '"vision_config"', "\udcff"])
-    def test_an_unreadable_config_reports_completion(
-        self, tmp_path: Path, monkeypatch, config: str
-    ) -> None:
-        folder = _flat_folder(tmp_path, _TEXT_CONFIG)
-        (folder / "config.json").write_bytes(config.encode("utf-8", "surrogateescape"))
-        assert self._caps(monkeypatch, folder) == ["completion"]
-
-    def test_a_folder_with_no_config_reports_completion(self, tmp_path: Path, monkeypatch) -> None:
-        folder = _flat_folder(tmp_path, _TEXT_CONFIG)
-        (folder / "config.json").unlink()
-        assert self._caps(monkeypatch, folder) == ["completion"]
 
 
 class TestAVisionFolderInAPlan:

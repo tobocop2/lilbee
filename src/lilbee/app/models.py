@@ -176,6 +176,7 @@ class PullResult(BaseModel):
     source: str
     status: PullStatus
     path: str | None = None
+    warning: str | None = None
 
 
 class PullProgressEvent(BaseModel):
@@ -358,17 +359,47 @@ def _vision_projector_missing(ref: str) -> bool:
     return False
 
 
-def _ensure_vision_projector(ref: str) -> None:
-    """Fetch a vision model's mmproj projector when a cached install lacks it.
+def _no_projector_warning(ref: str) -> str:
+    return f"{ref} is named as a vision model, but its repo lists no projector file."
 
-    No-op for non-vision refs and when the projector already resolves on disk,
-    so pulling a complete install never touches the network.
+
+def _unchecked_projector_warning(ref: str) -> str:
+    return (
+        f"Could not check {ref} for a vision projector: the model listing is unreadable. "
+        "Run the pull again when the network is back."
+    )
+
+
+def ensure_vision_projector(
+    ref: str, *, warn_unreadable: bool, cancel: CancelSignal | None = None
+) -> str | None:
+    """Fetch the projector a GGUF lacks when its repo lists one; return a warning if unsure.
+
+    Runs after a fresh pull and for an installed model. A complete install never
+    touches the network. An unreadable listing never fails, so an offline pull
+    of a cached model still succeeds; it warns only when *warn_unreadable* is
+    set, which a pull that just fetched the model sets. A projector fetched but
+    not found by the engine launch judge raises. A set *cancel* ends the fetch.
     """
     from lilbee.catalog import download_mmproj, resolve_pull_target
+    from lilbee.catalog.download import ProjectorListingError
 
     entry = resolve_pull_target(ref)
-    if entry is not None and entry.task is ModelTask.VISION and _vision_projector_missing(ref):
-        download_mmproj(entry)
+    if entry is None or not _vision_projector_missing(ref):
+        return None
+    try:
+        fetched = download_mmproj(entry, cancel=cancel)
+    except ProjectorListingError as exc:
+        log.info("Could not check %s for a missing projector: %s", ref, exc)
+        return _unchecked_projector_warning(ref) if warn_unreadable else None
+    if fetched is None:
+        return _no_projector_warning(ref) if entry.task is ModelTask.VISION else None
+    if _vision_projector_missing(ref):
+        raise RuntimeError(
+            f"Fetched the projector {fetched.name} for {ref}, "
+            "but the engine does not find it beside the model."
+        )
+    return None
 
 
 def pull_model_data(
@@ -400,11 +431,17 @@ def pull_model_data(
                 manager.pull(ref, source, cancel=cancel)
             except (RuntimeError, NoEngineError) as exc:
                 log.info("Could not check %s for missing module files: %s", ref, exc)
-        # A cached vision install may carry the main GGUF but not its mmproj
-        # projector; without it llama-server can't serve OCR, so ensure it before
-        # reporting already-installed.
-        _ensure_vision_projector(ref)
-        return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
+        # A cached install may carry the main GGUF but not the projector its
+        # repo lists; without it llama-server can't serve OCR, so ensure it
+        # before reporting already-installed.
+        warning = (
+            ensure_vision_projector(ref, warn_unreadable=False, cancel=cancel)
+            if source is ModelSource.NATIVE
+            else None
+        )
+        return PullResult(
+            model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED, warning=warning
+        )
 
     bytes_cb = make_download_callback(on_update) if on_update is not None else None
     path = manager.pull(
@@ -419,6 +456,7 @@ def pull_model_data(
         source=source.value,
         status=PullStatus.OK,
         path=str(path) if path is not None else None,
+        warning=ensure_vision_projector(ref, warn_unreadable=True, cancel=cancel),
     )
 
 

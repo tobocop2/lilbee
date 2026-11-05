@@ -2130,30 +2130,10 @@ def test_get_capabilities_rerank_ref(monkeypatch) -> None:
     assert FleetProvider().get_capabilities("org/repo/rerank.gguf") == ["rerank"]
 
 
-def test_get_capabilities_vision_when_mmproj_present(monkeypatch) -> None:
+@pytest.mark.parametrize("ref", ["org/repo/v.gguf", "org/repo/folder", "missing/model.gguf"])
+def test_get_capabilities_of_a_chat_model_is_completion_only(monkeypatch, ref) -> None:
     monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/v.gguf")
-    )
-    monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.find_mmproj_for_model", lambda _p: Path("/m/mmproj.gguf")
-    )
-    assert FleetProvider().get_capabilities("org/repo/v.gguf") == ["completion", "vision"]
-
-
-def test_get_capabilities_completion_only_without_mmproj(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
-
-    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr(
-        "lilbee.providers.engine_params.resolve_model_path", lambda _m: Path("/m/c.gguf")
-    )
-
-    def _no_mmproj(_p: Path) -> Path:
-        raise ProviderError("no mmproj")
-
-    monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_mmproj)
-    assert FleetProvider().get_capabilities("org/repo/c.gguf") == ["completion"]
+    assert FleetProvider().get_capabilities(ref) == ["completion"]
 
 
 _TOOL_AWARE_TEMPLATE = "{% if tools %}{{ tool_calls }}{% endif %}"
@@ -3633,17 +3613,6 @@ def test_routing_provider_local_engine_is_fleet() -> None:
     assert isinstance(RoutingProvider()._get_local(), FleetProvider)
 
 
-def test_get_capabilities_unresolved_model_returns_completion(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
-
-    def _raise(_m: str):
-        raise ProviderError("not found")
-
-    monkeypatch.setattr("lilbee.catalog.is_rerank_ref", lambda _m: False)
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _raise)
-    assert FleetProvider().get_capabilities("missing/model.gguf") == ["completion"]
-
-
 class TestLifecycleMethods:
     def test_cancel_inference_is_noop(self) -> None:
         # llama-server stops on client disconnect; cancel has nothing to flip.
@@ -4980,6 +4949,7 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: pin)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     # Everything the test configures is placeable and buildable unless overridden.
@@ -5162,6 +5132,245 @@ def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_
     assert built and built[0] == machine  # into the machine slot
     users = list((machine / "engine-users").glob("*.lock"))
     assert len(users) == 1  # holding membership
+
+
+def test_the_membership_exists_before_the_engine_starts(monkeypatch, tmp_path: Path) -> None:
+    """An exit during the start finds this engine's hold and its in-progress mark."""
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    seen: list[tuple[bool, bool, bool]] = []
+
+    def _look_during_start(launches: list, **_kwargs: object) -> None:
+        seen.append(
+            (machine in p._engine_holds, live_users_exist(machine), machine in p._starting_dirs)
+        )
+
+    monkeypatch.setattr(swap, "start", _look_during_start)
+    assert p._ensure_fleet() is True
+
+    assert seen == [(True, True, True)]
+
+
+def test_a_shutdown_during_a_stuck_start_stops_its_engine_without_waiting(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The start fails once its engine is stopped, so the exit waits on neither work nor lock."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    work_wait_s = 3.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", work_wait_s)
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    started = threading.Event()
+    engine_gone = threading.Event()
+    stopped: list[Path] = []
+
+    def _stop(engine_dir: Path) -> None:
+        stopped.append(Path(engine_dir))
+        engine_gone.set()
+
+    def _start_until_the_engine_exits(launches: list, **_kwargs: object) -> None:
+        started.set()
+        engine_gone.wait(30)
+        raise ProviderError("The local model engine exited before it was ready.", provider="fleet")
+
+    monkeypatch.setattr(prov_mod, "kill_engine", _stop)
+    monkeypatch.setattr(swap, "start", _start_until_the_engine_exits)
+    p = FleetProvider()
+    outcome: list[BaseException] = []
+
+    def _build() -> None:
+        try:
+            p._ensure_fleet(bounded=False)
+        except ProviderError as exc:
+            outcome.append(exc)
+
+    builder = threading.Thread(target=_build, daemon=True)
+    builder.start()
+    assert started.wait(5)
+
+    begin = time.monotonic()
+    p.shutdown()
+    elapsed = time.monotonic() - begin
+    builder.join(5)
+
+    assert elapsed < work_wait_s, f"shutdown took {elapsed:.2f} s with a start stuck"
+    # The shutdown kills what the start had recorded; the cancelled start kills what came after.
+    assert stopped == [machine, machine]
+    assert [str(exc) for exc in outcome] == ["The local model engine exited before it was ready."]
+    assert not live_users_exist(machine)
+
+
+def test_a_start_that_serves_nothing_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    p = FleetProvider()
+
+    assert p._ensure_fleet() is False
+
+    assert p._engine_holds == {}
+    assert not list((machine / "engine-users").glob("*.lock"))
+
+
+def test_a_failed_start_leaves_no_membership(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    # A reference keeps the hold alive, so only a release frees the lock, not collection.
+    held: list[object] = []
+
+    def _fail(launches: list, **_kwargs: object) -> None:
+        held.append(p._engine_holds[machine])
+        raise ProviderError("engine did not come up", provider="fleet")
+
+    monkeypatch.setattr(swap, "start", _fail)
+    p = FleetProvider()
+
+    with pytest.raises(ProviderError, match="engine did not come up"):
+        p._ensure_fleet()
+
+    assert len(held) == 1
+    assert p._engine_holds == {}
+    assert not live_users_exist(machine)
+
+
+def test_a_shutdown_during_a_start_stuck_before_spawn_waits_only_for_the_work(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A pending start keeps its hold, so the exit never waits on the build lock it holds."""
+    from lilbee.runtime.engine_lock import live_users_exist
+
+    work_wait_s = 1.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", work_wait_s)
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    killed: list[Path] = []
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda d: killed.append(Path(d)))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _stuck_then_spawned(self: FleetProvider, data_dir: Path) -> bool:
+        entered.set()
+        release.wait(30)
+        return True
+
+    monkeypatch.setattr(FleetProvider, "_plan_and_spawn", _stuck_then_spawned)
+    p = FleetProvider()
+    outcome: list[object] = []
+    builder = threading.Thread(target=lambda: outcome.append(p._ensure_fleet(bounded=False)))
+    builder.daemon = True
+    builder.start()
+    assert entered.wait(5)
+
+    begin = time.monotonic()
+    p.shutdown()
+    elapsed = time.monotonic() - begin
+    assert elapsed < work_wait_s + 1.0, f"shutdown took {elapsed:.2f} s with a start pending"
+    # The hold stays with the start until it returns.
+    assert machine in p._engine_holds
+    assert live_users_exist(machine)
+
+    release.set()
+    builder.join(5)
+    assert outcome == [False]
+    # The shutdown kills what the start had recorded; the cancelled start kills what came after.
+    assert killed == [machine, machine]
+    assert p._engine_holds == {}
+    assert not live_users_exist(machine)
+
+
+def test_a_shutdown_kills_a_starting_engine_without_the_graceful_stop(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    killed: list[Path] = []
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda d: killed.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    p._starting_dirs.add(machine)
+
+    p.shutdown()
+
+    assert killed == [machine]
+    assert stopped == []
+
+
+class _CountingLock:
+    """A lock wrapper that counts how deep the current holder is."""
+
+    def __init__(self, inner: threading.RLock) -> None:
+        self._inner = inner
+        self.depth = 0
+
+    def __enter__(self) -> _CountingLock:
+        self._inner.__enter__()
+        self.depth += 1
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.depth -= 1
+        self._inner.__exit__(*exc)
+
+
+def test_the_shutdown_kills_starting_engines_under_the_provider_lock(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The kill and the latch are one lock hold, so no start registers between them."""
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    lock = _CountingLock(p._lock)
+    p._lock = lock  # type: ignore[assignment]
+    depth_at_kill: list[int] = []
+    monkeypatch.setattr(prov_mod, "kill_engine", lambda _d: depth_at_kill.append(lock.depth))
+    p._starting_dirs.add(machine)
+
+    p.shutdown()
+
+    assert depth_at_kill == [1]
+
+
+@pytest.mark.parametrize("outcome", ["spawned", "nothing", "failed"])
+def test_a_start_leaves_the_in_progress_set_however_it_ends(
+    monkeypatch, tmp_path: Path, outcome: str
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    in_progress_during_spawn: list[set[Path]] = []
+
+    def _spawn(self: FleetProvider, data_dir: Path) -> bool:
+        in_progress_during_spawn.append(set(self._starting_dirs))
+        if outcome == "failed":
+            raise ProviderError("engine did not come up", provider="fleet")
+        return outcome == "spawned"
+
+    monkeypatch.setattr(FleetProvider, "_plan_and_spawn", _spawn)
+
+    if outcome == "failed":
+        with pytest.raises(ProviderError, match="engine did not come up"):
+            p._ensure_fleet()
+    else:
+        p._ensure_fleet()
+
+    assert in_progress_during_spawn == [{machine}]
+    assert p._starting_dirs == set()
+    assert (machine in p._engine_holds) is (outcome == "spawned")
+
+
+def test_a_start_spawns_nothing_once_the_shutdown_latched(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    started: list[list] = []
+    monkeypatch.setattr(swap, "start", lambda launches, **_kw: started.append(launches))
+    p = FleetProvider()
+    p._shut_down = True
+
+    assert p._plan_and_spawn(machine) is False
+
+    assert started == []
+    assert p._swaps == {}
 
 
 def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: Path) -> None:

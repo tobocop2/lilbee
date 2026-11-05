@@ -51,6 +51,7 @@ from lilbee.data.store import (
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import FILE_LINK_RE, terminal_sources_text
+from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
 from lilbee.runtime.console import PlainConsole, styled
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
@@ -286,6 +287,25 @@ def search(
     console.print(table)
 
 
+def _prepare_ask(*, no_sync: bool) -> None:
+    """Make sure ask has a chat model, a valid embedder and a synced index, or raise."""
+    from lilbee.app.settings import apply_settings_update
+    from lilbee.modelhub.models import ensure_chat_model
+
+    pulled = ensure_chat_model()
+    if pulled is not None:
+        apply_settings_update({"chat_model": pulled})
+    _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
+    get_services().embedder.validate_model()
+    if cfg.auto_sync and not no_sync:
+        if cfg.json_mode:
+            auto_sync(PlainConsole(quiet=True), run_sync_with_signal_cancel)
+        else:
+            auto_sync(console, run_sync_with_signal_cancel)
+    if get_services().searcher.search_unavailable():
+        raise RuntimeError(SEARCH_NEEDS_EMBEDDER)
+
+
 def ask(
     question: str = typer.Argument(..., help="Question to ask"),
     scope: SearchScope = _scope_option,
@@ -318,20 +338,7 @@ def ask(
     _reject_if_empty(question, "question")
 
     try:
-        from lilbee.app.settings import apply_settings_update
-        from lilbee.modelhub.models import ensure_chat_model
-
-        pulled = ensure_chat_model()
-        if pulled is not None:
-            apply_settings_update({"chat_model": pulled})
-        _swap_stale_models_to_installed(chat_overridden=chat_model_overridden())
-        get_services().embedder.validate_model()
-        if cfg.auto_sync and not no_sync:
-            if cfg.json_mode:
-                auto_sync(PlainConsole(quiet=True), run_sync_with_signal_cancel)
-            else:
-                auto_sync(console, run_sync_with_signal_cancel)
-
+        _prepare_ask(no_sync=no_sync)
         chunk_type = scope_to_chunk_type(scope)
 
         if cfg.json_mode:

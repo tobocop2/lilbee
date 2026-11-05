@@ -80,7 +80,7 @@ def fetched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     publish(monkeypatch, make_pack(wheel))
     calls: list[str] = []
 
-    def fake(lock: Any, cell: str, *, dest: Path) -> Path:
+    def fake(lock: Any, cell: str, *, dest: Path, **_signals: Any) -> Path:
         calls.append(cell)
         dest.mkdir(parents=True, exist_ok=True)
         copy = dest / wheel.name
@@ -225,6 +225,35 @@ def test_the_install_command_fetches_the_pack_when_no_engine_is_present(fetched)
     assert fetched == [CELL]
 
 
+def test_installing_the_pack_reports_bytes_and_retries_and_honours_cancel(
+    fetched, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = first_use.fetch_frozen
+    seen: dict[str, Any] = {}
+
+    def reporting(lock: Any, cell: str, *, dest: Path, **signals: Any) -> Path:
+        seen.update(signals)
+        signals["on_progress"](4, 10)
+        signals["on_retry"](1, 3, "Transfer failed: reset")
+        return real(lock, cell, dest=dest)
+
+    monkeypatch.setattr(first_use, "fetch_frozen", reporting)
+    updates: list[float] = []
+    retries: list[str] = []
+    cancel = threading.Event()
+    built = engine_service.install(
+        EngineName.LLAMA.value,
+        on_update=lambda p: updates.append(p.percent),
+        on_retry=retries.append,
+        cancel=cancel,
+    )
+    assert built.engine == EngineName.LLAMA.value
+    assert updates == [40.0]
+    assert retries == ["Transfer failed: reset. Attempt 1 of 3 failed; trying again."]
+    assert seen["cancel"] is cancel
+    assert fetched == [CELL]
+
+
 def test_the_install_command_names_the_missing_pack_when_none_is_published() -> None:
     with pytest.raises(engine_service.EngineRefusedError, match="is not published yet"):
         engine_service.install(EngineName.LLAMA.value)
@@ -363,3 +392,37 @@ def test_your_own_server_never_installs_a_pack_for_a_missing_helper(
     assert excinfo.value.kind is ProviderErrorKind.UNKNOWN
     assert f"Install {tool.value} with '{command}'" in str(excinfo.value)
     assert "engine install" not in str(excinfo.value)
+
+
+def test_a_pack_install_makes_the_next_read_in_the_process_ask_the_new_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from lilbee.providers import gguf_meta
+
+    payload = {
+        "header": {
+            "metadataKV": [
+                {"key": "general.architecture", "valueType": 8, "value": "bert"},
+                {"key": "bert.embedding_length", "valueType": 4, "value": 1024},
+            ]
+        }
+    }
+    monkeypatch.setattr("lilbee.core.system.default_cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.proc.run_bounded", lambda *a, **k: (json.dumps(payload), 0)
+    )
+    gguf_meta._METADATA_CACHE.clear()
+    gguf_meta._UNANSWERED.clear()
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 32)
+    # Nothing is published, so the first read finds no pack to install.
+    assert gguf_meta.read_gguf_metadata(model) is None
+    wheel = tmp_path / "given.whl"
+    publish(monkeypatch, make_pack(wheel))
+    first_use.install_pack(wheel)
+    assert gguf_meta.read_gguf_metadata(model) == {
+        "architecture": "bert",
+        "embedding_length": "1024",
+    }

@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import stat
+import time
 import zipfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -20,8 +21,11 @@ from typer.testing import CliRunner
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.catalog import download, runnable
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
+from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
@@ -30,12 +34,15 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
 from lilbee.server.routes import engines as routes
+from tests._async_wait import wait_until
+from tests._lilbee_app_test_host import await_chat
 from tests._litestar_test_client import create_test_client
 from tests._release_server import ReleaseServer, release_server
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import GGUF_ENGINE
+from tests.test_tui_engine_choice import _ChatApp
 
 ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
@@ -261,6 +268,86 @@ def test_a_download_the_network_keeps_cutting_gives_the_missing_pack_text(
     )
     assert len(release.requests) == 3
     assert _builds() == []
+
+
+def _downloadable(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+
+
+def _leftovers(root: Path) -> list[str]:
+    """Every download folder, lock file and stage folder still under the engines folder."""
+    return sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() or path.name.startswith((".download-", ".stage-"))
+    )
+
+
+async def test_cancelling_the_slash_install_mid_download_leaves_no_partial_file_and_no_lock(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    _downloadable(good, release, monkeypatch)
+    app = _ChatApp()
+    real = engine_service.make_download_callback
+
+    def cancelling(on_update: Any) -> Any:
+        inner = real(on_update)
+
+        def on_bytes(done: int, total: int) -> None:
+            app.task_bar.cancel_task(app.task_bar.queue.active_tasks[0].task_id)
+            inner(done, total)
+
+        return on_bytes
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        monkeypatch.setattr(engine_service, "make_download_callback", cancelling)
+        chat._cmd_engine(f"install {ENGINE.value}")
+        assert await wait_until(
+            pilot,
+            lambda: bool(app.task_bar.queue.history) and not app.task_bar._workers,
+            timeout=10,
+        )
+        (row,) = app.task_bar.queue.history
+        assert row.status is TaskStatus.CANCELLED
+    assert len(release.requests) == 1
+    assert _builds() == []
+    assert _leftovers(root) == []
+
+
+async def test_cancelling_the_slash_install_during_the_backoff_ends_it_before_the_next_connect(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    _downloadable(good, release, monkeypatch)
+    release.reset_next = 10
+    monkeypatch.setattr(download, "_RETRY_BACKOFF_SECONDS", 60)
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        chat._cmd_engine(f"install {ENGINE.value}")
+        assert await wait_until(
+            pilot,
+            lambda: any("trying again" in str(n.message) for n in app._notifications),
+            timeout=10,
+        )
+        started = time.monotonic()
+        app.task_bar.cancel_task(app.task_bar.queue.active_tasks[0].task_id)
+        assert await wait_until(
+            pilot,
+            lambda: bool(app.task_bar.queue.history) and not app.task_bar._workers,
+            timeout=10,
+        )
+        (row,) = app.task_bar.queue.history
+        assert row.status is TaskStatus.CANCELLED
+        assert time.monotonic() - started < 5
+    assert len(release.requests) == 1
+    assert _builds() == []
+    assert _leftovers(root) == []
 
 
 def test_a_pin_with_no_cells_installs_a_wheel_on_a_host_the_manifest_cannot_name(
@@ -759,3 +846,144 @@ def test_a_pack_url_outside_the_index_is_refused_and_no_request_is_sent(
         engine_service.install(ENGINE.value)
     assert "https://index.test/packs/" in str(exc.value)
     assert (release.requests, _builds()) == ([], [])
+
+
+def _refusing_host(os: HostOS, arch: HostArch, avx2: Feature | None = None) -> HostCaps:
+    return HostCaps(
+        os=os,
+        arch=arch,
+        avx2=avx2 or Feature(True),
+        neon=Feature(False, "not an ARM CPU"),
+        gpus=(),
+        nvidia_driver_cuda=None,
+        nvidia_reason="",
+        nvidia_known=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "host", "reason"),
+    [
+        (
+            "ik_llama.cpp",
+            _refusing_host(HostOS.LINUX, HostArch.X86_64, Feature(False, "Xeon lacks AVX2")),
+            "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON.",
+        ),
+        (
+            "tei",
+            _refusing_host(HostOS.WINDOWS, HostArch.X86_64),
+            "No build exists for Windows.",
+        ),
+        (
+            "mistral.rs",
+            _refusing_host(HostOS.MACOS, HostArch.X86_64),
+            "mistral.rs is not offered on macos x86_64.",
+        ),
+    ],
+)
+def test_each_refusing_engine_gives_its_reason_and_the_install_sentence(
+    name: str, host: HostCaps, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(name)
+    assert str(exc.value) == f"Engine {name} cannot run on this host. {reason} {STAYS}"
+
+
+STALL_TIMEOUT = 0.3
+
+
+@pytest.fixture
+def stalling(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch) -> ReleaseServer:
+    """A release whose file the engine's cell points at; the client gives up after 0.3 s."""
+    release.files["/fx.whl"] = good.read_bytes() * 50
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=len(release.files["/fx.whl"]))
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    monkeypatch.setattr(hub_constants, "HF_HUB_DOWNLOAD_TIMEOUT", STALL_TIMEOUT)
+    monkeypatch.setattr(hub_constants, "DOWNLOAD_CHUNK_SIZE", 1024)
+    return release
+
+
+def test_a_silent_server_names_each_failed_attempt_with_its_cause(
+    stalling: ReleaseServer,
+) -> None:
+    stalling.silent_next = 10
+    retries: list[str] = []
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError, match="cannot be downloaded"),
+    ):
+        engine_service.install(ENGINE.value, on_retry=retries.append)
+    assert len(stalling.requests) == 3
+    assert [t.split(". ")[-1] for t in retries] == [
+        "Attempt 1 of 3 failed; trying again.",
+        "Attempt 2 of 3 failed; trying again.",
+    ]
+    assert all(t.startswith("Transfer failed: ") for t in retries)
+
+
+def test_a_download_that_stops_mid_body_reports_the_bytes_that_arrived(
+    stalling: ReleaseServer,
+) -> None:
+    stalling.stall_next = 10
+    updates: list[tuple[float, str]] = []
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError),
+    ):
+        engine_service.install(
+            ENGINE.value, on_update=lambda p: updates.append((p.percent, p.detail))
+        )
+    assert 0 < updates[0][0] < 100
+
+
+def test_a_healthy_download_reports_no_retry_and_completes(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    retries: list[str] = []
+    built = engine_service.install(ENGINE.value, on_retry=retries.append)
+    assert (built.engine, retries) == (ENGINE.value, [])
+    assert len(release.requests) == 1
+
+
+@pytest.mark.parametrize("flags", [[], ["--json"]])
+def test_the_cli_tells_the_user_about_each_retry_on_stderr(
+    stalling: ReleaseServer, flags: list[str]
+) -> None:
+    stalling.silent_next = 10
+    with mock.patch.object(download.time, "sleep"):
+        result = CliRunner().invoke(cli_app, [*flags, "engine", "install", ENGINE.value])
+    assert result.exit_code == 1
+    assert result.stderr.count("failed; trying again.") == 2
+    if flags:
+        assert json.loads(result.stdout)["command"] == "engine install"
+    assert "failed; trying again." not in result.stdout
+
+
+def test_the_slash_command_hands_each_retry_to_the_screen(stalling: ReleaseServer) -> None:
+    stalling.silent_next = 10
+    retries: list[str] = []
+    with mock.patch.object(download.time, "sleep"):
+        out = run_engine_command(f"install {ENGINE.value}", on_retry=retries.append)
+    assert not out.ok
+    assert len(retries) == 2
+
+
+def test_the_cli_shows_download_progress_on_stderr_and_keeps_stdout_clean(
+    good: Path,
+) -> None:
+    def install(
+        _name: str, _wheel: Path | None, on_update: Any, on_retry: Any
+    ) -> engine_service.InstalledBuild:
+        on_update(DownloadProgress(percent=40.0, detail="4/10 MB", is_cache_hit=False))
+        return engine_service.InstalledBuild(ENGINE.value, VERSION, "cpu", "")
+
+    with mock.patch.object(engine_service, "install", side_effect=install):
+        result = CliRunner().invoke(cli_app, ["--json", "engine", "install", ENGINE.value])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["installed"] == f"{ENGINE.value} {VERSION} (cpu)"

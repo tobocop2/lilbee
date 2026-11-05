@@ -157,7 +157,7 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
     def refuse(placement, *_a, **_kw):
         if placement is None:
             return Placement(instances=(), unplaceable_roles=())
-        raise PlacementError("embed pinned to device 1 but only 0 GPU(s) detected")
+        raise PlacementError("embed is pinned to device 1, but this machine lists no devices.")
 
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     planning.clear_read_device_cache()

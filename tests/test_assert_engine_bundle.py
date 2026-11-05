@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import shlex
 import sys
 import zipfile
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "qa" / "assert_engine_bundle.py"
 
@@ -542,9 +544,170 @@ def test_a_library_without_a_tool_is_a_usage_error(
     assert "usage:" in capsys.readouterr().err
 
 
+_WORKFLOWS = _SCRIPT.parents[2] / ".github" / "workflows"
+
+
+def _bundle_check_calls(workflow: Path) -> list[list[str]]:
+    """Return the argument list of each assert_engine_bundle.py call in a workflow's run scripts."""
+    document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    calls: list[list[str]] = []
+    for job in document["jobs"].values():
+        for step in job["steps"]:
+            script = step.get("run", "").replace("\\\n", " ")
+            lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|()\n")
+            lexer.whitespace = " \t\r"
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            words = list(lexer)
+            for index, word in enumerate(words):
+                if word.endswith("assert_engine_bundle.py"):
+                    end = index + 1
+                    while end < len(words) and not set(words[end]) <= set(";&|()\n"):
+                        end += 1
+                    calls.append(words[index + 1 : end])
+    return calls
+
+
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == flag]
+
+
+def _assert_asks_for_ggml_base(workflow: Path) -> None:
+    calls = _bundle_check_calls(workflow)
+    assert calls
+    for args in calls:
+        assert _flag_values(args, "--tool") == ["llama-server"]
+        assert _flag_values(args, "--library") == ["ggml-base"]
+
+
 @pytest.mark.parametrize("workflow", ["verify-release.yml", "build-multigpu.yml"])
 def test_the_release_workflows_ask_for_ggml_base(workflow: str) -> None:
-    text = (_SCRIPT.parents[2] / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    calls = [line for line in text.splitlines() if "assert_engine_bundle.py" in line]
-    assert calls
-    assert all("--tool llama-server --library ggml-base" in line for line in calls)
+    _assert_asks_for_ggml_base(_WORKFLOWS / workflow)
+
+
+def test_a_comment_holding_the_flags_does_not_count_as_the_call(tmp_path: Path) -> None:
+    workflow = tmp_path / "wf.yml"
+    workflow.write_text(
+        "jobs:\n"
+        "  check:\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          python tools/qa/assert_engine_bundle.py engine/*.whl"
+        " # --tool llama-server --library ggml-base\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError):
+        _assert_asks_for_ggml_base(workflow)
+    assert _bundle_check_calls(workflow) == [["engine/*.whl"]]
+
+
+def test_a_flag_in_another_command_does_not_count_as_the_call(tmp_path: Path) -> None:
+    workflow = tmp_path / "wf.yml"
+    workflow.write_text(
+        "jobs:\n"
+        "  check:\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          python tools/qa/assert_engine_bundle.py \\\n"
+        "            engine/*.whl && echo --tool llama-server --library ggml-base\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError):
+        _assert_asks_for_ggml_base(workflow)
+
+
+def _bin_dir(tmp_path: Path, bin_files: tuple[str, ...]) -> Path:
+    root = tmp_path / "dist" / "lilbee.dist" / "lilbee_engine_llama_cpp" / "bin"
+    for entry in bin_files:
+        (root / entry).parent.mkdir(parents=True, exist_ok=True)
+        (root / entry).write_bytes(b"x")
+    return root
+
+
+def test_a_directory_with_every_windows_file_passes(tmp_path: Path) -> None:
+    root = _bin_dir(
+        tmp_path, ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT)
+    )
+    assert acb.check(root, "cu124", "Windows") == []
+
+
+def test_a_directory_without_vcomp140_is_rejected_as_an_executable(tmp_path: Path) -> None:
+    files = ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT[:-1])
+    problems = acb.check(_bin_dir(tmp_path, files), "cu124", "Windows")
+    assert len(problems) == 1
+    assert "windows executable is missing vcomp140.dll" in problems[0]
+
+
+def test_vcomp140_beside_the_bin_directory_does_not_count(tmp_path: Path) -> None:
+    root = _bin_dir(
+        tmp_path, ("llama-server.exe", "ggml-cuda.dll", *_WINDOWS_RUNTIME, *_WINDOWS_CRT[:-1])
+    )
+    (root.parent.parent / "vcomp140.dll").write_bytes(b"x")
+    assert any("vcomp140.dll" in p for p in acb.check(root, "cu124", "Windows"))
+
+
+def test_a_directory_rocm_runtime_is_read_from_nested_kernels(tmp_path: Path) -> None:
+    files = ("libggml-hip.so.0.15.1", *_ROCM_PAYLOAD[1:])
+    root = _bin_dir(tmp_path, files)
+    assert acb.check(root, "rocm", "Linux") == []
+    (root / "rocblas" / "library" / "kernels.dat").unlink()
+    problems = acb.check(root, "rocm", "Linux")
+    assert len(problems) == 1
+    assert "Tensile kernels" in problems[0]
+
+
+def test_a_directory_missing_its_backend_library_is_rejected(tmp_path: Path) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-base.so"))
+    problems = acb.check(root, "vulkan", "Linux")
+    assert any("vulkan executable is missing libggml-vulkan.so" in p for p in problems)
+    assert any("libvulkan.so.1" in p for p in problems)
+
+
+def test_a_directory_has_no_size_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-metal.dylib"))
+    monkeypatch.setattr(acb, "WHEEL_SIZE_LIMIT", 0)
+    assert acb.check(root, "metal", "macOS") == []
+
+
+def test_an_empty_directory_has_no_payload(tmp_path: Path) -> None:
+    root = tmp_path / "bin"
+    root.mkdir()
+    assert "no lilbee_engine_llama_cpp/bin/ payload" in acb.check(root, "cpu", "Linux")[0]
+
+
+def test_main_checks_a_directory_with_a_platform(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-cuda.so"))
+    args = ["--backend", "cu125", "--platform", "Linux", str(root)]
+    assert acb.main(args) == 1
+    assert "libcudart.so" in capsys.readouterr().err
+    (root / "libcudart.so.12").write_bytes(b"x")
+    (root / "libcublas.so.12").write_bytes(b"x")
+    (root / "libcublasLt.so.12").write_bytes(b"x")
+    assert acb.main(args) == 0
+
+
+def test_main_refuses_a_directory_without_a_platform(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server",))
+    assert acb.main(["--backend", "cpu", str(root)]) == 1
+    assert "needs --platform" in capsys.readouterr().err
+
+
+def test_main_refuses_the_tool_check_on_a_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-cpu.so"))
+    args = ["--backend", "cpu", "--platform", "Linux", "--tool", "llama-server", str(root)]
+    assert acb.main(args) == 1
+    assert "--tool reads a wheel, not a directory" in capsys.readouterr().err
+
+
+def test_main_refuses_a_directory_without_a_backend(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _bin_dir(tmp_path, ("llama-server", "libggml-vulkan.so"))
+    assert acb.main(["--platform", "Linux", str(root)]) == 1
+    assert "needs --backend" in capsys.readouterr().err

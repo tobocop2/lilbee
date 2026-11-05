@@ -549,6 +549,11 @@ feature it lacks and installs nothing. Nothing downloads on first use. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
 REST route `POST /api/engines/install`.
 
+During the download, the command line shows a progress bar on stderr, and the
+chat screen shows the bytes in the task bar. Each failed attempt prints its
+cause and its number. The MCP tool and the REST route return one result at the
+end and show no progress.
+
 ## Memory
 
 lilbee can remember durable facts about you and standing preferences for how
@@ -801,6 +806,8 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
 {"event": "done", "model": "...", "installed": true}
+// "warning" is optional: it is a string only when the pull could not confirm a vision projector
+{"event": "done", "model": "...", "installed": true, "warning": "... is named as a vision model, but its repo lists no projector file."}
 ```
 
 **Gaps vs MCP.** The CLI doesn't expose `crawl` (non-blocking URL crawling) or
@@ -1216,6 +1223,24 @@ lilbee resolves the data directory in this order (highest priority first):
 | macOS | `~/Library/Application Support/lilbee/` |
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
+
+### What the data directory holds
+
+The data directory holds your documents, the search index, `config.toml`
+and the logs. Four locations stay outside it and are shared by every data
+directory:
+
+| Location | Platform default | Variable that moves it |
+|----------|------------------|------------------------|
+| Models folder (also the Hugging Face cache) | `models/` in the platform data folder | `LILBEE_MODELS_DIR` |
+| Engines folder | `engines/` next to the models folder | follows `LILBEE_MODELS_DIR` |
+| Machine engine slot | `engine/` in the platform state folder | `LILBEE_ENGINE_DIR` |
+| GGUF metadata cache | the platform cache folder | `XDG_CACHE_HOME` (Linux), `HOME` (macOS) |
+
+A model you pull once is available to every data directory. To isolate a
+run fully, set `LILBEE_DATA`, `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR`
+to new folders. On Linux, also set `XDG_DATA_HOME`, `XDG_STATE_HOME` and
+`XDG_CACHE_HOME`. On macOS, set `HOME`.
 
 Run `lilbee init` to create a `.lilbee/` directory in your project. It
 contains `documents/` (your indexed files), `data/` (the search index), a
