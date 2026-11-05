@@ -7,6 +7,7 @@ name to the distribution's canonical "hf-xet", and Nuitka's frozen lookup folds
 case but not '-' against '_'.
 """
 
+import importlib.metadata
 from pathlib import Path
 
 import yaml
@@ -35,14 +36,17 @@ def test_declared_name_is_the_one_huggingface_hub_queries() -> None:
 
 def test_trigger_module_is_the_one_that_reads_the_metadata() -> None:
     """Nuitka applies the config only when it compiles the named module, so the
-    trigger has to be the module whose import populates the version table."""
+    trigger has to be the module that reads the version metadata."""
     from huggingface_hub.utils import _runtime
 
     entries = yaml.safe_load(_CONFIG.read_text())
     modules = {entry["module-name"] for entry in entries}
 
     assert _runtime.__name__ in modules
-    assert _runtime._package_versions["hf_xet"] == _runtime._get_version("hf_xet")
+    # Hub fills the version table on the first lookup, so ask the public getter.
+    reported = _runtime.get_xet_version()
+    assert reported != "N/A"
+    assert reported == importlib.metadata.version("hf_xet")
 
 
 def test_build_passes_the_config_and_compiles_hf_xet() -> None:

@@ -49,10 +49,11 @@ dependencies = [
     "litestar>=2.0",
     "uvicorn>=0.30",
     "httpx",
+    "httpx2",
     "diskcache>=5.6.1",
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
-    "huggingface_hub>=1.27.0",
+    "huggingface_hub>=2.4.0",
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     # 2.5 drops the 3.11 floor and ships 3.12-only stubs mypy rejects at the 3.11 target.

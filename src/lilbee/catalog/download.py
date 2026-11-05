@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
 import httpx
+import httpx2
 from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
@@ -229,7 +230,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
     except EntryNotFoundError:
         raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
-    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+    except httpx2.TransportError as exc:
         raise _TransientDownloadError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise _TransientDownloadError(f"I/O error downloading {entry.hf_repo}: {exc}") from None

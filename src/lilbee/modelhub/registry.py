@@ -182,8 +182,8 @@ def _blob_digest(source_path: Path) -> str:
 def _cache_blob_name(real: Path) -> str | None:
     """Name of *real* relative to its cache ``blobs/`` dir, or None outside one.
 
-    Older huggingface_hub keeps blobs flat (``blobs/<sha>``); newer releases
-    shard them under a two-character prefix (``blobs/a0/<sha>``). The name
+    huggingface_hub writes flat blobs (``blobs/<sha>``), and its shared blob
+    store shards them under a two-character prefix (``blobs/a0/<sha>``). The name
     keeps that prefix, so ``cache_path / "blobs" / name`` finds the file in both.
     """
     if real.parent.name == "blobs":

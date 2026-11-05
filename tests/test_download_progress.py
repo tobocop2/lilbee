@@ -451,13 +451,13 @@ class TestDownloadModelErrorPropagation:
     def test_timeout_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import httpx
+        import httpx2
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_timeout(**kwargs: Any) -> str:
-            raise httpx.TimeoutException("Connection timed out")
+            raise httpx2.TimeoutException("Connection timed out")
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_timeout)
         entry = _test_entry()
@@ -468,13 +468,13 @@ class TestDownloadModelErrorPropagation:
     def test_connect_error_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import httpx
+        import httpx2
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_connect(**kwargs: Any) -> str:
-            raise httpx.ConnectError("Connection refused")
+            raise httpx2.ConnectError("Connection refused")
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_connect)
         entry = _test_entry()

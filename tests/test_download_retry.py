@@ -153,11 +153,17 @@ class TestTransientErrorTranslation:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _raise)
         dl._hf_download_or_translate(_entry(), _config())
 
-    def test_a_network_timeout_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import httpx
+    @pytest.mark.parametrize(
+        "name", ["ConnectError", "TimeoutException", "ReadError", "RemoteProtocolError"]
+    )
+    def test_a_network_error_from_hub_is_transient(
+        self, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """Hub raises httpx2 errors, which are not httpx errors."""
+        import httpx2
 
         with pytest.raises(dl._TransientDownloadError, match="Network error"):
-            self._download(monkeypatch, httpx.ConnectError("refused"))
+            self._download(monkeypatch, getattr(httpx2, name)("refused"))
 
     def test_an_io_error_is_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(dl._TransientDownloadError, match="I/O error"):
