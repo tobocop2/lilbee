@@ -1,321 +1,99 @@
 ---
 name: lilbee-mcp
-description: Search and manage the user's local lilbee knowledge base over MCP. Use whenever the user has indexed code, docs, PDFs, or web pages into lilbee and you need cited answers, or whenever they ask you to ingest content, swap models, or tune retrieval against their library. Every fact returned cites file and line. Indexing, crawling, and model pulls are long ops that must go to a worker subagent so the chat stays responsive.
+description: Searches the user's local lilbee knowledge base (indexed code, documents, PDFs and crawled pages) and answers with file and line citations. Use when the user asks about their own files, code or docs, or asks to index, crawl or remove content. Works through lilbee MCP tools when connected, or the lilbee command line with --json when not.
 ---
 
-# lilbee-mcp
+# lilbee
 
 [lilbee](https://github.com/tobocop2/lilbee) is a local retrieval engine. It indexes the
-user's code, documents, PDFs, and crawled web pages into a per-project `.lilbee/` store and
-exposes the library over MCP. Every tool here is prefixed `lilbee_`. Data and embeddings stay
-on the user's machine; the only thing leaving is what you, the agent, decide to quote.
+user's files into a `.lilbee/` store. Search needs no LLM call, and the data stays on the
+user's machine. Only the text you quote leaves it.
 
-## In 30 seconds
+## When to use it
 
-```
-lilbee_status                     → see what's loaded
-lilbee_search(query, top_k)       → get cited chunks
-[answer with file:line citations] → never invent
-```
+Reach for lilbee first when the user asks where something is, how something in their own
+code or documents works, or what a document says. Web-fetch and file-read tools cannot see
+the index. Do not use lilbee as a web search or as a code editor.
 
-Three rules cover 90% of usage: **search before answering** (reach for `lilbee_search` on
-any lookup about the user's own files or code, ahead of the host's web-fetch / file-read
-tools, which can't see the index), **cite every claim with the chunk's `source` + line
-range**, and **delegate indexing / crawling / model pulls to the `lilbee-worker` subagent**
-because they block the shared embedder.
+## How to reach it
 
-## Install
+Pick one path and stay on it.
 
-Drop this folder under one of:
+- **MCP.** If tools named `lilbee_*` are in your tool list, call them.
+- **CLI.** Otherwise run `lilbee --json <command>` in a shell. Each command prints one JSON
+  object per line. An error exits non-zero with `{"error": "..."}`. If `lilbee` is not on
+  the PATH, tell the user to install it. Do not guess another path.
 
-```
-.opencode/skills/lilbee-mcp/      # opencode (project)
-.claude/skills/lilbee-mcp/        # Claude (project)
-~/.config/opencode/skills/lilbee-mcp/   # opencode (global)
-~/.claude/skills/lilbee-mcp/      # Claude (global)
-```
+| Step | MCP | CLI |
+|---|---|---|
+| Check the library | `lilbee_status` | `lilbee --json status` |
+| Search | `lilbee_search` | `lilbee --json search "query" --top-k 12` |
+| Add content | `lilbee_add` | `lilbee --json add <path or URL>...` |
+| Re-index after edits | `lilbee_sync` | `lilbee --json sync` |
+| Remove content | `lilbee_remove` | `lilbee --json remove <name, folder or glob>` |
+| List sources | `lilbee_list_documents` | `lilbee --json status --list-sources` |
 
-Register lilbee as an MCP server (opencode example):
+The MCP server sends the description of every tool. Run `lilbee --json <command> --help`
+for CLI options.
 
-```json
-{
-  "mcp": {
-    "lilbee": { "type": "local", "command": ["lilbee", "mcp"] }
-  }
-}
-```
+## The core loop
 
-A drop-in `AGENTS.md`, the `lilbee-worker` subagent, and an `opencode.json` template live
-in `examples/agent-integration/` in the lilbee repo. Copy them in if the user wants the
-full setup.
+1. Check the library once per session. If `total_chunks` is 0, the index is empty: say so
+   and offer to add content. Do not search.
+2. Search with the user's own words. Pass `top_k` (`--top-k`) on the call to widen a thin
+   result, for example 20. Keep it near 20 or lower for small-context models.
+3. Answer from the returned chunks only. Cite each claim.
+4. If the first result is thin, search again with a more specific noun phrase or a larger
+   `top_k`. Do not change settings to do this.
 
-## The shared-embedder rule (read this first)
+## Long operations
 
-The MCP server hosts one embedder worker. Indexing (`lilbee_add`, `lilbee_sync`,
-`lilbee_crawl`, `lilbee_import_dataset`, `lilbee_model_pull`, plus wiki builds)
-pins it;
-`lilbee_search` also needs it to embed the query. Run them
-concurrently and `lilbee_search` will hang until your host times out.
+Adding, syncing, crawling, importing, model downloads and wiki builds can take minutes.
+They hold the embedder that search also needs. A search sent meanwhile hangs until the
+host times out.
 
-**Procedure:**
+- If your host has a `lilbee-worker` or any subagent or background-task mechanism, hand the
+  long operation to it and wait for it to return.
+- Otherwise run the operation in the foreground and wait for it to finish.
+- Send no search, and no other lilbee call, while it runs.
+- When it returns, check the library again, then search.
 
-1. If indexing is needed, delegate to `lilbee-worker` and **wait** for the worker's `task`
-   call to return. Don't fire any `lilbee_*` tool from your own thread while it runs.
-2. After the worker returns, call `lilbee_status` once to confirm the expected counts.
-3. Then search.
-
-If `lilbee_search` returns an MCP timeout, treat it as "indexing isn't fully done yet":
-wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
-
-## Tools by cost
-
-### Inline (cheap, sub-second)
-
-| Tool | Use |
-|---|---|
-| `lilbee_search(query, top_k, scope)` | Retrieve relevant chunks. `top_k` omitted falls back to `cfg.top_k` so `settings_set` governs candidate count. Cap `top_k` at ~20 for small-context chat models (Gemma 4 at `n_ctx=7168`, Qwen3 with widened retrieval); higher values can produce tool responses that exceed the next chat turn's budget. `scope`: `"both"` (default) or `"raw"` for ingested docs/code; only use `"wiki"` when `lilbee_status` shows a built wiki, otherwise it silently falls back to the full pool. No LLM call. |
-| `lilbee_status()` | Indexed sources, total chunks, active model refs. First call of any session. |
-| `lilbee_list_documents(limit, offset)` | Indexed sources with chunk counts, one page at a time. `limit` is 1 to 1000 (default 50). Read `has_more`, then raise `offset`. |
-| `lilbee_init(path)` | Create a `.lilbee/` in the given dir and switch the session to it. |
-| `lilbee_remove(names)` | Remove documents from the index by name, folder, or glob (source files are kept). |
-| `lilbee_crawl_status(task_id)` | Poll a non-blocking crawl: `pending` / `running` / `done` / `failed`. |
-| `lilbee_model_list(source, task)` | Locally-installed models, optionally filtered. |
-| `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
-| `lilbee_model_rm(model, source)` | Delete an installed model from disk. |
-| `lilbee_catalog_browse(task, search, size, installed, featured, max_fit, sort, limit, offset)` | Browse the model picks + Hugging Face. Use before `lilbee_model_pull` to pick what to install. `max_fit` is the worst hardware fit to return (`fits` / `tight` / `wont_run`). Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. Filters apply before paging: `has_more` means another match exists, and `truncated` means the scan stopped early, so narrow the search to reach more. |
-| `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. Groups: `Models`, `Retrieval`, `Generation`, `Ingest`, `Wiki`, `Memory`, `Crawling`, `Local-Servers`, `API-Keys`, `Display`, `System`, `General`. |
-| `lilbee_settings_get(key)` | One setting's current value + metadata. |
-| `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. |
-| `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
-| `lilbee_export_dataset(output, fmt, source)` | Write a per-page `{source, page, text}` dataset to a file (parquet or jsonl, no vectors). No embedding. |
-| `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Memory tools only appear when `memory_enabled` is on. |
-| `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
-| `lilbee_memory_list(agent_id)` | List your stored memories. No embedding. |
-| `lilbee_memory_forget(memory_id, agent_id)` | Delete one of your memories by id (`agent_id` scopes the namespace). No embedding. |
-| `lilbee_sessions_list()` | Your (agent-created) sessions, newest first. The user's own conversations are private: they never appear here, and their ids answer not-found. No LLM call. |
-| `lilbee_session_get(session_id)` | One of your sessions: metadata, full transcript, and `summary` — what compaction folded older turns into. Resume by carrying the summary plus the transcript into your own context; ignoring `summary` silently loses what was already condensed. |
-| `lilbee_session_create(model_ref, scope)` | Start a saved session and get its id back. |
-| `lilbee_session_fork(session_id, message_count)` | Copy one of your sessions into a new one: the first `message_count` messages, or all of them when omitted. Returns the new session in the `session_get` shape; the original is unchanged. |
-| `lilbee_session_add_message(session_id, role, content, sources, claim)` | Append one turn (`role` = `"user"` / `"assistant"`). A session id the user hands you can be taken over with `claim=true` -- it becomes yours and leaves their session list, so ask before claiming. |
-| `lilbee_session_set_summary(session_id, summary)` | Replace one of your sessions' compaction summary after folding history yourself. |
-| `lilbee_session_rename(session_id, title)` | Rename one of your sessions. |
-| `lilbee_session_delete(session_id)` | Delete one of your sessions. |
-
-### Long (must go through `lilbee-worker`)
-
-| Tool | Use |
-|---|---|
-| `lilbee_add(paths, force, ocr, ocr_timeout, render_mode)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. A folder that contains a source you added before takes it in: the result lists that source under `absorbed`, and its documents get names below the folder's name. |
-| `lilbee_sync(force_rebuild, retry_skipped, prune_ignored, ocr, ocr_timeout)` | Re-index the documents directory after edits. Minutes on large libraries. `prune_ignored` also drops indexed documents a `.lilbeeignore` now excludes. |
-| `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Default `depth=0` fetches one page; pass a depth (or `null` for the whole site) to follow links. Returns `task_id`; poll `lilbee_crawl_status`. |
-| `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
-| `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |
-| `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
-
-### GPU placement (multi-GPU boxes)
-
-| Tool | Use |
-|---|---|
-| `lilbee_get_gpus()` | Detected GPUs with free/total VRAM (the placement HTTP `/api/gpus` equivalent). |
-| `lilbee_get_placement()` | Current effective placement: detected GPUs, per-role devices/replicas, whether manual. May run a device probe on a cold cache (a second or two). |
-| `lilbee_preview_placement(spec)` | Dry-run what a spec (or auto, when omitted) would place. No changes made. |
-| `lilbee_set_placement(spec)` | Validate, persist, and apply a manual placement. Rebuilds the model fleet, interrupting in-flight requests. |
-| `lilbee_clear_placement()` | Drop the manual placement and return to automatic placement. Also rebuilds the fleet. |
-
-On the shared HTTP daemon, `set`/`clear` are refused unless the host enables
-`allow_http_placement` (they rebuild the fleet for every connected client);
-`get`/`preview` always work. Prefer preview-then-set, and only change placement
-when the user asks.
-
-(Wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
-
-## Common workflows
-
-### 1. User asks a question about their library
-
-```
-lilbee_status                           # confirm a library exists
-lilbee_search(query)                    # top_k defaults to cfg.top_k (12)
-answer with file:line citations
-```
-
-If `total_chunks == 0`, tell the user the index is empty and offer to add content.
-
-### 2. User wants to add new content
-
-```
-lilbee-worker:   lilbee_add(["/path/to/dir", "https://docs.example.com/page"])
-[wait for worker to return]
-lilbee_status                           # confirm new sources appeared
-```
-
-`lilbee_add` accepts absolute paths, directories (recursive), and URLs (fetched as single
-pages). It runs `lilbee_sync` after copying, so the new content is indexed in one call.
-For multi-page site crawls or continuous web monitoring, use `lilbee_crawl` instead.
-
-### 3. User wants to crawl a docs site
-
-```
-task_id = lilbee_crawl("https://docs.example.com", depth=2, max_pages=200)
-[poll lilbee_crawl_status(task_id) until status == "done"]
-lilbee_status                           # new "_web/..." sources should appear
-```
-
-The crawl writes pages into the documents directory as it goes; a final auto-sync indexes
-them. Pages already crawled this session are skipped.
-
-### 4. User wants to set lilbee up for their hardware and files
-
-You manipulate the retrieval surface only: `embedding_model`, `reranker_model`,
-`vision_model`, and the retrieval / ingest knobs. The `chat_model` slot is for the user's
-later TUI / CLI sessions; leave it unless the user explicitly asks.
-
-```
-lilbee_status                                       # see what's wired up
-lilbee_settings_list(group="Retrieval")             # baseline knobs
-lilbee_catalog_browse(task="embedding")             # discover candidates
-lilbee_catalog_browse(task="rerank")
-lilbee_catalog_browse(task="vision")
-lilbee-worker:  lilbee_model_pull(<picked model>)   # one worker call per pull
-lilbee_settings_set({
-    "embedding_model": "...",
-    "reranker_model":  "...",
-    "vision_model":    "...",
-    # plus retrieval tuning, all batched:
-    "top_k": 12,
-    "diversity_max_per_source": 6,
-    "concept_graph": true,
-})
-```
-
-If the response includes `reindex_required: true` (triggered by `chunk_size`,
-`chunk_overlap`, or swapping `embedding_model` to a different ref), hand
-`lilbee_sync(force_rebuild=true)` to the worker before searching again.
-
-Tell the user which knobs you moved and why; `lilbee_settings_reset([...])` rolls any of
-them back.
-
-### 5. Your first answer feels thin -- self-tune and retry
-
-When the user asks a broad question against a dense pile of reference
-docs (godot class XMLs, an API reference, xberg-style docstrings)
-and your first `lilbee_search` returns only one or two relevant hits
-where you'd expect a family, the retrieval defaults are too narrow for
-the shape of what's indexed. Self-tune in-place rather than handing the
-user a thin answer:
-
-```
-lilbee_search("user's natural query")          # baseline
-# If results are visibly narrow for the indexed shape:
-lilbee_settings_set({
-    "top_k": 15,                                # wider candidate pool
-    "diversity_max_per_source": 8,              # more chunks per file ok
-    "max_distance": 0.85,                       # accept fuzzier matches
-})
-lilbee_search("user's natural query")          # same query, richer pool
-# Answer from the richer results, cite every class you found.
-lilbee_settings_reset(["top_k", "diversity_max_per_source", "max_distance"])
-```
-
-Tell the user one sentence on what you widened and that you've reset
-afterward, so the next question gets the unmodified defaults.
-
-### 6. User wants to delete or replace content
-
-```
-lilbee_list_documents                     # find the source name
-lilbee_remove(["old-manual.pdf"])         # drop its chunks (source file kept)
-lilbee_remove(["reports/2024"])           # a folder: remove everything indexed beneath it
-lilbee_remove(["**/*.log"])               # a glob: remove every matching source
-```
-
-For a clean slate: `lilbee_reset(confirm=true)` via the worker.
-
-## Cheat sheet: which knobs to move
-
-| Question style | Tune |
-|---|---|
-| Code Q&A, call graphs | Set `reranker_model`, raise `rerank_candidates` to 24-48, enable `concept_graph`, lower `chunk_size` to 256-384. |
-| Long-document walkthroughs | Raise `top_k` to 12-16 and `max_context_sources`; drop `diversity_max_per_source` to 1 to let one source dominate. |
-| Fact lookup across many sources | Raise `top_k` and `candidate_multiplier`; keep `reranker_model` set; keep `diversity_max_per_source` at default. |
-| Vocabulary mismatch (English question, code answer) | Enable `hyde`; raise `max_distance` to ~0.8 so semantically-related chunks aren't clipped. |
-
-## Runbook: when things go wrong
-
-- **`total_chunks == 0`.** The library is empty. Don't search. Tell the user and offer
-  `lilbee_add` or `lilbee_crawl`.
-- **`lilbee_search` returns 0 results.** Try a more specific noun phrase. If still zero,
-  the content isn't indexed. Verify with `lilbee_list_documents`.
-- **`lilbee_search` times out.** Indexing is in flight. Wait 10s, re-check
-  `lilbee_status`, retry. Do not switch tools.
-- **`lilbee_settings_set` returns `error`.** The boundary rejected the value (unknown
-  key, wrong type, model not installed for a role swap). Show the error to the user
-  verbatim; don't paper over it.
-- **`lilbee_settings_set` succeeds with `reindex_required: true`.** The persisted vector
-  store is no longer valid for the new `chunk_size` / `chunk_overlap`. Run
-  `lilbee_sync(force_rebuild=true)` through the worker.
-- **`lilbee_model_pull` failed mid-stream.** The progress notifications stop. Retry the
-  same call; partially-downloaded files are skipped.
-- **Want to set a model role but the catalog ref isn't installed.** Pull first, then
-  `settings_set`. The boundary checks the catalog-task assignment but not whether the
-  file is present on disk.
-- **Confused about what changed in this session.** `lilbee_settings_list` always
-  reflects current state.
-
-## Settings you can change, and what a change needs
-
-`lilbee_settings_list` returns the full writable surface at runtime, and
-[docs/settings.md](https://github.com/tobocop2/lilbee/blob/main/docs/settings.md) is the
-written reference: every setting, its default, and a column per surface saying whether
-MCP can set it. Three cases need an extra step after the write succeeds.
-
-**A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled` and
-`mcp_sessions_enabled` decide which tools register, and that is decided once, when the
-server starts. `lilbee_settings_set({"wiki": true})` succeeds and persists, and the
-`lilbee_wiki_*` tools still are not there. Tell the user to restart the lilbee MCP server;
-do not report the feature as broken. `lilbee_wiki_status` works either way, so read it to
-confirm `wiki_enabled` before and after.
-
-**Turning a feature on does not run it.** After enabling the wiki, pages exist only once
-you build them: `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for a single page,
-or `lilbee_wiki_build` for the corpus (roughly one LLM call per source document, so hand
-it to the `lilbee-worker` subagent).
-
-**A reindex-forcing setting invalidates the index.** See the `reindex_required` note below.
-
-## Secrets stay out of MCP reads
-
-Secrets (`*_api_key`, `hf_token`, `crawl_authorization`, `crawl_password` and `crawl_cookie`) carry a `write_only` flag on the lilbee config.
-`lilbee_settings_list` skips them; `lilbee_settings_get` errors on them;
-`lilbee_settings_set` still writes (so you can configure a key on the user's behalf).
-Never assume you can read a key back.
+If a search times out, indexing is still running. Wait about 10 seconds, check the library,
+and retry the search on the same path.
 
 ## Citation rules
 
-- Every fact you state must trace to a chunk `lilbee_search` returned. Cite as the
-  source file and the line range the chunk reported, exactly as returned (e.g.
-  `src/lilbee/data/ingest/pipeline.py:216-247`).
-- If a chunk doesn't actually support a claim, drop the claim. Re-search before
-  inventing.
-- "Not in the indexed files" is a valid answer. Say so plainly and suggest indexing the right
-  path if the user expected it to be there.
-- When the user reads code in their editor that you've cited, your line numbers must
-  match. If you see the chunk metadata report a line range, do not guess a different one.
+- Every fact you state must trace to a chunk that search returned. Cite the source file and
+  the line range the chunk reported, exactly as returned (for example
+  `src/app/pipeline.py:216-247`). The CLI wraps the chunks in a `results` list. When
+  `line_start` and `line_end` are 0, the chunk has no line range: cite the file, and the
+  page for a PDF.
+- If a chunk does not support a claim, drop the claim. Search again before you guess.
+- "Not in the indexed files" is a valid answer. Say so, and offer to index the right path.
+- The user may open your citation in an editor. Never change a reported line range.
 
-## What this skill is not
+## Runbook
 
-- **Not a code editor.** Use the host's `read` / `edit` / `write` tools after pulling
-  context through `lilbee_search`.
-- **Not a web search.** `lilbee_crawl` fetches a specific URL into the library on the
-  user's explicit request; it isn't a general fallback when search misses.
-- **Not a chat model.** lilbee can run its own chat / wiki / OCR models locally, but as
-  a tool consumer you stay on the host's model. Don't manipulate `chat_model` unless the
-  user is setting lilbee up for their own later TUI use.
-- **Not a substitute for codebase discovery tools.** If the host has codesearch / glob /
-  grep and the user's question is about a path that isn't indexed yet, offer to index it
-  rather than guessing through filesystem tools.
+- **Search returns nothing.** Try a more specific noun phrase. If still empty, list the
+  sources to see whether the content is indexed.
+- **A command or tool returns an error.** Show the error to the user verbatim. Do not retry
+  silently.
+- **A model download failed part way.** Run the same command again. Finished files are skipped.
+- **Remove content.** `remove` drops chunks and keeps the source files. Wiping the whole
+  index (`lilbee_reset`, `lilbee --json reset --yes`) is destructive. Do it only when the
+  user asks.
 
-## Other skills
+## Settings and models
 
-- **Wiki tools** (per-concept and per-entity pages with citations) live in the separate `lilbee-mcp-wiki` skill (`plugins/lilbee/skills/lilbee-mcp-wiki/SKILL.md` in the lilbee repository). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
-- **Non-MCP agents** that need to shell out to lilbee's CLI instead of MCP can use the `--json` flag on any command. See the JSON CLI fallback section of the usage guide (`docs/usage.md` in the lilbee repository).
+Change settings, models or GPU placement only when the user asks. A change is saved to
+disk and every client of the same lilbee sees it. Do not change a setting to improve one
+search and reset it afterwards. Use the per-call arguments above.
+
+When the user does ask, open the reference file for the task:
+
+- [reference-tuning.md](reference-tuning.md): retrieval tuning and model setup.
+- [reference-settings.md](reference-settings.md): settings that change the tool list,
+  secrets, and GPU placement.
+
+The wiki tools (generated concept pages) are in the separate `lilbee-mcp-wiki` skill. Load
+it only when the user asks about wiki pages.
