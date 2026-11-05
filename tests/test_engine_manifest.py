@@ -237,6 +237,37 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     assert f"-1.{cell.rsplit('-', 1)[1]}-py3-none-" in pin["platforms"][cell]["url"]
 
 
+SHIPPED_LLAMA_CUDA = {
+    ("Linux", "x86_64"): (
+        "linux-x86_64-cuda",
+        "6cdd44291d036a352fd496b2a2c146f0a5aaf35cd38f73e8f795ca5a2d87edd4",
+    ),
+    ("Windows", "AMD64"): (
+        "windows-x86_64-cuda",
+        "975be314c81ab5c518c40be68fd72edb080b4e4d3f3ba4adbbb3380985cd117c",
+    ),
+}
+
+
+@pytest.mark.parametrize(("system", "machine"), SHIPPED_LLAMA_CUDA)
+def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_shipped_table(
+    system: str, machine: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cell, digest = SHIPPED_LLAMA_CUDA[(system, machine)]
+    nvml = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
+    host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvml=nvml)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
+    pin = LlamaCppAdapter().pack_pin()
+    assert pin["backend"] == "cuda"
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    assert pin["platforms"][cell]["url"].startswith(
+        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105-cuda/"
+    )
+
+
 class _Reached(Exception):
     """The download check passed and the fetch went on to the disk check."""
 

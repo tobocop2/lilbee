@@ -60,19 +60,38 @@ _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port"
 _PIN_LIBRARIES = ["ggml-base"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _CPU_PACK = "cpu"
-# The pack backend by (os, arch). The macOS arm64 pack is a Metal build. A host not listed
-# runs the cpu pack; the CUDA cells add their rows here.
-_PACK_BACKENDS: dict[tuple[HostOS | None, HostArch | None], str] = {
-    (HostOS.MACOS, HostArch.ARM64): "metal"
+# The CUDA pack is built with CUDA 12.4: it needs a driver that offers 12.4 and a card of
+# compute capability 5.0 or newer (the oldest architecture the pack targets).
+_CUDA_DRIVER_FLOOR = (12, 4)
+_CUDA_MIN_COMPUTE = (5, 0)
+_CUDA_BACKEND = "cuda"
+_CUDA_HOSTS = {
+    (HostOS.LINUX, HostArch.X86_64),
+    (HostOS.WINDOWS, HostArch.X86_64),
 }
+_PACK_LICENCES = ["MIT"]
+_CUDA_PACK_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
 # The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
 # engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
 _WHEEL_VERSION = "1.12032.1"
 
 
+def _has_usable_cuda(host: HostCaps) -> bool:
+    """Whether the NVIDIA driver and a card of *host* can run the CUDA pack."""
+    if not host.nvidia_known or not host.gpus:
+        return False
+    if (host.nvidia_driver_cuda or (0, 0)) < _CUDA_DRIVER_FLOOR:
+        return False
+    return max(gpu.compute for gpu in host.gpus) >= _CUDA_MIN_COMPUTE
+
+
 def pack_backend(host: HostCaps) -> str:
     """The backend of the llama.cpp pack that *host* installs."""
-    return _PACK_BACKENDS.get((host.os, host.arch), _CPU_PACK)
+    if (host.os, host.arch) == (HostOS.MACOS, HostArch.ARM64):
+        return "metal"
+    if (host.os, host.arch) in _CUDA_HOSTS and _has_usable_cuda(host):
+        return _CUDA_BACKEND
+    return _CPU_PACK
 
 
 def _starts_with_gguf_magic(path: Path) -> bool:
@@ -112,7 +131,8 @@ class LlamaCppAdapter:
         from lilbee.providers.fleet.engine_manifest import pack_platforms
 
         host = session_host()
-        platforms = pack_platforms(self.name.value, _WHEEL_VERSION, host, pack_backend(host))
+        backend = pack_backend(host)
+        platforms = pack_platforms(self.name.value, _WHEEL_VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": ENGINE_LLAMA_CPP_REF,
@@ -122,7 +142,7 @@ class LlamaCppAdapter:
             "launch": _PIN_LAUNCH,
             "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
-            "licenses": ["MIT"],
+            "licenses": _CUDA_PACK_LICENCES if backend == _CUDA_BACKEND else _PACK_LICENCES,
         }
 
     def pack_pin(self) -> Mapping[str, Any]:
