@@ -28,10 +28,12 @@ jobs:
       matrix:
         include:
           - cell: windows-x86_64-cpu
+            backend: cpu
             runner: windows-2022
             asset: llama-b12032-bin-win-cpu-x64.zip
             platform: win_amd64
-          - cell: macos-arm64-cpu
+          - cell: macos-arm64-metal
+            backend: metal
             runner: macos-14
             asset: llama-b12032-bin-macos-arm64.tar.gz
             platform: macosx_14_0_arm64
@@ -42,6 +44,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       ASSET: ${{ matrix.asset }}
       PLATFORM: ${{ matrix.platform }}
+      BACKEND: ${{ matrix.backend }}
     steps:
       - uses: actions/checkout@v7
 
@@ -167,7 +170,7 @@ jobs:
           python -m pip install build wheel
           grep -E '^(license|license-files|requires)' pyproject.toml
           cat lilbee_engine_llama_cpp/pins.py
-          python -m build --wheel -C--build-option="--build-number=1.cpu"
+          python -m build --wheel -C--build-option="--build-number=1.${BACKEND}"
           python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
           ls dist
 
@@ -176,15 +179,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install "delocate==0.13.0"
-          exe=packaging/engine-wheel/lilbee_engine_llama_cpp/bin/llama-server
-          minos="$(otool -l "${exe}" | awk '/LC_BUILD_VERSION/ {f = 1} f && $1 == "minos" {print $2; exit}')"
-          echo "minos of llama-server: ${minos}"
-          # A wheel tag holds the major version only, so the minos rounds up: 13.3 needs macosx_14_0.
-          [[ "${minos}" =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?$ ]] || { echo "no minos for llama-server (got '${minos}')"; exit 1; }
-          major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]#.}"
-          if [ "${minor}" -gt 0 ] || [ "${patch:-0}" -gt 0 ]; then major=$((major + 1)); fi
-          [ "${major}" -le 14 ] || { echo "llama-server needs macOS ${minos}; the cell floor is ${MACOSX_DEPLOYMENT_TARGET}"; exit 1; }
-          delocate-wheel --require-archs arm64 -w repaired packaging/engine-wheel/dist/*.whl
+          # Fails when any Mach-O needs a newer macOS than the tag (macosx_14_0) allows.
+          delocate-wheel --require-archs arm64 --require-target-macos-version 14.0 \
+            -w repaired packaging/engine-wheel/dist/*.whl
           ls repaired
           for w in repaired/*.whl; do
             case "${w}" in *-macosx_14_0_arm64.whl) ;; *) echo "wrong tag on ${w}"; exit 1 ;; esac
