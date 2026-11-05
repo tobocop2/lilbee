@@ -245,7 +245,7 @@ jobs:
       matrix:
         include:
           - {os: ubuntu-latest,  engine-pattern: "lilbee_engine_llama_cpp-*-1.cpu-*manylinux*"}
-          - {os: macos-latest,   engine-pattern: "lilbee_engine_llama_cpp-*-1.cpu-*macosx*"}
+          - {os: macos-latest,   engine-pattern: "lilbee_engine_llama_cpp-*-1.metal-*macosx*"}
           - {os: windows-latest, engine-pattern: "lilbee_engine_llama_cpp-*-1.cpu-*win_amd64*"}
     runs-on: ${{ matrix.os }}
     steps:
