@@ -125,7 +125,7 @@ The default Vulkan build works on NVIDIA cards, but there's a dedicated CUDA bui
 | **pip** (devs) | `pip install --pre lilbee` |
 | **uv** (devs)  | `uv tool install --prerelease=allow lilbee` |
 
-Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. A `pip` or `uv` install downloads the CUDA engine pack on its own when it finds a usable NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first, and on Scoop run `scoop uninstall lilbee` first. Older driver? `cu124` and `cu121` ship via the matching wheel indexes and as direct-download Linux binaries on the release page.
+Same `lilbee` command after install. The CUDA runtime is bundled; you only need the NVIDIA driver. A `pip` or `uv` install downloads the CUDA engine pack on its own when it finds a usable NVIDIA driver. Already have the regular `lilbee` installed? On AUR `paru -S lilbee-cuda` swaps it automatically; on Homebrew run `brew uninstall lilbee` first, and on Scoop run `scoop uninstall lilbee` first. Older driver? `cu124` and `cu121` ship as direct-download Linux binaries on the release page.
 
 </details>
 
