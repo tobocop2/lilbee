@@ -140,3 +140,32 @@ def test_install_table_commands_use_the_manifest_names():
     assert f"npx skills add {slug} -g -a hermes-agent" in commands
     assert f"npx skills add {slug} -g" in commands
     assert "lilbee mcp" in commands
+
+SKILL_LINK = re.compile(r"\]\(([^)#\s]+)\)")
+
+
+def _local_links(skill_md: Path) -> list[str]:
+    text = skill_md.read_text(encoding="utf-8")
+    return [link for link in SKILL_LINK.findall(text) if "://" not in link]
+
+
+@pytest.mark.parametrize("skill_dir", SKILL_DIRS, ids=lambda p: p.name)
+def test_skill_stays_short_and_every_linked_file_exists(skill_dir):
+    skill_md = skill_dir / "SKILL.md"
+    assert len(skill_md.read_text(encoding="utf-8").splitlines()) < 200
+    for link in _local_links(skill_md):
+        assert (skill_dir / link).is_file(), f"{skill_dir.name} links to missing {link}"
+
+
+def test_the_main_skill_links_its_reference_files():
+    links = _local_links(PLUGIN / "skills" / "lilbee-mcp" / "SKILL.md")
+    assert sorted(links) == ["reference-settings.md", "reference-tuning.md"]
+
+
+def test_launcher_installs_the_reference_files_with_the_skill(tmp_path):
+    skill_dir = PLUGIN / "skills" / "lilbee-mcp"
+    installed = skill_install.install_bundled_skill(tmp_path / "skills" / "lilbee-mcp")
+    assert installed is not None
+    expected = sorted(p.name for p in skill_dir.iterdir())
+    assert "reference-tuning.md" in expected
+    assert sorted(p.name for p in installed.iterdir()) == expected
