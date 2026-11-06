@@ -978,7 +978,8 @@ async def test_every_link_in_the_resumed_tui_list_targets_its_own_source(session
             await pilot.pause()
             shown[surface] = _bubble_text(screen.query(AssistantMessage).last())
     expected = [[url] if (url := _own_file_url(s)) else [] for s, _ in _ATTACK_SOURCES]
-    assert expected[0] and not expected[1], "the instrument sees a linked and an unlinked line"
+    # A memory source has no file on any platform; a NUL path resolves on Windows.
+    assert expected[0] and not expected[4], "the instrument sees a linked and an unlinked line"
     assert _markup_in("x [y](https://evil.example/c) **b** # c"), "the instrument finds markup"
     for surface, markdown in shown.items():
         assert _line_links(markdown) == expected, surface
