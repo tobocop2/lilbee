@@ -6007,6 +6007,7 @@ async def test_the_palette_lists_models_once_per_open_and_off_the_event_loop():
             assert await wait_until(
                 pilot, lambda: app.screen.query_one(CommandList).option_count == 1
             )
+            await app.screen.workers.wait_for_complete()
     assert len(lookup_threads) == 1
     assert lookup_threads[0] != loop_thread
 
