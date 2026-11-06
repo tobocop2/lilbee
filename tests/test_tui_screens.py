@@ -6007,6 +6007,7 @@ async def test_the_palette_lists_models_once_per_open_and_off_the_event_loop():
             assert await wait_until(
                 pilot, lambda: app.screen.query_one(CommandList).option_count == 1
             )
+            await app.screen.workers.wait_for_complete()
     assert len(lookup_threads) == 1
     assert lookup_threads[0] != loop_thread
 
@@ -6083,6 +6084,8 @@ async def test_landed_models_search_again_only_when_a_row_matches(typed, rows, s
             provider._models_landed(palette, lookup)
         assert post.called is searches_again
         assert provider._models == rows
+        # The typed text starts a search worker; leaving the app first unmounts its list.
+        await palette.workers.wait_for_complete()
 
 
 async def test_a_cancelled_model_listing_adds_no_rows():
