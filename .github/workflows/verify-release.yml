@@ -181,16 +181,16 @@ jobs:
             sleep 60
           done
 
-  # The contract clients pin. Checked here because the schema and the profile
-  # recording come from one small job: a dropped artifact, or a schema that
-  # stopped naming its SSE routes or its multi-segment params, would otherwise
+  # The contract clients pin. Checked here because the schema is one small file
+  # from one small job: a dropped artifact, or a schema that stopped naming its
+  # SSE routes, its multi-segment params or its profile errors, would otherwise
   # ship silently.
   verify-openapi:
     needs: [resolve]
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - name: The published schema and profile recording parse and declare what clients read
+      - name: The published schema parses and declares what clients read
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -198,7 +198,6 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'openapi.json' --dir schema/
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'profile-responses.json' --dir schema/
           python3 - <<'PY'
           import json, pathlib, sys
           schema = json.loads(pathlib.Path("schema/openapi.json").read_text())
@@ -221,10 +220,10 @@ jobs:
           }
           if "slug" not in greedy:
               sys.exit("published schema no longer marks the wiki slug as a multi-segment path param")
-          recorded = json.loads(pathlib.Path("schema/profile-responses.json").read_text())
-          if recorded.get("list", {}).get("status") != 200:
-              sys.exit("profile-responses.json has no successful profile list")
-          print(f"{len(schema['paths'])} paths, {len(streamed)} streaming, {len(recorded)} profile responses")
+          clash = schema["paths"].get("/api/profiles/{name}/duplicate", {}).get("post", {})
+          if "409" not in clash.get("responses", {}):
+              sys.exit("published schema no longer documents the 409 a profile name clash answers")
+          print(f"{len(schema['paths'])} paths, {len(streamed)} streaming")
           PY
 
   verify-executables:

@@ -11,6 +11,14 @@ from litestar.status_codes import HTTP_200_OK
 from lilbee.core.profile_files import MAX_PROFILE_BYTES
 from lilbee.server.content_disposition import CONTENT_DISPOSITION, attachment_disposition
 from lilbee.server.handlers import profiles as handlers
+from lilbee.server.handlers.profiles import (
+    FILE_ERRORS,
+    NAMED_ERRORS,
+    NAMED_WRITE_ERRORS,
+    REFUSAL_ERRORS,
+    UPLOAD_ERRORS,
+    WRITE_ERRORS,
+)
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ActiveProfileResponse,
@@ -35,19 +43,19 @@ PROFILE_MEDIA_TYPE = "application/toml"
 PROFILE_BODY_MAX_BYTES = 6 * MAX_PROFILE_BYTES + 64 * 1024
 
 
-@get("/api/profiles")
+@get("/api/profiles", raises=FILE_ERRORS)
 async def profiles_list_route() -> ProfileListResponse:
     """Every profile file, Default first, built-ins next; broken files carry their reason."""
     return await handlers.list_profiles()
 
 
-@get("/api/profiles/active")
+@get("/api/profiles/active", raises=FILE_ERRORS)
 async def profiles_active_route() -> ActiveProfileResponse:
     """The project's applied profile and whether its file is current, changed, gone or broken."""
     return await handlers.active_profile()
 
 
-@post("/api/profiles", status_code=HTTP_200_OK)
+@post("/api/profiles", status_code=HTTP_200_OK, raises=WRITE_ERRORS)
 async def profiles_save_route(data: ProfileSaveRequest) -> ProfileSaveResponse:
     """Save the project's settings as a new profile and switch the project to it."""
     return await handlers.save_profile(data)
@@ -56,6 +64,7 @@ async def profiles_save_route(data: ProfileSaveRequest) -> ProfileSaveResponse:
 @post(
     "/api/profiles/discard",
     status_code=HTTP_200_OK,
+    raises=REFUSAL_ERRORS,
     media_type=SSE_MEDIA_TYPE,
     responses={
         HTTP_200_OK: ResponseSpec(
@@ -82,33 +91,41 @@ async def profiles_discard_route(
     return Stream(handlers.rebuild_after_discard_stream(discarded))
 
 
-@post("/api/profiles/new", status_code=HTTP_200_OK)
+@post("/api/profiles/new", status_code=HTTP_200_OK, raises=NAMED_WRITE_ERRORS)
 async def profiles_new_route(data: ProfileNewRequest) -> ProfileLocationResponse:
     """Write a template listing every profile setting, optionally from a profile's values."""
     return await handlers.new_profile(data)
 
 
-@post("/api/profiles/import", status_code=HTTP_200_OK, request_max_body_size=PROFILE_BODY_MAX_BYTES)
+@post(
+    "/api/profiles/import",
+    status_code=HTTP_200_OK,
+    request_max_body_size=PROFILE_BODY_MAX_BYTES,
+    raises=[*WRITE_ERRORS, *UPLOAD_ERRORS],
+)
 async def profiles_import_route(data: ProfileImportRequest) -> ProfileLocationResponse:
     """Validate an uploaded profile file and copy it into a profile folder."""
     return await handlers.import_profile(data)
 
 
 @post(
-    "/api/profiles/validate", status_code=HTTP_200_OK, request_max_body_size=PROFILE_BODY_MAX_BYTES
+    "/api/profiles/validate",
+    status_code=HTTP_200_OK,
+    request_max_body_size=PROFILE_BODY_MAX_BYTES,
+    raises=[*REFUSAL_ERRORS, *UPLOAD_ERRORS],
 )
 async def profiles_validate_route(data: ProfileValidateRequest) -> ProfileValidationResponse:
     """Every problem with an uploaded profile file."""
     return await handlers.validate_profile(data)
 
 
-@get("/api/profiles/{name:str}")
+@get("/api/profiles/{name:str}", raises=NAMED_ERRORS)
 async def profiles_show_route(name: FromPath[str]) -> ProfileEntryResponse:
     """The profile *name* picks."""
     return await handlers.show_profile(name)
 
 
-@get("/api/profiles/{name:str}/diff")
+@get("/api/profiles/{name:str}/diff", raises=NAMED_ERRORS)
 async def profiles_diff_route(name: FromPath[str]) -> ProfileDiffResponse:
     """What applying the profile changes and which values of yours it keeps."""
     return await handlers.diff_profile(name)
@@ -117,6 +134,7 @@ async def profiles_diff_route(name: FromPath[str]) -> ProfileDiffResponse:
 @post(
     "/api/profiles/{name:str}/apply",
     status_code=HTTP_200_OK,
+    raises=NAMED_ERRORS,
     media_type=SSE_MEDIA_TYPE,
     responses={
         HTTP_200_OK: ResponseSpec(
@@ -143,13 +161,13 @@ async def profiles_apply_route(
     return Stream(handlers.rebuild_after_apply_stream(applied))
 
 
-@put("/api/profiles/{name:str}")
+@put("/api/profiles/{name:str}", raises=NAMED_WRITE_ERRORS)
 async def profiles_update_route(name: FromPath[str]) -> ProfileSaveResponse:
     """Write the project's settings into its profile, which the name must pick."""
     return await handlers.update_profile(name)
 
 
-@post("/api/profiles/{name:str}/duplicate", status_code=HTTP_200_OK)
+@post("/api/profiles/{name:str}/duplicate", status_code=HTTP_200_OK, raises=NAMED_WRITE_ERRORS)
 async def profiles_duplicate_route(
     name: FromPath[str], data: ProfileDuplicateRequest
 ) -> ProfileLocationResponse:
@@ -157,7 +175,7 @@ async def profiles_duplicate_route(
     return await handlers.duplicate_profile(name, data)
 
 
-@patch("/api/profiles/{name:str}")
+@patch("/api/profiles/{name:str}", raises=NAMED_WRITE_ERRORS)
 async def profiles_rename_route(
     name: FromPath[str], data: ProfileRenameRequest
 ) -> ProfileLocationResponse:
@@ -165,13 +183,13 @@ async def profiles_rename_route(
     return await handlers.rename_profile(name, data.new_name)
 
 
-@delete("/api/profiles/{name:str}", status_code=HTTP_200_OK)
+@delete("/api/profiles/{name:str}", status_code=HTTP_200_OK, raises=NAMED_ERRORS)
 async def profiles_delete_route(name: FromPath[str]) -> ProfileLocationResponse:
     """Remove a project or global profile file; projects keep their recorded copy."""
     return await handlers.delete_profile(name)
 
 
-@get("/api/profiles/{name:str}/export", media_type=PROFILE_MEDIA_TYPE)
+@get("/api/profiles/{name:str}/export", media_type=PROFILE_MEDIA_TYPE, raises=NAMED_ERRORS)
 async def profiles_export_route(name: FromPath[str]) -> Response[str]:
     """Download the profile as a clean file."""
     exported = await handlers.export_profile(name)

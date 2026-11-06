@@ -107,13 +107,10 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --locked
       - run: uv run python tools/gen_openapi.py schema/openapi.json
-      - run: uv run python tools/record_profile_responses.py schema/profile-responses.json
       - uses: actions/upload-artifact@v7
         with:
           name: openapi-schema
-          path: |
-            schema/openapi.json
-            schema/profile-responses.json
+          path: schema/openapi.json
           if-no-files-found: error
 
   build-default-wheels:
