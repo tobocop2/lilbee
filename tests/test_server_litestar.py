@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -1750,6 +1751,28 @@ class TestOpenAPISchema:
             if media_type == "text/event-stream"
         ]
         assert streamed == ["text/event-stream"]
+
+    def test_greedy_path_params_publish_the_path_format(self, client):
+        """OpenAPI writes ``{slug:path}`` as ``{slug}``, the same as a one-segment
+        param, so a client cannot tell that ``/api/wiki/{slug}`` also matches
+        ``/api/wiki/entities/foo``. Every greedy param says so with ``format: path``,
+        and no other param does."""
+        greedy = {
+            (route.path.replace(":path}", "}").replace(":str}", "}"), name)
+            for route in client.app.routes
+            for name, param in route.path_parameters.items()
+            if param.type is Path and not route.path.startswith("/schema")
+        }
+        assert greedy, "the app has no {name:path} routes to check"
+        schema = client.get("/schema/openapi.json").json()
+        marked = {
+            (path, param["name"])
+            for path, ops in schema["paths"].items()
+            for op in ops.values()
+            for param in op.get("parameters", [])
+            if param["in"] == "path" and param["schema"].get("format") == "path"
+        }
+        assert marked == greedy
 
     def test_export_publishes_the_octet_stream_media_type(self, client):
         """/api/export answers with a parquet or jsonl body. It set its media

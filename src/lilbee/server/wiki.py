@@ -9,12 +9,12 @@ from __future__ import annotations
 import asyncio
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from litestar import MediaType, Response, delete, get, patch, post
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.openapi.datastructures import ResponseSpec
-from litestar.params import FromPath, FromQuery
+from litestar.params import FromQuery, Parameter
 from litestar.response import Stream
 from litestar.status_codes import HTTP_200_OK, HTTP_409_CONFLICT
 
@@ -65,6 +65,10 @@ from lilbee.wiki.shared import (
 )
 from lilbee.wiki.stubs import load_stub_index, shown_sources, ungenerated_stubs
 
+# OpenAPI writes ``{slug:path}`` as ``{slug}``, the same as a one-segment param.
+# The format tells a client that the slug can span segments, as ``entities/foo`` does.
+SlugPath = Annotated[str, Parameter(schema_extra={"format": "path"})]
+
 
 def _wiki_root() -> Path:
     """Resolve the wiki directory under data_root."""
@@ -108,7 +112,7 @@ async def wiki_drafts_route() -> list[DraftInfoResponse]:
 
 
 @get("/api/wiki/drafts/diff/{slug:path}")
-async def wiki_draft_diff_route(slug: FromPath[str]) -> WikiDraftDiffResponse:
+async def wiki_draft_diff_route(slug: SlugPath) -> WikiDraftDiffResponse:
     """Return the unified diff of a draft against its published counterpart.
 
     The ``diff`` action prefix precedes the slug because Litestar's
@@ -130,7 +134,7 @@ async def wiki_draft_diff_route(slug: FromPath[str]) -> WikiDraftDiffResponse:
 
 
 @post("/api/wiki/drafts/accept/{slug:path}")
-async def wiki_draft_accept_route(slug: FromPath[str]) -> WikiDraftAcceptResponse:
+async def wiki_draft_accept_route(slug: SlugPath) -> WikiDraftAcceptResponse:
     """Accept a draft: overwrite the published page and re-index its chunks.
 
     See :func:`wiki_draft_diff_route` for the action-prefix rationale.
@@ -152,7 +156,7 @@ async def wiki_draft_accept_route(slug: FromPath[str]) -> WikiDraftAcceptRespons
 
 
 @delete("/api/wiki/drafts/{slug:path}", status_code=200)
-async def wiki_draft_reject_route(slug: FromPath[str]) -> WikiDraftRejectResponse:
+async def wiki_draft_reject_route(slug: SlugPath) -> WikiDraftRejectResponse:
     """Reject a draft: delete the draft file without touching the published page."""
     _require_wiki()
     slug = slug.lstrip("/")
@@ -180,7 +184,7 @@ async def wiki_citations_reverse_route(
 
 
 @get("/api/wiki/{slug:path}")
-async def wiki_read_route(slug: FromPath[str]) -> WikiPageDetail | WikiCitationsResult:
+async def wiki_read_route(slug: SlugPath) -> WikiPageDetail | WikiCitationsResult:
     """Read a specific wiki page as markdown, or its citations."""
     _require_wiki()
     slug = slug.lstrip("/")
@@ -301,7 +305,7 @@ def _ungenerated_candidates() -> list[WikiEntityCandidateResponse]:
 
 
 @post("/api/wiki/generate/{slug:path}", media_type=SSE_MEDIA_TYPE)
-async def wiki_generate_route(slug: FromPath[str]) -> Stream:
+async def wiki_generate_route(slug: SlugPath) -> Stream:
     """Generate one indexed page, streaming progress. Costs a single LLM call.
 
     One model call takes long enough to look hung, so the response is an SSE
