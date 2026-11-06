@@ -181,15 +181,16 @@ jobs:
             sleep 60
           done
 
-  # The contract clients pin. Checked here because the schema is one small file
-  # from one small job: a dropped artifact, or a schema that stopped naming its
-  # SSE routes, would otherwise ship silently.
+  # The contract clients pin. Checked here because the schema and the profile
+  # recording come from one small job: a dropped artifact, or a schema that
+  # stopped naming its SSE routes or its multi-segment params, would otherwise
+  # ship silently.
   verify-openapi:
     needs: [resolve]
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - name: The published schema parses and declares its streaming routes
+      - name: The published schema and profile recording parse and declare what clients read
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -197,6 +198,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'openapi.json' --dir schema/
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'profile-responses.json' --dir schema/
           python3 - <<'PY'
           import json, pathlib, sys
           schema = json.loads(pathlib.Path("schema/openapi.json").read_text())
@@ -210,7 +212,19 @@ jobs:
           missing = {"/api/ask/stream", "/api/chat/stream", "/api/sync"} - streamed
           if missing:
               sys.exit(f"published schema documents these as JSON, not SSE: {sorted(missing)}")
-          print(f"{len(schema['paths'])} paths, {len(streamed)} streaming")
+          greedy = {
+              param["name"]
+              for ops in schema["paths"].values()
+              for op in ops.values()
+              for param in op.get("parameters", [])
+              if param["in"] == "path" and param["schema"].get("format") == "path"
+          }
+          if "slug" not in greedy:
+              sys.exit("published schema no longer marks the wiki slug as a multi-segment path param")
+          recorded = json.loads(pathlib.Path("schema/profile-responses.json").read_text())
+          if recorded.get("list", {}).get("status") != 200:
+              sys.exit("profile-responses.json has no successful profile list")
+          print(f"{len(schema['paths'])} paths, {len(streamed)} streaming, {len(recorded)} profile responses")
           PY
 
   verify-executables:
