@@ -14,16 +14,17 @@ from markdown_it.rules_inline.html_inline import html_inline as _stock_html_inli
 from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
-from lilbee.app.titles import stored_web_titles
+from lilbee.app.session_sources import message_sources
 from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
 from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
+    SourceRef,
+    append_sources_block,
     close_open_fence,
+    located,
     markdown_text,
-    source_markdown_label,
     split_sources_list,
-    with_sources_block,
 )
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
 
@@ -72,15 +73,30 @@ def _front_matter(meta: SessionMeta) -> str:
 def _message_section(message: SessionMessage) -> str:
     """One turn: the message with its headings nested, then its Sources list without links."""
     content = _LINE_BREAK_RE.sub("\n", message.content).rstrip()
+    if message.source_refs is None:
+        body = _legacy_body(content, message)
+    else:
+        body = _listed(_contained(content), message_sources(message)[1])
+    return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
+
+
+def _legacy_body(content: str, message: SessionMessage) -> str:
+    """The body of a turn saved before ``source_refs``: its text, then the Sources
+    list it ends in with its links made plain, or the list of its ``sources``."""
     text, stored_sources = split_sources_list(content)
     body = _contained(text.rstrip())
     if stored_sources:
-        body += _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
-    elif message.sources:
-        body = with_sources_block(
-            body, message.sources, stored_web_titles, render=source_markdown_label
-        )
-    return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
+        return body + _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
+    return _listed(body, message_sources(message)[1])
+
+
+def _listed(body: str, refs: list[SourceRef]) -> str:
+    """*body* ending in the Sources list of *refs*, each named by its label and locator."""
+    if not refs:
+        return body
+    return append_sources_block(
+        body, refs, render=lambda ref: markdown_text(located(ref.label, ref))
+    )
 
 
 def _contained(text: str) -> str:

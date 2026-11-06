@@ -670,8 +670,13 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 ```json
 // lilbee --json search "oil change interval" --top-k 3
 {"command": "search", "query": "oil change interval", "results": [
-  {"source": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
+  {"source": "manual.pdf", "label": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
 ]}
+
+// lilbee --json ask "oil change interval?"  (each source also carries the [n] the answer cites it by)
+{"command": "ask", "question": "oil change interval?", "answer": "Every 5,000 miles [1].", "sources": [
+  {"source": "manual.pdf", "label": "manual.pdf", "citation_number": 1, "chunk": "Change oil every 5,000 miles...", "chunk_type": "raw"}
+], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null}
 
 // lilbee --json status  (sources: the newest 10; document_count: the real count)
 {"command": "status", "config": {...}, "sources": [{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12"}], "source_kinds": {"document": 1}, "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0, "ocr_note": "..."}

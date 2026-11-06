@@ -22,6 +22,9 @@ class DocumentResult(BaseModel):
     # Vault-relative path for clients to deep-link into the native UI.
     # ``None`` when the server can't resolve the source under ``cfg.vault_base``.
     vault_path: str | None = None
+    # The plain one-line name of the source a client shows (``host · title`` for a
+    # crawled page). Never escaped: a client shows it as text.
+    label: str | None = None
 
 
 def _zero_to_none(val: int) -> int | None:

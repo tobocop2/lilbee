@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import string
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from markdown_it.token import Token
 
 from lilbee.core.text import collapse_whitespace, strip_control_characters
 from lilbee.core.web_names import INDEX_STEM, WEB_PREFIX, is_web_source, page_stem
-from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
+from lilbee.data.store import SearchChunk, is_memory_source
 from lilbee.data.types import CODE_CONTENT_TYPE
 
 CONTEXT_TEMPLATE = """Context:
@@ -58,33 +59,6 @@ _LLM_CITATION_BLOCK_RE = re.compile(
 _TRAILING_HEADING_RE = re.compile(_CITE_HEADING + r"\s*$", re.IGNORECASE)
 
 
-def display_source_path(source: str) -> str:
-    """Render a chunk's source as an absolute path with ``~`` expansion.
-
-    Source values in the store are stored relative to ``documents_dir`` so the
-    database is portable across machines. For display we resolve back to the
-    user's filesystem and substitute ``~`` for the home directory so the path
-    is unambiguous without being noisy.
-
-    Falls back to the raw source string only if resolution itself fails (an
-    exotic OSError such as a symlink loop). A missing file is not a failure:
-    ``resolve(strict=False)`` still returns the absolute path to where the
-    file would be, so a moved documents directory renders its old location.
-    """
-    from lilbee.data.ingest.discovery import resolve_source_path
-
-    candidate = resolve_source_path(source)
-    try:
-        resolved = candidate.resolve(strict=False)
-    except OSError:
-        return source
-    home = Path.home()
-    try:
-        return f"~/{resolved.relative_to(home)}"
-    except ValueError:
-        return str(resolved)
-
-
 _SOURCE_SEP = " · "
 # A page controls its title, so a rendered label never opens a link, image, code
 # span, tag, entity, emphasis or strikethrough of its own, and never starts a block.
@@ -112,15 +86,12 @@ def source_label(source: str, title: str = "") -> str:
 
 
 def markdown_text(text: str) -> str:
-    """*text* on one line as markdown that shows exactly that text, with no markup or block."""
-    escaped = _MARKDOWN_SPECIAL_RE.sub(r"\\\g<0>", collapse_whitespace(text))
+    """*text* on one line as markdown that shows exactly that text, with no markup, block
+    or control character."""
+    plain = strip_control_characters(collapse_whitespace(text))
+    escaped = _MARKDOWN_SPECIAL_RE.sub(r"\\\g<0>", plain)
     escaped = _BLOCK_MARK_RE.sub(r"\\\g<0>", escaped)
     return _LIST_NUMBER_RE.sub(r"\1\\\2", escaped)
-
-
-def source_markdown_label(source: str, title: str = "") -> str:
-    """The label of *source*, titled *title*, as markdown that shows exactly that label."""
-    return markdown_text(source_label(source, title))
 
 
 def _source_file_url(source: str) -> str | None:
@@ -134,33 +105,13 @@ def _source_file_url(source: str) -> str | None:
         return None
 
 
-def _source_locator(result: SearchChunk) -> str:
-    """The ``, page N`` / ``, lines A-B`` suffix for a source line, or ''."""
-    location = _location_suffix(result)
-    return f", {location}" if location else ""
-
-
-def _format_citation(citation: CitationRecord) -> str:
-    """Format a single wiki transitive citation as an indented attribution line."""
-    source_display = display_source_path(citation["source_filename"])
-    if citation["page_start"] or citation["page_end"]:
-        ps, pe = citation["page_start"], citation["page_end"]
-        pages = f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-        return f"    → {source_display}, {pages}"
-    if citation["line_start"] or citation["line_end"]:
-        ls, le = citation["line_start"], citation["line_end"]
-        lines = f"line {ls}" if ls == le else f"lines {ls}-{le}"
-        return f"    → {source_display}, {lines}"
-    return f"    → {source_display}"
-
-
 def _location_suffix(result: SearchChunk) -> str:
     """The page or line span of a chunk, or empty when neither applies.
 
     Zero means "no location": PDF chunks whose page metadata was missing are
     stored with page 0, so a locator is only rendered when at least one end
-    of the span is set. Sole owner of the rule -- ``_source_locator`` adds
-    the leading separator and nothing else.
+    of the span is set. Sole owner of the rule: a Sources line shows the
+    ``SourceRef.locator`` it computes.
     """
     if result.content_type == "pdf" and (result.page_start or result.page_end):
         ps, pe = result.page_start, result.page_end
@@ -171,31 +122,45 @@ def _location_suffix(result: SearchChunk) -> str:
     return ""
 
 
-def source_markdown_link(source: str, title: str = "") -> str:
-    """A bare source name as the ``[label](file-url)`` link a live answer's Sources
-    block uses, the label as plain text; the plain label when no path resolves.
-    Public so restored transcripts render sources identically to live ones."""
-    label = source_label(source, title)
-    if is_memory_source(source):
+# Every locator ``_location_suffix`` writes. A client saves a ref's locator back, and
+# only these forms are accepted.
+_LOCATOR_RE = re.compile(r"(?:page|line) \d+|(?:pages|lines) \d+-\d+")
+
+
+def is_locator(text: str) -> bool:
+    """Whether *text* is a locator lilbee writes, or '' for none."""
+    return not text or _LOCATOR_RE.fullmatch(text) is not None
+
+
+def source_ref_link(ref: SourceRef) -> str:
+    """*ref* as the ``[label](file-url)`` link of a Sources line, the label as plain text;
+    the plain label when no path resolves."""
+    return _linked_label(ref.source, ref.label)
+
+
+def source_ref_line(ref: SourceRef) -> str:
+    """*ref* as a Sources line shows it: its link and its page or line locator."""
+    return located(source_ref_link(ref), ref)
+
+
+def markdown_source_line(ref: SourceRef) -> str:
+    """*ref* as a Markdown renderer shows its Sources line: its label and locator as
+    written, linked to the file of its own source."""
+    line = _linked_label(ref.source, markdown_text(ref.label))
+    return f"{line}, {markdown_text(ref.locator)}" if ref.locator else line
+
+
+def located(name: str, ref: SourceRef) -> str:
+    """*name*, the way a Sources line names *ref*, followed by its locator when it has one."""
+    return f"{name}, {ref.locator}" if ref.locator else name
+
+
+def _linked_label(source: str, label: str) -> str:
+    """*label* linked to the file of *source*, or plain when *source* has no file."""
+    if not source or is_memory_source(source):
         return label
     url = _source_file_url(source)
     return f"[{label}]({url})" if url else label
-
-
-def format_source(
-    result: SearchChunk, citations: list[CitationRecord] | None = None, title: str = ""
-) -> str:
-    """Format a source as a clickable, readable citation: a ``[label](file-url)``
-    markdown link plus any page/line locator. Web docs render as ``host · title``;
-    wiki chunks append their indented transitive citations. Memory rows render
-    as their plain ``memory:<id>`` label: they have no file to link.
-    """
-    if result.memory_id is not None:
-        return source_label(result.source)
-    head = source_markdown_link(result.source, title)
-    if result.chunk_type is ChunkType.WIKI and citations:
-        return "\n".join([head, *(_format_citation(c) for c in citations)])
-    return f"{head}{_source_locator(result)}"
 
 
 def unique_sources(results: list[SearchChunk]) -> list[SearchChunk]:
@@ -210,6 +175,36 @@ def unique_sources(results: list[SearchChunk]) -> list[SearchChunk]:
             seen.add(r.source)
             out.append(r)
     return out
+
+
+@dataclass(frozen=True)
+class SourceRef:
+    """One source as a client names it: its ``label``, the ``[n]`` an answer cites it
+    by (None when no answer numbers it) and the plain-text ``locator`` of its page or
+    line span, such as ``page 3`` ('' when it has none)."""
+
+    source: str
+    label: str
+    citation_number: int | None
+    locator: str = ""
+
+
+def _chunk_ref(result: SearchChunk, title: str, number: int | None) -> SourceRef:
+    """The ref of *result*'s source, located by *result*. A memory row has no title or locator."""
+    if result.memory_id is not None:
+        return SourceRef(result.source, source_label(result.source), number)
+    return SourceRef(
+        result.source, source_label(result.source, title), number, _location_suffix(result)
+    )
+
+
+def source_refs(results: list[SearchChunk], titles: Mapping[str, str]) -> list[SourceRef]:
+    """Each unique source of *results*, with its label from its title in *titles*, its
+    locator from its first chunk and its citation number: its position in
+    ``unique_sources``, the ``[n]`` the model cites."""
+    return [
+        _chunk_ref(r, titles.get(r.source, ""), i) for i, r in enumerate(unique_sources(results), 1)
+    ]
 
 
 def _context_header(result: SearchChunk) -> str:
@@ -250,43 +245,60 @@ FILE_LINK_RE = re.compile(r"\[(?P<label>[^\n]+)\]\((?P<url>file://[^)\s]+)\)")
 _FENCE_PROBE = "\n\n# probe"
 
 
-def format_sources_block(
-    results: list[SearchChunk],
-    titles: Mapping[str, str],
-    citations_map: dict[str, list[CitationRecord]] | None = None,
-) -> str:
+def format_sources_block(results: list[SearchChunk], titles: Mapping[str, str]) -> str:
     """The authoritative numbered ``Sources:`` block appended to an answer. Each
     unique source is numbered to match the ``[n]`` markers the model emitted, so
     every inline citation resolves to a line here; *titles* holds the stored title
     of each crawled page. '' when there are no sources."""
-    sources = unique_sources(results)
-    if not sources:
-        return ""
-    # A markdown ordered list, so a Markdown renderer puts each source on its own
-    # line (plain "  → path" lines collapse into one soft-wrapped paragraph) and
-    # the list number is the citation number the model cited inline.
-    lines = [
-        f"{i}. {format_source(r, (citations_map or {}).get(r.source), titles.get(r.source, ''))}"
-        for i, r in enumerate(sources, 1)
-    ]
-    return SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+    refs = source_refs(results, titles)
+    return _sources_list(refs, source_ref_line) if refs else ""
 
 
-def with_sources_block(
+@dataclass(frozen=True)
+class AnswerSources:
+    """Emitted once after a grounded answer's last token: the retrieved *results* the
+    answer was written from and the stored *titles* of their crawled pages."""
+
+    results: list[SearchChunk]
+    titles: Mapping[str, str]
+
+    def refs(self) -> list[SourceRef]:
+        """The answer's Sources list, numbered as the answer cites it."""
+        return source_refs(self.results, self.titles)
+
+    def block(self, answer: str) -> str:
+        """The ``Sources:`` block that follows *answer*, closing a code block it left open."""
+        refs = self.refs()
+        if not refs:
+            return ""
+        return close_open_fence(answer).removeprefix(answer) + _sources_list(refs, source_ref_line)
+
+
+def append_sources_block(
     content: str,
-    sources: Sequence[str],
-    titles: Callable[[Sequence[str]], Mapping[str, str]],
-    render: Callable[[str, str], str] = source_markdown_link,
+    refs: Sequence[SourceRef],
+    render: Callable[[SourceRef], str] = source_ref_line,
 ) -> str:
-    """*content* ending in the numbered ``Sources:`` list a live answer carries,
-    each source and its stored title from *titles* shown by *render*, unless it
-    already has one. A code block the content leaves open is closed first, so the
-    list is never inside it."""
-    if SOURCES_BLOCK_MARKER in content:
-        return content
-    stored = titles(sources)
-    lines = [f"{i}. {render(s, stored.get(s, ''))}" for i, s in enumerate(sources, 1)]
-    return close_open_fence(content.rstrip()) + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+    """*content* ending in the numbered ``Sources:`` list of *refs*, each shown by
+    *render*, whatever the content says. A code block the content leaves open is
+    closed first, so the list is never inside it."""
+    return close_open_fence(content.rstrip()) + _sources_list(refs, render)
+
+
+def _sources_list(refs: Sequence[SourceRef], render: Callable[[SourceRef], str]) -> str:
+    """The ``Sources:`` list of *refs*, each shown by *render* under its citation number
+    (its position when it has none). The one renderer of the live and restored lists."""
+    numbers = [i if r.citation_number is None else r.citation_number for i, r in enumerate(refs, 1)]
+    if numbers == list(range(1, len(refs) + 1)):
+        # A markdown ordered list, so a Markdown renderer puts each source on its own
+        # line and the list number is the citation number the model cited inline.
+        lines = "\n".join(f"{n}. {render(r)}" for n, r in zip(numbers, refs, strict=True))
+    else:
+        # A markdown list shows its items numbered on from the first, so a cited
+        # subset [1], [3] would show 1. and 2.: escaped numbers on hard-broken
+        # lines show each number as written.
+        lines = "\\\n".join(f"{n}\\. {render(r)}" for n, r in zip(numbers, refs, strict=True))
+    return SOURCES_BLOCK_MARKER + "\n" + lines
 
 
 def split_sources_list(content: str) -> tuple[str, str]:
@@ -328,17 +340,6 @@ def terminal_sources_block(content: str) -> str:
     """*content* with the Sources list it ends in made safe for a terminal or a TUI widget."""
     text, sources = split_sources_list(content)
     return text + terminal_sources_text(sources)
-
-
-def markdown_sources_block(content: str) -> str:
-    """*content* as the markdown a renderer shows with each Sources label as written."""
-    text, sources = split_sources_list(content)
-    return text + FILE_LINK_RE.sub(_markdown_link, sources)
-
-
-def _markdown_link(link: re.Match[str]) -> str:
-    """A raw Sources link with its label escaped."""
-    return f"[{markdown_text(link['label'])}]({link['url']})"
 
 
 @cache

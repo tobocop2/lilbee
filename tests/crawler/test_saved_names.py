@@ -1523,11 +1523,14 @@ class TestEverySurfaceShowsTheStoredTitle:
 
     @pytest.mark.timeout(120)
     async def test_a_restored_chat_turn(self, library: Store, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.app.session_sources import message_sources
         from lilbee.cli.tui.widgets.message import AssistantMessage
+        from lilbee.sessions import MessageRole, SessionMessage
 
         source = await _crawled_forum(monkeypatch)
-        restored = AssistantMessage(content="Feed them weekly [1].", sources=(source,))
-        assert f"1. [{_FORUM_LABEL}](file://" in "".join(restored._content_parts)
+        saved = SessionMessage(MessageRole.ASSISTANT, "Feed them weekly [1].", sources=(source,))
+        restored = AssistantMessage(content=saved.content, sources=message_sources(saved)[1])
+        assert f"1. [{_FORUM_LABEL}](file://" in restored._shown(markdown=False)
 
     @pytest.mark.timeout(120)
     async def test_a_chat_export(self, library: Store, monkeypatch: pytest.MonkeyPatch):

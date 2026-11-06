@@ -30,7 +30,7 @@ from lilbee.app.ingest import (
     removable_names,
     remove_documents_durably,
 )
-from lilbee.app.search import clean_result
+from lilbee.app.search import clean_results
 from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
@@ -909,7 +909,7 @@ def chunks(
 
     raw_chunks = store.get_chunks_by_source(source)
     cleaned = sorted(
-        [clean_result(c) for c in raw_chunks],
+        clean_results(raw_chunks),
         key=lambda c: c.get("chunk_index", 0),
     )
 

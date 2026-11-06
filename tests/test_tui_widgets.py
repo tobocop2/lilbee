@@ -25,16 +25,37 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
+from lilbee.retrieval.query.formatting import SourceRef
 from tests._crafted_titles import (
     CONTROL_TITLES,
     CRAFTED_SOURCE,
     CRAFTED_TITLES,
     TERMINAL_CONTROL_RE,
     crafted_label,
+    linked_label,
     shown_inline,
 )
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
+
+
+def _refs(*sources: str) -> list[SourceRef]:
+    """A Sources list of local files, each labelled by its path and numbered by its position."""
+    return [SourceRef(s, s, i) for i, s in enumerate(sources, 1)]
+
+
+def _crafted_refs(title: str) -> list[SourceRef]:
+    """The Sources list of the crafted page titled *title*."""
+    from lilbee.retrieval.query.formatting import source_label
+
+    return [SourceRef(CRAFTED_SOURCE, source_label(CRAFTED_SOURCE, title), 1)]
+
+
+def _crafted_url() -> str:
+    """The ``file://`` URL the crafted page's Sources line links to."""
+    from lilbee.retrieval.query.formatting import FILE_LINK_RE
+
+    return FILE_LINK_RE.search(linked_label(CRAFTED_SOURCE))["url"]
 
 
 @pytest.fixture(autouse=True)
@@ -78,16 +99,17 @@ class _MsgApp(LilbeeAppHost):
 
 
 class _RestoredApp(LilbeeAppHost):
-    """Hosts one assistant turn restored with *content*."""
+    """Hosts one assistant turn restored with *content* and its *sources*."""
 
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, sources: list[SourceRef] | None = None) -> None:
         super().__init__()
         self._restored = content
+        self._sources = sources or []
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.message import AssistantMessage
 
-        self._am = AssistantMessage(content=self._restored)
+        self._am = AssistantMessage(content=self._restored, sources=self._sources)
         yield self._am
 
 
@@ -137,48 +159,49 @@ class TestAssistantMessageAsync:
         assert am._content_widget is not None
 
     async def test_sources_render_one_way_across_mixed_turns(self) -> None:
-        """One citation style everywhere: a restored transcript mixing turns
-        that carry an in-text Sources list (TUI-saved) with turns that carry
-        only the structured array (seeded / HTTP / MCP) must not alternate
-        between two renderings. The in-text list is the one rendering; a turn
-        without one gets the identical list synthesized, exactly once."""
+        """One citation style everywhere: the Sources list is built from the turn's
+        refs, whatever its text says. A text that keeps a "Sources:" heading before
+        prose gets the list under it; a text without one gets the same list; a turn
+        with no refs gets none."""
         from lilbee.cli.tui.widgets.message import AssistantMessage
 
-        answer = "The belt goes 90,000 km [1].\n\nSources:\n\n1. [manual.md](file:///v/manual.md)"
-        has_block = AssistantMessage(content=answer, sources=("manual.md",))
-        array_only = AssistantMessage(content="85 Nm.", sources=("manual.md",))
+        prose = "The belt goes 90,000 km [1].\n\nSources:\nI used the manual."
+        heading = AssistantMessage(content=prose, sources=_refs("manual.md"))
+        array_only = AssistantMessage(content="85 Nm.", sources=_refs("manual.md"))
+        no_refs = AssistantMessage(content=prose)
 
-        joined = "".join(has_block._content_parts)
-        assert joined.count("\nSources:\n") == 1, "existing list must not duplicate"
-        synthesized = "".join(array_only._content_parts)
+        under_heading = heading._shown(markdown=True)
+        assert under_heading.startswith(prose), "the text is shown as written"
+        assert under_heading.count("1. [manual.md](") == 1, "and the list follows it"
+        synthesized = array_only._shown(markdown=True)
         assert synthesized.count("\nSources:\n") == 1, "array-only turns gain the same list"
         assert "1. [manual.md](" in synthesized, "and it is the clickable markdown form"
+        assert array_only._content_parts == ["85 Nm."], "the turn's text holds no list"
+        assert "manual.md" not in no_refs._shown(markdown=True), "no refs, no list"
 
     def test_a_restored_answer_cut_off_in_a_code_block_lists_sources_after_it(self) -> None:
         from lilbee.cli.tui.widgets.message import AssistantMessage
 
-        restored = AssistantMessage(content="Try:\n\n```python\nx = 1", sources=("manual.md",))
-        joined = "".join(restored._content_parts)
-        assert "```python\nx = 1\n```\n\nSources:\n\n1. [manual.md](" in joined
+        restored = AssistantMessage(content="Try:\n\n```python\nx = 1", sources=_refs("manual.md"))
+        shown = restored._shown(markdown=True)
+        assert "```python\nx = 1\n```\n\nSources:\n\n1. [manual.md](" in shown
 
     @pytest.mark.parametrize("title", CRAFTED_TITLES)
     async def test_a_restored_turn_renders_a_page_title_as_text(self, title: str) -> None:
-        """The widget's markdown escapes the Sources labels; the turn's text stays raw."""
+        """The widget's markdown escapes the Sources labels and links the ref's own file."""
         from textual.widgets import Markdown
 
         from lilbee.cli.tui.widgets.message import _answer_markdown_parser
-        from lilbee.retrieval.query.formatting import FILE_LINK_RE, source_markdown_link
 
-        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
-        app = _RestoredApp(content)
+        app = _RestoredApp("x [1]", _crafted_refs(title))
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
             assert isinstance(am._content_widget, Markdown)
-            assert "".join(am._content_parts) == content
+            assert am._content_parts == ["x [1]"]
             line = am._content_widget.source.rpartition("\n1. ")[2]
             hrefs, shown = shown_inline(_answer_markdown_parser(), line)
-            assert hrefs == [FILE_LINK_RE.search(content)["url"]]
+            assert hrefs == [_crafted_url()]
             assert shown == crafted_label(title)
 
     @pytest.mark.parametrize("title", CRAFTED_TITLES)
@@ -186,39 +209,36 @@ class TestAssistantMessageAsync:
         from textual.widgets import Markdown
 
         from lilbee.cli.tui.widgets.message import _answer_markdown_parser
-        from lilbee.retrieval.query.formatting import FILE_LINK_RE, source_markdown_link
 
-        block = f"\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
             am.append_content("x [1]")
-            am.append_content(block)
+            am.show_sources(_crafted_refs(title))
             am.finish()
             await pilot.pause()
             assert isinstance(am._content_widget, Markdown)
-            assert "".join(am._content_parts) == f"x [1]{block}"
+            assert am._content_parts == ["x [1]"]
             line = am._content_widget.source.rpartition("\n1. ")[2]
             hrefs, shown = shown_inline(_answer_markdown_parser(), line)
-            assert hrefs == [FILE_LINK_RE.search(block)["url"]]
+            assert hrefs == [_crafted_url()]
             assert shown == crafted_label(title)
 
     async def test_rebuilding_the_markdown_widget_escapes_the_sources_again(self) -> None:
         from textual.widgets import Markdown
 
-        content = "x [1]\n\nSources:\n\n1. [my_notes.md](file:///kb/my_notes.md)"
-        app = _RestoredApp(content)
+        app = _RestoredApp("x [1]", _refs("my_notes.md"))
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
             await am.rebuild_content_widget(use_markdown=False)
             assert isinstance(am._content_widget, Static)
-            assert "1. [my_notes.md](file:///kb/my_notes.md)" in am._content_widget.content.plain
+            assert "1. [my_notes.md](file://" in am._content_widget.content.plain
             await am.rebuild_content_widget(use_markdown=True)
             await pilot.pause()
             assert isinstance(am._content_widget, Markdown)
-            assert "1. [my\\_notes.md](file:///kb/my_notes.md)" in am._content_widget.source
+            assert "1. [my\\_notes.md](file://" in am._content_widget.source
 
     def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
         """A turn can end before its bubble reaches the screen; finish() must
@@ -226,9 +246,8 @@ class TestAssistantMessageAsync:
         from lilbee.cli.tui.widgets.message import AssistantMessage
 
         am = AssistantMessage()
-        am.finish(["/docs/a.pdf"])  # no compose() ran: nothing mounted yet
+        am.finish()  # no compose() ran: nothing mounted yet
         assert am._finished
-        assert "Sources:" in "".join(am._content_parts) or not am._content_parts
 
     async def test_on_mount_attaches_thinking_header(self) -> None:
         """Mounting the message inserts a sibling ``ThinkingHeader`` above content."""
@@ -289,7 +308,7 @@ class TestAssistantMessageAsync:
                 # The first append fired an update on its own; subsequent
                 # bursts inside the 0.1 s debounce window do not.
                 assert mock_update.call_count == 0
-                am.finish(sources=None)
+                am.finish()
                 # finish() flushes the buffered tail.
                 assert mock_update.call_count == 1
                 # Reasoning is wrapped as literal Content (never parsed as markup).
@@ -306,7 +325,7 @@ class TestAssistantMessageAsync:
             am = app._am
             am.append_reasoning("quoting yield from _flush(buffer) then [/] and [bold]x")
             await pilot.pause()
-            am.finish(sources=None)
+            am.finish()
             await pilot.pause()  # renders without raising MarkupError
             assert am._reasoning_static is not None
             # The markup chars are preserved verbatim in the reasoning, not parsed.
@@ -361,14 +380,14 @@ class TestAssistantMessageAsync:
             assert isinstance(am._reasoning_widget, Collapsible)
             assert am._reasoning_widget.is_mounted
 
-    async def test_finish_with_sources_shows_citations(self) -> None:
+    async def test_finish_collapses_the_reasoning_block(self) -> None:
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
             am.append_reasoning("think")
             am.append_content("answer")
-            am.finish(sources=["doc.pdf:1"])
+            am.finish()
             assert am._finished is True
             assert am._reasoning_widget is not None
             assert "reasoning" in am._reasoning_widget.title
@@ -384,7 +403,7 @@ class TestAssistantMessageAsync:
             await pilot.pause()
             am = app._am
             am.append_content("hi")
-            am.finish(sources=None)
+            am.finish()
             assert am._finished is True
             assert am._reasoning_widget is None
             assert am._thinking_header is None
@@ -395,31 +414,8 @@ class TestAssistantMessageAsync:
             await pilot.pause()
             am = app._am
             am.append_content("just an answer")
-            am.finish(sources=None)
+            am.finish()
             assert "Sources:" not in "".join(am._content_parts)
-
-    async def test_finish_with_sources_folds_them_into_the_answer(self) -> None:
-        """A live turn handed structured sources renders them the one way:
-        appended as the same clickable Sources list, not a separate widget."""
-        app = _MsgApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            am = app._am
-            am.append_content("the answer")
-            am.finish(sources=["manual.md"])
-            joined = "".join(am._content_parts)
-            assert joined.count("\nSources:\n") == 1
-            assert "1. [manual.md](" in joined
-
-    async def test_finish_closes_a_cut_off_code_block_before_the_sources(self) -> None:
-        app = _MsgApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            am = app._am
-            am.append_content("Try:\n\n```python\nx = 1")
-            am.finish(sources=["manual.md"])
-            joined = "".join(am._content_parts)
-            assert "```python\nx = 1\n```\n\nSources:\n" in joined
 
     async def test_markdown_rendering_true_uses_markdown_widget(self) -> None:
         from textual.widgets import Markdown
@@ -7771,43 +7767,35 @@ class TestTerminalSafeSourcesList:
     ) -> None:
         from textual.widgets import Markdown
 
-        from lilbee.retrieval.query.formatting import source_markdown_link
-
-        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
-        app = _RestoredApp(content)
+        app = _RestoredApp("x [1]", _crafted_refs(title))
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
             assert isinstance(am._content_widget, Markdown)
             assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
-            assert "".join(am._content_parts) == content
+            assert "Sources:" in am._content_widget.source
 
     @pytest.mark.parametrize("title", CONTROL_TITLES)
     async def test_a_live_turn_renders_a_title_without_control_characters(self, title: str) -> None:
         from textual.widgets import Markdown
 
-        from lilbee.retrieval.query.formatting import source_markdown_link
-
-        block = f"\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
             am.append_content("x [1]")
-            am.append_content(block)
+            am.show_sources(_crafted_refs(title))
             am.finish()
             await pilot.pause()
             assert isinstance(am._content_widget, Markdown)
             assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
+            assert "Sources:" in am._content_widget.source
 
     @pytest.mark.parametrize("title", CONTROL_TITLES)
     async def test_the_plain_text_view_shows_a_title_without_control_characters(
         self, title: str
     ) -> None:
-        from lilbee.retrieval.query.formatting import source_markdown_link
-
-        content = f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
-        app = _RestoredApp(content)
+        app = _RestoredApp("x [1]", _crafted_refs(title))
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am

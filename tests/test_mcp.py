@@ -232,6 +232,25 @@ class TestSearch:
         results = search("PX4471")
         assert [r["source"] for r in results] == ["far-but-lexical.md"]
 
+    def test_results_carry_a_label_and_no_number(self, mock_svc):
+        page = "_web/example.com/guide.md"
+        mock_svc.store.web_titles.return_value = {page: "The Guide"}
+        chunk = SearchChunk(
+            source=page,
+            content_type="text",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk="text",
+            chunk_index=0,
+            vector=[0.1],
+        )
+        mock_svc.searcher.search.return_value = [chunk]
+        [result] = search("guide")
+        assert result["label"] == "example.com · The Guide"
+        assert "citation_number" not in result
+
     def test_embedder_mismatch_returns_structured_error(self, mock_svc):
         """An agent gets the same adoptable-embedder fields the HTTP 409
         carries, not just prose it would have to parse."""

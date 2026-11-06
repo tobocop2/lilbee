@@ -108,13 +108,39 @@ class TitleSource(StrEnum):
 
 
 @dataclass(frozen=True)
+class StoredSourceRef:
+    """One entry of a turn's Sources list: the source, the ``[n]`` the answer cites
+    it by (None when the number is unknown) and the plain-text locator of its page
+    or line span ('' when it has none). The label is not stored: a reader computes
+    it from the current stored title."""
+
+    source: str
+    citation_number: int | None = None
+    locator: str = ""
+
+
+@dataclass(frozen=True)
 class SessionMessage:
-    """One turn in a session. ``ts`` is stamped by the store on write."""
+    """One turn in a session. ``ts`` is stamped by the store on write.
+
+    ``source_refs`` is None for a turn saved before the store kept it; such a turn
+    has only ``sources``, or a Sources list at the end of ``content``.
+    """
 
     role: MessageRole
     content: str
     sources: tuple[str, ...] = ()
     ts: str = ""
+    source_refs: tuple[StoredSourceRef, ...] | None = None
+
+
+def message_with_refs(
+    role: MessageRole, content: str, refs: tuple[StoredSourceRef, ...]
+) -> SessionMessage:
+    """A turn with the Sources list *refs*, its ``sources`` kept for older readers."""
+    return SessionMessage(
+        role=role, content=content, sources=tuple(r.source for r in refs), source_refs=refs
+    )
 
 
 @dataclass(frozen=True)
@@ -228,22 +254,40 @@ def _fork_count(source: Session, message_count: int | None) -> int:
 
 def _message_event(message: SessionMessage, ts: str) -> dict[str, Any]:
     """The ``message`` event line for *message*, stamped *ts*."""
-    return {
+    event: dict[str, Any] = {
         "type": SessionEventType.MESSAGE,
         "role": message.role,
         "content": message.content,
         "sources": list(message.sources),
         "ts": ts,
     }
+    if message.source_refs is not None:
+        event["source_refs"] = [_ref_event(r) for r in message.source_refs]
+    return event
+
+
+def _ref_event(ref: StoredSourceRef) -> dict[str, Any]:
+    """*ref* as its entry in a ``message`` event, its locator only when it has one."""
+    entry: dict[str, Any] = {"source": ref.source, "citation_number": ref.citation_number}
+    if ref.locator:
+        entry["locator"] = ref.locator
+    return entry
 
 
 def _message_from_event(event: dict[str, Any], ts: str) -> SessionMessage:
     """Reconstruct one message from its ``message`` event line."""
+    refs = event.get("source_refs")
     return SessionMessage(
         role=MessageRole(event["role"]),
         content=event["content"],
         sources=tuple(event.get("sources", [])),
         ts=ts,
+        source_refs=None
+        if refs is None
+        else tuple(
+            StoredSourceRef(r["source"], r.get("citation_number"), r.get("locator", ""))
+            for r in refs
+        ),
     )
 
 

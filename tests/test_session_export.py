@@ -23,9 +23,14 @@ from lilbee.app.session_export import (
     session_markdown,
     write_session_markdown,
 )
-from lilbee.retrieval.query.formatting import source_markdown_link
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
-from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label, shown_inline
+from tests._crafted_titles import (
+    CRAFTED_SOURCE,
+    CRAFTED_TITLES,
+    crafted_label,
+    linked_label,
+    shown_inline,
+)
 from tests.conftest import make_mock_services
 
 _ID = "3f2a1b2c-0000-4000-8000-000000000000"
@@ -136,9 +141,9 @@ def test_every_kind_of_source_is_named_as_markdown_that_shows_its_label(source, 
 def test_a_stored_sources_list_keeps_its_names_and_locations_but_no_links():
     content = (
         "85 Nm. [1][2]\n\nSources:\n\n"
-        f"1. {source_markdown_link('manual.pdf')}, page 3\n"
-        f"2. {source_markdown_link('src/brake.py')}, lines 4-9\n"
-        f"3. {source_markdown_link('notes [draft] (v2).md')}"
+        f"1. {linked_label('manual.pdf')}, page 3\n"
+        f"2. {linked_label('src/brake.py')}, lines 4-9\n"
+        f"3. {linked_label('notes [draft] (v2).md')}"
     )
     assert content.count("file://") == 3
     markdown = session_markdown(_session(_assistant(content, sources=("manual.pdf",))))
@@ -156,9 +161,7 @@ def test_a_page_title_shows_as_text_in_the_export(title, stored):
     services.store.web_titles.return_value = {CRAFTED_SOURCE: title}
     set_services(services)
     if stored:
-        answer = _assistant(
-            f"x [1]\n\nSources:\n\n1. {source_markdown_link(CRAFTED_SOURCE, title)}"
-        )
+        answer = _assistant(f"x [1]\n\nSources:\n\n1. {linked_label(CRAFTED_SOURCE, title)}")
     else:
         answer = _assistant("x [1]", sources=(CRAFTED_SOURCE,))
     markdown = session_markdown(_session(answer))

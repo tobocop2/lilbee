@@ -51,13 +51,19 @@ from lilbee.app.placement import (
     preview_placement,
     set_placement,
 )
-from lilbee.app.search import clean_result
+from lilbee.app.search import clean_results
 from lilbee.app.services import (
     exit_on_signals_in_loop,
     get_services,
     reset_services,
     reset_store,
     set_config_refresh,
+)
+from lilbee.app.session_sources import (
+    LocatorError,
+    SourceRefInput,
+    message_payload,
+    posted_message,
 )
 from lilbee.app.settings import (
     SettingInfo,
@@ -111,10 +117,10 @@ from lilbee.sessions import (
     MessageRole,
     Session,
     SessionForkRangeError,
-    SessionMessage,
     SessionNotFoundError,
     SessionOrigin,
     SessionOwnershipError,
+    StoredSourceRef,
     TitleSource,
     agent_sessions_enabled,
 )
@@ -323,7 +329,7 @@ def search(
         results = get_services().searcher.search(
             query, top_k=effective_top_k, chunk_type=chunk_type
         )
-        return [clean_result(r) for r in results]
+        return clean_results(results)
     except EmbeddingModelMismatchError as exc:
         # Structured so an agent can offer to adopt the index's embedder
         # rather than parse prose out of a generic error. Names the embedder,
@@ -725,15 +731,7 @@ def _session_payload(session: Session) -> dict[str, Any]:
     """An agent session as the session tools return it: meta, transcript, summary."""
     return {
         "meta": asdict(session.meta),
-        "messages": [
-            {
-                "role": message.role.value,
-                "content": message.content,
-                "sources": list(message.sources),
-                "ts": message.ts,
-            }
-            for message in session.messages
-        ],
+        "messages": [message_payload(message) for message in session.messages],
         # What compaction folded the older turns into (empty if never compacted).
         # An agent that resumes and continues the conversation needs it, or it
         # rebuilds history without what was already condensed.
@@ -773,21 +771,32 @@ def session_add_message(
     content: str,
     sources: list[str] | None = None,
     claim: bool = False,
+    source_refs: list[SourceRefInput] | None = None,
 ) -> dict[str, Any]:
-    """Append one turn; a foreign session errors unless claim=True (ask first)."""
+    """Append one turn; a foreign session errors unless claim=True (ask first).
+    ``source_refs`` is the answer's Sources list, each ``{source, citation_number, locator}``;
+    a locator is ``page N``, ``pages A-B``, ``line N`` or ``lines A-B``, or absent."""
     if not agent_sessions_enabled():
         return _error(AGENT_SESSIONS_DISABLED_HINT)
     store = get_services().session_store
     try:
         # Re-coerce: the MCP layer passes the enum, but a raw string still
         # arrives via direct library calls, and a bad one must error cleanly.
-        message = SessionMessage(
-            role=MessageRole(role), content=content, sources=tuple(sources or ())
+        message = posted_message(
+            MessageRole(role),
+            content,
+            sources or (),
+            None
+            if source_refs is None
+            else [
+                StoredSourceRef(r["source"], r.get("citation_number"), r.get("locator", ""))
+                for r in source_refs
+            ],
         )
         if claim:
             store.transfer(session_id, SessionOrigin.MCP)
         store.add_message(session_id, message, surface=SessionOrigin.MCP)
-    except (SessionNotFoundError, SessionOwnershipError) as exc:
+    except (SessionNotFoundError, SessionOwnershipError, LocatorError) as exc:
         return _error(str(exc))
     except ValueError as exc:
         return _error(f"invalid role {role!r}: {exc}")
