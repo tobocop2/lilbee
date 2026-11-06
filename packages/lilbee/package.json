@@ -1,6 +1,6 @@
 {
   "name": "lilbee",
-  "version": "0.6.102",
+  "version": "0.6.103",
   "description": "The whole local AI stack in one executable: run and manage local models across every GPU you have, and search your files, notes, code, and crawled sites with answers that cite the source. Terminal app, CLI, MCP server, and REST API. Auto-detects your hardware (CUDA, ROCm, Metal) and fetches the matching standalone binary on first use.",
   "license": "MIT",
   "homepage": "https://lilbee.sh",
@@ -33,7 +33,7 @@
   },
   "lilbee": {
     "repo": "tobocop2/lilbee",
-    "release": "v0.6.90b448",
+    "release": "v0.6.90b692",
     "glibcFloor": "2.34"
   },
   "repository": {
