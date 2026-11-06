@@ -1,0 +1,98 @@
+name: MLX macos-15 output checks
+
+on:
+  push:
+    branches: [ci/mlx-macos15]
+
+permissions:
+  contents: read
+
+jobs:
+  mlx:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PORT: "18765"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Host facts
+        run: |
+          mkdir -p out
+          { sw_vers; uname -m; sysctl -n machdep.cpu.brand_string; sysctl -n hw.memsize; } | tee out/host.txt
+
+      - name: Install the MLX engine
+        run: |
+          uv python install 3.12
+          uv venv --python 3.12 "$RUNNER_TEMP/mlx"
+          uv pip install --python "$RUNNER_TEMP/mlx/bin/python" 'mlx-lm==0.32.2' huggingface_hub
+          "$RUNNER_TEMP/mlx/bin/python" -m pip --version >/dev/null 2>&1 || true
+          uv pip list --python "$RUNNER_TEMP/mlx/bin/python" | tee out/mlx-packages.txt
+
+      - name: Metal probe
+        continue-on-error: true
+        run: |
+          "$RUNNER_TEMP/mlx/bin/python" - <<'PY' 2>&1 | tee out/metal-probe.txt
+          import mlx.core as mx
+          print("default_device:", mx.default_device())
+          print("metal_available:", mx.metal.is_available())
+          x = mx.ones((256, 256)) @ mx.ones((256, 256))
+          mx.eval(x)
+          print("gpu_matmul_ok:", float(x[0, 0]))
+          PY
+
+      - name: Download the model
+        run: |
+          "$RUNNER_TEMP/mlx/bin/python" - <<'PY'
+          from huggingface_hub import snapshot_download
+          p = snapshot_download("mlx-community/Qwen3-0.6B-4bit", local_dir="model")
+          print(p)
+          PY
+
+      - name: Start the server
+        run: |
+          HF_HUB_OFFLINE=1 nohup "$RUNNER_TEMP/mlx/bin/mlx_lm.server" --model "$PWD/model" \
+            --host 127.0.0.1 --port "$PORT" > out/server.log 2>&1 &
+          for i in $(seq 1 60); do
+            nc -z 127.0.0.1 "$PORT" && exit 0
+            sleep 2
+          done
+          echo "server did not open the port"; cat out/server.log; exit 1
+
+      - name: Warm-up request
+        run: |
+          curl -sS -m 300 -w '\nHTTP %{http_code}\n' "http://127.0.0.1:$PORT/v1/chat/completions" \
+            -H 'content-type: application/json' \
+            -d '{"model":"default_model","messages":[{"role":"user","content":"Say hi."}],"max_tokens":16}' \
+            | tee out/warmup.txt
+
+      - name: Install lilbee
+        run: uv sync --locked
+
+      - name: Run the output-check fixtures
+        timeout-minutes: 40
+        run: |
+          uv run python -m tests.conformance.record_presets \
+            --server mlx --version 0.32.2 --roles chat --models chat=default_model \
+            --strict --backend metal --url "http://127.0.0.1:$PORT" \
+            --out out/mlx-chat-metal.json 2>&1 | tee out/fixtures.out
+
+      - name: Summarise each fixture
+        if: always()
+        run: |
+          { echo '## MLX fixtures on macos-15'; grep '^STEP' out/mlx-chat-metal.log 2>/dev/null || echo 'no recording'; } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-macos15-fixtures
+          path: out/
+          if-no-files-found: warn
