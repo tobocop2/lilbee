@@ -11,6 +11,9 @@ jobs:
   mlx:
     runs-on: macos-15
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
     env:
       HF_HUB_DISABLE_TELEMETRY: "1"
       DO_NOT_TRACK: "1"
@@ -74,7 +77,7 @@ jobs:
             | tee out/warmup.txt
 
       - name: Install lilbee
-        run: uv sync --locked
+        run: uv sync --locked --extra providers
 
       - name: Run the output-check fixtures
         timeout-minutes: 40
