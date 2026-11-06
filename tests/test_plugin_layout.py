@@ -77,3 +77,14 @@ def test_worker_agent_names_itself():
     meta = _frontmatter(PLUGIN / "agents" / "lilbee-worker.md")
     assert meta["name"] == "lilbee-worker"
     assert meta["description"]
+
+
+NPM_PACKAGE = ROOT / "packages" / "lilbee"
+
+
+def test_npm_plugin_command_matches_the_claude_mcp_config():
+    command = (NPM_PACKAGE / "plugin" / "command.js").read_text(encoding="utf-8")
+    found = re.search(r"MCP_COMMAND = (\[.*?\])", command)
+    assert found
+    config = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["lilbee"]
+    assert json.loads(found.group(1)) == [config["command"], *config["args"]]
