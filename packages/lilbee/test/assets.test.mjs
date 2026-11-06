@@ -68,7 +68,6 @@ const RELEASE_ASSETS = [
   "lilbee_engine-0.6.90b432-1.cpu-py3-none-macosx_11_0_arm64.whl",
   "lilbee_engine-0.6.90b432-1.rocm-py3-none-manylinux_2_17_x86_64.whl",
   "openapi.json",
-  "profile-responses.json",
 ];
 
 const BINARIES = {
