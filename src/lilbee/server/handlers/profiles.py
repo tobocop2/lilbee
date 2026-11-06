@@ -9,8 +9,13 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 from typing import TypeVar
 
-from litestar.exceptions import HTTPException, NotFoundException, ValidationException
-from litestar.status_codes import HTTP_409_CONFLICT, HTTP_503_SERVICE_UNAVAILABLE
+from litestar.exceptions import (
+    ClientException,
+    NotFoundException,
+    ServiceUnavailableException,
+    ValidationException,
+)
+from litestar.status_codes import HTTP_409_CONFLICT, HTTP_413_REQUEST_ENTITY_TOO_LARGE
 
 from lilbee.app import profiles
 from lilbee.app.profiles import ExportedProfile, ProfileNotFoundError, file_failure_message
@@ -38,6 +43,28 @@ from lilbee.server.models import (
 T = TypeVar("T")
 
 
+class ProfileConflictException(ClientException):
+    """A profile file of that name already exists in the target folder."""
+
+    status_code = HTTP_409_CONFLICT
+
+
+class ProfileTooLargeException(ClientException):
+    """An upload over the route's body cap. Litestar answers it before the handler runs."""
+
+    status_code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
+
+
+# What each kind of profile route can answer besides success. The routes list
+# these as ``raises``, so the schema documents every error ``_run`` maps to.
+FILE_ERRORS = [ServiceUnavailableException]
+REFUSAL_ERRORS = [ValidationException, ServiceUnavailableException]
+UPLOAD_ERRORS = [ProfileTooLargeException]
+NAMED_ERRORS = [NotFoundException, ValidationException, ServiceUnavailableException]
+WRITE_ERRORS = [ProfileConflictException, ValidationException, ServiceUnavailableException]
+NAMED_WRITE_ERRORS = [NotFoundException, *WRITE_ERRORS]
+
+
 def _store() -> ProfileStore:
     return get_services().profile_store
 
@@ -49,13 +76,11 @@ async def _run(operation: Callable[[], T]) -> T:
     except ProfileNotFoundError as exc:
         raise NotFoundException(detail=str(exc)) from exc
     except ProfileNameClashError as exc:
-        raise HTTPException(status_code=HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise ProfileConflictException(detail=str(exc)) from exc
     except ValueError as exc:
         raise ValidationException(detail=str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(
-            status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=file_failure_message(exc)
-        ) from exc
+        raise ServiceUnavailableException(detail=file_failure_message(exc)) from exc
 
 
 async def list_profiles() -> ProfileListResponse:
