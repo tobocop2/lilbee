@@ -13,7 +13,7 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from lilbee.app.search import clean_result
+from lilbee.app.search import clean_results
 from lilbee.app.services import get_services
 from lilbee.cli import theme
 from lilbee.cli.app import (
@@ -137,10 +137,11 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     emits no OSC 8 on the legacy path, which would drop it). The marker can span
     tokens, so a marker-sized tail is held back until it can be classified.
     """
-    from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER
+    from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER, AnswerSources
     from lilbee.retrieval.reasoning import RetrievalNotice
 
     buf = ""
+    answer = ""
     hold = len(SOURCES_BLOCK_MARKER)
     in_sources = False
     flushed = False
@@ -149,14 +150,20 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
             if isinstance(token, RetrievalNotice):
                 announce_retrieval_query(token.query)
                 continue
-            on_first_token()
-            if token.is_reasoning:
+            if isinstance(token, AnswerSources):
+                text = token.block(answer)
+            elif token.is_reasoning:
                 # Reasoning is not filtered by StreamingCitationFilter, so a
                 # thinking trace drafting a Sources: list must never trip the
                 # marker scan; it prints live and bypasses the buffer.
+                on_first_token()
                 console.print(token.content, end="")
                 continue
-            buf += token.content
+            else:
+                on_first_token()
+                text = token.content
+                answer += text
+            buf += text
             if in_sources:
                 continue
             if SOURCES_BLOCK_MARKER in buf:
@@ -245,7 +252,7 @@ def search(
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
-    cleaned = [clean_result(r) for r in results]
+    cleaned = clean_results(results)
 
     if cfg.json_mode:
         json_output({"command": "search", "query": query, "results": cleaned})
@@ -328,10 +335,10 @@ def ask(
                     "command": "ask",
                     "question": question,
                     "answer": result.answer,
-                    "sources": [clean_result(s) for s in result.sources],
-                    "cited_sources": [clean_result(s) for s in result.cited_sources],
+                    "sources": clean_results(result.sources, result.sources),
+                    "cited_sources": clean_results(result.cited_sources, result.sources),
                     "retrieval_query": result.retrieval_query,
-                    "dropped_sources": [clean_result(s) for s in result.dropped_sources],
+                    "dropped_sources": clean_results(result.dropped_sources, result.sources),
                 }
             )
             return

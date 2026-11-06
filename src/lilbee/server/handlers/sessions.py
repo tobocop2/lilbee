@@ -15,6 +15,7 @@ from litestar.status_codes import HTTP_409_CONFLICT, HTTP_422_UNPROCESSABLE_ENTI
 
 from lilbee.app.services import get_services
 from lilbee.app.session_export import default_export_name, session_markdown
+from lilbee.app.session_sources import LocatorError, message_payload, posted_message
 from lilbee.server.models import (
     SessionCreateRequest,
     SessionDeleteResponse,
@@ -32,12 +33,12 @@ from lilbee.sessions import (
     SESSIONS_DISABLED_HINT,
     Session,
     SessionForkRangeError,
-    SessionMessage,
     SessionMeta,
     SessionNotFoundError,
     SessionOrigin,
     SessionOwnershipError,
     SessionStore,
+    StoredSourceRef,
     TitleSource,
     sessions_enabled,
 )
@@ -101,15 +102,7 @@ def _meta_item(meta: SessionMeta) -> SessionMetaItem:
 def _detail(session: Session) -> SessionDetailResponse:
     return SessionDetailResponse(
         meta=_meta_item(session.meta),
-        messages=[
-            SessionMessageItem(
-                role=message.role,
-                content=message.content,
-                sources=list(message.sources),
-                ts=message.ts,
-            )
-            for message in session.messages
-        ],
+        messages=[SessionMessageItem(**message_payload(message)) for message in session.messages],
         summary=session.summary,
     )
 
@@ -149,8 +142,20 @@ async def create_session(data: SessionCreateRequest) -> SessionDetailResponse:
 async def add_session_message(
     session_id: str, data: SessionMessageCreateRequest
 ) -> SessionDetailResponse:
-    """Append one turn to a conversation and return it, or 404 if unknown."""
-    message = SessionMessage(role=data.role, content=data.content, sources=tuple(data.sources))
+    """Append one turn to a conversation and return it, 404 if unknown, 422 for a
+    locator lilbee never writes."""
+    refs = data.source_refs
+    try:
+        message = posted_message(
+            data.role,
+            data.content,
+            data.sources,
+            None
+            if refs is None
+            else [StoredSourceRef(r.source, r.citation_number, r.locator) for r in refs],
+        )
+    except LocatorError as exc:
+        raise ClientException(detail=str(exc), status_code=HTTP_422_UNPROCESSABLE_ENTITY) from exc
     store = _store()
     with _session_errors():
         store.add_message(session_id, message, surface=SessionOrigin.HTTP)

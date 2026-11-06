@@ -10,12 +10,13 @@ import pytest
 from lilbee.app.services import get_services, set_services
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
-from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
+from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage, _answer_markdown_parser
 from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
 from lilbee.core.config import Config, cfg
 from lilbee.retrieval.query.compaction import CompactionResult
+from lilbee.retrieval.query.formatting import SourceRef
 from lilbee.retrieval.reasoning import StreamToken
-from lilbee.sessions import MessageRole, SessionMessage, TitleSource
+from lilbee.sessions import MessageRole, SessionMessage, StoredSourceRef, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
@@ -80,7 +81,9 @@ async def test_turns_append_to_the_same_session(sessions):
         screen = await await_chat(app, pilot)
         screen._persist_user_turn("first question")
         session_id = screen._session_id
-        screen._persist_assistant_turn(session_id, "the answer", ["manual.pdf"])
+        screen._persist_assistant_turn(
+            session_id, "the answer [2]", [SourceRef("manual.pdf", "manual.pdf", 2)]
+        )
         screen._persist_user_turn("second question")
         assert screen._session_id == session_id
         assert len(sessions.list()) == 1
@@ -88,6 +91,7 @@ async def test_turns_append_to_the_same_session(sessions):
         assert session.meta.message_count == 3
         assert session.messages[1].role == MessageRole.ASSISTANT
         assert session.messages[1].sources == ("manual.pdf",)
+        assert session.messages[1].source_refs == (StoredSourceRef("manual.pdf", 2),)
 
 
 async def test_user_turn_recovers_if_active_session_deleted(sessions):
@@ -679,3 +683,305 @@ async def test_resume_shows_message_bodies_line_for_line_without_escapes(session
         )
         assert user_text.startswith(_RESTORED_BODY)
         assert "\x1b" not in user_text
+
+
+def _source_chunk(
+    source: str, content_type: str = "text", pages: int = 0, lines: tuple[int, int] = (0, 0)
+):
+    from lilbee.data.store import SearchChunk
+
+    return SearchChunk(
+        source=source,
+        content_type=content_type,
+        chunk="text",
+        page_start=pages,
+        page_end=pages,
+        line_start=lines[0],
+        line_end=lines[1],
+        chunk_index=0,
+        vector=[0.1],
+    )
+
+
+def _shown_sources(source: str) -> str:
+    """The Sources list a bubble's markdown *source* shows, one line per hard break,
+    as the widget's parser reads it: no ordered list, so no renumbering."""
+    from lilbee.cli.tui.widgets.message import _answer_markdown_parser
+
+    tokens = _answer_markdown_parser().parse(source.rpartition("\n\nSources:\n\n")[2])
+    assert "ordered_list_open" not in {t.type for t in tokens}
+    inline = next(t for t in tokens if t.type == "inline")
+    return "".join(
+        "\n" if c.type == "hardbreak" else c.content
+        for c in inline.children or []
+        if c.content or c.type == "hardbreak"
+    )
+
+
+async def test_a_streamed_turn_saves_its_sources_beside_the_answer(sessions):
+    """The answer is saved without its Sources list; the list is saved as refs, and
+    a resumed session shows the same list as the live turn did."""
+    from lilbee.retrieval.query.formatting import AnswerSources
+
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content="Oil [2].", is_reasoning=False)
+        yield AnswerSources([_source_chunk("a.md"), _source_chunk("b.md")], {})
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            screen._send_message("oil?")
+            assert await pump_until(pilot, lambda: not screen.streaming)
+            await pilot.pause()
+        session_id = screen._session_id
+        live = _bubble_text(screen.query(AssistantMessage).last())
+        saved = sessions.get(session_id).messages[-1]
+        assert saved.content == "Oil [2]."
+        assert saved.source_refs == (StoredSourceRef("a.md", 1), StoredSourceRef("b.md", 2))
+        assert "1. [a.md](file://" in live and "2. [b.md](file://" in live
+        screen.resume_session(session_id)
+        await pilot.pause()
+        assert _bubble_text(screen.query(AssistantMessage).last()) == live
+
+
+async def test_a_live_answer_that_keeps_a_sources_heading_shows_its_sources_list(sessions):
+    """An answer whose text keeps a "Sources:" heading before prose still gets lilbee's
+    list from its refs, and the resumed turn shows the live one whole."""
+    from lilbee.retrieval.query.formatting import AnswerSources
+
+    prose = "Answer [1].\n\nSources:\nI used the documents provided."
+
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content=prose, is_reasoning=False)
+        yield AnswerSources([_source_chunk("a.md")], {})
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            screen._send_message("q?")
+            assert await pump_until(pilot, lambda: not screen.streaming)
+            await pilot.pause()
+        live = _bubble_text(screen.query(AssistantMessage).last())
+        assert live.startswith(prose)
+        assert "1. [a.md](file://" in live
+        screen.resume_session(screen._session_id)
+        await pilot.pause()
+        assert _bubble_text(screen.query(AssistantMessage).last()) == live
+
+
+async def test_a_restored_legacy_turn_keeps_the_prose_after_its_own_sources_heading(sessions):
+    """A turn saved with no refs, whose text has a model-written "Sources:" heading and
+    no lilbee list after it, restores whole."""
+    prose = "Answer [1].\n\nSources:\nI used the documents provided."
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    sessions.add_message(session_id, SessionMessage(role=MessageRole.USER, content="q"))
+    sessions.add_message(session_id, SessionMessage(role=MessageRole.ASSISTANT, content=prose))
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        await pilot.pause()
+        assert _bubble_text(screen.query(AssistantMessage).first()) == prose
+
+
+async def test_a_restored_cited_subset_shows_its_true_numbers(sessions):
+    """A turn a client saved with the cited subset [1], [3] shows 1. and 3., not 1. and 2."""
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    sessions.add_message(session_id, SessionMessage(role=MessageRole.USER, content="q"))
+    sessions.add_message(
+        session_id,
+        SessionMessage(
+            role=MessageRole.ASSISTANT,
+            content="See [1] and [3].",
+            sources=("first.md", "third.md"),
+            source_refs=(StoredSourceRef("first.md", 1), StoredSourceRef("third.md", 3)),
+        ),
+    )
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        await pilot.pause()
+        shown = _shown_sources(_bubble_text(screen.query(AssistantMessage).first()))
+        assert shown == "1. first.md\n3. third.md"
+
+
+async def test_a_resumed_turn_keeps_the_page_and_line_locators_it_showed_live(sessions):
+    """A PDF page and a code line span shown in the live Sources list come back on resume."""
+    from lilbee.retrieval.query.formatting import AnswerSources
+
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content="See [1] and [2].", is_reasoning=False)
+        yield AnswerSources(
+            [
+                _source_chunk("manual.pdf", "pdf", pages=3),
+                _source_chunk("tool.py", "code", lines=(10, 20)),
+            ],
+            {},
+        )
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            screen._send_message("q?")
+            assert await pump_until(pilot, lambda: not screen.streaming)
+            await pilot.pause()
+        session_id = screen._session_id
+        live = _bubble_text(screen.query(AssistantMessage).last()).rpartition("Sources:")[2]
+        assert ", page 3\n" in live and live.endswith(", lines 10-20")
+        screen.resume_session(session_id)
+        await pilot.pause()
+        restored = _bubble_text(screen.query(AssistantMessage).last()).rpartition("Sources:")[2]
+        assert restored == live
+        assert sessions.get(session_id).messages[-1].source_refs == (
+            StoredSourceRef("manual.pdf", 1, "page 3"),
+            StoredSourceRef("tool.py", 2, "lines 10-20"),
+        )
+
+
+# Locators a client may post: a link, a link target, inline markup, a block after a
+# line break, an autolink.
+_ATTACK_LOCATORS = [
+    "[click](https://evil.example/x)",
+    "x](file:///etc/passwd)",
+    "page 3](file:///etc/passwd)",
+    "page 3 **bold** ![px](https://evil.example/p.png)",
+    "page 3\n\n# Heading",
+    "<https://evil.example/auto>",
+]
+# Sources a client may post whose label reads as a link elsewhere: one with no file
+# (a NUL byte), one with markup, ones whose label holds a ``](file://`` target.
+_ATTACK_SOURCES = [
+    ("a.md", "page 3"),
+    ("[b.md](file:///etc/passwd)\x00", ""),
+    ("b.md](file:///etc/passwd)", "pages 2-4"),
+    ("[b.md](file:///etc/passwd)", ""),
+    ("memory:[click](https://evil.example/m) **m**", "line 7"),
+    ("[c.md](file:///etc/passwd)\x1b", "lines 1-2"),
+]
+_MARKUP_TOKENS = {"image", "strong_open", "em_open", "heading_open", "html_inline", "html_block"}
+
+
+def _markup_in(markdown: str) -> list[str]:
+    """Each web link, image, emphasis, heading or html token the answer widget's parser
+    makes. A bare URL the parser links as written (as in any answer text) is not markup."""
+    found = []
+    for token in _answer_markdown_parser().parse(markdown):
+        tokens = [token, *(token.children or [])]
+        for t, after in zip(tokens, [*tokens[1:], None], strict=True):
+            href = str(t.attrGet("href"))
+            as_written = t.markup == "linkify" and after is not None and after.content == href
+            if t.type == "link_open" and not href.startswith("file://") and not as_written:
+                found.append(f"link:{href}")
+            elif t.type in _MARKUP_TOKENS:
+                found.append(t.type)
+    return found
+
+
+def _list_lines(markdown: str) -> list[str]:
+    """The shown text of each item of the Sources list *markdown* ends in."""
+    lines = []
+    for t in _answer_markdown_parser().parse(markdown.rpartition("Sources:")[2]):
+        if t.type == "inline" and t.level == 3:
+            lines.append("".join(c.content for c in t.children or [] if c.type == "text"))
+    return lines
+
+
+def _line_links(markdown: str) -> list[list[str]]:
+    """The target of each link on each item of the Sources list *markdown* ends in. A
+    bare URL the parser links as written shows its own target, so it is not counted."""
+    lines = []
+    for t in _answer_markdown_parser().parse(markdown.rpartition("Sources:")[2]):
+        if t.type == "inline" and t.level == 3:
+            kids = t.children or []
+            hrefs = []
+            for c, after in zip(kids, [*kids[1:], None], strict=True):
+                href = str(c.attrGet("href"))
+                as_written = c.markup == "linkify" and after is not None and after.content == href
+                if c.type == "link_open" and not as_written:
+                    hrefs.append(href)
+            lines.append(hrefs)
+    return lines
+
+
+def _own_file_url(source: str) -> str | None:
+    """The ``file://`` URL of *source*'s own file, or None when it has none."""
+    from lilbee.data.store import is_memory_source
+    from lilbee.retrieval.query.formatting import _source_file_url
+
+    return None if is_memory_source(source) else _source_file_url(source)
+
+
+def _post_both(sessions, refs: list[dict]) -> tuple[int, dict, str, str]:
+    """*refs* posted over HTTP and over MCP: the HTTP status, the MCP result and both ids."""
+    from litestar.testing import TestClient
+
+    import lilbee.server.auth as auth_mod
+    from lilbee.mcp_server import session_add_message, session_create
+    from lilbee.server.app import create_app
+
+    content = "See " + " ".join(f"[{r['citation_number']}]" for r in refs) + "."
+    auth_mod.session_manager.disable()
+    try:
+        client = TestClient(create_app())
+        with patch.object(cfg, "mcp_sessions_enabled", True):
+            http_id = sessions.create(model_ref="m", scope="both")
+            response = client.post(
+                f"/api/sessions/{http_id}/messages",
+                json={"role": "assistant", "content": content, "source_refs": refs},
+            )
+            mcp_id = session_create("m")["id"]
+            result = session_add_message(mcp_id, "assistant", content, source_refs=refs)
+    finally:
+        auth_mod.session_manager.cleanup()
+    return response.status_code, result, http_id, mcp_id
+
+
+@pytest.mark.parametrize("locator", _ATTACK_LOCATORS)
+def test_a_locator_lilbee_never_writes_is_refused_over_http_and_mcp(sessions, locator):
+    """HTTP answers 422 and MCP an error naming the locator forms; nothing is saved."""
+    refs = [{"source": "a.md", "citation_number": 1, "locator": locator}]
+    status, result, http_id, mcp_id = _post_both(sessions, refs)
+    assert status == 422
+    assert "page N" in result["error"] and repr(locator) in result["error"]
+    assert not sessions.get(http_id).messages and not sessions.get(mcp_id).messages
+
+
+async def test_every_link_in_the_resumed_tui_list_targets_its_own_source(sessions):
+    """Sources posted over HTTP and over MCP resume in the TUI with each line's link,
+    file:// included, on the file of that line's own source, or no link when it has
+    none; no web link, image, emphasis, heading or html; each locator as written."""
+    refs = [
+        {"source": source, "citation_number": n, "locator": locator}
+        for n, (source, locator) in enumerate(_ATTACK_SOURCES, 1)
+    ]
+    status, result, http_id, mcp_id = _post_both(sessions, refs)
+    assert status == 201 and "error" not in result
+    shown = {}
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        for surface, session_id in (("http", http_id), ("mcp", mcp_id)):
+            screen.resume_session(session_id)
+            await pilot.pause()
+            shown[surface] = _bubble_text(screen.query(AssistantMessage).last())
+    expected = [[url] if (url := _own_file_url(s)) else [] for s, _ in _ATTACK_SOURCES]
+    assert expected[0] and not expected[1], "the instrument sees a linked and an unlinked line"
+    assert _markup_in("x [y](https://evil.example/c) **b** # c"), "the instrument finds markup"
+    for surface, markdown in shown.items():
+        assert _line_links(markdown) == expected, surface
+        assert _markup_in(markdown) == [], surface
+        for line, (_, locator) in zip(_list_lines(markdown), _ATTACK_SOURCES, strict=True):
+            assert line.endswith(f", {locator}" if locator else ""), (surface, line)

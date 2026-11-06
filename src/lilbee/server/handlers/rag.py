@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from lilbee.app.memory import auto_extract, auto_extract_enabled
-from lilbee.app.search import clean_result
+from lilbee.app.search import clean_results, source_labels
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.results import DocumentResult, group
@@ -136,7 +136,8 @@ async def search(
     results = await asyncio.to_thread(
         get_services().searcher.search, q, top_k=resolved_top_k, chunk_type=chunk_type
     )
-    return group(results)
+    labels = source_labels(results)
+    return [r.model_copy(update={"label": labels[r.source]}) for r in group(results)]
 
 
 async def ask(
@@ -165,11 +166,18 @@ async def ask(
         await _store_extracted_memories(question, result.answer)
     return AskResponse(
         answer=result.answer,
-        sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
-        cited_sources=[CleanedChunk(**clean_result(s)) for s in result.cited_sources],
+        sources=_cleaned_chunks(result.sources, result.sources),
+        cited_sources=_cleaned_chunks(result.cited_sources, result.sources),
         retrieval_query=result.retrieval_query,
-        dropped_sources=[CleanedChunk(**clean_result(s)) for s in result.dropped_sources],
+        dropped_sources=_cleaned_chunks(result.dropped_sources, result.sources),
     )
+
+
+def _cleaned_chunks(
+    chunks: list[SearchChunk], answered_from: list[SearchChunk] | None = None
+) -> list[CleanedChunk]:
+    """*chunks* as response models, numbered by the retrieved list *answered_from*."""
+    return [CleanedChunk(**c) for c in clean_results(chunks, answered_from or [])]
 
 
 def _chat_warming_events() -> list[str]:
@@ -321,7 +329,7 @@ async def _emit_sources_and_memories(
         source_list = [*cited, *memories]
     else:
         source_list = sources
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
+    yield sse_event(SseEvent.SOURCES, clean_results(source_list, sources))
     yield sse_done({})
     async for event in _emit_extracted_memories(question, answer):
         yield event
@@ -564,14 +572,11 @@ async def chat(
         await _store_extracted_memories(question, answer)
     return AskResponse(
         answer=answer,
-        sources=[CleanedChunk(**clean_result(s)) for s in sources],
-        cited_sources=[
-            CleanedChunk(**clean_result(s))
-            for s in cited_subset(strip_llm_citations(answer), sources)
-        ],
+        sources=_cleaned_chunks(sources, sources),
+        cited_sources=_cleaned_chunks(cited_subset(strip_llm_citations(answer), sources), sources),
         compaction=compaction,
         retrieval_query=retrieval_query,
-        dropped_sources=[CleanedChunk(**clean_result(s)) for s in dropped],
+        dropped_sources=_cleaned_chunks(dropped, sources),
     )
 
 

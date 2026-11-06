@@ -47,6 +47,13 @@ def crafted_label(title: str) -> str:
     return f"{CRAFTED_HOST} · {collapse_whitespace(title)}"
 
 
+def linked_label(source: str, title: str = "") -> str:
+    """The raw ``[label](file-url)`` link a Sources line shows for *source* titled *title*."""
+    from lilbee.retrieval.query.formatting import SourceRef, source_label, source_ref_link
+
+    return source_ref_link(SourceRef(source, source_label(source, title), None))
+
+
 def shown_inline(parser: MarkdownIt, line: str) -> tuple[list[str], str]:
     """The link targets in one Sources *line* and the text it shows, failing on any other markup."""
     tokens: list[Token] = parser.parseInline(line)[0].children or []

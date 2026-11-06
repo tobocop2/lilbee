@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.app.session_export import session_markdown, write_session_markdown
+from lilbee.app.session_sources import message_payload
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
@@ -125,10 +126,7 @@ def show_cmd(
         json_output(
             {
                 "meta": asdict(session.meta),
-                "messages": [
-                    {"role": m.role.value, "content": m.content, "sources": list(m.sources)}
-                    for m in session.messages
-                ],
+                "messages": [message_payload(m) for m in session.messages],
                 # What compaction folded older turns into (empty if never
                 # compacted). A script that resumes from this JSON needs it, or
                 # it rebuilds history without what was already condensed -- the

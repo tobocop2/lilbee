@@ -190,6 +190,12 @@ class CleanedChunk(BaseModel):
     # Set only on recalled-memory sources (``source`` is ``memory:<id>``), so
     # clients can mark them as memory and link them to ``GET /api/memories``.
     memory_id: str | None = None
+    # The plain one-line name of the source a client shows (``host · title`` for a
+    # crawled page). Never escaped: a client shows it as text.
+    label: str | None = None
+    # The ``[n]`` the answer cites this source by. Absent on a dropped chunk whose
+    # source no chunk in the answer's context holds.
+    citation_number: int | None = None
 
 
 class StatusSourceInfo(BaseModel):
@@ -991,13 +997,34 @@ class SessionListResponse(BaseModel):
     sessions: list[SessionMetaItem]
 
 
+class SessionSourceRefInput(BaseModel):
+    """One entry of a turn's Sources list as a client saves it."""
+
+    source: str
+    # The ``[n]`` the answer cites the source by; null when unknown.
+    citation_number: int | None = None
+    # The page or line span the answer read, such as "page 3"; "" when none.
+    locator: str = ""
+
+
+class SessionSourceRef(SessionSourceRefInput):
+    """One entry of a turn's Sources list, with the label to show computed at read time."""
+
+    # The plain one-line name of the source. Never escaped: a client shows it as text.
+    label: str
+
+
 class SessionMessageItem(BaseModel):
-    """One message in a session transcript."""
+    """One message in a session transcript.
+
+    ``content`` never holds lilbee's Sources list: ``source_refs`` carries it.
+    """
 
     role: MessageRole
     content: str
     sources: list[str]
     ts: str
+    source_refs: list[SessionSourceRef] = []
 
 
 class SessionDetailResponse(BaseModel):
@@ -1028,6 +1055,8 @@ class SessionMessageCreateRequest(BaseModel):
     role: MessageRole
     content: str
     sources: list[str] = []
+    # The answer's Sources list. When given, ``sources`` is derived from it.
+    source_refs: list[SessionSourceRefInput] | None = None
 
 
 class SessionForkRequest(BaseModel):

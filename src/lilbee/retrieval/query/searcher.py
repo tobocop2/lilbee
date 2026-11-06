@@ -64,6 +64,7 @@ from lilbee.retrieval.query.expansion import (
 )
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
+    AnswerSources,
     StreamingCitationFilter,
     build_context,
     cited_subset,
@@ -1543,8 +1544,8 @@ class Searcher:
         options: dict[str, Any] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> Generator[StreamToken | RetrievalNotice, None, None]:
-        """Stream answer tokens with citations appended at the end.
+    ) -> Generator[StreamToken | RetrievalNotice | AnswerSources, None, None]:
+        """Stream answer tokens, then the sources they cite as one ``AnswerSources``.
 
         When retrieval ran on a rewrite of the question, a ``RetrievalNotice``
         carrying that rewrite precedes the first token.
@@ -1580,14 +1581,12 @@ class Searcher:
             show_reasoning=self._config.show_reasoning,
             cap_chars=effective_reasoning_cap(),
         )
-        answer = yield from self._filtered_answer_tokens(events)
+        yield from self._filtered_answer_tokens(events)
         # A model that emits its own trailing Sources block has had it dropped by
         # the filter above; this authoritative list is numbered to match the
         # ``[n]`` markers the model used, so every citation resolves to a line.
-        block = format_sources_block(results, self._store.web_titles(r.source for r in results))
-        if block:
-            fence_closer = close_open_fence(answer).removeprefix(answer)
-            yield StreamToken(content=fence_closer + block, is_reasoning=False)
+        if results:
+            yield AnswerSources(results, self._store.web_titles(r.source for r in results))
 
     def _filtered_answer_tokens(
         self, events: Generator[Any, None, None]

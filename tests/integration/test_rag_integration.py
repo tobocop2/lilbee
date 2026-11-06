@@ -430,40 +430,43 @@ class TestAskStream:
         reset_provider()
 
     def test_stream_yields_tokens(self, rag_pipeline):
-        """ask_stream() yields StreamToken objects with content."""
-        from lilbee.retrieval.reasoning import StreamToken
+        """ask_stream() yields answer tokens, and no token carries the Sources list."""
+        from lilbee.retrieval.query.formatting import AnswerSources
+        from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
 
         svc = get_services()
-        tokens = list(svc.searcher.ask_stream("What is the oil capacity?", top_k=5))
+        events = list(svc.searcher.ask_stream("What is the oil capacity?", top_k=5))
+        tokens = [e for e in events if isinstance(e, StreamToken)]
         assert len(tokens) > 0
-        assert all(isinstance(t, StreamToken) for t in tokens)
+        assert all(isinstance(e, StreamToken | RetrievalNotice | AnswerSources) for e in events)
+        assert not any("Sources:" in t.content for t in tokens)
 
     def test_stream_ends_with_citations(self, rag_pipeline):
-        """The last token from ask_stream() contains source citations.
+        """The last event from ask_stream() is the answer's Sources list as data.
 
-        The Sources token is only yielded after the full LLM stream completes.
+        The sources are only yielded after the full LLM stream completes.
         """
-        from lilbee.retrieval.reasoning import StreamToken
+        from lilbee.retrieval.query.formatting import AnswerSources
 
         svc = get_services()
-        tokens = list(svc.searcher.ask_stream("What engine does the Thunderbolt have?", top_k=5))
-        assert len(tokens) > 0
-        last_token = tokens[-1]
-        assert isinstance(last_token, StreamToken)
-        assert "Sources:" in last_token.content
+        events = list(svc.searcher.ask_stream("What engine does the Thunderbolt have?", top_k=5))
+        assert len(events) > 0
+        last_event = events[-1]
+        assert isinstance(last_event, AnswerSources)
+        assert "specs.md" in {ref.source for ref in last_event.refs()}
 
     def test_stream_is_reasoning_flag(self, rag_pipeline):
         """ask_stream() yields StreamTokens with correct is_reasoning flags."""
         from lilbee.retrieval.reasoning import StreamToken
 
         svc = get_services()
-        tokens = list(svc.searcher.ask_stream("Tell me about the Thunderbolt", top_k=5))
+        events = list(svc.searcher.ask_stream("Tell me about the Thunderbolt", top_k=5))
+        tokens = [e for e in events if isinstance(e, StreamToken)]
         non_empty = [t for t in tokens if t.content.strip()]
         assert len(non_empty) > 0
         assert all(isinstance(t, StreamToken) for t in non_empty)
         # With thinking models (qwen3), some tokens are reasoning. Verify
-        # that at least some non-reasoning content exists (the actual answer
-        # or citations).
+        # that at least some non-reasoning content exists (the actual answer).
         response_tokens = [t for t in non_empty if not t.is_reasoning]
         assert len(response_tokens) > 0, "Expected non-reasoning content in stream"
 

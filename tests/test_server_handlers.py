@@ -6569,3 +6569,150 @@ class TestASyncLockThatCannotBeOpened:
         assert [e for e in events if e.startswith("event: done")] == []
         assert _data_root_tree() == before
         assert not (cfg.documents_dir / "note.md").exists()
+
+
+_WEB_PAGE = "_web/example.com/guide.md"
+# Retrieved in this order, so the model cites them as [1], [2], [3].
+_LABELLED = [
+    _SAMPLE_CHUNK.model_copy(update={"source": "first.md", "chunk_index": 0}),
+    _SAMPLE_CHUNK.model_copy(update={"source": "second.md", "chunk_index": 1}),
+    _SAMPLE_CHUNK.model_copy(update={"source": _WEB_PAGE, "chunk_index": 2}),
+]
+_CITED_ONE_AND_THREE = "See [1] and [3]."
+# What a client is sent for the cited subset [1], [3]: the true numbers, not 1 and 2.
+_CITED_REFS = [
+    {"source": "first.md", "label": "first.md", "citation_number": 1},
+    {"source": _WEB_PAGE, "label": "example.com · The Guide", "citation_number": 3},
+]
+
+
+def _refs(sources) -> list[dict]:
+    """The source, label and citation number of each sent source."""
+    rows = [s if isinstance(s, dict) else s.model_dump() for s in sources]
+    return [{k: row.get(k) for k in ("source", "label", "citation_number")} for row in rows]
+
+
+class TestSourceLabelsOnTheWire:
+    """Every surface that sends sources sends each one's label and citation number."""
+
+    @pytest.fixture(autouse=True)
+    def _titles(self, mock_svc):
+        mock_svc.store.web_titles.side_effect = lambda names: {
+            n: "The Guide" for n in names if n == _WEB_PAGE
+        }
+
+    async def test_ask_stream_sources_event(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = RagContext(list(_LABELLED), [])
+        mock_svc.provider.chat.return_value = iter([_CITED_ONE_AND_THREE])
+        events = [e async for e in handlers.ask_stream("question")]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        assert _refs(json.loads(sources_event.split("data: ")[1].strip())) == _CITED_REFS
+
+    async def test_chat_stream_sources_event(self, mock_svc, monkeypatch):
+        mock_svc.searcher.build_rag_context.return_value = RagContext(list(_LABELLED), [])
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat_stream",
+            lambda req: _canonical_text_stream([_CITED_ONE_AND_THREE]),
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        assert _refs(json.loads(sources_event.split("data: ")[1].strip())) == _CITED_REFS
+
+    async def test_ask_response(self, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        shed = _SAMPLE_CHUNK.model_copy(update={"source": "shed.md", "chunk_index": 9})
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer=_CITED_ONE_AND_THREE,
+            sources=list(_LABELLED),
+            cited_sources=[_LABELLED[0], _LABELLED[2]],
+            dropped_sources=[shed],
+        )
+        result = await handlers.ask("what?")
+        assert [r["citation_number"] for r in _refs(result.sources)] == [1, 2, 3]
+        assert _refs(result.cited_sources) == _CITED_REFS
+        # A dropped source was not in the answer's context, so it has no number.
+        assert _refs(result.dropped_sources) == [
+            {"source": "shed.md", "label": "shed.md", "citation_number": None}
+        ]
+
+    async def test_chat_response(self, mock_svc, monkeypatch):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        def _fake_dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text=_CITED_ONE_AND_THREE)],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return(list(_LABELLED))
+        result = await handlers.chat("q", [])
+        assert [r["citation_number"] for r in _refs(result.sources)] == [1, 2, 3]
+        assert _refs(result.cited_sources) == _CITED_REFS
+
+    async def test_ask_numbers_a_dropped_chunk_of_a_cited_source(self, mock_svc):
+        """The budget fit sheds chunk by chunk: a shed chunk whose source the context
+        still holds is cited by that source's ``[n]``."""
+        from lilbee.retrieval.query import AskResult
+
+        shed_of_third = _LABELLED[2].model_copy(update={"chunk_index": 7})
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer=_CITED_ONE_AND_THREE, sources=list(_LABELLED), dropped_sources=[shed_of_third]
+        )
+        result = await handlers.ask("what?")
+        assert _refs(result.dropped_sources) == [_CITED_REFS[1]]
+
+    async def test_chat_numbers_a_dropped_chunk_of_a_cited_source(self, mock_svc, monkeypatch):
+        from lilbee.retrieval.query.searcher import RagContext
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text=_CITED_ONE_AND_THREE)],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        shed_of_third = _LABELLED[2].model_copy(update={"chunk_index": 7})
+        shed = _SAMPLE_CHUNK.model_copy(update={"source": "shed.md", "chunk_index": 9})
+        rag = _rag_return(list(_LABELLED))
+        mock_svc.searcher.build_rag_context.return_value = RagContext(
+            rag.results, rag.messages, dropped=[shed_of_third, shed]
+        )
+        result = await handlers.chat("q", [])
+        assert _refs(result.dropped_sources) == [
+            _CITED_REFS[1],
+            {"source": "shed.md", "label": "shed.md", "citation_number": None},
+        ]
+
+    async def test_search_results_carry_a_label_and_no_number(self, mock_svc):
+        mock_svc.searcher.search.return_value = list(_LABELLED)
+        result = await handlers.search("q")
+        dumped = [r.model_dump(exclude_none=True) for r in result]
+        assert {r["source"]: r["label"] for r in dumped} == {
+            "first.md": "first.md",
+            "second.md": "second.md",
+            _WEB_PAGE: "example.com · The Guide",
+        }
+        assert all("citation_number" not in r for r in dumped)

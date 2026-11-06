@@ -49,6 +49,7 @@ from lilbee.app.ingest import (
 )
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
+from lilbee.app.session_sources import message_sources
 from lilbee.app.settings import list_setting_value
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
 from lilbee.app.themes import DARK_THEMES
@@ -122,7 +123,7 @@ from lilbee.data.store import (
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
-from lilbee.retrieval.query import SOURCES_BLOCK_MARKER, ChatMessage
+from lilbee.retrieval.query import ChatMessage
 from lilbee.retrieval.query.compaction import (
     compaction_due,
     foldable,
@@ -131,6 +132,7 @@ from lilbee.retrieval.query.compaction import (
     prompt_history,
     summary_messages,
 )
+from lilbee.retrieval.query.formatting import AnswerSources, SourceRef
 from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
@@ -149,8 +151,10 @@ from lilbee.sessions import (
     SessionOrigin,
     SessionOwnershipError,
     SessionStore,
+    StoredSourceRef,
     TitleSource,
     derive_title,
+    message_with_refs,
 )
 
 if TYPE_CHECKING:
@@ -181,6 +185,8 @@ class _Turn:
     session_id: str | None
     stop: threading.Event = field(default_factory=threading.Event)
     answer: str = ""
+    # The answer's Sources list, kept out of ``answer``.
+    source_refs: list[SourceRef] = field(default_factory=list)
 
 
 class _TurnEnded(Message):
@@ -1810,7 +1816,7 @@ class ChatScreen(Screen[None]):
             store.add_message(self._open_session(store, text), message, surface=SessionOrigin.TUI)
 
     def _save_assistant_turn(
-        self, session_id: str | None, content: str, sources: list[str]
+        self, session_id: str | None, content: str, sources: list[SourceRef]
     ) -> None:
         """Persist the assistant turn, telling the user when the save fails. Worker thread."""
         try:
@@ -1822,9 +1828,10 @@ class ChatScreen(Screen[None]):
             )
 
     def _persist_assistant_turn(
-        self, session_id: str | None, content: str, sources: list[str]
+        self, session_id: str | None, content: str, sources: list[SourceRef]
     ) -> None:
-        """Append the assistant turn to *session_id*, the session its turn started in."""
+        """Append the assistant turn and its Sources list to *session_id*, the session
+        its turn started in."""
         if session_id is None or not cfg.sessions_enabled:
             # Sessions switched off mid-conversation: the id outlives the
             # setting, so the toggle has to be re-checked here rather than
@@ -1834,7 +1841,11 @@ class ChatScreen(Screen[None]):
         with contextlib.suppress(SessionNotFoundError):
             get_services().session_store.add_message(
                 session_id,
-                SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
+                message_with_refs(
+                    MessageRole.ASSISTANT,
+                    content,
+                    tuple(StoredSourceRef(r.source, r.citation_number, r.locator) for r in sources),
+                ),
                 surface=SessionOrigin.TUI,
             )
 
@@ -1905,10 +1916,11 @@ class ChatScreen(Screen[None]):
         # Constructed complete, not appended-to after mounting: mount() is async,
         # so append_content/finish would both no-op against a content widget that
         # compose has not built yet, and the answer would render empty.
+        # An older TUI turn's Sources list is read from its content into refs.
+        text, sources = message_sources(message)
         log.mount(
             AssistantMessage(
-                content=strip_control_characters(message.content, keep_lines=True),
-                sources=list(message.sources),
+                content=strip_control_characters(text, keep_lines=True), sources=sources
             )
         )
 
@@ -2139,6 +2151,11 @@ class ChatScreen(Screen[None]):
                     status = msg.SEARCHING_FOR.format(query=token.query)
                     call_from_thread(self, widget.set_thinking_status, status)
                     continue
+                if isinstance(token, AnswerSources):
+                    # Shown under the answer, saved beside it: never part of its text.
+                    turn.source_refs = token.refs()
+                    call_from_thread(self, widget.show_sources, turn.source_refs)
+                    continue
                 self._buffer_token(token, reason_buf, content_buf, response_parts)
                 self._maybe_flush(flush, timings)
             except Exception:
@@ -2184,7 +2201,7 @@ class ChatScreen(Screen[None]):
                 self._history.append({"role": "assistant", "content": turn.answer})
         # No trim here: the next turn compacts before it builds its prompt, so
         # trimming now would drop turns without folding them in.
-        self._save_assistant_turn(turn.session_id, turn.answer, [])
+        self._save_assistant_turn(turn.session_id, turn.answer, turn.source_refs)
 
     @on(_TurnEnded)
     def _on_turn_ended(self, event: _TurnEnded) -> None:
@@ -2208,7 +2225,7 @@ class ChatScreen(Screen[None]):
         if (
             cfg.chat_mode == ChatMode.SEARCH.value
             and self._embedding_ready()
-            and SOURCES_BLOCK_MARKER not in turn.answer
+            and not turn.source_refs
         ):
             self._notify_no_results()
 

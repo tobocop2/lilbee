@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from markdown_it import MarkdownIt
 from textual.app import ComposeResult
@@ -17,6 +17,9 @@ from typing_extensions import override
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
 from lilbee.core.config import cfg
+
+if TYPE_CHECKING:
+    from lilbee.retrieval.query.formatting import SourceRef
 
 # Minimum interval (seconds) between markdown widget updates during streaming
 _MD_UPDATE_INTERVAL = 0.1
@@ -44,19 +47,21 @@ def _answer_markdown_parser() -> MarkdownIt:
     return _AnswerMarkdownIt("gfm-like")
 
 
-def _markdown_source(text: str) -> str:
-    """*text* as the markdown the widget renders: its Sources labels shown as written."""
+def _shown_text(text: str, sources: Sequence[SourceRef], markdown: bool) -> str:
+    """*text* followed by the Sources list of *sources*, as markdown with each label and
+    locator shown as written when *markdown*, and made safe for a terminal."""
     # Lazy: formatting transitively imports the store stack, which widget
     # import must not pay at TUI startup.
-    from lilbee.retrieval.query.formatting import markdown_sources_block, terminal_sources_block
+    from lilbee.retrieval.query.formatting import (
+        append_sources_block,
+        markdown_source_line,
+        source_ref_line,
+        terminal_sources_block,
+    )
 
-    return markdown_sources_block(terminal_sources_block(text))
-
-
-def _plain_source(text: str) -> str:
-    """*text* with the Sources labels it ends in made safe for a terminal."""
-    from lilbee.retrieval.query.formatting import terminal_sources_block
-
+    if sources:
+        render = markdown_source_line if markdown else source_ref_line
+        text = append_sources_block(text, sources, render)
     return terminal_sources_block(text)
 
 
@@ -88,30 +93,22 @@ class AssistantMessage(Vertical):
 
     DEFAULT_CSS: ClassVar[str] = _MESSAGE_CSS
 
-    def __init__(self, content: str = "", sources: Sequence[str] = ()) -> None:
+    def __init__(self, content: str = "", sources: Sequence[SourceRef] = ()) -> None:
         """A live answer bubble, or a finished one restored from a saved session.
 
         A restored turn's *content* must be passed here, not appended after
         mounting: mount() is async, so compose has not run and appends no-op
         against a still-None ``_content_widget``, silently dropping the text.
 
-        Sources render ONE way: the clickable numbered ``Sources:`` list a live
-        answer carries in its text. A turn arriving with structured *sources*
-        but no in-text list (seeded or written over HTTP/MCP, where the answer
-        text and the sources array are stored side by side) gets the same list
-        synthesized into its content, so a mixed transcript reads uniformly
-        instead of alternating between two citation styles.
+        Sources render ONE way: the clickable numbered ``Sources:`` list under the
+        answer text, built from *sources* (or from ``show_sources`` for a live
+        answer) whatever the text says, each link's target the file of its ref's
+        own source.
         """
         super().__init__(classes="assistant-message")
         self._reasoning_parts: list[str] = []
-        if content and sources:
-            # Lazy: formatting transitively imports the store stack, which widget
-            # import must not pay at TUI startup.
-            from lilbee.app.titles import stored_web_titles
-            from lilbee.retrieval.query.formatting import with_sources_block
-
-            content = with_sources_block(content, sources, stored_web_titles)
         self._content_parts: list[str] = [content] if content else []
+        self._sources: Sequence[SourceRef] = sources
         # A restored turn is finished by definition: it must not raise a spinner.
         self._finished = bool(content)
         self._content_widget: Markdown | Static | None = None
@@ -125,7 +122,7 @@ class AssistantMessage(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(_SPEAKER_LILBEE, classes="speaker-label")
         # Built with the restored text (empty for a live turn, which streams in).
-        self._content_widget = self._build_content_widget("".join(self._content_parts))
+        self._content_widget = self._build_content_widget()
         yield self._content_widget
 
     def on_mount(self) -> None:
@@ -141,10 +138,14 @@ class AssistantMessage(Vertical):
         self._thinking_header = header
         self.mount(header, before=self._content_widget)
 
-    def _build_content_widget(self, text: str = "") -> Markdown | Static:
+    def _shown(self, markdown: bool) -> str:
+        """The answer text and its Sources list, as markdown when *markdown*."""
+        return _shown_text("".join(self._content_parts), self._sources, markdown)
+
+    def _build_content_widget(self) -> Markdown | Static:
         """Create the content widget based on the current rendering mode.
 
-        *text* must be passed at construction rather than via a later
+        The text is passed at construction rather than via a later
         ``update()``: Textual's Markdown re-renders from its constructor
         argument on mount, discarding any pre-mount update.
 
@@ -154,12 +155,12 @@ class AssistantMessage(Vertical):
         """
         if self._use_markdown:
             return Markdown(
-                _markdown_source(text),
+                self._shown(markdown=True),
                 classes="response-md",
                 parser_factory=_answer_markdown_parser,
                 open_links=False,
             )
-        return Static(Content(_plain_source(text)), classes="response-md")
+        return Static(Content(self._shown(markdown=False)), classes="response-md")
 
     @property
     def use_markdown(self) -> bool:
@@ -172,22 +173,27 @@ class AssistantMessage(Vertical):
             return
         self._use_markdown = use_markdown
         old = self._content_widget
-        new_widget = self._build_content_widget("".join(self._content_parts))
+        new_widget = self._build_content_widget()
         await self.mount(new_widget, after=old)
         self._content_widget = new_widget
         await old.remove()
 
-    @staticmethod
-    def _set_content(widget: Markdown | Static, text: str) -> None:
-        """Update a content widget with raw model text. A Markdown widget consumes
+    def _set_content(self, widget: Markdown | Static) -> None:
+        """Update a content widget with the raw model text. A Markdown widget consumes
         the raw markdown string, but a Static parses console markup -- so wrap the
         text as literal Content. Otherwise a ``[..]`` in the answer (quoted code, an
         option like ``[/path]``) raises MarkupError and crashes the whole TUI.
         """
         if isinstance(widget, Markdown):
-            widget.update(_markdown_source(text))
+            widget.update(self._shown(markdown=True))
         else:
-            widget.update(Content(_plain_source(text)))
+            widget.update(Content(self._shown(markdown=False)))
+
+    def show_sources(self, sources: Sequence[SourceRef]) -> None:
+        """Show *sources* as the Sources list under the answer."""
+        self._sources = sources
+        if self._content_widget is not None:
+            self._set_content(self._content_widget)
 
     def append_reasoning(self, text: str) -> None:
         """Append a reasoning token; debounced at ``_MD_UPDATE_INTERVAL``."""
@@ -216,26 +222,17 @@ class AssistantMessage(Vertical):
         now = time.monotonic()
         if self._content_widget is not None and now - self._last_md_update >= _MD_UPDATE_INTERVAL:
             self._last_md_update = now
-            self._set_content(self._content_widget, "".join(self._content_parts))
+            self._set_content(self._content_widget)
             self.refresh()
 
-    def finish(self, sources: list[str] | None = None) -> None:
-        """Mark response as complete, folding any structured *sources* into the
-        answer's own ``Sources:`` list (live RAG answers already carry one)."""
+    def finish(self) -> None:
+        """Mark response as complete."""
         self._finished = True
         # Always retire the standalone header on finish; the reasoning fold
         # (if mounted) carries the post-stream title.
         self._dismiss_thinking_header()
-        if sources and self._content_parts:
-            # Lazy: formatting transitively imports the store stack, which widget
-            # import must not pay at TUI startup.
-            from lilbee.app.titles import stored_web_titles
-            from lilbee.retrieval.query.formatting import with_sources_block
-
-            joined = with_sources_block("".join(self._content_parts), sources, stored_web_titles)
-            self._content_parts = [joined]
         if self._content_widget is not None and self._content_parts:
-            self._set_content(self._content_widget, "".join(self._content_parts))
+            self._set_content(self._content_widget)
             self.refresh()
         if self._reasoning_widget is not None and self._reasoning_parts:
             if self._reasoning_static is not None:

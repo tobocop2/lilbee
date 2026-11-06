@@ -215,10 +215,10 @@ class TestAssistantMessage:
         msg._reasoning_parts.append("thinking")
         assert "thinking" in msg._reasoning_parts
 
-    def test_finish_with_sources(self) -> None:
+    def test_finish_marks_the_message_finished(self) -> None:
         msg = AssistantMessage()
         list(msg.compose())
-        msg.finish(["doc.pdf:42"])
+        msg.finish()
         assert msg._finished
 
 

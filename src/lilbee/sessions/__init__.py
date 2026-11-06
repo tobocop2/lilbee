@@ -15,9 +15,11 @@ from lilbee.sessions.store import (
     SessionOrigin,
     SessionOwnershipError,
     SessionStore,
+    StoredSourceRef,
     TitleSource,
     agent_sessions_enabled,
     derive_title,
+    message_with_refs,
     sessions_enabled,
 )
 
@@ -34,8 +36,10 @@ __all__ = [
     "SessionOrigin",
     "SessionOwnershipError",
     "SessionStore",
+    "StoredSourceRef",
     "TitleSource",
     "agent_sessions_enabled",
     "derive_title",
+    "message_with_refs",
     "sessions_enabled",
 ]

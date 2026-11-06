@@ -60,6 +60,7 @@ from tests._crafted_titles import (
     CRAFTED_TITLES,
     PLAIN_NAMES,
     crafted_label,
+    linked_label,
 )
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
@@ -708,6 +709,42 @@ class TestAsk:
         with mock.patch("lilbee.cli.commands.search_chat.announce_retrieval_query") as announce:
             _print_answer_stream(stream, on_first_token=lambda: firsts.append(1))
         announce.assert_called_once_with("rewrite")
+        assert len(firsts) == 1
+
+    def test_the_sources_event_prints_its_list_after_the_answer(self):
+        """The typed sources event renders as the Sources list under the answer,
+        after the code block the answer left open, and is not a first token."""
+        from lilbee.cli.commands import search_chat
+        from lilbee.data.store import SearchChunk
+        from lilbee.retrieval.query.formatting import AnswerSources
+        from lilbee.retrieval.reasoning import StreamToken
+
+        chunk = SearchChunk(
+            source="a.md",
+            content_type="text",
+            chunk="x",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk_index=0,
+            vector=[0.1],
+        )
+        firsts: list[int] = []
+        stream = iter(
+            [
+                StreamToken(content="Try [1]:\n\n```py\nx = 1", is_reasoning=False),
+                AnswerSources([chunk], {}),
+            ]
+        )
+        with (
+            mock.patch.object(search_chat, "console") as console,
+            mock.patch.object(search_chat, "_print_sources_block") as print_block,
+        ):
+            search_chat._print_answer_stream(stream, on_first_token=lambda: firsts.append(1))
+        shown = "".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
+        assert shown.startswith("Try [1]:\n\n```py\nx = 1\n```")
+        assert print_block.call_args.args[0].startswith("\n1. [a.md](file://")
         assert len(firsts) == 1
 
     def test_ask_rejects_empty_question(self, mock_svc):
@@ -2716,6 +2753,32 @@ class TestChunks:
         assert len(data["chunks"]) == 1
         assert "vector" not in data["chunks"][0]
 
+    def test_chunks_json_labels_a_crawled_page_with_its_stored_title(self, isolated_env, mock_svc):
+        """``chunks --json`` names its source as every other JSON surface does."""
+        page = "_web/example.com/guide.md"
+        mock_svc.store.get_sources.return_value = [
+            {"filename": page, "file_hash": "h", "chunk_count": 1, "ingested_at": "2026-01-01"},
+        ]
+        mock_svc.store.web_titles.side_effect = lambda names: {n: "The Guide" for n in names}
+        mock_svc.store.get_chunks_by_source.return_value = [
+            SearchChunk(
+                source=page,
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="Chunk content",
+                chunk_index=0,
+                vector=[0.1],
+            ),
+        ]
+        result = runner.invoke(app, ["--json", "chunks", page])
+        assert result.exit_code == 0
+        chunk = json.loads(result.output.strip())["chunks"][0]
+        assert chunk["label"] == "example.com · The Guide"
+        assert "citation_number" not in chunk
+
     def test_chunks_nonexistent_bracketed_source_prints_it_literally(self, mock_svc):
         mock_svc.store.get_sources.return_value = []
         result = runner.invoke(app, ["chunks", "note[draft].pdf"])
@@ -3306,6 +3369,71 @@ class TestAskJson:
         assert "vector" not in data["dropped_sources"][0]
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_numbers_a_dropped_chunk_of_a_cited_source(self, mock_sync, mock_svc):
+        """The budget fit sheds chunk by chunk, so a shed chunk's source can still be
+        one the answer cites: it carries that source's ``[n]``."""
+        from lilbee.data.store import SearchChunk
+        from lilbee.retrieval.query import AskResult
+
+        def chunk(source: str, index: int) -> SearchChunk:
+            return SearchChunk(
+                source=source,
+                content_type="text",
+                chunk="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk_index=index,
+                vector=[0.1],
+            )
+
+        kept = [chunk("a.md", 0), chunk("b.md", 0)]
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="42 [2]", sources=kept, dropped_sources=[chunk("b.md", 1), chunk("shed.md", 0)]
+        )
+        result = runner.invoke(app, ["--json", "ask", "what?"])
+        assert result.exit_code == 0
+        dropped = json.loads(result.output.strip())["dropped_sources"]
+        assert [(s["source"], s.get("citation_number")) for s in dropped] == [
+            ("b.md", 2),
+            ("shed.md", None),
+        ]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_sources_carry_label_and_citation_number(self, mock_sync, mock_svc):
+        from lilbee.data.store import SearchChunk
+        from lilbee.retrieval.query import AskResult
+
+        page = "_web/example.com/guide.md"
+        mock_svc.store.web_titles.return_value = {page: "The Guide"}
+        first, second, web = (
+            SearchChunk(
+                source=source,
+                content_type="text",
+                chunk="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk_index=i,
+                vector=[0.1],
+            )
+            for i, source in enumerate(["first.md", "second.md", page])
+        )
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="See [1] and [3].", sources=[first, second, web], cited_sources=[first, web]
+        )
+        result = runner.invoke(app, ["--json", "ask", "what?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert [s["citation_number"] for s in data["sources"]] == [1, 2, 3]
+        assert [(s["label"], s["citation_number"]) for s in data["cited_sources"]] == [
+            ("first.md", 1),
+            ("example.com · The Guide", 3),
+        ]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
         from lilbee.retrieval.query import AskResult
 
@@ -3553,13 +3681,12 @@ class TestEnsureChatModelWiring:
     @pytest.mark.parametrize("name", PLAIN_NAMES)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_a_piped_ask_prints_a_name_as_typed(self, mock_sync, mock_svc, name):
-        from lilbee.retrieval.query.formatting import source_markdown_link
         from lilbee.runtime.console import PlainConsole
 
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
             "answer",
             "\n\nSources:\n",
-            f"1. {source_markdown_link(name)}\n2. {source_markdown_link(CRAFTED_SOURCE, name)}",
+            f"1. {linked_label(name)}\n2. {linked_label(CRAFTED_SOURCE, name)}",
         )
         pipe = PlainConsole(force_terminal=False, width=400)
         with mock.patch("lilbee.cli.commands.search_chat.console", pipe), pipe.capture() as cap:
@@ -3577,10 +3704,8 @@ class TestEnsureChatModelWiring:
     ):
         from rich.console import Console
 
-        from lilbee.retrieval.query.formatting import source_markdown_link
-
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
-            "answer", "\n\nSources:\n", f"1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+            "answer", "\n\nSources:\n", f"1. {linked_label(CRAFTED_SOURCE, title)}"
         )
         term = Console(force_terminal=True, legacy_windows=False, width=400)
         with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
@@ -3593,11 +3718,10 @@ class TestEnsureChatModelWiring:
     @pytest.mark.parametrize("title", CONTROL_TITLES)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_a_piped_ask_writes_no_control_character_of_a_label(self, mock_sync, mock_svc, title):
-        from lilbee.retrieval.query.formatting import source_markdown_link
         from lilbee.runtime.console import PlainConsole
 
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
-            "answer", "\n\nSources:\n", f"1. {source_markdown_link(CRAFTED_SOURCE, title)}"
+            "answer", "\n\nSources:\n", f"1. {linked_label(CRAFTED_SOURCE, title)}"
         )
         pipe = PlainConsole(force_terminal=False, width=400)
         with mock.patch("lilbee.cli.commands.search_chat.console", pipe), pipe.capture() as cap:
@@ -3611,9 +3735,7 @@ class TestEnsureChatModelWiring:
     def test_a_page_title_is_shown_as_typed_in_one_hyperlink(self, mock_sync, mock_svc, title):
         from rich.console import Console
 
-        from lilbee.retrieval.query.formatting import source_markdown_link
-
-        link = source_markdown_link(CRAFTED_SOURCE, title)
+        link = linked_label(CRAFTED_SOURCE, title)
         mock_svc.searcher.ask_stream.return_value = _mock_stream(
             "answer", "\n\nSources:\n", f"1. {link}"
         )
