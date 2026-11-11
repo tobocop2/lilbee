@@ -8,13 +8,13 @@
     "url": "https://github.com/tobocop2/lilbee",
     "source": "github"
   },
-  "version": "0.6.103",
+  "version": "0.6.104",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "lilbee",
-      "version": "0.6.103",
+      "version": "0.6.104",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
