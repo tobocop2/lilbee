@@ -351,20 +351,18 @@ Of the four, lilbee is the only one built around retrieval. It places chat, embe
 
 ### Install size (single-file download, models excluded)
 
-Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked. lilbee and Ollama measured 2026-07-25 from their release APIs (lilbee v0.6.90b420.dev726, Ollama v0.32.4).
+Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked. Measured 2026-11-11 from each project's latest release: lilbee v0.6.90b692, Ollama v0.40.16, LM Studio 0.4.28-2. The files are lilbee's `macos-arm64`, `windows-x86_64.exe` and `linux-x86_64` executables (CUDA: `cu125`), Ollama's `Ollama.dmg`, `OllamaSetup.exe` and `ollama-linux-amd64.tar.zst`, and LM Studio's arm64 `.dmg`, x64 `.exe` and x64 `.AppImage`.
 
 | | macOS | Windows | Linux | What you get |
 |---|---|---|---|---|
-| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 317 MB | 333 MB | 478 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
-| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 666 MB | 1.25 GB | the same whole stack, with the faster CUDA runtime |
-| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (ROCm, opt-in for AMD) | n/a | n/a | 854 MB* | the same whole stack, with the faster ROCm runtime |
-| [Ollama](https://github.com/ollama/ollama/releases) | 181 MB | 1.56 GB (CUDA bundled) | 1.42 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
-| [LM Studio](https://lmstudio.ai/download) | 569 MB | 617 MB | 1.10 GB | a desktop app (Electron) |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 290 MB | 304 MB | 420 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 635 MB | 1.22 GB | the same whole stack, with the faster CUDA runtime |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (ROCm, opt-in for AMD) | n/a | n/a | 817 MB | the same whole stack, with the faster ROCm runtime |
+| [Ollama](https://github.com/ollama/ollama/releases) | 230 MB | 1.86 GB (CUDA bundled) | 1.55 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
+| [LM Studio](https://lmstudio.ai/download) | 573 MB | 626 MB | 1.03 GB | a desktop app (Electron) |
 | [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
 
 Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.
-
-\* ROCm is the one figure not yet from a release: it is the binary CI builds today, measured, and lands here unchanged at the first release that carries it.
 
 </details>
 
