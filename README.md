@@ -40,6 +40,7 @@
   <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/downloads/tobocop2/lilbee/total?label=downloads&logo=github&logoColor=9ccfd8&style=flat-square&labelColor=191724&color=9ccfd8" alt="Release downloads"></a>
   <a href="https://glama.ai/mcp/servers/tobocop2/lilbee"><img src="https://glama.ai/mcp/servers/tobocop2/lilbee/badges/score.svg" alt="Glama MCP server score"></a>
   <a href="https://mcptoplist.com/server/glama%2Ftobocop2%2Flilbee"><img src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fmcptoplist.com%2Fbadge%2Fglama%252Ftobocop2%252Flilbee.svg&search=Top%20(%5B0-9%5D%2B%25%20of%20%5B0-9,%5D%2B)&replace=Top%20%241&label=MCP%20Toplist&labelColor=191724&color=ebbcba&style=flat-square" alt="MCP Toplist rank"></a>
+  <a href="https://mcpservers.org/servers/tobocop2/lilbee"><img src="https://mcpservers.org/badge.svg" alt="Listed on mcpservers.org"></a>
 </p>
 
 <p align="center">
