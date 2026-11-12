@@ -11,6 +11,7 @@ setup() {
   printf 'parent-sha\n' > "${FIXTURE}/parent"
   : > "${FIXTURE}/ls_remote"
   echo 0 > "${FIXTURE}/diff_rc"
+  printf 'Promote 1.2.3\n' > "${FIXTURE}/subject"
   printf '[project]\nversion = "1.2.3"\n' > "${FIXTURE}/pyproject.toml"
   cp "${BATS_TEST_DIRNAME}/stubs/git-candidate" "${FIXTURE}/bin/git"
   cp "${BATS_TEST_DIRNAME}/stubs/gh-candidate" "${FIXTURE}/bin/gh"
@@ -100,6 +101,15 @@ prerelease() {  # tag version repo [from]
   printf 'abc123 refs/tags/v1.2.2\n' > "${FIXTURE}/ls_remote"
   printf 'abc123\n' > "${FIXTURE}/parent"
   echo 1 > "${FIXTURE}/diff_rc"
+  run detect v1.2.3
+  [ "$status" -eq 0 ]
+  [ "$(cat "${FIXTURE}/outputs")" = "promoted_from=" ]
+}
+
+@test "a version-only change with a release subject is not a promotion" {
+  printf 'abc123 refs/tags/v1.2.2\n' > "${FIXTURE}/ls_remote"
+  printf 'abc123\n' > "${FIXTURE}/parent"
+  printf 'Release 1.2.3\n' > "${FIXTURE}/subject"
   run detect v1.2.3
   [ "$status" -eq 0 ]
   [ "$(cat "${FIXTURE}/outputs")" = "promoted_from=" ]

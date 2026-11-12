@@ -21,17 +21,18 @@ EDITOR
   export GIT_EDITOR="${FIXTURE}/bin/editor"
 }
 
-make_repo() {  # tag.gpgsign value
+make_repo() {  # tag.gpgsign value, then the seed version (default 1.2.3b7)
+  local seed="${2:-1.2.3b7}"
   git init -q --bare "${ORIGIN}"
   git init -q -b main "${WORK}"
   git -C "${WORK}" config user.name "Release Test"
   git -C "${WORK}" config user.email "release@example.com"
   git -C "${WORK}" config commit.gpgsign false
   git -C "${WORK}" config tag.gpgsign "$1"
-  printf 'version = "1.2.3b7"\n' > "${WORK}/pyproject.toml"
-  printf 'version = "1.2.3b7"\n' > "${WORK}/uv.lock"
+  printf 'version = "%s"\n' "${seed}" > "${WORK}/pyproject.toml"
+  printf 'version = "%s"\n' "${seed}" > "${WORK}/uv.lock"
   mkdir -p "${WORK}/plugins/lilbee/.claude-plugin"
-  printf '{\n  "name": "lilbee",\n  "version": "1.2.3b7",\n  "license": "MIT"\n}\n' > "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
+  printf '{\n  "name": "lilbee",\n  "version": "%s",\n  "license": "MIT"\n}\n' "${seed}" > "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
   git -C "${WORK}" add pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json
   git -C "${WORK}" commit -q -m "Initial"
   git -C "${WORK}" remote add origin "${ORIGIN}"
@@ -117,6 +118,13 @@ detect() {  # tag: run detect_promotion.sh at the checked-out release commit
   cd "${WORK}" && bash "${REPO_ROOT}/scripts/detect_promotion.sh" "$1"
 }
 
+@test "a dev counter moves the plugin version to the next dev counter" {
+  make_repo false 1.2.3b7.dev4
+  run cut
+  [ "$status" -eq 0 ]
+  grep -q '"version": "1.2.3b7.dev5"' "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
+}
+
 @test "two releases in a row are not a promotion" {
   make_repo false
   run cut
@@ -139,4 +147,37 @@ detect() {  # tag: run detect_promotion.sh at the checked-out release commit
   run detect v1.2.3b8
   [ "$status" -eq 0 ]
   [[ "$output" == *"promoted_from=v1.2.3b7" ]]
+}
+
+@test "a promotion moves the plugin manifest to the new version" {
+  make_repo false
+  seed_source_tag
+  run promote
+  [ "$status" -eq 0 ]
+  git -C "${WORK}" fetch -q origin tag v1.2.3b8
+  [ "$(git -C "${WORK}" show v1.2.3b8:pyproject.toml)" = 'version = "1.2.3b8"' ]
+  git -C "${WORK}" show v1.2.3b8:plugins/lilbee/.claude-plugin/plugin.json | grep -q '"version": "1.2.3b8"'
+}
+
+@test "promoting a dev tag to its beta gives the plugin the beta version" {
+  make_repo false 1.2.3b7.dev4
+  git -C "${WORK}" -c tag.gpgsign=false tag v1.2.3b7.dev4
+  git -C "${WORK}" push -q origin v1.2.3b7.dev4
+  cd "${WORK}"
+  run bash "${REPO_ROOT}/scripts/promote_release.sh" v1.2.3b7.dev4 1.2.3b7
+  [ "$status" -eq 0 ]
+  git -C "${WORK}" fetch -q origin tag v1.2.3b7
+  git -C "${WORK}" show v1.2.3b7:plugins/lilbee/.claude-plugin/plugin.json | grep -q '"version": "1.2.3b7"'
+}
+
+@test "a promotion of a tag from before the plugin existed changes only the Python version files" {
+  make_repo false
+  git -C "${WORK}" rm -q -r plugins
+  git -C "${WORK}" commit -q -m "No plugin"
+  git -C "${WORK}" push -q origin main
+  seed_source_tag
+  run promote
+  [ "$status" -eq 0 ]
+  git -C "${WORK}" fetch -q origin tag v1.2.3b8
+  [ "$(git -C "${WORK}" diff --name-only v1.2.3b7 v1.2.3b8 | tr '\n' ' ')" = "pyproject.toml uv.lock " ]
 }
