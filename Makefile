@@ -1,7 +1,7 @@
 .PHONY: lint lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/record_profile_responses.py hatch_build.py
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 	# docs/settings.md is generated from the Config fields; a new setting must
 	# land in the reference with the code that adds it.
@@ -23,10 +23,10 @@ test-shell:  ## Run the bats tests for the release scripts
 	bats tests/shell/
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/record_profile_responses.py hatch_build.py
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/record_profile_responses.py hatch_build.py
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -36,7 +36,7 @@ typecheck:
 	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
-	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/record_profile_responses.py hatch_build.py
+	uv run mypy tools/readme_media.py tools/gen_formats_table.py hatch_build.py
 
 # A replaced worker deadlocks --dist loadgroup (pytest-dev/pytest-xdist#1378),
 # so a worker that dies fails the run instead.

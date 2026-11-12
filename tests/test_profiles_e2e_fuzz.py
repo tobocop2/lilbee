@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import functools
 import json
 import re
 from collections.abc import Callable, Iterator
@@ -325,10 +326,48 @@ def _cli_verdict(result: Result, operation: str) -> dict[str, Any] | None:
     return None
 
 
+@functools.cache
+def _schema_routes() -> tuple[tuple[str, re.Pattern[str], frozenset[int]], ...]:
+    """Each operation's method, path pattern and documented statuses, fixed paths first."""
+    from lilbee.server.app import create_app
+
+    paths = create_app().openapi_schema.to_schema()["paths"]
+    routes = [
+        (
+            method.upper(),
+            re.compile(re.sub(r"\{[^}]+\}", "[^/]+", template)),
+            frozenset(int(status) for status in operation["responses"]),
+        )
+        for template, operations in sorted(paths.items(), key=lambda item: item[0].count("{"))
+        for method, operation in operations.items()
+    ]
+    return tuple(routes)
+
+
+# A path no route serves, such as one a ``..`` name resolves away, gets the router's 404.
+UNROUTED = frozenset({404})
+
+
+def _documented_statuses(method: str, path: str) -> frozenset[int]:
+    for route_method, pattern, statuses in _schema_routes():
+        if route_method == method and pattern.fullmatch(path):
+            return statuses
+    return UNROUTED
+
+
 def _http_verdict(response: Any, operation: str) -> Any:
-    """The body on success, None on a refusal with a reason; a 5xx or a traceback fails."""
+    """The body on success, None on a refusal with a reason; a 5xx or a traceback fails.
+
+    Every status the route answers is one its OpenAPI schema lists, so a client reading
+    the published schema knows each error it can get.
+    """
     assert TRACEBACK not in response.text, response.text
     event(f"http {operation} {response.status_code}")
+    request = response.request
+    # Litestar routes a path with a trailing slash as the same path without it.
+    path = request.url.raw_path.decode().split("?")[0].rstrip("/") or "/"
+    documented = _documented_statuses(request.method, path)
+    assert response.status_code in documented, (request.method, path, response.status_code)
     if response.status_code in REFUSED_STATUSES:
         assert response.json().get("detail"), response.text
         return None
