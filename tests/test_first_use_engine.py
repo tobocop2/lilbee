@@ -53,7 +53,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.data_root = tmp_path
     cfg.models_dir = tmp_path / "models"
     cfg.llama_server_path = ""
-    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
@@ -407,7 +407,7 @@ def test_an_install_from_a_given_wheel_is_not_warned(
 def test_a_host_with_no_pack_is_refused_before_any_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    arm = collect(system="Linux", machine="aarch64", cpu_info={}, nvml=None)
+    arm = collect(system="Linux", machine="aarch64", cpu_info={}, nvidia=None)
     monkeypatch.setattr(first_use, "session_host", lambda: arm)
     monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
     with (
@@ -421,7 +421,7 @@ def test_a_host_with_no_pack_is_refused_before_any_warning(
 def test_a_host_whose_pack_uses_the_gpu_is_not_warned(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None)
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
     monkeypatch.setattr(first_use, "session_host", lambda: mac)
     monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
     with caplog.at_level("WARNING", logger=first_use.__name__):

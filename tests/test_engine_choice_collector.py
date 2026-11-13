@@ -90,7 +90,7 @@ def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
     kwargs = dict(
         fmt=ModelFormat.GGUF,
         host=lambda: collect(
-            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None
+            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None
         ),
         installed={EngineName.LLAMA: frozenset({ModelFormat.GGUF})},
         preferred="mlx",
@@ -350,7 +350,7 @@ def test_an_adapter_that_never_states_bundled_is_reported_not_hidden(
 
 GGUF = ModelFormat.GGUF
 BOTH = {EngineName.LLAMA: frozenset({GGUF}), EngineName.MISTRAL: frozenset({GGUF})}
-LINUX = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+LINUX = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
 
 
 def _rule(role: WorkerRole, preferred: str = "auto", override: str | None = None) -> Any:

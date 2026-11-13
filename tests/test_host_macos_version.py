@@ -11,7 +11,7 @@ from lilbee.providers.fleet.host_caps import collect, detect
 
 
 def _mac(mac_ver: str) -> host_caps.HostCaps:
-    return collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None, mac_ver=mac_ver)
+    return collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None, mac_ver=mac_ver)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +43,7 @@ def test_an_unreadable_macos_version_is_unknown_with_a_reason(raw: str) -> None:
 def test_a_host_that_is_not_macos_has_no_version_and_nothing_unknown(
     system: str, machine: str
 ) -> None:
-    caps = collect(system=system, machine=machine, cpu_info={}, nvml=None, mac_ver="14.0")
+    caps = collect(system=system, machine=machine, cpu_info={}, nvidia=None, mac_ver="14.0")
     assert caps.macos_version is None
     assert caps.macos_known is True
 
@@ -52,5 +52,5 @@ def test_detect_reads_the_macos_version_from_the_platform(monkeypatch: pytest.Mo
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
     monkeypatch.setattr(platform, "mac_ver", lambda: ("15.2", ("", "", ""), "arm64"))
-    monkeypatch.setattr(host_caps, "read_nvml", lambda: None)
+    monkeypatch.setattr(host_caps, "host_facts", lambda: None)
     assert detect().macos_version == (15, 2)

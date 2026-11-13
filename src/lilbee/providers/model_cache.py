@@ -8,8 +8,8 @@ from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
+from lilbee.providers.fleet.gpu_backends.nvidia import cards as nvidia_cards
 from lilbee.providers.fleet.gpu_env import gpu_environ
-from lilbee.providers.fleet.host_caps import nvml_device_totals
 
 log = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def compute_dynamic_ctx(
 def get_available_memory(fraction: float, *, total: bool = False) -> int:
     """Return usable GPU/unified memory in bytes, scaled by *fraction*.
     - macOS (Apple Silicon): unified memory via psutil
-    - Linux with NVIDIA GPU: NVML -> nvidia-smi -> psutil fallback
+    - Linux with NVIDIA GPU: nvidia-smi -> psutil fallback
     - Other: psutil system memory
 
     With multiple NVIDIA GPUs, *total* sums every card's memory (whole-fleet
@@ -193,7 +193,7 @@ def total_system_memory() -> int:
 
 
 def has_nvidia_gpu() -> bool:
-    """Whether an NVIDIA GPU is physically present on this host (NVML or nvidia-smi).
+    """Whether an NVIDIA GPU is physically present on this host (nvidia-smi lists a card).
 
     Deliberately unmasked. ``CUDA_VISIBLE_DEVICES`` says what a CUDA process may
     use, not what the machine has, and the callers of this ask the second
@@ -211,9 +211,9 @@ def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
     which card it will run on. ``sum`` gives whole-fleet capacity, used only by
     the catalog fit chip to decide whether a model can run split across every card.
 
-    Restricted to the devices ``CUDA_VISIBLE_DEVICES`` exposes. Neither NVML nor
-    nvidia-smi applies that mask on its own: it is read by the CUDA runtime, and
-    both tools report every card the driver knows about. Unmasked, a container
+    Restricted to the devices ``CUDA_VISIBLE_DEVICES`` exposes. nvidia-smi does not
+    apply that mask: the CUDA runtime reads it, and the tool reports every card the
+    driver knows about. Unmasked, a container
     given one card of an eight-card host summed all eight and approved models
     eight times too large for the card it had, and a fleet whose smallest card
     was masked out sized every budget against a card the engine cannot see.
@@ -231,48 +231,7 @@ def _nvidia_device_totals() -> list[tuple[str, int]] | None:
     ``None`` means no NVIDIA GPU was detectable at all, which is the expected
     outcome on every non-NVIDIA host.
     """
-    totals = nvml_device_totals()
-    if totals:
-        return totals
-
-    try:
-        import subprocess
-
-        # nvidia-smi ships with the NVIDIA driver and is always on PATH when
-        # present; fully-qualifying it would break on every install layout.
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total,uuid", "--format=csv,noheader,nounits"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-        if result.returncode == 0:
-            rows = [_parse_smi_row(line) for line in result.stdout.strip().splitlines()]
-            parsed = [row for row in rows if row is not None]
-            if parsed:
-                return parsed
-    except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
-        pass
-
-    return None
-
-
-def _parse_smi_row(line: str) -> tuple[str, int] | None:
-    """One ``memory.total,uuid`` CSV row as ``(uuid, total_bytes)``.
-
-    The UUID column is optional so an older nvidia-smi that only echoes the
-    memory still yields a device; only a UUID-keyed mask needs it.
-    """
-    fields = [field.strip() for field in line.split(",")]
-    if not fields or not fields[0]:
-        return None
-    try:
-        mib = int(fields[0])
-    except ValueError:
-        return None
-    return (fields[1] if len(fields) > 1 else "", mib * 1024 * 1024)
+    return [(card.uuid, card.total_bytes) for card in nvidia_cards()] or None
 
 
 def _apply_cuda_visible_mask(devices: list[tuple[str, int]]) -> list[tuple[str, int]]:

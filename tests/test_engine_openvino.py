@@ -59,7 +59,7 @@ def _host(name: str) -> HostCaps:
         system=data["system"],
         machine=data["machine"],
         cpu_info={},
-        nvml=None,
+        nvidia=None,
         accel_devices=None if accel is None else [tuple(pair) for pair in accel],
     )
 
@@ -128,7 +128,7 @@ def test_s12_a_wrong_platform_is_refused_before_any_stage() -> None:
 
 def test_s12_an_unread_platform_is_unknown() -> None:
     gate = OPENVINO.host_gate(
-        host_caps.collect(system="Plan9", machine="mips", cpu_info={}, nvml=None)
+        host_caps.collect(system="Plan9", machine="mips", cpu_info={}, nvidia=None)
     )
     assert gate.known is False
 

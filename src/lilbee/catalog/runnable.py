@@ -68,8 +68,8 @@ def session_host() -> HostCaps:
         return detect()
     except (OSError, ValueError) as exc:
         log.warning("Host detection failed, the catalog lists every row: %s", exc)
-        unreadable = {"driver": None, "cuda_driver": None, "gpus": None}
-        return collect(system="", machine="", cpu_info={}, nvml=unreadable)
+        unreadable = {"cuda_driver": None, "gpus": None}
+        return collect(system="", machine="", cpu_info={}, nvidia=unreadable)
 
 
 def refresh_session_host() -> HostCaps:

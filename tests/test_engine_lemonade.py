@@ -36,7 +36,7 @@ def _host(name: str) -> HostCaps:
         system=data["system"],
         machine=data["machine"],
         cpu_info={},
-        nvml=None,
+        nvidia=None,
         accel_devices=None if accel is None else [tuple(pair) for pair in accel],
     )
 
@@ -97,7 +97,7 @@ def test_b1_an_older_xdna_npu_is_refused() -> None:
         system="Linux",
         machine="x86_64",
         cpu_info={},
-        nvml=None,
+        nvidia=None,
         accel_devices=[("0x1022", "0x1502")],
     )
     assert not LEMONADE.host_gate(caps).ok
@@ -120,7 +120,7 @@ def test_b1_a_mac_is_refused() -> None:
 
 
 def test_b1_windows_on_arm_is_refused() -> None:
-    caps = host_caps.collect(system="Windows", machine="arm64", cpu_info={}, nvml=None)
+    caps = host_caps.collect(system="Windows", machine="arm64", cpu_info={}, nvidia=None)
     assert not LEMONADE.host_gate(caps).ok
 
 

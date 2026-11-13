@@ -47,7 +47,7 @@ def _floor_text(floor: tuple[int, ...]) -> str:
 
 def host(system: str, machine: str, mac_ver: str = "") -> host_caps.HostCaps:
     return host_caps.collect(
-        system=system, machine=machine, cpu_info={}, nvml=None, mac_ver=mac_ver
+        system=system, machine=machine, cpu_info={}, nvidia=None, mac_ver=mac_ver
     )
 
 
