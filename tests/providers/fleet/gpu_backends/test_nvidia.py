@@ -32,17 +32,79 @@ def _fake_run(stdout: str, returncode: int = 0):
 
 
 def test_parse_smi_output_happy_path() -> None:
-    out = "0, 37, 3536, 46068\n1, 12, 3352, 46068\n"
+    out = "0, 37, 61, 3536, 46068\n1, 12, 61, 3352, 46068\n"
     result = _parse_smi_output(out)
     assert result[0].utilization_pct == 37
     assert result[0].free_bytes == (46068 - 3536) * MIB
     assert result[0].total_bytes == 46068 * MIB
-    assert result[0].temperature_c is None
+    assert result[0].temperature_c == 61
     assert result[1].utilization_pct == 12
 
 
+def test_parse_smi_output_reads_each_cards_temperature() -> None:
+    result = _parse_smi_output("0, 37, 70, 3536, 46068\n1, 12, 86, 3352, 46068\n")
+    assert [result[0].temperature_c, result[1].temperature_c] == [70, 86]
+
+
+def test_parse_smi_output_unavailable_temperature_keeps_the_rest() -> None:
+    result = _parse_smi_output("0, 37, [N/A], 3536, 46068\n")
+    assert result[0].temperature_c is None
+    assert result[0].utilization_pct == 37
+    assert result[0].total_bytes == 46068 * MIB
+
+
+def test_parse_smi_output_four_column_row_is_skipped() -> None:
+    """A row without the temperature column is not read as shifted columns."""
+    assert _parse_smi_output("0, 37, 3536, 46068\n") == {}
+
+
+def test_card_count_counts_rows_whose_memory_did_not_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv = "0, 37, 61, 100, 46068\n1, 12, 61, [N/A], [N/A]\nbad row\n"
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: csv)
+    assert nvidia_mod.card_count() == 2
+    assert list(nvidia_mod._cache.stats()) == [0]
+
+
+def test_card_count_is_zero_when_smi_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "")
+    assert nvidia_mod.card_count() == 0
+
+
+def test_card_count_and_stats_share_one_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def _count(*_a: object, **_k: object) -> str:
+        calls["n"] += 1
+        return "0, 30, 61, 100, 46068\n"
+
+    monkeypatch.setattr(nvidia_mod, "run_smi", _count)
+    nvidia_mod.card_count()
+    NvidiaBackend().sample(frozenset({0}))
+    assert calls["n"] == 1
+
+
+def test_a_slow_probe_does_not_age_its_own_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The entry is stamped when the probe ends, so a probe longer than the TTL is still fresh."""
+    now = [0.0]
+    calls = {"n": 0}
+
+    def _slow(*_a: object, **_k: object) -> str:
+        calls["n"] += 1
+        now[0] += 5.0
+        return "0, 30, 61, 100, 46068\n"
+
+    monkeypatch.setattr(nvidia_mod, "run_smi", _slow)
+    monkeypatch.setattr(nvidia_mod.time, "monotonic", lambda: now[0])
+    cache = SmiCache()
+    cache.stats()
+    cache.stats()
+    assert calls["n"] == 1
+
+
 def test_parse_smi_output_malformed_lines_skipped() -> None:
-    out = "garbage\n0, x, y, z\n1, 20, 1024, 46068\n"
+    out = "garbage\n0, x, 61, y, z\n1, 20, 61, 1024, 46068\n"
     result = _parse_smi_output(out)
     assert 0 not in result
     assert result[1].utilization_pct == 20
@@ -59,7 +121,7 @@ def test_parse_smi_output_empty() -> None:
 
 def test_sample_returns_indexed_subset(monkeypatch: pytest.MonkeyPatch) -> None:
     # run_smi is imported by name into nvidia_mod; patch there, not in base.
-    csv = "0, 37, 100, 46068\n1, 12, 100, 46068\n"
+    csv = "0, 37, 61, 100, 46068\n1, 12, 61, 100, 46068\n"
     monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: csv)
     backend = NvidiaBackend()
     result = backend.sample(frozenset({0}))
@@ -89,7 +151,7 @@ def test_cache_coalesces_concurrent_calls(monkeypatch: pytest.MonkeyPatch) -> No
 
     def _count(*_a: object, **_k: object) -> str:
         calls["n"] += 1
-        return "0, 30, 100, 46068\n"
+        return "0, 30, 61, 100, 46068\n"
 
     monkeypatch.setattr(nvidia_mod, "run_smi", _count)
     backend = NvidiaBackend()
@@ -107,7 +169,7 @@ def test_cache_ttl_triggers_new_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _count(*_a: object, **_k: object) -> str:
         calls["n"] += 1
-        return "0, 10, 100, 46068\n"
+        return "0, 10, 61, 100, 46068\n"
 
     monkeypatch.setattr(nvidia_mod, "run_smi", _count)
     monkeypatch.setattr(nvidia_mod.time, "monotonic", lambda: fake_now[0])
@@ -139,7 +201,7 @@ def test_concurrent_threads_probe_once(monkeypatch: pytest.MonkeyPatch) -> None:
         return original(out)
 
     monkeypatch.setattr(nvidia_mod, "_parse_smi_output", _gated)
-    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "0, 20, 100, 46068\n")
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "0, 20, 61, 100, 46068\n")
 
     cache = SmiCache()
     results: list[dict] = [{}, {}]
@@ -184,7 +246,7 @@ def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
         base_mod.subprocess,
         "run",
         lambda *_a, **_k: subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="0, 10, 100, 46068\n", stderr=""
+            args=[], returncode=0, stdout="0, 10, 61, 100, 46068\n", stderr=""
         ),
     )
     nvidia_mod._smi_output()

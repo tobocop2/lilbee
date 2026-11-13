@@ -85,21 +85,21 @@ class TestANotAvailableUtilKeepsTheMemoryReading:
     def test_the_row_survives_with_no_utilization(self) -> None:
         from lilbee.providers.fleet.gpu_backends.nvidia import _parse_smi_output
 
-        samples = _parse_smi_output("0, [N/A], 1024, 4096")
+        samples = _parse_smi_output("0, [N/A], 61, 1024, 4096")
         assert samples[0].utilization_pct is None
         assert samples[0].total_bytes == 4096 * 1024 * 1024
 
     def test_a_complete_row_is_unchanged(self) -> None:
         from lilbee.providers.fleet.gpu_backends.nvidia import _parse_smi_output
 
-        samples = _parse_smi_output("1, 42, 1024, 4096")
+        samples = _parse_smi_output("1, 42, 61, 1024, 4096")
         assert samples[1].utilization_pct == 42
 
     def test_an_unreadable_index_still_drops_the_row(self) -> None:
         # Without an index there is nothing to attribute the reading to.
         from lilbee.providers.fleet.gpu_backends.nvidia import _parse_smi_output
 
-        assert _parse_smi_output("[N/A], 42, 1024, 4096") == {}
+        assert _parse_smi_output("[N/A], 42, 61, 1024, 4096") == {}
 
     def test_an_unreadable_header_leaves_the_pin_alone(self, monkeypatch, tmp_path) -> None:
         # Some published GGUFs report no usable context length. Contradicting an
