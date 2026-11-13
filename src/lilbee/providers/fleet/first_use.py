@@ -62,6 +62,26 @@ INSTALL_REFUSALS = (
 """The errors that stop a pack install for a reason the user can act on."""
 
 
+class _RefusedInstalls:
+    """The refusal of each first-use install this process made, so a lookup does not retry it."""
+
+    def __init__(self) -> None:
+        self._by_pack: dict[tuple[str, str, str], Exception] = {}
+
+    def remember(self, key: tuple[str, str, str], refusal: Exception) -> None:
+        self._by_pack[key] = refusal
+
+    def forget(self, key: tuple[str, str, str]) -> None:
+        self._by_pack.pop(key, None)
+
+    def raise_if_refused(self, key: tuple[str, str, str]) -> None:
+        if key in self._by_pack:
+            raise self._by_pack[key]
+
+
+_refusals = _RefusedInstalls()
+
+
 def _store() -> EngineStore:
     return EngineStore(engines_root(cfg.models_dir))
 
@@ -146,12 +166,8 @@ def install_pack(
         else:
             store.ensure(lock, download)
     forget_unanswered_reads()
-    _REFUSED.pop((str(store.root), lock.version, cell), None)
+    _refusals.forget((str(store.root), lock.version, cell))
     return lock
-
-
-_REFUSED: dict[tuple[str, str, str], Exception] = {}
-"""The refusal of each first-use install this process made, so a lookup does not retry it."""
 
 
 def first_use_tool(tool: str) -> Path | None:
@@ -166,11 +182,10 @@ def first_use_tool(tool: str) -> Path | None:
         return found
     lock, cell = pack_lock()
     key = (str(_store().root), lock.version, cell)
-    if key in _REFUSED:
-        raise _REFUSED[key]
+    _refusals.raise_if_refused(key)
     try:
         install_pack()
     except INSTALL_REFUSALS as exc:
-        _REFUSED[key] = exc
+        _refusals.remember(key, exc)
         raise
     return installed_tool(tool)
