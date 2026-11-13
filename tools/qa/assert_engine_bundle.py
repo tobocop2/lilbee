@@ -93,7 +93,6 @@ BACKEND_LIBRARY = {
     "cpu": "ggml-cpu",
     "metal": "ggml-metal",
     "rocm": "ggml-hip",
-    "sycl": "ggml-sycl",
     "vulkan": "ggml-vulkan",
 }
 # Cells built with GGML_CPU_ALL_VARIANTS ship the CPU backend as one module per
