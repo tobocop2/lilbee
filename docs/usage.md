@@ -1335,7 +1335,8 @@ error from a failed download names the file to copy.
 
 **Your own engine.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM,
 Windows on ARM, or Intel Macs. On a computer with an AMD or Intel GPU, lilbee
-installs the CPU pack and logs a warning that names the GPU vendor. The engine wheels for those backends are not on the `lilbee.sh`
+installs the CPU pack and logs a warning that names the GPU vendor. The engine
+wheels for those backends are not on the `lilbee.sh`
 index yet. On those computers, use a bundled build, or run your own
 `llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
 build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install
