@@ -98,7 +98,15 @@ def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
             continue
         vendor_id = _read_sysfs_hex(device / _SYSFS_VENDOR_FILE)
         if vendor_id is not None:
-            yield vendor_id, (device / _SYSFS_DRIVER_LINK).exists()
+            yield vendor_id, _has_driver_link(device)
+
+
+def _has_driver_link(device: Path) -> bool:
+    """Whether the device has a bound kernel driver; an unreadable link counts as none."""
+    try:
+        return (device / _SYSFS_DRIVER_LINK).exists()
+    except OSError:
+        return False
 
 
 def _read_sysfs_hex(path: Path) -> int | None:

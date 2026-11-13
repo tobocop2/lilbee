@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -141,6 +142,56 @@ class TestLinuxSysfs:
     ) -> None:
         """A non-hex class code cannot raise out of the probe."""
         _write_pci_device(tmp_path, "0000-00-02.0", class_code="not-a-number", vendor="0x8086")
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+
+        assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
+
+    @pytest.mark.parametrize("unreadable", ["driver", "class", "vendor"])
+    def test_a_permission_error_on_one_entry_spares_the_other_devices(
+        self, unreadable: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One unreadable entry drops only its own device; the scan reaches the rest."""
+        _write_pci_device(
+            tmp_path, "0000-00-02.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x8086"
+        )
+        _write_pci_device(
+            tmp_path, "0000-01-00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x1002"
+        )
+        _write_pci_device(
+            tmp_path, "0000-02-00.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x10de"
+        )
+        denied = tmp_path / "0000-01-00.0" / unreadable
+        real_stat, real_read_text = Path.stat, Path.read_text
+
+        def stat(path: Path, **kwargs: Any) -> Any:
+            if path == denied:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, **kwargs)
+
+        def read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+            if path == denied:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", stat)
+        monkeypatch.setattr(Path, "read_text", read_text)
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+
+        assert gpu_hardware.installed_gpu_counts() == {INTEL: 1, NVIDIA: 1}
+        undriven = frozenset({AMD}) if unreadable == "driver" else frozenset()
+        assert gpu_hardware.undriven_gpu_vendor_ids() == undriven
+
+    def test_an_unreadable_sysfs_directory_reports_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A denied listing of the PCI device directory is "cannot tell", not a crash."""
+
+        def iterdir(path: Path) -> Any:
+            raise PermissionError(13, "Permission denied", str(path))
+
+        monkeypatch.setattr(Path, "iterdir", iterdir)
         monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 
