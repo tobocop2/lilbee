@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from lilbee.catalog.download import RetryCallback
@@ -26,11 +27,16 @@ from lilbee.providers.fleet.engine_store import (
     fetch_frozen,
 )
 from lilbee.providers.fleet.engines.choice import pin_lock
-from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.llama import LLAMA, pack_backend
+from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.gguf_meta import forget_unanswered_reads
 from lilbee.runtime.cancellation import CancelSignal
 
+log = logging.getLogger(__name__)
+
 _FIRST_USE_LOCK_S = 1800.0
+_UNSERVED_GPU_VENDORS = {PCIVendorID.AMD: "AMD", PCIVendorID.INTEL: "Intel"}
 _TOOL_SUFFIXES = ("", ".exe")
 
 
@@ -90,6 +96,22 @@ def installed_tool(tool: str) -> Path | None:
     return None
 
 
+def warn_if_gpu_unserved() -> None:
+    """Warn when the CPU pack installs on a computer with an AMD or Intel GPU."""
+    if pack_backend(session_host()) != "cpu":
+        return
+    present = installed_gpu_vendor_ids()
+    for vendor, name in _UNSERVED_GPU_VENDORS.items():
+        if vendor in present:
+            log.warning(
+                "This computer has an %s GPU, and no llama.cpp pack uses it. "
+                "lilbee installs the CPU build. For a GPU build, use a bundled build "
+                "or set LILBEE_LLAMA_SERVER_PATH to your own llama-server.",
+                name,
+            )
+            return
+
+
 def install_pack(
     wheel: Path | None = None,
     *,
@@ -104,6 +126,7 @@ def install_pack(
     hears the bytes, *on_retry* each failed attempt, and a set *cancel* ends the download.
     """
     lock, cell = pack_lock()
+    warn_if_gpu_unserved()
     store = _store()
     with file_lock(store.root / ".locks" / f"first-use-{lock.engine}", _FIRST_USE_LOCK_S):
         if wheel is not None:
