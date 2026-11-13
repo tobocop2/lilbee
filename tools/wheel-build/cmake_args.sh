@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|sycl)}"
+backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -46,8 +46,7 @@ esac
 # with an on-target run proving offload still works (vulkan_Windows:
 # Nuitka handling of DL .dlls untested; cu12x: the CUDA runtime copy
 # assumes the backend is a DT_NEEDED of libggml; rocm: the runtime
-# bundler and its ld.so gate assume a linked backend; sycl: never
-# validated on hardware).
+# bundler and its ld.so gate assume a linked backend).
 # arm64: NEON is mandatory in ARMv8; one variant covers all aarch64.
 # LLAMA_BUILD_UI=OFF + LLAMA_USE_PREBUILT_UI=OFF: no npm UI build, no HF
 # asset download (the pinned bucket revision is pruned upstream); lilbee
@@ -148,11 +147,7 @@ case "${backend}_${runner_os}" in
     rocm_targets="$(rocm_buildable_targets "${rocm_root}")"
     args="${common_x86} -DGGML_HIP=ON -DAMDGPU_TARGETS=${rocm_targets} -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF -DCMAKE_C_COMPILER=${rocm_clang} -DCMAKE_CXX_COMPILER=${rocm_clang}++"
     ;;
-  sycl_Linux|sycl_Windows)
-    # Intel oneAPI SYCL — Intel Arc + Data Center Max GPUs.
-    args="${common_x86} -DGGML_SYCL=ON -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
-    ;;
-  metal_*|vulkan_macOS|cu*_macOS|rocm_*|sycl_macOS)
+  metal_*|vulkan_macOS|cu*_macOS|rocm_*)
     echo "tools/wheel-build/cmake_args.sh: backend '${backend}' is not supported on ${runner_os}" >&2
     exit 1
     ;;

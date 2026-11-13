@@ -6,7 +6,7 @@ description: >-
   the onefile. Run before the executable is built.
 inputs:
   backend:
-    description: "Backend matching the executable (cpu|vulkan|metal|cu121..cu125|rocm|sycl)."
+    description: "Backend matching the executable (cpu|vulkan|metal|cu121..cu125|rocm)."
     required: true
   llama-cpp-repo:
     description: >-

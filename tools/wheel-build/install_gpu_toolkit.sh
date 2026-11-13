@@ -156,35 +156,6 @@ linux_install_rocm() {
   fi
 }
 
-linux_install_sycl() {
-  # Intel oneAPI repo + base toolkit (icx/icpx + DPC++ + MKL).
-  if ! dpkg -s intel-basekit >/dev/null 2>&1; then
-    wget -q https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-      -O /tmp/intel.pub
-    sudo apt-key add /tmp/intel.pub
-    echo "deb https://apt.repos.intel.com/oneapi all main" | \
-      sudo tee /etc/apt/sources.list.d/oneAPI.list
-    sudo apt-get update
-    sudo apt-get install -y intel-basekit
-  fi
-  # shellcheck disable=SC1091
-  source /opt/intel/oneapi/setvars.sh
-  if [ -n "${GITHUB_ENV:-}" ]; then
-    {
-      echo "PATH=$PATH"
-      echo "CMPLR_ROOT=${CMPLR_ROOT:-}"
-      echo "ONEAPI_ROOT=${ONEAPI_ROOT:-}"
-    } >> "$GITHUB_ENV"
-  fi
-  if [ -n "${TOOLKIT_ENV_FILE:-}" ]; then
-    {
-      echo "export PATH=\"$PATH\""
-      echo "export CMPLR_ROOT=\"${CMPLR_ROOT:-}\""
-      echo "export ONEAPI_ROOT=\"${ONEAPI_ROOT:-}\""
-    } >> "$TOOLKIT_ENV_FILE"
-  fi
-}
-
 case "${backend}_${runner_os}" in
   cpu_*|metal_macOS)
     echo "no GPU SDK required for ${backend} on ${runner_os}"
@@ -205,9 +176,6 @@ case "${backend}_${runner_os}" in
     ;;
   rocm_Linux)
     linux_install_rocm
-    ;;
-  sycl_Linux)
-    linux_install_sycl
     ;;
   *)
     echo "tools/wheel-build/install_gpu_toolkit.sh: unsupported '${backend}' on '${runner_os}'" >&2
