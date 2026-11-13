@@ -289,6 +289,34 @@ def test_preset_chat_steps_send_temperature_zero_and_a_seed(
     assert provider.options[0]["seed"] == 7
 
 
+def test_preset_reasoning_step_sends_temperature_zero_and_a_seed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sent: list[dict[str, Any]] = []
+
+    class _Reply:
+        def __enter__(self) -> _Reply:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "x"}}]}).encode()
+
+    def fake_urlopen(request: Any, timeout: float) -> _Reply:
+        sent.append(json.loads(request.data))
+        return _Reply()
+
+    monkeypatch.setattr(preset_check.urllib.request, "urlopen", fake_urlopen)
+    setup = Setup(("chat",), dict(_MODELS), strict=True)
+    with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
+        preset_check._STEP_FUNCTIONS["reasoning"](setup)
+    assert len(sent) == 1
+    assert sent[0]["temperature"] == 0
+    assert sent[0]["seed"] == 7
+
+
 def test_preset_named_step_sends_temperature_zero_and_a_seed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
