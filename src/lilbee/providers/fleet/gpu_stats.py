@@ -18,7 +18,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.devices import VULKAN_BACKEND
 from lilbee.providers.fleet.gpu_backends import (
     IntelUtilHint,
@@ -29,6 +28,7 @@ from lilbee.providers.fleet.gpu_backends import (
 from lilbee.providers.fleet.gpu_backends import (
     intel_util_hint as _detect_intel_util_hint,
 )
+from lilbee.providers.fleet.gpu_backends.nvidia import card_count
 from lilbee.providers.fleet.gpu_env import gpu_environ
 
 
@@ -165,7 +165,7 @@ def _takes_a_sample(device: DeviceLike, devices: Sequence[DeviceLike]) -> bool:
 
     No id joins a Vulkan number to a driver's number, so a Vulkan device takes one
     only when it is the only device. An NVIDIA device also needs a driver that shows
-    at most one card, and only that case opens the driver.
+    at most one card, counted from the bounded nvidia-smi probe.
     """
     if device.backend != VULKAN_BACKEND:
         return True
@@ -173,7 +173,7 @@ def _takes_a_sample(device: DeviceLike, devices: Sequence[DeviceLike]) -> bool:
         return False
     if util_backend_name(device.backend, device.name) != _NVIDIA_UTIL_BACKEND:
         return True
-    return len(host_caps.read_card_memory()) <= 1
+    return card_count() <= 1
 
 
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:

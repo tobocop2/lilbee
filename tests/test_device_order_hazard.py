@@ -55,7 +55,7 @@ def host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setattr(gpu_stats, "_safe_sample", sample)
     for var in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(host_caps, "read_card_memory", lambda: [])
+    monkeypatch.setattr(gpu_stats, "card_count", lambda: 0)
     return monkeypatch
 
 
@@ -65,28 +65,28 @@ def _fleet(*names: str, backend: str = "Vulkan") -> list[FleetDevice]:
 
 def test_memory_vulkan_nvidia_order_1_0_keeps_each_vulkan_figure(host) -> None:
     """Vulkan 0 is driver card 1 here, so sampling index 0 would be another card's figure."""
-    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(2))
+    host.setattr(gpu_stats, "card_count", lambda: 2)
     stats = probe_gpu_stats(_fleet(_NVIDIA, _NVIDIA))
     assert [s.free_bytes for s in stats.values()] == [_VULKAN_FREE, _VULKAN_FREE]
     assert [s.utilization_pct for s in stats.values()] == [None, None]
 
 
 def test_memory_second_vendor_in_the_vulkan_list_keeps_each_vulkan_figure(host) -> None:
-    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(1))
+    host.setattr(gpu_stats, "card_count", lambda: 1)
     stats = probe_gpu_stats(_fleet(_AMD, _NVIDIA))
     assert [s.free_bytes for s in stats.values()] == [_VULKAN_FREE, _VULKAN_FREE]
 
 
 def test_memory_cuda_mask_does_not_apply_to_a_vulkan_number(host) -> None:
     host.setenv("CUDA_VISIBLE_DEVICES", "1,0")
-    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(2))
+    host.setattr(gpu_stats, "card_count", lambda: 2)
     stats = probe_gpu_stats(_fleet(_NVIDIA, _NVIDIA))
     assert [s.free_bytes for s in stats.values()] == [_VULKAN_FREE, _VULKAN_FREE]
 
 
 def test_memory_lone_vulkan_device_on_a_two_card_host_keeps_its_vulkan_figure(host) -> None:
     """One Vulkan device with two cards on the driver does not say which card it is."""
-    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(2))
+    host.setattr(gpu_stats, "card_count", lambda: 2)
     stats = probe_gpu_stats(_fleet(_NVIDIA))
     assert stats[0].free_bytes == _VULKAN_FREE
     assert stats[0].utilization_pct is None
@@ -94,7 +94,7 @@ def test_memory_lone_vulkan_device_on_a_two_card_host_keeps_its_vulkan_figure(ho
 
 @pytest.mark.parametrize("cards", [0, 1], ids=["driver-read-fails", "one-card"])
 def test_memory_lone_vulkan_device_keeps_the_sample(host, cards: int) -> None:
-    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(cards))
+    host.setattr(gpu_stats, "card_count", lambda: cards)
     stats = probe_gpu_stats(_fleet(_NVIDIA))
     assert stats[0].free_bytes == _card_free(0)
     assert stats[0].utilization_pct == 10
@@ -116,10 +116,10 @@ def test_the_intel_hint_fires_only_when_a_tool_could_give_the_sample(host, names
 def test_memory_cuda_devices_never_read_the_driver_count(host) -> None:
     """The join refusal is about Vulkan numbers; a CUDA tick starts no second driver read."""
 
-    def read_cards() -> list[host_caps.CardMemory]:
+    def read_cards() -> int:
         raise AssertionError("a CUDA fleet does not need the driver count")
 
-    host.setattr(host_caps, "read_card_memory", read_cards)
+    host.setattr(gpu_stats, "card_count", read_cards)
     stats = probe_gpu_stats(_fleet(_NVIDIA, _NVIDIA, backend="CUDA"))
     assert [s.free_bytes for s in stats.values()] == [_card_free(0), _card_free(1)]
 
@@ -291,7 +291,7 @@ def _hot_cards(host, fleet: list[FleetDevice]) -> Signals:
         return {p: GpuStat(p, 99, _card_free(p), 100 * GIB, temperature_c=90) for p in wanted}
 
     host.setattr(gpu_stats, "_safe_sample", sample)
-    host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(len(fleet)))
+    host.setattr(gpu_stats, "card_count", lambda: len(fleet))
     host.setattr(psutil, "cpu_percent", lambda interval: 10.0)
     host.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=8, total=10))
     return make_signal_sampler(fleet)(throughput=10.0)
@@ -318,19 +318,19 @@ def test_the_throttle_signal_leaves_the_figures_of_each_card_alone(host) -> None
     assert [s.temperature_c for s in stats.values()] == [None, None]
 
 
-def _no_driver_read() -> list[host_caps.CardMemory]:
+def _no_driver_read() -> int:
     raise AssertionError("this device does not need the driver count")
 
 
 @pytest.mark.parametrize("name", [_INTEL, _AMD], ids=["intel", "amd"])
 def test_a_lone_vulkan_device_of_another_vendor_opens_no_driver(host, name: str) -> None:
     """The driver count numbers NVIDIA cards, so it says nothing about this device."""
-    host.setattr(host_caps, "read_card_memory", _no_driver_read)
+    host.setattr(gpu_stats, "card_count", _no_driver_read)
     assert probe_gpu_stats(_fleet(name))[0].utilization_pct == 10
 
 
 def test_the_intel_hint_opens_no_driver(host) -> None:
-    host.setattr(host_caps, "read_card_memory", _no_driver_read)
+    host.setattr(gpu_stats, "card_count", _no_driver_read)
     host.setattr(gpu_stats, "_detect_intel_util_hint", lambda: _INSTALL_HINT)
     fleet = _fleet(_INTEL)
     missing = {0: GpuStat(0, None, _VULKAN_FREE, 100 * GIB)}
@@ -345,11 +345,11 @@ def test_the_stats_stream_never_reads_the_driver_on_its_event_loop(
 ) -> None:
     readers: list[int] = []
 
-    def read_cards() -> list[host_caps.CardMemory]:
+    def read_cards() -> int:
         readers.append(threading.get_ident())
-        return []
+        return 0
 
-    host.setattr(host_caps, "read_card_memory", read_cards)
+    host.setattr(gpu_stats, "card_count", read_cards)
     host.setattr(gpu_stats, "_shared_sample", {})
     host.setattr(gpu_stats, "_detect_intel_util_hint", lambda: None)
     host.setattr(gpu_stats, "_safe_sample", lambda _backend, _wanted: {})
