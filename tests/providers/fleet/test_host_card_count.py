@@ -110,6 +110,10 @@ class TestHostCardsTotal:
         host.tree = Counter({vendor_tree: 2})
         assert planning.HostCards([_card(0, "gpu0", backend)]).total == 2
 
+    def test_a_sycl_card_is_an_intel_card_beside_a_hidden_nvidia_one(self, host: _Host) -> None:
+        host.driver_answers = [1]
+        assert planning.HostCards([_card(0, "gpu0", "SYCL")]).total == 2
+
     def test_the_gate_count_is_the_drivers_own(self, host: _Host) -> None:
         host.driver_answers = [3]
         host.tree = Counter({_NVIDIA_ID: 5})
@@ -182,6 +186,20 @@ class TestMixedPlanWarning:
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
         assert _refusal(model, 2, "engine-b") in text
 
+    def test_a_hidden_card_of_another_vendor_does_not_open_the_gate(
+        self, host: _Host, monkeypatch, tmp_path, caplog
+    ) -> None:
+        host.driver_answers = [1]
+        host.tree = Counter({_NVIDIA_ID: 1, _AMD_ID: 1})
+        prepare_host(monkeypatch, tmp_path, _ROLES, 64 * GIB)
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            plan = planning.plan_all_launches(
+                engines=_two_engines(tmp_path, [_card(0, _NV_NAME, "CUDA")])
+            )
+        assert "cannot be told which one" not in caplog.text
+        assert {launch.role for launch in plan.launches} == {C, E}
+        assert host.tree_reads == 0
+
 
 class TestPinRefusal:
     """The refusal for a pin to a card the engine does not list, through plan_all_launches."""
@@ -222,6 +240,17 @@ class TestPinRefusal:
     ) -> None:
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _AMD_NAME)])
         assert refusal == self._text("1 found")
+
+    def test_a_pin_to_a_card_that_exists_reads_no_table(
+        self, host: _Host, monkeypatch, tmp_path
+    ) -> None:
+        prepare_host(monkeypatch, tmp_path, _ROLES, 64 * GIB)
+        monkeypatch.setattr(cfg, "placement", self.SPEC)
+        devices = [_card(0, _NV_NAME, "CUDA"), _card(1, _NV_NAME, "CUDA")]
+        engine = CardEngine("engine-a", tmp_path / "a", _ROLES, devices)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert plan.refused_roles == {}
+        assert (host.driver_reads, host.tree_reads) == (0, 0)
 
     def test_an_unmasked_host_keeps_the_visible_count(
         self, host: _Host, monkeypatch, tmp_path
