@@ -164,8 +164,9 @@ def _takes_a_sample(device: DeviceLike, devices: Sequence[DeviceLike]) -> bool:
     """Whether a vendor sample can name *device*.
 
     No id joins a Vulkan number to a driver's number, so a Vulkan device takes one
-    only when it is the only device. An NVIDIA device also needs a driver that shows
-    at most one card, counted from the bounded nvidia-smi probe.
+    only when it is the only device. An NVIDIA device also needs a driver card list
+    that holds exactly one card. An empty list leaves the count unknown, so that
+    device takes no sample.
     """
     if device.backend != VULKAN_BACKEND:
         return True
@@ -173,7 +174,7 @@ def _takes_a_sample(device: DeviceLike, devices: Sequence[DeviceLike]) -> bool:
         return False
     if util_backend_name(device.backend, device.name) != _NVIDIA_UTIL_BACKEND:
         return True
-    return card_count() <= 1
+    return card_count() == 1
 
 
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:

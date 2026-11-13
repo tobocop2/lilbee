@@ -1,6 +1,6 @@
-"""The NVIDIA sampler: temperature reaches the throttle, and no NVML read can stall a stream.
+"""The NVIDIA sampler: temperature reaches the throttle, and no driver read can stall a stream.
 
-The stand-in is the nvidia-smi output. The driver library is made to raise, so a
+The stand-in is the driver's card list. The in-process driver read is made to raise, so a
 sampler that reaches it fails the test instead of passing on a mock.
 """
 
@@ -96,10 +96,20 @@ def test_a_lone_vulkan_device_on_a_two_card_driver_takes_no_sample(
     assert (stat.utilization_pct, stat.temperature_c) == (None, None)
 
 
-def test_a_lone_vulkan_device_takes_no_sample_when_smi_is_empty(
+def test_a_lone_vulkan_device_takes_no_sample_when_the_card_list_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(nvidia_mod, "run_smi", _smi())
+    stat = probe_gpu_stats(_fleet("Vulkan"))[0]
+    assert (stat.utilization_pct, stat.temperature_c) == (None, None)
+
+
+def test_a_lone_vulkan_device_takes_no_sample_when_the_count_is_unknown_on_a_cold_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = iter(["", "0, 40, 86, 1024, 24576\n"])
+    monkeypatch.setattr(nvidia_mod, "_CACHE_TTL_S", 0.0)
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: next(outputs))
     stat = probe_gpu_stats(_fleet("Vulkan"))[0]
     assert (stat.utilization_pct, stat.temperature_c) == (None, None)
 
