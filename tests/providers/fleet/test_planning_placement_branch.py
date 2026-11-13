@@ -116,6 +116,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
         {WorkerRole.CHAT: "ref"},
         devices,
         unified_budget=None,
+        host_cards=planning.HostCards(devices),
         engines=engines_for_all_roles(LLAMA),
     )
 
@@ -137,7 +138,13 @@ def test_auto_planner_charged_against_total_capacity(monkeypatch):
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
-        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        None,
+        [],
+        {},
+        devices,
+        unified_budget=None,
+        host_cards=planning.HostCards(devices),
+        engines=engines_for_all_roles(LLAMA),
     )
     assert captured["devs"] == [(0, 80 * GIB)]  # total, not the 5 GiB free
 
@@ -164,6 +171,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
             {WorkerRole.EMBED: "ref"},
             devices,
             unified_budget=None,
+            host_cards=planning.HostCards(devices),
             engines=engines_for_all_roles(LLAMA),
         )
 
@@ -187,6 +195,7 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
         {WorkerRole.CHAT: "ref"},
         devices,
         unified_budget=None,
+        host_cards=planning.HostCards(devices),
         engines=engines_for_all_roles(LLAMA),
     )
 
@@ -201,7 +210,13 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", lambda *_a, **_kw: auto)
 
     placement, spec_applied = planning._placement_or_auto(
-        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        None,
+        [],
+        {},
+        devices,
+        unified_budget=None,
+        host_cards=planning.HostCards(devices),
+        engines=engines_for_all_roles(LLAMA),
     )
 
     assert placement is auto
@@ -287,7 +302,13 @@ def test_no_spec_uses_auto_planner(monkeypatch):
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
-        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        None,
+        [],
+        {},
+        devices,
+        unified_budget=None,
+        host_cards=planning.HostCards(devices),
+        engines=engines_for_all_roles(LLAMA),
     )
     assert called.get("auto") is True
 

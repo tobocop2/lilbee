@@ -205,3 +205,54 @@ def test_darwin_reports_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gpu_hardware.sys, "platform", "darwin")
 
     assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
+    assert gpu_hardware.installed_gpu_counts() == {}
+
+
+class TestCardCounts:
+    def test_linux_counts_each_driven_controller_by_vendor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two NVIDIA cards and an AMD card count 2 and 1; a card with no driver counts none."""
+        for slot, vendor, bound in [
+            ("0000-01-00.0", "0x10de", True),
+            ("0000-02-00.0", "0x10de", True),
+            ("0000-03-00.0", "0x1002", True),
+            ("0000-04-00.0", "0x8086", False),
+        ]:
+            _write_pci_device(
+                tmp_path, slot, class_code=VGA_CONTROLLER_CLASS, vendor=vendor, driver_bound=bound
+            )
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+
+        assert gpu_hardware.installed_gpu_counts() == {NVIDIA: 2, AMD: 1}
+
+    def test_windows_counts_one_card_for_each_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An adapter naming its vendor in both values is one card; two adapters are two."""
+        winreg = mock.MagicMock(name="winreg")
+        winreg.HKEY_LOCAL_MACHINE = 0
+        class_root = mock.MagicMock(name="class_root")
+        subkeys = [mock.MagicMock(name=f"000{i}") for i in range(3)]
+        winreg.OpenKey.side_effect = [class_root, *subkeys]
+        winreg.EnumKey.side_effect = ["0000", "0001", "0002", OSError("end")]
+        ids = {
+            id(subkeys[0]): {
+                "MatchingDeviceId": r"PCI\VEN_10DE&DEV_1F95",
+                "HardwareID": [r"PCI\VEN_10DE&DEV_1F95&SUBSYS_1", r"PCI\VEN_10DE&DEV_1F95"],
+            },
+            id(subkeys[1]): {"HardwareID": [r"PCI\VEN_10DE&DEV_2204"]},
+            id(subkeys[2]): {"MatchingDeviceId": r"ROOT\BasicDisplay"},
+        }
+
+        def _query(key: mock.MagicMock, name: str) -> tuple[object, int]:
+            if name in ids[id(key)]:
+                return (ids[id(key)][name], 1)
+            raise OSError("missing value")
+
+        winreg.QueryValueEx.side_effect = _query
+        monkeypatch.setitem(sys.modules, "winreg", winreg)
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "win32")
+
+        assert gpu_hardware.installed_gpu_counts() == {NVIDIA: 2}

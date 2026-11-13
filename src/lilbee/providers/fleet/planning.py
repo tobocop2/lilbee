@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -37,6 +38,7 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.choice import LIST_HINT
+from lilbee.providers.fleet.gpu_backends import util_backend_name
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
@@ -3178,13 +3180,14 @@ def _resolve_placement(
     *,
     engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
+    host_cards: HostCards,
     charge_against_free: bool = False,
 ) -> Placement:
     """Resolve a Placement from the manual spec when set, else the auto planner."""
     estimate_peak = _peak_estimator(model_refs, engines)
     capacity = _device_capacity(devices, charge_against_free)
     auto_cards = _auto_capacity(devices, charge_against_free)
-    unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
+    unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget, host_cards)
     if placement is not None:
         refused = _unusable_targets(placement, model_refs, engines)
         if refused:
@@ -3446,6 +3449,7 @@ def _roles_on_missing_cards(
     spec: PlacementSpec | None,
     roles: Mapping[WorkerRole, str],
     devices: list[FleetDevice],
+    host_cards: HostCards,
 ) -> dict[WorkerRole, str]:
     """The reason for each role pinned to a card this machine lacks, in a spec that names a target.
 
@@ -3457,6 +3461,7 @@ def _roles_on_missing_cards(
         return {}
     present = {d.index for d in devices}
     hint = _hidden_device_hint(devices)
+    on_host = f", {host_cards.total} on this host" if host_cards.total > len(present) else ""
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = spec.roles.get(role)
@@ -3466,7 +3471,7 @@ def _roles_on_missing_cards(
         if missing:
             found = (
                 f"{role.value}: GPU {', '.join(missing)} is not on this machine "
-                f"({len(present)} found)."
+                f"({len(present)} found{on_host})."
             )
             fix = f"Set the {role.value} devices to a GPU that exists, or set its target to cpu."
             refused[role] = " ".join(part for part in (found, hint, fix) if part)
@@ -3485,9 +3490,50 @@ def _without_roles(
     )
 
 
-def _host_gpu_count(devices: list[FleetDevice]) -> int:
-    """The cards on this host: the visible ones, or the driver's count if that is larger."""
-    return max(len(devices), len(host_caps.read_card_memory()))
+class HostCards:
+    """The cards on this host, counted by vendor against the engine's visible *devices*.
+
+    One plan makes one value. Each count is read on first use and kept, so the gate
+    and both refusal texts agree, and a plan that asks for neither reads nothing.
+    """
+
+    def __init__(self, devices: list[FleetDevice]) -> None:
+        self._devices = devices
+
+    @functools.cached_property
+    def nvidia_driver(self) -> int:
+        """The NVIDIA driver's own card count, zero when the driver does not answer."""
+        return len(host_caps.read_card_memory())
+
+    @functools.cached_property
+    def total(self) -> int:
+        """The cards of every vendor, each at the larger of its visible and tabled count.
+
+        The table for NVIDIA is the driver when it answers, else the PCI tree. The table
+        for every other vendor is the PCI tree. Without a table the count is the visible one.
+        A visible card whose name gives no vendor fills a card the tables list and no
+        visible card of a known vendor accounts for.
+        """
+        from lilbee.providers.fleet.gpu_hardware import installed_gpu_counts
+        from lilbee.providers.fleet.gpu_select import PCIVendorID
+
+        backend_vendor = {
+            "CUDA": PCIVendorID.NVIDIA,
+            "ROCm": PCIVendorID.AMD,
+            "HIP": PCIVendorID.AMD,
+            "SYCL": PCIVendorID.INTEL,
+        }
+        visible = Counter(
+            backend_vendor.get(util_backend_name(device.backend, device.name))
+            for device in self._devices
+        )
+        in_tree = installed_gpu_counts()
+        table = {vendor: in_tree[vendor] for vendor in PCIVendorID}
+        if self.nvidia_driver:
+            table[PCIVendorID.NVIDIA] = self.nvidia_driver
+        counted = sum(max(visible[vendor], table[vendor]) for vendor in PCIVendorID)
+        unseen = counted - sum(visible[vendor] for vendor in PCIVendorID)
+        return counted + max(visible[None] - unseen, 0)
 
 
 def _roles_without_a_pin(
@@ -3495,6 +3541,7 @@ def _roles_without_a_pin(
     devices: list[FleetDevice],
     engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
+    host_cards: HostCards,
 ) -> tuple[WorkerRole, ...]:
     """Roles of a mixed plan on several discrete cards whose engine a pin cannot reach.
 
@@ -3503,7 +3550,7 @@ def _roles_without_a_pin(
     """
     if unified_budget is not None or not devices or not _is_mixed(engines):
         return ()
-    if _host_gpu_count(devices) < _MIN_SPLIT_GPUS:
+    if max(len(devices), host_cards.nvidia_driver) < _MIN_SPLIT_GPUS:
         return ()
     return tuple(
         model.role
@@ -3538,6 +3585,7 @@ def _placement_or_auto(
     *,
     engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
+    host_cards: HostCards,
     charge_against_free: bool = False,
 ) -> tuple[Placement, bool]:
     """Resolve a saved spec, falling back to auto when it no longer fits the hardware.
@@ -3563,6 +3611,7 @@ def _placement_or_auto(
             devices,
             engines=engines,
             unified_budget=unified_budget,
+            host_cards=host_cards,
             charge_against_free=charge_against_free,
         ), False
     try:
@@ -3573,6 +3622,7 @@ def _placement_or_auto(
             devices,
             engines=engines,
             unified_budget=unified_budget,
+            host_cards=host_cards,
             charge_against_free=charge_against_free,
         ), True
     except TargetRefusedError:
@@ -3592,6 +3642,7 @@ def _placement_or_auto(
         devices,
         engines=engines,
         unified_budget=unified_budget,
+        host_cards=host_cards,
         charge_against_free=charge_against_free,
     ), False
 
@@ -3604,6 +3655,7 @@ def _placement_that_runs(
     *,
     engines: Mapping[WorkerRole, EngineAdapter],
     unified_budget: int | None,
+    host_cards: HostCards,
     charge_against_free: bool = False,
 ) -> tuple[Placement, bool, dict[WorkerRole, str]]:
     """The placement the fleet runs for *spec*, whether the spec applied, and the roles it drops.
@@ -3614,7 +3666,7 @@ def _placement_that_runs(
     loop ends. The launch and the placement view both read this, so the view reports
     what runs. An interactive set does not read this: it raises the same reason.
     """
-    refused = _roles_on_missing_cards(spec, model_refs, devices)
+    refused = _roles_on_missing_cards(spec, model_refs, devices, host_cards)
     for refusal in refused.values():
         log.warning(refusal)
     while True:
@@ -3625,6 +3677,7 @@ def _placement_that_runs(
                 devices,
                 engines=engines,
                 unified_budget=unified_budget,
+                host_cards=host_cards,
                 charge_against_free=charge_against_free,
             )
         except TargetRefusedError as exc:
@@ -3707,13 +3760,26 @@ def resolve_placement_plan(
     )
     admission_budget = _unified_admission_budget(devices, engine)
     refused_roles: dict[WorkerRole, str] = {}
+    host_cards = HostCards(devices)
     if fall_back_to_auto:
         resolved, spec_applied, refused_roles = _placement_that_runs(
-            placement, inputs, model_refs, devices, engines=engines, unified_budget=admission_budget
+            placement,
+            inputs,
+            model_refs,
+            devices,
+            engines=engines,
+            unified_budget=admission_budget,
+            host_cards=host_cards,
         )
     else:
         resolved = _resolve_placement(
-            placement, inputs, model_refs, devices, engines=engines, unified_budget=admission_budget
+            placement,
+            inputs,
+            model_refs,
+            devices,
+            engines=engines,
+            unified_budget=admission_budget,
+            host_cards=host_cards,
         )
         spec_applied = placement is not None
     return ResolvedPlacement(
@@ -3764,6 +3830,7 @@ def _log_refused_roles(
     engines: Mapping[WorkerRole, EngineAdapter],
     inputs: list[ModelPlacementInput],
     devices: list[FleetDevice],
+    host_cards: HostCards,
     *,
     unified_budget: int | None,
     capacity: dict[int, int],
@@ -3775,7 +3842,7 @@ def _log_refused_roles(
     card with no split that holds it, and a role with no room beside the others.
     """
     mixed = _is_mixed(engines)
-    unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget)
+    unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget, host_cards)
     charges = {model.role: model.est_vram_bytes for model in inputs}
     largest_usable = max(capacity.values(), default=0) * usable_vram_fraction()
     on_cards = [role for role in placement.unplaceable_roles if role in charges]
@@ -3801,7 +3868,7 @@ def _log_refused_roles(
                 "told which one to use. Use another engine for this role.",
                 role.value,
                 model,
-                _host_gpu_count(devices),
+                host_cards.total,
                 engine,
             )
         elif role not in fits_alone:
@@ -3999,6 +4066,7 @@ def _planned_launches(
     charge_against_free = _current_plan_probe(snapshot_engine) is not None
     named = {index for entry in (spec.roles.values() if spec else ()) for index in entry.devices}
     capacity = _auto_capacity(devices, charge_against_free, named)
+    host_cards = HostCards(devices)
     placement, _spec_applied, refused_roles = _placement_that_runs(
         spec,
         inputs,
@@ -4006,6 +4074,7 @@ def _planned_launches(
         devices,
         engines=engines,
         unified_budget=admission_budget,
+        host_cards=host_cards,
         charge_against_free=charge_against_free,
     )
     _log_refused_roles(
@@ -4014,6 +4083,7 @@ def _planned_launches(
         engines,
         inputs,
         devices,
+        host_cards,
         unified_budget=admission_budget,
         capacity=capacity,
     )

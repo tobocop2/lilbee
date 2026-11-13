@@ -285,6 +285,7 @@ class TestPlacementFromSpecWithAuto:
             cards_of((24,)),
             engines=engines_for_all_roles(engine),
             unified_budget=40 * GIB,
+            host_cards=planning.HostCards(cards_of((24,))),
         )
         assert captured == {"models": [WorkerRole.EMBED], "budget": 10 * GIB}
 
