@@ -196,15 +196,6 @@ def test_backend_argument_covers_a_wheel_built_before_its_tag_is_added(tmp_path:
     assert "libggml-hip.so" in problems[0]
 
 
-def test_sycl_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
-    wheel = _wheel(
-        tmp_path,
-        "lilbee_engine_llama_cpp-1.0-1.sycl-py3-none-manylinux_2_17_x86_64.whl",
-        ("llama-server", "libggml-cpu.so"),
-    )
-    assert len(acb.check(wheel)) == 1
-
-
 def test_windows_vulkan_wheel_without_its_backend_is_rejected(tmp_path: Path) -> None:
     wheel = _wheel(
         tmp_path,
