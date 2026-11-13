@@ -257,7 +257,7 @@ jobs:
       # runner; their closure is identical to the CPU/Vulkan/Metal cells that
       # do run this gate.
       - name: Smoke test the bundled binary
-        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' && matrix.backend != 'sycl' }}
+        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' }}
         shell: bash
         run: |
           set -x
