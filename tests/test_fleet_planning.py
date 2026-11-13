@@ -2294,6 +2294,7 @@ class TestChatSplitCtxObjective:
             {WorkerRole.CHAT: "ref"},
             devices,
             unified_budget=None,
+            host_cards=planning_mod.HostCards(devices),
             engines=engines_for_all_roles(LLAMA),
         )
         assert captured["chat_ctx_target"] == 8192
@@ -3077,6 +3078,7 @@ class TestPlacementChargesAgainstFreeMemory:
             {WorkerRole.CHAT: "ref"},
             [held],
             unified_budget=None,
+            host_cards=planning_mod.HostCards([held]),
             charge_against_free=True,
             engines=engines_for_all_roles(LLAMA),
         )
@@ -3091,6 +3093,7 @@ class TestPlacementChargesAgainstFreeMemory:
             {WorkerRole.CHAT: "ref"},
             [idle],
             unified_budget=None,
+            host_cards=planning_mod.HostCards([idle]),
             charge_against_free=True,
             engines=engines_for_all_roles(LLAMA),
         )
@@ -3111,6 +3114,7 @@ class TestPlacementChargesAgainstFreeMemory:
             {WorkerRole.CHAT: "ref"},
             [warm],
             unified_budget=None,
+            host_cards=planning_mod.HostCards([warm]),
             charge_against_free=False,
             engines=engines_for_all_roles(LLAMA),
         )
@@ -3386,6 +3390,7 @@ class TestPlacementFindingsLog:
                 engines_for_all_roles(LLAMA),
                 [],
                 [],
+                planning_mod.HostCards([]),
                 unified_budget=_GB,
                 capacity={},
             )
