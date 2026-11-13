@@ -548,6 +548,25 @@ def test_rerank_answer_that_is_not_the_over_limit_answer_is_an_error_sent_once(
     assert caplog.records == []
 
 
+def test_rerank_gateway_retry_after_an_overflow_still_warns_once(monkeypatch, caplog) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    resends = 0
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        nonlocal resends
+        if json.loads(req.content).get("truncate") is False:
+            return httpx.Response(422, json=_OVER_LIMIT)
+        resends += 1
+        if resends == 1:
+            return httpx.Response(502, text="bad gateway")
+        return httpx.Response(200, json=[{"index": 0, "score": 0.75}])
+
+    with caplog.at_level("WARNING"):
+        assert _tei_client(handler).rerank("q", ["a"]) == [0.75]
+    assert resends == 2
+    assert len(caplog.records) == 1
+
+
 def _long_candidates(count: int, long_at: set[int]) -> list[str]:
     return [("long" if i in long_at else "short") + str(i) for i in range(count)]
 
