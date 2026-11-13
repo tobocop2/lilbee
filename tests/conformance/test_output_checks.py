@@ -324,7 +324,7 @@ def test_preset_named_step_sends_temperature_zero_and_a_seed(
     monkeypatch.setattr(preset_check, "RoutingProvider", lambda: provider)
     setup = Setup(("chat",), dict(_MODELS), strict=True)
     preset_check._STEP_FUNCTIONS["named"](setup)
-    assert provider.options == [{**preset_check.PINNED_SAMPLING, "max_tokens": 1024}]
+    assert provider.options == [{"temperature": 0, "seed": 7, "max_tokens": 1024}]
 
 
 def _reasoning_outcome(
