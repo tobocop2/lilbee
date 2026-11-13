@@ -313,6 +313,54 @@ def test_an_unreadable_store_leaves_the_engine_pin_unpinned(monkeypatch) -> None
     assert binary_mod.engine_build_id() == "unpinned"
 
 
+@pytest.mark.parametrize(("vendor_id", "vendor"), [(0x1002, "AMD"), (0x8086, "Intel")])
+def test_installing_the_cpu_pack_on_an_unserved_gpu_host_names_the_vendor(
+    vendor_id: int,
+    vendor: str,
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({vendor_id}))
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.install_pack()
+    assert fetched == [CELL]
+    [record] = caplog.records
+    message = record.getMessage()
+    assert f"has an {vendor} GPU" in message
+    assert "installs the CPU build" in message
+    assert "LILBEE_LLAMA_SERVER_PATH" in message
+
+
+@pytest.mark.parametrize(
+    "vendors",
+    [frozenset(), frozenset({0x10DE}), frozenset({0x1AF4})],
+    ids=["none", "nvidia", "other"],
+)
+def test_a_host_with_no_amd_or_intel_gpu_installs_the_cpu_pack_silently(
+    vendors: frozenset[int],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: vendors)
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.install_pack()
+    assert fetched == [CELL]
+    assert caplog.records == []
+
+
+def test_a_host_whose_pack_uses_the_gpu_is_not_warned(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None)
+    monkeypatch.setattr(first_use, "session_host", lambda: mac)
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    assert caplog.records == []
+
+
 def test_a_wheel_that_is_not_a_zip_is_refused_by_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
