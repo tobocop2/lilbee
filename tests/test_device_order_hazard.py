@@ -92,9 +92,16 @@ def test_memory_lone_vulkan_device_on_a_two_card_host_keeps_its_vulkan_figure(ho
     assert stats[0].utilization_pct is None
 
 
-@pytest.mark.parametrize("cards", [0, 1], ids=["driver-read-fails", "one-card"])
-def test_memory_lone_vulkan_device_keeps_the_sample(host, cards: int) -> None:
-    host.setattr(gpu_stats, "card_count", lambda: cards)
+def test_memory_lone_vulkan_device_with_an_unknown_card_count_keeps_its_vulkan_figure(host) -> None:
+    """An empty driver card list leaves the count unknown, so no card is named."""
+    host.setattr(gpu_stats, "card_count", lambda: 0)
+    stats = probe_gpu_stats(_fleet(_NVIDIA))
+    assert stats[0].free_bytes == _VULKAN_FREE
+    assert stats[0].utilization_pct is None
+
+
+def test_memory_lone_vulkan_device_on_a_one_card_host_keeps_the_sample(host) -> None:
+    host.setattr(gpu_stats, "card_count", lambda: 1)
     stats = probe_gpu_stats(_fleet(_NVIDIA))
     assert stats[0].free_bytes == _card_free(0)
     assert stats[0].utilization_pct == 10
