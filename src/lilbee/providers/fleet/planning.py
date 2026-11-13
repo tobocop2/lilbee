@@ -38,7 +38,7 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.choice import LIST_HINT
-from lilbee.providers.fleet.gpu_backends import util_backend_name
+from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -3462,7 +3462,6 @@ def _roles_on_missing_cards(
         return {}
     present = {d.index for d in devices}
     hint = _hidden_device_hint(devices)
-    on_host = f", {host_cards.total} on this host" if host_cards.total > len(present) else ""
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = spec.roles.get(role)
@@ -3470,6 +3469,9 @@ def _roles_on_missing_cards(
             continue
         missing = [str(idx) for idx in entry.devices if idx not in present]
         if missing:
+            on_host = (
+                f", {host_cards.total} on this host" if host_cards.total > len(present) else ""
+            )
             found = (
                 f"{role.value}: GPU {', '.join(missing)} is not on this machine "
                 f"({len(present)} found{on_host})."
@@ -3515,16 +3517,7 @@ class HostCards:
         A visible card whose name gives no vendor fills a card the tables list and no
         visible card of a known vendor accounts for.
         """
-        backend_vendor = {
-            "CUDA": PCIVendorID.NVIDIA,
-            "ROCm": PCIVendorID.AMD,
-            "HIP": PCIVendorID.AMD,
-            "SYCL": PCIVendorID.INTEL,
-        }
-        visible = Counter(
-            backend_vendor.get(util_backend_name(device.backend, device.name))
-            for device in self._devices
-        )
+        visible = Counter(self._vendor_of(device) for device in self._devices)
         in_tree = gpu_hardware.installed_gpu_counts()
         table = {vendor: in_tree[vendor] for vendor in PCIVendorID}
         if self.nvidia_driver:
@@ -3532,6 +3525,12 @@ class HostCards:
         counted = sum(max(visible[vendor], table[vendor]) for vendor in PCIVendorID)
         unseen = counted - sum(visible[vendor] for vendor in PCIVendorID)
         return counted + max(visible[None] - unseen, 0)
+
+    @staticmethod
+    def _vendor_of(device: FleetDevice) -> PCIVendorID | None:
+        """The PCI vendor the device's util backend serves, None when its name gives none."""
+        backend = resolve_backend(util_backend_name(device.backend, device.name))
+        return backend.pci_vendor if backend else None
 
 
 def _roles_without_a_pin(
