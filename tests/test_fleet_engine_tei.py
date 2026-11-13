@@ -249,6 +249,11 @@ def test_profile_has_no_tokenize_route_and_names_the_rerank_route() -> None:
     assert profile.batch_count_refusal is not None
     assert profile.batch_count_refusal.search("batch size 40 > maximum allowed batch size 32")
     assert profile.context_overflow.search("`inputs` must have less than 512 tokens. Given: 600")
+    assert profile.context_overflow.search(
+        "`inputs` must have less than 2048 characters. Given: 3000"
+    )
+    assert not profile.context_overflow.search("`inputs` cannot be empty")
+    assert (profile.rerank_fields, profile.context_overflow_status) == ({"truncate": False}, 422)
 
 
 def _recorded_rerank(name: str) -> tuple[dict, str]:
@@ -501,6 +506,21 @@ def test_rerank_over_the_limit_warns_once_and_is_sent_again_for_the_server_to_tr
     assert record.getMessage().startswith("Rerank query and candidate exceed the reranker's token")
     assert "the server truncates the input" in record.getMessage()
     assert "must have less than 24 tokens. Given: 31" in record.getMessage()
+
+
+def test_rerank_over_the_character_limit_is_sent_again_for_the_server_to_truncate() -> None:
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        bodies.append(body)
+        if body.get("truncate") is False:
+            error = "`inputs` must have less than 2048 characters. Given: 3000"
+            return httpx.Response(422, json={"error": error})
+        return httpx.Response(200, json=[{"index": 0, "score": 0.5}])
+
+    assert _tei_client(handler).rerank("q", ["a"]) == [0.5]
+    assert len(bodies) == 2
 
 
 def test_rerank_422_that_is_not_an_overflow_is_an_error_sent_once() -> None:
