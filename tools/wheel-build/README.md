@@ -17,8 +17,14 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   package's `bin/` for the requested backend.
 - `bundle_rocm_runtime.sh` — packs the ROCm userspace `llama-server` links
   (discovered by walking `DT_NEEDED`, plus the rocBLAS Tensile kernels) beside
-  the binary, so an AMD user needs only a kernel driver. Called by
-  `build_llama_server.sh` for the rocm backend; tested on its own.
+  the binary, so an AMD user needs only a kernel driver and six host libraries
+  (libnuma, libelf, libdrm, libdrm_amdgpu, zlib, zstd; the script bundles none
+  of them). Called by `build_llama_server.sh` for the rocm backend; tested on its
+  own.
+- `llama_gpu_manylinux.sh` — builds the Linux Vulkan or ROCm engine pack in the
+  manylinux_2_34 image for `llama-pack-cells.yml`.
+- `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
+  or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
   executable, bundling the engine wheel built above.
 
