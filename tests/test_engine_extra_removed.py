@@ -6,7 +6,13 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = ("README.md", "docs/usage.md", "packaging/engine-wheel/README.md", "site/index.html")
+DOCS = (
+    "README.md",
+    "docs/usage.md",
+    "docs/architecture.md",
+    "packaging/engine-wheel/README.md",
+    "site/index.html",
+)
 
 
 def extras_of(pyproject_text: str) -> set[str]:
