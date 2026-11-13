@@ -122,27 +122,29 @@ def install_pack(
     """Install the llama.cpp pack once; a second caller waits and finds it installed.
 
     The download runs under one lock per engine, so two first uses fetch the wheel once.
-    A pack copied into the packs folder by hand is used with no download. *on_progress*
+    A pack copied into the packs folder by hand is used with no download. The warning for
+    an AMD or Intel GPU comes only with a download. *on_progress*
     hears the bytes, *on_retry* each failed attempt, and a set *cancel* ends the download.
     """
     lock, cell = pack_lock()
-    warn_if_gpu_unserved()
     store = _store()
+
+    def download(pin: PinLock, scratch: Path) -> Path:
+        warn_if_gpu_unserved()
+        return fetch_frozen(
+            pin,
+            cell,
+            dest=scratch,
+            on_progress=on_progress,
+            on_retry=on_retry,
+            cancel=cancel,
+        )
+
     with file_lock(store.root / ".locks" / f"first-use-{lock.engine}", _FIRST_USE_LOCK_S):
         if wheel is not None:
             store.install_from_wheel(lock, wheel)
         else:
-            store.ensure(
-                lock,
-                lambda pin, scratch: fetch_frozen(
-                    pin,
-                    cell,
-                    dest=scratch,
-                    on_progress=on_progress,
-                    on_retry=on_retry,
-                    cancel=cancel,
-                ),
-            )
+            store.ensure(lock, download)
     forget_unanswered_reads()
     return lock
 
