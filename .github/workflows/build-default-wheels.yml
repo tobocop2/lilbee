@@ -4,8 +4,8 @@ name: Build default wheels
 # per-platform `lilbee-engine-llama-cpp` wheel (build-multigpu.yml). lilbee
 # downloads that wheel as an engine pack the first time a model needs it, so the
 # lilbee wheel does not depend on it. So there is one platform-independent wheel
-# + an sdist, with no per-OS / per-CPython axis. Reusable; the caller (release-candidate.yml) keeps
-# the artifacts.
+# + an sdist, with no per-OS / per-CPython axis. Reusable; the caller
+# (release-candidate.yml) keeps the artifacts.
 
 on:
   workflow_dispatch:

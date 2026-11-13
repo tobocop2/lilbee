@@ -529,9 +529,10 @@ TEI are published for Linux x86_64. No pack of mlx is published yet, so mlx refu
 to install and prints the no-pack text. A host with no pack for its platform gets the
 same text. Nothing is installed, and llama.cpp stays in use.
 
-If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that wheel runs. The
-llama.cpp pack stays unused. To run the pack, remove the wheel with
-`pip uninstall lilbee-engine-llama-cpp`, then run `lilbee engine install`.
+If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that
+wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel
+with `pip uninstall lilbee-engine-llama-cpp`, then run
+`lilbee engine install`.
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
@@ -1336,9 +1337,8 @@ error from a failed download names the file to copy.
 **Your own engine.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM,
 Windows on ARM, or Intel Macs. On a computer with an AMD or Intel GPU, lilbee
 installs the CPU pack and logs a warning that names the GPU vendor. The engine
-wheels for those backends are not on the `lilbee.sh`
-index yet. On those computers, use a bundled build, or run your own
-`llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
+wheels for those backends are not on the `lilbee.sh` index yet. On those
+computers, use a bundled build, or run your own `llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
 build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install
 lilbee with any of these commands. Then set `LILBEE_LLAMA_SERVER_PATH` to the
 binary.
