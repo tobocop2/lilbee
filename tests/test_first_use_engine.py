@@ -379,6 +379,45 @@ def test_a_host_with_no_amd_or_intel_gpu_installs_the_cpu_pack_silently(
     assert caplog.records == []
 
 
+def test_a_repeat_install_with_the_pack_present_is_not_warned(
+    fetched: list[str], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.install_pack()
+        assert len(caplog.records) == 1
+        caplog.clear()
+        first_use.install_pack()
+    assert fetched == [CELL]
+    assert caplog.records == []
+
+
+def test_an_install_from_a_given_wheel_is_not_warned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    wheel = tmp_path / "given.whl"
+    publish(monkeypatch, make_pack(wheel))
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.install_pack(wheel)
+    assert first_use.installed_tool("gguf-parser") is not None
+    assert caplog.records == []
+
+
+def test_a_host_with_no_pack_is_refused_before_any_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    arm = collect(system="Linux", machine="aarch64", cpu_info={}, nvml=None)
+    monkeypatch.setattr(first_use, "session_host", lambda: arm)
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    with (
+        caplog.at_level("WARNING", logger=first_use.__name__),
+        pytest.raises(first_use.PackNotPublishedError, match="not published yet"),
+    ):
+        first_use.install_pack()
+    assert caplog.records == []
+
+
 def test_a_host_whose_pack_uses_the_gpu_is_not_warned(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
