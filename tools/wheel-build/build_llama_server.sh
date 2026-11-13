@@ -6,7 +6,7 @@
 # depends on no separate inference library.
 #
 # Reads:
-#   BACKEND            cpu|vulkan|metal|cu121..cu125|rocm|sycl
+#   BACKEND            cpu|vulkan|metal|cu121..cu125|rocm
 #   LLAMA_CPP_REPO     llama.cpp repo to clone (default: the pin in
 #                      engine-versions.env)
 #   LLAMA_CPP_REF      llama.cpp ref to build (default: the pin; cu121 pins
@@ -273,8 +273,8 @@ fi
 # the CPU/Vulkan/Metal cells exercise the identical copy logic, so the closure
 # is still gated on every push.
 case "${backend}" in
-  cu* | rocm | sycl) _can_exec="" ;;
-  *)                 _can_exec="1" ;;
+  cu* | rocm) _can_exec="" ;;
+  *)          _can_exec="1" ;;
 esac
 if [ -n "${_can_exec}" ] && [ -z "${target_arch}" ]; then
   "${pkg_bin_dir}/llama-server" --version

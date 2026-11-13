@@ -29,7 +29,7 @@ Scripts read these env vars:
 - `LLAMA_CPP_REPO` / `LLAMA_CPP_REF` — the llama.cpp repo and ref to build
   from (optional; the build script defaults to the pin in engine-versions.env).
 - `BACKEND` — one of `cpu`, `vulkan`, `metal`, `cu121`, `cu122`, `cu123`,
-  `cu124`, `rocm`, `sycl`.
+  `cu124`, `rocm`.
 - `LLAMA_BUILD_DIR` — output directory for the built/fetched wheel.
 - `RUNNER_OS` — `Linux`, `macOS`, or `Windows`. (CI sets this; locally,
   scripts auto-detect.)
