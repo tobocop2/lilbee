@@ -111,7 +111,10 @@ def test_lemonade_does_not_read_a_model_header(tmp_path: Path) -> None:
 
 def test_lemonade_health_check_uses_the_recorded_live_route() -> None:
     launch = InstanceLaunch(role=WorkerRole.CHAT, argv=[], env_overrides={}, model="m")
-    assert LEMONADE.swap_extras(launch) == {"checkEndpoint": "/live"}
+    assert LEMONADE.swap_extras(launch) == {
+        "checkEndpoint": "/live",
+        "useModelName": "lilbee-chat",
+    }
     assert OPENVINO.swap_extras(launch) == {}
 
 
