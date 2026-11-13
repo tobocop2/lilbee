@@ -28,7 +28,9 @@ from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_ro
 from lilbee.providers.fleet.engines import llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
-from lilbee.providers.fleet.host_caps import CardMemory, HostCaps
+from lilbee.providers.fleet.gpu_backends import nvidia as nvidia_mod
+from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaCard
+from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import ROLE_FIELDS, Role, cards_of, prepare_host
@@ -349,16 +351,16 @@ class _Cards:
         self.driver_reads = 0
         self._backend = backend
         monkeypatch.setattr(llama, "probe_devices", self._llama_probe)
-        monkeypatch.setattr(devices, "read_card_memory", self._driver_read)
+        monkeypatch.setattr(nvidia_mod, "cards", self._driver_read)
 
     def _llama_probe(self, _binary: Path) -> DeviceProbe:
         self.llama_reads += 1
         card = FleetDevice(self._backend, 0, "gpu0", _TOTAL_IN_WHOLE_MIB, self.free)
         return DeviceProbe(devices=[card], output="", spoke_protocol=True)
 
-    def _driver_read(self) -> list[CardMemory]:
+    def _driver_read(self) -> list[NvidiaCard]:
         self.driver_reads += 1
-        return [CardMemory("GPU-a", "gpu0", _TOTAL, self.driver_free or self.free)]
+        return [NvidiaCard(0, "GPU-a", "gpu0", _TOTAL, self.driver_free or self.free)]
 
 
 def _plan_of_the_reload(
@@ -485,9 +487,9 @@ def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
     cards = _Cards(monkeypatch)
     planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
     monkeypatch.setattr(
-        devices,
-        "read_card_memory",
-        lambda: [CardMemory("GPU-b", "gpu0", _LOW, _LOW - (1 << 20))],
+        nvidia_mod,
+        "cards",
+        lambda: [NvidiaCard(0, "GPU-b", "gpu0", _LOW, _LOW - (1 << 20))],
     )
     probe = planning._current_plan_probe(mistral.MISTRAL)
     assert probe is not None
@@ -517,7 +519,7 @@ def test_a_card_read_starts_no_process(
 
     monkeypatch.setattr(subprocess, "run", _no_process)
     monkeypatch.setattr(subprocess, "Popen", _no_process)
-    monkeypatch.setattr(devices, "read_card_memory", lambda: [])
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: [])
     assert tei.TEI.discover_devices(host[EngineName.TEI]).devices == []
     assert mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices == []
 
@@ -530,10 +532,10 @@ def test_the_card_read_follows_the_visible_devices_mask(
     mask: str, indices: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = [
-        CardMemory("GPU-a", "card0", _TOTAL, _FREE),
-        CardMemory("GPU-b", "card1", _TOTAL, _FREE),
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
     ]
-    monkeypatch.setattr(devices, "read_card_memory", lambda: cards)
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     found = devices.visible_nvidia_cards()
     assert [d.name for d in found] == [f"card{i}" for i in indices]
@@ -544,7 +546,7 @@ def test_a_cpu_tei_build_reads_no_card(
     cpu_host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     called: list[int] = []
-    monkeypatch.setattr(devices, "read_card_memory", lambda: called.append(1) or [])
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: called.append(1) or [])
     assert tei.TEI.discover_devices(cpu_host[EngineName.TEI]).devices == []
     assert not called
 

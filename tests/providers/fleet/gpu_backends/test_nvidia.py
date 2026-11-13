@@ -249,7 +249,7 @@ def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
             args=[], returncode=0, stdout="0, 10, 61, 100, 46068\n", stderr=""
         ),
     )
-    nvidia_mod._smi_output()
+    nvidia_mod._cache.stats()
     assert "nvidia-smi" in resolved
 
 
@@ -260,3 +260,151 @@ def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_registry_maps_cuda_to_nvidia_backend() -> None:
     assert isinstance(gpu_backends.resolve_backend("CUDA"), NvidiaBackend)
+
+
+# ---------------------------------------------------------------------------
+# Card facts and host facts
+# ---------------------------------------------------------------------------
+
+_CARDS_CSV = (
+    "0, GPU-a, NVIDIA GeForce RTX 3090, 24576, 23552\n"
+    "1, GPU-b, NVIDIA GeForce RTX 3060, 12288, 10240\n"
+)
+_COMPUTE_CSV = "0, 8.6\n1, 8.6\n"
+_CUDA_XML = (
+    "<nvidia_smi_log><driver_version>550.1</driver_version>"
+    "<cuda_version>12.4</cuda_version></nvidia_smi_log>"
+)
+
+
+class _Smi:
+    """A fake nvidia-smi that answers each query from a table and counts the runs."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, **answers: str) -> None:
+        self.answers = {"cards": _CARDS_CSV, "compute": _COMPUTE_CSV, "cuda": _CUDA_XML} | answers
+        self.runs: list[str] = []
+        self.now = 0.0
+        self.cost = 0.0
+        monkeypatch.setattr(nvidia_mod, "run_smi", self)
+        monkeypatch.setattr(nvidia_mod.time, "monotonic", lambda: self.now)
+
+    def __call__(self, _tool: str, args: list[str], _timeout: float = 5.0) -> str:
+        kind = "cuda" if "-x" in args else "compute" if "compute_cap" in args[0] else "cards"
+        self.runs.append(kind)
+        self.now += self.cost
+        return self.answers[kind]
+
+
+def test_cards_read_uuid_name_and_memory_in_driver_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Smi(monkeypatch)
+    assert nvidia_mod.cards() == [
+        nvidia_mod.NvidiaCard(0, "GPU-a", "NVIDIA GeForce RTX 3090", 24576 * MIB, 23552 * MIB),
+        nvidia_mod.NvidiaCard(1, "GPU-b", "NVIDIA GeForce RTX 3060", 12288 * MIB, 10240 * MIB),
+    ]
+
+
+def test_cards_are_empty_when_nvidia_smi_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Smi(monkeypatch, cards="")
+    assert nvidia_mod.cards() == []
+
+
+def test_cards_are_unknown_when_one_memory_figure_does_not_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keeping the other card would number it as if the unreadable one did not exist."""
+    _Smi(monkeypatch, cards="0, GPU-a, n0, [N/A], [N/A]\n1, GPU-b, n1, 8192, 8000\n")
+    assert nvidia_mod.cards() == []
+
+
+def test_cards_skip_a_row_without_all_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Smi(monkeypatch, cards="garbage\n1, GPU-b, n1, 8192\n0, GPU-a, n0, 8192, 8000\n")
+    assert [c.uuid for c in nvidia_mod.cards()] == ["GPU-a"]
+
+
+def test_host_facts_read_compute_capability_and_driver_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch)
+    assert nvidia_mod.host_facts() == {
+        "cuda_driver": 12040,
+        "gpus": [
+            {"name": "NVIDIA GeForce RTX 3090", "cc": [8, 6]},
+            {"name": "NVIDIA GeForce RTX 3060", "cc": [8, 6]},
+        ],
+    }
+
+
+def test_host_facts_are_none_when_nvidia_smi_fails_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards="")
+    assert nvidia_mod.host_facts() is None
+
+
+def test_host_facts_are_unreadable_when_the_probe_hits_its_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smi = _Smi(monkeypatch, cards="")
+    smi.cost = nvidia_mod._TIMEOUT_S
+    assert nvidia_mod.host_facts() == {"cuda_driver": None, "gpus": None}
+    assert smi.runs == ["cards"]
+
+
+def test_a_card_that_prints_no_compute_capability_leaves_the_gpus_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, compute="0, 8.6\n1, [N/A]\n")
+    facts = nvidia_mod.host_facts()
+    assert facts is not None
+    assert (facts["gpus"], facts["cuda_driver"]) == (None, 12040)
+
+
+@pytest.mark.parametrize("xml", ["", "<cuda_version>N/A</cuda_version>", "<x>12.4</x>"])
+def test_a_driver_with_no_cuda_version_leaves_it_unknown(
+    monkeypatch: pytest.MonkeyPatch, xml: str
+) -> None:
+    _Smi(monkeypatch, cuda=xml)
+    facts = nvidia_mod.host_facts()
+    assert facts is not None
+    assert facts["cuda_driver"] is None
+    assert [g["name"] for g in facts["gpus"]] == [
+        "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 3060",
+    ]
+
+
+def test_the_compute_capability_and_cuda_version_are_read_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smi = _Smi(monkeypatch)
+    nvidia_mod.host_facts()
+    smi.now += 3600
+    nvidia_mod.host_facts()
+    assert smi.runs.count("compute") == 1
+    assert smi.runs.count("cuda") == 1
+    assert smi.runs.count("cards") == 2
+
+
+def test_a_probe_that_hit_its_time_limit_is_not_run_again_for_thirty_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smi = _Smi(monkeypatch, cards="")
+    smi.cost = nvidia_mod._TIMEOUT_S
+    nvidia_mod.cards()
+    smi.now += nvidia_mod._WEDGED_TTL_S - 1
+    nvidia_mod.cards()
+    assert smi.runs == ["cards"]
+    smi.now += 2
+    nvidia_mod.cards()
+    assert smi.runs == ["cards", "cards"]
+
+
+def test_a_probe_that_fails_at_once_is_run_again_after_the_short_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smi = _Smi(monkeypatch, cards="")
+    nvidia_mod.cards()
+    smi.now += nvidia_mod._CACHE_TTL_S + 0.1
+    smi.answers["cards"] = _CARDS_CSV
+    assert len(nvidia_mod.cards()) == 2
+    assert smi.runs == ["cards", "cards"]

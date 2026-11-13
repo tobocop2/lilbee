@@ -195,7 +195,7 @@ def lock_with(cells: dict[str, PlatformAsset]) -> PinLock:
 
 
 def linux() -> Any:
-    return collect(system="Linux", machine="x86_64", cpu_info={}, nvml=None)
+    return collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=None)
 
 
 def test_a_pin_with_cells_chooses_the_cell_key_of_the_host() -> None:
@@ -223,13 +223,13 @@ def test_a_pin_without_cells_has_no_cell_for_a_pack_install() -> None:
 
 
 def test_a_pin_without_cells_installs_on_a_host_of_unknown_os_and_architecture() -> None:
-    odd = collect(system="Plan9", machine="riscv64", cpu_info={}, nvml=None)
+    odd = collect(system="Plan9", machine="riscv64", cpu_info={}, nvidia=None)
     assert (odd.os, odd.arch) == (None, None)
     assert host_cell(lock_with({}), odd) == ""
 
 
 def test_a_host_of_unknown_os_has_no_cell_in_a_pin_with_cells() -> None:
-    host = collect(system="Plan9", machine="x86_64", cpu_info={}, nvml=None)
+    host = collect(system="Plan9", machine="x86_64", cpu_info={}, nvidia=None)
     lock = lock_with({"linux-x86_64-vulkan": PlatformAsset(BASE + "x.whl", SHA, 1, None)})
     with pytest.raises(UnsupportedPlatformError, match="has no vulkan build for this computer"):
         host_cell(lock, host)

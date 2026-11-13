@@ -47,7 +47,7 @@ def _two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         engine_choice,
         "session_host",
-        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GLOBAL_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.OPENVINO, LIBRARY_ENGINE)  # type: ignore[arg-type]

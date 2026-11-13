@@ -62,7 +62,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         engine_choice,
         "session_host",
-        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
@@ -722,7 +722,7 @@ def test_every_role_view_shows_why_the_host_refused_an_engine(
             system="Linux",
             machine="x86_64",
             cpu_info={"flags": ["sse4_2"], "brand_raw": "Xeon"},
-            nvml=None,
+            nvidia=None,
         ),
     )
     cfg.engine_choices = json.dumps({GGUF_REF: "ik_llama.cpp"})

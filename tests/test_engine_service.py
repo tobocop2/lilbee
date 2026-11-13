@@ -62,7 +62,7 @@ OPENVINO_ENGINE = _OpenvinoEngine()
 
 @pytest.fixture(autouse=True)
 def _host(monkeypatch: pytest.MonkeyPatch) -> None:
-    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None)
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
     monkeypatch.setattr(engine_choice, "session_host", lambda: mac)
     monkeypatch.setattr(engine_service, "session_host", lambda: mac)
 

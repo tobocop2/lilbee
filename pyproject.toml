@@ -61,9 +61,7 @@ dependencies = [
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
     "regex",
-    # GPU and CPU probes for the hardware report: NVML bindings (BSD) and a
-    # pure-Python CPU reader (MIT).
-    "nvidia-ml-py>=13.615.71",
+    # CPU probe for the hardware report: a pure-Python CPU reader (MIT).
     "py-cpuinfo>=9.0.0",
     # llama.cpp's own Python package, for the ggml block and type sizes the
     # download-size estimate prices a quant with. It is not a second GGUF

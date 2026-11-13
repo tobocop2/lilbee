@@ -19,9 +19,9 @@ from tests._published import render_table, wheel_name
 VERSION = "1.12032.1"
 SHA = "ab" * 32
 
-MAC = collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None, mac_ver="15.1")
-LINUX = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
-WINDOWS = collect(system="Windows", machine="AMD64", cpu_info={"flags": ["avx2"]}, nvml=None)
+MAC = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None, mac_ver="15.1")
+LINUX = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
+WINDOWS = collect(system="Windows", machine="AMD64", cpu_info={"flags": ["avx2"]}, nvidia=None)
 CELLS = {
     "mac": (MAC, "macos-arm64-metal"),
     "linux": (LINUX, "linux-x86_64-cpu"),
@@ -105,7 +105,7 @@ def _nvidia(
         "cuda_driver": cuda,
         "gpus": [{"name": f"card{i}", "cc": list(cc)} for i, cc in enumerate(cards)],
     }
-    return collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvml=nvml)
+    return collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=nvml)
 
 
 PASCAL = ((6, 1),)
@@ -136,7 +136,7 @@ def test_a_host_with_a_usable_nvidia_driver_installs_the_cuda_pack(
 def test_a_host_with_no_nvidia_driver_installs_the_cpu_pack(
     system: str, machine: str, cell: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = collect(system=system, machine=machine, cpu_info={}, nvml=NO_DRIVER_LIBRARY)
+    host = collect(system=system, machine=machine, cpu_info={}, nvidia=NO_DRIVER_LIBRARY)
     assert pack_backend(host) == "cpu"
     _host(monkeypatch, host, cell)
     pin = LlamaCppAdapter().pack_pin()
@@ -148,7 +148,7 @@ def test_a_host_with_no_nvidia_driver_installs_the_cpu_pack(
     "host",
     [
         pytest.param(
-            collect(system="Linux", machine="x86_64", cpu_info={}, nvml=UNREADABLE),
+            collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=UNREADABLE),
             id="driver-unreadable",
         ),
         pytest.param(_nvidia("Linux", "x86_64", cuda=12030, cards=PASCAL), id="driver-12.3"),

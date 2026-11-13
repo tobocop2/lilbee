@@ -27,7 +27,7 @@ def _host(system: str, machine: str) -> host_caps.HostCaps:
         system=system,
         machine=machine,
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
-        nvml=None,
+        nvidia=None,
     )
 
 
@@ -255,7 +255,7 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
 ) -> None:
     cell, digest = SHIPPED_LLAMA_CUDA[(system, machine)]
     nvml = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
-    host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvml=nvml)
+    host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvidia=nvml)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")

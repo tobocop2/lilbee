@@ -22,7 +22,7 @@ def _host(name: str) -> HostCaps:
         system=data["system"],
         machine=data["machine"],
         cpu_info={},
-        nvml=None,
+        nvidia=None,
         accel_devices=None if accel is None else [tuple(pair) for pair in accel],
     )
 
@@ -78,7 +78,7 @@ def test_an_amd_xdna2_device_passes_the_xdna2_gate_and_fails_for_xdna() -> None:
 
 
 def test_an_unread_list_on_linux_is_unknown() -> None:
-    caps = collect(system="Linux", machine="x86_64", cpu_info={}, nvml=None)
+    caps = collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=None)
     assert (caps.npu_known, caps.npu_reason) == (False, host_caps.NPU_UNREAD)
 
 
@@ -97,7 +97,7 @@ def test_the_sysfs_reader_pairs_vendor_and_device_ids(
 def test_detect_reads_sysfs_only_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(host_caps, "_accel_devices", lambda: [("0x8086", "0x7d1d")])
     monkeypatch.setattr(host_caps, "_cpu_info", lambda: {})
-    monkeypatch.setattr(host_caps, "read_nvml", lambda: None)
+    monkeypatch.setattr(host_caps, "host_facts", lambda: None)
     monkeypatch.setattr(host_caps.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(host_caps.platform, "system", lambda: "Linux")
     assert host_caps.detect().npus == (Npu(NpuVendor.INTEL, "Intel NPU"),)
@@ -110,7 +110,7 @@ def test_a_vendor_outside_the_npu_table_is_no_npu() -> None:
         system="Linux",
         machine="x86_64",
         cpu_info={},
-        nvml=None,
+        nvidia=None,
         accel_devices=[("0xdead", "0x0001")],
     )
     assert (caps.npu_known, caps.npus) == (True, ())

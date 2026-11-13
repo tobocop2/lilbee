@@ -36,9 +36,9 @@ G, MX, OVF, ST = (
 )
 
 
-def _caps(system: str, machine: str, flags: list[str] | None = None, nvml=None) -> HostCaps:
+def _caps(system: str, machine: str, flags: list[str] | None = None, nvidia=None) -> HostCaps:
     cpu_info = {} if flags is None else {"flags": flags, "brand_raw": "Xeon"}
-    return collect(system=system, machine=machine, cpu_info=cpu_info, nvml=nvml)
+    return collect(system=system, machine=machine, cpu_info=cpu_info, nvidia=nvidia)
 
 
 MAC = _caps("Darwin", "arm64")
@@ -235,7 +235,7 @@ def test_name_that_is_a_substring_of_an_installed_engine_does_not_match() -> Non
 
 NO_AVX2 = _caps("Linux", "x86_64", ["sse4_2"])
 UNREADABLE = collect(
-    system="", machine="", cpu_info={}, nvml={"driver": None, "cuda_driver": None, "gpus": None}
+    system="", machine="", cpu_info={}, nvidia={"driver": None, "cuda_driver": None, "gpus": None}
 )
 LLAMA_AND_IK = {L: {G}, IK: {G}}
 

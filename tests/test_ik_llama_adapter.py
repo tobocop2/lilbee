@@ -40,7 +40,7 @@ def _host(system: str, machine: str, flags: list[str] | None) -> Any:
         system=system,
         machine=machine,
         cpu_info=cpu_info,
-        nvml=None,
+        nvidia=None,
     )
 
 
@@ -61,7 +61,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(cfg, "preferred_engine", "auto")
     monkeypatch.setattr(cfg, "engine_choices", None)
-    linux = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+    linux = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(engine_choice, "session_host", lambda: linux)
     monkeypatch.setattr(engine_service, "session_host", lambda: linux)
 
@@ -280,7 +280,7 @@ def test_auto_never_picks_the_installed_engine(system: str, build: Path, monkeyp
         engine_choice,
         "session_host",
         lambda: collect(
-            system=system.capitalize(), machine=machine, cpu_info={"flags": ["avx2"]}, nvml=None
+            system=system.capitalize(), machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None
         ),
     )
     assert EngineName.IK_LLAMA in installed_engines()

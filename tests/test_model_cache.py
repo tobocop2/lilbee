@@ -274,136 +274,41 @@ class TestTotalSystemMemory:
         assert total_system_memory() == 8_000_000_000
 
 
+def _smi_lists(monkeypatch, *totals_mib: int, output: str | None = None) -> None:
+    """Make nvidia-smi list one card per figure, each with *total* MiB of memory."""
+    rows = "".join(f"{i}, GPU-{i}, card{i}, {mib}, {mib}\n" for i, mib in enumerate(totals_mib))
+    text = rows if output is None else output
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.gpu_backends.nvidia.run_smi", lambda *_a, **_k: text
+    )
+
+
 class TestTryNvidiaMemory:
-    def test_returns_total_from_pynvml_when_available(self, monkeypatch) -> None:
-        """pynvml success path returns the GPU total in bytes."""
-        fake_pynvml = mock.MagicMock()
-        fake_info = mock.MagicMock()
-        fake_info.total = 16 * 1024 * 1024 * 1024
-        fake_pynvml.nvmlDeviceGetMemoryInfo.return_value = fake_info
-        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
-        assert _try_nvidia_memory() == 16 * 1024 * 1024 * 1024
+    def test_returns_the_total_nvidia_smi_lists(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, 16384)
+        assert _try_nvidia_memory() == 16 * 1024**3
 
-    def test_returns_none_when_pynvml_and_nvidia_smi_fail(self, monkeypatch) -> None:
-        # Force pynvml import to fail (no module installed by default in CI).
-        original_import = __import__("builtins").__import__
-
-        def _no_pynvml(name, *args, **kwargs):
-            if name == "pynvml":
-                raise ImportError("not installed")
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", _no_pynvml)
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(side_effect=FileNotFoundError))
+    def test_returns_none_when_nvidia_smi_cannot_run(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output="")
         assert _try_nvidia_memory() is None
 
-    def test_returns_total_from_nvidia_smi_when_pynvml_unavailable(self, monkeypatch) -> None:
-        original_import = __import__("builtins").__import__
-
-        def _no_pynvml(name, *args, **kwargs):
-            if name == "pynvml":
-                raise ImportError("not installed")
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", _no_pynvml)
-        result = mock.MagicMock(returncode=0, stdout="8192\n")
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
-        assert _try_nvidia_memory() == 8192 * 1024 * 1024
-
-    @pytest.mark.parametrize("failure", ["init_oserror", "no_count", "memory_none"])
-    def test_any_nvml_failure_falls_through_to_nvidia_smi(self, monkeypatch, failure: str) -> None:
-        fake = mock.MagicMock()
-        if failure == "init_oserror":
-            fake.nvmlInit.side_effect = OSError("library cannot load")
-        elif failure == "no_count":
-            fake.nvmlDeviceGetCount.side_effect = AttributeError("nvmlDeviceGetCount")
-        else:
-            fake.nvmlDeviceGetCount.return_value = 1
-            fake.nvmlDeviceGetMemoryInfo.return_value = None
-        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake)
-        result = mock.MagicMock(returncode=0, stdout="8192, GPU-smi\n")
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
-        assert _try_nvidia_memory() == 8192 * 1024 * 1024
-
-    def test_nvml_shutdown_error_keeps_the_nvml_total(self, monkeypatch) -> None:
-        fake = mock.MagicMock()
-        fake.nvmlDeviceGetCount.return_value = 1
-        fake.nvmlDeviceGetMemoryInfo.return_value.total = 16 * 1024 * 1024 * 1024
-        fake.nvmlShutdown.side_effect = RuntimeError("shutdown failed")
-        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake)
-        smi = mock.MagicMock(side_effect=AssertionError("nvidia-smi must not run"))
-        monkeypatch.setattr("subprocess.run", smi)
-        assert _try_nvidia_memory() == 16 * 1024 * 1024 * 1024
-
-    @pytest.mark.parametrize("returncode", [1, 2])
-    def test_returns_none_when_nvidia_smi_nonzero_exit(self, monkeypatch, returncode: int) -> None:
-        original_import = __import__("builtins").__import__
-
-        def _no_pynvml(name, *args, **kwargs):
-            if name == "pynvml":
-                raise ImportError("not installed")
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", _no_pynvml)
-        result = mock.MagicMock(returncode=returncode, stdout="")
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
+    def test_returns_none_when_a_cards_memory_does_not_read(self, monkeypatch) -> None:
+        _smi_lists(
+            monkeypatch, output="0, GPU-0, card0, 8192, 8192\n1, GPU-1, card1, [N/A], [N/A]\n"
+        )
         assert _try_nvidia_memory() is None
 
 
 class TestHeterogeneousGpuSizing:
-    def test_pynvml_takes_minimum_total_across_devices(self, monkeypatch) -> None:
+    def test_takes_the_minimum_total_across_cards(self, monkeypatch) -> None:
         # Heterogeneous GPUs: sizing against the smallest card is conservative.
-        fake_pynvml = mock.MagicMock()
-        fake_pynvml.nvmlDeviceGetCount.return_value = 2
-        infos = {0: mock.MagicMock(total=24 * 1024**3), 1: mock.MagicMock(total=8 * 1024**3)}
-        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = lambda i: i
-        fake_pynvml.nvmlDeviceGetMemoryInfo.side_effect = lambda handle: infos[handle]
-        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
+        _smi_lists(monkeypatch, 24576, 8192)
         assert _try_nvidia_memory() == 8 * 1024**3
 
-    def test_pynvml_sum_reducer_totals_every_device(self, monkeypatch) -> None:
+    def test_sum_reducer_totals_every_card(self, monkeypatch) -> None:
         # The fit chip sums all cards: a model can tensor-split across the fleet.
-        fake_pynvml = mock.MagicMock()
-        fake_pynvml.nvmlDeviceGetCount.return_value = 2
-        infos = {0: mock.MagicMock(total=24 * 1024**3), 1: mock.MagicMock(total=8 * 1024**3)}
-        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = lambda i: i
-        fake_pynvml.nvmlDeviceGetMemoryInfo.side_effect = lambda handle: infos[handle]
-        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
+        _smi_lists(monkeypatch, 24576, 8192)
         assert _try_nvidia_memory(sum) == 32 * 1024**3
-
-    def test_pynvml_zero_devices_falls_through_to_nvidia_smi(self, monkeypatch) -> None:
-        fake_pynvml = mock.MagicMock()
-        fake_pynvml.nvmlDeviceGetCount.return_value = 0
-        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
-        result = mock.MagicMock(returncode=0, stdout="4096\n")
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
-        assert _try_nvidia_memory() == 4096 * 1024 * 1024
-
-    def test_nvidia_smi_takes_minimum_total_across_lines(self, monkeypatch) -> None:
-        original_import = __import__("builtins").__import__
-
-        def _no_pynvml(name, *args, **kwargs):
-            if name == "pynvml":
-                raise ImportError("not installed")
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", _no_pynvml)
-        result = mock.MagicMock(returncode=0, stdout="24576\n8192\n")
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
-        assert _try_nvidia_memory() == 8192 * 1024 * 1024
-
-    def test_nvidia_smi_sum_reducer_totals_every_line(self, monkeypatch) -> None:
-        original_import = __import__("builtins").__import__
-
-        def _no_pynvml(name, *args, **kwargs):
-            if name == "pynvml":
-                raise ImportError("not installed")
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", _no_pynvml)
-        result = mock.MagicMock(returncode=0, stdout="24576\n8192\n")
-        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
-        assert _try_nvidia_memory(sum) == (24576 + 8192) * 1024 * 1024
 
 
 class TestHasNvidiaGpu:
@@ -434,10 +339,10 @@ class TestHasNvidiaGpu:
 
 
 class TestCudaVisibleDevicesMask:
-    """NVML and nvidia-smi report every card the driver knows about.
+    """nvidia-smi reports every card the driver knows about.
 
-    CUDA_VISIBLE_DEVICES is read by the CUDA runtime, not by either tool, so
-    budgets taken straight off them describe a machine the engine does not have.
+    CUDA_VISIBLE_DEVICES is read by the CUDA runtime, not by the tool, so
+    budgets taken straight off it describe a machine the engine does not have.
     """
 
     _FLEET = (("GPU-aaa", 24 * 1024**3), ("GPU-bbb", 8 * 1024**3), ("GPU-ccc", 16 * 1024**3))
@@ -488,27 +393,6 @@ class TestCudaVisibleDevicesMask:
         monkeypatch.setattr(cfg, "gpu_devices", "1")
         assert _try_nvidia_memory(sum) == 8 * 1024**3
         assert "CUDA_VISIBLE_DEVICES" not in os.environ
-
-
-class TestNvidiaSmiRowsThatDoNotParse:
-    """nvidia-smi output is text; a row that is not a memory figure is skipped
-    rather than allowed to poison the budget."""
-
-    def test_a_blank_row_is_dropped(self) -> None:
-        from lilbee.providers.model_cache import _parse_smi_row
-
-        assert _parse_smi_row("") is None
-        assert _parse_smi_row("  , GPU-aaa") is None
-
-    def test_a_non_numeric_memory_figure_is_dropped(self) -> None:
-        from lilbee.providers.model_cache import _parse_smi_row
-
-        assert _parse_smi_row("[N/A], GPU-aaa") is None
-
-    def test_an_older_smi_without_the_uuid_column_still_yields_a_device(self) -> None:
-        from lilbee.providers.model_cache import _parse_smi_row
-
-        assert _parse_smi_row("8192") == ("", 8192 * 1024 * 1024)
 
 
 class TestSystemMemoryUnderACgroupCap:

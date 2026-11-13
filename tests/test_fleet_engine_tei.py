@@ -41,9 +41,9 @@ def _caps(
     gpu: tuple[str, tuple[int, int]] | None = None,
     cuda: int = 12080,
 ) -> HostCaps:
-    nvml = None
+    nvidia = None
     if gpu is not None:
-        nvml = {
+        nvidia = {
             "driver": "570.0",
             "cuda_driver": cuda,
             "gpus": [{"name": gpu[0], "cc": list(gpu[1])}],
@@ -52,7 +52,7 @@ def _caps(
         system=system,
         machine=machine,
         cpu_info={"flags": ["avx", "avx2"], "brand_raw": "Test CPU"},
-        nvml=nvml,
+        nvidia=nvidia,
     )
 
 
