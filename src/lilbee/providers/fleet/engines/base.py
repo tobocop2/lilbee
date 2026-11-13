@@ -7,6 +7,7 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -94,6 +95,10 @@ class RequestProfile:
     """
     batch_count_refusal: re.Pattern[str] | None = None
     """Matches an error body that refuses a request for holding too many inputs, or None."""
+    rerank_fields: Mapping[str, Any] = MappingProxyType({})
+    """Extra fields on a rerank route request, such as one that stops silent truncation."""
+    context_overflow_status: int = 400
+    """The status the server answers an input past its limit with."""
 
 
 class EngineAdapter(Protocol, Hashable):

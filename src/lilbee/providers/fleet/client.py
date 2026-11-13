@@ -422,7 +422,6 @@ _UPSTREAM_PREFIX = "/upstream"
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
-_HTTP_BAD_REQUEST = 400
 _HTTP_NOT_FOUND = 404
 _HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
@@ -593,6 +592,12 @@ class LlamaServerClient:
                 return True
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
 
+    def _is_context_overflow(self, resp: httpx.Response) -> bool:
+        """True when *resp* is the server's answer to an input past its limit."""
+        return resp.status_code == self._profile.context_overflow_status and bool(
+            self._profile.context_overflow.search(resp.text)
+        )
+
     def _raise_for_status(self, resp: httpx.Response) -> None:
         """Raise the plain error for a failed *resp*, naming this client's model and log.
 
@@ -610,7 +615,7 @@ class LlamaServerClient:
         # user-facing message so the chat route returns a clean context_length_exceeded
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
-        if resp.status_code == _HTTP_BAD_REQUEST and (
+        if resp.status_code == self._profile.context_overflow_status and (
             self._profile.context_overflow.search(body) or is_prompt_length_overflow(body)
         ):
             raise ProviderError(
@@ -1187,11 +1192,21 @@ class LlamaServerClient:
         return scores
 
     def _rerank_route_batch(self, path: str, query: str, texts: list[str]) -> list[float]:
+        def _post(extra: Mapping[str, Any]) -> httpx.Response:
+            return self._http.post(
+                self._native_route(path), json={"query": query, "texts": texts, **extra}
+            )
+
         def _call() -> list[dict[str, Any]]:
             with self._track():
-                resp = self._http.post(
-                    self._native_route(path), json={"query": query, "texts": texts}
-                )
+                resp = _post(self._profile.rerank_fields)
+                if self._profile.rerank_fields and self._is_context_overflow(resp):
+                    log.warning(
+                        "Rerank query and candidate exceed the reranker's token limit; "
+                        "the server truncates the input (%s)",
+                        resp.text.strip(),
+                    )
+                    resp = _post({})
                 self._raise_for_status(resp)
                 return list(resp.json())
 

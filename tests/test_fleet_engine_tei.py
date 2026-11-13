@@ -278,7 +278,11 @@ def test_recorded_rerank_answer_gives_scores_in_candidate_order(recording: str) 
     assert scores == [by_index[0], by_index[1], by_index[2]]
     assert max(range(3), key=scores.__getitem__) == 1
     assert [r.url.path for r in seen] == [f"/upstream/{request['model']}/rerank"]
-    assert json.loads(seen[0].content) == {"query": request["query"], "texts": request["texts"]}
+    assert json.loads(seen[0].content) == {
+        "query": request["query"],
+        "texts": request["texts"],
+        "truncate": False,
+    }
 
 
 def _base64_vectors(vectors: list[list[float]]) -> dict[str, object]:
@@ -457,3 +461,84 @@ def test_a_cpu_role_charges_the_fixed_reserve_to_system_memory(
     assert sized is not None
     assert sized.est_vram_bytes == 0
     assert sized.est_ram_bytes >= 2 * 1024**3
+
+
+_OVER_LIMIT = {"error": "Input validation error: `inputs` must have less than 24 tokens. Given: 31"}
+
+
+def _rerank_exchange(over_limit: bool) -> tuple[list[dict], LlamaServerClient]:
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        bodies.append(body)
+        if over_limit and body.get("truncate") is False:
+            return httpx.Response(422, json=_OVER_LIMIT)
+        return httpx.Response(200, json=[{"index": 0, "score": 0.25}])
+
+    return bodies, _tei_client(handler)
+
+
+def test_rerank_that_fits_sends_one_request_with_truncation_off_and_no_warning(caplog) -> None:
+    bodies, client = _rerank_exchange(over_limit=False)
+    with caplog.at_level("WARNING"):
+        assert client.rerank("q", ["a"]) == [0.25]
+    assert bodies == [{"query": "q", "texts": ["a"], "truncate": False}]
+    assert caplog.records == []
+
+
+def test_rerank_over_the_limit_warns_once_and_is_sent_again_for_the_server_to_truncate(
+    caplog,
+) -> None:
+    bodies, client = _rerank_exchange(over_limit=True)
+    with caplog.at_level("WARNING"):
+        assert client.rerank("q", ["a"]) == [0.25]
+    assert bodies == [
+        {"query": "q", "texts": ["a"], "truncate": False},
+        {"query": "q", "texts": ["a"]},
+    ]
+    [record] = caplog.records
+    assert record.getMessage().startswith("Rerank query and candidate exceed the reranker's token")
+    assert "the server truncates the input" in record.getMessage()
+    assert "must have less than 24 tokens. Given: 31" in record.getMessage()
+
+
+def test_rerank_422_that_is_not_an_overflow_is_an_error_sent_once() -> None:
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(422, json={"error": "`inputs` cannot be empty"})
+
+    with pytest.raises(ProviderError) as raised:
+        _tei_client(handler).rerank("q", ["a"])
+    assert raised.value.kind is not ProviderErrorKind.CONTEXT_OVERFLOW
+    assert len(bodies) == 1
+
+
+def test_rerank_overflow_from_an_engine_with_no_extra_fields_is_not_sent_again() -> None:
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(422, json=_OVER_LIMIT)
+
+    client = _tei_client(handler, rerank_fields={})
+    with pytest.raises(ProviderError) as raised:
+        client.rerank("q", ["a"])
+    assert raised.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert bodies == [{"query": "q", "texts": ["a"]}]
+
+
+def test_the_422_over_limit_answer_is_a_context_overflow() -> None:
+    client = _tei_client(lambda req: httpx.Response(422, json=_OVER_LIMIT), WorkerRole.EMBED)
+    with pytest.raises(ProviderError, match="context window") as raised:
+        client._raise_for_status(client._http.post("/v1/embeddings", json={}))
+    assert raised.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_the_400_status_is_not_the_over_limit_answer_of_this_engine() -> None:
+    client = _tei_client(lambda req: httpx.Response(400, json=_OVER_LIMIT), WorkerRole.EMBED)
+    with pytest.raises(ProviderError) as raised:
+        client._raise_for_status(client._http.post("/v1/embeddings", json={}))
+    assert raised.value.kind is not ProviderErrorKind.CONTEXT_OVERFLOW
