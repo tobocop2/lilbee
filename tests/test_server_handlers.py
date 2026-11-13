@@ -373,10 +373,11 @@ class TestWarmStreamAfterSwap:
 
     @staticmethod
     def _routing_with_stale_local_error():
+        from lilbee.providers.fleet.engines import LLAMA
         from lilbee.providers.routing_provider import RoutingProvider
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
-        routing = RoutingProvider()
+        routing = RoutingProvider(engine=LLAMA)
         local = MagicMock()
         local.warm_progress.return_value = WarmProgress(
             phase=WarmPhase.ERROR, error="chat model Qwen3 4B is not installed"

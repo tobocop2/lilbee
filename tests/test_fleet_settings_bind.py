@@ -17,11 +17,13 @@ import pytest
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers import engine_params, gguf_meta
+from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.contract import contract_matches
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
@@ -67,14 +69,16 @@ def _owner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[FleetProvid
             super().start(launches, **kwargs)
             _record(states, self._group, launches)
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group: _RecordingSwap(group))
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group, _engine: _RecordingSwap(group))
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     provider = FleetProvider()
     monkeypatch.setattr(provider, "_preload_roles", lambda roles=None: None)
     monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
     with provider._lock:
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engine=LLAMA)
+        ).items():
             provider._adopt_group(group, _FakeSwap(), list(launches))
             provider._group_dirs[group] = tmp_path
             _record(states, group, list(launches))
@@ -88,7 +92,7 @@ def _new_process_ladder(
     monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir: dict(states))
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _dir: pytest.fail("stopped the fleet"))
 
     class _BindingSwap(_FakeSwap):
@@ -96,14 +100,14 @@ def _new_process_ladder(
             self.bound = True
             return True
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _BindingSwap())
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group, _engine: _BindingSwap())
     peer = FleetProvider()
     monkeypatch.setattr(peer, "_hold_membership", lambda _dir: None)
     monkeypatch.setattr(peer, "_plan_and_spawn", lambda _dir: pytest.fail("built a second fleet"))
     result = peer._acquire_in_dir(
         tmp_path,
         engine_pin(),
-        prov_mod._placeable_demand(),
+        prov_mod._placeable_demand(LLAMA),
         overflow_dir=tmp_path / "private",
         wait_until=time.monotonic() + prov_mod._OWNER_CATCH_UP_WAIT_S,
     )
@@ -225,7 +229,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
     real_planner, monkeypatch, tmp_path: Path
 ) -> None:
     resolve = engine_params.resolve_model_path
-    read = gguf_meta.read_gguf_metadata
+    read = llama_mod.read_gguf_metadata
     vision_path = tmp_path / "vision.gguf"
     vision_path.write_bytes(b"weights")
     monkeypatch.setattr(
@@ -234,7 +238,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
         lambda ref: vision_path if ref == _VISION_REF else resolve(ref),
     )
     monkeypatch.setattr(
-        gguf_meta,
+        llama_mod,
         "read_gguf_metadata",
         lambda path: {"general.architecture": "clip"} if Path(path) == vision_path else read(path),
     )
@@ -252,7 +256,7 @@ def test_an_ocr_change_with_a_vision_model_stops_vision_and_keeps_the_rest_binda
 
 
 def _settings(role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None) -> str:
-    return planning_mod.launch_settings(role, rerank_mode, meta, Path("model.gguf"))
+    return planning_mod.launch_settings(role, rerank_mode, meta, Path("model.gguf"), engine=LLAMA)
 
 
 @pytest.mark.parametrize(
@@ -386,7 +390,7 @@ def _peer_mid_call_over_an_owner_restart(
     result, peer = _new_process_ladder(monkeypatch, tmp_path, states)
     assert result is True
     monkeypatch.setattr(cfg, "flash_attention", flash_attention)
-    for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+    for group, launches in _launches_by_group(planning_mod.plan_all_launches(engine=LLAMA)).items():
         _record(states, group, list(launches))
     monkeypatch.setattr(cfg, "flash_attention", True)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)

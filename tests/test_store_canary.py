@@ -692,7 +692,7 @@ class TestRebuildKeepsMemoriesStopped:
                 lambda texts: [np.eye(store._config.embedding_dim)[1] for _ in texts]
             )
             monkeypatch.setattr(pipeline, "get_services", lambda: mock.MagicMock(embedder=embedder))
-            pipeline._force_rebuild_store(store)
+            pipeline._prepare_forced_rebuild(store)
 
         store.add_chunks(_make_records())
         store.add_memory(_memory(store._config))
@@ -710,7 +710,7 @@ class TestRebuildKeepsMemoriesStopped:
     def test_an_embedder_that_is_down_stops_the_rebuild_before_it_drops_anything(
         self, store, rebuilt_with
     ):
-        with pytest.raises(ProviderError, match="embedding model"):
+        with pytest.raises(RuntimeError, match="embedding model is not available"):
             rebuilt_with(available=False)
 
         assert store.has_chunks()
@@ -721,7 +721,7 @@ class TestRebuildKeepsMemoriesStopped:
     def test_an_embedder_that_fails_stops_the_rebuild_before_it_drops_anything(
         self, store, rebuilt_with
     ):
-        with pytest.raises(ProviderError, match="worker died"):
+        with pytest.raises(RuntimeError, match="worker died"):
             rebuilt_with(failure=ProviderError("worker died"))
 
         assert store.has_chunks()

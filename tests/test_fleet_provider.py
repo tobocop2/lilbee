@@ -506,7 +506,7 @@ def test_vision_without_server_names_the_missing_projector(
     monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: None)
 
-    message = prov_mod._no_server_message(WorkerRole.VISION)
+    message = prov_mod._no_server_message(WorkerRole.VISION, None)
 
     assert "org/vlm/vlm.gguf has no mmproj" in message
 
@@ -517,7 +517,7 @@ def test_vision_without_server_keeps_the_generic_message_when_the_projector_exis
     monkeypatch.setattr(prov_mod, "_configured_model_for", lambda _role: "org/vlm/vlm.gguf")
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: Path("/m/mmproj.gguf"))
 
-    message = prov_mod._no_server_message(WorkerRole.VISION)
+    message = prov_mod._no_server_message(WorkerRole.VISION, None)
 
     assert "mmproj" not in message
     assert "No vision model server is running" in message
@@ -2329,13 +2329,13 @@ def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
     monkeypatch, caplog
 ) -> None:
     swap = _FakeSwap()
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g, _engine: swap)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda: planning_mod.FleetPlan(
+        lambda *, engine: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED))
         ),
     )
@@ -6147,7 +6147,9 @@ def test_a_retired_client_starts_a_hold_sweep_when_its_last_request_ends(monkeyp
     monkeypatch.setattr(
         p, "_release_unused_holds", lambda: swept.append(threading.current_thread().name)
     )
-    client = LlamaServerClient("http://127.0.0.1:1", "chat-0")
+    client = LlamaServerClient(
+        "http://127.0.0.1:1", "chat-0", profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client.reserve()
     client.reserve()
     with p._lock:
@@ -6305,7 +6307,7 @@ def test_the_routing_provider_hands_the_config_refresh_to_its_fleet() -> None:
     def refresh() -> None:
         return None
 
-    local = RoutingProvider(config_refresh=refresh)._get_local()
+    local = RoutingProvider(engine=LLAMA, config_refresh=refresh)._get_local()
     assert isinstance(local, FleetProvider)
     assert local._config_refresh is refresh
 

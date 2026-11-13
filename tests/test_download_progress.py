@@ -434,7 +434,9 @@ class TestDownloadModelProgressChain:
         from lilbee.catalog import download as download_mod
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(
+            "lilbee.catalog.download.resolve_filename", lambda e, engine: e.gguf_filename
+        )
         monkeypatch.setattr(
             download_mod,
             "fetch_remote_file",
@@ -454,7 +456,7 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr("huggingface_hub.hf_hub_download", fail_download)
         calls: list[tuple[int, int]] = []
-        result = download_model(entry, on_progress=lambda d, t: calls.append((d, t)))
+        result = download_model(entry, on_progress=lambda d, t: calls.append((d, t)), engine=LLAMA)
         assert result == snapshot
         assert calls and calls[-1] == (1000, 1000)
 

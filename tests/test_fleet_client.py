@@ -3101,7 +3101,9 @@ def test_abort_streams_wakes_a_reader_blocked_after_headers(
     """A cancel stops a read that waits on a silent body and drops the connection."""
     server = _HeadersOnlyServer()
     http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(30.0))
-    client = LlamaServerClient(server.url, "test-model", http=http)
+    client = LlamaServerClient(
+        server.url, "test-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client._needs_alternation = False
     registered = threading.Event()
     register = client._abortable
@@ -3329,7 +3331,12 @@ def test_a_response_read_whole_on_arrival_is_not_registered() -> None:
 
 
 def _real_client(url: str) -> LlamaServerClient:
-    client = LlamaServerClient(url, "test-model", http=httpx.Client(base_url=url))
+    client = LlamaServerClient(
+        url,
+        "test-model",
+        http=httpx.Client(base_url=url),
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     client._needs_alternation = False
     return client
 
@@ -3347,13 +3354,16 @@ def test_stream_cut_after_first_frame_says_the_answer_is_cut() -> None:
     assert not isinstance(caught.value, httpx.HTTPError)
     assert not is_connection_failure(caught.value)
     assert isinstance(caught.value.__cause__, httpx.TransportError)
+    assert caught.value.provider == LLAMA.request_profile(WorkerRole.CHAT).label
 
 
 def test_stream_cut_by_a_read_timeout_keeps_its_cause_and_text() -> None:
     """The engine is alive but silent: nothing restarted, and the text says so."""
     server = _ClosingServer(frames=1, mode="silent")
     http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(0.2))
-    client = LlamaServerClient(server.url, "test-model", http=http)
+    client = LlamaServerClient(
+        server.url, "test-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client._needs_alternation = False
     stream = client.chat_stream_items([{"role": "user", "content": "hi"}])
     assert next(stream) == "Hi"
@@ -3433,6 +3443,7 @@ def test_stream_ending_with_no_finish_and_no_sentinel_is_cut() -> None:
     server.close()
     assert "The model server stopped answering and the answer is cut." in str(caught.value)
     assert "Send your message again." in str(caught.value)
+    assert caught.value.provider == LLAMA.request_profile(WorkerRole.CHAT).label
 
 
 def test_stream_with_no_frame_at_all_is_not_called_cut() -> None:
