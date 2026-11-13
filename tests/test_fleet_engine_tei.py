@@ -523,17 +523,70 @@ def test_rerank_over_the_character_limit_is_sent_again_for_the_server_to_truncat
     assert len(bodies) == 2
 
 
-def test_rerank_422_that_is_not_an_overflow_is_an_error_sent_once() -> None:
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (400, "`inputs` cannot be empty"),
+        (422, "`texts` must be a list"),
+        (400, _OVER_LIMIT["error"]),
+    ],
+    ids=["empty-input", "other-validation-error", "overflow-body-wrong-status"],
+)
+def test_rerank_answer_that_is_not_the_over_limit_answer_is_an_error_sent_once(
+    status: int, error: str, caplog
+) -> None:
     bodies: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(req.content))
-        return httpx.Response(422, json={"error": "`inputs` cannot be empty"})
+        return httpx.Response(status, json={"error": error})
 
-    with pytest.raises(ProviderError) as raised:
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError) as raised:
         _tei_client(handler).rerank("q", ["a"])
     assert raised.value.kind is not ProviderErrorKind.CONTEXT_OVERFLOW
     assert len(bodies) == 1
+    assert caplog.records == []
+
+
+def _long_candidates(count: int, long_at: set[int]) -> list[str]:
+    return [("long" if i in long_at else "short") + str(i) for i in range(count)]
+
+
+def _batched_rerank_exchange() -> tuple[list[dict], LlamaServerClient]:
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        bodies.append(body)
+        over = any(text.startswith("long") for text in body["texts"])
+        if over and body.get("truncate") is False:
+            return httpx.Response(422, json=_OVER_LIMIT)
+        scores = [{"index": i, "score": 0.5} for i in range(len(body["texts"]))]
+        return httpx.Response(200, json=scores)
+
+    return bodies, _tei_client(handler)
+
+
+@pytest.mark.parametrize(
+    ("count", "long_at", "overflowing"),
+    [(200, set(range(200)), 4), (65, {0, 64}, 2), (200, {70, 130}, 2), (200, set(), 0)],
+    ids=["every-batch", "both-batches", "some-batches", "no-batch"],
+)
+def test_rerank_in_batches_warns_once_for_the_whole_call(
+    count: int, long_at: set[int], overflowing: int, caplog
+) -> None:
+    bodies, client = _batched_rerank_exchange()
+    with caplog.at_level("WARNING"):
+        scores = client.rerank("q", _long_candidates(count, long_at))
+    assert scores == [0.5] * count
+    batches = -(-count // 64)
+    assert len(bodies) == batches + overflowing
+    if overflowing == 0:
+        assert caplog.records == []
+        return
+    [record] = caplog.records
+    assert f"in {overflowing} of {batches} batches" in record.getMessage()
+    assert "must have less than 24 tokens. Given: 31" in record.getMessage()
 
 
 def test_rerank_overflow_from_an_engine_with_no_extra_fields_is_not_sent_again() -> None:
