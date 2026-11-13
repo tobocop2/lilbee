@@ -77,7 +77,7 @@ class RequestProfile:
     label: str
     """The name of the engine's server in error messages."""
     context_overflow: re.Pattern[str]
-    """Matches a 400 body that reports a prompt past the context window."""
+    """Matches an error body that reports a prompt past the context window."""
     batch_overflow: re.Pattern[str] | None
     """Matches a 500 body that reports an input past the physical batch, or None."""
     unreadable_embedding_hint: str
