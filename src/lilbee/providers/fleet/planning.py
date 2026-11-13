@@ -19,7 +19,7 @@ from lilbee.core.system import is_network_path
 from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ctx as fleet_ctx
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import gpu_hardware, host_caps
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     NO_DEVICE,
@@ -40,6 +40,7 @@ from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.gpu_backends import util_backend_name
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import installed_safetensors_bytes
@@ -3514,9 +3515,6 @@ class HostCards:
         A visible card whose name gives no vendor fills a card the tables list and no
         visible card of a known vendor accounts for.
         """
-        from lilbee.providers.fleet.gpu_hardware import installed_gpu_counts
-        from lilbee.providers.fleet.gpu_select import PCIVendorID
-
         backend_vendor = {
             "CUDA": PCIVendorID.NVIDIA,
             "ROCm": PCIVendorID.AMD,
@@ -3527,7 +3525,7 @@ class HostCards:
             backend_vendor.get(util_backend_name(device.backend, device.name))
             for device in self._devices
         )
-        in_tree = installed_gpu_counts()
+        in_tree = gpu_hardware.installed_gpu_counts()
         table = {vendor: in_tree[vendor] for vendor in PCIVendorID}
         if self.nvidia_driver:
             table[PCIVendorID.NVIDIA] = self.nvidia_driver
