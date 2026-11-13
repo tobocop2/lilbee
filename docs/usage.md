@@ -549,7 +549,8 @@ lilbee engine install <engine> --wheel /path/to/pack.whl
 
 The install checks that the host can run the engine, then checks the digest and
 the licence of the wheel. If the host fails the check, the command names the
-feature it lacks and installs nothing. Nothing downloads on first use. The same
+feature it lacks and installs nothing. Only the llama.cpp pack installs on first
+use, when a model needs it. Every other engine needs this command. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
 REST route `POST /api/engines/install`.
 
@@ -1332,8 +1333,9 @@ same install the first time a model needs an engine. A computer with no network
 needs the pack copied into the `packs` folder of the engine cache by hand. The
 error from a failed download names the file to copy.
 
-**Your own engine.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM, or
-Intel Macs. The engine wheels for those backends are not on the `lilbee.sh`
+**Your own engine.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM,
+Windows on ARM, or Intel Macs. On a computer with an AMD or Intel GPU, lilbee
+installs the CPU pack and logs a warning that names the GPU vendor. The engine wheels for those backends are not on the `lilbee.sh`
 index yet. On those computers, use a bundled build, or run your own
 `llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
 build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install

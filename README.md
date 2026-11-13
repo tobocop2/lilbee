@@ -233,8 +233,9 @@ engine cache by hand. The error from a failed download names the file to copy.
 | NVIDIA with a usable driver      | CUDA (Linux and Windows)   |
 | Other x86_64 Linux and Windows   | CPU                        |
 
-No pack exists yet for AMD (ROCm), Vulkan, Linux on ARM, or Intel Macs. On those
-computers, use a bundled build. A `pip` or `uv` install can run your own
+No pack exists yet for AMD (ROCm), Vulkan, Linux on ARM, Windows on ARM, or Intel
+Macs. On a computer with an AMD or Intel GPU, lilbee installs the CPU pack and logs
+a warning that names the GPU vendor. For a GPU build, use a bundled build. A `pip` or `uv` install can run your own
 `llama-server` instead. Install lilbee with `pip install --pre lilbee`. Then set
 `LILBEE_LLAMA_SERVER_PATH` to a `llama-server` built for your hardware. The
 engine wheels for ROCm and Vulkan are not on the `lilbee.sh` index yet.

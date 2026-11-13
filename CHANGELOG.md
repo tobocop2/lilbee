@@ -6,7 +6,9 @@ The `[engine]` extra is gone. `pip install lilbee[engine]` no longer installs an
 
 If you installed the old extra, the `lilbee-engine-llama-cpp` wheel stays in your environment. The wheel takes precedence over the pack. To use the pack, run `pip uninstall lilbee-engine-llama-cpp`, then run `lilbee engine install`.
 
-No pack exists yet for AMD (ROCm), Vulkan, Linux on ARM, or Intel Macs. On those computers, use a bundled build or set `LILBEE_LLAMA_SERVER_PATH` to your own `llama-server`.
+No pack exists yet for AMD (ROCm), Vulkan, Linux on ARM, Windows on ARM, or Intel Macs. On those computers, use a bundled build. Or set `LILBEE_LLAMA_SERVER_PATH` to your own `llama-server`.
+
+On a computer with an AMD or Intel GPU, lilbee installs the CPU pack and logs a warning that names the GPU vendor. For a GPU build, use a bundled build or your own `llama-server`.
 
 ## 0.6.66b481
 
