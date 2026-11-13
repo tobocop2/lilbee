@@ -109,7 +109,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         engine_choice,
         "session_host",
-        lambda: collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None),
+        lambda: collect(
+            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None
+        ),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(runnable, "detect", _live_host)
@@ -124,7 +126,7 @@ def _live_host() -> host_caps.HostCaps:
         system="Linux",
         machine="x86_64",
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
-        nvml=None,
+        nvidia=None,
     )
 
 
@@ -242,7 +244,7 @@ def test_a_host_the_manifest_cannot_name_is_refused(
     monkeypatch.setattr(
         runnable,
         "detect",
-        lambda: host_caps.collect(system="Plan9", machine="x86_64", cpu_info={}, nvml=None),
+        lambda: host_caps.collect(system="Plan9", machine="x86_64", cpu_info={}, nvidia=None),
     )
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
@@ -359,7 +361,7 @@ def test_a_pin_with_no_cells_installs_a_wheel_on_a_host_the_manifest_cannot_name
     monkeypatch.setattr(
         runnable,
         "detect",
-        lambda: host_caps.collect(system="Plan9", machine="riscv64", cpu_info={}, nvml=None),
+        lambda: host_caps.collect(system="Plan9", machine="riscv64", cpu_info={}, nvidia=None),
     )
     engine_service.install(ENGINE.value, good)
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]

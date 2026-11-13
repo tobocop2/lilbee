@@ -152,6 +152,19 @@ def _no_real_browser(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_nvidia_probes() -> Generator[None]:
+    """Start and end each test with no cached nvidia-smi answer, so one test's fake never leaks."""
+    from lilbee.providers.fleet.gpu_backends import nvidia
+
+    probes = (nvidia._cache, nvidia._cards_probe, nvidia._compute_probe, nvidia._cuda_probe)
+    for probe in probes:
+        probe.reset()
+    yield
+    for probe in probes:
+        probe.reset()
+
+
+@pytest.fixture(autouse=True)
 def _download_without_a_child_process(request, monkeypatch):
     """Run a download's transfer in this process so a test's patches reach it.
 

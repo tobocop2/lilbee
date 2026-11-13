@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.fleet import gpu_hardware, host_caps, planning
+from lilbee.providers.fleet import gpu_hardware, planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import CardEngine, Role, engines_for_all_roles, model_file, prepare_host
@@ -30,10 +30,6 @@ def _card(index: int, name: str, backend: str = _VULKAN) -> FleetDevice:
     return FleetDevice(backend, index, name, 8 * GIB, 8 * GIB)
 
 
-def _driver_cards(count: int) -> list[host_caps.CardMemory]:
-    return [host_caps.CardMemory(f"GPU-{i}", "n", 8 * GIB, 8 * GIB) for i in range(count)]
-
-
 class _Host:
     """The host's two tables, with a count of how often each was read."""
 
@@ -42,15 +38,15 @@ class _Host:
         self.tree = Counter[int]()
         self.driver_reads = 0
         self.tree_reads = 0
-        monkeypatch.setattr(host_caps, "read_card_memory", self._driver)
+        monkeypatch.setattr(planning, "card_count", self._driver)
         monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", self._tree)
 
-    def _driver(self) -> list[host_caps.CardMemory]:
+    def _driver(self) -> int:
         """The next scripted answer; the driver fails once the script is spent."""
         self.driver_reads += 1
         if not self.driver_answers:
-            return []
-        return _driver_cards(self.driver_answers.pop(0))
+            return 0
+        return self.driver_answers.pop(0)
 
     def _tree(self) -> Counter[int]:
         self.tree_reads += 1

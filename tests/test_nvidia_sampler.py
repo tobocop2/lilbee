@@ -1,8 +1,4 @@
-"""The NVIDIA sampler: temperature reaches the throttle, and no driver read can stall a stream.
-
-The stand-in is the driver's card list. The in-process driver read is made to raise, so a
-sampler that reaches it fails the test instead of passing on a mock.
-"""
+"""The NVIDIA sampler: temperature reaches the throttle, and no driver read can stall a stream."""
 
 from __future__ import annotations
 
@@ -11,7 +7,7 @@ import asyncio
 import pytest
 
 from lilbee.data.ingest.adaptive import CONSERVATIVE, ControllerState, Signals, decide
-from lilbee.providers.fleet import gpu_stats, host_caps
+from lilbee.providers.fleet import gpu_stats
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.gpu_backends import nvidia as nvidia_mod
 from lilbee.providers.fleet.gpu_stats import probe_gpu_stats, probe_throttle_signal
@@ -29,11 +25,7 @@ def _smi(*rows: str):
 
 
 @pytest.fixture(autouse=True)
-def _no_driver_library(monkeypatch: pytest.MonkeyPatch) -> None:
-    def blocked() -> list[host_caps.CardMemory]:
-        raise AssertionError("the sampler must not read the driver library")
-
-    monkeypatch.setattr(host_caps, "read_card_memory", blocked)
+def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising=False)
     nvidia_mod._cache.reset()

@@ -24,7 +24,7 @@ class _Reached(Exception):
 
 
 def _unreadable_host(monkeypatch: pytest.MonkeyPatch) -> HostCaps:
-    host = collect(system="", machine="", cpu_info={}, nvml=_UNREADABLE)
+    host = collect(system="", machine="", cpu_info={}, nvidia=_UNREADABLE)
     monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
@@ -77,7 +77,7 @@ def test_install_names_the_unreadable_host_as_the_reason(
 def test_a_readable_host_still_lists_and_installs_tei(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
@@ -90,7 +90,7 @@ def test_a_readable_host_still_lists_and_installs_tei(
 def test_a_half_unread_host_lists_no_engine_and_install_refuses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, system: str, machine: str
 ) -> None:
-    host = collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvml=None)
+    host = collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     assert engine_service.not_installed() == []
@@ -123,7 +123,7 @@ def test_the_list_logs_why_it_hides_engines_on_an_unreadable_host(
 def test_a_readable_host_logs_nothing_about_hidden_engines(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+    host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(engine_service, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=engine_service.log.name):
         engine_service.not_installed()

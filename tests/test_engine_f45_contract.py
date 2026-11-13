@@ -25,7 +25,7 @@ BINARY = Path("/engines/bin/tool")
 def _unread() -> HostCaps:
     from lilbee.providers.fleet import host_caps
 
-    return host_caps.collect(system="Plan9", machine="mips", cpu_info={}, nvml=None)
+    return host_caps.collect(system="Plan9", machine="mips", cpu_info={}, nvidia=None)
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS, ids=lambda a: a.name.value)
