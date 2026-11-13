@@ -43,6 +43,8 @@ _TIMEOUT_S = 600.0
 _EMBED_PATH = "/v1/embeddings"
 _IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
+PINNED_SAMPLING = {"temperature": 0, "seed": 7}
+"""Sampling every chat step sends, so one model gives the same answer on every run."""
 _OVERSIZE = "w " * 60000
 _OVERFLOW_CAP_S = 30.0
 """The most seconds the overflow step waits; an engine that hangs fails here, not at 600 s."""
@@ -143,7 +145,7 @@ def _ref(setup: Setup, role: str) -> str:
 
 def _template(setup: Setup) -> Outcome:
     result = create_sdk_provider().chat(
-        _CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
+        _CONVERSATION, model=_ref(setup, "chat"), options={**PINNED_SAMPLING, "max_tokens": 1024}
     )
     assert isinstance(result, ChatResult)
     answer = split_reasoning(result.text).answer
@@ -156,7 +158,7 @@ def _tool(setup: Setup) -> Outcome:
         model=_ref(setup, "chat"),
         tools=[_WEATHER],
         tool_choice="auto",
-        options={"max_tokens": 1024},
+        options={**PINNED_SAMPLING, "max_tokens": 1024},
     )
     assert isinstance(result, ChatResult)
     names = [call.name for call in result.tool_calls]
@@ -192,7 +194,7 @@ def _rerank(setup: Setup) -> Outcome:
 
 def _send_oversize(setup: Setup) -> Outcome:
     messages = [{"role": "user", "content": _OVERSIZE}]
-    options = {"max_tokens": 16}
+    options = {**PINNED_SAMPLING, "max_tokens": 16}
     try:
         if setup.window:
             from lilbee.providers.fleet.provider import FleetProvider
@@ -235,7 +237,7 @@ def _json_step(
     result = create_sdk_provider().chat(
         [{"role": "user", "content": _JSON_ASK}],
         model=_ref(setup, "chat"),
-        options={"max_tokens": 256, "response_format": response_format},
+        options={**PINNED_SAMPLING, "max_tokens": 256, "response_format": response_format},
     )
     assert isinstance(result, ChatResult)
     return Outcome(not json_fault(result.text, schema), f"finish={result.finish_reason}")
@@ -258,7 +260,12 @@ def _reasoning_text(setup: Setup) -> Outcome:
 
     The provider drops the reasoning field, so the step reads the wire message itself.
     """
-    body = {"messages": [_REASONING_ASK], "model": setup.models["chat"], "stream": False}
+    body = {
+        "messages": [_REASONING_ASK],
+        "model": setup.models["chat"],
+        "stream": False,
+        **PINNED_SAMPLING,
+    }
     request = urllib.request.Request(  # noqa: S310  a local server under test
         presets.get_preset(setup.preset).base_url + "/v1/chat/completions",
         data=json.dumps(body).encode(),
@@ -293,7 +300,7 @@ def _named(setup: Setup) -> Outcome:
     try:
         if role == "chat":
             cfg.chat_model = model
-            routing.chat(_CONVERSATION, options={"max_tokens": 1024})
+            routing.chat(_CONVERSATION, options={**PINNED_SAMPLING, "max_tokens": 1024})
         elif role == "embed":
             cfg.embedding_model = model
             routing.embed(["alpha"])

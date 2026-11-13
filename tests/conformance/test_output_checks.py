@@ -265,12 +265,51 @@ def test_preset_template_step_reads_only_the_answer(
     assert _template_outcome(tmp_path, message).ok is ok
 
 
+class _Recorder:
+    """A provider that keeps the options of every chat call."""
+
+    def __init__(self) -> None:
+        self.options: list[dict[str, Any]] = []
+
+    def chat(self, *_args: Any, **kwargs: Any) -> ChatResult:
+        self.options.append(kwargs.get("options") or {})
+        return _result("Rome.")
+
+
+@pytest.mark.parametrize("step", ["template", "tool", "overflow", "json_object", "json_schema"])
+def test_preset_chat_steps_send_temperature_zero_and_a_seed(
+    monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    provider = _Recorder()
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: provider)
+    setup = Setup(("chat",), dict(_MODELS), strict=True)
+    preset_check._STEP_FUNCTIONS[step](setup)
+    assert len(provider.options) == 1
+    assert provider.options[0]["temperature"] == 0
+    assert provider.options[0]["seed"] == 7
+
+
+def test_preset_named_step_sends_temperature_zero_and_a_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Recorder()
+    monkeypatch.setattr(preset_check, "RoutingProvider", lambda: provider)
+    setup = Setup(("chat",), dict(_MODELS), strict=True)
+    preset_check._STEP_FUNCTIONS["named"](setup)
+    assert provider.options == [{**preset_check.PINNED_SAMPLING, "max_tokens": 1024}]
+
+
 def _reasoning_outcome(
     tmp_path: Path, message: dict[str, Any], finish: str = "stop"
 ) -> preset_check.Outcome:
     """Run the reasoning step against a server that sends *message* as its one reply."""
     setup = Setup(("chat",), dict(_MODELS), strict=True)
-    request = {"messages": [preset_check._REASONING_ASK], "model": "m", "stream": False}
+    request = {
+        "messages": [preset_check._REASONING_ASK],
+        "model": "m",
+        "stream": False,
+        **preset_check.PINNED_SAMPLING,
+    }
     reply = {"choices": [{"message": message, "finish_reason": finish}]}
     exchange = preset_check.Exchange(
         "POST", "/v1/chat/completions", request, 200, "application/json", json.dumps(reply)
