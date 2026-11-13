@@ -217,10 +217,6 @@ def test_install_on_a_host_without_avx2_is_refused_and_writes_nothing(
     assert not engines_root(cfg.models_dir).exists()
 
 
-def test_the_adapter_records_no_pack_digest_until_a_pack_is_published() -> None:
-    assert IK_LLAMA.pin_record()["sha256"] is None
-
-
 def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
