@@ -8,6 +8,7 @@ from collections.abc import Iterator
 
 from lilbee.providers.fleet.devices import MIB
 from lilbee.providers.fleet.gpu_backends.base import UtilSample, run_smi
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 
 _TOOL = "nvidia-smi"
 _QUERY = "index,utilization.gpu,temperature.gpu,memory.used,memory.total"
@@ -64,6 +65,8 @@ _cache = SmiCache()
 
 class NvidiaBackend:
     """CUDA util backend: nvidia-smi with TTL caching."""
+
+    pci_vendor = PCIVendorID.NVIDIA
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
         return {i: s for i, s in _cache.stats().items() if i in indices}
