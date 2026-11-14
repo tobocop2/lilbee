@@ -141,16 +141,13 @@ jobs:
       - run: make lint-shell
       - run: make test-shell
 
-      # The registry's own validator, at the release the publish script pins:
-      # an invalid server.json is red here, before a release tries to list it.
+      # The registry's own validator, at the release the publish script pins
+      # and verifies: an invalid server.json is red here, before a release
+      # tries to list it.
+      - uses: sigstore/cosign-installer@v4.1.2
+
       - name: Validate the MCP Registry listing
-        env:
-          MCP_PUBLISHER_VERSION: "v1.8.7"
-        run: |
-          set -euo pipefail
-          curl -sSfL "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
-            | tar xz mcp-publisher
-          ./mcp-publisher validate server.json
+        run: bash scripts/publish_mcp_registry.sh --validate server.json
 
   npm-launcher:
     needs: [changes]

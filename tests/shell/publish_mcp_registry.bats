@@ -71,6 +71,27 @@ publish() {
   NPM_VIEW_RC="${NPM_VIEW_RC:-0}" bash "${SCRIPT}" "$@"
 }
 
+@test "validate mode checks the publisher signature, then runs its validator and nothing else" {
+  run publish --validate "${SERVER_JSON}"
+  [ "$status" -eq 0 ]
+  grep -q '^cosign verify-blob' "${CALLS}"
+  grep -q "^publisher validate ${SERVER_JSON}\$" "${CALLS}"
+  ! grep -q -E '^(curl .*/v0\.1/|npm |publisher (login|publish))' "${CALLS}"
+}
+
+@test "validate mode stops on a failed signature check before the validator runs" {
+  COSIGN_RC=1 run publish --validate "${SERVER_JSON}"
+  [ "$status" -ne 0 ]
+  ! grep -q '^publisher' "${CALLS}"
+}
+
+@test "validate mode downloads the publisher version the publish mode pins" {
+  run publish --validate "${SERVER_JSON}"
+  pin=$(sed -n 's/^publisher_version="\(.*\)"$/\1/p' "${SCRIPT}")
+  [ -n "${pin}" ]
+  grep -q "/releases/download/${pin}/mcp-publisher_linux_amd64.tar.gz" "${CALLS}"
+}
+
 @test "a version the registry already holds is skipped, with the note in the job summary" {
   GITHUB_STEP_SUMMARY="${FIXTURE}/summary" REGISTRY_CODE=200 run publish "${SERVER_JSON}"
   [ "$status" -eq 0 ]

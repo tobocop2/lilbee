@@ -6,15 +6,45 @@
 # npm package, including a missing or wrong mcpName, so a broken listing is red
 # rather than skipped. npm gets three attempts to show a version it has just
 # published. The publisher binary is checked against its signature bundle
-# before it runs.
-# Usage: publish_mcp_registry.sh <server.json>
+# before it runs. This script owns the publisher version for every caller:
+# --validate runs the registry's own validator on a server.json and does
+# nothing else.
+# Usage: publish_mcp_registry.sh [--validate] <server.json>
 # Env: MCP_REGISTRY_URL overrides the registry address. GITHUB_STEP_SUMMARY
 # gets the skip note.
 set -euo pipefail
 
-server_json="${1:?usage: publish_mcp_registry.sh <server.json>}"
+validate=""
+if [ "${1:-}" = "--validate" ]; then
+  validate=1
+  shift
+fi
+server_json="${1:?usage: publish_mcp_registry.sh [--validate] <server.json>}"
 registry_url="${MCP_REGISTRY_URL:-https://registry.modelcontextprotocol.io}"
 publisher_version="v1.8.7"
+
+# Downloads the publisher, checks its signature bundle, and sets publisher to the binary.
+fetch_publisher() {
+  local workdir archive base_url
+  workdir=$(mktemp -d)
+  archive="mcp-publisher_linux_amd64.tar.gz"
+  base_url="https://github.com/modelcontextprotocol/registry/releases/download/${publisher_version}"
+  curl --fail --location --silent --show-error --retry 3 --output "${workdir}/${archive}" "${base_url}/${archive}"
+  curl --fail --location --silent --show-error --retry 3 --output "${workdir}/${archive}.sigstore.json" "${base_url}/${archive}.sigstore.json"
+  cosign verify-blob \
+    --bundle "${workdir}/${archive}.sigstore.json" \
+    --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${publisher_version}" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "${workdir}/${archive}"
+  tar xzf "${workdir}/${archive}" -C "${workdir}" mcp-publisher
+  publisher="${workdir}/mcp-publisher"
+}
+
+if [ -n "${validate}" ]; then
+  fetch_publisher
+  "${publisher}" validate "${server_json}"
+  exit 0
+fi
 
 name=$(jq -r '.name' "${server_json}")
 version=$(jq -r '.version' "${server_json}")
@@ -71,17 +101,6 @@ done
   exit 1
 }
 
-workdir=$(mktemp -d)
-archive="mcp-publisher_linux_amd64.tar.gz"
-base_url="https://github.com/modelcontextprotocol/registry/releases/download/${publisher_version}"
-curl --fail --location --silent --show-error --retry 3 --output "${workdir}/${archive}" "${base_url}/${archive}"
-curl --fail --location --silent --show-error --retry 3 --output "${workdir}/${archive}.sigstore.json" "${base_url}/${archive}.sigstore.json"
-cosign verify-blob \
-  --bundle "${workdir}/${archive}.sigstore.json" \
-  --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${publisher_version}" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  "${workdir}/${archive}"
-tar xzf "${workdir}/${archive}" -C "${workdir}" mcp-publisher
-
-"${workdir}/mcp-publisher" login github-oidc
-"${workdir}/mcp-publisher" publish "${server_json}"
+fetch_publisher
+"${publisher}" login github-oidc
+"${publisher}" publish "${server_json}"

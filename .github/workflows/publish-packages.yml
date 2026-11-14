@@ -312,15 +312,15 @@ jobs:
   # so it must publish after they are attached -- `resolve` is that gate.
   # It publishes packages/lilbee/package.json as committed at the tag, and refuses
   # a package.json whose version is not the npm form of the tag (release.sh and
-  # promote_release.sh stamp it). Dev builds are not published to npm. A version
-  # already on npm is skipped. Auth is npm trusted publishing: the registry takes the
+  # promote_release.sh stamp it). scripts/publish_npm.sh skips dev builds and a
+  # version already on npm. Auth is npm trusted publishing: the registry takes the
   # job's OIDC token, so there is no npm token anywhere and provenance is
   # automatic. That trust is configured per package on npmjs.com and names
   # this filename, so renaming this workflow breaks the publish -- see
   # packages/lilbee/docs/publishing.md.
   npm:
     needs: resolve
-    if: (inputs.channels == 'all' || contains(inputs.channels, 'npm')) && !contains(needs.resolve.outputs.tag, '.dev')
+    if: inputs.channels == 'all' || contains(inputs.channels, 'npm')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Mirrors the PyPI job: the `npm` environment name is pinned by npm's
@@ -352,55 +352,17 @@ jobs:
         run: npm test
         working-directory: packages/lilbee
 
-      - name: Check package.json matches the tag
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: bash scripts/release_version.sh check "${TAG}"
-
-      - name: Check whether this version is already on npm
-        id: check
-        working-directory: packages/lilbee
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p 'require("./package.json").version')
-          VERSIONS=$(npm view lilbee versions --json)
-          PUBLISHED=$(VERSION="${VERSION}" VERSIONS="${VERSIONS}" node -p \
-            '[].concat(JSON.parse(process.env.VERSIONS)).includes(process.env.VERSION)')
-          echo "lilbee ${VERSION} on npm: ${PUBLISHED}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "skip=${PUBLISHED}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish lilbee
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled' && steps.check.outputs.skip != 'true'
-        run: npm publish --access public --tag latest
-        working-directory: packages/lilbee
-
-      # Lists the package in the MCP Registry, using the job's OIDC token (the
-      # io.github.tobocop2 namespace is verified by GitHub login). server.json is
-      # the tag's own file: the release stamps its version with the npm version.
-      # The script asks the registry whether it holds this version, so a re-run
-      # after a failed listing lists it. The registry reads `mcpName` from the
-      # published package, so this runs after the npm publish, and the registry
-      # itself refuses a package whose `mcpName` is missing or names another
-      # server. The script gives npm three attempts to show the version.
+      # The OIDC token also lists the package in the MCP Registry (the
+      # io.github.tobocop2 namespace is verified by GitHub login), through
+      # cosign, which checks the registry publisher's signature.
       - name: Install cosign
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
         uses: sigstore/cosign-installer@v4.1.2
 
-      - name: List lilbee in the MCP Registry
-        if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
-        timeout-minutes: 10
-        run: bash scripts/publish_mcp_registry.sh server.json
-
-      - name: Say why nothing published
-        if: vars.NPM_TRUSTED_PUBLISHING != 'enabled' || steps.check.outputs.skip == 'true'
+      # One script checks the tag, publishes and lists, so the order is not
+      # in this file. See the script for the rules.
+      - name: Publish lilbee and list it in the MCP Registry
+        timeout-minutes: 15
         env:
-          SKIP: ${{ steps.check.outputs.skip }}
-          TRUSTED: ${{ vars.NPM_TRUSTED_PUBLISHING }}
-          VERSION: ${{ steps.check.outputs.version }}
-        run: |
-          if [ "${SKIP}" = "true" ] && [ "${TRUSTED}" = "enabled" ]; then
-            echo "Skipped the Publish lilbee step: lilbee ${VERSION} is already on npm. The MCP Registry step still ran and lists ${VERSION}; the registry refuses it unless that npm package carries mcpName."
-          else
-            echo "Skipped the Publish lilbee and MCP Registry steps: the repository variable NPM_TRUSTED_PUBLISHING is not 'enabled', so lilbee ${VERSION} did not publish. Finish the one-time npmjs setup in packages/lilbee/docs/publishing.md, then set the variable."
-          fi
+          TAG: ${{ needs.resolve.outputs.tag }}
+          NPM_TRUSTED_PUBLISHING: ${{ vars.NPM_TRUSTED_PUBLISHING }}
+        run: bash scripts/publish_npm.sh "${TAG}"

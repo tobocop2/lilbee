@@ -30,13 +30,14 @@ published to npm. A version with no mapping (`a`, `rc`, `post`) stops the releas
 The release also sets both `version` fields of `server.json`, the MCP Registry
 listing, to the npm version.
 
-The `npm` job checks out the tag and stops when `package.json` or `server.json`
+The `npm` job checks out the tag and runs `scripts/publish_npm.sh`. The script
+skips a dev build. It stops when `package.json` or `server.json`
 does not carry the npm version of that tag, or when the `server.json` name is
 not the `mcpName` of `package.json`. It publishes with `--tag latest`,
 because npm 11 refuses a prerelease publish without a dist-tag. If the version
-is already on npm, the job skips the publish.
+is already on npm, the script skips the publish.
 
-After the npm publish, the job lists the version in the MCP Registry. The
+After the npm publish, the script lists the version in the MCP Registry. The
 registry checks the published package for `mcpName`, and the login uses the
 job's OIDC token. The job asks the registry first, so a re-run after a failed
 listing lists the version. The job asks npm for the published version three
