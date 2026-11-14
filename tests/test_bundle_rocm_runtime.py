@@ -31,7 +31,7 @@ _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/bundl
 _BUILT = ("llama-server", "libggml-hip.so", "libggml-base.so")
 
 # The shared libraries the ROCm runtime links that the pack never ships: the host
-# provides them. Each is also present in the build host's system directories below.
+# provides them.
 _HOST_LIBS = (
     "libelf.so.1",
     "libdrm.so.2",
@@ -197,14 +197,8 @@ def _run(
     if with_patchelf:
         _write_stub_patchelf(stub_dir, tmp_path / "patchelf.log")
     _link_real_tools(stub_dir)
-    # A system lib dir holding every host library: the bundler must leave them there.
-    system_dir = tmp_path / "sys"
-    system_dir.mkdir(exist_ok=True)
-    for name in _HOST_LIBS:
-        (system_dir / name).write_text(f"elf: {name}")
     env = {
         "ROCM_PATH": str(rocm_tree),
-        "SYSTEM_LIB_DIRS": str(system_dir),
         "PATH": str(stub_dir),
     }
     if targets is not None:
@@ -264,8 +258,7 @@ def test_leaves_host_libraries_alone(bundled):
 def test_leaves_each_host_library_to_the_host(bundled, soname):
     """libnuma is LGPL and the other five match the host's driver stack or distro.
 
-    The ROCm tree holds none of them, and the system directory that does hold them
-    is not searched: a copy there would put an LGPL library in the wheel.
+    The ROCm tree holds none of them, so the bundler has nothing to copy.
     """
     assert not (bundled / soname).exists()
 

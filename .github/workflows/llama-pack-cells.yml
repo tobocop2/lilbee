@@ -46,7 +46,7 @@ jobs:
             timeout: 60
           - cell: macos-arm64-metal
             backend: metal
-            runner: macos-14
+            runner: macos-15
             asset: llama-b12032-bin-macos-arm64.tar.gz
             platform: macosx_14_0_arm64
             license: MIT
@@ -91,6 +91,15 @@ jobs:
       BACKEND: ${{ matrix.backend }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Free disk space for the Vulkan and ROCm build
+        if: matrix.build == 'source' && matrix.backend != 'cuda'
+        run: |
+          set -euo pipefail
+          # The ROCm packages and the build need more disk than the runner image leaves free.
+          # This runs before setup-go and setup-python, so the later tool installs survive it.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
+          df -h / | tail -1
 
       - name: Read the engine pins
         run: grep -E '^ENGINE_[A-Z_]+=' engine-versions.env >> "$GITHUB_ENV"
@@ -187,9 +196,6 @@ jobs:
         if: matrix.build == 'source' && matrix.backend != 'cuda'
         run: |
           set -euo pipefail
-          # The ROCm packages and the build need more disk than the runner image leaves free.
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
-          df -h / | tail -1
           mkdir -p packaging/engine-wheel/lilbee_engine_llama_cpp/bin
           docker run --rm -v "${PWD}:/work" -w /work \
             -e BACKEND -e UPSTREAM_REPO -e UPSTREAM_TAG \
