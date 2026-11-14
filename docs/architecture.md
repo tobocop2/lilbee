@@ -876,7 +876,15 @@ flowchart LR
   own, and an engine whose `--help` lists `--fit-target`. When the engine reports more
   of chat in system memory than the estimate expects with every layer on the card, the
   readback warns once. The fit reads free memory at load, so roles that share a card warm
-  one at a time, chat last (`provider._warm_chains`). Chat slots share one KV pool (`--kv-unified
+  one at a time, chat last (`provider._warm_chains`). A mistral.rs role on several
+  cards gets `--device-layers`: the layer count of the model (the GGUF `block_count`, or
+  `num_hidden_layers` in `config.json`) is shared over the cards by the placement ratio,
+  largest remainder first, and the card order is the order of `CUDA_VISIBLE_DEVICES`.
+  Every mistral.rs launch sets `MISTRALRS_NO_NCCL=1`, because with several visible cards
+  the engine otherwise runs equal tensor-parallel shards and drops the map. The map has
+  no fit check in the engine, so placement charges each card the weights by layer share.
+  A split that cannot run is refused with a message that names the model: an unreadable
+  layer count, a card with no layer, or a Metal or CPU build. Chat slots share one KV pool (`--kv-unified
   --kv-unified-per-slot <window>`), sized at slots x window as before, on an engine whose
   `--help` lists the per-slot cap.
 Header math (`model_cache.compute_dynamic_ctx`) is the fallback
