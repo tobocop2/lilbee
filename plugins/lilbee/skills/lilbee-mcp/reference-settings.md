@@ -9,8 +9,9 @@ The full list of settings, with defaults and which surfaces can set each one, is
 
 `wiki`, `memory_enabled` and `mcp_sessions_enabled` decide which tools register. The
 server decides once, at start. `lilbee_settings_set({"wiki": true})` succeeds and persists,
-and the `lilbee_wiki_*` tools are still absent. Ask the user to restart the lilbee MCP
-server. Do not report the feature as broken. `lilbee_wiki_status` works either way.
+and the other `lilbee_wiki_*` tools are still absent. Ask the user to restart the lilbee MCP
+server. Do not report the feature as broken. `lilbee_wiki_status` and `lilbee_wiki_wipe`
+work either way.
 
 ## Turning a feature on does not run it
 

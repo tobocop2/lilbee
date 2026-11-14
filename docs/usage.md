@@ -693,7 +693,8 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 
 **Two patterns worth knowing:**
 
-- **`search` vs `ask`.** `search` returns raw chunks without an LLM call. Use it
+- **`search` vs `ask`.** `search` returns raw chunks and generates no answer. By default it
+  may ask the chat model for query variants. Use it
   when your agent has its own LLM and just needs context from your files. `ask` runs
   lilbee's local RAG end-to-end and returns an answer with sources. Most
   non-MCP agents want `search`.

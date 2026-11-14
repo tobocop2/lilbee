@@ -7,8 +7,8 @@ description: Searches the user's local lilbee knowledge base (indexed code, docu
 
 [lilbee](https://github.com/tobocop2/lilbee) is a local retrieval engine. It indexes the
 user's files into a `.lilbee/` store. The data stays on the user's machine. Only the text
-you quote leaves it. Search asks the local chat model for query variants, so it can be slow
-while that model is busy.
+you quote leaves it. By default, search may ask the chat model for query variants (it skips
+very short queries), so it can be slow while that model is busy.
 
 ## When to use it
 
@@ -20,7 +20,10 @@ the index. Do not use lilbee as a web search or as a code editor.
 
 Pick one path and stay on it.
 
-- **MCP.** If tools named `lilbee_*` are in your tool list, call them.
+- **MCP.** If your tool list has tools from the lilbee MCP server, call them. The host adds
+  its own prefix to the tool name, so look for a tool whose name contains `lilbee` and ends
+  in the tool name, such as `search` (for example `lilbee_search`, `mcp__lilbee__search` or
+  `mcp__plugin_lilbee_lilbee__search`). The table below uses the `lilbee_` form.
 - **CLI.** Otherwise run `lilbee --json <command>` in a shell. Each command prints one JSON
   object per line. An error exits non-zero with `{"error": "..."}`. If `lilbee` is not on
   the PATH, tell the user to install it. Do not guess another path.
@@ -40,7 +43,8 @@ for CLI options.
 ## The core loop
 
 1. Check the library once per session. If `total_chunks` is 0, the index is empty: say so
-   and offer to add content. Do not search.
+   and offer to add content. Do not search. If the status reports an upgrade in progress
+   instead, wait and check again.
 2. Search with the user's own words. Pass `top_k` (`--top-k`) on the call to widen a thin
    result, for example 20. Keep it near 20 or lower for small-context models.
 3. Answer from the returned chunks only. Cite each claim.

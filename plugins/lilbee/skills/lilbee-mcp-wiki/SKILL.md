@@ -13,10 +13,17 @@ library status already shows a built wiki. The `lilbee-mcp` skill says how to re
 ## Availability
 
 `lilbee_wiki_status` (CLI `lilbee --json wiki status`) always works. It reports
-`wiki_enabled` and the page counts. Every other wiki tool is absent from the MCP tool list
-when the server started with the wiki off, and returns `{"error": "wiki not enabled"}` if
-the wiki is turned off while it runs. Enabling the wiki with a settings change takes effect
-after the user restarts the MCP server. The CLI commands do not need a restart.
+`wiki_enabled` and the page counts. `lilbee_wiki_wipe` is always present too, because
+turning the wiki off leaves the generated pages in place. Every other wiki tool is absent
+from the MCP tool list when the server started with the wiki off, and returns
+`{"error": "wiki not enabled"}` if the wiki is turned off while it runs. Enabling the wiki
+with a settings change takes effect after the user restarts the MCP server. The CLI
+commands do not need a restart.
+
+With the wiki off, the CLI commands that write (`build`, `update`, `synthesize`, `prune`,
+`index`, `generate`, `drafts accept`, `drafts reject`) exit with "Wiki is disabled (set
+wiki = true in settings)". The CLI has no settings command: ask the user to set
+`wiki = true` in `config.toml` or on the `/settings` screen of `lilbee chat`.
 
 ## Commands
 
@@ -26,8 +33,11 @@ Each MCP tool has a CLI twin: `lilbee_wiki_<name>` is `lilbee --json wiki <name>
 |---|---|---|
 | Build the whole wiki | `build` (`--dry-run` previews candidates) | Long, one LLM call per source |
 | Refresh after a sync | `update` | Long, currently a full rebuild |
-| Cross-source pages | `synthesize` | Long |
+| Cross-source pages | `synthesize` (concept clusters with three or more sources) | Long |
+| Rebuild the browse index | `index` | Short, no LLM call |
+| Write one indexed page | `generate <slug>` | One LLM call |
 | Archive stale pages | `prune` | Short |
+| Delete every generated page | `wipe` (MCP `confirm=true`, CLI `--yes`) | Short, cannot be undone |
 | Inspect | `status`, `list`, `read <slug>`, `lint`, `citations`, `drafts list`, `drafts diff <slug>` | Short |
 
 A dry run of `build` makes no LLM call, so it is short.
@@ -44,4 +54,6 @@ A dry run of `build` makes no LLM call, so it is short.
 5. Run `lint` to find orphan pages and stale citations.
 
 Accepting or rejecting a draft changes the wiki the user sees. Do it only when the user
-asks.
+asks. The MCP tools only list and diff drafts. Accept and reject are CLI only:
+`lilbee --json wiki drafts accept <slug>` and `lilbee --json wiki drafts reject <slug>`.
+Run `wipe` only when the user asks.

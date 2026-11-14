@@ -27,9 +27,9 @@ the retrieval and ingest settings. Leave `chat_model` alone unless the user asks
 
 | Question style | Tune |
 |---|---|
-| Code questions, call graphs | Set `reranker_model`. Raise `rerank_candidates` to 24-48. Enable `concept_graph`. Lower `chunk_size` to 256-384. |
-| Long-document walkthroughs | Raise `top_k` to 12-16 and `max_context_sources`. Lower `diversity_max_per_source` to 1. |
+| Code questions, call graphs | Set `reranker_model`. Leave `concept_graph` on (the default). `rerank_candidates` is 60 by default: raise it for recall, lower it for speed. Lower `chunk_size` from 512 to 256-384. |
+| Long-document walkthroughs | Raise `top_k` from 12 to 16-20 and raise `max_context_sources` (default 8). Lower `diversity_max_per_source` from 5 to 1. |
 | Fact lookup across many sources | Raise `top_k` and `candidate_multiplier`. Keep `reranker_model` set. |
-| English question, code answer | Enable `hyde`. Raise `max_distance` to about 0.8. |
+| English question, code answer | Enable `hyde`. Raise `max_distance` from 0.75 to about 0.8. |
 
 `chunk_size`, `chunk_overlap` and a new `embedding_model` need a full re-index.
