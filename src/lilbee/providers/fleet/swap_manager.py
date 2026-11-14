@@ -1228,24 +1228,23 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
 
 
 def _lemonade_orphans() -> list[psutil.Process]:
-    """Live ``lemond`` and ``llama-server`` processes that run from a Lemonade role folder.
+    """Live ``lemond`` processes that run from a Lemonade role folder.
 
-    A Lemonade child listens on a port that lilbee never chose, so the member
-    ports do not find it. The role folder in its command line does. A process
-    below a live llama-swap belongs to a current run and is spared.
+    ``lemond`` listens on a port that lilbee never chose, so the member ports
+    do not find it. The role folder in its command line does. A process below a
+    live llama-swap belongs to a current run and is spared.
     """
     from lilbee.providers.fleet.engines.lemonade import data_root
 
     root = str(data_root())
     orphans: list[psutil.Process] = []
-    for needle in (_LEMONADE_PROCESS_NAME, _LLAMA_SERVER_PROCESS_NAME):
-        for proc in _processes_named(needle):
-            try:
-                cmdline = proc.cmdline()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-            if any(arg.startswith(root) for arg in cmdline) and not _has_live_swap_ancestor(proc):
-                orphans.append(proc)
+    for proc in _processes_named(_LEMONADE_PROCESS_NAME):
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if any(arg.startswith(root) for arg in cmdline) and not _has_live_swap_ancestor(proc):
+            orphans.append(proc)
     return orphans
 
 

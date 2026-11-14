@@ -1,4 +1,4 @@
-"""The Lemonade adapter: the ``lemond`` server, which starts its own llama.cpp children."""
+"""The Lemonade adapter: the ``lemond`` server, which runs NPU models through its flm recipe."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from lilbee.catalog.types import ModelFormat
+from lilbee.catalog.xdna import read_checkpoint
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import RoleServerSpec
-from lilbee.providers.fleet.binary import resolve_llama_server
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import engines_root
@@ -28,27 +28,29 @@ from lilbee.providers.fleet.engines.host_gate import PLATFORM_UNREAD, HostGate, 
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "2026.44.1"
 _TOOL = "lemond"
-_BACKEND = "cpu"
+_BACKEND = "npu"
 _HOST = "127.0.0.1"
 _LICENCES = ["Apache-2.0"]
 _XDNA2 = "XDNA2"
 _NPU_SYSTEMS = frozenset({HostOS.LINUX, HostOS.WINDOWS})
 _RESERVE_BYTES = 2 * 1024**3
-"""The figure charged for one role; the recorded chat, embed and rerank models fit under it."""
+"""The figure charged for one role; not measured on an NPU."""
 _ENDPOINTS = {
     WorkerRole.CHAT: "/v1/chat/completions",
     WorkerRole.EMBED: "/v1/embeddings",
 }
 _DATA_DIRNAME = "lemonade-data"
-_MODES = {
-    WorkerRole.CHAT: "chat",
-    WorkerRole.EMBED: "embeddings",
-}
+_RECIPE = "flm"
+_USER_PREFIX = "user."
+_KEY_CHECKPOINT = "checkpoint"
+_KEY_RECIPE = "recipe"
+_KEY_LABELS = "labels"
+_KEY_CTX = "ctx_size"
+_LABEL_EMBEDDINGS = "embeddings"
 _TMP_SUFFIX = ".tmp"
 _INSTALL_HINT = (
     "lilbee has no Lemonade pack. Install Lemonade from "
@@ -81,9 +83,14 @@ def role_dir(role: WorkerRole, replica: int) -> Path:
     return data_root() / f"{role.value}-{replica}"
 
 
-def model_name(role: WorkerRole) -> str:
-    """The name Lemonade gives the model of *role*, taken from the link file name."""
+def _entry_name(role: WorkerRole) -> str:
+    """The key of the model of *role* in ``user_models.json``."""
     return f"lilbee-{role.value}"
+
+
+def model_name(role: WorkerRole) -> str:
+    """The name Lemonade gives the model of *role* in requests and in ``recipe_options.json``."""
+    return f"{_USER_PREFIX}{_entry_name(role)}"
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -94,66 +101,24 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _links_to(link: Path, target: Path) -> bool:
-    """True when *link* already serves *target*, as a link or as a hard link or copy."""
-    if link.is_symlink():
-        return link.readlink() == target
-    try:
-        return link.is_file() and os.path.samefile(link, target)
-    except OSError:
-        return False
-
-
-def _place_model(link: Path, target: Path) -> None:
-    """Make *link* serve *target*: a symlink, else a hard link, else a copy."""
-    if _links_to(link, target):
-        return
-    link.parent.mkdir(parents=True, exist_ok=True)
-    tmp = link.with_name(link.name + _TMP_SUFFIX)
-    tmp.unlink(missing_ok=True)
-    for make in (os.symlink, os.link, shutil.copyfile):
-        try:
-            make(target, tmp)
-        except OSError:
-            continue
-        os.replace(tmp, link)
-        return
-    raise ProviderError(f"Lemonade cannot link the model {target} into {link.parent}.")
-
-
-def _recipe_ctx(role: WorkerRole, request: LaunchRequest) -> int:
-    """The context for the recipe: for embed, the one ``lemond`` serves, else the one asked.
-
-    ``lemond`` ignores ``ctx_size`` for an embed model and serves the trained
-    context (8192 for a 4096 ask on bge-m3, recorded in run p4). Chat and rerank
-    keep the figure. With several embed slots the per-slot share is not measured.
-    """
-    asked = request.ctx_per_slot * request.slots
-    if role is not WorkerRole.EMBED:
-        return asked
-    meta = read_gguf_metadata(request.model_path)
-    return max(asked, train_ctx_from_meta(meta, fallback=asked, model_path=request.model_path))
+def _registration(role: WorkerRole, tag: str) -> dict[str, dict[str, Any]]:
+    """The ``user_models.json`` content: one NPU-recipe model named by its tag."""
+    entry: dict[str, Any] = {_KEY_CHECKPOINT: tag, _KEY_RECIPE: _RECIPE}
+    if role is WorkerRole.EMBED:
+        entry[_KEY_LABELS] = [_LABEL_EMBEDDINGS]
+    return {_entry_name(role): entry}
 
 
 def _prepare(spec: RoleServerSpec, request: LaunchRequest) -> Path:
-    """Write the folders, the config and the model link of one role; safe to repeat."""
+    """Write the folders, the config and the model registration of one role; safe to repeat."""
     root = role_dir(spec.role, request.replica)
     (root / "cache").mkdir(parents=True, exist_ok=True)
-    view = root / "view"
-    _place_model(view / _MODES[spec.role] / f"{model_name(spec.role)}.gguf", request.model_path)
-    config = {
-        "extra_models_dir": str(view),
-        "websocket_port": "auto",
-        "llamacpp": {"backend": _BACKEND, "cpu_bin": str(resolve_llama_server().parent)},
-    }
-    recipe = {
-        f"extra.{model_name(spec.role)}": {
-            "ctx_size": _recipe_ctx(spec.role, request),
-            "llamacpp_args": f"--parallel {request.slots}",
-        }
-    }
-    _write_atomic(root / "config" / "config.json", json.dumps(config, indent=2))
-    _write_atomic(root / "config" / "recipe_options.json", json.dumps(recipe, indent=2))
+    registry = _registration(spec.role, read_checkpoint(request.model_path))
+    options = {model_name(spec.role): {_KEY_CTX: request.ctx_per_slot * request.slots}}
+    config = root / "config"
+    _write_atomic(config / "config.json", json.dumps({"websocket_port": "auto"}, indent=2))
+    _write_atomic(config / "user_models.json", json.dumps(registry, indent=2))
+    _write_atomic(config / "recipe_options.json", json.dumps(options, indent=2))
     return root
 
 
@@ -225,10 +190,10 @@ class LemonadeAdapter:
         return RoleServerSpec(role, _ENDPOINTS[role], (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The ``lemond`` command, after the role folder holds its config and model link.
+        """The ``lemond`` command, after the role folder holds its config and model entry.
 
-        Lemonade reads the model from the view folder in place, runs lilbee's own
-        llama-server, and picks the ports of its children and WebSocket itself.
+        ``lemond`` downloads the model on its first load and picks the ports of
+        its NPU server and WebSocket itself.
         """
         root = _prepare(spec, request)
         return [
