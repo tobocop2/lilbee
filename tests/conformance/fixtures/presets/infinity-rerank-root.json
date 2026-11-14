@@ -1,0 +1,67 @@
+{
+ "server": "infinity-rerank-root",
+ "version": "0.0.80 BAAI/bge-reranker-base torch-cpu",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "BAAI/bge-reranker-base"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": true,
+ "results": {
+  "rerank": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer infinity-rerank-root/BAAI/bge-reranker-base on your account. Pick a different model or check the name."
+  },
+  "named": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer infinity-rerank-root/BAAI/bge-reranker-base on your account. Pick a different model or check the name."
+  }
+ },
+ "error_answers": [
+  [
+   404,
+   "{\"detail\":\"Not Found\"}"
+  ],
+  [
+   404,
+   "{\"detail\":\"Not Found\"}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"Not Found\"}"
+  }
+ ]
+}

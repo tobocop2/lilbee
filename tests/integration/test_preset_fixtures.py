@@ -40,6 +40,7 @@ _ROW_STEPS = {
     "embed": "embed",
     "rerank": "rerank",
     "vision": "vision",
+    "named": "named",
 }
 _CITE = re.compile(r"`([a-z0-9-]+)`(?: \((pass|fail)\))?")
 _WIRE = re.compile(r" \(wire `[a-z0-9]+`\)$")
