@@ -1,0 +1,15 @@
+engine: mistralrs-cpu
+version: mistralrs 0.9.5 v0.9.5 cpu
+host: Linux-7.0.0-1014-gcp-x86_64-with-glibc2.39
+backend: cpu
+models: chat=Qwen/Qwen3-0.6B,embed=Qwen/Qwen3-Embedding-0.6B,vision=HuggingFaceTB/SmolVLM-256M-Instruct
+front: llama-swap v267, one mistral.rs process per model, request bodies pass through unchanged
+STEP mistralrs-cpu template ok=True finish=stop
+STEP mistralrs-cpu tool ok=True tool_calls=['get_weather']
+STEP mistralrs-cpu overflow ok=True kind=context_overflow
+STEP mistralrs-cpu json_object ok=True finish=stop
+STEP mistralrs-cpu json_schema ok=True finish=stop
+STEP mistralrs-cpu reasoning ok=True finish=stop
+STEP mistralrs-cpu embed ok=True dims=[1024]
+STEP mistralrs-cpu vision ok=True red_named=True blue_called_red=False
+STEP mistralrs-cpu named ok=True log=['served by engine=mistralrs-cpu version=preset role=chat model=mistralrs-cpu/Qwen/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'mistralrs-cpu', <WorkerRole.EMBED: 'embed'>: 'mistralrs-cpu'}

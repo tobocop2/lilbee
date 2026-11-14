@@ -22,6 +22,7 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.roles import WorkerRole
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _fake_client, _FakeSwap
 from tests.test_fleet_reload_gap import _SignalCondition
 
@@ -76,14 +77,14 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
 
 def _running_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FleetProvider:
     """A provider serving the current real plan, with fake servers and fake clients."""
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group, _engine: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _FakeSwap())
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     provider = FleetProvider()
     monkeypatch.setattr(provider, "_preload_roles", lambda roles=None: None)
     with provider._lock:
         for group, launches in _launches_by_group(
-            planning_mod.plan_all_launches(engine=LLAMA)
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         ).items():
             provider._adopt_group(group, _FakeSwap(), list(launches))
             provider._group_dirs[group] = tmp_path
@@ -107,9 +108,9 @@ def _apply_settings_write(monkeypatch, provider: FleetProvider, keys: set[str]) 
 
 
 def test_an_ocr_change_with_no_vision_model_leaves_every_launch_identical(real_planner) -> None:
-    before = planning_mod.plan_all_launches(engine=LLAMA).launches
+    before = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
     cfg.ocr = "off"
-    assert planning_mod.plan_all_launches(engine=LLAMA).launches == before
+    assert planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches == before
 
 
 def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
@@ -121,11 +122,13 @@ def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
     monkeypatch.setattr(cfg, "vision_model", _CHAT_REF)
     cfg.ocr = "all"
     before = {
-        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+        launch.role: launch
+        for launch in planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
     }
     cfg.ocr = "off"
     after = {
-        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+        launch.role: launch
+        for launch in planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
     }
     assert WorkerRole.VISION in before
     assert WorkerRole.VISION not in after
@@ -135,11 +138,13 @@ def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
 
 def test_a_chunk_size_change_moves_only_the_embed_window(real_planner) -> None:
     before = {
-        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+        launch.role: launch
+        for launch in planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
     }
     cfg.chunk_size = _NOTES_CHUNK_SIZE
     after = {
-        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+        launch.role: launch
+        for launch in planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
     }
     assert before[WorkerRole.CHAT] == after[WorkerRole.CHAT]
     assert before[WorkerRole.EMBED].ctx == _EMBED_WINDOW_AT_512
@@ -203,7 +208,7 @@ def test_a_request_during_a_real_embed_restart_gets_the_new_server(
             assert release.wait(_JOIN_S)
             super().start(*args, **kwargs)
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group, _engine: _HeldSwap())
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _HeldSwap())
     cfg.chunk_size = _NOTES_CHUNK_SIZE
     provider.reload_role(WorkerRole.VISION)
     assert starting.wait(_JOIN_S)
@@ -274,7 +279,9 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
     if captured:
         planning_mod.capture_plan_probe(LLAMA)
 
-    reason = planning_mod.plan_all_launches(engine=LLAMA).skipped_unusable_ctx[WorkerRole.CHAT]
+    reason = planning_mod.plan_all_launches(
+        engines=engines_for_all_roles(LLAMA)
+    ).skipped_unusable_ctx[WorkerRole.CHAT]
 
     assert ("Other processes hold" in reason) is names_other_processes
     if names_other_processes:

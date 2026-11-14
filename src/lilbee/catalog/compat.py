@@ -9,11 +9,10 @@ from huggingface_hub.utils import HFValidationError
 
 from lilbee.catalog.header_probe import GgufHeader, probe_header
 from lilbee.catalog.refs import (
-    GGUF_SUFFIX,
-    NATIVE_GGUF_REF_MIN_SLASHES,
     WILDCARD,
     gguf_filename_from_ref,
     hf_repo_from_ref,
+    is_native_gguf_shape,
 )
 from lilbee.catalog.types import ModelCompat
 
@@ -74,7 +73,7 @@ def _resolve_blob_url(ref: str) -> str:
     (the filename may add subdirs for a quant), so the repo and filename are split
     on that shape; an ollama-style ``repo:tag`` ref is split on the colon.
     """
-    if ref.endswith(GGUF_SUFFIX) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+    if is_native_gguf_shape(ref):
         repo, filename = hf_repo_from_ref(ref), gguf_filename_from_ref(ref)
     elif ":" in ref:
         repo, filename = ref.split(":", 1)

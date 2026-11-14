@@ -132,6 +132,10 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)
     yield _label_line("Reranker", reranker)
+    for served in status.serving:
+        yield _label_line(
+            f"{served.role.value.capitalize()} engine", f"{served.engine} {served.version}"
+        )
     yield _label_line(SCANNED_PAGES_LABEL, status.ocr_note)
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"

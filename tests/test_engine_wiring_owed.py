@@ -13,7 +13,7 @@ from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
-from lilbee.providers.fleet.engines.base import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from tests.conformance.fake_adapter import FAKE, FakeAdapter
 
 _REQUEST = MemoryRequest(

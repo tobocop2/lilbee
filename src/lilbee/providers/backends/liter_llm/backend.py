@@ -27,6 +27,7 @@ from lilbee.providers.backends.liter_llm.errors import (
 from lilbee.providers.backends.liter_llm.events import (
     _finish_reason,
     _next_chunk,
+    _reasoning,
     _text,
     _tool_call,
     _tool_call_delta,
@@ -39,6 +40,7 @@ from lilbee.providers.local_servers import (
     detect_local_server,
     openai_models_url,
 )
+from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -105,8 +107,11 @@ class LiterLlmBackend:
             raise _provider_error(_CHAT_FAILED, exc, model) from exc
         choice = response.choices[0] if response.choices else None
         message = choice.message if choice is not None else None
+        content = _text(message.content) if message is not None else ""
+        if message is not None and request.inline_reasoning:
+            content = inline_reasoning(_reasoning(message), content)
         return CompletionResult(
-            content=_text(message.content if message is not None else None),
+            content=content,
             finish_reason=_finish_reason(choice.finish_reason) if choice is not None else None,
             usage=_usage(response.usage),
             model=response.model or None,
@@ -132,10 +137,10 @@ class LiterLlmBackend:
             first = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
             raise _provider_error(_CHAT_FAILED, exc, model) from exc
-        return self._stream_chunks(stream, first, model)
+        return self._stream_chunks(stream, first, model, request.inline_reasoning)
 
     @staticmethod
-    def _stream_chunks(stream: Any, first: Any, model: str) -> Iterator[StreamChunk]:
+    def _stream_chunks(stream: Any, first: Any, model: str, inline: bool) -> Iterator[StreamChunk]:
         """Yield ``StreamChunk`` values from a liter-llm chunk stream.
 
         Exceptions raised mid-iteration are classified into ``ProviderError``
@@ -143,26 +148,31 @@ class LiterLlmBackend:
         where the SDK failed.
         """
         chunk = first
+        inliner = ThinkInliner(enabled=inline)
         try:
             while chunk is not None:
                 choice = chunk.choices[0] if chunk.choices else None
-                content = ""
+                text = ""
                 finish_reason = None
                 tool_call_deltas: tuple[SdkToolCallDelta, ...] = ()
                 if choice is not None:
                     delta = choice.delta
-                    content = delta.content or ""
+                    text = inliner.feed(_reasoning(delta), delta.content or "")
                     finish_reason = _finish_reason(choice.finish_reason)
                     tool_call_deltas = tuple(_tool_call_delta(c) for c in delta.tool_calls or [])
                 usage = _usage(chunk.usage) if chunk.usage is not None else None
-                if content or finish_reason or tool_call_deltas or usage is not None:
+                if finish_reason:
+                    text += inliner.finish()
+                if text or finish_reason or tool_call_deltas or usage is not None:
                     yield StreamChunk(
-                        content=content,
+                        content=text,
                         finish_reason=finish_reason,
                         tool_call_deltas=tool_call_deltas,
                         usage=usage,
                     )
                 chunk = asyncio_loop.run(_next_chunk(stream))
+            if tail := inliner.finish():
+                yield StreamChunk(content=tail)
         except Exception as exc:
             raise _provider_error(_CHAT_FAILED, exc, model) from exc
 

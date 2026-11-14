@@ -12,7 +12,7 @@
  "results": {
   "rerank": {
    "ok": false,
-   "detail": "ProviderError: The provider doesn't offer check/BAAI/bge-reranker-base on your account. Pick a different model or check the name."
+   "detail": "ProviderError: The provider doesn't offer tei-rerank-v1/BAAI/bge-reranker-base on your account. Pick a different model or check the name."
   }
  },
  "exchanges": [

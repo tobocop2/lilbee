@@ -26,7 +26,7 @@ from lilbee.app.profiles import (
 )
 from lilbee.app.settings import SettingInfo, SettingsUpdateResult
 from lilbee.app.settings_map import SettingGroup
-from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
+from lilbee.catalog.types import KeyStatus, ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config.defaults import MAX_CRAWL_DEPTH, MAX_CRAWL_PAGES
 from lilbee.core.config.enums import (
     CrawlRenderMode,
@@ -250,6 +250,15 @@ class StatusIndexInfo(BaseModel):
     """Why search and ingest stop when the embedding engine gives other vectors."""
 
 
+class ServingInfo(BaseModel):
+    """The engine and version that serve one configured role."""
+
+    role: WorkerRole
+    model: str
+    engine: str
+    version: str
+
+
 class StatusResponse(BaseModel):
     """Response for GET /api/status."""
 
@@ -270,6 +279,8 @@ class StatusResponse(BaseModel):
     skipped_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
+    serving: list[ServingInfo] = []
+    """The engine and version that serve each configured role."""
 
 
 class ShutdownResponse(BaseModel):
@@ -283,6 +294,8 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    chat_engine: str | None = None
+    """The engine that serves the chat model; absent when no chat model resolves."""
     chat_ready: bool = False
     """True once the chat engine is loaded and ready to serve a first token.
 
@@ -568,8 +581,18 @@ class CatalogEntryResponse(BaseModel):
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
     safety_stripped: bool = False
+    formats: list[str] = Field(default_factory=lambda: [ModelFormat.GGUF.value])
+    """The weight formats this host can run for the row; a pull takes one of them."""
     provider: str = ""
     key_status: KeyStatus | None = None
+
+
+class HiddenEntryResponse(BaseModel):
+    """A catalog row the listing left out, and why."""
+
+    hf_repo: str
+    reason: str
+    text: str
 
 
 class ModelsCatalogResponse(BaseModel):
@@ -587,6 +610,8 @@ class ModelsCatalogResponse(BaseModel):
     has_more: bool = False
     next_offset: int | None
     truncated: bool = False
+    hidden: list[HiddenEntryResponse] = Field(default_factory=list)
+    hidden_summary: str = ""
 
 
 class ModelsInstalledResponse(BaseModel):
@@ -916,6 +941,7 @@ class RolePlacementResponse(BaseModel):
 
     role: WorkerRole
     model: str
+    engine: str
     devices: list[int]
     tensor_split: list[int] | None
     replicas: int
@@ -928,6 +954,14 @@ class SkippedRoleResponse(BaseModel):
     model: str
 
 
+class SkippedNoEngineResponse(BaseModel):
+    """A configured role left unplaced because no installed engine loads its model."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -937,6 +971,7 @@ class PlacementResponse(BaseModel):
     manual: bool
     spec_json: str | None
     skipped_not_installed: list[SkippedRoleResponse] = []
+    skipped_no_engine: list[SkippedNoEngineResponse] = []
     co_tenants: list[str] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
@@ -954,6 +989,7 @@ class PlacementResponse(BaseModel):
                 RolePlacementResponse(
                     role=r.role,
                     model=r.model,
+                    engine=r.engine,
                     devices=list(r.devices),
                     tensor_split=list(r.tensor_split) if r.tensor_split else None,
                     replicas=r.replicas,
@@ -965,6 +1001,10 @@ class PlacementResponse(BaseModel):
             spec_json=view.spec_json,
             skipped_not_installed=[
                 SkippedRoleResponse(role=s.role, model=s.model) for s in view.skipped_not_installed
+            ],
+            skipped_no_engine=[
+                SkippedNoEngineResponse(role=s.role, model=s.model, notice=s.notice)
+                for s in view.skipped_no_engine
             ],
             co_tenants=[r.value for r in view.co_tenants],
             rejected_spec_json=view.rejected_spec_json,
@@ -1009,6 +1049,63 @@ class PresetRemovedResponse(BaseModel):
     """Response for a preset removal."""
 
     removed: str
+
+
+class EngineRoleResponse(BaseModel):
+    """The engine of one role: its model, the engine it runs on and the notice, if any."""
+
+    role: WorkerRole
+    model: str
+    format: str
+    engine: str | None
+    notice: str | None
+
+
+class EngineRolesResponse(BaseModel):
+    """Response for the engine of every role."""
+
+    roles: list[EngineRoleResponse]
+
+
+class EngineBuildResponse(BaseModel):
+    """One installed engine build."""
+
+    engine: str
+    version: str
+    backend: str
+
+
+class EngineBuildsResponse(BaseModel):
+    """Response for the installed engine builds."""
+
+    builds: list[EngineBuildResponse]
+
+
+class EngineRemovedResponse(BaseModel):
+    """Response for a build removal: the build as one line."""
+
+    removed: str
+
+
+class EngineUseBody(BaseModel):
+    """Request body that chooses the engine for the model of one role."""
+
+    model: str
+    engine: str
+    confirm_embed_change: bool = False
+
+
+class EnginePreferBody(BaseModel):
+    """Request body that sets the global engine preference."""
+
+    engine: str
+    confirm_embed_change: bool = False
+
+
+class EngineChosenResponse(BaseModel):
+    """Response for an engine write: the engine now stored."""
+
+    engine: str
 
 
 class PresetAddBody(BaseModel):

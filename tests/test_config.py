@@ -33,6 +33,7 @@ from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX, env_var_name
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
     _TAKES_DEFAULT_WHEN_REFUSED,
+    SERVICE_ONLY_FIELDS,
     _TomlSource,
     env_value,
     value_is_set,
@@ -2790,7 +2791,7 @@ _OPEN_SETTINGS_THAT_REFUSE = {
 }
 
 # No variable sets these: the load warns that the variable is ignored and never stops.
-_SETTINGS_NO_VARIABLE_SETS = {"linked_roots"}
+_SETTINGS_NO_VARIABLE_SETS = {"linked_roots"} | SERVICE_ONLY_FIELDS
 
 
 _TEXT = "text"
