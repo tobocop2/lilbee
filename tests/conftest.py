@@ -268,6 +268,19 @@ def _suppress_model_scan(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_engine_model_lists(request, monkeypatch):
+    """Keep a catalog browse from reading an engine's published model list over the network.
+
+    Tests of that read use ``@pytest.mark.real_engine_model_lists`` and patch ``httpx.get``.
+    """
+    if "real_engine_model_lists" in {m.name for m in request.node.iter_markers()}:
+        return
+    from lilbee.catalog.hf_client import HfClient
+
+    monkeypatch.setattr(HfClient, "fetch_engine_models", lambda self, engine: [])
+
+
+@pytest.fixture(autouse=True)
 def _assume_provider_sdk_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
