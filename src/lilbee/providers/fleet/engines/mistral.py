@@ -37,6 +37,7 @@ _CONFIG = "config.json"
 _LAYERS_KEY = "num_hidden_layers"
 _TEXT_CONFIG_KEY = "text_config"
 _GGUF_LAYERS_KEY = "block_count"
+_SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
@@ -277,19 +278,20 @@ class MistralAdapter:
             label = "Metal" if backend == _METAL else "CPU"
             raise ProviderError(
                 f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
-                "Give the role one card."
+                f"{_SPLIT_FIX}"
             )
         layers = _layer_count(request.model_path)
         if layers is None:
             raise ProviderError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
-                "the model does not list its layer count. Give the role one card."
+                f"the model does not list its layer count. {_SPLIT_FIX}"
             )
         shares = _apportion(layers, ratio)
         if shares is None:
             raise ProviderError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
-                "the split leaves a card with no layer. Give the role fewer cards."
+                "the split leaves a card with no layer. "
+                f"Use the {EngineName.LLAMA.value} engine for this role."
             )
         return [_DEVICE_LAYERS, ";".join(f"{card}:{count}" for card, count in enumerate(shares))]
 
