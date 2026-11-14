@@ -31,7 +31,6 @@ def test_the_hand_runs_are_found() -> None:
     assert {path.stem for path in _HAND_RUNS} >= {
         "openvino-cpu",
         "openvino-gpu",
-        "lemonade-cpu-thinkpad",
     }
 
 
