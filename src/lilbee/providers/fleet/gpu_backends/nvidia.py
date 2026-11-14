@@ -21,10 +21,10 @@ from lilbee.providers.fleet.gpu_select import PCIVendorID
 _TOOL = "nvidia-smi"
 _QUERY = "index,utilization.gpu,temperature.gpu,memory.used,memory.total"
 _FIELDS = 5
-# The name is the last column: it is the only field that can hold a comma, and the row splits at
-# the first four commas only.
-_CARD_QUERY = "index,uuid,memory.total,memory.free,name"
-_CARD_FIELDS = 5
+# The query and the parser both read this tuple. The name is the last column: it is the only
+# field that can hold a comma, and the row splits at the commas before it only.
+_CARD_COLUMNS = ("index", "uuid", "memory.total", "memory.free", "name")
+_CARD_QUERY = ",".join(_CARD_COLUMNS)
 _COMPUTE_QUERY = "index,compute_cap"
 _COMPUTE_FIELDS = 2
 _TIMEOUT_S = 5.0
@@ -189,9 +189,10 @@ def cards() -> list[NvidiaCard]:
     return found if len(found) == len(listed) else []
 
 
-def readable_cards() -> list[NvidiaCard]:
-    """The cards whose memory read, in driver order; empty when nvidia-smi cannot run."""
-    return [card for card in map(_Listed.card, _listed(_cards_probe.read().out)) if card]
+def card_totals() -> list[tuple[str, int]]:
+    """``(uuid, total bytes)`` of each card whose total memory reads, in driver order."""
+    listed = _listed(_cards_probe.read().out)
+    return [(c.uuid, c.total_mib * MIB) for c in listed if c.total_mib is not None]
 
 
 def host_facts() -> dict[str, Any] | None:
@@ -235,10 +236,15 @@ def _compute_caps(out: str) -> dict[int, list[int]]:
 
 def _listed(out: str) -> list[_Listed]:
     """Every card row of the card query, whether or not its memory read."""
-    return [
-        _Listed(index, parts[1], parts[4], _as_int(parts[2]), _as_int(parts[3]))
-        for index, parts in _rows(out, _CARD_FIELDS)
-    ]
+    return [_listed_row(index, parts) for index, parts in _rows(out, len(_CARD_COLUMNS))]
+
+
+def _listed_row(index: int, parts: list[str]) -> _Listed:
+    """One card row, each field read by its column name in the card query."""
+    row = dict(zip(_CARD_COLUMNS, parts, strict=True))
+    return _Listed(
+        index, row["uuid"], row["name"], _as_int(row["memory.total"]), _as_int(row["memory.free"])
+    )
 
 
 def _as_int(field: str) -> int | None:

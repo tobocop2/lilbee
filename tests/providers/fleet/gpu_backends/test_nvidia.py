@@ -415,11 +415,71 @@ def test_a_probe_that_fails_at_once_is_run_again_after_the_short_cache(
     assert smi.runs == ["cards", "cards"]
 
 
-def test_readable_cards_leave_out_a_card_whose_memory_does_not_read(
+def test_card_totals_leave_out_a_card_whose_total_does_not_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _Smi(monkeypatch, cards=_NA_FIRST_CSV)
-    assert [c.uuid for c in nvidia_mod.readable_cards()] == ["GPU-b"]
+    assert nvidia_mod.card_totals() == [("GPU-b", 8192 * MIB)]
+
+
+def test_card_totals_keep_a_card_whose_free_memory_does_not_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards="0, GPU-a, 24576, 20000, n0\n1, GPU-b, 12288, [N/A], n1\n")
+    assert nvidia_mod.card_totals() == [("GPU-a", 24576 * MIB), ("GPU-b", 12288 * MIB)]
+
+
+_CARD_TABLE = (
+    {
+        "index": "0",
+        "uuid": "GPU-a",
+        "name": "Acme, Inc. Card",
+        "memory.total": "24576",
+        "memory.free": "23552",
+    },
+    {
+        "index": "1",
+        "uuid": "GPU-b",
+        "name": "NVIDIA GeForce RTX 3060",
+        "memory.total": "12288",
+        "memory.free": "10240",
+    },
+)
+
+
+def _print_asked_columns(_tool: str, args: list[str], _timeout: float = 5.0) -> str:
+    """A fake nvidia-smi that prints the card columns in the order the query names them."""
+    if "-x" in args:
+        return _CUDA_XML
+    columns = args[0].removeprefix("--query-gpu=").split(",")
+    if columns == ["index", "compute_cap"]:
+        return _COMPUTE_CSV
+    return "".join(", ".join(card[c] for c in columns) + "\n" for card in _CARD_TABLE)
+
+
+def test_the_card_query_and_its_parser_name_the_same_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(nvidia_mod, "run_smi", _print_asked_columns)
+    assert nvidia_mod.cards() == [
+        nvidia_mod.NvidiaCard(0, "GPU-a", "Acme, Inc. Card", 24576 * MIB, 23552 * MIB),
+        nvidia_mod.NvidiaCard(1, "GPU-b", "NVIDIA GeForce RTX 3060", 12288 * MIB, 10240 * MIB),
+    ]
+    assert nvidia_mod.card_totals() == [("GPU-a", 24576 * MIB), ("GPU-b", 12288 * MIB)]
+    facts = nvidia_mod.host_facts()
+    assert facts is not None
+    assert [g["name"] for g in facts["gpus"]] == ["Acme, Inc. Card", "NVIDIA GeForce RTX 3060"]
+
+
+@pytest.mark.parametrize("kind", ["cards", "compute", "cuda"])
+def test_a_fast_failure_is_not_run_again_inside_the_short_cache(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    smi = _Smi(monkeypatch, **{kind: ""})
+    nvidia_mod.host_facts()
+    smi.now += nvidia_mod._CACHE_TTL_S - 0.1
+    nvidia_mod.host_facts()
+    assert smi.runs.count(kind) == 1
 
 
 def test_host_facts_keep_a_card_whose_memory_does_not_read(
