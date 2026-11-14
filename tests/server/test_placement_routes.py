@@ -101,6 +101,39 @@ def test_get_gpus_provider_error_returns_503(monkeypatch):
         assert r.status_code == 503
 
 
+def test_get_placement_os_error_returns_503(monkeypatch):
+    async def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr(handlers, "placement", boom)
+    with create_test_client([placement_route]) as client:
+        r = client.get("/api/placement")
+        assert r.status_code == 503
+        assert "device node unreadable" in r.text
+
+
+def test_get_gpus_os_error_returns_503(monkeypatch):
+    async def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr(handlers, "gpus", boom)
+    with create_test_client([gpus_route]) as client:
+        r = client.get("/api/gpus")
+        assert r.status_code == 503
+        assert "device node unreadable" in r.text
+
+
+def test_gpu_stream_os_error_returns_503(monkeypatch):
+    def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr("lilbee.app.placement.get_placement", boom)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        r = client.get("/api/gpus/stream")
+        assert r.status_code == 503
+        assert "device node unreadable" in r.text
+
+
 def test_preview_unfit_returns_422(monkeypatch):
     from lilbee.providers.fleet.placement_spec import PlacementError
 

@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.app.placement import (
+    PLACEMENT_READ_ERRORS,
     PlacementView,
     get_placement,
     preview_placement,
@@ -20,11 +21,8 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.runtime.console import styled
-
-_PLACEMENT_ERRORS = (PlacementError, ProviderError, OSError)
 
 placement_app = typer.Typer(
     name="placement",
@@ -52,7 +50,7 @@ def _guard(action: Callable[[], PlacementView]) -> None:
     """Run a placement action and render it, turning known failures into a clean exit."""
     try:
         view = action()
-    except _PLACEMENT_ERRORS as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:

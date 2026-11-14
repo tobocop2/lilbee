@@ -1,10 +1,11 @@
 import pytest
 
 from lilbee.app import placement as app_placement
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement import InstancePlan
-from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.planning import ResolvedPlacement
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import engines_for_all_roles
@@ -629,19 +630,35 @@ def test_size_unknown_notices_keeps_the_notices_of_the_asked_role(monkeypatch):
             app_placement.SizeUnknownRole(WorkerRole.EMBED, "b", "embed notice"),
         ),
     )
-    monkeypatch.setattr(app_placement, "get_placement", lambda: view)
+    monkeypatch.setattr(app_placement, "_read_placement", lambda: view)
     assert app_placement.size_unknown_notices(WorkerRole.CHAT) == ["chat notice"]
     assert app_placement.size_unknown_notices(WorkerRole.VISION) == []
 
 
-def test_size_unknown_notices_is_empty_when_the_placement_cannot_be_read(monkeypatch):
-    from lilbee.providers.base import ProviderError
-
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ProviderError("llama-server binary not found."),
+        PlacementError("A saved spec names a card the machine lacks."),
+        OSError("model folder unreadable"),
+    ],
+    ids=["provider", "placement", "os"],
+)
+def test_size_unknown_notices_is_empty_when_the_placement_cannot_be_read(monkeypatch, failure):
     def unreadable():
-        raise ProviderError("llama-server binary not found.")
+        raise failure
 
-    monkeypatch.setattr(app_placement, "get_placement", unreadable)
+    monkeypatch.setattr(app_placement, "_read_placement", unreadable)
     assert app_placement.size_unknown_notices(WorkerRole.CHAT) == []
+
+
+def test_size_unknown_notices_lets_a_programming_error_through(monkeypatch):
+    def broken():
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(app_placement, "_read_placement", broken)
+    with pytest.raises(RuntimeError, match="bug"):
+        app_placement.size_unknown_notices(WorkerRole.CHAT)
 
 
 def _bare_view():

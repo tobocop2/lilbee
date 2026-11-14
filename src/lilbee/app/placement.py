@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 
 from lilbee.app.engine_choice import BookReading, EngineBook
@@ -24,6 +24,9 @@ from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
 log = logging.getLogger(__name__)
+
+PLACEMENT_READ_ERRORS = (PlacementError, ProviderError, OSError)
+"""What reading the placement raises: a bad spec, an engine probe that fails, an unreadable file."""
 
 _PLACEMENT_KEY = "placement"
 
@@ -231,6 +234,12 @@ def _resolve(
     )
 
 
+def _log_size_unknown(notices: Iterable[str]) -> None:
+    """Record each sentence that says a model has no known size."""
+    for notice in notices:
+        log.warning("%s", notice)
+
+
 def get_placement() -> PlacementView:
     """The current effective placement (manual if a spec is set, else auto).
 
@@ -238,7 +247,15 @@ def get_placement() -> PlacementView:
     the fleet runs the auto plan, and this reports that rather than a manual layout
     nothing is using. A spec that drops a role (a target its engine cannot run, a
     card the machine lacks) reports the roles that run and the reason for the rest.
+    Each model of unknown size is logged once per read.
     """
+    view = _read_placement()
+    _log_size_unknown(unknown.notice for unknown in view.size_unknown)
+    return view
+
+
+def _read_placement() -> PlacementView:
+    """The placement of :func:`get_placement`, without the size log."""
     reading = _planning_engines()
     try:
         spec = _active_spec()
@@ -272,13 +289,19 @@ def get_placement() -> PlacementView:
 
 
 def size_unknown_notices(role: WorkerRole) -> list[str]:
-    """The sentences that say the model of *role* has no known size."""
+    """The sentences that say the model of *role* has no known size; none if unreadable.
+
+    Each sentence is logged once per call, so a surface that asks for the role it
+    just started logs the fact once.
+    """
     try:
-        view = get_placement()
-    except ProviderError as exc:
+        view = _read_placement()
+    except PLACEMENT_READ_ERRORS as exc:
         log.debug("No size notice for the %s model: the placement could not be read: %s", role, exc)
         return []
-    return [unknown.notice for unknown in view.size_unknown if unknown.role is role]
+    notices = [unknown.notice for unknown in view.size_unknown if unknown.role is role]
+    _log_size_unknown(notices)
+    return notices
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:

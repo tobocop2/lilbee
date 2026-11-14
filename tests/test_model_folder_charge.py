@@ -397,16 +397,13 @@ class TestAnUnknownSizeInThePlan:
         monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
         return planning._estimate_role(WorkerRole.CHAT, _REF, engine=MISTRAL, slots=1)
 
-    def test_the_plan_says_the_size_is_unknown_and_names_the_reserve(
+    def test_the_plan_charges_the_reserve_and_leaves_the_log_to_the_notice(
         self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with caplog.at_level(logging.WARNING, logger=planning.log.name):
+        with caplog.at_level(logging.DEBUG, logger=planning.log.name):
             placed = self._estimate(_folder(tmp_path), monkeypatch)
         assert placed.est_vram_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
-        assert (
-            f"The size of the chat model {_REF} is unknown, so 8.0 GiB is reserved for it"
-            in caplog.text
-        )
+        assert "is unknown" not in caplog.text
 
     def test_the_input_records_that_the_size_is_unknown(self, tmp_path: Path, monkeypatch) -> None:
         assert self._estimate(_folder(tmp_path), monkeypatch).size_known is False
@@ -429,6 +426,133 @@ class TestAnUnknownSizeInThePlan:
         monkeypatch.setattr(planning._read_device_cache, "get", lambda _binary, _engine: reading)
         monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: Path("/nonexistent/mistralrs"))
         return planning.resolve_placement_plan(None, engines={WorkerRole.CHAT: MISTRAL})
+
+    def _unknown_chat_model(self, folder: Path, monkeypatch) -> None:
+        """Plan the real placement of one installed chat model whose size is unknown."""
+        from lilbee.app import placement as app_placement
+        from lilbee.app.engine_choice import BookReading
+
+        monkeypatch.setattr(
+            app_placement,
+            "_planning_engines",
+            lambda: BookReading(adapters={WorkerRole.CHAT: MISTRAL}, notices={}),
+        )
+        monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+        self._resolved(folder, monkeypatch)
+
+    def _announce_cold_asks(self, asks: int = 2):
+        """Cold asks that announce the embed then the chat engine; the printed lines of each."""
+        from unittest import mock
+
+        from lilbee.app.services import set_services
+        from lilbee.cli import helpers
+
+        services = mock.MagicMock()
+        services.provider.warm_progress.return_value = None
+        set_services(services)
+        printed: list[list[str]] = []
+        for _ask in range(asks):
+            err = mock.MagicMock()
+            helpers.announce_ready(err, WorkerRole.EMBED)
+            helpers.announce_ready(err, WorkerRole.CHAT)
+            printed.append(
+                [c.args[0] for c in err.print.call_args_list if "is unknown" in c.args[0]]
+            )
+        return printed
+
+    @staticmethod
+    def _unknown_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if "is unknown" in r.getMessage()]
+
+    def test_each_cold_ask_logs_the_unknown_size_once_and_a_warm_ask_logs_nothing(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.cli import helpers
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        counts = []
+        with caplog.at_level(logging.DEBUG):
+            for _ask in range(2):
+                caplog.clear()
+                self._announce_cold_asks(asks=1)
+                counts.append(self._unknown_records(caplog))
+            caplog.clear()
+            helpers.announce_ready(None, WorkerRole.EMBED)
+            helpers.announce_ready(None, WorkerRole.CHAT)
+            warm = self._unknown_records(caplog)
+        assert [len(records) for records in counts] == [1, 1]
+        assert [r.levelno for r in counts[0]] == [logging.WARNING]
+        assert "the chat model" in counts[0][0].getMessage()
+        assert warm == []
+
+    def test_a_cold_ask_prints_the_unknown_size_once_when_the_log_is_not_on_the_terminal(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            printed = self._announce_cold_asks()
+        assert [len(lines) for lines in printed] == [1, 1]
+
+    def test_a_cold_ask_shows_the_unknown_size_once_when_the_log_prints_on_stderr(
+        self, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import sys
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(logging.WARNING)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            printed = self._announce_cold_asks()
+        finally:
+            root.removeHandler(handler)
+        logged = [line for line in capsys.readouterr().err.splitlines() if "is unknown" in line]
+        assert [len(lines) for lines in printed] == [0, 0]
+        assert len(logged) == 2
+
+    def test_reading_the_placement_view_logs_the_unknown_size_once_per_read(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.app import placement as app_placement
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            view = app_placement.get_placement()
+            first = self._unknown_records(caplog)
+            app_placement.get_placement()
+            both = self._unknown_records(caplog)
+        assert [u.role for u in view.size_unknown] == [WorkerRole.CHAT]
+        assert (len(first), len(both)) == (1, 2)
+
+    def test_a_known_size_logs_nothing_on_a_view_read(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.app import placement as app_placement
+
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        self._unknown_chat_model(folder, monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            view = app_placement.get_placement()
+        assert view.size_unknown == ()
+        assert self._unknown_records(caplog) == []
+
+    def test_the_launch_plan_logs_the_unknown_size_once(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.providers.fleet.devices import FleetDevice
+
+        folder = _folder(tmp_path)
+        self._resolved(folder, monkeypatch)
+        card = FleetDevice(
+            backend="CUDA", index=0, name="card", total_bytes=24 * GIB, free_bytes=24 * GIB
+        )
+        with caplog.at_level(logging.DEBUG):
+            planning.plan_launches(None, {0: card}, [card], engines={WorkerRole.CHAT: MISTRAL})
+        records = self._unknown_records(caplog)
+        assert [r.levelno for r in records] == [logging.WARNING]
+        assert "the chat model" in records[0].getMessage()
 
     def test_the_resolved_placement_lists_the_role_of_unknown_size(
         self, tmp_path: Path, monkeypatch
