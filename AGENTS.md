@@ -39,10 +39,10 @@ Every code change MUST be tracked as a beads task. Create tasks before starting 
 
 ## Commands
 ```bash
-uv sync                       # Install dependencies
+uv sync --extra providers     # Install dependencies; make check needs the providers extra
 make check                    # Run all checks: lint, license-check, format, typecheck, test, test-presets (same as CI)
 make test                     # Tests with coverage
-make test-presets             # Preset fixture replay (needs the providers extra)
+make test-presets             # Preset fixture replay
 make lint                     # Ruff linting
 make license-check            # Fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
 make typecheck                # Mypy
