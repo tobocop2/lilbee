@@ -188,7 +188,7 @@ def warn_when_chat_downsized(launch: InstanceLaunch) -> None:
 # (see _resolve_split_chat_slots) when the cards measurably have room for several
 # full windows, so this is a planning floor, not the served slot count.
 _SPLIT_CHAT_SLOTS = 1
-# Floor context the PLACEMENT estimate reserves KV for, so a large model is never
+# Floor context the PLACEMENT estimate of a sized engine reserves KV for, so a large model is never
 # single-carded into a KV corner too small for real use (a 17GB model on a 24GB
 # card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
 # placement reserve against this floor forces a tensor-split when one card cannot
