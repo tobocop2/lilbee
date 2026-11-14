@@ -472,6 +472,15 @@ class TestMaskNamesCardsByIndex:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         assert _try_nvidia_memory() is None
 
+    @pytest.mark.parametrize("mask", ["1,1", "2,1,2", "GPU-1,GPU-1", "1,GPU-1"])
+    def test_a_mask_that_repeats_a_card_leaves_the_budget_unknown(
+        self, monkeypatch, mask: str
+    ) -> None:
+        """NVIDIA documents no rule for a repeated entry, so the budget stays unknown."""
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert _try_nvidia_memory(sum) is None
+
     @pytest.mark.parametrize(
         ("mask", "expected_gib"),
         [("2,1", 24), ("2,9,1", 8), ("1x", None), ("3", None), (" 2 , 1 ", 24)],

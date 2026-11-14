@@ -245,7 +245,9 @@ def _apply_cuda_visible_mask(devices: list[CardTotal]) -> list[CardTotal]:
     stops enumerating at the first entry that names no device, and so does
     this, which is what makes ``0,9,1`` on a two-card host mean one card
     rather than two. A named card whose total does not read stays in the
-    result, so the caller sees that the budget is unknown.
+    result, so the caller sees that the budget is unknown. NVIDIA documents no
+    rule for a repeated entry, so a mask that names one card twice exposes
+    nothing here: the budget is unknown.
     """
     raw = gpu_environ().get("CUDA_VISIBLE_DEVICES")
     if raw is None:
@@ -255,6 +257,8 @@ def _apply_cuda_visible_mask(devices: list[CardTotal]) -> list[CardTotal]:
         matched = _resolve_cuda_entry(entry, devices)
         if matched is None:
             break
+        if matched in visible:
+            return []
         visible.append(matched)
     return visible
 
