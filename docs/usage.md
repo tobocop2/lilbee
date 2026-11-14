@@ -524,8 +524,11 @@ Error: No installed engine loads the openvino format of org/repo#openvino. Run l
 
 To pull a model in a format other than GGUF, add the format name to the
 reference as `org/repo#format`. Here `openvino` and `mlx` are names of weight
-formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
-`safetensors`. A reference with no `#format` is GGUF.
+formats, not engines. The format name is `gguf`, `mlx`, `openvino`, `safetensors`
+or `xdna`. A reference with no `#format` is GGUF.
+
+An `xdna` reference names an NPU model by its tag, as in `qwen3:0.6b#xdna`. The pull
+writes a small record and no weights. Lemonade downloads the model the first time it loads it.
 
 ### Install an engine
 
@@ -544,6 +547,10 @@ Lemonade has no pack, so you install it yourself. Follow the
 `lemonade-embeddable` archive from the Lemonade releases. Then put the folder with `lemond`
 on `PATH`. lilbee finds `lemond` there, and `lilbee engine list` no longer lists lemonade
 as not installed.
+
+Lemonade serves chat and embed models on an AMD XDNA2 NPU, through its `flm` recipe. It does
+not serve rerank, and it does not run GGUF models. On Windows lilbee cannot read the NPU, so
+Lemonade runs only when you choose it. lilbee has no recorded run of Lemonade on an NPU.
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
