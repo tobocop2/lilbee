@@ -239,6 +239,23 @@ def test_a_child_run_that_hits_its_limit_leaves_no_worker_alive(tmp_path: Path) 
             psutil.Process(worker_pid).kill()
 
 
+def _without_repo_test_paths(args: list[str]) -> list[str]:
+    """The arguments minus the test files and directories a target names in this repo.
+
+    The toy suite in the child's working directory takes their place, so the child
+    collects it and keeps every flag of the target.
+    """
+    return [a for a in args if a.startswith("-") or not (_REPO_ROOT / a.split("::")[0]).exists()]
+
+
+def test_the_presets_target_names_a_repo_test_path_the_toy_run_drops() -> None:
+    args = _XDIST_TARGETS["test-presets"]
+    toy_args = _without_repo_test_paths(args)
+    assert len(toy_args) < len(args)
+    assert not any(a.endswith(".py") for a in toy_args)
+    assert _without_repo_test_paths(_XDIST_TARGETS["test"]) == _XDIST_TARGETS["test"]
+
+
 @pytest.mark.timeout(_RUN_BUDGET_S * 2)
 @pytest.mark.parametrize("target", sorted(_XDIST_TARGETS))
 def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path: Path) -> None:
@@ -247,7 +264,14 @@ def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path
     env = {k: v for k, v in os.environ.items() if not k.startswith(_CHILD_ENV_PREFIXES)}
     env[_MARKER_ENV] = str(tmp_path / "died-once")
     output, returncode = _run_bounded_child(
-        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *_XDIST_TARGETS[target]],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            *_without_repo_test_paths(_XDIST_TARGETS[target]),
+        ],
         cwd=tmp_path,
         env=env,
     )
