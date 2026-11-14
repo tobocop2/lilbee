@@ -12,9 +12,10 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from huggingface_hub import HfApi, ModelInfo
-from huggingface_hub.errors import HfHubHTTPError, NotASafetensorsRepoError, SafetensorsParsingError
+from huggingface_hub import HfApi, ModelInfo, hf_hub_url
+from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.hf_api import RepoSibling
+from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
 from lilbee.catalog.compat import classify
 from lilbee.catalog.content import is_safety_stripped
@@ -97,7 +98,13 @@ _HF_EXPAND_FIELDS: list[str] = [
     "pipeline_tag",
     "cardData",
     "tags",
+    "safetensors",
 ]
+
+_CONFIG_FILE = "config.json"
+_WEIGHT_FORMATS = frozenset({ModelFormat.SAFETENSORS, ModelFormat.MLX})
+"""The formats whose size a listing row reads from the safetensors tensor counts."""
+_BYTES_PER_GIB = 1024**3
 
 # Query parameter carrying the listing position in the ``Link rel=next`` URL.
 _HF_CURSOR_PARAM = "cursor"
@@ -208,28 +215,56 @@ def repo_has_mmproj(hf_repo: str) -> bool:
     return any(fnmatch.fnmatch(s.rfilename, DEFAULT_MMPROJ_PATTERN) for s in siblings)
 
 
-def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[str, int]:
-    """The per-dtype tensor count of a Hub repo, read from the safetensors headers alone.
+_HUB_READ_ERRORS = (
+    HfHubHTTPError,
+    httpx.HTTPError,
+    OSError,
+    AttributeError,
+    TypeError,
+    ValueError,
+    KeyError,
+)
 
-    Returns an empty dict when the repo has no readable header, so the caller
-    reaches the unknown-size reserve instead of an error. A header that parses but
-    has the wrong shape (a list where a mapping belongs) counts as unreadable.
+
+def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[str, int]:
+    """The per-dtype tensor count of a Hub repo, from one request for its safetensors figures.
+
+    Returns an empty dict when the repo has no figures or the Hub cannot be read, so the
+    caller reaches the unknown-size reserve instead of an error.
     """
     try:
-        counts = HfApi().get_safetensors_metadata(repo, token=token).parameter_count
+        info = HfApi().model_info(repo, expand=["safetensors"], token=token)
+        counts = info.safetensors.parameters if info.safetensors else {}
         return {str(dtype): count for dtype, count in counts.items()}
-    except (
-        HfHubHTTPError,
-        NotASafetensorsRepoError,
-        SafetensorsParsingError,
-        OSError,
-        AttributeError,
-        TypeError,
-        ValueError,
-        KeyError,
-    ) as exc:
-        log.debug("No safetensors header for %s: %s", repo, exc)
+    except _HUB_READ_ERRORS as exc:
+        log.debug("No safetensors figures for %s: %s", repo, exc)
         return {}
+
+
+def read_model_config(repo: str, *, token: str | bool | None = None) -> dict[str, Any] | None:
+    """The ``config.json`` of a Hub repo, or None when it is missing, unreadable or no mapping."""
+    try:
+        resp = get_session().get(
+            hf_hub_url(repo, _CONFIG_FILE),
+            headers=build_hf_headers(token=token),
+            follow_redirects=True,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        hf_raise_for_status(resp)
+        config = resp.json()
+    except _HUB_READ_ERRORS as exc:
+        log.debug("No config.json for %s: %s", repo, exc)
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _weights_gb(counts: dict[str, int]) -> float:
+    """The weight size in GiB, to 0.1, of the listing's tensor counts; 0.0 when unknown."""
+    # circular: model_memory imports lilbee.catalog.types, whose package imports this module.
+    from lilbee.providers.fleet.model_memory import weights_from_header
+
+    weights = weights_from_header(counts)
+    return round(weights / _BYTES_PER_GIB, 1) if weights is not None else 0.0
 
 
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
@@ -390,7 +425,11 @@ class HfClient:
             return None
         card_desc = item.card_data.get("description", "") if item.card_data else ""
         gguf_meta = HfGgufMeta(**(item.gguf or {}))
-        size_gb = estimate_size_gb(gguf_meta.total, filename)
+        size_gb = (
+            _weights_gb(item.safetensors.parameters if item.safetensors else {})
+            if fmt in _WEIGHT_FORMATS
+            else estimate_size_gb(gguf_meta.total, filename)
+        )
         self.cache_arch(item.id, gguf_meta.architecture)
         return CatalogModel(
             hf_repo=item.id,

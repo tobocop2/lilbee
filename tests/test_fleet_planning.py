@@ -703,6 +703,24 @@ def test_placement_estimate_ctx_chat_capped_by_short_ceiling(monkeypatch) -> Non
     assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 2048
 
 
+def test_configured_chat_ctx_is_the_pin_when_set(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", 1024)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
+    assert planning_mod.configured_chat_ctx() == 1024
+
+
+def test_configured_chat_ctx_is_the_target_above_the_usable_floor(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
+    assert planning_mod.configured_chat_ctx() == 24576
+
+
+def test_configured_chat_ctx_floors_a_tiny_target(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
+    assert planning_mod.configured_chat_ctx() == planning_mod._MIN_USABLE_CHAT_CTX
+
+
 def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", 16384)
     assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384

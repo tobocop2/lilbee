@@ -12,7 +12,7 @@ import pytest
 from lilbee.app.services import get_services
 from lilbee.catalog import download
 from lilbee.catalog.formats import formats_from_tags, hf_listing_params, select_files
-from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.models import CatalogModel, estimate_size_gb
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
@@ -238,6 +238,48 @@ class TestHfClientFormat:
         row = _hub_row("o/m", files, ["safetensors"])
         page, _params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
         assert page.models == []
+
+    def test_the_listing_asks_for_the_safetensors_figures(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], ["safetensors"])
+        _page, params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
+        assert "safetensors" in params.get_list("expand")
+
+    @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
+    def test_a_row_carries_its_weight_size_from_the_listing_counts(
+        self, monkeypatch: pytest.MonkeyPatch, fmt: ModelFormat
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], [fmt.value, "safetensors"])
+        counts = {"BF16": 3 * 1024**3, "F32": 1024**3 // 4}
+        row["safetensors"] = {"parameters": counts, "total": sum(counts.values())}
+        page, _params = self._fetch(monkeypatch, [row], fmt)
+        assert page.models[0].size_gb == 7.0
+
+    def test_a_row_with_no_figures_keeps_a_size_of_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], ["safetensors"])
+        page, _params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
+        assert page.models[0].size_gb == 0.0
+
+    def test_a_row_with_unreadable_figures_keeps_a_size_of_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], ["safetensors"])
+        row["safetensors"] = {"parameters": {"BF16": -1}, "total": -1}
+        page, _params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
+        assert page.models[0].size_gb == 0.0
+
+    def test_a_gguf_row_keeps_its_size_from_the_gguf_parameter_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m-gguf", ["m-Q4_K_M.gguf"], ["gguf"])
+        row["safetensors"] = {"parameters": {"BF16": 100 * 1024**3}, "total": 100 * 1024**3}
+        row["gguf"] = {"total": 8_000_000_000}
+        page, _params = self._fetch(monkeypatch, [row], ModelFormat.GGUF)
+        assert page.models[0].size_gb == estimate_size_gb(8_000_000_000, "m-Q4_K_M.gguf")
+        assert 0 < page.models[0].size_gb < 100
 
     def test_gguf_listing_stays_gguf_with_the_search_word(
         self, monkeypatch: pytest.MonkeyPatch

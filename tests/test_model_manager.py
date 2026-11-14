@@ -1,5 +1,6 @@
 """Tests for model_manager.py: model lifecycle management across sources."""
 
+import logging
 import sys
 import threading
 from collections.abc import Iterator
@@ -11,7 +12,7 @@ import pytest
 from cachetools import TTLCache
 
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import (
     ModelManager,
@@ -797,6 +798,69 @@ class TestModelManagerPull:
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
         assert entry.gguf_filename == "gemma-2-2b-it-Q4_K_M.gguf"
         assert entry.featured is False
+
+    @staticmethod
+    def _pull_entry(tmp_path: Path, fmt: ModelFormat, task: ModelTask) -> list[object]:
+        """Pull one entry through ``_pull_native``; return the fit and download steps in order."""
+        from lilbee.catalog.pull_fit import PullFit
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        entry = CatalogModel(
+            hf_repo="acme/test-model",
+            gguf_filename="model.safetensors",
+            size_gb=0.0,
+            min_ram_gb=0.0,
+            description="",
+            featured=False,
+            downloads=0,
+            task=task,
+            format=fmt,
+        )
+        steps: list[object] = []
+
+        def fit(repo: str, ctx: int, *, token: object = None) -> PullFit:
+            steps.append(("fit", repo, ctx))
+            return PullFit(device_bytes=5 * 1024**3, ctx=ctx, size_known=True, upper_bound=False)
+
+        def download(*_args: object, **_kwargs: object) -> Path:
+            steps.append("download")
+            return models_dir / "model.safetensors"
+
+        with (
+            mock.patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+            mock.patch("lilbee.catalog.pull_fit.chat_pull_fit", side_effect=fit),
+            mock.patch("lilbee.catalog.download_model", side_effect=download),
+        ):
+            ModelManager(models_dir, cfg)._pull_native("acme/test-model", mock.Mock())
+        return steps
+
+    @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
+    def test_a_safetensors_chat_pull_works_out_the_memory_need_before_the_download(
+        self, fmt: ModelFormat, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.providers.fleet.planning import configured_chat_ctx
+
+        with caplog.at_level(logging.INFO, logger="lilbee.modelhub.model_manager.core"):
+            steps = self._pull_entry(tmp_path, fmt, ModelTask.CHAT)
+        assert steps == [("fit", "acme/test-model", configured_chat_ctx()), "download"]
+        assert "acme/test-model: This model needs 5.0 GiB at a context of" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("fmt", "task"),
+        [
+            (ModelFormat.GGUF, ModelTask.CHAT),
+            (ModelFormat.SAFETENSORS, ModelTask.EMBEDDING),
+            (ModelFormat.SAFETENSORS, ModelTask.RERANK),
+            (ModelFormat.OPENVINO, ModelTask.CHAT),
+        ],
+    )
+    def test_a_pull_that_is_not_a_safetensors_chat_model_reads_no_memory_need(
+        self, fmt: ModelFormat, task: ModelTask, tmp_path: Path
+    ) -> None:
+        with mock.patch("lilbee.catalog.download.resolve_filename", return_value="m.gguf"):
+            steps = self._pull_entry(tmp_path, fmt, task)
+        assert steps == ["download"]
 
     def test_native_pull_unknown_short_name_raises(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"

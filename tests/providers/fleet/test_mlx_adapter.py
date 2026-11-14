@@ -16,6 +16,7 @@ import pytest
 from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import host_caps, swap_config
@@ -34,6 +35,7 @@ from lilbee.providers.fleet.engines.choice import (
 )
 from lilbee.providers.fleet.engines.mlx import MACOS_FLOOR, MLX
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import CHAT_RUNTIME_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
@@ -185,17 +187,36 @@ def test_model_meta_gives_nothing_for_a_missing_or_broken_file(tmp_path: Path) -
     assert MLX.model_meta(folder) is None
 
 
-def test_the_memory_estimate_is_a_fixed_reserve_of_the_weights(tmp_path: Path) -> None:
-    folder = tmp_path / "model"
-    folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 1000)
-    estimate = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, cfg.kv_cache_type))
-    assert MLX.memory_kind is MemoryKind.FIXED_RESERVE
-    assert (estimate.kind, estimate.device_bytes, estimate.shared_bytes) == (
-        MemoryKind.FIXED_RESERVE,
-        1000,
-        1000,
+def test_the_memory_estimate_is_the_weights_plus_the_cache_at_each_slot(tmp_path: Path) -> None:
+    folder = model_dir(
+        tmp_path,
+        {
+            "num_hidden_layers": 2,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+        },
     )
+    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    one = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, cfg.kv_cache_type))
+    two = MLX.estimate_memory(MemoryRequest(folder, 4096, 2, 99, True, cfg.kv_cache_type))
+    cache_per_slot = 32 * 4096
+    assert MLX.memory_kind is MemoryKind.FIXED_RESERVE
+    assert one.kind is MemoryKind.FIXED_RESERVE
+    assert one.device_bytes == 1000 + cache_per_slot + CHAT_RUNTIME_BYTES
+    assert two.device_bytes - one.device_bytes == cache_per_slot
+    assert one.shared_bytes == one.device_bytes
+
+
+def test_the_memory_estimate_ignores_the_cache_type_setting(tmp_path: Path) -> None:
+    folder = model_dir(
+        tmp_path,
+        {"num_hidden_layers": 2, "num_attention_heads": 2, "head_dim": 4},
+    )
+    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    q8 = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, KvCacheType.Q8_0))
+    f16 = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, KvCacheType.F16))
+    assert q8 == f16
 
 
 def test_the_probes_answer_without_running_the_binary(tmp_path: Path) -> None:
