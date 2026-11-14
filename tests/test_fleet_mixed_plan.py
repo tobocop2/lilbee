@@ -256,6 +256,19 @@ class TestCleanBoxSnapshotCharge:
         model = f"{role.value} model {ref} ({engine.name})"
         assert _m1(model, need, 12 * 0.9 - other_need, others) in _warnings(caplog)
 
+    def test_the_same_tenant_without_a_snapshot_is_charged_against_the_total(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
+        held = [FleetDevice("CUDA", 0, "gpu0", 24 * _GIB, 12 * _GIB)]
+        chat, embed = _pair(tmp_path, held, 9, 3, other_kind=MemoryKind.FIXED_RESERVE)
+        with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
+            plan = planning.plan_all_launches(
+                engines={WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
+            )
+        assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert "will not be served" not in _warnings(caplog)
+
 
 class TestUnifiedHostRefusal:
     def test_u1_chat_too_big_is_refused_and_embed_takes_no_card(
