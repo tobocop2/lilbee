@@ -304,6 +304,14 @@ class TestTryNvidiaMemory:
         assert _try_nvidia_memory() == 8 * 1024**3
         assert has_nvidia_gpu() is True
 
+    def test_keeps_a_card_whose_free_memory_does_not_read(self, monkeypatch) -> None:
+        """Only the total sizes the budget, so an unread free figure drops no card."""
+        _smi_lists(
+            monkeypatch, output="0, GPU-0, 24576, 20000, card0\n1, GPU-1, 12288, [N/A], card1\n"
+        )
+        assert _try_nvidia_memory() == 12 * 1024**3
+        assert _try_nvidia_memory(sum) == 36 * 1024**3
+
 
 class TestHeterogeneousGpuSizing:
     def test_takes_the_minimum_total_across_cards(self, monkeypatch) -> None:
