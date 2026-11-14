@@ -526,3 +526,90 @@ def test_get_placement_names_the_engine_that_serves_each_role(monkeypatch):
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     assert [r.engine for r in app_placement.get_placement().roles] == ["llama.cpp"]
     assert [r.engine for r in app_placement.preview_placement().roles] == ["llama.cpp"]
+
+
+def _resolved_size_unknown():
+    from dataclasses import replace
+
+    return replace(_resolved(), size_unknown_roles=(WorkerRole.CHAT,))
+
+
+def test_view_lists_a_role_of_unknown_size_with_its_notice(monkeypatch):
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_size_unknown()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    view = app_placement.get_placement()
+    assert view.size_unknown == (
+        app_placement.SizeUnknownRole(
+            role=WorkerRole.CHAT,
+            model="org/chat.gguf",
+            notice="The size of the chat model org/chat.gguf is unknown, "
+            "so 8.0 GiB is reserved for it.",
+        ),
+    )
+
+
+def test_view_lists_nothing_when_every_size_is_known(monkeypatch):
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    assert app_placement.get_placement().size_unknown == ()
+
+
+def test_the_response_carries_the_role_of_unknown_size(monkeypatch):
+    from lilbee.server.models import PlacementResponse
+
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_size_unknown()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    body = PlacementResponse.from_view(app_placement.get_placement()).model_dump(mode="json")
+    assert body["size_unknown"] == [
+        {
+            "role": "chat",
+            "model": "org/chat.gguf",
+            "notice": "The size of the chat model org/chat.gguf is unknown, "
+            "so 8.0 GiB is reserved for it.",
+        }
+    ]
+
+
+def test_the_mcp_placement_tool_carries_the_role_of_unknown_size(monkeypatch):
+    from lilbee.mcp_server import get_placement_tool
+
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_size_unknown()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    assert [s["role"] for s in get_placement_tool()["size_unknown"]] == ["chat"]
+
+
+def test_size_unknown_notices_keeps_the_notices_of_the_asked_role(monkeypatch):
+    from dataclasses import replace
+
+    view = replace(
+        _bare_view(),
+        size_unknown=(
+            app_placement.SizeUnknownRole(WorkerRole.CHAT, "a", "chat notice"),
+            app_placement.SizeUnknownRole(WorkerRole.EMBED, "b", "embed notice"),
+        ),
+    )
+    monkeypatch.setattr(app_placement, "get_placement", lambda: view)
+    assert app_placement.size_unknown_notices(WorkerRole.CHAT) == ["chat notice"]
+    assert app_placement.size_unknown_notices(WorkerRole.VISION) == []
+
+
+def test_size_unknown_notices_is_empty_when_the_placement_cannot_be_read(monkeypatch):
+    from lilbee.providers.base import ProviderError
+
+    def unreadable():
+        raise ProviderError("llama-server binary not found.")
+
+    monkeypatch.setattr(app_placement, "get_placement", unreadable)
+    assert app_placement.size_unknown_notices(WorkerRole.CHAT) == []
+
+
+def _bare_view():
+    return app_placement.PlacementView(
+        gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None
+    )

@@ -120,6 +120,16 @@ def _render_view(view: PlacementView) -> None:
             soft_wrap=True,
         )
 
+    _render_model_notices(view)
+
+    if view.hidden_note:
+        console.print(Text(f"  {view.hidden_note}"), style=theme.MUTED, soft_wrap=True)
+
+    _render_rejected(view)
+
+
+def _render_model_notices(view: PlacementView) -> None:
+    """Print a line for each role left out for want of an engine, and each of unknown size."""
     for no_engine in view.skipped_no_engine:
         console.print(
             Text.assemble(
@@ -129,10 +139,8 @@ def _render_view(view: PlacementView) -> None:
             soft_wrap=True,
         )
 
-    if view.hidden_note:
-        console.print(Text(f"  {view.hidden_note}"), style=theme.MUTED, soft_wrap=True)
-
-    _render_rejected(view)
+    for unknown in view.size_unknown:
+        console.print(Text(f"  {unknown.notice}", style=theme.WARNING), soft_wrap=True)
 
 
 def _render_rejected(view: PlacementView) -> None:

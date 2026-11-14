@@ -1983,6 +1983,7 @@ class ChatScreen(Screen[None]):
             chat_engine_ready,
             chat_warm_error,
             request_engine_warm,
+            size_unknown_notices,
             wait_chat_ready,
         )
 
@@ -2011,6 +2012,8 @@ class ChatScreen(Screen[None]):
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: self._turn_stopped(turn)):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")
+            for notice in size_unknown_notices(WorkerRole.CHAT):
+                call_from_thread(self, self.notify, notice, severity="warning")
             return True
         if self._turn_stopped(turn):
             return False

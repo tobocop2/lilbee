@@ -4,12 +4,26 @@ from __future__ import annotations
 
 from unittest import mock
 
+import pytest
 from rich.console import Console
 
+from lilbee.app import placement as app_placement
+from lilbee.app.placement import PlacementView, SizeUnknownRole
 from lilbee.app.services import set_services
 from lilbee.cli import helpers
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+
+def _placement_view(*size_unknown: SizeUnknownRole) -> PlacementView:
+    return PlacementView(
+        gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None, size_unknown=size_unknown
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_size_unknown_roles(monkeypatch) -> None:
+    monkeypatch.setattr(app_placement, "get_placement", lambda: _placement_view())
 
 
 def _services_with_role_ready(ready: bool) -> mock.MagicMock:
@@ -91,3 +105,32 @@ def test_announce_ready_for_a_non_chat_role_ignores_the_chat_warm_tracker() -> N
     err = mock.MagicMock()
     helpers.announce_ready(err, WorkerRole.EMBED)
     assert "ready" in err.print.call_args.args[0].lower()
+
+
+def test_announce_ready_names_a_model_of_unknown_size_after_the_ready_line(monkeypatch) -> None:
+    notice = "The size of the chat model org/m is unknown, so 8.0 GiB is reserved for it."
+    view = _placement_view(
+        SizeUnknownRole(WorkerRole.CHAT, "org/m", notice),
+        SizeUnknownRole(WorkerRole.EMBED, "org/e", "the embed notice"),
+    )
+    monkeypatch.setattr(app_placement, "get_placement", lambda: view)
+    set_services(_services_with_warm(None))
+    err = mock.MagicMock()
+    helpers.announce_ready(err, WorkerRole.CHAT)
+    assert [call.args[0] for call in err.print.call_args_list] == ["chat engine ready.", notice]
+
+
+def test_announce_ready_prints_no_notice_when_every_size_is_known() -> None:
+    set_services(_services_with_warm(None))
+    err = mock.MagicMock()
+    helpers.announce_ready(err, WorkerRole.CHAT)
+    assert [call.args[0] for call in err.print.call_args_list] == ["chat engine ready."]
+
+
+def test_announce_ready_prints_no_notice_after_a_load_failure(monkeypatch) -> None:
+    view = _placement_view(SizeUnknownRole(WorkerRole.CHAT, "org/m", "unknown notice"))
+    monkeypatch.setattr(app_placement, "get_placement", lambda: view)
+    set_services(_services_with_warm(WarmProgress(phase=WarmPhase.ERROR, error="boom")))
+    err = mock.MagicMock()
+    helpers.announce_ready(err, WorkerRole.CHAT)
+    assert [call.args[0] for call in err.print.call_args_list] == ["boom"]

@@ -859,6 +859,14 @@ class SkippedNoEngineResponse(BaseModel):
     notice: str
 
 
+class SizeUnknownResponse(BaseModel):
+    """A placed role whose model has no known size, and the reserve it is charged."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -880,6 +888,8 @@ class PlacementResponse(BaseModel):
     # Vendors whose GPU is in this machine but hidden from the engine at launch, so
     # ``gpus`` has no row for them and no pin can name them. Empty when none is hidden.
     hidden_gpus: list[str] = []
+    # Roles placed on the unknown-size reserve; empty when every size is known.
+    size_unknown: list[SizeUnknownResponse] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -913,6 +923,10 @@ class PlacementResponse(BaseModel):
             refusal=view.refusal,
             engine_backend=view.engine_backend,
             hidden_gpus=list(view.hidden_gpus),
+            size_unknown=[
+                SizeUnknownResponse(role=s.role, model=s.model, notice=s.notice)
+                for s in view.size_unknown
+            ],
         )
 
 

@@ -116,6 +116,47 @@ def test_show_prints_the_note_for_a_hidden_gpu(monkeypatch: object) -> None:
     assert _HIDDEN_NOTE in result.stdout
 
 
+_SIZE_NOTICE = "The size of the chat model org/chat.gguf is unknown, so 8.0 GiB is reserved for it."
+
+
+def _view_with_size_unknown() -> PlacementView:
+    from lilbee.app.placement import SizeUnknownRole
+
+    return replace(
+        _view(), size_unknown=(SizeUnknownRole(WorkerRole.CHAT, "org/chat.gguf", _SIZE_NOTICE),)
+    )
+
+
+def test_show_prints_a_line_for_a_model_of_unknown_size(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_size_unknown)
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert result.exit_code == 0
+    assert result.stdout.count(_SIZE_NOTICE) == 1
+
+
+def test_show_prints_no_size_line_when_every_size_is_known(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
+    result = runner.invoke(placement_app, ["show"], terminal_width=300)
+    assert "unknown" not in result.stdout
+
+
+def test_show_json_lists_the_model_of_unknown_size(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_size_unknown)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["size_unknown"] == [
+        {"role": "chat", "model": "org/chat.gguf", "notice": _SIZE_NOTICE}
+    ]
+
+
+def test_show_json_lists_nothing_when_every_size_is_known(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert json.loads(result.stdout)["size_unknown"] == []
+
+
 def test_show_prints_no_hidden_gpu_note_when_nothing_is_hidden(monkeypatch: object) -> None:
     monkeypatch.setattr(cli_placement, "get_placement", lambda: _view())
     result = runner.invoke(placement_app, ["show"], terminal_width=300)

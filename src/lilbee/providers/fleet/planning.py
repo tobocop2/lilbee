@@ -979,6 +979,7 @@ def _estimate_role(
         replicas=_replica_count(role, device_count),
         est_ram_bytes=est.host_bytes,
         kind=est.kind,
+        size_known=est.size_known,
     )
 
 
@@ -3740,6 +3741,8 @@ class ResolvedPlacement:
     # The hardware the launch hides from the engine, so no row names it. ``None``
     # when nothing present is hidden.
     hidden: IcdChoice | None = None
+    # Roles placed on the unknown-size reserve because no figure for the model was found.
+    size_unknown_roles: tuple[WorkerRole, ...] = ()
 
 
 def resolve_placement_plan(
@@ -3808,6 +3811,7 @@ def resolve_placement_plan(
         tight_roles=dict(resolved.tight_roles),
         engine_backend=reading.backend,
         hidden=_hidden_choice(devices),
+        size_unknown_roles=tuple(inp.role for inp in inputs if not inp.size_known),
         skipped_no_engine={
             role: NoEngineRole(ref, (no_engine_notices or {}).get(role, ""))
             for role, ref in _roles_without_engine(None, engines).items()

@@ -13,6 +13,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.model_memory import unknown_size_text
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -79,6 +80,15 @@ class SkippedNoEngine:
 
 
 @dataclass(frozen=True)
+class SizeUnknownRole:
+    """A placed role whose model has no known size, with the sentence that says so."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+@dataclass(frozen=True)
 class TightRole:
     """A placed role whose estimate exceeds the memory on the card it landed on."""
 
@@ -124,6 +134,8 @@ class PlacementView:
     # says how to get them back.
     hidden_gpus: tuple[str, ...] = ()
     hidden_note: str | None = None
+    # Roles placed on the unknown-size reserve, so a surface can say the figure is a guess.
+    size_unknown: tuple[SizeUnknownRole, ...] = ()
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -191,6 +203,14 @@ def _view(
         refusal=refusal,
         hidden_gpus=tuple(v.label for v in resolved.hidden.hidden) if resolved.hidden else (),
         hidden_note=resolved.hidden.note() if resolved.hidden else None,
+        size_unknown=tuple(
+            SizeUnknownRole(
+                role=role,
+                model=resolved.model_refs[role],
+                notice=unknown_size_text(f"the {role.value} model {resolved.model_refs[role]}"),
+            )
+            for role in sorted(resolved.size_unknown_roles, key=lambda r: r.value)
+        ),
     )
 
 
@@ -249,6 +269,16 @@ def get_placement() -> PlacementView:
             refusal=" ".join(resolved.refused_roles.values()),
         )
     return _view(resolved, engines, manual=True, spec_json=spec.to_json())
+
+
+def size_unknown_notices(role: WorkerRole) -> list[str]:
+    """The sentences that say the model of *role* has no known size."""
+    try:
+        view = get_placement()
+    except ProviderError as exc:
+        log.debug("No size notice for the %s model: the placement could not be read: %s", role, exc)
+        return []
+    return [unknown.notice for unknown in view.size_unknown if unknown.role is role]
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
