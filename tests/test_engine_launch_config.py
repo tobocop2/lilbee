@@ -526,7 +526,7 @@ def test_a_card_read_starts_no_process(
 
 @pytest.mark.parametrize(
     ("mask", "indices"),
-    [("", []), ("1", [1]), ("GPU-a,0", [0, 0]), ("1,7,0", [1])],
+    [("", []), ("1", [1]), ("GPU-b,GPU-a", [1, 0]), ("1,7,0", [1])],
 )
 def test_the_card_read_follows_the_visible_devices_mask(
     mask: str, indices: list[int], monkeypatch: pytest.MonkeyPatch
@@ -540,6 +540,49 @@ def test_the_card_read_follows_the_visible_devices_mask(
     found = devices.visible_nvidia_cards()
     assert [d.name for d in found] == [f"card{i}" for i in indices]
     assert [d.index for d in found] == list(range(len(indices)))
+
+
+@pytest.mark.parametrize("mask", ["1,1", "0,1,0", "GPU-b,GPU-b", "1,GPU-b", "GPU-a,1,0"])
+def test_a_mask_that_repeats_a_card_lists_no_card(
+    mask: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated entry has no documented rule, so the list is unknown, as a failed read is."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    assert devices.visible_nvidia_cards() == []
+
+
+def test_a_repeat_after_the_first_unnamed_entry_is_never_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mask stops at the first entry that names no card, so a later repeat does not count."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,9,1")
+    assert [d.name for d in devices.visible_nvidia_cards()] == ["card1"]
+
+
+def test_both_card_engines_see_no_card_for_a_repeated_mask(
+    host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,1")
+    assert tei.TEI.discover_devices(host[EngineName.TEI]).devices == []
+    assert mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices == []
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert len(tei.TEI.discover_devices(host[EngineName.TEI]).devices) == 2
+    assert len(mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices) == 2
 
 
 def test_a_cpu_tei_build_reads_no_card(
