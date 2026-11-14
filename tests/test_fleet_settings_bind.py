@@ -18,6 +18,7 @@ from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.binary import engine_pin
@@ -375,6 +376,23 @@ def test_a_thread_that_cannot_start_leaves_no_reload_in_flight(
         provider.replan_fleet()
     assert provider._fleet_work is None
     assert provider._reload_owed == frozenset()
+
+
+def test_a_request_never_waits_on_a_reload_that_could_not_start(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    provider, _states = _owner(monkeypatch, tmp_path)
+    monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 0.2)
+
+    def refuse(_thread: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    with pytest.raises(RuntimeError, match="start new thread"):
+        provider.replan_fleet()
+    provider._clients[WorkerRole.CHAT] = []
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        provider._require_clients(WorkerRole.CHAT)
 
 
 def _peer_mid_call_over_an_owner_restart(
