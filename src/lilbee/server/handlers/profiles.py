@@ -15,7 +15,8 @@ from litestar.exceptions import (
     ServiceUnavailableException,
     ValidationException,
 )
-from litestar.status_codes import HTTP_409_CONFLICT, HTTP_413_REQUEST_ENTITY_TOO_LARGE
+from litestar.exceptions.http_exceptions import RequestEntityTooLarge
+from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app import profiles
 from lilbee.app.profiles import ExportedProfile, ProfileNotFoundError, file_failure_message
@@ -49,17 +50,11 @@ class ProfileConflictException(ClientException):
     status_code = HTTP_409_CONFLICT
 
 
-class ProfileTooLargeException(ClientException):
-    """An upload over the route's body cap. Litestar answers it before the handler runs."""
-
-    status_code = HTTP_413_REQUEST_ENTITY_TOO_LARGE
-
-
 # What each kind of profile route can answer besides success. The routes list
 # these as ``raises``, so the schema documents every error ``_run`` maps to.
 FILE_ERRORS = [ServiceUnavailableException]
 REFUSAL_ERRORS = [ValidationException, ServiceUnavailableException]
-UPLOAD_ERRORS = [ProfileTooLargeException]
+UPLOAD_ERRORS = [RequestEntityTooLarge]
 NAMED_ERRORS = [NotFoundException, ValidationException, ServiceUnavailableException]
 WRITE_ERRORS = [ProfileConflictException, ValidationException, ServiceUnavailableException]
 NAMED_WRITE_ERRORS = [NotFoundException, *WRITE_ERRORS]
