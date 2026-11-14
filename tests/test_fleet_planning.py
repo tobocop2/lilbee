@@ -844,6 +844,28 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
     assert seen["mmproj"] is None  # chat carries no projector
 
 
+def test_peak_estimator_sizes_an_uneven_split_for_llama_cpp(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 1000)
+    seen: dict = {}
+
+    def _est(_path, *, tensor_split, **_k) -> GgufVramEstimate:
+        seen["ratio"] = tensor_split
+        return GgufVramEstimate(
+            vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(33, 11)
+        )
+
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
+    estimate = planning_mod._peak_estimator(
+        {WorkerRole.CHAT: "ref"}, engines=engines_for_all_roles(LLAMA)
+    )
+    assert estimate(WorkerRole.CHAT, (3, 1)) == (33, 11)
+    assert seen["ratio"] == (3, 1)
+
+
 def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")

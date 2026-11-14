@@ -38,6 +38,7 @@ from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
+from tests._stated_sizes import state_size
 
 L4 = ("NVIDIA L4", (8, 9))
 A40 = ("NVIDIA A40", (8, 6))
@@ -949,3 +950,68 @@ def test_an_estimate_of_a_folder_without_a_layer_count_has_no_per_card_vector(
     (folder / "model.safetensors").write_bytes(b"x" * 4000)
     (folder / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
     assert _estimate(folder, (1, 1)).per_device == ()
+
+
+_stated = pytest.mark.usefixtures("stated_sizes")
+
+
+def _placed_on(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    card_gib: tuple[int, ...],
+    meta: dict[str, str] | None = None,
+) -> Any:
+    """Place a 30 GiB chat model on cards of *card_gib* with the mistral.rs engine."""
+    from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
+
+    model = tmp_path / "m.gguf"
+    state_size(model, 30 * GIB)
+    _cuda_host(monkeypatch, cards=len(card_gib))
+    _gguf_meta(monkeypatch, meta or {**_HEADS, "block_count": "32"})
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+    monkeypatch.setattr(planning, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
+    peak = planning._peak_estimator({WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL})
+    chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
+    devices = [(index, gib * GIB) for index, gib in enumerate(card_gib)]
+    return plan_placement([chat], devices, estimate_peak=peak, refuse_oversize=True)
+
+
+@_stated
+def test_placement_offers_an_equal_split_whose_heads_divide(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    placed = _placed_on(tmp_path, monkeypatch, (24, 24))
+    (instance,) = placed.instances
+    assert len(instance.devices) == 2
+    assert len(set(instance.tensor_split)) == 1
+
+
+@_stated
+def test_placement_offers_no_uneven_split_to_an_engine_that_refuses_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    placed = _placed_on(tmp_path, monkeypatch, (24, 16))
+    assert placed.instances == ()
+    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
+
+
+@_stated
+def test_placement_offers_no_split_whose_heads_do_not_divide(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nine_heads = {"head_count": "9", "head_count_kv": "9", "block_count": "36"}
+    (instance,) = _placed_on(tmp_path, monkeypatch, (24, 24, 24), nine_heads).instances
+    assert len(instance.devices) == 3
+    seven_heads = {"head_count": "7", "head_count_kv": "7", "block_count": "36"}
+    refused = _placed_on(tmp_path, monkeypatch, (24, 24, 24), seven_heads)
+    assert refused.instances == ()
+    assert refused.unplaceable_roles == (WorkerRole.CHAT,)
+
+
+@_stated
+def test_placement_names_the_launch_rule_when_a_split_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO")
+    _placed_on(tmp_path, monkeypatch, (24, 16))
+    assert "mistral.rs splits m.gguf only evenly across cards" in caplog.text

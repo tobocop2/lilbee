@@ -37,6 +37,7 @@ from lilbee.providers.fleet.devices import (
     visible_env,
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
+from lilbee.providers.fleet.engines.base import SplitChecked
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
 from lilbee.providers.fleet.gpu_backends.nvidia import cards as nvidia_cards
@@ -1115,6 +1116,8 @@ def _peak_estimator(
     def estimate_peak(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
         engine = engines[role]
         path = engine_params.resolve_model_path(model_refs[role])
+        if isinstance(engine, SplitChecked):
+            engine.check_split(path, ratio)
         meta = engine.model_meta(path)
         mmproj = vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
         slots = _placement_estimate_slots(role, meta)

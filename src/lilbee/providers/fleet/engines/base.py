@@ -194,6 +194,15 @@ class EngineAdapter(Protocol, Hashable):
 
 
 @runtime_checkable
+class SplitChecked(Protocol):
+    """An engine whose launch refuses some tensor splits; placement asks the same rule."""
+
+    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
+        """Raise ``ProviderError`` naming why *ratio* cannot launch over its cards."""
+        ...
+
+
+@runtime_checkable
 class UserInstalled(Protocol):
     """An engine that lilbee has no pack for: the user installs it and lilbee finds it."""
 

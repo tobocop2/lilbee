@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
-from lilbee.providers.fleet import model_memory, planning
+from lilbee.providers.fleet import host_caps, model_memory, planning
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
@@ -40,6 +41,26 @@ _REF = "org/repo/model"
 
 pytestmark = pytest.mark.usefixtures("stated_sizes")
 
+# Heads that divide over two cards and no layer count, so a split has no per-card breakdown.
+_HEADS_CONFIG = '{"num_attention_heads": 32, "num_key_value_heads": 8}'
+
+
+@pytest.fixture(autouse=True)
+def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host whose mistral.rs build can split over two cards, whatever runs the tests."""
+    nvidia = {
+        "driver": "570.0",
+        "cuda_driver": 12080,
+        "gpus": [{"name": "NVIDIA L4", "cc": [8, 9]}] * 2,
+    }
+    host = host_caps.collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvidia=nvidia,
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+
 
 def _sparse(path: Path, size: int) -> None:
     state_size(path, size)
@@ -51,7 +72,7 @@ def _folder(root: Path, *shards: int) -> Path:
     folder.mkdir()
     for index, size in enumerate(shards):
         _sparse(folder / f"model-{index:05d}.safetensors", size)
-    (folder / "config.json").write_text("{}", encoding="utf-8")
+    (folder / "config.json").write_text(_HEADS_CONFIG, encoding="utf-8")
     (folder / "tokenizer.json").write_text("{}", encoding="utf-8")
     return folder
 
@@ -175,6 +196,7 @@ class TestTheFolderWeights:
 class TestThePeakEstimator:
     def _peak(self, tmp_path: Path, monkeypatch, estimate: MemoryEstimate, ratio: tuple[int, ...]):
         monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: tmp_path)
+        (tmp_path / "config.json").write_text(_HEADS_CONFIG, encoding="utf-8")
         role = WorkerRole.CHAT
         peak = planning._peak_estimator({role: "ref"}, {role: _StatedEngine(estimate)})
         return peak(role, ratio)

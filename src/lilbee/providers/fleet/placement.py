@@ -567,6 +567,7 @@ def _place_split(
     by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
     best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
     spent = 0
+    refusals: set[str] = set()
     for count in range(2, len(by_free) + 1):
         chosen = by_free[:count]
         for ratio in _split_ratio_candidates(chosen, remaining):
@@ -581,9 +582,13 @@ def _place_split(
             spent += 1
             try:
                 per_device = estimate_peak(model.role, ratio)
-            except (ProviderError, OSError):
-                # An unsizable model cannot evaluate a split; the tight single-card
-                # path downstream places it or, when refusing, refuses it.
+            except (ProviderError, OSError) as exc:
+                # An unsizable model, or a split the engine's launch refuses, cannot
+                # be evaluated; the tight single-card path downstream places it or,
+                # when refusing, refuses it.
+                if str(exc) not in refusals:
+                    refusals.add(str(exc))
+                    log.info("No %d-card split for %s: %s", count, model.role.value, exc)
                 continue
             if len(per_device) != count or not all(
                 peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)

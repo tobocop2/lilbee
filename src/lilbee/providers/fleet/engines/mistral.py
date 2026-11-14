@@ -314,13 +314,17 @@ class MistralAdapter:
         return ["--paged-attn", "off"]
 
     def _check_split(self, request: LaunchRequest) -> None:
+        """Refuse a launch split over several cards that the engine cannot run."""
+        if request.target is not RoleTarget.CPU:
+            self.check_split(request.model_path, request.tensor_split)
+
+    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
         """Refuse a split over several cards unless the engine can run it as equal shards."""
-        ratio = request.tensor_split
-        if request.target is RoleTarget.CPU or len(ratio) < _MIN_SPLIT_CARDS:
+        if len(ratio) < _MIN_SPLIT_CARDS:
             return
         from lilbee.catalog.runnable import session_host
 
-        name = request.model_path.name
+        name = model_path.name
         cards = len(ratio)
         backend = self.pick_build(session_host()).backend
         if backend in (None, _CPU, _METAL):
@@ -334,7 +338,7 @@ class MistralAdapter:
                 f"mistral.rs splits {name} only evenly across cards. "
                 f"Use the {EngineName.LLAMA.value} engine for an uneven split."
             )
-        heads = _head_counts(request.model_path)
+        heads = _head_counts(model_path)
         if heads is None or not _heads_divide(*heads, cards):
             raise ProviderError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
