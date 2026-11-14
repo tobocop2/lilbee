@@ -6,11 +6,12 @@ import hashlib
 import json
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from lilbee.providers.gguf_meta import read_gguf_metadata
+from lilbee.providers.gguf_meta import read_gguf_metadata, read_mmproj_projector_type
 from tests._gguf_fixture import has_gguf_parser, make_minimal_gguf
 
 # These hand real GGUF bytes to the engine's parser. The unit lane installs no
@@ -356,3 +357,32 @@ def test_duplicate_metadata_key_is_read_rather_than_refused(tmp_path: Path) -> N
     f = tmp_path / "dup.gguf"
     f.write_bytes(_gguf_with_duplicate_key())
     assert read_gguf_metadata(f) == {"name": "x"}
+
+
+_PATH_KEYED_PARSER = """#!{python}
+import sys
+
+if sys.argv[1:3] != ["--path", {model!r}]:
+    sys.exit(1)
+print({payload!r})
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in parser is a shebang script")
+def test_projector_type_is_read_from_the_file_asked_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parser is asked about the mmproj file itself, not about nothing."""
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"GGUF")
+    payload = json.dumps(
+        {"header": {"metadataKV": [{"key": "clip.projector_type", "valueType": 8, "value": "ldp"}]}}
+    )
+    exe = tmp_path / "fake-gguf-parser"
+    exe.write_text(
+        _PATH_KEYED_PARSER.format(python=sys.executable, model=str(mmproj), payload=payload),
+        encoding="utf-8",
+    )
+    exe.chmod(0o755)
+    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_gguf_parser", lambda: exe)
+    assert read_mmproj_projector_type(mmproj) == "ldp"
