@@ -29,6 +29,7 @@ from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import PlanOrigin, SwapState
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.runtime.engine_lock import private_engine_dir
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _FakeSwap
 from tests.test_fleet_reload_plan import real_planner
 from tests.test_fleet_settings_bind import (
@@ -78,13 +79,13 @@ def _gap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, root: str | None = 
             self.bound = True
             return True
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group, _engine: _Swap(group))
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group: _Swap(group))
     owner = FleetProvider()
     monkeypatch.setattr(owner, "_preload_roles", lambda roles=None: None)
     monkeypatch.setattr(owner, "_reload_dir", lambda: tmp_path)
     with owner._lock:
         for group, launches in _launches_by_group(
-            planning_mod.plan_all_launches(engine=LLAMA)
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         ).items():
             owner._adopt_group(group, _FakeSwap(), list(launches))
             owner._group_dirs[group] = tmp_path
@@ -325,7 +326,9 @@ def test_one_bind_attempt_waits_within_one_bound_over_both_dirs(
     monkeypatch.setattr(
         prov_mod,
         "_placeable_demand",
-        lambda _engine: SimpleNamespace(skipped_not_installed={}, skipped_unusable_ctx={}),
+        lambda _engine, _engines: SimpleNamespace(
+            skipped_not_installed={}, skipped_unusable_ctx={}
+        ),
     )
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path / "slot")
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _dir: True)

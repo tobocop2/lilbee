@@ -817,7 +817,7 @@ class TestMixedCoTenantGroup:
         monkeypatch.setattr(cfg, "embedding_model", "")
         monkeypatch.setattr(cfg, "vision_model", "org/repo/vision.gguf")
         monkeypatch.setattr(planning, "vision_role_wanted", lambda _ref: True)
-        monkeypatch.setattr(planning, "_vision_mmproj", lambda _ref: tmp_path / "mmproj.gguf")
+        monkeypatch.setattr(planning, "vision_mmproj", lambda _ref: tmp_path / "mmproj.gguf")
         chat, vision = _pair(tmp_path, device, 7, 6)
         engines = {WorkerRole.CHAT: chat, WorkerRole.VISION: vision}
         return planning.plan_all_launches(engines=engines), chat, vision

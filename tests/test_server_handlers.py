@@ -382,6 +382,7 @@ class TestWarmStreamAfterSwap:
             phase=WarmPhase.ERROR, error="chat model Qwen3 4B is not installed"
         )
         local.role_ready.return_value = False
+        local.reload_notice.return_value = None
         routing._local = local
         return routing
 

@@ -51,6 +51,7 @@ FALLBACK = (
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     snapshot = cfg.model_copy()
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+    monkeypatch.setenv("LILBEE_MCP_ENGINES_ENABLED", "true")
     cfg.data_root = tmp_path
     cfg.allow_http_engines = True
     cfg.mcp_engines_enabled = True
@@ -339,12 +340,14 @@ def _roles_texts() -> dict[str, str]:
 
 
 def test_every_role_view_shows_the_fallback_notice(no_mlx: None) -> None:
+    settings.update_values(cfg.data_root, {"preferred_engine": EngineSetting.MLX.value})
     cfg.preferred_engine = EngineSetting.MLX
     for surface, text in _roles_texts().items():
         assert FALLBACK in " ".join(text.split()), surface
 
 
 def test_every_role_view_shows_the_unreadable_choices_notice() -> None:
+    settings.update_values(cfg.data_root, {"engine_choices": "not json"})
     cfg.engine_choices = "not json"
     for surface, text in _roles_texts().items():
         assert UNREADABLE_NOTICE in " ".join(text.split()), surface
@@ -634,7 +637,7 @@ class _FailingServer:
     def __init__(self, failure: BaseException) -> None:
         self.failure = failure
 
-    def reload_placement(self, *, wait: bool = False) -> None:
+    def replan_fleet(self, *, wait: bool = False) -> None:
         raise self.failure
 
 

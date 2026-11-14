@@ -83,7 +83,7 @@ async def _pick_frontier(app: LilbeeAppHost, pilot: Pilot, ref: str) -> None:
 
 
 async def _pick_first_download(app: LilbeeAppHost, pilot: Pilot, ref: str) -> None:
-    model = SimpleNamespace(task=ModelTask.EMBEDDING, ref=ref)
+    model = SimpleNamespace(task=ModelTask.EMBEDDING, ref=ref, pull_ref=ref)
     (await _catalog(app, pilot))._adopt_first_download(model)  # type: ignore[arg-type]
 
 

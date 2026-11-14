@@ -4767,7 +4767,9 @@ class TestEnginePerRole:
             return SimpleNamespace(role=plan.role)
 
         monkeypatch.setattr(planning_mod, "_launch_for", _launch)
-        monkeypatch.setattr(planning_mod, "_unusable_chat_ctx_reason", lambda _launch: None)
+        monkeypatch.setattr(
+            planning_mod, "_unusable_chat_ctx_reason", lambda _launch, _devices: None
+        )
         monkeypatch.setattr(
             planning_mod, "_plan_devices", lambda _binary, _engine: [_card(24 * _GB)]
         )

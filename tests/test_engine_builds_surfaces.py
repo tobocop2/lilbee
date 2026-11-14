@@ -40,6 +40,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     snapshot = cfg.model_copy()
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    monkeypatch.setenv("LILBEE_MCP_ENGINES_ENABLED", "true")
     cfg.data_root = tmp_path
     cfg.models_dir = tmp_path / "models"
     cfg.allow_http_engines = True

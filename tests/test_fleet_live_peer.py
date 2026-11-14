@@ -34,6 +34,7 @@ from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import SwapManager, SwapState
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.engine_lock import _user_lock_path, hold_user_lock, live_users_exist
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _connection_error, _fake_client, _FakeSwap
 from tests.test_fleet_reload_plan import (
     _NOTES_CHUNK_SIZE,
@@ -76,7 +77,7 @@ class _Box:
     def seed_fleet(self, engine_dir: Path) -> dict[SwapGroup, int]:
         """Start the current plan in *engine_dir* as another process; return its pids."""
         for group, launches in _launches_by_group(
-            planning_mod.plan_all_launches(engine=LLAMA)
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         ).items():
             self.record(engine_dir, group, list(launches))
         return self.pids(engine_dir)
@@ -95,7 +96,7 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
     machine = _Box(tmp_path)
 
     class _ProcessSwap(_FakeSwap):
-        def __init__(self, engine_dir: Path, group: SwapGroup, engine: object) -> None:
+        def __init__(self, engine_dir: Path, group: SwapGroup) -> None:
             super().__init__()
             self._dir = engine_dir
             self._group = group
@@ -163,7 +164,10 @@ def _assert_serves_all_from_private(provider: FleetProvider, box: _Box) -> None:
     assert set(provider._group_dirs.values()) == {box.private}
     assert not any(swap.bound for swap in provider._swaps.values())
     assert list(provider._engine_holds) == [box.private]
-    planned = {launch.role for launch in planning_mod.plan_all_launches(engine=LLAMA).launches}
+    planned = {
+        launch.role
+        for launch in planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).launches
+    }
     assert set(provider._clients) == planned
     assert all(provider._clients[role] for role in planned)
     assert set(box.records[_PRIVATE]) == set(provider._swaps)
@@ -569,7 +573,7 @@ def test_a_start_kills_only_the_swap_at_this_process_config(
     box: _Box, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The kill by config path cannot reach a group that another process started."""
-    own_config = SwapManager(box.slot, SwapGroup.EMBED, LLAMA)._config_path
+    own_config = SwapManager(box.slot, SwapGroup.EMBED)._config_path
     other_config = box.slot / swap_mod._config_filename(_PEER_PID, SwapGroup.EMBED.value)
     assert own_config != other_config
     own = MagicMock()

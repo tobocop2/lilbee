@@ -643,14 +643,14 @@ class TestRoutingProvider:
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
-    def test_get_local_hands_the_engine_and_refresh_to_the_fleet(self, monkeypatch) -> None:
+    def test_get_local_hands_the_refresh_to_the_fleet(self, monkeypatch) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
         built: dict[str, object] = {}
 
         class FakeFleet:
-            def __init__(self, *, engine, hold_warm: bool = False, config_refresh=None) -> None:
-                built.update(engine=engine, config_refresh=config_refresh)
+            def __init__(self, *, hold_warm: bool = False, config_refresh=None) -> None:
+                built.update(config_refresh=config_refresh)
 
             def shutdown(self) -> None: ...
 
@@ -660,7 +660,7 @@ class TestRoutingProvider:
         rp = RoutingProvider(config_refresh=refresh)
         self._to_shutdown.append(rp)
         rp._get_local()
-        assert built == {"engine": LLAMA, "config_refresh": refresh}
+        assert built == {"config_refresh": refresh}
 
     def test_get_sdk_provider_single_init_under_concurrency(self, monkeypatch) -> None:
         """Concurrent first-callers construct exactly one SdkLLMProvider.

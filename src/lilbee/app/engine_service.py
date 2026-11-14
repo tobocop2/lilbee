@@ -128,7 +128,7 @@ def _apply_to_running() -> None:
     if services is None:
         return
     try:
-        services.provider.reload_placement(wait=True)
+        services.provider.replan_fleet(wait=True)
     except (ProviderError, OSError) as exc:
         log.warning("The running server did not apply the engine choice: %s", exc)
         raise EngineNotAppliedError(

@@ -375,7 +375,7 @@ class _RecordingProvider:
         self.reloads: list[bool] = []
         self.failure = failure
 
-    def reload_placement(self, *, wait: bool = False) -> None:
+    def replan_fleet(self, *, wait: bool = False) -> None:
         self.reloads.append(wait)
         if self.failure is not None:
             raise self.failure

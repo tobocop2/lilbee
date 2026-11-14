@@ -1446,9 +1446,9 @@ class TestStateFilePersistenceKeys:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
+        mgr = SwapManager(tmp_path, _GROUP)
         first = sm.PlanOrigin("/root/a", '{"flash_attention": true}')
-        mgr.start([_launch(WorkerRole.CHAT)], origin=first)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA), origin=first)
         state = sm._load_state(mgr._state_path)
         assert state is not None and state.origin == first
         later = sm.PlanOrigin("/root/a", '{"flash_attention": false}')
@@ -1462,8 +1462,8 @@ class TestStateFilePersistenceKeys:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP, engine=LLAMA)
-        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
         payload = json.loads(mgr._state_path.read_text(encoding="utf-8"))
         assert "config_root" not in payload
         state = sm._load_state(mgr._state_path)

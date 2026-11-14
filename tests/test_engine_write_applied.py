@@ -280,10 +280,10 @@ def test_a_background_reload_failure_is_logged_with_its_text_and_raises_no_trace
     monkeypatch.setattr(threading, "excepthook", unhandled.append)
     local = _local(fleet)
     with caplog.at_level("ERROR", logger=fleet_provider.log.name):
-        local.reload_placement(wait=False)
+        local.replan_fleet(wait=False)
         _wait_for(lambda: any(r.levelname == "ERROR" for r in caplog.records))
         for thread in threading.enumerate():
-            if thread.name == "fleet-reload-placement":
+            if thread.name == "fleet-replan":
                 thread.join(_WAIT_S)
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors == [f"The engine reload failed: {failure}"]

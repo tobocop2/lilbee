@@ -2357,13 +2357,13 @@ def test_reload_pass_names_the_roles_it_restarts_and_logs_replica_counts(
     monkeypatch, caplog
 ) -> None:
     swap = _FakeSwap()
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g, _engine: swap)
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
-        lambda *, engine: planning_mod.FleetPlan(
+        lambda *, engines: planning_mod.FleetPlan(
             (_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED))
         ),
     )
@@ -6907,7 +6907,7 @@ def test_the_reload_notice_says_roles_may_run_the_previous_engine_while_a_reload
     p._swaps = {SwapGroup.CHAT: _FakeSwap()}
     seen: list[str | None] = []
     monkeypatch.setattr(p, "_reload_pass", lambda *a, **k: seen.append(p.reload_notice()))
-    p.reload_placement(wait=True)
+    p.replan_fleet(wait=True)
     notice = "A change to the engines is being applied; roles may run their previous engine."
     assert seen == [notice]
     assert p.reload_notice() is None
@@ -6931,11 +6931,11 @@ def test_a_failed_reload_leaves_the_notice_until_a_pass_succeeds(
 
     monkeypatch.setattr(p, "_reload_pass", _fail_once)
     with pytest.raises(ProviderError, match="engine refused"):
-        p.reload_placement(wait=True)
+        p.replan_fleet(wait=True)
     assert p.reload_notice() == (
         "The last engine reload failed; a role may still run its previous engine."
     )
-    p.reload_placement(wait=True)
+    p.replan_fleet(wait=True)
     assert p.reload_notice() is None
 
 

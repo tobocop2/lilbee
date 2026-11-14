@@ -164,5 +164,5 @@ def prepare_host(monkeypatch, tmp_path: Path, roles: tuple[Role, ...], total: in
         if role.role is WorkerRole.EMBED:
             monkeypatch.setattr(cfg, "embed_replicas", role.replicas)
     monkeypatch.setattr(planning, "vision_role_wanted", lambda _ref: True)
-    monkeypatch.setattr(planning, "_vision_mmproj", lambda _ref: tmp_path / "mmproj.gguf")
+    monkeypatch.setattr(planning, "vision_mmproj", lambda _ref: tmp_path / "mmproj.gguf")
     monkeypatch.setattr(planning, "host_lacks_nvlink", lambda: False)

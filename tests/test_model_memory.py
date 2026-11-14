@@ -144,8 +144,12 @@ class TestInstalledEstimate:
     def test_a_folder_that_cannot_be_read_is_the_reserve(
         self, fmt: ModelFormat, monkeypatch, tmp_path: Path
     ) -> None:
-        def _fail(self: Path, pattern: str) -> None:
-            raise PermissionError("denied")
+        real_rglob = Path.rglob
+
+        def _fail(self: Path, pattern: str) -> object:
+            if self == tmp_path:
+                raise PermissionError("denied")
+            return real_rglob(self, pattern)
 
         monkeypatch.setattr(Path, "rglob", _fail)
         est = mm.estimate_memory(fmt, _request(tmp_path))
