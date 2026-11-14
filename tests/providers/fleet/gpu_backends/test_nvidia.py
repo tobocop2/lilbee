@@ -405,6 +405,31 @@ def test_a_name_that_holds_the_na_marker_and_a_comma_is_a_gpu_name(
     }
 
 
+def test_the_card_list_keeps_a_name_that_holds_the_na_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards="0, GPU-a, 24576, 23552, Card [N/A]x, rev 2\n")
+    assert nvidia_mod.cards() == [
+        nvidia_mod.NvidiaCard(0, "GPU-a", "Card [N/A]x, rev 2", 24576 * MIB, 23552 * MIB)
+    ]
+
+
+def test_the_card_list_keeps_a_uuid_that_holds_the_na_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards="0, GPU-[N/A]-a, 24576, 23552, n0\n")
+    assert nvidia_mod.cards() == [
+        nvidia_mod.NvidiaCard(0, "GPU-[N/A]-a", "n0", 24576 * MIB, 23552 * MIB)
+    ]
+
+
+def test_the_card_list_is_unknown_when_a_name_is_exactly_the_na_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards="0, GPU-a, 24576, 23552, [N/A]\n")
+    assert nvidia_mod.cards() == []
+
+
 def test_a_card_whose_index_does_not_read_takes_its_row_position(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
