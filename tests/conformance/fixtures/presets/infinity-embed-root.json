@@ -13,11 +13,11 @@
  "results": {
   "embed": {
    "ok": false,
-   "detail": "ProviderError: The provider doesn't offer infinity-embed-root/BAAI/bge-small-en-v1.5 on your account. Pick a different model or check the name."
+   "detail": "ProviderError: The server for infinity-embed-root/BAAI/bge-small-en-v1.5 answered 404 to the embed request at http://harness. Check the base URL and the route prefix of the server. Check that the server has a model "
   },
   "named": {
    "ok": false,
-   "detail": "ProviderError: The provider doesn't offer infinity-embed-root/BAAI/bge-small-en-v1.5 on your account. Pick a different model or check the name."
+   "detail": "ProviderError: The server for infinity-embed-root/BAAI/bge-small-en-v1.5 answered 404 to the embed request at http://harness. Check the base URL and the route prefix of the server. Check that the server has a model "
   }
  },
  "error_answers": [
