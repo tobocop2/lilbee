@@ -45,7 +45,7 @@ from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import installed_safetensors_bytes
+from lilbee.providers.fleet.model_memory import installed_safetensors_bytes, unknown_size_text
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
@@ -1001,14 +1001,6 @@ def _estimate_role(
             expert_offload=_role_expert_offload(path, engine=engine),
         )
     )
-    if not est.size_known:
-        log.warning(
-            "The size of the %s model %s is unknown, so %.1f GiB is reserved for it "
-            "when the models are placed.",
-            role.value,
-            model_ref,
-            est.device_bytes / 1024**3,
-        )
     one_pool = unified_budget is not None or gpu_layers == 0
     fp = est.footprint(unified=one_pool)
     if role is WorkerRole.CHAT and not one_pool and est.kind is MemoryKind.SIZED:
@@ -4209,6 +4201,11 @@ def _planned_launches(
         capacity=capacity,
     )
     _log_placement_findings(placement, model_refs)
+    for inp in inputs:
+        if not inp.size_known:
+            log.warning(
+                "%s", unknown_size_text(f"the {inp.role.value} model {model_refs[inp.role]}")
+            )
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved_after_chat = _reservation_past_the_card(

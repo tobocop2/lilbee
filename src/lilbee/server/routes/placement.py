@@ -19,6 +19,7 @@ from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
 from litestar.response import Stream
 
+from lilbee.app.placement import PLACEMENT_READ_ERRORS
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
@@ -58,7 +59,7 @@ async def placement_route() -> PlacementResponse:
     """Current effective placement."""
     try:
         return await handlers.placement()
-    except ProviderError as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
@@ -111,7 +112,7 @@ async def gpus_route() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     try:
         return await handlers.gpus()
-    except ProviderError as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
@@ -125,6 +126,6 @@ async def gpu_stats_stream_route() -> Stream:
         # device probes that can wedge for the probe timeout on a broken driver;
         # offload so the probe never blocks the event loop.
         view = await asyncio.to_thread(get_placement)
-    except ProviderError as exc:
+    except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
     return Stream(handlers.gpu_stats_stream(view.gpus), media_type=SSE_MEDIA_TYPE)

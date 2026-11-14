@@ -198,6 +198,42 @@ def test_get_placement_tool_provider_error(monkeypatch):
     assert "llama-server" in out["error"]
 
 
+@pytest.mark.parametrize(
+    "tool", [mcp_server.get_placement_tool, mcp_server.get_gpus_tool], ids=["placement", "gpus"]
+)
+def test_a_placement_read_that_hits_an_os_error_returns_a_structured_error(monkeypatch, tool):
+    def boom():
+        raise OSError("device node unreadable")
+
+    monkeypatch.setattr(mcp_server, "get_placement", boom)
+    assert tool() == {"error": "device node unreadable"}
+
+
+@pytest.mark.parametrize(
+    "tool", [mcp_server.get_placement_tool, mcp_server.get_gpus_tool], ids=["placement", "gpus"]
+)
+def test_a_placement_read_that_loses_the_config_lock_gets_the_lock_message(monkeypatch, tool):
+    """The read errors include OSError, the lock error's parent, so the lock clause goes first."""
+    from lilbee.core.security import FileLockUnavailableError
+
+    def boom():
+        raise FileLockUnavailableError("config.toml.lock is held")
+
+    monkeypatch.setattr(mcp_server, "get_placement", boom)
+    error = tool()["error"]
+    assert "Nothing was changed. Close any other lilbee process and try again." in error
+    assert "config.toml.lock is held" in error
+
+
+def test_a_placement_write_that_hits_an_os_error_still_raises(monkeypatch):
+    def boom(spec):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(mcp_server, "set_placement", boom)
+    with pytest.raises(PermissionError, match="denied"):
+        mcp_server.clear_placement_tool()
+
+
 def test_clear_placement_tool_provider_error(monkeypatch):
     """clear_placement surfaces ProviderError as a structured error."""
     from lilbee.providers.base import ProviderError

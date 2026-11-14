@@ -14,6 +14,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.chat import _engine_status_text, _Turn
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -149,7 +150,7 @@ _SIZE_NOTICE = "The size of the chat model a/b is unknown, so 8.0 GiB is reserve
 async def test_a_chat_model_of_unknown_size_toasts_a_warning_when_it_is_ready(
     _warming_services, size
 ):
-    """The first cold prompt toasts the unknown-size sentence in full once the engine serves."""
+    """The first cold prompt toasts the unknown-size sentence once the engine serves."""
     from textual.widgets._toast import Toast
 
     from tests._async_wait import wait_until
@@ -161,9 +162,12 @@ async def test_a_chat_model_of_unknown_size_toasts_a_warning_when_it_is_ready(
         with (
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
             mock.patch("lilbee.app.placement.wait_chat_ready", return_value=True),
-            mock.patch("lilbee.app.placement.size_unknown_notices", return_value=[_SIZE_NOTICE]),
+            mock.patch(
+                "lilbee.app.placement.size_unknown_notices", return_value=[_SIZE_NOTICE]
+            ) as notices,
         ):
             assert await asyncio.to_thread(screen._await_chat_engine, _turn(mock.MagicMock()))
+        notices.assert_called_once_with(WorkerRole.CHAT)
 
         def _shown() -> str:
             return " ".join(

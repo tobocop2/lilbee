@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import httpx
+import httpx2
 import pytest
 from huggingface_hub.errors import HfHubHTTPError
 
@@ -50,11 +50,11 @@ class TestReadParameterCount:
         assert read_parameter_count("org/model") == {}
 
     def test_a_transport_error_gives_an_empty_count(self, monkeypatch) -> None:
-        monkeypatch.setattr(hf_client, "HfApi", _api_raising(httpx.ConnectError("down")))
+        monkeypatch.setattr(hf_client, "HfApi", _api_raising(httpx2.ConnectError("down")))
         assert read_parameter_count("org/model") == {}
 
     def test_an_http_error_gives_an_empty_count(self, monkeypatch) -> None:
-        response = httpx.Response(404, request=httpx.Request("GET", "https://hub.test"))
+        response = httpx2.Response(404, request=httpx2.Request("GET", "https://hub.test"))
         monkeypatch.setattr(
             hf_client, "HfApi", _api_raising(HfHubHTTPError("404", response=response))
         )
@@ -82,20 +82,20 @@ class TestReadParameterCount:
 class _Session:
     """A stand-in for the library's HTTP session that records the one request it gets."""
 
-    def __init__(self, response: httpx.Response | Exception) -> None:
+    def __init__(self, response: httpx2.Response | Exception) -> None:
         self.response = response
         self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def get(self, url: str, **kwargs: object) -> httpx.Response:
+    def get(self, url: str, **kwargs: object) -> httpx2.Response:
         self.calls.append((url, kwargs))
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
 
 
-def _response(status: int, body: bytes) -> httpx.Response:
-    return httpx.Response(
-        status, content=body, request=httpx.Request("GET", "https://hub.test/org/model/config")
+def _response(status: int, body: bytes) -> httpx2.Response:
+    return httpx2.Response(
+        status, content=body, request=httpx2.Request("GET", "https://hub.test/org/model/config")
     )
 
 
@@ -125,6 +125,6 @@ class TestReadModelConfig:
 
     def test_a_transport_error_gives_none(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            hf_client, "get_session", lambda: _Session(httpx.ConnectError("offline"))
+            hf_client, "get_session", lambda: _Session(httpx2.ConnectError("offline"))
         )
         assert read_model_config("org/model") is None

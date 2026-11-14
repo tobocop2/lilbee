@@ -869,6 +869,13 @@ class TestModelManagerPull:
         )
         assert notices == ["The size of this model is unknown, so 5.0 GiB is reserved for it."]
 
+    def test_a_pull_logs_an_unknown_size_once(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            self._pull_entry(tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False)
+        assert len([r for r in caplog.records if "is unknown" in r.getMessage()]) == 1
+
     def test_a_known_size_sends_no_notice(self, tmp_path: Path) -> None:
         notices: list[str] = []
         self._pull_entry(

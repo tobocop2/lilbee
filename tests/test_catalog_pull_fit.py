@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 
+import httpx2
 import pytest
+from huggingface_hub import constants as hub_constants
 
 from lilbee.catalog import hf_client
 from lilbee.catalog.pull_fit import PullFit, chat_pull_fit
@@ -175,3 +178,67 @@ class TestPullFitText:
     def test_an_unknown_size_says_so_and_names_the_reserve(self) -> None:
         fit = PullFit(device_bytes=8 * GIB, ctx=8192, size_known=False, upper_bound=False)
         assert fit.text() == "The size of this model is unknown, so 8.0 GiB is reserved for it."
+
+
+class _FailingSession:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def get(self, *_args: object, **_kwargs: object) -> object:
+        raise self._error
+
+
+class _FailingApi:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def model_info(self, *_args: object, **_kwargs: object) -> object:
+        raise self._error
+
+
+class TestAHubReadThatFails:
+    @pytest.mark.parametrize(
+        "error",
+        [
+            httpx2.ReadTimeout("slow"),
+            httpx2.ConnectError("down"),
+            json.JSONDecodeError("not json", "<html>", 0),
+            KeyError("content-length"),
+            OSError("offline"),
+        ],
+        ids=["timeout", "connect", "json", "header", "os"],
+    )
+    def test_gives_an_unknown_size_whatever_the_read_raised(
+        self, monkeypatch: pytest.MonkeyPatch, error: Exception
+    ) -> None:
+        monkeypatch.setattr(hf_client, "get_session", lambda: _FailingSession(error))
+        monkeypatch.setattr(hf_client, "HfApi", lambda: _FailingApi(error))
+        fit = chat_pull_fit("org/model", MISTRAL)
+        assert fit.size_known is False
+        assert fit.text() == "The size of this model is unknown, so 8.0 GiB is reserved for it."
+
+
+class TestARefusedConnection:
+    @pytest.fixture
+    def closed_port_hub(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        endpoint = f"http://127.0.0.1:{port}"
+        monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+        monkeypatch.setattr(hub_constants, "ENDPOINT", endpoint)
+        monkeypatch.setattr(
+            hub_constants,
+            "HUGGINGFACE_CO_URL_TEMPLATE",
+            endpoint + "/{repo_id}/resolve/{revision}/{filename}",
+        )
+
+    def test_the_config_read_gives_none(self, closed_port_hub: None) -> None:
+        assert hf_client.read_model_config("org/model") is None
+
+    def test_the_figures_read_gives_nothing(self, closed_port_hub: None) -> None:
+        assert hf_client.read_parameter_count("org/model") == {}
+
+    def test_the_pull_fit_reserves_the_unknown_size(self, closed_port_hub: None) -> None:
+        fit = chat_pull_fit("org/model", MISTRAL)
+        assert fit.size_known is False

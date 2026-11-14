@@ -23,7 +23,7 @@ def _placement_view(*size_unknown: SizeUnknownRole) -> PlacementView:
 
 @pytest.fixture(autouse=True)
 def _no_size_unknown_roles(monkeypatch) -> None:
-    monkeypatch.setattr(app_placement, "get_placement", lambda: _placement_view())
+    monkeypatch.setattr(app_placement, "_read_placement", lambda: _placement_view())
 
 
 def _services_with_role_ready(ready: bool) -> mock.MagicMock:
@@ -113,7 +113,7 @@ def test_announce_ready_names_a_model_of_unknown_size_after_the_ready_line(monke
         SizeUnknownRole(WorkerRole.CHAT, "org/m", notice),
         SizeUnknownRole(WorkerRole.EMBED, "org/e", "the embed notice"),
     )
-    monkeypatch.setattr(app_placement, "get_placement", lambda: view)
+    monkeypatch.setattr(app_placement, "_read_placement", lambda: view)
     set_services(_services_with_warm(None))
     err = mock.MagicMock()
     helpers.announce_ready(err, WorkerRole.CHAT)
@@ -129,7 +129,7 @@ def test_announce_ready_prints_no_notice_when_every_size_is_known() -> None:
 
 def test_announce_ready_prints_no_notice_after_a_load_failure(monkeypatch) -> None:
     view = _placement_view(SizeUnknownRole(WorkerRole.CHAT, "org/m", "unknown notice"))
-    monkeypatch.setattr(app_placement, "get_placement", lambda: view)
+    monkeypatch.setattr(app_placement, "_read_placement", lambda: view)
     set_services(_services_with_warm(WarmProgress(phase=WarmPhase.ERROR, error="boom")))
     err = mock.MagicMock()
     helpers.announce_ready(err, WorkerRole.CHAT)

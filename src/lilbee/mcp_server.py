@@ -45,6 +45,7 @@ from lilbee.app.memory import (
     remember,
 )
 from lilbee.app.placement import (
+    PLACEMENT_READ_ERRORS,
     PlacementView,
     get_placement,
     placement_refused_message,
@@ -113,7 +114,9 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
@@ -448,7 +451,6 @@ async def sync(
     """
     from lilbee.app.ingest import LIBRARY_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
-    from lilbee.providers.base import ProviderError
 
     try:
         validate_ocr_timeout(ocr_timeout)
@@ -2075,22 +2077,26 @@ def _placement_dict(view: PlacementView) -> dict[str, Any]:
     return PlacementResponse.from_view(view).model_dump(mode="json")
 
 
-def _placement_guard(serialize: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    """Run a placement query and serialize it, returning a structured error on failure."""
-    from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.placement_spec import PlacementError
+_WRITE_ERRORS: tuple[type[Exception], ...] = (PlacementError, ProviderError)
 
+
+def _placement_guard(
+    serialize: Callable[[], dict[str, Any]], errors: tuple[type[Exception], ...] = _WRITE_ERRORS
+) -> dict[str, Any]:
+    """Run a placement query and serialize it, returning a structured error on *errors*."""
     try:
         return serialize()
-    except (PlacementError, ProviderError) as exc:
-        return _error(str(exc))
     except FileLockUnavailableError as exc:
         return _error(config_write_failure_message(exc))
+    except errors as exc:
+        return _error(str(exc))
 
 
-def _placement_result(action: Callable[[], PlacementView]) -> dict[str, Any]:
-    """Run a placement action and serialize its view, returning a structured error on failure."""
-    return _placement_guard(lambda: _placement_dict(action()))
+def _placement_result(
+    action: Callable[[], PlacementView], errors: tuple[type[Exception], ...] = _WRITE_ERRORS
+) -> dict[str, Any]:
+    """Run a placement action and serialize its view, returning a structured error on *errors*."""
+    return _placement_guard(lambda: _placement_dict(action()), errors)
 
 
 def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
@@ -2114,13 +2120,13 @@ def get_gpus_tool() -> dict[str, Any]:
             "notice": msg.intel_util_hint_text(hint) if hint else None,
         }
 
-    return _placement_guard(_body)
+    return _placement_guard(_body, PLACEMENT_READ_ERRORS)
 
 
 @_tool_named("get_placement")
 def get_placement_tool() -> dict[str, Any]:
     """Show the current effective multi-GPU model placement."""
-    return _placement_result(get_placement)
+    return _placement_result(get_placement, PLACEMENT_READ_ERRORS)
 
 
 @_tool_named("preview_placement")

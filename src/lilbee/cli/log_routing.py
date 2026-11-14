@@ -49,6 +49,24 @@ def attach_rotating_file_handler(
     root.addHandler(handler)
 
 
+def _is_terminal_handler(handler: logging.Handler) -> bool:
+    """Whether *handler* writes records to stderr or stdout."""
+    return (
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        and handler.stream in (sys.stderr, sys.stdout)
+    )
+
+
+def warnings_reach_terminal() -> bool:
+    """Whether a WARNING record prints on the terminal."""
+    root = logging.getLogger()
+    return root.isEnabledFor(logging.WARNING) and any(
+        _is_terminal_handler(handler) and handler.level <= logging.WARNING
+        for handler in root.handlers
+    )
+
+
 def route_diagnostics_to_log_file() -> Path | None:
     """Send log records and Python warnings to ``cfg.data_root/logs/cli.log``.
 
@@ -69,11 +87,7 @@ def route_diagnostics_to_log_file() -> Path | None:
     attach_rotating_file_handler(log_path)
     root = logging.getLogger()
     for handler in list(root.handlers):
-        if (
-            isinstance(handler, logging.StreamHandler)
-            and not isinstance(handler, logging.FileHandler)
-            and handler.stream in (sys.stderr, sys.stdout)
-        ):
+        if _is_terminal_handler(handler):
             root.removeHandler(handler)
     logging.captureWarnings(True)
     return log_path

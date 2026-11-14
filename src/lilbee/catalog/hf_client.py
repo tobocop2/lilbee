@@ -12,8 +12,8 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
+import httpx2
 from huggingface_hub import HfApi, ModelInfo, hf_hub_url
-from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.hf_api import RepoSibling
 from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
@@ -217,8 +217,7 @@ def repo_has_mmproj(hf_repo: str) -> bool:
 
 
 _HUB_READ_ERRORS = (
-    HfHubHTTPError,
-    httpx.HTTPError,
+    httpx2.HTTPError,
     OSError,
     AttributeError,
     TypeError,
