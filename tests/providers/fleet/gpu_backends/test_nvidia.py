@@ -380,6 +380,16 @@ def test_the_na_marker_is_not_a_gpu_name(monkeypatch: pytest.MonkeyPatch) -> Non
     assert nvidia_mod.host_facts() == {"cuda_driver": 12040, "gpus": None}
 
 
+def test_a_name_that_holds_the_na_marker_and_a_comma_is_a_gpu_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards="0, GPU-a, 24576, 23552, Card [N/A]x, rev 2\n", compute="0, 8.6\n")
+    assert nvidia_mod.host_facts() == {
+        "cuda_driver": 12040,
+        "gpus": [{"name": "Card [N/A]x, rev 2", "cc": [8, 6]}],
+    }
+
+
 def test_a_card_whose_index_does_not_read_takes_its_row_position(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
