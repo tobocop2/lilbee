@@ -15,6 +15,7 @@ from conftest import stub_hf_listing
 from lilbee.app.services import get_services
 from lilbee.catalog import query as _query
 from lilbee.cli.tui.screens.catalog import CatalogScreen
+from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines.lemonade import LEMONADE
@@ -56,6 +57,12 @@ def _cards(screen: CatalogScreen) -> str:
     return "\n".join(lines)
 
 
+def _npu_card_shown(screen: CatalogScreen) -> bool:
+    """True once the cards show the ``qwen3:4b`` name and the size line of its NPU row."""
+    cards = _cards(screen)
+    return "qwen3:4b" in cards and CARD_SIZE_LINE in cards
+
+
 def _browse(monkeypatch: pytest.MonkeyPatch, host: host_caps.HostCaps) -> None:
     monkeypatch.setattr(_query, "get_picks", lambda: [])
     monkeypatch.setattr(_query, "session_host", lambda: host)
@@ -65,11 +72,21 @@ def _browse(monkeypatch: pytest.MonkeyPatch, host: host_caps.HostCaps) -> None:
 
 
 async def _search_chat_tab(pilot: Pilot[None], screen: CatalogScreen, text: str) -> None:
-    await pilot.press("2")
-    await pilot.press("slash")
-    await wait_until(pilot, lambda: screen._filter_open)
+    """Type *text* into the filter of the Chat tab, the tab the catalog opens on.
+
+    The first loads remount the grids and leave focus on a grid that is gone, and a key
+    sent to a removed widget is dropped. Wait for the loads to end, then open the filter
+    through the screen action, so the focus moves to the input before any key is typed.
+    """
+    await pilot.app.workers.wait_for_complete()
+    assert screen._active_tab_id() == TAB_CHAT
+    screen.action_focus_search()
+    typing = await wait_until(pilot, lambda: screen._filter_open and screen._search_focused)
+    assert typing, "the filter input never took focus"
     for char in text:
         await pilot.press("colon" if char == ":" else char)
+    typed = await wait_until(pilot, lambda: screen._get_search_text() == text)
+    assert typed, screen._get_search_text()
 
 
 @SIZES
@@ -81,7 +98,7 @@ async def test_an_npu_host_shows_the_row_and_no_hidden_note(
         screen = CatalogScreen()
         await pilot.app.push_screen(screen)
         await _search_chat_tab(pilot, screen, "qwen3:4b")
-        shown = await wait_until(pilot, lambda: CARD_SIZE_LINE in _cards(screen), timeout=3.0)
+        shown = await wait_until(pilot, lambda: _npu_card_shown(screen), timeout=3.0)
         cards, text = _cards(screen), _text(screen)
         assert shown, cards
         assert "qwen3:4b" in cards
