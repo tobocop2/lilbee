@@ -23,6 +23,7 @@ from lilbee.providers.fleet import devices, engine_manifest, host_caps, swap_con
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
+from lilbee.providers.fleet.engines import mistral as mistral_module
 from lilbee.providers.fleet.engines.base import PORT_SLOT, EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import (
     NoPublishedPackError,
@@ -535,3 +536,200 @@ def test_device_flags_follow_the_subcommand(
         {WorkerRole.EMBED: "embedding", WorkerRole.VISION: "multimodal"}.get(role, "text")
     )
     assert argv.index("--cpu") == subcommand + 1
+
+
+# ---- a role across several cards ----
+
+
+def _cuda_host(monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards: int = 2) -> None:
+    gpus = [L4] * cards if system != "Darwin" else None
+    machine = "arm64" if system == "Darwin" else "x86_64"
+    monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
+
+
+def _gguf_layers(monkeypatch: pytest.MonkeyPatch, meta: dict[str, str] | None) -> None:
+    monkeypatch.setattr(mistral_module, "read_gguf_metadata", lambda _path: meta)
+
+
+def _split_argv(
+    tmp_path: Path, split: tuple[int, ...], role: WorkerRole = WorkerRole.CHAT, **over: Any
+) -> list[str]:
+    model = over.pop("model_path", tmp_path / "m.gguf")
+    req = request(tmp_path, model_path=model, devices=tuple(range(len(split))), tensor_split=split)
+    return MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), req)
+
+
+def _layer_map(argv: list[str]) -> str:
+    return argv[argv.index("--device-layers") + 1]
+
+
+@pytest.mark.parametrize(
+    ("layers", "split", "expected"),
+    [
+        (32, (1, 1), "0:16;1:16"),
+        (33, (1, 1), "0:17;1:16"),
+        (32, (3, 1), "0:24;1:8"),
+        (32, (5, 3, 2), "0:16;1:10;2:6"),
+    ],
+)
+def test_a_gguf_split_gives_each_card_its_share_of_the_layers(
+    layers: int,
+    split: tuple[int, ...],
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cuda_host(monkeypatch, cards=len(split))
+    _gguf_layers(monkeypatch, {"block_count": str(layers)})
+    assert _layer_map(_split_argv(tmp_path, split)) == expected
+
+
+@pytest.mark.parametrize(
+    ("role", "subcommand"),
+    [
+        (WorkerRole.CHAT, "text"),
+        (WorkerRole.EMBED, "embedding"),
+        (WorkerRole.VISION, "multimodal"),
+    ],
+)
+def test_the_layer_map_follows_the_role_subcommand(
+    role: WorkerRole, subcommand: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    _gguf_layers(monkeypatch, {"block_count": "32"})
+    argv = _split_argv(tmp_path, (1, 1), role)
+    assert argv.index("--device-layers") > argv.index(subcommand)
+    assert argv.index("--device-layers") < argv.index("-m")
+
+
+def test_one_card_and_the_cpu_target_name_no_layer_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    _gguf_layers(monkeypatch, None)
+    assert "--device-layers" not in _split_argv(tmp_path, (1,))
+    assert "--device-layers" not in _split_argv(tmp_path, ())
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    cpu = request(tmp_path, target=RoleTarget.CPU, tensor_split=(1, 1))
+    assert "--device-layers" not in MISTRAL.launch_argv(spec, cpu)
+
+
+@pytest.mark.parametrize(
+    ("config", "layers"),
+    [
+        ({"num_hidden_layers": 40}, "0:20;1:20"),
+        ({"text_config": {"num_hidden_layers": 28}}, "0:14;1:14"),
+        ({"num_hidden_layers": 10, "text_config": {"num_hidden_layers": 28}}, "0:5;1:5"),
+    ],
+)
+def test_a_safetensors_split_reads_the_layer_count_from_the_config(
+    config: dict[str, Any],
+    layers: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cuda_host(monkeypatch)
+    folder = tmp_path / "st"
+    folder.mkdir()
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    assert _layer_map(_split_argv(tmp_path, (1, 1), model_path=folder)) == layers
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        "not json",
+        "[1, 2]",
+        '{"model_type": "llama"}',
+        '{"num_hidden_layers": "forty"}',
+        '{"num_hidden_layers": true}',
+        '{"num_hidden_layers": 0}',
+        '{"text_config": [1]}',
+    ],
+)
+def test_a_folder_without_a_layer_count_is_refused_on_a_split(
+    config: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    folder = tmp_path / "st_folder"
+    folder.mkdir()
+    if config is not None:
+        (folder / "config.json").write_text(config, encoding="utf-8")
+    with pytest.raises(ProviderError, match=r"mistral\.rs cannot split st_folder across 2 cards"):
+        _split_argv(tmp_path, (1, 1), model_path=folder)
+    assert "--device-layers" not in _split_argv(tmp_path, (1,), model_path=folder)
+
+
+@pytest.mark.parametrize("meta", [None, {}, {"block_count": "many"}, {"block_count": "0"}])
+def test_a_gguf_without_a_layer_count_is_refused_on_a_split(
+    meta: dict[str, str] | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    _gguf_layers(monkeypatch, meta)
+    with pytest.raises(ProviderError, match=r"mistral\.rs cannot split m\.gguf across 2 cards"):
+        _split_argv(tmp_path, (1, 1))
+    assert "--device-layers" not in _split_argv(tmp_path, (1,))
+
+
+@pytest.mark.parametrize("split", [(100, 100, 1), (1, 0), (0, 0)])
+def test_a_split_that_leaves_a_card_empty_is_refused(
+    split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=len(split))
+    _gguf_layers(monkeypatch, {"block_count": "4"})
+    with pytest.raises(ProviderError, match=r"m\.gguf.*no layer"):
+        _split_argv(tmp_path, split)
+
+
+@pytest.mark.parametrize(
+    ("system", "cards", "label"),
+    [("Darwin", 2, "Metal"), ("Windows", 2, "CPU"), ("Linux", 0, "CPU")],
+)
+def test_a_build_that_cannot_split_refuses_a_split(
+    system: str, cards: int, label: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, system, cards=cards)
+    _gguf_layers(monkeypatch, {"block_count": "32"})
+    with pytest.raises(ProviderError, match=rf"mistral\.rs cannot split m\.gguf.*{label}"):
+        _split_argv(tmp_path, (1, 1))
+
+
+def test_the_runtime_env_turns_the_collective_library_off_so_the_map_holds() -> None:
+    assert MISTRAL.runtime_env() == {"MISTRALRS_NO_NCCL": "1"}
+
+
+def _estimate(model: Path, split: tuple[int, ...]) -> Any:
+    request_ = MemoryRequest(model, 4096, 1, 99, True, cfg.kv_cache_type, tensor_split=split)
+    return MISTRAL.estimate_memory(request_)
+
+
+def test_a_split_estimate_charges_each_card_its_layer_share(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 3200)
+    _gguf_layers(monkeypatch, {"block_count": "32"})
+    estimate = _estimate(model, (3, 1))
+    assert estimate.per_device == (2400, 800)
+    assert (estimate.kind, estimate.device_bytes) == (MemoryKind.FIXED_RESERVE, 3200)
+
+
+def test_a_split_estimate_of_a_folder_charges_each_card_its_layer_share(tmp_path: Path) -> None:
+    folder = tmp_path / "st"
+    folder.mkdir()
+    (folder / "model.safetensors").write_bytes(b"x" * 4000)
+    (folder / "config.json").write_text('{"num_hidden_layers": 40}', encoding="utf-8")
+    assert _estimate(folder, (1, 1)).per_device == (2000, 2000)
+
+
+@pytest.mark.parametrize("meta", [None, {"block_count": "4"}])
+def test_an_estimate_without_a_usable_split_has_no_per_card_vector(
+    meta: dict[str, str] | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 1000)
+    _gguf_layers(monkeypatch, meta)
+    assert _estimate(model, (100, 100, 1)).per_device == ()
+    assert _estimate(model, (1,)).per_device == ()
+    assert _estimate(model, ()).per_device == ()
