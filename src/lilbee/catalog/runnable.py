@@ -50,10 +50,17 @@ class Hidden:
 
 
 def default_offers() -> list[EngineOffer]:
-    """The shipped engines, read from the engine table."""
+    """The engines whose models the catalog lists: llama.cpp, and Lemonade for NPU models."""
+    # circular: the engine modules import the catalog
     from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.engines.choice import installed_engines
+    from lilbee.providers.fleet.engines.lemonade import LEMONADE
 
-    return [EngineOffer(LLAMA, EngineState.INSTALLED)]
+    lemonade_here = LEMONADE.name in installed_engines()
+    return [
+        EngineOffer(LLAMA, EngineState.INSTALLED),
+        EngineOffer(LEMONADE, EngineState.INSTALLED if lemonade_here else EngineState.INSTALLABLE),
+    ]
 
 
 @functools.cache
