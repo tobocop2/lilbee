@@ -904,9 +904,12 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
   `num_key_value_heads` in `config.json`). The message names the model and the
   llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
-  each card the estimate (weights, cache and runtime allowance) by layer share. Every
-  chat or vision launch, split or not, also passes `--max-model-len` with the planned
-  context of the role.
+  each card its layer share of the estimate. For a model folder the estimate is the
+  weights, the cache at the launch context and the runtime allowance. For a GGUF file
+  it is the weights only. Every chat or vision launch, split or not, also passes
+  `--max-model-len` with the context of the launch: the `num_ctx` pin, else
+  `chat_n_ctx_target` within the trained window and `num_ctx_max`. A split passes the
+  largest context that fits each card, never more.
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process
