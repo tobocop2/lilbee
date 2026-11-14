@@ -169,6 +169,10 @@ def test_a_null_label_list_reads_as_none() -> None:
         pytest.param({"details": {"parameter_size": 4}}, id="params-number"),
         pytest.param({"details": {}}, id="params-missing"),
         pytest.param({"footprint": "3.1"}, id="footprint-text"),
+        pytest.param({"footprint": 0}, id="footprint-zero"),
+        pytest.param({"footprint": -3}, id="footprint-negative"),
+        pytest.param({"footprint": float("nan")}, id="footprint-nan"),
+        pytest.param({"size": float("inf")}, id="size-infinite"),
         pytest.param({"label": 5}, id="label-number"),
     ],
 )
