@@ -66,6 +66,12 @@ UNKNOWN_SIZE_RESERVE_BYTES = 8 * 1024**3
 """What a non-GGUF model is charged when neither its header nor its files give a size."""
 
 
+def unknown_size_text(subject: str, reserve_bytes: int = UNKNOWN_SIZE_RESERVE_BYTES) -> str:
+    """The sentence that says *subject* has no known size and what is reserved for it."""
+    gib = reserve_bytes / 1024**3
+    return f"The size of {subject} is unknown, so {gib:.1f} GiB is reserved for it."
+
+
 @dataclass(frozen=True)
 class KvPerToken:
     """The cache bytes one token holds, and whether the figure is a ceiling."""

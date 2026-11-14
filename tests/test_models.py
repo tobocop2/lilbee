@@ -241,7 +241,7 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None):
+        def fake_pull(model, source, *, on_bytes=None, on_notice=None):
             if on_bytes:
                 on_bytes(100, 100)
             return
@@ -256,7 +256,7 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None):
+        def fake_pull(model, source, *, on_bytes=None, on_notice=None):
             if on_bytes:
                 on_bytes(0, 0)
             return
@@ -299,6 +299,27 @@ class TestPullWithProgressProjector:
         out = console.file.getvalue()
         assert "Warning: acme/vl is named as a vision model" in out
         assert "Model 'acme/vl-GGUF' ready." in out
+
+    def test_prints_the_size_notice_with_the_projector_warning(self):
+        services = self._services()
+        services.model_manager.pull.side_effect = lambda *a, on_notice=None, **k: on_notice(
+            "The size of this model is unknown, so 8.0 GiB is reserved for it."
+        )
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value="no projector"):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        out = console.file.getvalue()
+        assert (
+            "Warning: The size of this model is unknown, so 8.0 GiB is reserved for it. "
+            "no projector" in out
+        )
+
+    def test_prints_no_warning_when_nothing_is_wrong(self):
+        self._services()
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        assert "Warning" not in console.file.getvalue()
 
     def test_unfetchable_projector_is_an_error(self):
         self._services()

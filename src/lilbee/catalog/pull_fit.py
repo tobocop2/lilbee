@@ -12,6 +12,7 @@ from lilbee.catalog import hf_client
 from lilbee.providers.fleet.model_memory import (
     kv_per_token_from_config,
     safetensors_chat_estimate,
+    unknown_size_text,
     weights_from_header,
 )
 from lilbee.providers.fleet.planning import planned_chat_ctx
@@ -37,7 +38,7 @@ class PullFit:
         """One sentence for the user: the figure, or the reserve with the reason it is a guess."""
         gib = self.device_bytes / _GIB
         if not self.size_known:
-            return f"The size of this model is unknown, so {gib:.1f} GiB is reserved for it."
+            return unknown_size_text("this model", self.device_bytes)
         qualifier = "at most " if self.upper_bound else ""
         return f"This model needs {qualifier}{gib:.1f} GiB at a context of {self.ctx} tokens."
 

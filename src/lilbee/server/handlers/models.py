@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-from lilbee.app.models import ensure_vision_projector, list_models_data
+from lilbee.app.models import ensure_vision_projector, join_warnings, list_models_data
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
@@ -586,15 +586,20 @@ async def models_pull(
 
         try:
             was_installed = manager.is_installed(model, src)
+            notices: list[str] = []
             manager.pull(
                 model,
                 src,
                 on_bytes=_on_bytes,
+                on_notice=notices.append,
                 allow_unsupported=allow_unsupported,
                 cancel=sse.cancel,
             )
-            warning = ensure_vision_projector(
-                model, warn_unreadable=not was_installed, cancel=sse.cancel
+            warning = join_warnings(
+                *notices,
+                ensure_vision_projector(
+                    model, warn_unreadable=not was_installed, cancel=sse.cancel
+                ),
             )
             done = {} if warning is None else {"warning": warning}
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))

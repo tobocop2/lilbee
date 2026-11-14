@@ -77,6 +77,7 @@ _CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CHAT_FILE = "Qwen3-0.6B-Q4_K_M.gguf"
 _CHAT_REF = f"{_CHAT_REPO}/{_CHAT_FILE}"
 _OLLAMA_REF = "ollama/llama3:latest"
+_SIZE_NOTICE = "The size of this model is unknown, so 8.0 GiB is reserved for it."
 
 
 class _FakeManager:
@@ -91,6 +92,7 @@ class _FakeManager:
         self._native = list(native or [])
         self._remote = list(remote or [])
         self.pull_calls: list[tuple[str, ModelSource]] = []
+        self.pull_notice: str | None = None
         self.remove_calls: list[tuple[str, ModelSource | None]] = []
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
@@ -114,8 +116,12 @@ class _FakeManager:
             return ModelSource.REMOTE
         return None
 
-    def pull(self, model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+    def pull(
+        self, model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+    ):
         self.pull_calls.append((model, source))
+        if self.pull_notice is not None and on_notice is not None:
+            on_notice(self.pull_notice)
         if on_bytes is not None:
             on_bytes(50, 100)
         return f"/fake/{model}.gguf"
@@ -880,6 +886,37 @@ class TestPullCmd:
         assert result.exit_code == 0, result.output
         final = json.loads(result.output.strip().splitlines()[-1])
         assert final["warning"] == "no projector listed"
+
+    def test_json_final_event_carries_the_size_notice_and_the_projector_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        fake_manager.pull_notice = _SIZE_NOTICE
+        monkeypatch.setattr(
+            model_mod, "ensure_vision_projector", lambda ref, **_: "no projector listed"
+        )
+        result = runner.invoke(
+            app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+        )
+        assert result.exit_code == 0, result.output
+        final = json.loads(result.output.strip().splitlines()[-1])
+        assert final["warning"] == f"{_SIZE_NOTICE} no projector listed"
+
+    def test_human_mode_prints_the_size_notice(self, fake_manager, native_manifests):
+        fake_manager.pull_notice = _SIZE_NOTICE
+        result = runner.invoke(app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"])
+        assert result.exit_code == 0, result.output
+        assert "Warning:" in result.output
+        assert "is unknown, so 8.0 GiB is reserved" in " ".join(result.output.split())
+
+    def test_a_pull_with_no_notice_has_no_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setattr(model_mod, "ensure_vision_projector", lambda ref, **_: None)
+        result = runner.invoke(
+            app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+        )
+        final = json.loads(result.output.strip().splitlines()[-1])
+        assert final["warning"] is None
 
     def test_human_already_installed_message(self, fake_manager, native_manifests):
         result = runner.invoke(app, ["model", "pull", _CHAT_REF])

@@ -402,6 +402,12 @@ def ensure_vision_projector(
     return None
 
 
+def join_warnings(*parts: str | None) -> str | None:
+    """The notices in *parts* as one warning text, or ``None`` when there are none."""
+    texts = [part for part in parts if part]
+    return " ".join(texts) if texts else None
+
+
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -444,10 +450,12 @@ def pull_model_data(
         )
 
     bytes_cb = make_download_callback(on_update) if on_update is not None else None
+    notices: list[str] = []
     path = manager.pull(
         ref,
         source,
         on_bytes=bytes_cb,
+        on_notice=notices.append,
         allow_unsupported=allow_unsupported,
         cancel=cancel,
     )
@@ -456,7 +464,9 @@ def pull_model_data(
         source=source.value,
         status=PullStatus.OK,
         path=str(path) if path is not None else None,
-        warning=ensure_vision_projector(ref, warn_unreadable=True, cancel=cancel),
+        warning=join_warnings(
+            *notices, ensure_vision_projector(ref, warn_unreadable=True, cancel=cancel)
+        ),
     )
 
 

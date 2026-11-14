@@ -4037,7 +4037,9 @@ class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        ):
             if on_bytes:
                 on_bytes(500, 1000)
                 on_bytes(1000, 1000)
@@ -4052,6 +4054,31 @@ class TestModelsPull:
         non_empty = [e for e in events if e]
         assert any('"current": 500' in e for e in non_empty)
         assert any('"total": 1000' in e for e in non_empty)
+
+    async def test_done_event_joins_the_size_notice_and_the_projector_warning(self):
+        mock_manager = MagicMock()
+
+        def fake_pull(model, source, *, on_notice=None, **_):
+            on_notice("The size of this model is unknown, so 8.0 GiB is reserved for it.")
+
+        mock_manager.pull.side_effect = fake_pull
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch(
+                "lilbee.server.handlers.models.ensure_vision_projector",
+                return_value="no projector listed",
+            ),
+        ):
+            events = [e async for e in handlers.models_pull("test", source="native")]
+        done = [e for e in events if e and "event: done" in e]
+        assert len(done) == 1
+        assert (
+            '"warning": "The size of this model is unknown, so 8.0 GiB is reserved for it. '
+            'no projector listed"'
+        ) in done[0]
 
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
@@ -4080,7 +4107,9 @@ class TestModelsPull:
         aborted: list[bool] = []
         mock_manager = MagicMock()
 
-        def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+        def blocking_pull(
+            model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        ):
             on_bytes(100, 1000)
             barrier.wait(timeout=2)
             try:
@@ -5526,7 +5555,9 @@ class TestModelPullProgressCancel:
         progress_called = threading.Event()
         aborted = threading.Event()
 
-        def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+        def fake_pull(
+            model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+        ):
             progress_called.set()
             try:
                 on_bytes(500, 1000)

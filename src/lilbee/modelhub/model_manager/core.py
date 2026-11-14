@@ -185,6 +185,7 @@ class ModelManager:
         source: ModelSource,
         *,
         on_bytes: Callable[[int, int], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
         allow_unsupported: bool = False,
         cancel: CancelSignal | None = None,
     ) -> Path | None:
@@ -198,6 +199,7 @@ class ModelManager:
         are refused with ``UnsupportedArchError``, and files whose tensors it
         cannot decode with ``UnsupportedQuantError``, unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
+        *on_notice* receives the sentence that says the model's size is unknown.
         A *cancel* signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
         """
@@ -216,6 +218,7 @@ class ModelManager:
                 model,
                 engine,
                 on_bytes=on_bytes,
+                on_notice=on_notice,
                 cancel=cancel,
                 allow_unsupported=allow_unsupported,
             )
@@ -255,6 +258,7 @@ class ModelManager:
         engine: "EngineAdapter",
         *,
         on_bytes: Callable[[int, int], None] | None = None,
+        on_notice: Callable[[str], None] | None = None,
         cancel: CancelSignal | None = None,
         allow_unsupported: bool = False,
     ) -> Path:
@@ -270,7 +274,9 @@ class ModelManager:
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
         entry = self._resolved_entry(entry, engine, verify=not allow_unsupported)
-        self._log_memory_need(entry, engine)
+        notice = self._log_memory_need(entry, engine)
+        if notice is not None and on_notice is not None:
+            on_notice(notice)
         path = download_model(
             entry,
             engine,
@@ -282,23 +288,22 @@ class ModelManager:
         return path
 
     @staticmethod
-    def _log_memory_need(entry: CatalogModel, engine: "EngineAdapter") -> None:
-        """Tell the user the memory a safetensors chat model needs, before its weights download.
+    def _log_memory_need(entry: CatalogModel, engine: "EngineAdapter") -> str | None:
+        """Log the memory a safetensors chat model needs, before its weights download.
 
-        A size that is unknown goes out as a warning, which the default log level shows.
+        Returns the sentence that says the size is unknown, or ``None`` when it is known.
         """
         if entry.format not in (ModelFormat.SAFETENSORS, ModelFormat.MLX):
-            return
+            return None
         if entry.task is not ModelTask.CHAT:
-            return
+            return None
         # heavy: lilbee.catalog and lilbee.providers.fleet (>50ms)
         from lilbee.catalog.hf_client import hf_token
         from lilbee.catalog.pull_fit import chat_pull_fit
 
         fit = chat_pull_fit(entry.hf_repo, engine, token=hf_token())
-        log.log(
-            logging.INFO if fit.size_known else logging.WARNING, "%s: %s", entry.hf_repo, fit.text()
-        )
+        log.info("%s: %s", entry.hf_repo, fit.text())
+        return None if fit.size_known else fit.text()
 
     def _resolved_entry(
         self, entry: CatalogModel, engine: "EngineAdapter", *, verify: bool
