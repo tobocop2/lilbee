@@ -34,6 +34,7 @@ from lilbee.catalog.refs import (
     split_shard_filenames,
 )
 from lilbee.catalog.types import ModelFormat, ModelTask
+from lilbee.catalog.xdna import ticket_path
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 
@@ -255,10 +256,20 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
+        parsed = parse_model_ref(ref)
+        if parsed.format is ModelFormat.XDNA:
+            return self._resolve_ticket(ref, parsed.hf_repo)
         non_gguf = _non_gguf_repo(ref)
         if non_gguf is not None:
             return self._resolve_file_set(ref, *non_gguf)
         return self._resolve_gguf(ref)
+
+    def _resolve_ticket(self, ref: str, tag: str) -> Path:
+        """The ticket of the installed NPU model *tag*; ``KeyError`` if not installed."""
+        ticket = ticket_path(self._root, tag)
+        if not ticket.is_file():
+            raise KeyError(f"Model {ref} not installed")
+        return ticket
 
     def _resolve_gguf(self, ref: str) -> Path:
         """Resolve a GGUF ref, or a bare ``<org>/<repo>``, to a loadable path."""
