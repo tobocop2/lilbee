@@ -41,18 +41,15 @@ def _table(monkeypatch: pytest.MonkeyPatch, procs: list[_Proc]) -> None:
     )
 
 
-def test_r10_a_lemonade_child_on_a_port_the_fleet_did_not_pick_is_found(
+def test_r10_a_lemond_that_runs_from_a_role_folder_is_found(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    child = _Proc(
-        "llama-server", ["llama-server", "-m", str(root / "view/chat/m.gguf"), "--port", "8001"]
-    )
     parent = _Proc(
         "lemond", ["lemond", "--port", "5800", str(root / "cache"), str(root / "config")]
     )
-    other = _Proc("llama-server", ["llama-server", "-m", "/x.gguf", "--port", "8001"])
-    _table(monkeypatch, [child, parent, other])
-    assert sm._find_orphan_servers((5800,)) == [parent, child]
+    other = _Proc("lemond", ["lemond", "--port", "8001", "/home/user/.cache/lemonade"])
+    _table(monkeypatch, [parent, other])
+    assert sm._find_orphan_servers((5800,)) == [parent]
 
 
 def test_r10_a_lemonade_process_below_a_live_swap_is_spared(
