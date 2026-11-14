@@ -65,6 +65,9 @@ _EXIT_DEADLINE_S = 60.0
 _GRACEFUL_SHUTDOWN_S = 10
 """Seconds open requests get before uvicorn cancels them and runs the lifespan teardown."""
 
+_INTERRUPTED_EXIT_STATUS = 128 + signal.SIGINT
+"""The status a shell reports for a process that Ctrl-C ended."""
+
 _HARD_EXIT_GRACE_S = 1
 """The same wait on SIGTERM or SIGHUP: long enough for a woken write to send its answer."""
 
@@ -170,6 +173,27 @@ def _refuse_to_start(message: str) -> NoReturn:
     raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
 
 
+def _take_the_scope() -> ScopeHold | None:
+    """Hold the exclusive scope named by the environment, or refuse to start; None when unset."""
+    scope_env = os.environ.get(SCOPE_ENV)
+    if not scope_env:
+        return None
+    scope_dir = Path(scope_env)
+    try:
+        scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+    except LockingUnsupportedError as exc:
+        _refuse_to_start(str(exc))
+    if scope_hold is None:
+        owner = read_scope_owner(scope_dir)
+        serving = f" It is serving {owner.data_dir}." if owner else ""
+        message = (
+            f"Another lilbee server is already running for this installation.{serving}"
+            " Stop it or wait for it to exit, then retry."
+        )
+        _refuse_to_start(message)
+    return scope_hold
+
+
 def serve(
     host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
     port: int = typer.Option(None, "--port", "-p", help="Port (default: 0/random)"),
@@ -188,22 +212,7 @@ def serve(
 
     # One managed server per scope: the plugin passes its shared root here so a
     # second vault's server cannot start while another vault's is serving it.
-    scope_hold = None
-    scope_env = os.environ.get(SCOPE_ENV)
-    if scope_env:
-        scope_dir = Path(scope_env)
-        try:
-            scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
-        except LockingUnsupportedError as exc:
-            _refuse_to_start(str(exc))
-        if scope_hold is None:
-            owner = read_scope_owner(scope_dir)
-            serving = f" It is serving {owner.data_dir}." if owner else ""
-            message = (
-                f"Another lilbee server is already running for this installation.{serving}"
-                " Stop it or wait for it to exit, then retry."
-            )
-            _refuse_to_start(message)
+    scope_hold = _take_the_scope()
 
     # One server per data dir: a second instance would overwrite server.port
     # and spawn a second engine fleet against the same models and vector store.
@@ -243,6 +252,11 @@ def serve(
     except Exception:
         # The exit in the finally can end the process before the traceback prints.
         logging.getLogger(__name__).error("The server run failed.", exc_info=True)
+        raise
+    except KeyboardInterrupt:
+        # The exit in the finally can end the process before the interrupt reaches the
+        # interpreter, so the status is the shell's own for Ctrl-C.
+        status = _INTERRUPTED_EXIT_STATUS
         raise
     finally:
         _stop_server(status, server_lock, scope_hold)

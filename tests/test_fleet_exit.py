@@ -29,6 +29,7 @@ _SIGTERM_STATUS = 143
 _SIGHUP_STATUS = 129
 _STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
 _STOPPING = "The server is stopping."
+_OPEN_EXIT_NOTE = "lilbee: the library is still opening; exiting now. The next start finishes it."
 _LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
 _SAVED_PLACEMENT = 'placement = "{}"\n'
 
@@ -149,6 +150,7 @@ class _Server:
         env = {
             **os.environ,
             "LILBEE_DATA": str(home),
+            "LILBEE_MEMORY_ENABLED": "true",
             "HOME": str(home),
             "PATH": "",
             "LILBEE_LLAMA_SERVER_PATH": "" if engine is None else str(engine),
@@ -249,10 +251,16 @@ def _request(
     )
 
 
-def _assert_ended_by_the_signal(server: _Server, elapsed: float) -> None:
+def _assert_ended_by_the_signal(
+    server: _Server, elapsed: float, *, open_still_running: bool = False
+) -> None:
+    """The exit status and the one teardown; an open that still runs ends the process at once."""
     assert elapsed < _EXIT_BUDGET_S
     assert server.process.returncode == _INTERRUPTED_STATUS, "\n".join(server.lines)
-    assert "interrupted" in server.lines
+    if open_still_running:
+        assert _OPEN_EXIT_NOTE in server.lines, "\n".join(server.lines)
+    else:
+        assert "interrupted" in server.lines
     assert server.lines.count("teardown") == 1, "\n".join(server.lines)
 
 
@@ -412,7 +420,7 @@ def test_a_request_before_the_library_opens_changes_nothing_and_joins_nothing(
     assert answer.json()["detail"] == _LIBRARY_WAIT
     assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
     assert not any(line.startswith("joined") for line in server.lines), server.lines
-    _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())
+    _assert_ended_by_the_signal(server, server.stop_and_time_the_exit(), open_still_running=True)
 
 
 def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothing(

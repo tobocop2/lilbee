@@ -498,6 +498,9 @@ class _PullingManager:
     def is_installed(self, _ref: str, _source: object = None) -> bool:
         return True
 
+    def is_registered(self, _ref: str) -> bool:
+        return True
+
     def pull(self, _ref: str, _source: object, *, cancel: object = None) -> None:
         def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
             self.fetched.append(files)
@@ -582,6 +585,23 @@ class TestPullOfAnInstalledModel:
     def test_a_bug_in_the_fetch_still_surfaces(self) -> None:
         with pytest.raises(KeyError, match="bug"):
             self._pull_offline("org/repo#safetensors", KeyError("bug"))
+
+    def test_a_cached_file_no_manifest_records_is_pulled_again_to_register_it(self) -> None:
+        from lilbee.app.models import PullStatus
+
+        manager = mock.Mock()
+        manager.is_installed.return_value = True
+        manager.is_registered.return_value = False
+        manager.pull.return_value = Path("/models/m.gguf")
+        with mock.patch(
+            "lilbee.app.models.get_services", return_value=mock.Mock(model_manager=manager)
+        ):
+            from lilbee.app import models as models_mod
+            from lilbee.catalog.types import ModelSource
+
+            result = models_mod.pull_model_data("org/repo/m.gguf", ModelSource.NATIVE)
+        assert result.status == PullStatus.OK
+        manager.pull.assert_called_once()
 
     def test_a_complete_model_downloads_nothing(self, tmp_path: Path) -> None:
         manager = _PullingManager(tmp_path, set(_DENSE_LISTING))

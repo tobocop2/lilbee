@@ -343,18 +343,23 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         # Terminate the provider's worker/fleet subprocesses so they don't
         # outlive the server (e.g. on parent-death shutdown in managed mode). The reset
         # clears the container, so the teardown at interpreter exit does not repeat this
-        # and a stuck engine start is waited for once. The open wait runs beside it, so
-        # its bound counts from the same start.
-        stops = [_wait_for_the_opens(), asyncio.to_thread(reset_services)]
-        # A failed shutdown must not leave the open wait unawaited.
-        for outcome in await asyncio.gather(*stops, return_exceptions=True):
-            if isinstance(outcome, BaseException):
-                log.warning("A server shutdown step failed", exc_info=outcome)
+        # and a stuck engine start is waited for once. The open wait starts first and runs
+        # on its own thread beside it, so its bound counts from the same start. The reset
+        # runs on this thread, so a second Ctrl-C ends a stuck teardown.
+        opens = asyncio.get_running_loop().run_in_executor(
+            None, wait_for_opens, _OPEN_EXIT_WAIT_SECONDS
+        )
+        try:
+            reset_services()
+        except Exception:
+            # A failed shutdown must not leave the open wait unawaited.
+            log.warning("A server shutdown step failed", exc_info=True)
+        await _report_the_opens(opens)
 
 
-async def _wait_for_the_opens() -> None:
+async def _report_the_opens(opens: asyncio.Future[bool]) -> None:
     """Wait, within one bound, for every open; an open in LanceDB at exit aborts 3.12 on Linux."""
-    if not await asyncio.to_thread(wait_for_opens, _OPEN_EXIT_WAIT_SECONDS):
+    if not await opens:
         log.warning(
             "The library is still opening after %.0f s; the server exits anyway.",
             _OPEN_EXIT_WAIT_SECONDS,

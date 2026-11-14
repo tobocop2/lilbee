@@ -816,6 +816,27 @@ class TestServeExitsPastARunningOpen:
         assert isinstance(result.exception, RuntimeError)
         assert "the loop failed" in caplog.text
 
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_ends_a_ctrl_c_with_the_shell_status_while_an_open_runs(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, monkeypatch
+    ):
+        """The open exit ends the process before the interrupt does, so it carries 130."""
+        from lilbee.cli.commands import servers as servers_mod
+
+        def run(coro):
+            coro.close()
+            raise KeyboardInterrupt
+
+        exits: list[int] = []
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        monkeypatch.setattr(servers_mod, "exit_if_opens_remain", exits.append)
+        result = runner.invoke(app, ["serve"])
+        assert exits == [130]
+        assert result.exit_code == 130
+
 
 class TestServeHoldsLocksThroughTeardown:
     @mock.patch("lilbee.cli.commands.servers.wait_for_hard_exit_teardown")

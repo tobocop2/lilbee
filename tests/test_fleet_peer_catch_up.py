@@ -122,7 +122,8 @@ def _owner_held_until(monkeypatch: pytest.MonkeyPatch, release: threading.Event)
     refresh = planning_mod.refresh_plan_devices
 
     def gated_refresh(engine: EngineAdapter) -> None:
-        if threading.current_thread().name == "owner-reload":
+        # The owner reloads first: the peer starts only after held is set.
+        if not held.is_set():
             held.set()
             release.wait(_WAIT_S)
         refresh(engine)
@@ -132,9 +133,7 @@ def _owner_held_until(monkeypatch: pytest.MonkeyPatch, release: threading.Event)
 
 
 def _start_owner(gap: _Gap) -> threading.Thread:
-    thread = threading.Thread(
-        target=gap.owner.replan_fleet, kwargs={"wait": True}, name="owner-reload"
-    )
+    thread = threading.Thread(target=gap.owner.replan_fleet, kwargs={"wait": True})
     thread.start()
     return thread
 

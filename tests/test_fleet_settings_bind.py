@@ -373,7 +373,7 @@ def test_a_thread_that_cannot_start_leaves_no_reload_in_flight(
     monkeypatch.setattr(threading.Thread, "start", refuse)
     with pytest.raises(RuntimeError, match="start new thread"):
         provider.replan_fleet()
-    assert provider._reloading is False
+    assert provider._fleet_work is None
     assert provider._reload_owed == frozenset()
 
 

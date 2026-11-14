@@ -252,7 +252,7 @@ def test_vision_at_the_bound_fails_the_call_and_leaves_no_vision_role(
     monkeypatch.setattr(fleet_provider, "_FLEET_WAIT_S", 0)
     gate = threading.Event()
     _ProcessSwap.start_gate = gate
-    first = threading.Thread(target=fleet.provider.reload_placement)
+    first = threading.Thread(target=fleet.provider.replan_fleet)
     local = _local(fleet)
     monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.MLX)
     first.start()

@@ -69,7 +69,7 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     monkeypatch.setattr(cfg, "chunk_overlap", 100)
     planning_mod.clear_plan_probe()
     planning_mod.clear_read_device_cache()
-    planning_mod.capture_plan_probe(LLAMA)
+    planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
     yield
     planning_mod.clear_plan_probe()
     planning_mod.clear_read_device_cache()
@@ -277,7 +277,7 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
     planning_mod.clear_plan_probe()
     planning_mod.clear_read_device_cache()
     if captured:
-        planning_mod.capture_plan_probe(LLAMA)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
     reason = planning_mod.plan_all_launches(
         engines=engines_for_all_roles(LLAMA)

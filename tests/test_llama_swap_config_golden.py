@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.fleet import adapters
+from lilbee.providers.fleet import adapters, swap_config
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -16,6 +16,7 @@ from tests._llama_swap_scenario import BASE_PORT, BINARY, CONFIGS, THREADS, memb
 
 # The text origin/main writes for the same model set, one string per config.
 GOLDEN = Path(__file__).parent / "llama_swap_config_main_golden.json"
+_GOLDEN_WORKERS = 14
 
 
 def _launches() -> list[InstanceLaunch]:
@@ -41,6 +42,8 @@ def _launches() -> list[InstanceLaunch]:
 @pytest.fixture(autouse=True)
 def _fixed_threads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: THREADS)
+    # The golden was written on a 14-worker machine; the concurrency limit follows the count.
+    monkeypatch.setattr(swap_config, "max_workers", lambda: _GOLDEN_WORKERS)
 
 
 def test_the_model_set_covers_every_role_and_a_replica() -> None:

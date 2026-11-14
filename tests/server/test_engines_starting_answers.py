@@ -42,7 +42,7 @@ def test_a_placement_that_did_not_apply_says_it_is_saved(
     failure: Exception, kind: ProviderErrorKind, reason: str
 ) -> None:
     services = mock.MagicMock()
-    services.provider.reload_placement.side_effect = failure
+    services.provider.replan_fleet.side_effect = failure
     with pytest.raises(ProviderError) as raised:
         _apply_to_running(services)
     assert str(raised.value) == (
@@ -50,7 +50,7 @@ def test_a_placement_that_did_not_apply_says_it_is_saved(
         f"{reason}. Restart lilbee to use the placement."
     )
     assert raised.value.kind is kind
-    services.provider.reload_placement.assert_called_once_with(wait=True)
+    services.provider.replan_fleet.assert_called_once_with(wait=True)
 
 
 def test_a_route_with_no_handler_of_its_own_answers_503_with_the_text() -> None:

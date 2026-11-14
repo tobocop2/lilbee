@@ -79,7 +79,9 @@ def _write(engine: str) -> _Caller:
 
 def _cold(local: FleetProvider) -> None:
     """Drop every group and stop its fake engine, which a dropped reference would orphan."""
-    local.invalidate_load_cache()
+    with local._lock:
+        local._drop_swap_refs()
+    local._release_engines()
     for swap in _ProcessSwap.live.values():
         swap.shutdown()
 
@@ -249,86 +251,6 @@ def test_o7_a_write_after_dead_groups_drop_applies(
     assert len(local._swaps) == groups_left
 
 
-def test_o7_a_write_during_a_real_drop_joins_the_loop(
-    fleet: Any, passes: list[int], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    local = _local(fleet)
-    entered, leave = threading.Event(), threading.Event()
-    release = local._release_engines
-
-    def _held_release(**kwargs: Any) -> None:
-        entered.set()
-        assert leave.wait(_WAIT_S)
-        release(**kwargs)
-
-    monkeypatch.setattr(local, "_release_engines", _held_release)
-    local.drop_loaded_models_async()
-    assert entered.wait(_WAIT_S)
-    work = local._fleet_work
-    assert work is not None
-    assert local._swaps == {}
-    writer = _write(_MLX)
-    _wait_for(lambda: local._writes_wanted != local._writes_done)
-    leave.set()
-    writer.join()
-    assert writer.heard is None
-    assert passes == []
-    assert local._fleet_work is None
-    assert local._swaps == {}
-    assert local._ensure_fleet() is True
-    assert "--mlx" in _chat_argv(local)
-
-
-def test_a_drop_while_every_group_stops_reaches_the_new_fleet(
-    fleet: Any, passes: list[int]
-) -> None:
-    local = _local(fleet)
-    gate, writer = _pass_at_the_gate(local)
-    assert local._swaps == {}
-    local.drop_loaded_models_async()
-    assert local._drop_wanted is True
-    gate.set()
-    writer.join()
-    assert writer.heard is None
-    assert len(passes) == 1
-    _settle(local)
-    assert local._drop_wanted is False
-    assert local._swaps == {}
-
-
-def test_a_read_after_a_drop_waits_for_the_drop_and_builds_again(
-    fleet: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    local = _local(fleet)
-    old = dict(local._swaps)
-    leave = threading.Event()
-    release = local._release_engines
-
-    def _held_release(**kwargs: Any) -> None:
-        assert leave.wait(_WAIT_S)
-        release(**kwargs)
-
-    monkeypatch.setattr(local, "_release_engines", _held_release)
-    local.invalidate_load_cache()
-    reader = _Caller(local._ensure_fleet)
-    leave.set()
-    reader.join()
-    assert reader.heard is None
-    assert set(local._swaps) == set(old)
-    assert all(local._swaps[group] is not old[group] for group in old)
-
-
-def test_a_read_while_a_drop_is_wanted_never_answers_from_the_old_groups(fleet: Any) -> None:
-    local = _local(fleet)
-    old = dict(local._swaps)
-    with local._lock:
-        local._drop_wanted = True
-    assert local._ensure_fleet() is True
-    assert local._drop_wanted is False
-    assert set(local._swaps) == set(old)
-    assert all(local._swaps[group] is not old[group] for group in old)
-
-
 def test_a_failed_forced_pass_keeps_the_role_for_the_rerun(
     fleet: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -357,37 +279,13 @@ def test_a_dead_group_rebuild_runs_as_a_step(fleet: Any, passes: list[int]) -> N
     assert _work_threads() == 0
 
 
-def test_a_drop_after_a_failed_pass_still_runs(fleet: Any, passes: list[int]) -> None:
-    local = _local(fleet)
-    gate, writer = _pass_at_the_gate(local)
-    _ProcessSwap.start_failure = _FAILED
-    local.drop_loaded_models_async()
-    gate.set()
-    writer.join()
-    assert writer.heard is None
-    _settle(local)
-    assert local._drop_wanted is False
-    assert local._swaps == {}
-
-
-def test_a_rebuild_and_a_drop_after_the_latch_start_nothing(fleet: Any) -> None:
+def test_a_rebuild_after_the_latch_starts_nothing(fleet: Any) -> None:
     local = _local(fleet)
     role = next(iter(local._role_group))
     with local._lock:
         local._shut_down = True
     local._rebuild_role(role)
-    local.invalidate_load_cache()
     assert local._forced_roles == set()
-    assert local._drop_wanted is False
-    assert local._fleet_work is None
-
-
-def test_a_drop_with_nothing_held_starts_no_thread(fleet: Any) -> None:
-    local = _local(fleet)
-    _cold(local)
-    local._engine_holds = {}
-    local.invalidate_load_cache()
-    assert local._drop_wanted is False
     assert local._fleet_work is None
 
 
@@ -449,7 +347,7 @@ def test_s2_a_write_no_wait_returns_at_once_during_a_stuck_build(fleet: Any) -> 
     work.start()
     assert _ProcessSwap.starting.wait(_WAIT_S)
     running = local._fleet_work
-    local.reload_placement(wait=False)  # the gate is shut, so a wait here would never end
+    local.replan_fleet(wait=False)  # the gate is shut, so a wait here would never end
     assert _work_threads() == 1
     assert local._fleet_work is running
     assert local.reload_notice() == RELOADING_NOTICE
