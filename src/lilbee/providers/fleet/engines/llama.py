@@ -64,6 +64,7 @@ _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _CPU_PACK = "cpu"
 # The CUDA pack is built with CUDA 12.4: it needs a driver that offers 12.4 and a card of
 # compute capability 5.0 or newer (the oldest architecture the pack targets).
+# A test reads the pack build files and fails when they stop agreeing with these two.
 _CUDA_DRIVER_FLOOR = (12, 4)
 _CUDA_MIN_COMPUTE = (5, 0)
 _CUDA_BACKEND = "cuda"

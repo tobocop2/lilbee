@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 from lilbee.app import engine_service
 from lilbee.catalog import runnable
@@ -12,7 +14,13 @@ from lilbee.core.config import Config, cfg
 from lilbee.providers.fleet import engine_manifest, first_use
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.llama import LlamaCppAdapter, cuda_pack_gap, pack_backend
+from lilbee.providers.fleet.engines.llama import (
+    _CUDA_DRIVER_FLOOR,
+    _CUDA_MIN_COMPUTE,
+    LlamaCppAdapter,
+    cuda_pack_gap,
+    pack_backend,
+)
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from tests._published import render_table, wheel_name
 
@@ -228,3 +236,40 @@ def test_the_first_use_warning_is_silent_for_a_card_the_pack_serves(
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.records == []
+
+
+def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host = _nvidia("Linux", "x86_64", cards=((3, 7),))
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    assert len(caplog.records) == 1
+    assert "compute capability 3.7" in caplog.text
+    assert "AMD" not in caplog.text
+
+
+_ROOT = Path(__file__).resolve().parents[1]
+_PACK_CUDA_VERSION = re.compile(r"cuda-(\d+)\.(\d+)")
+
+
+def _pack_build_cuda_versions() -> set[tuple[int, int]]:
+    cells = yaml.safe_load(
+        (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
+    )
+    matrix = cells["jobs"]["cell"]["strategy"]["matrix"]["include"]
+    texts = [str(value) for cell in matrix if cell["backend"] == "cuda" for value in cell.values()]
+    texts.append((_ROOT / "tools/wheel-build/llama_cuda_manylinux.sh").read_text(encoding="utf-8"))
+    return {(int(m[1]), int(m[2])) for text in texts for m in _PACK_CUDA_VERSION.finditer(text)}
+
+
+def test_the_driver_floor_is_the_cuda_version_the_pack_is_built_with() -> None:
+    assert _pack_build_cuda_versions() == {_CUDA_DRIVER_FLOOR}
+
+
+def test_the_compute_floor_follows_the_architectures_the_pack_build_targets() -> None:
+    args = (_ROOT / "tools/wheel-build/cmake_args.sh").read_text(encoding="utf-8")
+    assert "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major" in args
+    assert _CUDA_MIN_COMPUTE == (5, 0)

@@ -117,7 +117,11 @@ def installed_tool(tool: str) -> Path | None:
 
 
 def warn_if_gpu_unserved() -> None:
-    """Warn when the CPU pack installs on a computer with an AMD or Intel GPU."""
+    """Warn once when the CPU pack installs on a computer with a GPU it cannot use.
+
+    An NVIDIA card or driver below the CUDA pack gets its own warning; otherwise an AMD or
+    Intel GPU does.
+    """
     host = session_host()
     if pack_backend(host) != "cpu":
         return
@@ -146,8 +150,9 @@ def install_pack(
     """Install the llama.cpp pack once; a second caller waits and finds it installed.
 
     The download runs under one lock per engine, so two first uses fetch the wheel once.
-    A pack copied into the packs folder by hand is used with no download. The warning for
-    an AMD or Intel GPU comes only with a download. *on_progress*
+    A pack copied into the packs folder by hand is used with no download. The warning for a
+    GPU the CPU pack cannot use (NVIDIA below the CUDA pack, AMD or Intel) comes only with a
+    download. *on_progress*
     hears the bytes, *on_retry* each failed attempt, and a set *cancel* ends the download.
     """
     lock, cell = pack_lock()
