@@ -638,12 +638,12 @@ class TestFetchHfModels:
 
         monkeypatch.setattr(httpx, "get", _raise)
         client = get_services().hf_client
-        # Fresh client: the -inf sentinel means "never warned", so the first
-        # failure always warns regardless of the absolute monotonic clock value.
-        assert client._last_fetch_failure_warn == float("-inf")
+        # Fresh client: a source that never warned always warns first, regardless of
+        # the absolute monotonic clock value.
+        assert client._last_fetch_failure_warn == {}
         assert client.fetch_models().models == []
-        first_warn_at = client._last_fetch_failure_warn
-        assert first_warn_at > float("-inf")  # the WARNING branch ran and stamped the clock
+        first_warn_at = dict(client._last_fetch_failure_warn)
+        assert list(first_warn_at) == ["HuggingFace"]  # the WARNING branch ran and stamped it
         assert client.fetch_models().models == []
         # Still inside FETCH_FAILURE_WARN_INTERVAL_S: the repeat is throttled to
         # DEBUG and does not re-stamp the clock.
