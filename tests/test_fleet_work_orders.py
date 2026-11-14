@@ -78,8 +78,9 @@ def _write(engine: str) -> _Caller:
 
 
 def _cold(local: FleetProvider) -> None:
-    """Drop every group and stop its fake engine, which a dropped reference would orphan."""
+    """Drop every group, wait for the drop to end, and stop each fake engine it would orphan."""
     local.invalidate_load_cache()
+    _settle(local)
     for swap in _ProcessSwap.live.values():
         swap.shutdown()
 
