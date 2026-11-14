@@ -4,13 +4,13 @@
 
 ```bash
 git clone https://github.com/tobocop2/lilbee && cd lilbee
-uv sync
+uv sync --extra providers  # make check needs the providers extra
 ```
 
 ## Commands
 
 ```bash
-make check      # Run all checks: lint, format, typecheck, test (same as CI)
+make check      # Run all checks: lint, license-check, format-check, typecheck, test, test-presets, test-shell
 make test       # Tests with coverage
 make lint       # Ruff linting
 make typecheck  # Mypy

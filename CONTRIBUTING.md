@@ -16,7 +16,7 @@ No external services are required. lilbee downloads models locally (native GGUF)
 
 ```bash
 git clone https://github.com/tobocop2/lilbee && cd lilbee
-uv sync
+uv sync --extra providers  # make check replays the recorded presets, which needs this extra
 uv run lilbee self-check   # downloads a tiny model, runs an inference + embedding
 uv run lilbee              # launch the terminal app
 ```
@@ -25,7 +25,6 @@ Optional extras (only needed if you work on those areas):
 
 ```bash
 uv sync --extra crawler    # website crawling (/crawl, Playwright)
-uv sync --extra providers    # hosted-provider bridge (Ollama, LM Studio, cloud)
 uv sync --extra graph      # concept-graph search
 ```
 
