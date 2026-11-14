@@ -102,6 +102,14 @@ class TestPullAndResolve:
         with pytest.raises(KeyError, match="not installed"):
             ModelRegistry(tmp_path).resolve("qwen3:0.6b#xdna")
 
+    def test_removing_a_tag_deletes_its_ticket_once(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        ticket = xdna.write_ticket(tmp_path, "qwen3:0.6b")
+        assert registry.remove("qwen3:0.6b#xdna") is True
+        assert not ticket.exists()
+        assert not registry.is_installed("qwen3:0.6b#xdna")
+        assert registry.remove("qwen3:0.6b#xdna") is False
+
 
 class TestMemory:
     def test_the_estimate_is_the_unknown_size_reserve(self, tmp_path: Path) -> None:
