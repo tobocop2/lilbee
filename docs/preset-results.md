@@ -25,7 +25,7 @@ The TEI, Infinity, Lemonade and mistral.rs runs used CPU only, on a Linux host. 
 |---|---|---|---|---|
 | TEI | embed | pass (384 values per vector) | 1.9.4, `cpu-1.9` image, model `BAAI/bge-small-en-v1.5` | `tei-embed` |
 | TEI | rerank (wire `tei`) | pass | 1.9.4, `cpu-1.9` image, model `BAAI/bge-reranker-base` | `tei-rerank` |
-| TEI | rerank (wire `v1`) | fail: TEI documents no `POST /v1/rerank` route and answers HTTP 404, and lilbee reports that the server does not serve that route at the base URL | 1.9.4 | `tei-rerank-v1` |
+| TEI | rerank (wire `v1`) | fail: TEI documents no `POST /v1/rerank` route and answers HTTP 404, and lilbee reports the base URL and the role, and asks to check the route prefix and the loaded model | 1.9.4 | `tei-rerank-v1` |
 | TEI | chat, vision | not supported for this role: TEI documents no route | 1.9.4 |  |
 | Infinity | embed | pass (384 values per vector), started with `--url-prefix /v1`; fail without the prefix: `POST /v1/embeddings` answers HTTP 404 and lilbee reports "The provider doesn't offer ... on your account" | 0.0.80, `torch` engine, CPU, model `BAAI/bge-small-en-v1.5` | `infinity-embed`, `infinity-embed-root` (fail) |
 | Infinity | named | pass for embed: the log line and the status name the preset; fail without `--url-prefix /v1` | 0.0.80, `torch` engine, CPU | `infinity-embed`, `infinity-embed-root` (fail) |
@@ -89,7 +89,7 @@ The models in the runs:
 
 **TEI embed limit.** The output check passes for TEI embed. The server answers `encoding_format` values `float` and `base64` with HTTP 200, and the base64 text holds 384 floats. A stock TEI server refuses more than 32 inputs in one request: it answers HTTP 422 with "batch size 33 > maximum allowed batch size 32". lilbee sends at most 32 inputs per embed request to a preset, and joins the vectors in input order, so an ingest never meets this limit. The wire check E8 of the conformance harness still fails on a stock TEI server, because its largest batch holds 33 inputs and the harness sends it straight to the server. Start TEI with `--max-client-batch-size 64` only to make E8 pass.
 
-**TEI rerank wire.** TEI answers `POST /rerank` with `texts`. It answers `POST /v1/rerank` with HTTP 404. lilbee reports this 404 with the base URL and the role, and says that the server does not serve that route there. The fixture `tei-rerank-v1.json` records this failure. Use the `tei` wire for a TEI preset.
+**TEI rerank wire.** TEI answers `POST /rerank` with `texts`. It answers `POST /v1/rerank` with HTTP 404. lilbee reports this 404 with the base URL and the role, and asks to check the route prefix and the loaded model. The fixture `tei-rerank-v1.json` records this failure. Use the `tei` wire for a TEI preset.
 
 **Infinity route prefix.** Infinity 0.0.80 serves `/embeddings` and `/rerank` at the root by default. lilbee calls `/v1/embeddings` and `/v1/rerank`, so both roles answer HTTP 404 `{"detail":"Not Found"}`, and lilbee reports "The provider doesn't offer ... on your account". Start Infinity with `--url-prefix /v1` for a preset. The fixtures `infinity-embed-root.json` and `infinity-rerank-root.json` record the failure, and `infinity-embed.json` and `infinity-rerank.json` record the pass. The rerank answer to the `v1` wire holds `document` as null and sorts the results by score. The runs used the `torch` engine on CPU with both models in one server.
 
@@ -117,7 +117,7 @@ The fixtures `mlxlm-chat.json`, `vmlx-chat.json` and `vllmmlx-chat.json` hold te
 
 **vMLX rerank.** The earlier HTTP 500 row used a chat model as the reranker. With `BAAI/bge-reranker-v2-m3` the route fails with HTTP 500 "Received 393 parameters not in model". The fixture `vmlx-rerank.json` records this for the original Hub checkpoint. The MLX conversion `flaglow/BAAI-bge-reranker-v2-m3-mlx-fp16` gives the same HTTP 500 and the same list of 393 parameters, and `vmlx-rerank-flaglow.json` records it. The same conversion works on oMLX.
 
-**mlx-lm vision.** `mlx_lm.server` at tag v0.32.2 reads image parts only when the loaded model has a processor in `mlx_lm/processors/__init__.py`. Only Muse Spark has one. For `mlx-community/Qwen3-VL-2B-Instruct-4bit` the server answers HTTP 404 "Only 'text' content type is supported." The fixture `mlxlm-vision.json` records this. lilbee shows the 404 with the base URL and the chat role, and says that the server does not serve that route there.
+**mlx-lm vision.** `mlx_lm.server` at tag v0.32.2 reads image parts only when the loaded model has a processor in `mlx_lm/processors/__init__.py`. Only Muse Spark has one. For `mlx-community/Qwen3-VL-2B-Instruct-4bit` the server answers HTTP 404 "Only 'text' content type is supported." The fixture `mlxlm-vision.json` records this. lilbee shows the 404 with the base URL and the chat role, and asks to check the route prefix and the loaded model.
 
 ## Servers not run
 

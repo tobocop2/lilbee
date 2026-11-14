@@ -77,11 +77,11 @@ _TYPE_MESSAGES: dict[str, str] = {
     ),
 }
 
-# A server preset answers 404 when the server has no route at the base URL for the call.
+# A server preset answers 404 for a missing route or for a role with no model loaded.
 _PRESET_NOT_FOUND = (
     "The server for {model} answered 404 to the {role} request at {url}. "
-    "It does not serve that route there. "
-    "Fix the base URL of the preset, or the route prefix of the server."
+    "Check the base URL and the route prefix of the server. "
+    "Check that the server has a model loaded for the {role} role."
 )
 
 # Operation labels prefixed onto the fallback message for an unrecognised error.

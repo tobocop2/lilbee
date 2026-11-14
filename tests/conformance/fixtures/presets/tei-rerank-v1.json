@@ -12,7 +12,7 @@
  "results": {
   "rerank": {
    "ok": false,
-   "detail": "ProviderError: The server for tei-rerank-v1/BAAI/bge-reranker-base answered 404 to the rerank request at http://harness. It does not serve that route there. Fix the base URL of the preset, or the route prefix of the"
+   "detail": "ProviderError: The server for tei-rerank-v1/BAAI/bge-reranker-base answered 404 to the rerank request at http://harness. Check the base URL and the route prefix of the server. Check that the server has a model loade"
   }
  },
  "error_answers": [
