@@ -7,6 +7,7 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -76,7 +77,7 @@ class RequestProfile:
     label: str
     """The name of the engine's server in error messages."""
     context_overflow: re.Pattern[str]
-    """Matches a 400 body that reports a prompt past the context window."""
+    """Matches an error body that reports a prompt past the context window."""
     batch_overflow: re.Pattern[str] | None
     """Matches a 500 body that reports an input past the physical batch, or None."""
     unreadable_embedding_hint: str
@@ -94,6 +95,10 @@ class RequestProfile:
     """
     batch_count_refusal: re.Pattern[str] | None = None
     """Matches an error body that refuses a request for holding too many inputs, or None."""
+    rerank_fields: Mapping[str, Any] = MappingProxyType({})
+    """Extra fields on a rerank route request, such as one that stops silent truncation."""
+    context_overflow_status: int = 400
+    """The status the server answers an input past its limit with."""
 
 
 class EngineAdapter(Protocol, Hashable):

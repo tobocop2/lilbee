@@ -422,7 +422,6 @@ _UPSTREAM_PREFIX = "/upstream"
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
-_HTTP_BAD_REQUEST = 400
 _HTTP_NOT_FOUND = 404
 _HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
@@ -593,6 +592,12 @@ class LlamaServerClient:
                 return True
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
 
+    def _is_context_overflow(self, resp: httpx.Response) -> bool:
+        """True when *resp* is the server's answer to an input past its limit."""
+        return resp.status_code == self._profile.context_overflow_status and bool(
+            self._profile.context_overflow.search(resp.text)
+        )
+
     def _raise_for_status(self, resp: httpx.Response) -> None:
         """Raise the plain error for a failed *resp*, naming this client's model and log.
 
@@ -610,7 +615,7 @@ class LlamaServerClient:
         # user-facing message so the chat route returns a clean context_length_exceeded
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
-        if resp.status_code == _HTTP_BAD_REQUEST and (
+        if resp.status_code == self._profile.context_overflow_status and (
             self._profile.context_overflow.search(body) or is_prompt_length_overflow(body)
         ):
             raise ProviderError(
@@ -1182,28 +1187,54 @@ class LlamaServerClient:
         """
         step = self._batch_limit or len(candidates)
         scores: list[float] = []
+        overflows: list[str] = []
+        batches = 0
         for start in range(0, len(candidates), step):
-            scores.extend(self._rerank_route_batch(path, query, candidates[start : start + step]))
+            batches += 1
+            batch_scores, overflow = self._rerank_route_batch(
+                path, query, candidates[start : start + step]
+            )
+            scores.extend(batch_scores)
+            if overflow is not None:
+                overflows.append(overflow)
+        if overflows:
+            log.warning(
+                "Rerank query and candidate exceed the reranker's token limit in %d of %d "
+                "batches; the server truncates the input (%s)",
+                len(overflows),
+                batches,
+                overflows[0],
+            )
         return scores
 
-    def _rerank_route_batch(self, path: str, query: str, texts: list[str]) -> list[float]:
-        def _call() -> list[dict[str, Any]]:
-            with self._track():
-                resp = self._http.post(
-                    self._native_route(path), json={"query": query, "texts": texts}
-                )
-                self._raise_for_status(resp)
-                return list(resp.json())
+    def _rerank_route_batch(
+        self, path: str, query: str, texts: list[str]
+    ) -> tuple[list[float], str | None]:
+        """Scores for one batch, and the server's overflow answer when it had to truncate."""
 
-        by_index = {
-            int(item["index"]): float(item["score"]) for item in retry_on_gateway_error(_call)
-        }
+        def _post(extra: Mapping[str, Any]) -> httpx.Response:
+            return self._http.post(
+                self._native_route(path), json={"query": query, "texts": texts, **extra}
+            )
+
+        def _call() -> tuple[list[dict[str, Any]], str | None]:
+            with self._track():
+                resp = _post(self._profile.rerank_fields)
+                overflow = None
+                if self._profile.rerank_fields and self._is_context_overflow(resp):
+                    overflow = resp.text.strip()
+                    resp = _post({})
+                self._raise_for_status(resp)
+                return list(resp.json()), overflow
+
+        items, overflow = retry_on_gateway_error(_call)
+        by_index = {int(item["index"]): float(item["score"]) for item in items}
         if sorted(by_index) != list(range(len(texts))):
             raise ProviderError(
                 f"The reranker did not return one score for each of the {len(texts)} candidates.",
                 provider=self._profile.label,
             )
-        return [by_index[i] for i in range(len(texts))]
+        return [by_index[i] for i in range(len(texts))], overflow
 
     @property
     def _batch_limit(self) -> int | None:

@@ -43,7 +43,7 @@ _RESERVE_BYTES = 2 * 1024**3
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
 _RERANK_QUERY_TOKENS = 128
-"""Tokens kept for the query in a rerank pair; lilbee sets no query limit, so this is a bound."""
+"""The floor of the batch-token figure for a rerank query; lilbee sets no query limit."""
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
@@ -54,13 +54,15 @@ _PROFILE = RequestProfile(
     detokenize_path=None,
     apply_template_path="/apply-template",
     label="text-embeddings-inference",
-    context_overflow=re.compile(r"must have less than \d+ tokens"),
+    context_overflow=re.compile(r"must have less than \d+ (?:tokens|characters)"),
     batch_overflow=None,
     unreadable_embedding_hint="the server returns vectors that could not be decoded.",
     reasoning_field="reasoning_content",
     rerank_path="/rerank",
     batch_limit=_BATCH_LIMIT,
     batch_count_refusal=re.compile(r"maximum allowed batch size"),
+    rerank_fields={"truncate": False},
+    context_overflow_status=422,
 )
 _TOOL = "text-embeddings-router"
 _PIN_LAUNCH = ["{binary}", "--model-id", "{model}", "--hostname", "127.0.0.1", "--port", "{port}"]
