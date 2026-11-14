@@ -560,9 +560,10 @@ def _place_split(
     because a footprint that does not scale with the shard can overflow the
     smallest card at the proportional ratio and fit at a shifted one. The sweep
     stops after ``_MAX_SPLIT_ESTIMATES`` estimator calls and says so, since each
-    call is a subprocess.
+    call is a subprocess. A split the engine refuses outright runs no estimate and is not counted.
     """
     from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.engines.base import SplitRefusedError
 
     by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
     best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
@@ -582,13 +583,15 @@ def _place_split(
             spent += 1
             try:
                 per_device = estimate_peak(model.role, ratio)
-            except (ProviderError, OSError) as exc:
-                # An unsizable model, or a split the engine's launch refuses, cannot
-                # be evaluated; the tight single-card path downstream places it or,
-                # when refusing, refuses it.
-                if str(exc) not in refusals:
-                    refusals.add(str(exc))
-                    log.info("No %d-card split for %s: %s", count, model.role.value, exc)
+            except SplitRefusedError as exc:
+                # The engine's launch rule refuses this split before any estimate runs,
+                # so it spends none of the budget.
+                spent -= 1
+                _log_first_refusal(refusals, count, model.role, exc)
+                continue
+            except (ProviderError, OSError):
+                # An unsizable model cannot evaluate a split; the tight single-card
+                # path downstream places it or, when refusing, refuses it.
                 continue
             if len(per_device) != count or not all(
                 peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
@@ -611,6 +614,13 @@ def _place_split(
             if best is None or served > best[0]:
                 best = (served, chosen, ratio, per_device)
     return _best_or_none(best, model, remaining)
+
+
+def _log_first_refusal(seen: set[str], count: int, role: WorkerRole, refusal: Exception) -> None:
+    """Log *refusal* once per message, so a sweep names each rule without repeating it."""
+    if str(refusal) not in seen:
+        seen.add(str(refusal))
+        log.info("No %d-card split for %s: %s", count, role.value, refusal)
 
 
 def _best_or_none(
@@ -787,6 +797,8 @@ def placement_from_spec(
     A role its card cannot hold raises a plain error when the automatic plan can
     replace the spec. Otherwise it raises :class:`TargetRefusedError`, naming the role.
     """
+    from lilbee.providers.fleet.engines.base import SplitRefusedError
+
     usable = usable_vram_fraction()
     remaining = {idx: total * usable for idx, total in device_capacity.items()}
     instances: list[InstancePlan] = []
@@ -806,7 +818,10 @@ def placement_from_spec(
             continue
         card_roles.append(role)
         ratio = rp.tensor_split or _vram_proportional_split(rp.devices, remaining)
-        per_device = estimate_peak(role, ratio)
+        try:
+            per_device = estimate_peak(role, ratio)
+        except SplitRefusedError as exc:
+            raise _spec_refusal(role, str(exc), refuse_alone=not spec.all_on_cards) from exc
         split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
             _charge_devices(
@@ -963,6 +978,11 @@ def _required_entry(
     return rp
 
 
+def _spec_refusal(role: WorkerRole, reason: str, *, refuse_alone: bool) -> PlacementError:
+    """A manual spec's refusal: it names *role* when the launch drops that role alone."""
+    return TargetRefusedError({role: reason}) if refuse_alone else PlacementError(reason)
+
+
 def _charge_devices(
     role: WorkerRole,
     devices: tuple[int, ...],
@@ -983,7 +1003,7 @@ def _charge_devices(
     """
 
     def refusal(reason: str) -> PlacementError:
-        return TargetRefusedError({role: reason}) if refuse_alone else PlacementError(reason)
+        return _spec_refusal(role, reason, refuse_alone=refuse_alone)
 
     if not per_device and len(devices) > 1:
         raise refusal(

@@ -20,6 +20,7 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    SplitRefusedError,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -329,18 +330,18 @@ class MistralAdapter:
         backend = self.pick_build(session_host()).backend
         if backend in (None, _CPU, _METAL):
             label = "Metal" if backend == _METAL else "CPU"
-            raise ProviderError(
+            raise SplitRefusedError(
                 f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
                 f"{_SPLIT_FIX}"
             )
         if len(set(ratio)) != 1:
-            raise ProviderError(
+            raise SplitRefusedError(
                 f"mistral.rs splits {name} only evenly across cards. "
                 f"Use the {EngineName.LLAMA.value} engine for an uneven split."
             )
         heads = _head_counts(model_path)
         if heads is None or not _heads_divide(*heads, cards):
-            raise ProviderError(
+            raise SplitRefusedError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
                 f"the attention heads of the model do not divide over {cards} cards, "
                 f"or the model does not list its heads. {_SPLIT_FIX}"

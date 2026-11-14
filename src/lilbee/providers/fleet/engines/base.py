@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
@@ -193,12 +194,16 @@ class EngineAdapter(Protocol, Hashable):
     def request_profile(self, role: WorkerRole) -> RequestProfile: ...
 
 
+class SplitRefusedError(ProviderError):
+    """An engine's launch refuses a tensor split; the message names the rule."""
+
+
 @runtime_checkable
 class SplitChecked(Protocol):
     """An engine whose launch refuses some tensor splits; placement asks the same rule."""
 
     def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
-        """Raise ``ProviderError`` naming why *ratio* cannot launch over its cards."""
+        """Raise ``SplitRefusedError`` naming why *ratio* cannot launch over its cards."""
         ...
 
 

@@ -955,22 +955,36 @@ def test_an_estimate_of_a_folder_without_a_layer_count_has_no_per_card_vector(
 _stated = pytest.mark.usefixtures("stated_sizes")
 
 
+def _staged_chat_peak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    card_gib: tuple[int, ...],
+    meta: dict[str, str] | None = None,
+    *,
+    system: str = "Linux",
+) -> Any:
+    """Stage a 30 GiB chat model on mistral.rs and return the planner's peak estimator."""
+    model = tmp_path / "m.gguf"
+    state_size(model, 30 * GIB)
+    _cuda_host(monkeypatch, system, cards=len(card_gib))
+    _gguf_meta(monkeypatch, meta or {**_HEADS, "block_count": "32"})
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+    monkeypatch.setattr(planning, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
+    return planning._peak_estimator({WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL})
+
+
 def _placed_on(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     card_gib: tuple[int, ...],
     meta: dict[str, str] | None = None,
+    *,
+    system: str = "Linux",
 ) -> Any:
     """Place a 30 GiB chat model on cards of *card_gib* with the mistral.rs engine."""
     from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
 
-    model = tmp_path / "m.gguf"
-    state_size(model, 30 * GIB)
-    _cuda_host(monkeypatch, cards=len(card_gib))
-    _gguf_meta(monkeypatch, meta or {**_HEADS, "block_count": "32"})
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-    monkeypatch.setattr(planning, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
-    peak = planning._peak_estimator({WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL})
+    peak = _staged_chat_peak(tmp_path, monkeypatch, card_gib, meta, system=system)
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
     devices = [(index, gib * GIB) for index, gib in enumerate(card_gib)]
     return plan_placement([chat], devices, estimate_peak=peak, refuse_oversize=True)
@@ -1015,3 +1029,87 @@ def test_placement_names_the_launch_rule_when_a_split_is_refused(
     caplog.set_level("INFO")
     _placed_on(tmp_path, monkeypatch, (24, 16))
     assert "mistral.rs splits m.gguf only evenly across cards" in caplog.text
+
+
+@_stated
+def test_placement_offers_no_split_on_a_build_that_cannot_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO")
+    placed = _placed_on(tmp_path, monkeypatch, (24, 24), system="Darwin")
+    assert placed.instances == ()
+    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
+    assert "cannot split m.gguf across 2 cards on the Metal build" in caplog.text
+
+
+@_stated
+def test_refused_splits_do_not_spend_the_estimate_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 32 cards of 2 GiB: only all 32 shards fit the 30 GiB model. Card counts that 32 heads
+    # do not divide are refused at no cost; counted, they spend the 24 estimates first.
+    placed = _placed_on(tmp_path, monkeypatch, (2,) * 32)
+    (instance,) = placed.instances
+    assert len(instance.devices) == 32
+
+
+def _unequal_cards() -> list[FleetDevice]:
+    return [
+        FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate((24, 16))
+    ]
+
+
+def _saved_chat_placement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str) -> Any:
+    from lilbee.providers.fleet.placement import ModelPlacementInput
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    _staged_chat_peak(tmp_path, monkeypatch, (24, 16))
+    return planning._placement_or_auto(
+        PlacementSpec.from_json(raw),
+        [ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)],
+        {WorkerRole.CHAT: "ref"},
+        _unequal_cards(),
+        engines={WorkerRole.CHAT: MISTRAL},
+        unified_budget=None,
+        host_cards=planning.HostCards(_unequal_cards()),
+    )
+
+
+@_stated
+def test_a_saved_placement_the_split_rule_refuses_falls_back_to_automatic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("WARNING")
+    placed, applied = _saved_chat_placement(tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}')
+    assert applied is False
+    assert all(instance.tensor_split == () for instance in placed.instances)
+    assert "mistral.rs splits m.gguf only evenly across cards" in caplog.text
+    assert "using automatic placement instead" in caplog.text
+
+
+@_stated
+def test_a_saved_placement_with_a_role_off_the_cards_refuses_that_role_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.placement_spec import TargetRefusedError
+
+    raw = '{"chat": {"devices": [0, 1]}, "embed": {"target": "cpu"}}'
+    with pytest.raises(TargetRefusedError, match="only evenly across cards") as caught:
+        _saved_chat_placement(tmp_path, monkeypatch, raw)
+    assert list(caught.value.reasons) == [WorkerRole.CHAT]
+
+
+def test_a_manual_placement_does_not_hide_other_estimator_failures() -> None:
+    from lilbee.providers.fleet.placement import placement_from_spec
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    def unsizable(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
+        raise ProviderError("the model cannot be sized")
+
+    with pytest.raises(ProviderError, match="cannot be sized"):
+        placement_from_spec(
+            PlacementSpec.from_json('{"chat": {"devices": [0]}}'),
+            (WorkerRole.CHAT,),
+            {0: 24 * GIB},
+            estimate_peak=unsizable,
+        )
