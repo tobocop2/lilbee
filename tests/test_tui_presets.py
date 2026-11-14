@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 from textual.app import ComposeResult
+from textual.containers import VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TabbedContent
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
@@ -822,22 +823,23 @@ async def _open_settings(pilot, app) -> TabbedContent:
 
 
 class TestPaneKeyboardAccess:
-    async def test_greater_than_walks_every_group_then_reaches_presets_then_wraps(self):
+    async def test_greater_than_walks_every_tab_then_reaches_presets_then_wraps(self):
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             tabs = await _open_settings(pilot, app)
             groups = list(app.screen._pane_groups)
-            assert len(groups) > 1 and tabs.active == groups[0]
+            pane_ids = list(app.screen._pane_ids)
+            assert len(groups) > 1 and tabs.active == pane_ids[0]
             seen = [tabs.active]
-            for _ in groups:
+            for _ in pane_ids[1:]:
                 await pilot.press(">")
                 assert await wait_until(pilot, lambda: tabs.active != seen[-1])
                 seen.append(tabs.active)
-            assert seen == [*groups, PRESETS_PANE_ID]
+            assert seen[1:] == [*groups, PRESETS_PANE_ID]
             await pilot.press(">")
-            assert await wait_until(pilot, lambda: tabs.active == groups[0])
+            assert await wait_until(pilot, lambda: tabs.active == pane_ids[0])
 
-    async def test_less_than_from_the_first_group_reaches_presets(self):
+    async def test_less_than_from_the_first_tab_reaches_presets(self):
         app = _ChatApp()
         async with app.run_test(size=(120, 40)) as pilot:
             tabs = await _open_settings(pilot, app)
@@ -853,8 +855,8 @@ class TestPaneKeyboardAccess:
             last_group = list(screen._pane_groups)[-1]
             tabs.active = last_group
             assert await wait_until(pilot, lambda: bool(screen.query(f"#{last_group}-body > *")))
-            body = screen.query_one(f"#{last_group}-body")
-            last_field = [w for w in body.query("*") if w.focusable][-1]
+            body = screen.query_one(f"#{last_group}-body", VerticalScroll)
+            last_field = screen._focus_stops(body)[-1]
             screen._focus_pane_edge(last_group, -1)
             assert await wait_until(pilot, lambda: app.focused is last_field)
             await pilot.press("tab")
@@ -1002,7 +1004,7 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
 
     @pytest.mark.parametrize(
         "typed",
-        ["/login", "/set chunk_size 512", "/version", "hello there"],
+        ["/login", "/set top_k 5", "/version", "hello there"],
     )
     async def test_a_line_without_a_secret_is_recalled(self, typed):
         assert await self._recalled(typed) == typed

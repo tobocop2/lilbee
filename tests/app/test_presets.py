@@ -906,7 +906,7 @@ class TestNoGeneralPath:
         assert (cfg.data_root / "config.toml").read_bytes() == self.before
 
     def test_a_settings_read_is_refused(self):
-        with pytest.raises(KeyError, match=self.REFUSAL):
+        with pytest.raises(ValueError, match=self.REFUSAL):
             app_settings.get_setting(self.FIELD)
 
     def test_the_settings_list_leaves_it_out_and_holds_no_key(self):
