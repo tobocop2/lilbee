@@ -380,6 +380,7 @@ class TestTargetRefusedPlainMessage:
             devices or [],
             engines={WorkerRole.EMBED: engine},
             unified_budget=None,
+            host_cards=planning.HostCards(devices or []),
         )
 
     @pytest.mark.parametrize(
@@ -458,6 +459,7 @@ class TestNoFallbackToAuto:
             [],
             engines={WorkerRole.EMBED: LLAMA},
             unified_budget=None,
+            host_cards=planning.HostCards([]),
         )
 
     def test_refused_cpu_target_raises(
@@ -501,6 +503,7 @@ class TestExplicitGpuOnABuildWithoutOne:
             [FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)],
             engines={WorkerRole.EMBED: engine},
             unified_budget=None,
+            host_cards=planning.HostCards([FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)]),
         )
 
     @pytest.mark.parametrize(("adapter", "engine"), [(MistralAdapter, MISTRAL), (TeiAdapter, TEI)])
@@ -556,6 +559,7 @@ class TestExplicitGpuOnABuildWithoutOne:
                 [FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)],
                 engines={WorkerRole.EMBED: TEI},
                 unified_budget=None,
+                host_cards=planning.HostCards([FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 23 * GIB)]),
             )
         assert "automatic placement" not in caplog.text
 

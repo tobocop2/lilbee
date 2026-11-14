@@ -29,6 +29,7 @@ from enum import StrEnum
 
 from lilbee.providers.fleet.gpu_backends import fdinfo
 from lilbee.providers.fleet.gpu_backends.base import UtilSample, extract_int, run_smi
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 
 _TOOL_XPU_SMI = "xpu-smi"
 _TOOL_IGT = "intel_gpu_top"
@@ -70,6 +71,8 @@ class IntelUtilHint:
 
 class IntelBackend:
     """Intel util from xpu-smi, then DRM fdinfo, then intel_gpu_top."""
+
+    pci_vendor = PCIVendorID.INTEL
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
         for source in (_xpu_smi_samples, _fdinfo_samples, _intel_gpu_top_samples):

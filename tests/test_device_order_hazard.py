@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +24,7 @@ from lilbee.data.ingest.adaptive import (
     decide,
     make_signal_sampler,
 )
-from lilbee.providers.fleet import devices, gpu_stats, host_caps, planning
+from lilbee.providers.fleet import devices, gpu_hardware, gpu_stats, host_caps, planning
 from lilbee.providers.fleet.devices import FleetDevice, visible_env
 from lilbee.providers.fleet.gpu_stats import GpuStat, _physical_index, probe_gpu_stats
 from lilbee.providers.roles import WorkerRole
@@ -56,6 +57,7 @@ def host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for var in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(host_caps, "read_card_memory", lambda: [])
+    monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", Counter)
     return monkeypatch
 
 
@@ -209,7 +211,8 @@ def _unpinnable(host, backend: str, seen: int, cards: int) -> tuple[WorkerRole, 
     host.setattr(planning, "_read_device_cache", cache)
     host.setattr(host_caps, "read_card_memory", lambda: _driver_cards(cards))
     engines = {_CHAT: first, _EMBED: other}
-    return planning._roles_without_a_pin(_INPUTS, first.reading, engines, None)
+    on_host = planning.HostCards(first.reading)
+    return planning._roles_without_a_pin(_INPUTS, first.reading, engines, None, on_host)
 
 
 def test_mixed_plan_with_a_mask_hiding_a_card_is_refused(host) -> None:
@@ -248,7 +251,8 @@ def test_a_plan_with_one_engine_reads_no_driver_count(host) -> None:
     host.setattr(host_caps, "read_card_memory", read_cards)
     engine = _engine("only", "Vulkan", 1, True)
     engines = {_CHAT: engine, _EMBED: engine}
-    assert planning._roles_without_a_pin(_INPUTS, engine.reading, engines, None) == ()
+    cards = planning.HostCards(engine.reading)
+    assert planning._roles_without_a_pin(_INPUTS, engine.reading, engines, None, cards) == ()
 
 
 def _refusal_text(host, caplog, seen: int, cards: int) -> str:
@@ -267,6 +271,7 @@ def _refusal_text(host, caplog, seen: int, cards: int) -> str:
             {_CHAT: first, _EMBED: other},
             _INPUTS,
             first.reading,
+            planning.HostCards(first.reading),
             unified_budget=None,
             capacity={d.index: 8 * GIB for d in first.reading},
         )

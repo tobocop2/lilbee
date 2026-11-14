@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -55,11 +56,20 @@ def installed_gpu_vendor_ids() -> frozenset[int]:
     driver). That is "cannot tell", not "there is no GPU", and callers must not
     read it as proof that a vendor is absent.
     """
+    return frozenset(installed_gpu_counts())
+
+
+def installed_gpu_counts() -> Counter[int]:
+    """How many display controllers of each PCI vendor ID this host holds, driver bound.
+
+    The same reading as ``installed_gpu_vendor_ids``, with the card count kept.
+    Windows counts one card for each display adapter, whatever IDs it carries.
+    """
     if sys.platform == "win32":
-        return frozenset(_windows_gpu_vendor_ids())
+        return Counter(vendor for adapter in _windows_adapters() for vendor in adapter)
     if sys.platform.startswith("linux"):
-        return frozenset(vendor for vendor, bound in _linux_display_controllers() if bound)
-    return frozenset()
+        return Counter(vendor for vendor, bound in _linux_display_controllers() if bound)
+    return Counter()
 
 
 def undriven_gpu_vendor_ids() -> frozenset[int]:
@@ -99,24 +109,26 @@ def _read_sysfs_hex(path: Path) -> int | None:
         return None
 
 
-def _windows_gpu_vendor_ids() -> Iterator[int]:
-    """Yield the vendor ID of every registered display adapter."""
+def _windows_adapters() -> Iterator[frozenset[int]]:
+    """Yield the vendor IDs of each registered display adapter."""
     try:
         import winreg
     except ImportError:  # pragma: no cover - winreg ships with CPython on Windows
         return
-    yield from _iter_windows_gpu_vendor_ids(winreg)
+    yield from _iter_windows_adapters(winreg)
 
 
-def _iter_windows_gpu_vendor_ids(winreg: Any) -> Iterator[int]:
-    """Yield vendor IDs from the hardware IDs under the display-adapter class."""
+def _iter_windows_adapters(winreg: Any) -> Iterator[frozenset[int]]:
+    """Yield the vendor IDs in the hardware IDs of each display-adapter class subkey."""
     for subkey in iter_pnp_class_subkeys(winreg, PNP_DISPLAY_ADAPTER_CLASS_GUID):
+        vendors: set[int] = set()
         for value_name in _PNP_HARDWARE_ID_VALUE_NAMES:
             try:
                 value, _value_type = winreg.QueryValueEx(subkey, value_name)
             except OSError:
                 continue
-            yield from _vendor_ids_in(value)
+            vendors.update(_vendor_ids_in(value))
+        yield frozenset(vendors)
 
 
 def _vendor_ids_in(value: object) -> Iterator[int]:
