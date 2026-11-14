@@ -127,6 +127,24 @@ def test_refused_host_hides_with_the_gate_reason() -> None:
     assert not re.search(r"\. [a-z]", hidden.text)
 
 
+class _StrictFake(FakeAdapter):
+    """A second engine for the same format that refuses the host for its own reason."""
+
+    name = "strict-fake"
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return HostGate(False, "The host lacks a second thing.")
+
+
+def test_every_engine_refusal_reason_shows_once_in_order() -> None:
+    offers = [_fake_offer(), EngineOffer(_StrictFake(), EngineState.INSTALLED), _fake_offer()]
+    hidden = explain({ModelFormat.SAFETENSORS}, _host(avx2=ABSENT, gpus=GPU), offers)
+    assert hidden is not None
+    assert hidden.text == (
+        "This host cannot run it. The host lacks it. The host lacks a second thing."
+    )
+
+
 def test_no_engine_for_the_format_hides_it() -> None:
     hidden = explain({ModelFormat.MLX}, _host(), default_offers())
     assert hidden is not None
