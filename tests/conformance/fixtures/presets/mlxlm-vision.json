@@ -13,7 +13,7 @@
  "results": {
   "vision": {
    "ok": false,
-   "detail": "ProviderError: The provider doesn't offer mlxlm-vision/mlx-community/Qwen3-VL-2B-Instruct-4bit on your account. Pick a different model or check the name."
+   "detail": "ProviderError: The server for mlxlm-vision/mlx-community/Qwen3-VL-2B-Instruct-4bit answered 404 to the chat request at http://harness. It does not serve that route there. Fix the base URL of the preset, or the route"
   }
  },
  "error_answers": [

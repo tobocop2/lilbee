@@ -13,7 +13,7 @@
  "results": {
   "rerank": {
    "ok": false,
-   "detail": "ProviderError: The provider doesn't offer vllmmlx-rerank/default on your account. Pick a different model or check the name."
+   "detail": "ProviderError: The server for vllmmlx-rerank/default answered 404 to the rerank request at http://harness. It does not serve that route there. Fix the base URL of the preset, or the route prefix of the server."
   }
  },
  "error_answers": [

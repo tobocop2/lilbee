@@ -343,6 +343,12 @@ def steps_for(setup: Setup) -> list[str]:
     return [*steps, "named"] if setup.strict else steps
 
 
+# The recording proxy and the replay server listen on a random local port; a failure text that
+# names it reads the same in every run.
+_HARNESS_ADDRESS = re.compile(r"http://127\.0\.0\.1:\d+")
+HARNESS_ADDRESS_NAME = "http://harness"
+
+
 def run_steps(setup: Setup) -> dict[str, Outcome]:
     """Run every step of the documented roles. A raised error is a failed step."""
     results: dict[str, Outcome] = {}
@@ -350,7 +356,8 @@ def run_steps(setup: Setup) -> dict[str, Outcome]:
         try:
             results[step] = _STEP_FUNCTIONS[step](setup)
         except Exception as exc:  # a failed step is a result, not a crash
-            results[step] = Outcome(False, f"{type(exc).__name__}: {str(exc)[:200]}")
+            text = _HARNESS_ADDRESS.sub(HARNESS_ADDRESS_NAME, str(exc))
+            results[step] = Outcome(False, f"{type(exc).__name__}: {text[:200]}")
     return results
 
 
