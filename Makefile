@@ -63,7 +63,7 @@ imports-check:
 # The hosted-key tests need the providers extra, which only this job installs.
 # So do the real-types tests, which run the adapter on the library's own response types.
 test-integration:
-	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/providers/test_sdk_real_types.py -v
+	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/providers/test_sdk_real_types.py tests/conformance/test_preset_fixtures.py -v
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke

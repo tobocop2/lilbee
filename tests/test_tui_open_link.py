@@ -90,3 +90,9 @@ class TestOpenAnswerLink:
         chat_screen.ChatScreen._open_answer_link(screen, self._click("https://example.com/page"))
         screen.app.open_url.assert_called_once_with("https://example.com/page")
         opened.assert_not_called()
+
+
+def test_a_test_cannot_open_a_real_browser():
+    import webbrowser
+
+    assert isinstance(webbrowser.open, mock.MagicMock)

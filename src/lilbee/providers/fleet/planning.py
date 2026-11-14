@@ -51,6 +51,7 @@ from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RerankMode, WorkerRole
+from lilbee.providers.server_registry import loopback_reserve_bytes
 from lilbee.runtime.progress.types import OcrBackendUsed
 
 log = logging.getLogger(__name__)
@@ -2846,12 +2847,15 @@ def _unified_admission_budget(devices: list[FleetDevice], engine: EngineAdapter)
     against a live figure refuses a 600 MB model on a box that is merely busy at
     the moment, which is what happened. The GPU path already charges total
     capacity for exactly this reason.
+
+    The memory reserve of each loopback preset comes off as well: lilbee cannot read
+    the memory of a server it did not start. Sizing leaves it alone, since a resident
+    server is already missing from free RAM.
     """
     if _unified_memory_budget(devices, engine) is None:
         return None
-    return _capped_by_device_memory(
-        max(0, model_cache.total_system_memory() - _system_memory_floor()), devices
-    )
+    held_back = _system_memory_floor() + loopback_reserve_bytes()
+    return _capped_by_device_memory(max(0, model_cache.total_system_memory() - held_back), devices)
 
 
 def _system_memory_floor() -> int:
