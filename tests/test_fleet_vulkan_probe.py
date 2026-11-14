@@ -162,3 +162,46 @@ class TestTheChildSpawnItself:
         assert seen["argv"][1:] == ["-m", "lilbee.providers.fleet.vulkan_probe"]
         assert seen["timeout_s"] > 0
         assert seen["label"] == "vulkan-probe"
+
+
+class TestAStandInChildAtTheProductCallSite:
+    """Real child processes, started the way the product starts the probe."""
+
+    @staticmethod
+    def _use_standin(monkeypatch, tmp_path, body: str, timeout_s: float) -> None:
+        import os
+
+        (tmp_path / "standin_probe.py").write_text(body, encoding="utf-8")
+        monkeypatch.setattr(gpu_select, "_PROBE_MODULE", "standin_probe")
+        monkeypatch.setattr(gpu_select, "_PROBE_TIMEOUT_S", timeout_s)
+        monkeypatch.setattr(gpu_select, "_PROBE_KILL_WAIT_S", 5.0)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_env.engine_environ",
+            lambda: {**os.environ, "PYTHONPATH": str(tmp_path)},
+        )
+
+    def test_a_child_that_never_answers_returns_no_devices_at_the_limit(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        import time
+
+        self._use_standin(monkeypatch, tmp_path, "import time\ntime.sleep(120)\n", 1.0)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.fleet.gpu_select"):
+            started = time.monotonic()
+            devices = gpu_select._enumerate_vulkan_devices()
+            elapsed = time.monotonic() - started
+        assert devices is None
+        assert 0.9 <= elapsed < 30.0
+        assert "timed out after 1.0 seconds" in caplog.text
+
+    def test_a_child_that_crashes_returns_no_devices_and_the_parent_lives(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        self._use_standin(monkeypatch, tmp_path, "import os\nos._exit(139)\n", 30.0)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.fleet.gpu_select"):
+            assert gpu_select._enumerate_vulkan_devices() is None
+        assert "Vulkan probe child exited 139" in caplog.text
+
+    def test_a_child_that_answers_returns_its_devices(self, monkeypatch, tmp_path) -> None:
+        self._use_standin(monkeypatch, tmp_path, "print('[]')\n", 30.0)
+        assert gpu_select._enumerate_vulkan_devices() == []
