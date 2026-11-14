@@ -165,6 +165,10 @@ def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
     return _weights_estimate(weights_from_files(_installed_sizes(request.model_path)))
 
 
+def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
+    return _weights_estimate(UNKNOWN_SIZE_RESERVE_BYTES)
+
+
 def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
     """The GGUF parser's footprint for one instance, with its engine and mtime caches."""
     parsed = estimate_instance_footprint(
@@ -194,6 +198,7 @@ FORMAT_ESTIMATORS: Mapping[ModelFormat, Callable[[MemoryRequest], MemoryEstimate
     ModelFormat.MLX: _estimate_safetensors,
     ModelFormat.SAFETENSORS: _estimate_safetensors,
     ModelFormat.OPENVINO: _estimate_openvino,
+    ModelFormat.XDNA: _estimate_xdna,
 }
 
 

@@ -186,6 +186,7 @@ class TestSelectFiles:
             ModelFormat.MLX: ["m-Q4_K_M.gguf", "config.json"],
             ModelFormat.SAFETENSORS: ["m-Q4_K_M.gguf", "openvino_model.xml"],
             ModelFormat.OPENVINO: ["m-Q4_K_M.gguf", "model.safetensors"],
+            ModelFormat.XDNA: ["m-Q4_K_M.gguf", "model.safetensors"],
         }[fmt]
         assert select_files(fmt, [*blobs, *other, "params"]) == []
 
