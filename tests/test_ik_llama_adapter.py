@@ -24,6 +24,7 @@ from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+from lilbee.providers.fleet.engines.lemonade import LemonadeAdapter
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import RoleTarget, WorkerRole
@@ -310,9 +311,12 @@ def test_engine_list_shows_the_engine_as_not_installed_and_writes_nothing() -> N
     assert not engines_root(cfg.models_dir).exists()
 
 
-def test_engine_list_json_names_the_engines_that_are_not_installed() -> None:
+def test_engine_list_json_names_the_engines_that_are_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import json
 
+    monkeypatch.setattr(LemonadeAdapter, "user_binary", lambda self: None)
     result = runner.invoke(cli_app, ["--json", "engine", "list"])
     body = json.loads(result.output)
     assert body["builds"] == []
