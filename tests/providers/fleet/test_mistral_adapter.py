@@ -344,6 +344,23 @@ def test_the_memory_estimate_is_a_fixed_reserve_of_the_file_size(tmp_path: Path)
     assert missing.size_known is False
 
 
+def test_the_memory_estimate_of_a_folder_prices_its_weights_and_its_cache(tmp_path: Path) -> None:
+    folder = tmp_path / "model"
+    folder.mkdir()
+    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    config = {
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 4,
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    estimate = MISTRAL.estimate_memory(MemoryRequest(folder, 100, 2, 99, True, cfg.kv_cache_type))
+    cache = 2 * 2 * 1 * 4 * 2 * 100 * 2
+    assert estimate.device_bytes == 1000 + cache + 512 * 1024**2
+    assert estimate.size_known is True
+
+
 def _no_read() -> list[CardMemory]:
     raise AssertionError("a CPU build read the driver")
 
