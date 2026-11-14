@@ -1464,33 +1464,37 @@ class FleetProvider:
             # recorded engine so planning sees true free VRAM and the build never
             # lands beside an unprobeable incumbent.
             _clear_engine_dir(engine_dir)
-            # Membership comes first: an exit while the start waits on the engine
-            # must still find this engine's hold and stop it as the last user out.
-            # The hold and the registration are one lock hold, so a shutdown either
-            # releases the hold or leaves it to this start, never both.
+            return self._start_and_hold(engine_dir)
+
+    def _start_and_hold(self, engine_dir: Path) -> bool:
+        """Start the fleet in *engine_dir* and join its users; caller holds its build lock."""
+        # Membership comes first: an exit while the start waits on the engine
+        # must still find this engine's hold and stop it as the last user out.
+        # The hold and the registration are one lock hold, so a shutdown either
+        # releases the hold or leaves it to this start, never both.
+        with self._lock:
+            fresh = self._take_user_lock(engine_dir)
+            self._starting_dirs.add(engine_dir)
+        spawned = False
+        try:
+            spawned = self._plan_and_spawn(engine_dir)
+        finally:
+            # Cleared before the build lock is freed, so no peer binds an engine
+            # that the shutdown stops as a start.
             with self._lock:
-                fresh = self._take_user_lock(engine_dir)
-                self._starting_dirs.add(engine_dir)
-            spawned = False
-            try:
-                spawned = self._plan_and_spawn(engine_dir)
-            finally:
-                # Cleared before the build lock is freed, so no peer binds an engine
-                # that the shutdown stops as a start.
-                with self._lock:
-                    self._starting_dirs.discard(engine_dir)
-                    cancelled = self._shut_down
-                if cancelled:
-                    # A cancelled start kills its own engine and drops its own hold.
-                    kill_engine(engine_dir)
-                    self._drop_user_lock(engine_dir, taken=True)
-                elif not spawned:
-                    self._drop_user_lock(engine_dir, fresh)
-            if cancelled or not spawned:
-                return False
-            self._hold_membership(engine_dir)
-            _watch_bound_engine(engine_dir)
-            return True
+                self._starting_dirs.discard(engine_dir)
+                cancelled = self._shut_down
+            if cancelled:
+                # A cancelled start kills its own engine and drops its own hold.
+                kill_engine(engine_dir)
+                self._drop_user_lock(engine_dir, taken=True)
+            elif not spawned:
+                self._drop_user_lock(engine_dir, fresh)
+        if cancelled or not spawned:
+            return False
+        self._hold_membership(engine_dir)
+        _watch_bound_engine(engine_dir)
+        return True
 
     def _refuse_live_engine(self, engine_dir: Path, overflow_dir: Path | None) -> bool | None:
         """Leave a live engine this process cannot bind: overflow (None) or serve nothing.
