@@ -331,7 +331,7 @@ def build_adhoc_entry(
 
 def _format_pull_target(hf_repo: str, fmt: ModelFormat) -> CatalogModel | None:
     """The pullable entry for ``<repo>#<format>``, or None when the repo id is malformed."""
-    if not _is_hf_repo_id(hf_repo):
+    if fmt is not ModelFormat.XDNA and not _is_hf_repo_id(hf_repo):
         return None
     task = ModelTask(reclassify_by_name(hf_repo, ModelTask.CHAT))
     return build_adhoc_entry(hf_repo, task=task, fmt=fmt)
