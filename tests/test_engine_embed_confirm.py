@@ -322,3 +322,39 @@ def test_the_slash_command_prefer_writes_with_the_yes_word(
     assert _stored("preferred_engine") is None
     assert run_engine_command("prefer --yes openvino").ok is True
     assert _stored("preferred_engine") == "openvino"
+
+
+def test_every_surface_asks_before_a_model_write_that_changes_the_embed_trigger(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    from lilbee.cli.tui.engine_commands import run_engine_command
+
+    code, answer = _rest("PUT", "/api/engines/models", {"model": MODEL, "engine": "openvino"})
+    assert (code, answer["extra"]["documents"]) == (409, 3)
+    asked = mcp_server.engine_use_model_tool(MODEL, "openvino")
+    assert (asked["code"], asked["documents"]) == ("embed_engine_confirm_required", 3)
+    code, body = _run_cli("use-model", MODEL, "openvino")
+    assert (code, "--yes" in body["error"]) == (1, True)
+    out = run_engine_command(f"use-model {MODEL} openvino")
+    assert out.ok is False
+    assert out.text.endswith("Run the command again with --yes.")
+    assert _stored("engine_choices") is None
+
+
+def test_every_surface_writes_a_confirmed_model_choice(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    from lilbee.cli.tui.engine_commands import run_engine_command
+
+    body = {"model": MODEL, "engine": "openvino", "confirm_embed_change": True}
+    assert _rest("PUT", "/api/engines/models", body)[0] == 200
+    assert json.loads(str(_stored("engine_choices"))) == _CHOSEN
+    for write in (
+        lambda: mcp_server.engine_use_model_tool(MODEL, "openvino", confirm_embed_change=True),
+        lambda: _run_cli("use-model", MODEL, "openvino", "--yes"),
+        lambda: run_engine_command(f"use-model {MODEL} openvino --yes"),
+    ):
+        engine_service.use(MODEL, "auto", confirmed=True)
+        assert _stored("engine_choices") is None
+        write()
+        assert json.loads(str(_stored("engine_choices"))) == _CHOSEN

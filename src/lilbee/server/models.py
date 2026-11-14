@@ -1112,7 +1112,7 @@ class EngineRemovedResponse(BaseModel):
 
 
 class EngineUseBody(BaseModel):
-    """Request body that chooses the engine for the model of one role."""
+    """Request body that chooses the engine for one model."""
 
     model: str
     engine: str

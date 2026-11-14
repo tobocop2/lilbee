@@ -41,7 +41,12 @@ from tests.test_engine_service import (
     UNREADABLE_NOTICE,
 )
 
-ALL_ROUTES = [routes.engine_roles_route, routes.engine_use_route, routes.engine_prefer_route]
+ALL_ROUTES = [
+    routes.engine_roles_route,
+    routes.engine_use_route,
+    routes.engine_use_model_route,
+    routes.engine_prefer_route,
+]
 SURFACES = ("cli", "rest", "mcp", "slash")
 FALLBACK = (
     "Engine mlx for chat is not installed. Using llama.cpp. "
@@ -258,7 +263,13 @@ def test_the_tools_and_routes_are_registered() -> None:
     import asyncio
 
     tools = {t.name for t in asyncio.run(mcp_server.build_mcp_server().list_tools())}
-    assert {"engine_roles", "engine_use", "engine_prefer", "engine_install"} <= tools
+    assert {
+        "engine_roles",
+        "engine_use",
+        "engine_use_model",
+        "engine_prefer",
+        "engine_install",
+    } <= tools
 
 
 ENGINE_TOOLS = {
@@ -266,6 +277,7 @@ ENGINE_TOOLS = {
     "engine_remove",
     "engine_roles",
     "engine_use",
+    "engine_use_model",
     "engine_prefer",
     "engine_install",
 }
@@ -733,3 +745,120 @@ def test_every_role_view_shows_why_the_host_refused_an_engine(
     cfg.engine_choices = choices
     for surface, text in _roles_texts().items():
         assert "Xeon lacks AVX2" in " ".join(text.split()), surface
+
+
+def _model_refusal(surface: str, model: str, engine: str) -> str:
+    """The refusal text a surface shows for *engine* chosen for *model* with no role."""
+    if surface == "cli":
+        code, body = _run_cli("use-model", model, engine)
+        assert code == 1
+        return body["error"]
+    if surface == "rest":
+        code, body = _rest("PUT", "/api/engines/models", {"model": model, "engine": engine})
+        assert code == 422
+        return body["detail"]
+    if surface == "mcp":
+        return mcp_server.engine_use_model_tool(model, engine)["error"]
+    out = run_engine_command(f"use-model {model} {engine}")
+    assert not out.ok
+    return out.text
+
+
+def _write_model(surface: str, model: str, engine: str) -> None:
+    if surface == "cli":
+        assert _run_cli("use-model", model, engine) == (
+            0,
+            {"command": "engine use-model", "model": model, "engine": engine},
+        )
+    elif surface == "rest":
+        res = _rest("PUT", "/api/engines/models", {"model": model, "engine": engine})
+        assert res == (200, {"engine": engine})
+    elif surface == "mcp":
+        assert mcp_server.engine_use_model_tool(model, engine) == {"engine": engine}
+    else:
+        assert run_engine_command(f"use-model {model} {engine}").ok
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_model_in_no_role_gets_its_engine_stored_and_auto_removes_it(surface: str) -> None:
+    assert MLX_REF not in {v.model for v in engine_service.roles()}
+    _write_model(surface, MLX_REF, "mlx")
+    assert json.loads(str(_stored("engine_choices"))) == {MLX_REF: "mlx"}
+    _write_model(surface, MLX_REF, "auto")
+    assert _stored("engine_choices") is None
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_model_write_keeps_the_choice_of_another_model(surface: str) -> None:
+    _write(surface, "llama.cpp")
+    _write_model(surface, MLX_REF, "mlx")
+    assert json.loads(str(_stored("engine_choices"))) == {GGUF_REF: "llama.cpp", MLX_REF: "mlx"}
+
+
+MODEL_REFUSALS = [
+    pytest.param(GGUF_REF, "nonesuch", id="unknown-engine"),
+    pytest.param(GGUF_REF, "mlx", id="cannot-load-format"),
+]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize(("model", "engine"), MODEL_REFUSALS)
+def test_every_surface_shows_the_service_refusal_for_a_model_and_stores_nothing(
+    surface: str, model: str, engine: str
+) -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.use(model, engine)
+    expected = str(exc.value)
+    assert expected
+    assert _model_refusal(surface, model, engine) == expected
+    assert _stored("engine_choices") is None
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_model_engine_that_is_not_installed_is_refused_with_the_same_text(
+    surface: str, no_mlx: None
+) -> None:
+    assert _model_refusal(surface, MLX_REF, "mlx") == NOT_INSTALLED.format("mlx")
+    assert _stored("engine_choices") is None
+
+
+def test_the_role_path_stores_through_the_same_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, str]] = []
+    real = engine_service.use
+
+    def spy(model: str, name: str, confirmed: bool = False) -> str:
+        seen.append((model, name))
+        return real(model, name, confirmed)
+
+    monkeypatch.setattr(engine_service, "use", spy)
+    _write("cli", "llama.cpp")
+    _write_model("cli", MLX_REF, "mlx")
+    assert seen == [(GGUF_REF, "llama.cpp"), (MLX_REF, "mlx")]
+
+
+def test_rest_model_writes_are_refused_while_allow_http_engines_is_off() -> None:
+    cfg.allow_http_engines = False
+    code, body = _rest("PUT", "/api/engines/models", {"model": MLX_REF, "engine": "mlx"})
+    assert (code, body["detail"]) == (409, engine_service.http_refused_message())
+    assert _stored("engine_choices") is None
+
+
+def test_the_model_tool_refuses_while_the_mcp_engine_setting_is_off() -> None:
+    cfg.mcp_engines_enabled = False
+    refusal = {"error": mcp_server.ENGINES_DISABLED_ERROR}
+    assert mcp_server.engine_use_model_tool(MLX_REF, "mlx") == refusal
+    assert _stored("engine_choices") is None
+
+
+def test_the_model_tool_is_refused_on_a_mounted_server_with_the_http_flag_off() -> None:
+    mcp_server.set_http_mounted(True)
+    cfg.allow_http_engines = False
+    assert mcp_server.engine_use_model_tool(MLX_REF, "mlx") == {
+        "error": engine_service.http_refused_message()
+    }
+    assert _stored("engine_choices") is None
+
+
+def test_the_slash_usage_names_use_model() -> None:
+    assert "use-model MODEL ENGINE" in USAGE
+    assert run_engine_command("use-model onlyone").text == USAGE

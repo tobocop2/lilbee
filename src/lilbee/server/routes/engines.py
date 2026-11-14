@@ -114,6 +114,15 @@ async def engine_use_route(role: FromPath[str], data: EngineUseBody) -> EngineCh
     return EngineChosenResponse(engine=chosen)
 
 
+@put("/api/engines/models", status_code=200, guards=[_require_engines_enabled])
+async def engine_use_model_route(data: EngineUseBody) -> EngineChosenResponse:
+    """Choose the engine for one model, in any role or none. Refused unless allow_http_engines."""
+    chosen = await _call(
+        lambda: service.use(data.model, data.engine, confirmed=data.confirm_embed_change)
+    )
+    return EngineChosenResponse(engine=chosen)
+
+
 @post("/api/engines/install", status_code=200, guards=[_require_engines_enabled])
 async def engine_install_route(data: EngineInstallBody) -> EngineInstalledResponse:
     """Install an engine build from its pack. Refused unless allow_http_engines is enabled."""

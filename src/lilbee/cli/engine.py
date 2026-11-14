@@ -231,6 +231,23 @@ def use(
     console.print(f"{role} model {model} uses engine {chosen}.")
 
 
+@engine_app.command("use-model")
+def use_model(
+    model: str = typer.Argument(help="The model, in any role or none."),
+    engine: str = typer.Argument(help="Engine name, or 'auto' to remove the choice."),
+    yes: bool = _YES_OPTION,
+) -> None:
+    """Choose the engine that runs one model, whether or not a role uses it."""
+    try:
+        chosen = _confirming(lambda confirmed: engine_service.use(model, engine, confirmed), yes)
+    except engine_service.WRITE_FAILURES as exc:
+        raise _refuse("engine use-model", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine use-model", "model": model, "engine": chosen})
+        return
+    console.print(f"Model {model} uses engine {chosen}.")
+
+
 @engine_app.command("prefer")
 def prefer(
     name: str = typer.Argument(help="Engine name, or 'auto' for the default for each model."),

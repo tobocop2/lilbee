@@ -25,15 +25,17 @@ _REMOVE = "remove"
 _REMOVE_ARGS = 3
 _USE = "use"
 _PREFER = "prefer"
+_USE_MODEL = "use-model"
 _USE_ARGS = 3
+_USE_MODEL_ARGS = 2
 _PREFER_ARGS = 1
 _INSTALL = "install"
 _INSTALL_ARGS = 1
 YES_WORD = "--yes"
 USAGE = (
     "Use /engine roles, /engine list, /engine remove NAME VERSION BACKEND, "
-    "/engine use ROLE MODEL ENGINE [--yes], /engine prefer ENGINE [--yes], "
-    "or /engine install ENGINE."
+    "/engine use ROLE MODEL ENGINE [--yes], /engine use-model MODEL ENGINE [--yes], "
+    "/engine prefer ENGINE [--yes], or /engine install ENGINE."
 )
 
 
@@ -62,6 +64,12 @@ def _builds_text() -> str:
 def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> EngineCommandResult:
     chosen = engine_service.use_for_role(role, model, engine, confirmed=confirmed)
     text = msg.ENGINE_USE_DONE.format(role=role, model=model, engine=chosen)
+    return EngineCommandResult(True, text, CHOICES_KEY)
+
+
+def _use_model(model: str, engine: str, confirmed: bool = False) -> EngineCommandResult:
+    chosen = engine_service.use(model, engine, confirmed=confirmed)
+    text = msg.ENGINE_USE_MODEL_DONE.format(model=model, engine=chosen)
     return EngineCommandResult(True, text, CHOICES_KEY)
 
 
@@ -106,6 +114,8 @@ def _run(
     if verb == _USE and len(words) == _USE_ARGS:
         role, model, engine = words
         return _use(engine_service.parse_role(role), model, engine, confirmed)
+    if verb == _USE_MODEL and len(words) == _USE_MODEL_ARGS:
+        return _use_model(words[0], words[1], confirmed)
     if verb == _PREFER and len(words) == _PREFER_ARGS:
         chosen = engine_service.prefer(words[0], confirmed)
         text = msg.ENGINE_PREFER_DONE.format(engine=chosen)

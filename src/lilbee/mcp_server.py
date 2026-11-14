@@ -302,6 +302,7 @@ _ENGINE_TOOL_NAMES: frozenset[str] = frozenset(
         "engine_remove",
         "engine_roles",
         "engine_use",
+        "engine_use_model",
         "engine_prefer",
         "engine_install",
     }
@@ -2359,6 +2360,22 @@ def engine_use_tool(
     return _engine_result(
         lambda: EngineChosenResponse(
             engine=engine_service.use_for_role(role, model, engine, confirmed=confirm_embed_change)
+        )
+    )
+
+
+@_tool_named("engine_use_model")
+def engine_use_model_tool(
+    model: str, engine: str, confirm_embed_change: bool = False
+) -> dict[str, Any]:
+    """Choose the engine for one model, in any role or none; engine ``auto`` removes the choice."""
+    from lilbee.server.models import EngineChosenResponse
+
+    if (refused := _engine_write_refused()) is not None:
+        return refused
+    return _engine_result(
+        lambda: EngineChosenResponse(
+            engine=engine_service.use(model, engine, confirmed=confirm_embed_change)
         )
     )
 

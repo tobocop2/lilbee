@@ -58,6 +58,7 @@ ENGINE_ROUTES = [
     ("DELETE", "/api/engines/fx/1/cpu", None, 409),
     ("GET", "/api/engines/roles", None, 200),
     ("PUT", "/api/engines/roles/chat", {"model": "m", "engine": "e"}, 409),
+    ("PUT", "/api/engines/models", {"model": "m", "engine": "e"}, 409),
     ("PUT", "/api/engines/preferred", {"engine": "e"}, 409),
 ]
 
