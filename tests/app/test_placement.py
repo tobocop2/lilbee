@@ -280,6 +280,24 @@ def test_set_reports_what_runs_when_the_environment_outranks_the_saved_spec(monk
         app_placement.cfg.placement = prior
 
 
+def test_set_reports_a_saved_spec_as_manual_and_a_cleared_one_as_auto(monkeypatch):
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    monkeypatch.setattr(app_placement, "clear_read_device_cache", lambda: None)
+    prior = app_placement.cfg.placement
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(1, 1))})
+    try:
+        saved = app_placement.set_placement(spec)
+        cleared = app_placement.set_placement(None)
+    finally:
+        app_placement.cfg.placement = prior
+    assert saved.manual is True
+    assert saved.spec_json == spec.to_json()
+    assert cleared.manual is False
+    assert cleared.spec_json is None
+
+
 def test_set_clears_read_device_cache_when_nothing_runs(monkeypatch):
     """With no services built, the next boot should probe devices fresh."""
     cleared = {"called": False}

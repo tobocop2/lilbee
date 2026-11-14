@@ -226,6 +226,37 @@ class TestMixedPlanOnOneMemoryPool:
         assert "tight" not in _warnings(caplog)
 
 
+class TestCleanBoxSnapshotCharge:
+    @pytest.fixture(autouse=True)
+    def _reset_probe(self):
+        planning.clear_plan_probe()
+        yield
+        planning.clear_plan_probe()
+
+    def test_a_tenant_holding_the_card_cuts_both_the_admission_and_the_room_it_reports(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
+        # Another process holds 12 of the card's 24 GiB: 10.8 GiB are usable, so
+        # chat (9) and embed (3) cannot both sit there, though 21.6 GiB would hold them.
+        held = [FleetDevice("CUDA", 0, "gpu0", 24 * _GIB, 12 * _GIB)]
+        chat, embed = _pair(tmp_path, held, 9, 3, other_kind=MemoryKind.FIXED_RESERVE)
+        engines = {WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
+        planning.capture_plan_probe(engines)
+        with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
+            plan = planning.plan_all_launches(engines=engines)
+        served = {launch.role for launch in plan.launches}
+        refused = {WorkerRole.CHAT, WorkerRole.EMBED} - served
+        assert len(refused) == 1
+        (role,) = refused
+        engine = chat if role is WorkerRole.CHAT else embed
+        ref = cfg.chat_model if role is WorkerRole.CHAT else cfg.embedding_model
+        need, other_need = (9, 3) if role is WorkerRole.CHAT else (3, 9)
+        others = "embed" if role is WorkerRole.CHAT else "chat"
+        model = f"{role.value} model {ref} ({engine.name})"
+        assert _m1(model, need, 12 * 0.9 - other_need, others) in _warnings(caplog)
+
+
 class TestUnifiedHostRefusal:
     def test_u1_chat_too_big_is_refused_and_embed_takes_no_card(
         self, monkeypatch, tmp_path, caplog
