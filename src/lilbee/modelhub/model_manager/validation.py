@@ -28,6 +28,7 @@ from lilbee.modelhub.model_manager.discovery import (
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import availability
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
@@ -160,7 +161,9 @@ def _first_installed_local_ref(want: ModelTask) -> str | None:
     for manifest in registry.list_installed():
         if reclassify_by_name(manifest.ref, manifest.task) != want:
             continue
-        if install_state(manifest.ref, registry) is InstallState.REGISTERED:
+        if install_state(manifest.ref, registry) is InstallState.REGISTERED and loadable_refs(
+            [manifest.ref]
+        ):
             return manifest.ref
     return None
 

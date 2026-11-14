@@ -535,7 +535,8 @@ formats, not engines. The format name is `gguf`, `mlx`, `openvino`, `safetensors
 or `xdna`. A reference with no `#format` is GGUF.
 
 An `xdna` reference names an NPU model by its tag, as in `qwen3:0.6b#xdna`. The pull
-writes a small record and no weights. Lemonade downloads the model the first time it loads it.
+writes a small record and no weights. The record lists the model as installed, so you can
+assign it to a role. Lemonade downloads the model the first time it loads it.
 
 ### Install an engine
 

@@ -12,7 +12,7 @@ import pytest
 
 from lilbee.app import engine_service
 from lilbee.catalog import xdna
-from lilbee.catalog.types import ModelFormat
+from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import host_caps
@@ -46,6 +46,7 @@ MODES = {
     WorkerRole.EMBED: "embeddings",
 }
 TAGS = {WorkerRole.CHAT: "qwen3:0.6b", WorkerRole.EMBED: "embed-gemma:300m"}
+TASKS = {WorkerRole.CHAT: ModelTask.CHAT, WorkerRole.EMBED: ModelTask.EMBEDDING}
 
 
 def _request(model: Path, replica: int = 0, slots: int = 1, ctx: int = 2048) -> LaunchRequest:
@@ -66,7 +67,7 @@ def _launch(
     replica: int = 0,
     slots: int = 1,
 ) -> list[str]:
-    ticket = model or xdna.write_ticket(cfg.models_dir, TAGS[role])
+    ticket = model or xdna.write_ticket(cfg.models_dir, TAGS[role], TASKS[role])
     request = _request(ticket, replica, slots)
     return LEMONADE.launch_argv(LEMONADE.role_spec(role, None, None), request)
 
@@ -188,7 +189,7 @@ def test_r2_a_second_call_changes_nothing() -> None:
 
 def test_r2_a_new_ticket_changes_the_registered_tag() -> None:
     _launch()
-    ticket = xdna.write_ticket(cfg.models_dir, "llama3.2:1b")
+    ticket = xdna.write_ticket(cfg.models_dir, "llama3.2:1b", ModelTask.CHAT)
     _launch(model=ticket)
     entry = _config_file(WorkerRole.CHAT, "user_models.json")["lilbee-chat"]
     assert entry["checkpoint"] == "llama3.2:1b"
