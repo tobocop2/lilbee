@@ -894,15 +894,17 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
-- **A mistral.rs role on several cards**: the launch gets `--device-layers`. The layer
-  count of the model (the GGUF `block_count`, or `num_hidden_layers` in `config.json`)
-  is shared over the cards by the placement ratio, largest remainder first. The card
-  order is the order of `CUDA_VISIBLE_DEVICES`. Every mistral.rs launch sets
-  `MISTRALRS_NO_NCCL=1`, because with several visible cards the engine otherwise runs
-  equal tensor-parallel shards and drops the map. The engine has no fit check for the
-  map, so placement charges each card the weights by layer share. A split that cannot
-  run is refused with a message that names the model and the llama.cpp engine as the
-  fix: an unreadable layer count, a card with no layer, or a Metal or CPU build.
+- **A mistral.rs role on several cards**: the launch runs as equal tensor-parallel
+  shards and carries no layer flag. The card order is the order of
+  `CUDA_VISIBLE_DEVICES`. A launch that is not a split sets `MISTRALRS_NO_NCCL=1`: one
+  card, no card pinned, or the CPU target. The engine drops a layer map when
+  collectives are on, and the map it keeps with collectives off answered wrongly on
+  two cards. So the launch refuses an uneven ratio (every entry must be the same
+  number) and a model whose attention heads do not divide over the card count (the
+  GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
+  `num_key_value_heads` in `config.json`). The message names the model and the
+  llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
+  each card the weights by layer share.
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process

@@ -216,7 +216,7 @@ class LlamaCppAdapter:
     def runtime_env(self) -> Mapping[str, str]:
         return llama_server_runtime_env()
 
-    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         return {}
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:

@@ -135,7 +135,7 @@ class CardEngine(FakeAdapter):
     def runtime_env(self):
         return {}
 
-    def target_env(self, target):
+    def target_env(self, target, cards):
         return {}
 
     def swap_extras(self, launch):
