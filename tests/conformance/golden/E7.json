@@ -1,0 +1,40 @@
+{
+  "id": "E7",
+  "rows": [
+    9,
+    29,
+    48,
+    55
+  ],
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is the weather in Paris?"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Weather for a city",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "max_tokens": 512
+  },
+  "assert": "message.tool_calls[0] names get_weather with JSON arguments. Bare JSON in content gives fallback."
+}

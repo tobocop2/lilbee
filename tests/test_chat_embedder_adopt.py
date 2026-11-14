@@ -38,6 +38,23 @@ def _fake_app():
         yield app
 
 
+class TestEngineChangedMessage:
+    """An engine change shows its message and opens no adopt dialog."""
+
+    def test_the_message_is_shown_and_no_dialog_opens(self):
+        from lilbee.data.store import EmbeddingEngineChangedError
+
+        screen = _bare_screen()
+        widget = MagicMock()
+        error = EmbeddingEngineChangedError(model="m", dim=8, distance=0.2, verified=True)
+
+        with _fake_app() as app:
+            screen._on_embedding_mismatch(error, "q", widget)
+
+        widget.append_content.assert_called_once_with(str(error))
+        app.push_screen.assert_not_called()
+
+
 class TestStreamResponseDispatch:
     """The stream body routes an embedder mismatch to the adopt prompt and any
     other error to the generic stream-error message."""

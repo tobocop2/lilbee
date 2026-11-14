@@ -2158,7 +2158,7 @@ class CatalogScreen(Screen[None]):
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
         try:
-            filename = resolve_filename(model)
+            filename = resolve_filename(model, get_services().engine)
             dest = cfg.models_dir / filename
             if dest.exists():
                 self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))

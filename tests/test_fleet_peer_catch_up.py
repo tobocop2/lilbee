@@ -22,6 +22,8 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import PlanOrigin, SwapState
@@ -76,12 +78,14 @@ def _gap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, root: str | None = 
             self.bound = True
             return True
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group: _Swap(group))
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group, _engine: _Swap(group))
     owner = FleetProvider()
     monkeypatch.setattr(owner, "_preload_roles", lambda roles=None: None)
     monkeypatch.setattr(owner, "_reload_dir", lambda: tmp_path)
     with owner._lock:
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engine=LLAMA)
+        ).items():
             owner._adopt_group(group, _FakeSwap(), list(launches))
             owner._group_dirs[group] = tmp_path
     waits = threading.Event()
@@ -116,11 +120,11 @@ def _owner_held_until(monkeypatch: pytest.MonkeyPatch, release: threading.Event)
     held = threading.Event()
     refresh = planning_mod.refresh_plan_devices
 
-    def gated_refresh() -> None:
+    def gated_refresh(engine: EngineAdapter) -> None:
         if threading.current_thread().name == "owner-reload":
             held.set()
             release.wait(_WAIT_S)
-        refresh()
+        refresh(engine)
 
     monkeypatch.setattr(planning_mod, "refresh_plan_devices", gated_refresh)
     return held
@@ -321,7 +325,7 @@ def test_one_bind_attempt_waits_within_one_bound_over_both_dirs(
     monkeypatch.setattr(
         prov_mod,
         "_placeable_demand",
-        lambda: SimpleNamespace(skipped_not_installed={}, skipped_unusable_ctx={}),
+        lambda _engine: SimpleNamespace(skipped_not_installed={}, skipped_unusable_ctx={}),
     )
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path / "slot")
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _dir: True)

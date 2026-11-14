@@ -48,7 +48,7 @@ def test_a_cache_smaller_than_dense_attention_would_hold_is_kept(monkeypatch, ca
     # of the model's layers run linear attention and hold no per-token cache.
     from lilbee.providers.fleet.placement import ModelPlacementInput
 
-    def _refuse(*_a: object) -> int:
+    def _refuse(*_a: object, **_kw) -> int:
         raise AssertionError("the analytic floor must not weigh in on a well-formed estimate")
 
     monkeypatch.setattr(planning, "_cpu_offload_in_play", lambda: False)

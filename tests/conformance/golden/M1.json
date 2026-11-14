@@ -1,0 +1,10 @@
+{
+  "id": "M1",
+  "rows": [
+    5,
+    16,
+    25
+  ],
+  "request": null,
+  "assert": "The launch template holds {port}, the engine starts from it, and --help exits 0 with text."
+}

@@ -23,6 +23,8 @@ from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
 
+    from lilbee.providers.fleet.engines.base import EngineAdapter
+
 log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_S = 0.2
@@ -184,6 +186,7 @@ def download_in_subprocess(
     entry: CatalogModel,
     models_dir: Path,
     token: str | None,
+    engine: EngineAdapter,
     *,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
@@ -199,7 +202,7 @@ def download_in_subprocess(
         raise TaskCancelledError
     for attempt in range(STALL_ATTEMPTS):
         try:
-            return _run_one_attempt(entry, models_dir, token, on_progress, cancel)
+            return _run_one_attempt(entry, models_dir, token, engine, on_progress, cancel)
         except _ChildStalledError:
             log.warning(
                 "Transfer of %s stalled (attempt %d/%d); starting again in a new process.",
@@ -223,6 +226,7 @@ def _run_one_attempt(
     entry: CatalogModel,
     models_dir: Path,
     token: str | None,
+    engine: EngineAdapter,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
 ) -> Path:
@@ -232,7 +236,7 @@ def _run_one_attempt(
     same partial file any other interrupted attempt leaves. ``SystemExit`` is
     not, so interpreter shutdown skips the filesystem work.
     """
-    worker, receiver = _start_worker(entry, models_dir, token)
+    worker, receiver = _start_worker(entry, models_dir, token, engine)
     owned: list[str] = []
     try:
         try:
@@ -256,7 +260,7 @@ def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> 
 
 
 def _start_worker(
-    entry: CatalogModel, models_dir: Path, token: str | None
+    entry: CatalogModel, models_dir: Path, token: str | None, engine: EngineAdapter
 ) -> tuple[_Worker, Connection]:
     """Spawn the download child; fork is unsafe under the parent's threads.
 
@@ -268,7 +272,7 @@ def _start_worker(
     receiver, sender = context.Pipe(duplex=False)
     worker = context.Process(
         target=_run_download_child,
-        args=(sender, entry, str(models_dir), token),
+        args=(sender, entry, str(models_dir), token, engine),
         name=f"lilbee-download-{entry.hf_repo}",
         daemon=True,
     )
@@ -353,7 +357,11 @@ def _stop_worker(worker: _Worker) -> None:
 
 
 def _run_download_child(
-    conn: Connection, entry: CatalogModel, models_dir: str, token: str | None
+    conn: Connection,
+    entry: CatalogModel,
+    models_dir: str,
+    token: str | None,
+    engine: EngineAdapter,
 ) -> None:
     """Child-process entry: fetch the files and report the verdict over *conn*."""
     _silence_output()
@@ -365,6 +373,7 @@ def _run_download_child(
             entry,
             Path(models_dir),
             token,
+            engine,
             on_progress=_PipeProgress(conn),
             on_probe=_PipeProbe(conn),
         )

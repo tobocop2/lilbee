@@ -310,6 +310,31 @@ class TestTryNvidiaMemory:
         monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
         assert _try_nvidia_memory() == 8192 * 1024 * 1024
 
+    @pytest.mark.parametrize("failure", ["init_oserror", "no_count", "memory_none"])
+    def test_any_nvml_failure_falls_through_to_nvidia_smi(self, monkeypatch, failure: str) -> None:
+        fake = mock.MagicMock()
+        if failure == "init_oserror":
+            fake.nvmlInit.side_effect = OSError("library cannot load")
+        elif failure == "no_count":
+            fake.nvmlDeviceGetCount.side_effect = AttributeError("nvmlDeviceGetCount")
+        else:
+            fake.nvmlDeviceGetCount.return_value = 1
+            fake.nvmlDeviceGetMemoryInfo.return_value = None
+        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake)
+        result = mock.MagicMock(returncode=0, stdout="8192, GPU-smi\n")
+        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
+        assert _try_nvidia_memory() == 8192 * 1024 * 1024
+
+    def test_nvml_shutdown_error_keeps_the_nvml_total(self, monkeypatch) -> None:
+        fake = mock.MagicMock()
+        fake.nvmlDeviceGetCount.return_value = 1
+        fake.nvmlDeviceGetMemoryInfo.return_value.total = 16 * 1024 * 1024 * 1024
+        fake.nvmlShutdown.side_effect = RuntimeError("shutdown failed")
+        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake)
+        smi = mock.MagicMock(side_effect=AssertionError("nvidia-smi must not run"))
+        monkeypatch.setattr("subprocess.run", smi)
+        assert _try_nvidia_memory() == 16 * 1024 * 1024 * 1024
+
     @pytest.mark.parametrize("returncode", [1, 2])
     def test_returns_none_when_nvidia_smi_nonzero_exit(self, monkeypatch, returncode: int) -> None:
         original_import = __import__("builtins").__import__

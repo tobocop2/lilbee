@@ -40,9 +40,10 @@ Every code change MUST be tracked as a beads task. Create tasks before starting 
 ## Commands
 ```bash
 uv sync                       # Install dependencies
-make check                    # Run all checks: lint, format, typecheck, test (same as CI)
+make check                    # Run all checks: lint, license-check, format, typecheck, test (same as CI)
 make test                     # Tests with coverage
 make lint                     # Ruff linting
+make license-check            # Fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
 make typecheck                # Mypy
 make format                   # Auto-format code
 uv run lilbee init            # Create .lilbee/ in current dir (per-project DB)
