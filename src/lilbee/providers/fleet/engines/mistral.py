@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,8 +25,18 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
+from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
+# The flag that gives each visible card a count of layers; the engine runs equal
+# tensor-parallel shards instead of that map unless its collective library is off.
+_DEVICE_LAYERS = "--device-layers"
+_MIN_SPLIT_CARDS = 2
+_NO_COLLECTIVE_ENV = "MISTRALRS_NO_NCCL"
+_CONFIG = "config.json"
+_LAYERS_KEY = "num_hidden_layers"
+_TEXT_CONFIG_KEY = "text_config"
+_GGUF_LAYERS_KEY = "block_count"
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
@@ -106,6 +117,47 @@ def _linux_pick(host: HostCaps) -> BuildPick:
     return BuildPick(f"cuda128-sm{compute[0]}{compute[1]}", "")
 
 
+def _positive_int(value: object) -> int | None:
+    """*value* as a whole number above zero, or ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        return None
+    try:
+        count = int(value)
+    except ValueError:
+        return None
+    return count if count > 0 else None
+
+
+def _layer_count(path: Path) -> int | None:
+    """The layer count a GGUF file or a model folder declares, or ``None``."""
+    if path.suffix.lower() == _GGUF_SUFFIX:
+        meta = read_gguf_metadata(path)
+        return _positive_int(meta.get(_GGUF_LAYERS_KEY)) if meta else None
+    try:
+        config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    for section in (config, config.get(_TEXT_CONFIG_KEY)):
+        count = _positive_int(section.get(_LAYERS_KEY)) if isinstance(section, dict) else None
+        if count is not None:
+            return count
+    return None
+
+
+def _apportion(layers: int, ratio: tuple[int, ...]) -> tuple[int, ...] | None:
+    """Layers per card by largest remainder; ``None`` when a card gets none."""
+    total = sum(ratio)
+    if total <= 0:
+        return None
+    shares = [layers * part // total for part in ratio]
+    by_remainder = sorted(range(len(ratio)), key=lambda i: (-(layers * ratio[i] % total), i))
+    for i in by_remainder[: layers - sum(shares)]:
+        shares[i] += 1
+    return tuple(shares) if min(shares) > 0 else None
+
+
 class MistralAdapter:
     """mistral.rs behind the engine contract; it serves chat, embed and vision, never rerank."""
 
@@ -183,7 +235,7 @@ class MistralAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The serve command; the engine places the model itself, so layers and context stay unset.
+        """The serve command; context stays unset, and several cards get a layer map.
 
         A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
         decides the device flags: a CPU build gets ``--cpu``, and
@@ -198,6 +250,7 @@ class MistralAdapter:
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
         argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
         argv += self._device_flags(request.target)
+        argv += self._split_flags(request)
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
@@ -209,6 +262,36 @@ class MistralAdapter:
         if target is RoleTarget.CPU or self.pick_build(session_host()).backend in (None, _CPU):
             return ["--cpu"]
         return ["--paged-attn", "off"]
+
+    def _split_flags(self, request: LaunchRequest) -> list[str]:
+        """The layer map for a split over several cards; it refuses a split it cannot run."""
+        ratio = request.tensor_split
+        if request.target is RoleTarget.CPU or len(ratio) < _MIN_SPLIT_CARDS:
+            return []
+        from lilbee.catalog.runnable import session_host
+
+        name = request.model_path.name
+        cards = len(ratio)
+        backend = self.pick_build(session_host()).backend
+        if backend in (None, _CPU, _METAL):
+            label = "Metal" if backend == _METAL else "CPU"
+            raise ProviderError(
+                f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
+                "Give the role one card."
+            )
+        layers = _layer_count(request.model_path)
+        if layers is None:
+            raise ProviderError(
+                f"mistral.rs cannot split {name} across {cards} cards: "
+                "the model does not list its layer count. Give the role one card."
+            )
+        shares = _apportion(layers, ratio)
+        if shares is None:
+            raise ProviderError(
+                f"mistral.rs cannot split {name} across {cards} cards: "
+                "the split leaves a card with no layer. Give the role fewer cards."
+            )
+        return [_DEVICE_LAYERS, ";".join(f"{card}:{count}" for card, count in enumerate(shares))]
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
@@ -225,6 +308,20 @@ class MistralAdapter:
         return DeviceProbe(devices=visible_nvidia_cards(), output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        whole = self._whole_estimate(request)
+        if len(request.tensor_split) < _MIN_SPLIT_CARDS:
+            return whole
+        layers = _layer_count(request.model_path)
+        if layers is None:
+            return whole
+        shares = _apportion(layers, request.tensor_split)
+        if shares is None:
+            return whole
+        per_device = tuple(whole.device_bytes * count // layers for count in shares)
+        return replace(whole, per_device=per_device)
+
+    @staticmethod
+    def _whole_estimate(request: MemoryRequest) -> MemoryEstimate:
         if request.model_path.is_dir():
             return estimate_memory(ModelFormat.SAFETENSORS, request)
         try:
@@ -252,7 +349,7 @@ class MistralAdapter:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
-        return {}
+        return {_NO_COLLECTIVE_ENV: "1"}
 
     def target_env(self, target: RoleTarget) -> Mapping[str, str]:
         return {}

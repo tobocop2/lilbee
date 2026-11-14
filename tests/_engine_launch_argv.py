@@ -50,13 +50,18 @@ def launch_argvs(
         device_names=("CUDA0", "CUDA1"),
         tensor_split=(1, 1),
     )
+    # The host is Metal, where mistral.rs refuses a split, so it gets one card.
+    one_card = replace(request, devices=(0,), device_names=("CUDA0",), tensor_split=())
+    per_engine = {
+        EngineName.LEMONADE: replace(request, model_path=ticket),
+        EngineName.MISTRAL: one_card,
+    }
     found: dict[str, dict[str, list[str]]] = {}
     for name, adapter in choice.ADAPTERS.items():
         roles = sorted(adapter.served_roles, key=lambda role: role.value)
         found[name.value] = {
             role.value: adapter.launch_argv(
-                adapter.role_spec(role, None, None),
-                replace(request, model_path=ticket) if name is EngineName.LEMONADE else request,
+                adapter.role_spec(role, None, None), per_engine.get(name, request)
             )
             for role in roles
         }
