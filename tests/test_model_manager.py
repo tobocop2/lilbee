@@ -3,7 +3,7 @@
 import logging
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -801,7 +801,12 @@ class TestModelManagerPull:
 
     @staticmethod
     def _pull_entry(
-        tmp_path: Path, fmt: ModelFormat, task: ModelTask, *, size_known: bool = True
+        tmp_path: Path,
+        fmt: ModelFormat,
+        task: ModelTask,
+        *,
+        size_known: bool = True,
+        on_notice: Callable[[str], None] | None = None,
     ) -> list[object]:
         """Pull one entry through ``_pull_native``; return the fit and download steps in order."""
         from lilbee.catalog.pull_fit import PullFit
@@ -838,7 +843,9 @@ class TestModelManagerPull:
             mock.patch("lilbee.catalog.pull_fit.chat_pull_fit", side_effect=fit),
             mock.patch("lilbee.catalog.download_model", side_effect=download),
         ):
-            ModelManager(models_dir, cfg)._pull_native("acme/test-model", engine)
+            ModelManager(models_dir, cfg)._pull_native(
+                "acme/test-model", engine, on_notice=on_notice
+            )
         return steps
 
     @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
@@ -851,12 +858,29 @@ class TestModelManagerPull:
         assert "acme/test-model: This model needs 5.0 GiB at a context of" in caplog.text
         assert [r.levelno for r in caplog.records if "needs 5.0 GiB" in r.message] == [logging.INFO]
 
-    def test_an_unknown_size_reaches_the_user_at_the_default_log_level(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.model_manager.core"):
-            self._pull_entry(tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False)
-        assert "acme/test-model: The size of this model is unknown, so 5.0 GiB" in caplog.text
+    def test_an_unknown_size_goes_to_the_notice_callback(self, tmp_path: Path) -> None:
+        notices: list[str] = []
+        self._pull_entry(
+            tmp_path,
+            ModelFormat.SAFETENSORS,
+            ModelTask.CHAT,
+            size_known=False,
+            on_notice=notices.append,
+        )
+        assert notices == ["The size of this model is unknown, so 5.0 GiB is reserved for it."]
+
+    def test_a_known_size_sends_no_notice(self, tmp_path: Path) -> None:
+        notices: list[str] = []
+        self._pull_entry(
+            tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, on_notice=notices.append
+        )
+        assert notices == []
+
+    def test_an_unknown_size_pull_without_a_callback_still_downloads(self, tmp_path: Path) -> None:
+        steps = self._pull_entry(
+            tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False
+        )
+        assert steps[-1] == "download"
 
     @pytest.mark.parametrize(
         ("fmt", "task"),
