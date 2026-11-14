@@ -72,6 +72,15 @@ def test_card_count_counts_rows_whose_memory_did_not_read(
     assert list(nvidia_mod._cache.stats()) == [0]
 
 
+def test_a_stats_row_whose_index_does_not_read_names_no_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv = "0, 37, 61, 100, 46068\n[N/A], 12, 61, 100, 46068\n"
+    monkeypatch.setattr(nvidia_mod, "run_tool", prints(lambda *_a, **_k: csv))
+    assert nvidia_mod.card_count() == 1
+    assert list(nvidia_mod._cache.stats()) == [0]
+
+
 def test_card_count_is_zero_when_smi_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(nvidia_mod, "run_tool", prints(lambda *_a, **_k: ""))
     assert nvidia_mod.card_count() == 0
@@ -441,6 +450,13 @@ def test_an_exit_that_names_no_driver_or_no_card_reads_as_no_driver(
 ) -> None:
     _Smi(monkeypatch, cards="", codes={"cards": code})
     assert nvidia_mod.host_facts() is None
+
+
+def test_rows_printed_by_a_failed_card_probe_are_not_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, codes={"cards": 15})
+    assert (nvidia_mod.cards(), nvidia_mod.card_totals()) == ([], [])
 
 
 @pytest.mark.parametrize("code", [1, 15, 18])
