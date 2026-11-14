@@ -75,7 +75,7 @@ PATHS = [
 
 
 @pytest.mark.parametrize(("path", "role"), PATHS)
-def test_a_preset_404_names_the_url_the_role_and_the_missing_route(
+def test_a_preset_404_names_the_url_the_role_and_both_checks(
     sdk: fakes.FakeSdk, path: Callable[..., Callable[[LiterLlmBackend], object]], role: str
 ) -> None:
     with pytest.raises(ProviderError) as err:
@@ -84,8 +84,10 @@ def test_a_preset_404_names_the_url_the_role_and_the_missing_route(
     assert err.value.kind is ProviderErrorKind.NOT_FOUND
     assert URL in text
     assert f"{role} request" in text
-    assert "does not serve that route" in text
-    assert "route prefix" in text
+    assert "Check the base URL and the route prefix of the server." in text
+    assert f"has a model loaded for the {role} role" in text
+    assert "does not serve" not in text
+    assert "missing" not in text
     assert HOSTED not in text
     assert "Not Found" not in text
 

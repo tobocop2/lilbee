@@ -13,6 +13,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.providers.routing_provider import RoutingProvider
+from tests import _fake_sdk as fakes
 from tests.conformance import preset_check, record_presets
 from tests.conformance.fake_engine import Behaviour, FakeEngine
 from tests.conformance.harness import (
@@ -483,6 +484,22 @@ def test_a_failed_step_names_the_harness_address_not_its_random_port(
     assert results["embed"] == preset_check.Outcome(
         False, "ValueError: no route at http://harness or http://harness"
     )
+
+
+@pytest.mark.parametrize("name", ["tei-rerank-v1", "mlxlm-vision", "vllmmlx-rerank"])
+def test_a_404_fixture_detail_is_the_text_lilbee_prints(name: str, tmp_path: Path) -> None:
+    """The recorded detail of a 404 failure is what a run prints for a 404 answer."""
+    setup, recorded, exchanges, _doc = load_fixture(FIXTURES / f"{name}.json")
+    assert recorded
+    sdk = fakes.FakeSdk()
+    sdk.chat_error = sdk.embed_error = sdk.rerank_error = sdk.error("NotFoundError", "x")
+    with (
+        fakes.installed(sdk),
+        preset_check.replaying(exchanges) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        replayed = preset_check.run_steps(setup)
+    assert replayed == recorded
 
 
 def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
