@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.models import ListsModels
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.host_caps import HostCaps, collect, detect
 
@@ -50,16 +51,17 @@ class Hidden:
 
 
 def default_offers() -> list[EngineOffer]:
-    """The engines whose models the catalog lists: llama.cpp, and Lemonade for NPU models."""
+    """llama.cpp, and each engine that publishes a model list of its own."""
     # circular: the engine modules import the catalog
     from lilbee.providers.fleet.engines import LLAMA
-    from lilbee.providers.fleet.engines.choice import installed_engines
-    from lilbee.providers.fleet.engines.lemonade import LEMONADE
+    from lilbee.providers.fleet.engines.choice import ADAPTERS, installed_engines
 
-    lemonade_here = LEMONADE.name in installed_engines()
-    return [
-        EngineOffer(LLAMA, EngineState.INSTALLED),
-        EngineOffer(LEMONADE, EngineState.INSTALLED if lemonade_here else EngineState.INSTALLABLE),
+    here = installed_engines()
+    # isinstance: only some engines publish a model list, so the offers are narrowed by capability
+    publishers = [a for a in ADAPTERS.values() if isinstance(a, ListsModels)]
+    return [EngineOffer(LLAMA, EngineState.INSTALLED)] + [
+        EngineOffer(a, EngineState.INSTALLED if a.name in here else EngineState.INSTALLABLE)
+        for a in publishers
     ]
 
 
