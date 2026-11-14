@@ -192,6 +192,15 @@ class TestChatEstimate:
         assert (est.device_bytes, est.size_known) == (RESERVE + 5, False)
 
 
+class TestRuntimeAllowances:
+    def test_a_chat_engine_holds_512_mib_beyond_its_weights_and_cache(self) -> None:
+        est = mm.safetensors_chat_estimate(0, mm.KvPerToken(1, upper_bound=False), 1, 1)
+        assert est.device_bytes == 1 + 512 * 1024**2
+
+    def test_an_encoder_holds_500_mib_beyond_its_weights(self) -> None:
+        assert mm.encoder_estimate(0).device_bytes == 500 * 1024**2
+
+
 class TestEncoderEstimate:
     def test_charges_weights_and_the_runtime_allowance_with_no_cache(self) -> None:
         est = mm.encoder_estimate(1000)
