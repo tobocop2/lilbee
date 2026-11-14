@@ -66,15 +66,16 @@ from lilbee.providers.fleet.readback import engine_log_path, writes_engine_log
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     EngineLifetime,
+    EngineReadiness,
     PlanOrigin,
     SwapManager,
     SwapState,
+    engine_readiness,
     engine_record_exists,
     ensure_engine_reaper,
     find_live_state,
     kill_engine,
     reap_stale,
-    state_is_healthy,
     stop_engine,
 )
 from lilbee.providers.fleet.windowing import window_messages
@@ -270,19 +271,25 @@ def _launch_changes(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, 
     return ", ".join(moved) or "no launch field moved"
 
 
-def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
-    """One probe pass over *engine_dir*: the recorded, answering group states.
+def _healthy_states(engine_dir: Path, *, in_use: bool = False) -> dict[SwapGroup, SwapState]:
+    """One probe pass over *engine_dir*: the recorded group states that are bindable.
 
     The ladder's single view of a dir. Bind eligibility and the replaceability
     check both read this snapshot, so they cannot disagree about an engine that
     died between them, and one wedged proxy port is paid for once per ladder
     pass rather than once per decision -- all of it under the build lock, which
-    every other lilbee start is waiting on.
+    every other lilbee start is waiting on. An answering engine that never
+    loaded is not bindable, unless *in_use*: a live user holds it, and a user
+    that never asked for a load leaves no proof of one.
     """
     found: dict[SwapGroup, SwapState] = {}
+    now = time.time()
     for group in SwapGroup:
         state = find_live_state(engine_dir, group)
-        if state is not None and state_is_healthy(state):
+        if state is None:
+            continue
+        readiness = engine_readiness(state, now=now)
+        if readiness is not None and (in_use or readiness is not EngineReadiness.FAILED):
             found[group] = state
     return found
 
@@ -334,7 +341,7 @@ def _await_slot_change(
         time.sleep(_OWNER_CATCH_UP_POLL_S)
         if not live_users_exist(engine_dir, exclude_self=True):
             return
-        if _healthy_states(engine_dir) != before:
+        if _healthy_states(engine_dir, in_use=True) != before:
             return
 
 
@@ -1438,13 +1445,14 @@ class FleetProvider:
         """
         wanted = demand.pairs
         with build_lock(engine_dir):
-            # One probe pass serves the bind and the owed-rebuild check.
-            states = _healthy_states(engine_dir) if wanted else {}
-            if self._bind_held_dir(engine_dir, pin, demand, states):
-                return True
             # This process's own hold is no reason to overflow: the ladder runs only
             # when this provider serves no group, so the hold is all that is left.
-            if live_users_exist(engine_dir, exclude_self=True):
+            in_use = live_users_exist(engine_dir, exclude_self=True)
+            # One probe pass serves the bind and the owed-rebuild check.
+            states = _healthy_states(engine_dir, in_use=in_use) if wanted else {}
+            if self._bind_held_dir(engine_dir, pin, demand, states):
+                return True
+            if in_use:
                 if may_wait and _owner_owes_the_file(states):
                     return _SlotOwed(states)
                 return self._refuse_live_engine(engine_dir, overflow_dir)
@@ -2808,6 +2816,10 @@ class FleetProvider:
                 )
         if warmed:
             self._warm_errors.pop(role, None)
+            with self._lock:
+                swap = self._swap_for(role)
+            if swap is not None:
+                swap.record_ready()
         return warmed
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:

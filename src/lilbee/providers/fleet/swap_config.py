@@ -120,7 +120,7 @@ def build_swap_config(
         entry.update(launch.swap_extras)
         models[launch.model_id] = entry
     config: dict[str, object] = {
-        _KEY_HEALTH_TIMEOUT: _health_check_timeout_s(launches),
+        _KEY_HEALTH_TIMEOUT: health_check_timeout_s(launches),
         _KEY_LOG_LEVEL: _LOG_LEVEL,
         _KEY_MODELS: models,
         _KEY_GROUPS: {
@@ -150,7 +150,7 @@ def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:
     return max(_COLD_LOAD_FLOOR_S[role], weights_bytes // _COLD_LOAD_BYTES_PER_S)
 
 
-def _health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
+def health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
     """Slowest member's cold-load ceiling; the timeout is proxy-global in
     llama-swap, so the slowest possible load sets it."""
     return max(
