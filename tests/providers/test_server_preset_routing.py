@@ -182,7 +182,10 @@ class TestStoredValue:
     def test_no_value_holds_no_entries(self) -> None:
         assert decode_entries(None) == []
 
-    @pytest.mark.parametrize("raw", ["not json", '{"a": 1}', 7, "[" * 100000])
+    @pytest.mark.parametrize(
+        "raw",
+        ["not json", '{"a": 1}', 7, pytest.param("[" * 100000, id="deeply-nested-brackets")],
+    )
     def test_a_value_that_is_no_list_is_refused(self, raw: Any) -> None:
         with pytest.raises(ValueError, match="do not parse"):
             decode_entries(raw)

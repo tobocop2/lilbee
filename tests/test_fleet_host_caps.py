@@ -543,3 +543,54 @@ class TestDetectNeverRaises:
         caps = _collect(nvml={"driver": "570.1"})
         assert not caps.nvidia_known
         assert caps.gpus == ()
+
+
+_CARD_TOTAL = 24 << 30
+_CARD_FREE = 20 << 30
+
+
+class _FakeDriver:
+    """The calls of the driver library the card read uses."""
+
+    def __init__(self, count: int = 1, memory_error: bool = False) -> None:
+        self._count = count
+        self._memory_error = memory_error
+
+    def nvmlDeviceGetCount(self) -> int:
+        return self._count
+
+    def nvmlDeviceGetHandleByIndex(self, index: int) -> int:
+        return index
+
+    def nvmlDeviceGetMemoryInfo(self, _handle: int) -> types.SimpleNamespace:
+        if self._memory_error:
+            raise RuntimeError("driver gone")
+        return types.SimpleNamespace(total=_CARD_TOTAL, free=_CARD_FREE)
+
+    def nvmlDeviceGetUUID(self, _handle: int) -> bytes:
+        return b"GPU-a"
+
+    def nvmlDeviceGetName(self, _handle: int) -> str:
+        return "card0"
+
+    def nvmlShutdown(self) -> None:
+        return None
+
+
+def test_the_card_read_reports_the_driver_figures(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(host_caps, "_open_nvml", _FakeDriver)
+    assert host_caps.read_card_memory() == [
+        host_caps.CardMemory("GPU-a", "card0", _CARD_TOTAL, _CARD_FREE)
+    ]
+
+
+def test_the_card_read_is_empty_when_the_driver_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raises() -> None:
+        raise OSError("no library")
+
+    monkeypatch.setattr(host_caps, "_open_nvml", _raises)
+    assert host_caps.read_card_memory() == []
+    monkeypatch.setattr(host_caps, "_open_nvml", lambda: None)
+    assert host_caps.read_card_memory() == []
+    monkeypatch.setattr(host_caps, "_open_nvml", lambda: _FakeDriver(memory_error=True))
+    assert host_caps.read_card_memory() == []

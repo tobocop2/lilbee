@@ -27,6 +27,8 @@ class EngineSetting(StrEnum):
     AUTO = "auto"
     LLAMA = "llama.cpp"
     IK_LLAMA = "ik_llama.cpp"
+    MISTRAL = "mistral.rs"
+    TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
 

@@ -109,17 +109,20 @@ class LLMOptions(BaseModel):
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
-def filter_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Validate and filter generation options through LLMOptions model."""
-    return LLMOptions(**options).to_dict()
-
-
 class ChosenSeed(int):
     """A seed lilbee picked for an internal call, not one the user set.
 
     A provider with no seed field drops it and answers the call. A seed that is
     a plain ``int`` came from the user, and that provider refuses it.
     """
+
+
+def filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Validate and filter generation options through LLMOptions model, keeping a ChosenSeed."""
+    filtered = LLMOptions(**options).to_dict()
+    if isinstance(options.get("seed"), ChosenSeed):
+        filtered["seed"] = options["seed"]
+    return filtered
 
 
 def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:
@@ -166,6 +169,7 @@ class ProviderErrorKind(StrEnum):
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
     MODEL_FILE_BROKEN = "model_file_broken"
+    STARTING = "starting"
     UNKNOWN = "unknown"
 
 
@@ -531,6 +535,10 @@ class LLMProvider(Protocol):
     def shutdown(self) -> None:
         """Release resources (e.g. background threads). No-op if nothing to clean up."""
         ...
+
+    def stop_waiting(self) -> None:
+        """Answer the callers that wait on this provider's work now. No-op default."""
+        return
 
     def warm_up_pool(self) -> None:
         """Eagerly start the configured role servers so the first call lands warm.

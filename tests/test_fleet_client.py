@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import json
 import threading
 import time
@@ -16,8 +17,16 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from lilbee.providers.base import ProviderError, StreamFinish, TokenUsage
+from lilbee.providers.base import (
+    ChosenSeed,
+    ProviderError,
+    StreamFinish,
+    TokenUsage,
+    aux_options,
+)
+from lilbee.providers.engine_params import chat_options_to_kwargs
 from lilbee.providers.fleet.client import (
+    _RERANK_PAIR_SEPARATOR,
     ChatDeadlineError,
     LlamaServerClient,
     StreamInterruptedError,
@@ -27,6 +36,8 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
 )
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.reasoning import ThinkInliner
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -3501,3 +3512,195 @@ def test_stream_cut_before_first_frame_keeps_the_transport_error() -> None:
     with pytest.raises(httpx.TransportError):
         next(stream)
     server.close()
+
+
+def _no_route_client(handler, cap: int | None = None, **changes) -> LlamaServerClient:
+    """A client whose engine has no tokenize or detokenize route, plus any other profile changes."""
+    profile = dataclasses.replace(
+        LLAMA.request_profile(WorkerRole.EMBED), tokenize_path=None, detokenize_path=None, **changes
+    )
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    return LlamaServerClient("http://gpu0", "m", http=http, token_cap=cap, profile=profile)
+
+
+def test_embed_without_tokenize_route_truncates_by_characters() -> None:
+    posts: list[str] = []
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(request.url.path)
+        sent.extend(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    out = _no_route_client(handler, cap=4).embed(["x" * 100])
+    assert _as_lists(out) == [[0.5]]
+    assert posts == ["/v1/embeddings"]
+    assert sent == ["x" * 12]
+
+
+def test_embed_without_tokenize_route_keeps_input_within_cap() -> None:
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.extend(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    _no_route_client(handler, cap=4).embed(["x" * 12])
+    assert sent == ["x" * 12]
+
+
+def test_embed_without_tokenize_route_truncates_again_on_context_overflow() -> None:
+    calls: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content)["input"])
+        if len(calls) == 1:
+            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    out = _no_route_client(handler, cap=4).embed(["x" * 12])
+    assert _as_lists(out) == [[0.5]]
+    assert calls == [["x" * 12], ["x" * 12]]
+
+
+def test_count_tokens_without_tokenize_route_estimates_by_characters() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    client = _no_route_client(handler)
+    assert client.count_tokens("x" * 10) == 4
+
+
+def test_count_chat_prompt_tokens_without_tokenize_route_asks_for_an_estimate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    with pytest.raises(NotImplementedError, match="no tokenize route"):
+        _no_route_client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_rerank_with_route_posts_query_and_texts_and_orders_scores_by_index() -> None:
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json=[{"index": 1, "score": 0.9}, {"index": 0, "score": 0.1}])
+
+    scores = _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
+    assert scores == [0.1, 0.9]
+    assert seen == [("/upstream/m/rerank", {"query": "q", "texts": ["alpha", "beta"]})]
+
+
+def test_rerank_with_route_splits_candidates_at_the_batch_limit() -> None:
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["texts"]
+        sizes.append(len(texts))
+        return httpx.Response(
+            200, json=[{"index": i, "score": float(text)} for i, text in enumerate(texts)]
+        )
+
+    candidates = [str(i) for i in range(5)]
+    scores = _no_route_client(handler, rerank_path="/rerank", batch_limit=2).rerank("q", candidates)
+    assert sizes == [2, 2, 1]
+    assert scores == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_rerank_through_embeddings_splits_pairs_at_the_batch_limit() -> None:
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.content)["input"]
+        sizes.append(len(inputs))
+        return httpx.Response(200, json=_embed_body([[float(len(text))] for text in inputs]))
+
+    candidates = ["a" * n for n in range(1, 6)]
+    scores = _no_route_client(handler, batch_limit=2).rerank("", candidates)
+    assert sizes == [2, 2, 1]
+    assert scores == [float(len(f"{_RERANK_PAIR_SEPARATOR}{c}")) for c in candidates]
+
+
+def test_rerank_with_route_refuses_an_answer_missing_a_candidate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"index": 0, "score": 0.1}, {"index": 0, "score": 0.2}])
+
+    with pytest.raises(ProviderError, match="one score for each of the 2 candidates"):
+        _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
+
+
+def test_rerank_with_route_and_no_candidates_sends_nothing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    assert _no_route_client(handler, rerank_path="/rerank").rerank("q", []) == []
+
+
+def test_llama_profile_keeps_tokenize_routes_and_has_no_rerank_route() -> None:
+    profile = LLAMA.request_profile(WorkerRole.RERANK)
+    assert (profile.tokenize_path, profile.detokenize_path) == ("/tokenize", "/detokenize")
+    assert profile.rerank_path is None
+
+
+_MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_CALLS = {
+    "chat": lambda c, o: c.chat(_MESSAGES, options=o),
+    "chat_stream": lambda c, o: list(c.chat(_MESSAGES, options=o, stream=True)),
+    "chat_result": lambda c, o: c.chat_result(_MESSAGES, options=o),
+    "chat_stream_items": lambda c, o: list(c.chat_stream_items(_MESSAGES, options=o)),
+    "chat_abortable": lambda c, o: c.chat_abortable(_MESSAGES, options=o),
+    "chat_tools": lambda c, o: c.chat_tools(_MESSAGES, tools=[], options=o),
+}
+
+
+def _body_sent_by(engine, call: str, seed: int = ChosenSeed(42)) -> dict:
+    """The chat body that *call* sends to *engine*'s server for an internal call's options."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(200, text=_STREAM_BODY)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Hello"}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        async_transport=httpx.MockTransport(handler),
+        profile=engine.request_profile(WorkerRole.CHAT),
+    )
+    client._needs_alternation = False
+    options = chat_options_to_kwargs(aux_options(64, seed=seed, cache_prompt=False))
+    _CHAT_CALLS[call](client, options)
+    return bodies[-1]
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_the_prompt_cache_flag_reaches_no_other_engine(engine, call) -> None:
+    """cache_prompt is a llama-server field, so no other engine gets it."""
+    assert "cache_prompt" not in _body_sent_by(engine, call)
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_seed_lilbee_chose_reaches_no_engine_that_takes_none(engine, call) -> None:
+    assert "seed" not in _body_sent_by(engine, call)
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_seed_the_user_set_reaches_every_engine(engine, call) -> None:
+    body = _body_sent_by(engine, call, seed=7)
+    assert body["seed"] == 7
+    assert "cache_prompt" not in body
+
+
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_llama_engine_gets_the_prompt_cache_flag(call) -> None:
+    body = _body_sent_by(LLAMA, call)
+    assert body["cache_prompt"] is False
+    assert body["seed"] == 42

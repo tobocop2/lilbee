@@ -257,6 +257,24 @@ def test_set_persists_and_reloads_live_fleet(monkeypatch):
         app_placement.cfg.placement = prior
 
 
+def test_set_reports_what_runs_when_the_environment_outranks_the_saved_spec(monkeypatch):
+    """LILBEE_PLACEMENT wins over config.toml, so the view shows what runs, not the saved spec."""
+    other = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
+    monkeypatch.setenv("LILBEE_PLACEMENT", other.to_json())
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    prior = app_placement.cfg.placement
+    try:
+        view = app_placement.set_placement(
+            PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
+        )
+        assert view.manual is False
+        assert view.spec_json is None
+    finally:
+        app_placement.cfg.placement = prior
+
+
 def test_set_clears_read_device_cache_when_nothing_runs(monkeypatch):
     """With no services built, the next boot should probe devices fresh."""
     cleared = {"called": False}

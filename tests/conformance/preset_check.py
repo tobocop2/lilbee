@@ -8,6 +8,7 @@ import math
 import re
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterator
@@ -38,6 +39,8 @@ PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
 ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
 _TIMEOUT_S = 600.0
+_EMBED_PATH = "/v1/embeddings"
+_IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERSIZE = "w " * 60000
 _CONVERSATION = [
@@ -359,17 +362,44 @@ def _scrubbed(value: Any) -> Any:
     return value
 
 
-def _proxy_handler(upstream: str, tape: _Tape) -> type[BaseHTTPRequestHandler]:
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.netloc
+
+
+class _SameOriginRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to the origin of the request, so a bearer token stays there."""
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> Any:
+        if _origin(newurl) != _origin(req.full_url):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _proxy_handler(
+    upstream: str, tape: _Tape, token: str | None, embed_url: str | None, vision_url: str | None
+) -> type[BaseHTTPRequestHandler]:
+    opener = urllib.request.build_opener(_SameOriginRedirects)
+
     class Handler(BaseHTTPRequestHandler):
         def _forward(self) -> None:
             size = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(size) if size else b""
             headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+            target = upstream
+            if embed_url is not None and self.path.startswith(_EMBED_PATH):
+                target = embed_url
+            elif vision_url is not None and _IMAGE_PART in raw:
+                target = vision_url
+            if token is not None and _origin(target) == _origin(upstream):
+                headers["Authorization"] = f"Bearer {token}"
             request = urllib.request.Request(  # noqa: S310  a local server under test
-                upstream + self.path, data=raw or None, method=self.command, headers=headers
+                target + self.path, data=raw or None, method=self.command, headers=headers
             )
             try:
-                with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as resp:  # noqa: S310
+                with opener.open(request, timeout=_TIMEOUT_S) as resp:
                     status, body, kind = resp.status, resp.read(), resp.headers.get_content_type()
             except urllib.error.HTTPError as exc:
                 status, body, kind = exc.code, exc.read(), exc.headers.get_content_type()
@@ -399,10 +429,23 @@ def _proxy_handler(upstream: str, tape: _Tape) -> type[BaseHTTPRequestHandler]:
 
 
 @contextmanager
-def recording(upstream: str) -> Iterator[tuple[str, _Tape]]:
-    """A proxy in front of *upstream* that records every exchange; yields its URL and tape."""
+def recording(
+    upstream: str,
+    *,
+    token: str | None = None,
+    embed_url: str | None = None,
+    vision_url: str | None = None,
+) -> Iterator[tuple[str, _Tape]]:
+    """A proxy in front of *upstream* that records every exchange; yields its URL and tape.
+
+    *token* is sent to *upstream* as a bearer token and never reaches the tape.
+    *embed_url* takes the embeddings route, for an upstream that does not serve it.
+    *vision_url* takes a chat request that carries an image part.
+    """
     tape = _Tape()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _proxy_handler(upstream, tape))
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), _proxy_handler(upstream, tape, token, embed_url, vision_url)
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

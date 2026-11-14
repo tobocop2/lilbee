@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import os
 import sys
+import threading
+import time
 from collections.abc import Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -18,6 +21,8 @@ logger = logging.getLogger(__name__)
 _LOG_DIR_NAME = "logs"
 _SERVER_LOG_FILE_NAME = "server.log"
 _FAULT_LOG_FILE_NAME = "server-fault.log"
+
+_DEADLINE_EXIT_STATUS = 1
 _MAX_BYTES = 2_097_152  # 2 MiB
 _BACKUP_COUNT = 3
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -59,6 +64,12 @@ def setup_server_log_file(earlier: Iterable[str] = ()) -> Path:
     return log_path
 
 
+def _fault_log_path() -> Path:
+    log_dir = cfg.data_root / _LOG_DIR_NAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / _FAULT_LOG_FILE_NAME
+
+
 class _FaultLog:
     """Holds the fault-log handle alive; faulthandler writes to the raw fd."""
 
@@ -67,9 +78,7 @@ class _FaultLog:
 
     def enable(self) -> Path:
         """Open the fault log if needed and point faulthandler at it."""
-        log_dir = cfg.data_root / _LOG_DIR_NAME
-        log_dir.mkdir(parents=True, exist_ok=True)
-        fault_path = log_dir / _FAULT_LOG_FILE_NAME
+        fault_path = _fault_log_path()
         if self._handle is None or self._handle.closed:
             self._handle = fault_path.open("a", encoding="utf-8")
             faulthandler.enable(file=self._handle)
@@ -82,6 +91,25 @@ _fault_log = _FaultLog()
 def enable_fault_log() -> Path:
     """Point ``faulthandler`` at ``cfg.data_root/logs/server-fault.log``. Idempotent."""
     return _fault_log.enable()
+
+
+def _exit_at_the_deadline(seconds: float) -> None:
+    """Wait out *seconds*, dump every thread while this one holds the GIL, then exit."""
+    time.sleep(seconds)
+    try:
+        with _fault_log_path().open("a", encoding="utf-8") as fault_log:
+            fault_log.write(f"Timeout ({seconds:g} s)!\n")
+            fault_log.flush()
+            faulthandler.dump_traceback(file=fault_log, all_threads=True)
+    finally:
+        os._exit(_DEADLINE_EXIT_STATUS)
+
+
+def arm_exit_deadline(seconds: float) -> None:
+    """End the process with status 1 after *seconds*; the fault log names what held it."""
+    threading.Thread(
+        target=_exit_at_the_deadline, args=(seconds,), name="exit-deadline", daemon=True
+    ).start()
 
 
 class _ExceptHook:
