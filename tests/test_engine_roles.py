@@ -690,3 +690,40 @@ async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_nothing(
     assert enqueued == []
     assert any(_NO_MLX_TEXT in n for n in notices)
     assert not no_mlx_engine.exists()
+
+
+def test_a_container_retries_on_the_engine_choice_the_file_now_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.app.services import build_services, set_config_refresh
+    from lilbee.providers.fleet.provider import FleetProvider
+    from lilbee.providers.routing_provider import RoutingProvider
+    from tests.test_fleet_provider import _connection_error
+
+    other_ref = "org/other/file.gguf"
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    monkeypatch.setattr(cfg, "documents_dir", tmp_path / "documents")
+    monkeypatch.setattr(cfg, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "data" / "lancedb")
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
+    services = build_services(cfg)
+    try:
+        # Another process writes the new choice; the surface takes it when asked.
+        set_config_refresh(lambda: monkeypatch.setattr(cfg, "chat_model", other_ref))
+        attempts: list[str] = []
+
+        def call() -> str:
+            attempts.append(cfg.chat_model)
+            if len(attempts) == 1:
+                raise _connection_error()
+            return cfg.chat_model
+
+        assert isinstance(services.provider, RoutingProvider)
+        engine = services.provider._get_local()
+        assert isinstance(engine, FleetProvider)
+        assert engine._with_rediscover(call) == other_ref
+        assert attempts == [GGUF_REF, other_ref]
+    finally:
+        services.store.close()
