@@ -405,7 +405,7 @@ class TestAnUnknownSizeInThePlan:
         monkeypatch.setattr(cfg, "chat_model", _REF)
         monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref, registry=None: folder)
         monkeypatch.setattr(planning._read_device_cache, "get", lambda _binary, _engine: reading)
-        monkeypatch.setattr(MISTRAL, "binary", lambda: Path("/nonexistent/mistralrs"))
+        monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: Path("/nonexistent/mistralrs"))
         return planning.resolve_placement_plan(None, engines={WorkerRole.CHAT: MISTRAL})
 
     def test_the_resolved_placement_lists_the_role_of_unknown_size(
