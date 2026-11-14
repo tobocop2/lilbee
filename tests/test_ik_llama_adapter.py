@@ -18,37 +18,40 @@ from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import adapters as fleet_adapters
-from lilbee.providers.fleet import host_caps
-from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
+from lilbee.providers.fleet import engine_manifest, host_caps
+from lilbee.providers.fleet.engine_store import EngineStore, PinLock, UnsafeWheelError, engines_root
 from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
-from lilbee.providers.fleet.engines.choice import HostFacts, installed_engines
+from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+from lilbee.providers.fleet.engines.lemonade import LemonadeAdapter
 from lilbee.providers.fleet.engines.llama import LLAMA
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
 COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
 runner = CliRunner()
 
 
-def _host(system: str, machine: str, flags: list[str] | None, mac_ver: str = "") -> Any:
+def _host(system: str, machine: str, flags: list[str] | None) -> Any:
     cpu_info: dict[str, Any] = {} if flags is None else {"flags": flags, "brand_raw": "Test CPU"}
     return host_caps.collect(
         system=system,
         machine=machine,
-        mac_ver=mac_ver,
         cpu_info=cpu_info,
         nvml=None,
-        npu_devices=[],
     )
 
 
-def _make_wheel(path: Path) -> str:
+def _make_wheel(path: Path, *, libraries: bool = True) -> str:
     with zipfile.ZipFile(path, "w") as archive:
         tool = zipfile.ZipInfo("lilbee_engine_ik/bin/llama-server")
         tool.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(tool, "#!/bin/sh\n")
+        if libraries:
+            archive.writestr("lilbee_engine_ik/bin/libggml.so", "x")
+            archive.writestr("lilbee_engine_ik/bin/libllama.so", "x")
         archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -58,9 +61,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(cfg, "preferred_engine", "auto")
     monkeypatch.setattr(cfg, "engine_choices", None)
-    monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="linux", machine="x86_64")
-    )
+    linux = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None)
+    monkeypatch.setattr(engine_choice, "session_host", lambda: linux)
+    monkeypatch.setattr(engine_service, "session_host", lambda: linux)
 
 
 @pytest.fixture
@@ -69,7 +72,15 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     wheel = tmp_path / "ik.whl"
     sha = _make_wheel(wheel)
     publish(monkeypatch, EngineName.IK_LLAMA, sha)
-    lock = PinLock(EngineName.IK_LLAMA.value, ik_llama.VERSION, ik_llama.BACKEND, {}, ("MIT",), sha)
+    lock = PinLock(
+        EngineName.IK_LLAMA.value,
+        ik_llama.VERSION,
+        ik_llama.BACKEND,
+        {},
+        ("MIT",),
+        sha,
+        "llama-server",
+    )
     return EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
 
@@ -79,6 +90,27 @@ def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     assert pin["version"] == f"0+git{COMMIT[:12]}"
     assert (pin["engine"], pin["backend"], pin["licenses"]) == ("ik_llama.cpp", "cpu", ["MIT"])
     assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
+
+
+def test_the_pin_expects_no_shared_library() -> None:
+    assert "libraries" not in IK_LLAMA.pin_record()
+
+
+def test_the_static_server_only_pack_installs_from_the_pin(tmp_path: Path) -> None:
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel, libraries=False)
+    lock = choice.pin_lock({**IK_LLAMA.pin_record(), "sha256": sha})
+    root = EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
+    assert lock.libraries == ()
+    assert (root / "lilbee_engine_ik" / "bin" / "llama-server").is_file()
+
+
+def test_the_llama_cpp_pin_refuses_the_one_ggml_library_layout(tmp_path: Path) -> None:
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel)
+    lock = choice.pin_lock({**LLAMA.pin_record(), "backend": "cpu", "sha256": sha})
+    with pytest.raises(UnsafeWheelError, match="no library file for 'ggml-base'"):
+        EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
 
 def test_the_engine_is_registered_and_does_not_ship_in_the_package() -> None:
@@ -119,16 +151,13 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = EngineStore(engines_root(cfg.models_dir))
-    toolless = tmp_path / "toolless.whl"
-    with zipfile.ZipFile(toolless, "w") as archive:
-        archive.writestr("lilbee_engine_ik-1.dist-info/METADATA", "License-Expression: MIT\n")
-    sha = hashlib.sha256(toolless.read_bytes()).hexdigest()
-    store.install_from_wheel(
-        PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha), toolless
-    )
-    store.install_from_wheel(
-        PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha), toolless
-    )
+    wheel = tmp_path / "ik.whl"
+    sha = _make_wheel(wheel)
+    other = PinLock("ik_llama.cpp", "0+gitaaaaaaaaaaaa", "cpu", {}, ("MIT",), sha, "llama-server")
+    store.install_from_wheel(other, wheel)
+    current = PinLock("ik_llama.cpp", ik_llama.VERSION, "cpu", {}, ("MIT",), sha, "llama-server")
+    for server in store.install_from_wheel(current, wheel).glob("*/bin/llama-server*"):
+        server.unlink()
     with pytest.raises(ProviderError, match="is not installed"):
         IK_LLAMA.binary()
 
@@ -142,35 +171,33 @@ def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
 ) -> None:
     wheel = tmp_path / "ik.whl"
     sha = _make_wheel(wheel)
-    lock = PinLock("ik_llama.cpp", version, backend, {}, ("MIT",), sha)
+    lock = PinLock("ik_llama.cpp", version, backend, {}, ("MIT",), sha, "llama-server")
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
     with pytest.raises(ProviderError, match="is not installed"):
         IK_LLAMA.binary()
 
 
 @pytest.mark.parametrize(
-    ("system", "machine", "flags", "mac_ver"),
-    [("Linux", "x86_64", ["avx2"], ""), ("Darwin", "arm64", None, "15.0")],
+    ("system", "machine", "flags"),
+    [("Linux", "x86_64", ["avx2"]), ("Darwin", "arm64", None)],
 )
 def test_a_cpu_with_avx2_or_neon_passes_the_gate(
-    system: str, machine: str, flags: list[str] | None, mac_ver: str
+    system: str, machine: str, flags: list[str] | None
 ) -> None:
-    gate = IK_LLAMA.host_gate(_host(system, machine, flags, mac_ver))
+    gate = IK_LLAMA.host_gate(_host(system, machine, flags))
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, True, True)
 
 
-def test_a_cpu_without_avx2_is_refused_naming_avx2_and_llama_cpp() -> None:
+def test_a_cpu_without_avx2_is_refused_naming_avx2() -> None:
     gate = IK_LLAMA.host_gate(_host("Linux", "x86_64", ["avx", "sse4_2"]))
     assert gate.ok is False
-    assert gate.reason == (
-        "Test CPU lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
-    )
+    assert gate.reason == "Test CPU lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON."
 
 
 def test_an_unreadable_cpu_stays_selectable_but_never_automatic() -> None:
     gate = IK_LLAMA.host_gate(_host("Linux", "x86_64", None))
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
-    assert gate.reason == "the CPU flags of this CPU could not be read"
+    assert gate.reason == "The CPU flags of this CPU could not be read."
 
 
 def test_an_unreadable_architecture_stays_selectable_but_never_automatic() -> None:
@@ -185,18 +212,17 @@ def test_install_on_a_host_without_avx2_is_refused_and_writes_nothing(
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install("ik_llama.cpp")
     assert "AVX2" in str(exc.value)
-    assert "llama.cpp stays in use" in str(exc.value)
+    assert str(exc.value).endswith(
+        "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
+    )
     assert not engines_root(cfg.models_dir).exists()
-
-
-def test_the_adapter_records_no_pack_digest_until_a_pack_is_published() -> None:
-    assert IK_LLAMA.pin_record()["sha256"] is None
 
 
 def test_install_with_no_published_pack_says_so_for_a_wheel_and_the_packs_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     wheel = tmp_path / "ik.whl"
     _make_wheel(wheel)
     packs = engines_root(cfg.models_dir) / "packs"
@@ -224,11 +250,38 @@ def test_install_from_a_pack_with_the_pinned_digest_lists_the_engine(
     assert EngineName.IK_LLAMA in installed_engines()
 
 
+def test_install_of_a_wheel_other_than_the_published_pack_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    wheel = tmp_path / "ik.whl"
+    _make_wheel(wheel)
+    publish(monkeypatch, EngineName.IK_LLAMA, "0" * 64)
+    with pytest.raises(engine_service.EngineRefusedError, match="does not match its pin"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
+def test_install_on_a_system_below_the_published_floor_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "detect", lambda: _host("Linux", "x86_64", ["avx2"]))
+    wheel = tmp_path / "ik.whl"
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_wheel(wheel), min_os="2.40", host_os="2.31")
+    with pytest.raises(engine_service.EngineRefusedError, match=r"needs glibc 2\.40 or later"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
 @pytest.mark.parametrize("system", ["linux", "darwin"])
 def test_auto_never_picks_the_installed_engine(system: str, build: Path, monkeypatch) -> None:
     machine = "arm64" if system == "darwin" else "x86_64"
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system=system, machine=machine)
+        engine_choice,
+        "session_host",
+        lambda: collect(
+            system=system.capitalize(), machine=machine, cpu_info={"flags": ["avx2"]}, nvml=None
+        ),
     )
     assert EngineName.IK_LLAMA in installed_engines()
     got = engine_choice.resolve_engines(cfg).choices[WorkerRole.CHAT]
@@ -258,13 +311,16 @@ def test_engine_list_shows_the_engine_as_not_installed_and_writes_nothing() -> N
     assert not engines_root(cfg.models_dir).exists()
 
 
-def test_engine_list_json_names_the_engines_that_are_not_installed() -> None:
+def test_engine_list_json_names_the_engines_that_are_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import json
 
+    monkeypatch.setattr(LemonadeAdapter, "user_binary", lambda self: None)
     result = runner.invoke(cli_app, ["--json", "engine", "list"])
     body = json.loads(result.output)
     assert body["builds"] == []
-    assert body["not_installed"] == ["ik_llama.cpp", "mistral.rs", "tei"]
+    assert body["not_installed"] == ["ik_llama.cpp", "mistral.rs", "tei", "openvino", "lemonade"]
 
 
 def test_engine_list_shows_an_installed_build_and_no_not_installed_line(build: Path) -> None:
@@ -367,6 +423,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         ("model_meta", None),
         ("assert_loadable", None),
         ("runtime_env", {}),
+        ("target_env", {}),
         ("estimate_memory", None),
         ("check_readback", False),
         ("supports_fit_target", False),
@@ -380,6 +437,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     IK_LLAMA.model_meta(path)
     IK_LLAMA.assert_loadable("repo", "file", None)
     IK_LLAMA.runtime_env()
+    IK_LLAMA.target_env(RoleTarget.CPU)
     IK_LLAMA.estimate_memory(None)  # type: ignore[arg-type]
     IK_LLAMA.check_readback(path)
     IK_LLAMA.supports_fit_target(path)
@@ -391,6 +449,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         "model_meta",
         "assert_loadable",
         "runtime_env",
+        "target_env",
         "estimate_memory",
         "check_readback",
         "supports_fit_target",

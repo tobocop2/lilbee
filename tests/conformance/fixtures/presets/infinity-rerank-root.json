@@ -1,0 +1,67 @@
+{
+ "server": "infinity-rerank-root",
+ "version": "0.0.80 BAAI/bge-reranker-base torch-cpu",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "BAAI/bge-reranker-base"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": true,
+ "results": {
+  "rerank": {
+   "ok": false,
+   "detail": "ProviderError: The server for infinity-rerank-root/BAAI/bge-reranker-base answered 404 to the rerank request at http://harness. Check the base URL and the route prefix of the server. Check that the server has a mode"
+  },
+  "named": {
+   "ok": false,
+   "detail": "ProviderError: The server for infinity-rerank-root/BAAI/bge-reranker-base answered 404 to the rerank request at http://harness. Check the base URL and the route prefix of the server. Check that the server has a mode"
+  }
+ },
+ "error_answers": [
+  [
+   404,
+   "{\"detail\":\"Not Found\"}"
+  ],
+  [
+   404,
+   "{\"detail\":\"Not Found\"}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"Not Found\"}"
+  }
+ ]
+}

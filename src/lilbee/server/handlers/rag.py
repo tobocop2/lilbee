@@ -513,9 +513,10 @@ async def chat(
 ) -> AskResponse:
     """Chat with history. Returns answer and sources via canonical dispatch."""
     searcher = get_services().searcher
-    if searcher.search_unavailable():
+    if top_k != 0 and searcher.search_unavailable():
         # Search mode with no embedder can't ground; refuse cleanly with the same
-        # message ask returns instead of silently answering off-corpus.
+        # message ask returns instead of silently answering off-corpus. An
+        # explicit top_k 0 runs no search, so it needs no embedder.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
     history, compaction = await asyncio.to_thread(_manage_history, history, summary)
     _persist_summary(session_id, compaction)
@@ -624,9 +625,10 @@ def _resolve_chat_stream_context(
     chunk_type: ChunkType | None,
 ) -> _ChatStreamPlan:
     frames = list(_chat_warming_events())
-    if searcher.search_unavailable():
+    if top_k != 0 and searcher.search_unavailable():
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # token the ask stream emits instead of silently answering off-corpus.
+        # An explicit top_k 0 runs no search, so it needs no embedder.
         frames += [
             sse_event(SseEvent.TOKEN, {"token": SEARCH_NEEDS_EMBEDDER}),
             sse_event(SseEvent.SOURCES, []),

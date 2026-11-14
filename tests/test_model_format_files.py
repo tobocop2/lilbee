@@ -186,6 +186,7 @@ class TestSelectFiles:
             ModelFormat.MLX: ["m-Q4_K_M.gguf", "config.json"],
             ModelFormat.SAFETENSORS: ["m-Q4_K_M.gguf", "openvino_model.xml"],
             ModelFormat.OPENVINO: ["m-Q4_K_M.gguf", "model.safetensors"],
+            ModelFormat.XDNA: ["m-Q4_K_M.gguf", "model.safetensors"],
         }[fmt]
         assert select_files(fmt, [*blobs, *other, "params"]) == []
 
@@ -551,7 +552,7 @@ class TestPullOfAnInstalledModel:
             mock.patch.object(
                 models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
             ),
-            mock.patch.object(models_mod, "_ensure_vision_projector"),
+            mock.patch.object(models_mod, "ensure_vision_projector", return_value=None),
         ):
             result = models_mod.pull_model_data(ref, ModelSource.NATIVE)
         return result.status, manager.pull.call_count

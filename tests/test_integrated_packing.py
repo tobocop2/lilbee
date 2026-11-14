@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from lilbee.providers.fleet.devices import FleetDevice
-from lilbee.providers.fleet.planning import _device_capacity
+from lilbee.providers.fleet.planning import _auto_capacity, _device_capacity
 
 _GB = 1024**3
 
@@ -26,19 +26,26 @@ class TestAnIntegratedDeviceIsNotPackedBesideADiscreteOne:
             FleetDevice("Vulkan", 0, "Radeon 780M", 32 * _GB, 32 * _GB, unified=True),
             FleetDevice("Vulkan", 1, "RX 7900", 24 * _GB, 24 * _GB),
         ]
-        assert set(_device_capacity(devices, False)) == {1}
+        assert set(_auto_capacity(devices, False)) == {1}
+
+    def test_every_listed_device_is_a_device_a_pin_can_name(self) -> None:
+        devices = [
+            FleetDevice("Vulkan", 0, "Radeon 780M", 32 * _GB, 32 * _GB, unified=True),
+            FleetDevice("Vulkan", 1, "RX 7900", 24 * _GB, 24 * _GB),
+        ]
+        assert set(_device_capacity(devices, False)) == {0, 1}
 
     def test_an_igpu_only_host_keeps_it(self) -> None:
         # Nothing else to serve from; the shared-memory budget governs instead.
         devices = [FleetDevice("Vulkan", 0, "Radeon 780M", 32 * _GB, 32 * _GB, unified=True)]
-        assert set(_device_capacity(devices, False)) == {0}
+        assert set(_auto_capacity(devices, False)) == {0}
 
     def test_an_all_discrete_host_is_unchanged(self) -> None:
         devices = [
             FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB),
             FleetDevice("CUDA", 1, "B", 24 * _GB, 24 * _GB),
         ]
-        assert set(_device_capacity(devices, False)) == {0, 1}
+        assert set(_auto_capacity(devices, False)) == {0, 1}
 
 
 class TestATinyCarveoutIsNotADedicatedCard:

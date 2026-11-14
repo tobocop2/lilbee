@@ -11,8 +11,9 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
+from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engine_manifest import pack_digest
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest, RequestProfile
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
@@ -20,7 +21,7 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 # A commit of the upstream main branch, never "latest": a bump follows a passing harness run.
 IK_LLAMA_COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
@@ -29,7 +30,7 @@ VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 BACKEND = "cpu"
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
-_REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON. llama.cpp stays in use."
+_REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
     label="ik_llama.cpp server",
@@ -57,7 +58,7 @@ class IkLlamaAdapter:
         gate = gate_on(feature)
         if gate.ok:
             return gate
-        return HostGate(False, f"{gate.reason}. {_REFUSAL_TAIL}")
+        return HostGate(False, f"{gate.reason} {_REFUSAL_TAIL}")
 
     def binary(self) -> Path:
         """The server of the installed build of the pin; raises when the pack is not installed."""
@@ -77,13 +78,16 @@ class IkLlamaAdapter:
     def pin_record(self) -> Mapping[str, Any]:
         from lilbee.catalog.runnable import session_host
 
+        host = session_host()
+        platforms = pack_platforms(self.name.value, VERSION, host, BACKEND)
         return {
             "engine": self.name.value,
             "version": VERSION,
             "backend": BACKEND,
-            "sha256": pack_digest(self.name.value, session_host(), BACKEND),
+            "sha256": pack_digest(self.name.value, VERSION, host, BACKEND),
+            "tool": EngineTool.LLAMA_SERVER.value,
             "launch": _PIN_LAUNCH,
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
             "licenses": ["MIT"],
         }
@@ -99,6 +103,9 @@ class IkLlamaAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return LLAMA.discover_devices(binary)
 
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        return LLAMA.device_targets(binary)
+
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return LLAMA.model_meta(path)
 
@@ -107,6 +114,9 @@ class IkLlamaAdapter:
 
     def runtime_env(self) -> Mapping[str, str]:
         return LLAMA.runtime_env()
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        return LLAMA.target_env(target)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return LLAMA.estimate_memory(request)

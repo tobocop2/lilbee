@@ -110,6 +110,9 @@ class TestEveryVendorGetsTheWarning:
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset(vendor_ids),
         )
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids", frozenset
+        )
 
     @pytest.mark.parametrize(
         ("vendor_id", "vendor"),
@@ -126,6 +129,53 @@ class TestEveryVendorGetsTheWarning:
             planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
         assert vendor in caplog.text
         assert "reported none" in caplog.text
+
+    def test_a_card_with_no_kernel_driver_is_named_with_the_cause(
+        self, monkeypatch, caplog
+    ) -> None:
+        # An NVIDIA-only laptop with the nvidia module not loaded: the card does not
+        # count as a usable GPU, but the user still needs to hear why there is none.
+        from lilbee.providers.fleet import planning as planning_mod
+
+        self._probe_reporting_nothing(monkeypatch, set())
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids",
+            lambda: frozenset({0x10DE}),
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
+        assert "NVIDIA GPU" in caplog.text
+        assert "no kernel driver" in caplog.text
+
+    def test_a_card_with_an_unreadable_driver_link_is_not_called_driverless(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        from lilbee.providers.fleet import gpu_hardware
+        from lilbee.providers.fleet import planning as planning_mod
+
+        card = tmp_path / "0000-01-00.0"
+        card.mkdir()
+        (card / "class").write_text("0x030000\n", encoding="utf-8")
+        (card / "vendor").write_text("0x1002\n", encoding="utf-8")
+        denied = card / "driver"
+        real_stat = Path.stat
+        real_undriven = gpu_hardware.undriven_gpu_vendor_ids
+
+        def stat(path: Path, **kwargs):
+            if path == denied:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, **kwargs)
+
+        self._probe_reporting_nothing(monkeypatch, set())
+        monkeypatch.setattr(Path, "stat", stat)
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids", real_undriven
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
+        assert "no kernel driver" not in caplog.text
 
     def test_a_host_with_no_gpu_at_all_stays_quiet(self, monkeypatch, caplog) -> None:
         from lilbee.providers.fleet import planning as planning_mod
@@ -230,3 +280,34 @@ class TestPartialOutputArrivesInEitherShape:
         from lilbee.providers.fleet.devices import _decoded_output, _probe_tail
 
         assert _probe_tail(_decoded_output(raw)) == expected
+
+
+class TestAMissingRuntimeDllIsNamed:
+    """Status 0xC0000135 means a DLL was not found, not that the flag is unknown."""
+
+    def test_the_silent_probe_names_the_runtime(self, monkeypatch) -> None:
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 0xC0000135))
+        with pytest.raises(ProviderError, match="Visual C"):
+            devices_mod.probe_devices(Path("/bin/llama-server"))
+
+    def test_a_probe_that_printed_its_header_keeps_the_crash_warning(
+        self, monkeypatch, caplog
+    ) -> None:
+        output = "Available devices:\n"
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: (output, 0xC0000135))
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.devices"):
+            devices_mod.probe_devices(Path("/bin/llama-server"))
+        assert "then crashed" in caplog.text
+
+    def test_another_status_keeps_the_flag_warning(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 3))
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.devices"):
+            devices_mod.probe_devices(Path("/bin/llama-server"))
+        assert "does not appear to support the flag" in caplog.text
+
+    def test_the_planner_read_of_devices_lets_it_through(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import planning
+
+        monkeypatch.setattr(devices_mod, "_run_list_devices", lambda _b, _t: ("", 0xC0000135))
+        with pytest.raises(ProviderError, match="Visual C"):
+            planning.resolve_devices(Path("/bin/llama-server"), LLAMA)

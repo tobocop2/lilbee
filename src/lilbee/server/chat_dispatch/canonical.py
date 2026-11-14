@@ -115,21 +115,32 @@ class CanonicalChatRequest:
     dropped_images: int = 0
 
 
-IMAGES_ONLY_MESSAGE = (
-    "The request holds only image content, and lilbee cannot pass images to the model. "
-    "Send text with the request."
-)
-
-
 # Tells the client how many image parts the server dropped from its request.
 IMAGES_DROPPED_HEADER = "X-Lilbee-Images-Dropped"
 
 
+IMAGES_DROPPED_REASON_HEADER = "X-Lilbee-Images-Dropped-Reason"
+
+IMAGES_DROPPED_REASON = (
+    "Chat does not load the vision projector, so it drops images. "
+    "Use the vision role to read images."
+)
+
+IMAGES_ONLY_MESSAGE = (
+    f"The request holds only image content. {IMAGES_DROPPED_REASON} Send text with the request."
+)
+
+
 def images_dropped_headers(req: CanonicalChatRequest) -> dict[str, str]:
-    """Response headers that report the images dropped from *req*, or none."""
+    """The header that counts the images dropped from *req*."""
+    return {IMAGES_DROPPED_HEADER: str(req.dropped_images)}
+
+
+def images_dropped_response_headers(req: CanonicalChatRequest) -> dict[str, str]:
+    """Response headers that give the count and the reason for the images dropped from *req*."""
     if not req.dropped_images:
         return {}
-    return {IMAGES_DROPPED_HEADER: str(req.dropped_images)}
+    return {**images_dropped_headers(req), IMAGES_DROPPED_REASON_HEADER: IMAGES_DROPPED_REASON}
 
 
 def _blocks_carry_content(blocks: list[ContentBlock]) -> bool:

@@ -717,6 +717,19 @@ wheels = [
 ]
 
 [[package]]
+name = "dumb-pypi"
+version = "1.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/65/31/30c7b420d45a5bbe5b75bde3507fd172e9d3454e251992f77fa977139c75/dumb_pypi-1.15.0.tar.gz", hash = "sha256:9509047c9c7e0ea1a035c982abfcdec4e23c2d187df5812c2a9cb52782439f75", size = 18397, upload-time = "2023-10-03T17:08:17.884Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/2b/ccb283f0c92adead4803ee80ba359ee43f730003907132ba12c12842074e/dumb_pypi-1.15.0-py2.py3-none-any.whl", hash = "sha256:050e0ea9b72cf8d229331601df90173b196452df74e2a9dfa44476f6f8afc52a", size = 16429, upload-time = "2023-10-03T17:08:16.154Z" },
+]
+
+[[package]]
 name = "execnet"
 version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1320,9 +1333,6 @@ cuda12 = [
     { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
-engine = [
-    { name = "lilbee-engine" },
-]
 graph = [
     { name = "graspologic-native" },
     { name = "spacy" },
@@ -1343,9 +1353,10 @@ release = [
 dev = [
     { name = "ada-url" },
     { name = "cryptography" },
+    { name = "dumb-pypi" },
     { name = "httpx" },
     { name = "hypothesis" },
-    { name = "lilbee-engine" },
+    { name = "lilbee-engine-llama-cpp" },
     { name = "mypy" },
     { name = "packaging" },
     { name = "pre-commit" },
@@ -1361,6 +1372,9 @@ dev = [
     { name = "types-cachetools" },
     { name = "types-pyyaml" },
 ]
+index = [
+    { name = "dumb-pypi" },
+]
 license-check = [
     { name = "licensecheck", marker = "python_full_version >= '3.12'" },
 ]
@@ -1374,13 +1388,12 @@ requires-dist = [
     { name = "filelock", specifier = ">=4.2.1,<4.3" },
     { name = "gguf", specifier = ">=0.19" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
-    { name = "httpx" },
+    { name = "httpx", specifier = "<1.0" },
     { name = "huggingface-hub", specifier = ">=1.27.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
     { name = "lancedb", specifier = ">=0.40" },
     { name = "lilbee", extras = ["crawler", "providers", "graph"], marker = "extra == 'release'" },
-    { name = "lilbee-engine", marker = "extra == 'engine'", directory = "packaging/engine-wheel" },
-    { name = "liter-llm", marker = "extra == 'providers'", specifier = ">=2.4.1,<3" },
+    { name = "liter-llm", marker = "extra == 'providers'", specifier = ">=2.5.0,<3" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "markdown-it-py", specifier = ">=4.2.0,<5" },
     { name = "mcp", specifier = ">=2.2.0,<3" },
@@ -1406,15 +1419,16 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "xberg", specifier = ">=1.3.8" },
 ]
-provides-extras = ["engine", "providers", "graph", "crawler", "cuda12", "release"]
+provides-extras = ["providers", "graph", "crawler", "cuda12", "release"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "ada-url", specifier = ">=4.0.0" },
     { name = "cryptography", specifier = ">=44" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "dumb-pypi", specifier = "==1.15.0" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "hypothesis", specifier = ">=6.100" },
-    { name = "lilbee-engine", directory = "packaging/engine-wheel" },
+    { name = "lilbee-engine-llama-cpp", directory = "packaging/engine-wheel" },
     { name = "mypy", specifier = ">=1.19.1" },
     { name = "packaging", specifier = ">=24" },
     { name = "pre-commit", specifier = ">=4.0" },
@@ -1430,10 +1444,11 @@ dev = [
     { name = "types-cachetools", specifier = ">=7.0.0.20260713" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
+index = [{ name = "dumb-pypi", specifier = "==1.15.0" }]
 license-check = [{ name = "licensecheck", marker = "python_full_version >= '3.12'", specifier = ">=2026.0.8" }]
 
 [[package]]
-name = "lilbee-engine"
+name = "lilbee-engine-llama-cpp"
 version = "0.0.0"
 source = { directory = "packaging/engine-wheel" }
 
@@ -1451,15 +1466,15 @@ wheels = [
 
 [[package]]
 name = "liter-llm"
-version = "2.4.1"
+version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/86/60/e43fe473fd96a6bf59ef02c9d518af849de196619142eb5d345b2005d8f7/liter_llm-2.4.1.tar.gz", hash = "sha256:7f44c7e057ff6db64e6fbc0864f2ecaf148de8bf7a43db9145e82b2341aa82bd", size = 131444, upload-time = "2026-10-27T12:11:08.566Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/91/fb/4773c52f4247f789022bff2e36f60bf5175f4f13bd7150784a48111d9635/liter_llm-2.5.0.tar.gz", hash = "sha256:a59868efd029a8973369a22ee2d81d5bde818af16f5d4d0be4c232190123e162", size = 131864, upload-time = "2026-11-04T06:34:36.19Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/5e/fa3db170d075b145e2964830f89b830decb955fae9642ae21b32a33594cb/liter_llm-2.4.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:c32c9f7deba37c8c8e5bc5e332658d0a6ffd2bdb377bbd6cccca735ce1039b90", size = 8788829, upload-time = "2026-10-27T12:10:58.712Z" },
-    { url = "https://files.pythonhosted.org/packages/79/b6/5b2e13129fa19e758b3b26d913c6535ea24d3473dcdd157d03696d0f4fe2/liter_llm-2.4.1-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:ef6851eeea3b75ce84f7a7364b3576a86c299dc8056c96172adeacb77bd291fe", size = 9769273, upload-time = "2026-10-27T12:11:01.036Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/7d/221a98c190f3ea69ab395972c5875e219f6a26ff46dad6e745b6decab6c3/liter_llm-2.4.1-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:fcd8f8e3e76ea09c0d6cb1e8f03504931ae36f86c05033c583999186ee3db4a4", size = 10891574, upload-time = "2026-10-27T12:11:02.89Z" },
-    { url = "https://files.pythonhosted.org/packages/55/62/924711b240a9761bef302722b2d9f9fad24ebc9d854f592df3f96e52b000/liter_llm-2.4.1-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e4e8cead2aacd0e1b92f0b87e4ac655dd97abb627feb1c8772120fc9c1e0845c", size = 11428554, upload-time = "2026-10-27T12:11:04.828Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/36/f1e9526213d1ed6a58153c44dbc431f3de4b01f7b0df1250add63a9520e2/liter_llm-2.4.1-cp310-abi3-win_amd64.whl", hash = "sha256:0d6a4548df5207b857725cb1a40d01b2b2e53a4d2d0a5c7778bb57f23bd09cce", size = 11376617, upload-time = "2026-10-27T12:11:06.826Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/5f/6d84fb65eb56f6e390a123a73b51f3144cf37c33c74fa4684444d23d9354/liter_llm-2.5.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:f42735c9b236f2dd28b4752e345f3e16bbaa55040920dab0cffc31f5927f33ff", size = 8578765, upload-time = "2026-11-04T06:34:24.51Z" },
+    { url = "https://files.pythonhosted.org/packages/14/1e/a0ef9499110e30e24a74665313d91d8ffca66b04c1fd4c580669adefb1f2/liter_llm-2.5.0-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:bd4df8a5db362dd5ace49c7011bcc023abfdfbc1dc8e74814aca8535f41f0385", size = 9542600, upload-time = "2026-11-04T06:34:26.876Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/15/490c08336136496d70022ee507e72f1b6d3bd97586423ad93b0a94c1b83b/liter_llm-2.5.0-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:3b26aeb882f6a223942202c03f616b590fb9691ba9d55f22d85a363fe5de0de2", size = 10700506, upload-time = "2026-11-04T06:34:29.324Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/25/26a33be2dfb049ecbd0c0f1b3cd148e3effb8a68d743637e167546119e78/liter_llm-2.5.0-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:13c852af04d404018b96ce951a706fe4792519c107a49cf0104b86774dff9ffe", size = 11221369, upload-time = "2026-11-04T06:34:31.784Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/72/c2ca6f061b024023cc31f55fb21f143acc1c71e60d51911d27bf9c77de47/liter_llm-2.5.0-cp310-abi3-win_amd64.whl", hash = "sha256:63f2ef0d9b60c54b649fd94b45ffff24490f63e089e0f34c752ac8d644b1d118", size = 11219820, upload-time = "2026-11-04T06:34:34.186Z" },
 ]
 
 [[package]]

@@ -24,6 +24,8 @@ from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
+    IMAGES_DROPPED_REASON,
+    IMAGES_DROPPED_REASON_HEADER,
     IMAGES_ONLY_MESSAGE,
 )
 from lilbee.server.chat_dispatch.concurrency import ChatSlotGuard, chat_gate
@@ -566,6 +568,7 @@ class TestNonStreamingCompletion:
             )
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["describe"]
 
@@ -585,6 +588,7 @@ class TestNonStreamingCompletion:
             )
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
 
     async def test_image_only_request_is_400_naming_the_cause(
         self, services_with_chat_model, _auth_token
@@ -597,7 +601,11 @@ class TestNonStreamingCompletion:
                 json={"model": INSTALLED_REF, "messages": [message]},
             )
         assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
+        message = resp.json()["error"]["message"]
+        assert message == IMAGES_ONLY_MESSAGE
+        assert "projector" in message
+        assert "vision role" in message
+        assert "cannot pass images" not in message
 
     async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token
@@ -611,6 +619,7 @@ class TestNonStreamingCompletion:
             )
         assert resp.status_code == 200
         assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        assert resp.headers[IMAGES_DROPPED_REASON_HEADER] == IMAGES_DROPPED_REASON
         sent = services_with_chat_model.provider.chat.call_args.kwargs["messages"]
         assert [m["content"] for m in sent] == ["describe"]
 

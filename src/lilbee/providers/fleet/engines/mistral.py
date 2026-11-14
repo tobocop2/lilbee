@@ -9,33 +9,39 @@ from pathlib import Path
 from typing import Any, Literal
 
 from lilbee.catalog.types import ModelFormat
-from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
-from lilbee.providers.fleet.engine_manifest import pack_digest
-from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
     EngineName,
     LaunchRequest,
     RequestProfile,
 )
-from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
+# The expression a CUDA pack declares: it bundles NVIDIA runtime libraries.
+_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"]
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
+# The model subcommand each role names; the device flags go after it.
+_SUBCOMMAND = {
+    WorkerRole.EMBED: "embedding",
+    WorkerRole.VISION: "multimodal",
+}
+_TEXT = "text"
 _METAL = "metal"
 _CUDA_DRIVER_FLOOR = (12, 8)
 # The compute capabilities the release publishes a CUDA 12.8 archive for.
@@ -116,9 +122,7 @@ class MistralAdapter:
 
     def host_gate(self, host: HostCaps) -> HostGate:
         if host.os is None or host.arch is None:
-            return HostGate(
-                True, "The OS or CPU architecture of this host could not be read.", known=False
-            )
+            return PLATFORM_UNREAD
         if (host.os, host.arch) in _SUPPORTED_HOSTS:
             reason = self._archive(host, host.os).reason
             return HostGate(True, reason) if reason else PASS
@@ -144,26 +148,24 @@ class MistralAdapter:
 
         host = session_host()
         backend = self.pick_build(host).backend or _CPU
+        platforms = pack_platforms(self.name.value, _VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": pack_digest(self.name.value, host, backend),
+            "sha256": pack_digest(self.name.value, _VERSION, host, backend),
+            "tool": _TOOL,
             "launch": [_TOOL, "serve"],
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
-            "licenses": _LICENCES,
+            "licenses": _LICENCES if backend == _CPU else _CUDA_LICENCES,
         }
 
     def binary(self) -> Path:
-        from lilbee.providers.fleet.engines.choice import NoPublishedPackError, pin_lock
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engines.choice import store_tool
 
-        store = EngineStore(engines_root(cfg.models_dir))
-        try:
-            build = store.complete_build(pin_lock(self.pin_record()))
-        except NoPublishedPackError:
-            build = None
-        tool = next(iter(build.glob(f"*/bin/{_TOOL}*")), None) if build else None
+        tool = store_tool(self.pin_record(), _TOOL, session_host())
         if tool is None:
             raise ProviderError(
                 "The mistral.rs engine is not installed. Run lilbee engine install mistral.rs."
@@ -183,28 +185,37 @@ class MistralAdapter:
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         """The serve command; the engine places the model itself, so layers and context stay unset.
 
-        The backend of the build decides the device flags: a CPU build gets ``--cpu``, and
+        A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
+        decides the device flags: a CPU build gets ``--cpu``, and
         any GPU build turns paged attention off, because its cache takes the whole card
         and the first chat then answers 503. The port flag
-        belongs to ``serve``, so it sits before the model subcommand. A GGUF file
+        belongs to ``serve``, so it sits before the model subcommand. The device flags
+        belong to the subcommand: before it the engine ignores ``--cpu`` and takes the
+        whole card (20536 MiB measured), so every role names its subcommand. A GGUF file
         goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
         several quantizations is open for slice 8.
         """
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
-        if spec.role is WorkerRole.EMBED:
-            argv.append("embedding")
-        argv += self._device_flags()
+        argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
+        argv += self._device_flags(request.target)
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
         return [*argv, "-m", str(path)]
 
-    def _device_flags(self) -> list[str]:
+    def _device_flags(self, target: RoleTarget) -> list[str]:
+        from lilbee.catalog.runnable import session_host
+
+        if target is RoleTarget.CPU or self.pick_build(session_host()).backend in (None, _CPU):
+            return ["--cpu"]
+        return ["--paged-attn", "off"]
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return ["--cpu"]
-        return ["--paged-attn", "off"]
+            return frozenset({RoleTarget.CPU})
+        return frozenset({RoleTarget.CPU, RoleTarget.GPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         from lilbee.catalog.runnable import session_host
@@ -214,6 +225,8 @@ class MistralAdapter:
         return DeviceProbe(devices=visible_nvidia_cards(), output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        if request.model_path.is_dir():
+            return estimate_memory(ModelFormat.SAFETENSORS, request)
         try:
             weights = request.model_path.stat().st_size
         except OSError:
@@ -239,6 +252,9 @@ class MistralAdapter:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
+        return {}
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
         return {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:

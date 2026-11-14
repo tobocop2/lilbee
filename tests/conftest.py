@@ -20,6 +20,7 @@ from filelock import Timeout as FileLockTimeout
 from PIL import Image, ImageDraw
 
 import tests._suite_data_root  # noqa: F401  # must run before lilbee and huggingface_hub load
+from tests import _stated_sizes as stated_sizes_module
 
 # Opt tests out of the per-role catalog-task validator at import time so
 # the many ``cfg.chat_model = "test-model"``-style fixtures don't trip
@@ -136,6 +137,14 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+@pytest.fixture
+def stated_sizes(monkeypatch) -> Generator[None]:
+    """Switch on ``tests._stated_sizes.state_size`` for one test."""
+    stated_sizes_module.install(monkeypatch)
+    yield
+    stated_sizes_module.uninstall()
+
+
 @pytest.fixture(autouse=True)
 def _no_real_browser(monkeypatch):
     """Stop a test from opening a page on the machine that runs the suite."""
@@ -181,6 +190,20 @@ def _restore_interactive_intent():
     yield
     services_mod._state.interactive = before
     services_mod._state.on_upgrade = reporter
+
+
+@pytest.fixture(autouse=True)
+def _restore_server_stop_flag():
+    """Snapshot the flag that says the server is stopping around every test.
+
+    A serve teardown sets it and only the next serve clears it, so a leak makes
+    a later test's cancelled chat stream end with the stop error.
+    """
+    from lilbee.app import services as services_mod
+
+    before = services_mod._server_exit.stopping
+    yield
+    services_mod._server_exit.stopping = before
 
 
 @pytest.fixture(autouse=True)
@@ -263,7 +286,7 @@ def _sealed_engine_resolution(request, monkeypatch):
     installed resolves a real binary where CI raises ProviderError. Blocking
     the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
     override forces a test that needs a binary to plant its own (a tmp-file
-    ``cfg.llama_server_path``, a fake ``lilbee_engine``, or a
+    ``cfg.llama_server_path``, a fake ``lilbee_engine_llama_cpp``, or a
     ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
     """
     if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
@@ -388,7 +411,7 @@ def _join_fleet_background_threads():
     fire-and-forget daemon threads that end on their own once joined; on a host
     without the engine binary they fail fast, and joining keeps that warning
     inside the test that started them. The child-guard spawner is different: its
-    ``fleet-spawner`` worker is a process-lifetime executor thread that a join
+    ``fleet-spawner`` thread is a process-lifetime daemon that a join
     never ends (it parks waiting for the next spawn), so any test that ran a real
     probe or launch must close it, or the leak guard flags it against whatever
     test happens to run next.

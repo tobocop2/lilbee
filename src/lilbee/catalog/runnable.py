@@ -69,9 +69,7 @@ def session_host() -> HostCaps:
     except (OSError, ValueError) as exc:
         log.warning("Host detection failed, the catalog lists every row: %s", exc)
         unreadable = {"driver": None, "cuda_driver": None, "gpus": None}
-        return collect(
-            system="", machine="", mac_ver="", cpu_info={}, nvml=unreadable, npu_devices=()
-        )
+        return collect(system="", machine="", cpu_info={}, nvml=unreadable)
 
 
 def refresh_session_host() -> HostCaps:
@@ -113,8 +111,8 @@ def explain(
     gates = [o.adapter.host_gate(host) for o in naming]
     if any(g.ok for g in gates):
         return None
-    reasons = "; ".join(dict.fromkeys(g.reason for g in gates if g.reason))
-    return Hidden(HiddenReason.HOST_UNSUPPORTED, f"this host cannot run it: {reasons}")
+    reasons = " ".join(dict.fromkeys(g.reason for g in gates if g.reason))
+    return Hidden(HiddenReason.HOST_UNSUPPORTED, f"This host cannot run it. {reasons}")
 
 
 def hidden_reason(

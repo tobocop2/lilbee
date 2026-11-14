@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.providers.routing_provider import RoutingProvider
+from tests import _fake_sdk as fakes
 from tests.conformance import preset_check, record_presets
 from tests.conformance.fake_engine import Behaviour, FakeEngine
 from tests.conformance.harness import (
@@ -24,7 +27,13 @@ from tests.conformance.harness import (
     run,
     tool_arguments_fault,
 )
-from tests.conformance.preset_check import ENGINE_FIXTURES, FIXTURES, Setup, load_fixture, steps_for
+from tests.conformance.preset_check import (
+    FIXTURES,
+    Setup,
+    harness_recordings,
+    load_fixture,
+    steps_for,
+)
 
 _SCHEMA = {
     "type": "object",
@@ -202,6 +211,67 @@ def test_preset_embed_step_rejects_near_copies(
     assert _outcome(monkeypatch, "embed", embed=vectors) is ok
 
 
+def _template_outcome(tmp_path: Path, message: dict[str, Any]) -> preset_check.Outcome:
+    """Run the template step through the real provider against a server that sends *message*."""
+    setup = Setup(("chat",), dict(_MODELS))
+    choice = {"index": 0, "message": {"role": "assistant", **message}, "finish_reason": "stop"}
+    reply = json.dumps(
+        {"id": "c", "object": "chat.completion", "created": 0, "model": "m", "choices": [choice]}
+    ).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with preset_check.configured(
+            f"http://127.0.0.1:{server.server_address[1]}", setup, tmp_path
+        ):
+            return preset_check._STEP_FUNCTIONS["template"](setup)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize(
+    ("message", "ok"),
+    [
+        ({"content": "Rome."}, True),
+        ({"content": "<think>No idea.</think>Rome."}, True),
+        ({"content": "Rome.", "reasoning_content": "No idea."}, True),
+        ({"content": "<think>Rome, surely.</think>Florence."}, False),
+        ({"content": "<think>Rome</think>"}, False),
+        ({"content": "<think>Rome, so"}, False),
+        ({"content": "Florence.", "reasoning_content": "Rome, surely."}, False),
+    ],
+    ids=[
+        "answer",
+        "inline-think-right",
+        "reasoning-field-right",
+        "inline-think-wrong",
+        "no-answer",
+        "unterminated-think",
+        "reasoning-field-wrong",
+    ],
+)
+def test_preset_template_step_reads_only_the_answer(
+    tmp_path: Path, message: dict[str, Any], ok: bool
+) -> None:
+    assert _template_outcome(tmp_path, message).ok is ok
+
+
 def _reasoning_outcome(
     tmp_path: Path, message: dict[str, Any], finish: str = "stop"
 ) -> preset_check.Outcome:
@@ -356,9 +426,7 @@ def test_the_preset_is_named_after_the_recorded_engine() -> None:
     assert Setup(("chat",), {}, server="llama.cpp-cpu").preset == "llama-cpp-cpu"
 
 
-@pytest.mark.parametrize(
-    "path", sorted(ENGINE_FIXTURES.glob("**/*.json")), ids=lambda path: path.stem
-)
+@pytest.mark.parametrize("path", harness_recordings(), ids=lambda path: path.stem)
 def test_a_recording_names_its_own_engine(path: Path) -> None:
     setup, recorded, _exchanges, doc = load_fixture(path)
     head = dict(
@@ -384,15 +452,13 @@ def test_the_recorder_sets_strict_only_when_asked() -> None:
     assert record_presets.setup_from(parser.parse_args(_ARGS)).strict is False
 
 
-@pytest.mark.parametrize(
-    "path", sorted(ENGINE_FIXTURES.glob("**/*.json")), ids=lambda path: path.stem
-)
+@pytest.mark.parametrize("path", harness_recordings(), ids=lambda path: path.stem)
 def test_every_engine_recording_sets_strict(path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8")).get("strict") is True
 
 
 def test_the_engine_recordings_folder_is_not_empty() -> None:
-    assert sorted(ENGINE_FIXTURES.glob("**/*.json"))
+    assert harness_recordings()
 
 
 def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -> None:
@@ -405,6 +471,35 @@ def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -
     )
     assert "front:" not in plain
     assert fronted.splitlines()[5] == "front: llama-swap v267"
+
+
+def test_a_failed_step_names_the_harness_address_not_its_random_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_setup: Setup) -> preset_check.Outcome:
+        raise ValueError("no route at http://127.0.0.1:54321 or http://127.0.0.1:7")
+
+    monkeypatch.setitem(preset_check._STEP_FUNCTIONS, "embed", refused)
+    results = preset_check.run_steps(Setup(roles=("embed",), models={"embed": "m"}))
+    assert results["embed"] == preset_check.Outcome(
+        False, "ValueError: no route at http://harness or http://harness"
+    )
+
+
+@pytest.mark.parametrize("name", ["tei-rerank-v1", "mlxlm-vision", "vllmmlx-rerank"])
+def test_a_404_fixture_detail_is_the_text_lilbee_prints(name: str, tmp_path: Path) -> None:
+    """The recorded detail of a 404 failure is what a run prints for a 404 answer."""
+    setup, recorded, exchanges, _doc = load_fixture(FIXTURES / f"{name}.json")
+    assert recorded
+    sdk = fakes.FakeSdk()
+    sdk.chat_error = sdk.embed_error = sdk.rerank_error = sdk.error("NotFoundError", "x")
+    with (
+        fakes.installed(sdk),
+        preset_check.replaying(exchanges) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        replayed = preset_check.run_steps(setup)
+    assert replayed == recorded
 
 
 def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:

@@ -7,36 +7,51 @@ import json
 import re
 import socket
 import stat
+import time
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
+from huggingface_hub import constants as hub_constants
 from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
-from lilbee.catalog import runnable
+from lilbee.catalog import download, runnable
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import run_engine_command
+from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts, installed_engines
+from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
 from lilbee.server.routes import engines as routes
+from tests._async_wait import wait_until
+from tests._lilbee_app_test_host import await_chat
 from tests._litestar_test_client import create_test_client
+from tests._release_server import ReleaseServer, release_server
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import GGUF_ENGINE
+from tests.test_tui_engine_choice import _ChatApp
 
 ENGINE = EngineName.IK_LLAMA
 VERSION = "git-0123456789ab"
-NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it and llama.cpp stays in use."
-BAD_PACK = "The wheel for engine ik_llama.cpp git-0123456789ab does not match its pin."
+NO_AVX2 = "This host has no AVX2. ik_llama.cpp needs it."
+STAYS = "llama.cpp stays in use."
+BAD_PACK = (
+    "The file for engine ik_llama.cpp git-0123456789ab (cpu) does not match its pin, "
+    "so lilbee did not install it. Run the install again. If this happens again, report it."
+)
 ROUTES = [routes.engine_install_route]
 
 
@@ -57,9 +72,14 @@ class StandIn(FakeAdapter):
     formats = frozenset({"gguf"})
 
     def __init__(
-        self, sha: str | None, gate: HostGate = PASS, licences: tuple[str, ...] = ("MIT",)
+        self,
+        sha: str | None,
+        gate: HostGate = PASS,
+        licences: tuple[str, ...] = ("MIT",),
+        cells: Mapping[str, Any] | None = None,
     ):
         self.sha, self.gate, self.licences = sha, gate, licences
+        self.cells = cells or {}
 
     def host_gate(self, host: Any) -> HostGate:
         return self.gate
@@ -69,8 +89,10 @@ class StandIn(FakeAdapter):
             "engine": self.name,
             "version": VERSION,
             "backend": "cpu",
+            "platforms": self.cells,
             "sha256": self.sha,
             "licenses": list(self.licences),
+            "tool": "server",
         }
 
 
@@ -85,7 +107,9 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="linux", machine="x86_64")
+        engine_choice,
+        "session_host",
+        lambda: collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvml=None),
     )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(runnable, "detect", _live_host)
@@ -99,18 +123,33 @@ def _live_host() -> host_caps.HostCaps:
     return host_caps.collect(
         system="Linux",
         machine="x86_64",
-        mac_ver="",
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvml=None,
-        npu_devices=[],
     )
 
 
 @pytest.fixture
-def good(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Register the stand-in with the sha of a good wheel; return that wheel."""
+def release(monkeypatch: pytest.MonkeyPatch) -> Iterator[ReleaseServer]:
+    """A loopback release server; the hub's offline switch is off while it runs."""
+    monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "http://127.0.0.1:")
+    with release_server() as server:
+        yield server
+
+
+def _cell(
+    url: str, sha: str = "a" * 64, min_os: str | None = None, size: int = 1
+) -> dict[str, Any]:
+    return {"linux-x86_64-cpu": {"url": url, "sha256": sha, "size": size, "min_os": min_os}}
+
+
+@pytest.fixture
+def good(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release: ReleaseServer) -> Path:
+    """Register the stand-in with the sha of a good wheel; its cell is a 404 on the server."""
     wheel = tmp_path / "good.whl"
-    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(make_wheel(wheel)))  # type: ignore[arg-type]
+    sha = make_wheel(wheel)
+    cells = _cell(f"{release.url}/gone.whl", sha)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
     return wheel
 
 
@@ -156,6 +195,176 @@ def test_no_pack_and_no_network_gives_the_missing_pack_text(good: Path, root: Pa
     assert _builds() == []
 
 
+def test_a_download_from_the_release_url_installs_the_build(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    built = engine_service.install(ENGINE.value)
+    assert (built.engine, built.version, built.backend) == (ENGINE.value, VERSION, "cpu")
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+    assert len(release.requests) == 1
+
+
+def test_a_host_with_no_cell_is_refused_and_no_request_is_sent(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = {"macos-arm64-metal": _cell(f"{release.url}/fx.whl")["linux-x86_64-cpu"]}
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, cells=other))  # type: ignore[arg-type]
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value)
+    assert str(exc.value) == (
+        f"Engine {ENGINE} has no cpu build for linux-x86_64. Builds for this computer: none."
+    )
+    assert (release.requests, _builds()) == ([], [])
+
+
+@pytest.mark.parametrize("with_wheel", [False, True])
+def test_a_system_below_the_floor_is_refused_on_the_download_and_the_wheel_route(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, with_wheel: bool
+) -> None:
+    cells = _cell(f"{release.url}/fx.whl", min_os="2.34")
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, cells=cells))  # type: ignore[arg-type]
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "2.31")
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, good if with_wheel else None)
+    head = f"Engine {ENGINE} {VERSION} (cpu) needs glibc 2.34 or later. "
+    tail = "Update the system."
+    assert str(exc.value) == f"{head}This computer has glibc 2.31. {tail}"
+    assert (release.requests, _builds()) == ([], [])
+
+
+def test_a_host_the_manifest_cannot_name_is_refused(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        runnable,
+        "detect",
+        lambda: host_caps.collect(system="Plan9", machine="x86_64", cpu_info={}, nvml=None),
+    )
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, good)
+    assert str(exc.value) == f"Engine {ENGINE} has no cpu build for this computer."
+
+
+def test_a_download_the_network_keeps_cutting_gives_the_missing_pack_text(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    release.reset_next = 10
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError) as exc,
+    ):
+        engine_service.install(ENGINE.value)
+    assert str(exc.value) == (
+        f"Engine {ENGINE} {VERSION} (cpu) is not installed and cannot be downloaded. "
+        f"Copy {ENGINE}-{VERSION}-cpu.whl into {root / 'packs'} and run the install again."
+    )
+    assert len(release.requests) == 3
+    assert _builds() == []
+
+
+def _downloadable(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+
+
+def _leftovers(root: Path) -> list[str]:
+    """Every download folder, lock file and stage folder still under the engines folder."""
+    return sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() or path.name.startswith((".download-", ".stage-"))
+    )
+
+
+async def test_cancelling_the_slash_install_mid_download_leaves_no_partial_file_and_no_lock(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    _downloadable(good, release, monkeypatch)
+    app = _ChatApp()
+    real = engine_service.make_download_callback
+
+    def cancelling(on_update: Any) -> Any:
+        inner = real(on_update)
+
+        def on_bytes(done: int, total: int) -> None:
+            app.task_bar.cancel_task(app.task_bar.queue.active_tasks[0].task_id)
+            inner(done, total)
+
+        return on_bytes
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        monkeypatch.setattr(engine_service, "make_download_callback", cancelling)
+        chat._cmd_engine(f"install {ENGINE.value}")
+        assert await wait_until(
+            pilot,
+            lambda: bool(app.task_bar.queue.history) and not app.task_bar._workers,
+            timeout=10,
+        )
+        (row,) = app.task_bar.queue.history
+        assert row.status is TaskStatus.CANCELLED
+    assert len(release.requests) == 1
+    assert _builds() == []
+    assert _leftovers(root) == []
+
+
+async def test_cancelling_the_slash_install_during_the_backoff_ends_it_before_the_next_connect(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    _downloadable(good, release, monkeypatch)
+    release.reset_next = 10
+    monkeypatch.setattr(download, "_RETRY_BACKOFF_SECONDS", 60)
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        chat._cmd_engine(f"install {ENGINE.value}")
+        assert await wait_until(
+            pilot,
+            lambda: any("trying again" in str(n.message) for n in app._notifications),
+            timeout=10,
+        )
+        started = time.monotonic()
+        app.task_bar.cancel_task(app.task_bar.queue.active_tasks[0].task_id)
+        assert await wait_until(
+            pilot,
+            lambda: bool(app.task_bar.queue.history) and not app.task_bar._workers,
+            timeout=10,
+        )
+        (row,) = app.task_bar.queue.history
+        assert row.status is TaskStatus.CANCELLED
+        assert time.monotonic() - started < 5
+    assert len(release.requests) == 1
+    assert _builds() == []
+    assert _leftovers(root) == []
+
+
+def test_a_pin_with_no_cells_installs_a_wheel_on_a_host_the_manifest_cannot_name(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(
+        choice.ADAPTERS, ENGINE, StandIn(hashlib.sha256(good.read_bytes()).hexdigest())
+    )  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        runnable,
+        "detect",
+        lambda: host_caps.collect(system="Plan9", machine="riscv64", cpu_info={}, nvml=None),
+    )
+    engine_service.install(ENGINE.value, good)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
 def test_a_pack_in_the_packs_folder_is_installed_without_a_wheel_argument(
     good: Path, root: Path
 ) -> None:
@@ -171,7 +380,7 @@ def test_a_host_that_fails_the_gate_is_refused_before_the_store_is_touched(
     monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn("a" * 64, HostGate(False, NO_AVX2)))  # type: ignore[arg-type]
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
-    assert str(exc.value) == f"Engine {ENGINE} cannot run on this host. {NO_AVX2}"
+    assert str(exc.value) == f"Engine {ENGINE} cannot run on this host. {NO_AVX2} {STAYS}"
     assert not root.exists()
 
 
@@ -188,7 +397,10 @@ def test_an_engine_with_no_adapter_is_refused(monkeypatch: pytest.MonkeyPatch) -
         engine_service.install(ENGINE.value)
 
 
-def test_the_engine_in_the_package_is_refused() -> None:
+def test_the_engine_in_the_package_is_refused(tmp_path: Path) -> None:
+    server = tmp_path / "llama-server"
+    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    cfg.llama_server_path = str(server)
     with pytest.raises(engine_service.EngineRefusedError, match="ships with lilbee"):
         engine_service.install(EngineName.LLAMA.value)
 
@@ -259,7 +471,12 @@ def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
     code, body = _cli("install", ENGINE.value, "--wheel", str(good))
     assert (code, body) == (
         0,
-        {"command": "engine install", "installed": f"{ENGINE} {VERSION} (cpu)", "note": ""},
+        {
+            "command": "engine install",
+            "installed": f"{ENGINE} {VERSION} (cpu)",
+            "note": "",
+            "not_run_on": [],
+        },
     )
     listing = CliRunner().invoke(cli_app, ["engine", "list"])
     assert f"{ENGINE} {VERSION} (cpu)" in listing.output
@@ -299,7 +516,13 @@ def test_rest_installs_a_pack_from_the_packs_folder(good: Path, root: Path) -> N
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     assert _rest({"engine": ENGINE.value}) == (
         200,
-        {"engine": ENGINE.value, "version": VERSION, "backend": "cpu", "note": ""},
+        {
+            "engine": ENGINE.value,
+            "version": VERSION,
+            "backend": "cpu",
+            "note": "",
+            "not_run_on": [],
+        },
     )
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
@@ -329,6 +552,7 @@ def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
         "version": VERSION,
         "backend": "cpu",
         "note": "",
+        "not_run_on": [],
     }
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
@@ -424,6 +648,7 @@ def test_every_surface_shows_the_service_refusal(
         engine_service.install(name)
     expected = str(exc.value)
     assert expected
+    assert expected.endswith(STAYS) is (name == ENGINE.value)
     assert _cli("install", name)[1]["error"] == expected
     code, body = _rest({"engine": name})
     assert (code, body["detail"]) == (422, expected)
@@ -581,3 +806,196 @@ def test_a_note_from_the_host_gate_reaches_every_install_surface(
     assert _rest({"engine": ENGINE.value})[1]["note"] == NOTE
     assert mcp_server.engine_install_tool(ENGINE.value)["note"] == NOTE
     assert NOTE in run_engine_command(f"install {ENGINE.value}").text
+
+
+def _two_digest_pin(
+    monkeypatch: pytest.MonkeyPatch, url: str, cell_sha: str, top_sha: str, size: int = 1
+) -> None:
+    cells = _cell(url, cell_sha, size=size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(top_sha, cells=cells))  # type: ignore[arg-type]
+
+
+def test_a_pin_whose_top_digest_is_another_cells_installs_a_wheel_of_this_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "cell.whl"
+    cell_sha = make_wheel(wheel)
+    _two_digest_pin(monkeypatch, "https://example.invalid/x.whl", cell_sha, "b" * 64)
+    engine_service.install(ENGINE.value, wheel)
+    (installed,) = EngineStore(engines_root(cfg.models_dir)).installed()
+    assert installed.sha256 == cell_sha
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_a_pin_whose_top_digest_is_another_cells_installs_the_download_of_this_cell(
+    release: ReleaseServer, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wheel = tmp_path / "cell.whl"
+    cell_sha = make_wheel(wheel)
+    release.files["/fx.whl"] = wheel.read_bytes()
+    _two_digest_pin(monkeypatch, f"{release.url}/fx.whl", cell_sha, "b" * 64, wheel.stat().st_size)
+    engine_service.install(ENGINE.value)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_a_wheel_of_the_top_digest_is_refused_when_the_cell_digest_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "top.whl"
+    top_sha = make_wheel(wheel)
+    _two_digest_pin(monkeypatch, "https://example.invalid/x.whl", "b" * 64, top_sha)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, wheel)
+    assert str(exc.value) == BAD_PACK
+    assert _builds() == []
+
+
+def test_a_pack_url_outside_the_index_is_refused_and_no_request_is_sent(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_store, "PACKAGES_URL", "https://index.test/packs/")
+    with pytest.raises(engine_service.EngineRefusedError, match="not on the pack index") as exc:
+        engine_service.install(ENGINE.value)
+    assert "https://index.test/packs/" in str(exc.value)
+    assert (release.requests, _builds()) == ([], [])
+
+
+def _refusing_host(os: HostOS, arch: HostArch, avx2: Feature | None = None) -> HostCaps:
+    return HostCaps(
+        os=os,
+        arch=arch,
+        avx2=avx2 or Feature(True),
+        neon=Feature(False, "This is not an ARM CPU."),
+        gpus=(),
+        nvidia_driver_cuda=None,
+        nvidia_reason="",
+        nvidia_known=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "host", "reason"),
+    [
+        (
+            "ik_llama.cpp",
+            _refusing_host(HostOS.LINUX, HostArch.X86_64, Feature(False, "Xeon lacks AVX2.")),
+            "Xeon lacks AVX2. ik_llama.cpp needs a CPU with AVX2 or NEON.",
+        ),
+        (
+            "tei",
+            _refusing_host(HostOS.WINDOWS, HostArch.X86_64),
+            "No build exists for Windows.",
+        ),
+        (
+            "mistral.rs",
+            _refusing_host(HostOS.MACOS, HostArch.X86_64),
+            "mistral.rs is not offered on macos x86_64.",
+        ),
+    ],
+)
+def test_each_refusing_engine_gives_its_reason_and_the_install_sentence(
+    name: str, host: HostCaps, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(name)
+    assert str(exc.value) == f"Engine {name} cannot run on this host. {reason} {STAYS}"
+
+
+STALL_TIMEOUT = 0.3
+
+
+@pytest.fixture
+def stalling(good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch) -> ReleaseServer:
+    """A release whose file the engine's cell points at; the client gives up after 0.3 s."""
+    release.files["/fx.whl"] = good.read_bytes() * 50
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=len(release.files["/fx.whl"]))
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    monkeypatch.setattr(hub_constants, "HF_HUB_DOWNLOAD_TIMEOUT", STALL_TIMEOUT)
+    monkeypatch.setattr(hub_constants, "DOWNLOAD_CHUNK_SIZE", 1024)
+    return release
+
+
+def test_a_silent_server_names_each_failed_attempt_with_its_cause(
+    stalling: ReleaseServer,
+) -> None:
+    stalling.silent_next = 10
+    retries: list[str] = []
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError, match="cannot be downloaded"),
+    ):
+        engine_service.install(ENGINE.value, on_retry=retries.append)
+    assert len(stalling.requests) == 3
+    assert [t.split(". ")[-1] for t in retries] == [
+        "Attempt 1 of 3 failed; trying again.",
+        "Attempt 2 of 3 failed; trying again.",
+    ]
+    assert all(t.startswith("Transfer failed: ") for t in retries)
+
+
+def test_a_download_that_stops_mid_body_reports_the_bytes_that_arrived(
+    stalling: ReleaseServer,
+) -> None:
+    stalling.stall_next = 10
+    updates: list[tuple[float, str]] = []
+    with (
+        mock.patch.object(download.time, "sleep"),
+        pytest.raises(engine_service.EngineRefusedError),
+    ):
+        engine_service.install(
+            ENGINE.value, on_update=lambda p: updates.append((p.percent, p.detail))
+        )
+    assert 0 < updates[0][0] < 100
+
+
+def test_a_healthy_download_reports_no_retry_and_completes(
+    good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release.files["/fx.whl"] = good.read_bytes()
+    sha = hashlib.sha256(good.read_bytes()).hexdigest()
+    cells = _cell(f"{release.url}/fx.whl", sha, size=good.stat().st_size)
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha, cells=cells))  # type: ignore[arg-type]
+    retries: list[str] = []
+    built = engine_service.install(ENGINE.value, on_retry=retries.append)
+    assert (built.engine, retries) == (ENGINE.value, [])
+    assert len(release.requests) == 1
+
+
+@pytest.mark.parametrize("flags", [[], ["--json"]])
+def test_the_cli_tells_the_user_about_each_retry_on_stderr(
+    stalling: ReleaseServer, flags: list[str]
+) -> None:
+    stalling.silent_next = 10
+    with mock.patch.object(download.time, "sleep"):
+        result = CliRunner().invoke(cli_app, [*flags, "engine", "install", ENGINE.value])
+    assert result.exit_code == 1
+    assert result.stderr.count("failed; trying again.") == 2
+    if flags:
+        assert json.loads(result.stdout)["command"] == "engine install"
+    assert "failed; trying again." not in result.stdout
+
+
+def test_the_slash_command_hands_each_retry_to_the_screen(stalling: ReleaseServer) -> None:
+    stalling.silent_next = 10
+    retries: list[str] = []
+    with mock.patch.object(download.time, "sleep"):
+        out = run_engine_command(f"install {ENGINE.value}", on_retry=retries.append)
+    assert not out.ok
+    assert len(retries) == 2
+
+
+def test_the_cli_shows_download_progress_on_stderr_and_keeps_stdout_clean(
+    good: Path,
+) -> None:
+    def install(
+        _name: str, _wheel: Path | None, on_update: Any, on_retry: Any
+    ) -> engine_service.InstalledBuild:
+        on_update(DownloadProgress(percent=40.0, detail="4/10 MB", is_cache_hit=False))
+        return engine_service.InstalledBuild(ENGINE.value, VERSION, "cpu", "")
+
+    with mock.patch.object(engine_service, "install", side_effect=install):
+        result = CliRunner().invoke(cli_app, ["--json", "engine", "install", ENGINE.value])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["installed"] == f"{ENGINE.value} {VERSION} (cpu)"

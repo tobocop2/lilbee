@@ -7,10 +7,11 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
@@ -33,6 +34,7 @@ class EngineName(StrEnum):
     TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
+    LEMONADE = "lemonade"
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,8 @@ class LaunchRequest:
     memory_endpoint: bool = False
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
+    target: RoleTarget = RoleTarget.GPU
+    replica: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,13 +79,15 @@ class RequestProfile:
     label: str
     """The name of the engine's server in error messages."""
     context_overflow: re.Pattern[str]
-    """Matches a 400 body that reports a prompt past the context window."""
+    """Matches an error body that reports a prompt past the context window."""
     batch_overflow: re.Pattern[str] | None
     """Matches a 500 body that reports an input past the physical batch, or None."""
     unreadable_embedding_hint: str
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
+    structured_output: bool = True
+    """Whether the server enforces ``response_format``; if not, the client drops or refuses it."""
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
     batch_limit: int | None = None
@@ -91,6 +97,10 @@ class RequestProfile:
     """
     batch_count_refusal: re.Pattern[str] | None = None
     """Matches an error body that refuses a request for holding too many inputs, or None."""
+    rerank_fields: Mapping[str, Any] = MappingProxyType({})
+    """Extra fields on a rerank route request, such as one that stops silent truncation."""
+    context_overflow_status: int = 400
+    """The status the server answers an input past its limit with."""
 
 
 class EngineAdapter(Protocol, Hashable):
@@ -100,6 +110,8 @@ class EngineAdapter(Protocol, Hashable):
     executable, ``discover_devices`` probes it, ``estimate_memory`` sizes a
     plan, ``role_spec`` and ``launch_argv`` build each command line, and
     ``check_readback`` says whether the running instance reports its memory.
+    ``device_targets`` runs after ``binary()``, before ``launch_argv``, and only
+    for a role that names a target other than gpu.
     """
 
     @property
@@ -111,7 +123,7 @@ class EngineAdapter(Protocol, Hashable):
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
-    """How far this engine's memory figures can be trusted, known without an estimate."""
+    """A fixed reserve's figure does not follow the window and has no share per card."""
     bundled: bool
     """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
@@ -136,6 +148,10 @@ class EngineAdapter(Protocol, Hashable):
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]: ...
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        """The targets *binary* can run a role on; ``launch_argv`` writes their flags."""
+        ...
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         """Size one instance; ``per_device`` follows a ratio only if ``launch_argv`` honours it."""
@@ -165,6 +181,22 @@ class EngineAdapter(Protocol, Hashable):
         """Extra environment variables for a spawned engine process."""
         ...
 
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        """Environment variables that pin a process to *target*, beyond ``launch_argv`` flags."""
+        ...
+
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...
 
     def request_profile(self, role: WorkerRole) -> RequestProfile: ...
+
+
+@runtime_checkable
+class UserInstalled(Protocol):
+    """An engine that lilbee has no pack for: the user installs it and lilbee finds it."""
+
+    install_hint: str
+    """How to get the engine, for a message that says it is missing."""
+
+    def user_binary(self) -> Path | None:
+        """The executable the user installed, or ``None`` when there is none."""
+        ...

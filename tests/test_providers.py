@@ -784,6 +784,16 @@ class TestRoutingProvider:
         assert caps == ["completion", "vision"]
         mock_sdk.get_capabilities.assert_called_once_with("ollama/llava:7b")
 
+    def test_a_routed_sdk_model_does_not_report_vision(self) -> None:
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+        from tests.providers.test_sdk_llm_provider import FakeBackend
+
+        rp = self._make_provider()
+        backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision"]})
+        rp._sdk_provider = SdkLLMProvider(backend)
+
+        assert rp.get_capabilities("ollama/llava:7b") == ["completion"]
+
     def test_invalidate_load_cache_forwards_to_native(self) -> None:
         """``invalidate_load_cache`` releases the native side; SDK has no cache."""
         rp = self._make_provider()
@@ -1044,7 +1054,7 @@ class TestShowModelCapabilities:
 
         assert result is None
 
-    def test_get_capabilities_returns_list(self) -> None:
+    def test_get_capabilities_returns_the_list_without_vision(self) -> None:
         provider = self._make_provider()
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"capabilities": ["completion", "vision", "tools"]}
@@ -1053,7 +1063,7 @@ class TestShowModelCapabilities:
         with mock.patch("httpx.post", return_value=mock_resp):
             caps = provider.get_capabilities("ollama/llava:7b")
 
-        assert caps == ["completion", "vision", "tools"]
+        assert caps == ["completion", "tools"]
 
     def test_get_capabilities_returns_empty_on_error(self) -> None:
         provider = self._make_provider()
@@ -2655,7 +2665,7 @@ class TestReadGgufMetadata:
     def test_returns_none_when_no_parser_is_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without the engine extra there is no reader, and no engine to load with either."""
+        """With no engine installed there is no reader, and no engine to load with either."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         def _no_parser() -> Path:

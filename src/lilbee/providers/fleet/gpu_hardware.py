@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,9 @@ _PCI_CLASS_CODE_BASE_SHIFT = 16
 _SYSFS_PCI_DEVICE_DIR = Path("/sys/bus/pci/devices")
 _SYSFS_CLASS_FILE = "class"
 _SYSFS_VENDOR_FILE = "vendor"
+# The link to the kernel driver bound to the device. A card with none, such as
+# an NVIDIA card whose module is not loaded, cannot run a Vulkan driver.
+_SYSFS_DRIVER_LINK = "driver"
 
 # Windows PnP device-instance IDs carry the PCI vendor in their hardware IDs
 # ("PCI\\VEN_10DE&DEV_1F95&..."). Both value names are set by the class
@@ -44,22 +48,44 @@ _PCI_VENDOR_ID_PATTERN = re.compile(r"ven_([0-9a-f]{4})", re.IGNORECASE)
 
 
 def installed_gpu_vendor_ids() -> frozenset[int]:
-    """PCI vendor IDs of this host's display controllers.
+    """PCI vendor IDs of this host's display controllers that a kernel driver runs.
 
-    Empty means the device tree holds no PCI display controller or could not be
-    read at all (macOS, an ARM SoC whose GPU is not on the PCI bus, a container
-    with no ``/sys``). That is "cannot tell", not "there is no GPU", and callers
-    must not read it as proof that a vendor is absent.
+    Empty means the device tree holds no such controller or could not be read
+    at all (macOS, an ARM SoC whose GPU is not on the PCI bus, a container with
+    no ``/sys``, or a Linux host where no display controller has a bound
+    driver). That is "cannot tell", not "there is no GPU", and callers must not
+    read it as proof that a vendor is absent.
+    """
+    return frozenset(installed_gpu_counts())
+
+
+def installed_gpu_counts() -> Counter[int]:
+    """How many display controllers of each PCI vendor ID this host holds, driver bound.
+
+    The same reading as ``installed_gpu_vendor_ids``, with the card count kept.
+    Windows counts one card for each display adapter, whatever IDs it carries.
     """
     if sys.platform == "win32":
-        return frozenset(_windows_gpu_vendor_ids())
+        return Counter(vendor for adapter in _windows_adapters() for vendor in adapter)
     if sys.platform.startswith("linux"):
-        return frozenset(_linux_gpu_vendor_ids())
-    return frozenset()
+        return Counter(vendor for vendor, bound in _linux_display_controllers() if bound)
+    return Counter()
 
 
-def _linux_gpu_vendor_ids() -> Iterator[int]:
-    """Yield the vendor ID of every PCI display controller in sysfs."""
+def undriven_gpu_vendor_ids() -> frozenset[int]:
+    """PCI vendor IDs of display controllers with no bound kernel driver.
+
+    Such a card cannot run anything, so it is not in ``installed_gpu_vendor_ids``;
+    this names it so a warning can say why the engine found no GPU. Only Linux
+    sysfs records the binding, so every other platform answers empty.
+    """
+    if not sys.platform.startswith("linux"):
+        return frozenset()
+    return frozenset(vendor for vendor, bound in _linux_display_controllers() if not bound)
+
+
+def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
+    """Yield each readable display controller's vendor ID and whether a driver is bound."""
     try:
         devices = sorted(_SYSFS_PCI_DEVICE_DIR.iterdir())
     except OSError:
@@ -71,8 +97,13 @@ def _linux_gpu_vendor_ids() -> Iterator[int]:
         if class_code >> _PCI_CLASS_CODE_BASE_SHIFT != _PCI_DISPLAY_CONTROLLER_CLASS:
             continue
         vendor_id = _read_sysfs_hex(device / _SYSFS_VENDOR_FILE)
-        if vendor_id is not None:
-            yield vendor_id
+        if vendor_id is None:
+            continue
+        try:
+            bound = (device / _SYSFS_DRIVER_LINK).exists()
+        except OSError:
+            continue
+        yield vendor_id, bound
 
 
 def _read_sysfs_hex(path: Path) -> int | None:
@@ -83,24 +114,26 @@ def _read_sysfs_hex(path: Path) -> int | None:
         return None
 
 
-def _windows_gpu_vendor_ids() -> Iterator[int]:
-    """Yield the vendor ID of every registered display adapter."""
+def _windows_adapters() -> Iterator[frozenset[int]]:
+    """Yield the vendor IDs of each registered display adapter."""
     try:
         import winreg
     except ImportError:  # pragma: no cover - winreg ships with CPython on Windows
         return
-    yield from _iter_windows_gpu_vendor_ids(winreg)
+    yield from _iter_windows_adapters(winreg)
 
 
-def _iter_windows_gpu_vendor_ids(winreg: Any) -> Iterator[int]:
-    """Yield vendor IDs from the hardware IDs under the display-adapter class."""
+def _iter_windows_adapters(winreg: Any) -> Iterator[frozenset[int]]:
+    """Yield the vendor IDs in the hardware IDs of each display-adapter class subkey."""
     for subkey in iter_pnp_class_subkeys(winreg, PNP_DISPLAY_ADAPTER_CLASS_GUID):
+        vendors: set[int] = set()
         for value_name in _PNP_HARDWARE_ID_VALUE_NAMES:
             try:
                 value, _value_type = winreg.QueryValueEx(subkey, value_name)
             except OSError:
                 continue
-            yield from _vendor_ids_in(value)
+            vendors.update(_vendor_ids_in(value))
+        yield frozenset(vendors)
 
 
 def _vendor_ids_in(value: object) -> Iterator[int]:

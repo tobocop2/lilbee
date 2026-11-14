@@ -9,6 +9,8 @@ download entry point runs under the retry loop.
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -112,6 +114,49 @@ class TestTransientRetries:
             self._run(monkeypatch, [PermissionError("needs authentication")])
 
 
+class TestCancelDuringBackoff:
+    @staticmethod
+    def _fail(monkeypatch: pytest.MonkeyPatch, attempts: list[int]) -> None:
+        def work() -> Path:
+            attempts.append(1)
+            raise dl._TransientDownloadError("reset")
+
+        monkeypatch.setattr(dl, "_RETRY_BACKOFF_SECONDS", 30)
+        monkeypatch.setattr(dl, "_CANCEL_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(dl, "_hf_download_or_translate", lambda entry, config: work())
+
+    def test_a_cancel_ends_the_wait_between_attempts_at_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts: list[int] = []
+        self._fail(monkeypatch, attempts)
+        cancel = threading.Event()
+        threading.Timer(0.1, cancel.set).start()
+        started = time.monotonic()
+
+        with pytest.raises(TaskCancelledError):
+            dl._retry_transient(
+                lambda: dl._hf_download_or_translate(_entry(), _config()), None, cancel
+            )
+
+        assert time.monotonic() - started < 5
+        assert attempts == [1]
+
+    def test_an_unset_signal_leaves_the_wait_and_the_retries_whole(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts: list[int] = []
+        self._fail(monkeypatch, attempts)
+        monkeypatch.setattr(dl, "_RETRY_BACKOFF_SECONDS", 0.02)
+
+        with pytest.raises(RuntimeError, match="failed 3 times"):
+            dl._retry_transient(
+                lambda: dl._hf_download_or_translate(_entry(), _config()), None, threading.Event()
+            )
+
+        assert attempts == [1, 1, 1]
+
+
 class TestRetryIsOnEveryTransfer:
     @pytest.mark.parametrize(
         "call",
@@ -127,7 +172,9 @@ class TestRetryIsOnEveryTransfer:
         retried: list[str] = []
         gguf = tmp_path / "f.gguf"
 
-        def _fake_retried(entry: CatalogModel, config: dl.DownloadConfig) -> Path:
+        def _fake_retried(
+            entry: CatalogModel, config: dl.DownloadConfig, cancel: object = None
+        ) -> Path:
             retried.append(config.filename)
             gguf.write_bytes(b"g")  # lands only when the transfer ran
             return gguf
@@ -137,7 +184,6 @@ class TestRetryIsOnEveryTransfer:
         monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: "f.gguf")
         monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="abc"))
         monkeypatch.setattr(dl, "_resolve_mmproj_filename", lambda *a: "mmproj.gguf")
-        monkeypatch.setattr(dl, "repo_has_mmproj", lambda repo: False)
 
         call(_entry())
 

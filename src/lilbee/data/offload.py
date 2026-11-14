@@ -40,11 +40,11 @@ def embed_inflight_target() -> int:
 
     ``embed replicas x _EMBED_INFLIGHT_PER_REPLICA`` when a multi-replica fleet is
     resolvable, else 0 (single card or no fleet: the CPU-bound sizing already
-    fits). Never raises -- a fleet that cannot be probed yet returns 0.
+    fits). Never raises -- a fleet that cannot be probed yet, or a missing embed
+    engine, returns 0. The embed call itself refuses a run with no embed engine.
     """
     try:
         from lilbee.app.services import get_services
-        from lilbee.providers.fleet.engines.choice import NoEngineError
         from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
         from lilbee.providers.roles import WorkerRole
 
@@ -52,8 +52,6 @@ def embed_inflight_target() -> int:
             WorkerRole.EMBED,
             gpu_device_count(get_services().engines.for_role(WorkerRole.EMBED).adapter),
         )
-    except NoEngineError:
-        raise
     except Exception:
         return 0
     return slots * _EMBED_INFLIGHT_PER_REPLICA if slots > 1 else 0

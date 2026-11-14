@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from conftest import stub_hf_listing
@@ -23,11 +25,11 @@ from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
-from lilbee.providers.fleet.host_caps import Feature, HostCaps, NvidiaGpu, nvidia_feature
+from lilbee.providers.fleet.host_caps import Feature, HostCaps, NvidiaGpu
 from tests.conformance.fake_adapter import FakeAdapter
 
 PRESENT = Feature(True)
-ABSENT = Feature(False, "lacks it")
+ABSENT = Feature(False, "The host lacks it.")
 UNKNOWN = Feature(False, "could not be read", known=False)
 
 
@@ -41,14 +43,12 @@ def _host(
     return HostCaps(
         os=None,
         arch=None,
-        macos_version=None,
         avx2=avx2,
         neon=neon,
         gpus=gpus,
         nvidia_driver_cuda=None,
         nvidia_reason="" if known else host_caps.NVIDIA_UNREADABLE,
         nvidia_known=known,
-        npus=(),
     )
 
 
@@ -92,14 +92,14 @@ def test_host_field_gates_in_three_states(
 def test_nvidia_field_gates_in_three_states(
     gpus: tuple[NvidiaGpu, ...], known: bool, ok: bool, auto: bool
 ) -> None:
-    gate = gate_on(nvidia_feature(_host(gpus=gpus, known=known)))
+    gate = gate_on(Feature(bool(gpus), "no NVIDIA GPU", known=known))
     assert (gate.ok, gate.auto_selectable) == (ok, auto)
     if not ok or not known:
         assert gate.reason
 
 
 def test_absent_wins_over_unknown_and_unknown_shows_its_reason() -> None:
-    assert gate_on(UNKNOWN, ABSENT) == HostGate(False, "lacks it")
+    assert gate_on(UNKNOWN, ABSENT) == HostGate(False, "The host lacks it.")
     assert gate_on(PRESENT, UNKNOWN) == HostGate(True, "could not be read", known=False)
 
 
@@ -122,7 +122,27 @@ def test_refused_host_hides_with_the_gate_reason() -> None:
     hidden = explain({ModelFormat.SAFETENSORS}, _host(avx2=ABSENT, gpus=GPU), [_fake_offer()])
     assert hidden is not None
     assert hidden.reason is HiddenReason.HOST_UNSUPPORTED
-    assert "lacks it" in hidden.text
+    assert hidden.text.startswith("This host cannot run it. ")
+    assert hidden.text == "This host cannot run it. The host lacks it."
+    assert not re.search(r"\. [a-z]", hidden.text)
+
+
+class _StrictFake(FakeAdapter):
+    """A second engine for the same format that refuses the host for its own reason."""
+
+    name = "strict-fake"
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return HostGate(False, "The host lacks a second thing.")
+
+
+def test_every_engine_refusal_reason_shows_once_in_order() -> None:
+    offers = [_fake_offer(), EngineOffer(_StrictFake(), EngineState.INSTALLED), _fake_offer()]
+    hidden = explain({ModelFormat.SAFETENSORS}, _host(avx2=ABSENT, gpus=GPU), offers)
+    assert hidden is not None
+    assert hidden.text == (
+        "This host cannot run it. The host lacks it. The host lacks a second thing."
+    )
 
 
 def test_no_engine_for_the_format_hides_it() -> None:

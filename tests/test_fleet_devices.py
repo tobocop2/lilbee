@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import devices as dev_mod
 from lilbee.providers.fleet.devices import (
     FleetDevice,
@@ -287,11 +287,11 @@ class TestPresetVisibleDeviceComposition:
         assert env == {"CUDA_VISIBLE_DEVICES": "0,1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
 
     @pytest.mark.usefixtures("_quiet_probe_env")
-    def test_preset_cuda_device_order_is_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_preset_cuda_device_order_is_replaced(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
-        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        assert dev_mod._probe_env(Path("/bin/srv"))["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
         env = visible_env((FleetDevice("CUDA", 0, "", 0, 0),))
-        assert env["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"  # same order the probe used
+        assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"  # same order the probe used
 
     @pytest.mark.usefixtures("_quiet_probe_env")
     def test_probe_env_defaults_order_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1010,3 +1010,41 @@ class TestReportedEngineBackend:
 
         with pytest.raises(KeyError):
             dev_mod._selected_backend([device], spoke=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_an_illegal_instruction_names_the_cpu(tmp_path: Path) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\nkill -ILL $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    with pytest.raises(ProviderError, match="instruction this CPU does not have") as caught:
+        probe_devices(script)
+    assert caught.value.kind is ProviderErrorKind.CPU_UNSUPPORTED
+
+
+def test_a_probe_with_the_windows_illegal_instruction_status_names_the_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", 0xC000001D))
+    with pytest.raises(ProviderError, match="instruction this CPU does not have"):
+        probe_devices(Path("llama-server.exe"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_an_illegal_instruction_after_its_header_keeps_the_probe(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\necho 'Available devices:'\nkill -ILL $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    probe = probe_devices(script)
+    assert probe.devices == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
+def test_a_probe_killed_by_another_signal_does_not_name_the_cpu(tmp_path: Path) -> None:
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\nkill -SEGV $$\n", encoding="utf-8")
+    script.chmod(0o755)
+    probe = probe_devices(script)
+    assert probe.devices == []

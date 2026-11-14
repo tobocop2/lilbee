@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Assert a lilbee-engine wheel carries the backend it claims, and the runtime it links.
+"""Assert a lilbee-engine-llama-cpp bundle carries the backend it claims, and the runtime it links.
+
+A bundle is a wheel, or the ``lilbee_engine_llama_cpp/bin`` directory of an executable's
+standalone tree. Both go through the same checks; only the wheel has a size limit.
 
 Both checks read the payload, because neither failure shows in a build log or on a
 driverless runner. A flavor missing its ggml backend library is a build whose flag
@@ -9,19 +12,39 @@ dies at process start on Windows and drops to CPU on Linux; non-CUDA wheels are
 checked the other way, that no copy step quietly bloated them.
 
 ``--backend`` at build time, where the wheel has no ``-1.<backend>-`` tag yet.
+A directory has no file name to read the platform from: ``--platform`` takes the
+runner OS (``Linux``, ``macOS`` or ``Windows``).
+
+``--tool`` names the engine server of the pin. With it, the wheel must also hold that
+server with the execute bit. The rule is the one the engine store applies when it
+installs a wheel.
+
+``--library`` names a library the server needs, and may be given more than once. Each
+one must be a shared library in the package of the server, by the store's own rule.
+It needs ``--tool``.
 
 Usage:
-    assert_engine_bundle.py [--backend <flavor>] <wheel> [<wheel> ...]
+    assert_engine_bundle.py [--backend <flavor>] [--tool <server> [--library <name> ...]]
+        <wheel> [<wheel> ...]
+    assert_engine_bundle.py [--backend <flavor>] --platform <runner OS> <bin dir>
 """
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import sys
 import zipfile
 from pathlib import Path
 
-BIN_DIR = "lilbee_engine/bin/"
+_RULE = Path(__file__).resolve().parents[2] / "src/lilbee/providers/fleet/wheel_server.py"
+
+_spec = importlib.util.spec_from_file_location("wheel_server", _RULE)
+assert _spec and _spec.loader
+wheel_server = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(wheel_server)
+
+BIN_DIR = "lilbee_engine_llama_cpp/bin/"
 
 # GitHub caps a single artifact at 2 GiB, and every wheel travels as one. A bundled
 # ROCm engine is the only flavor near it: its runtime and per-gfx kernels are most of
@@ -42,9 +65,10 @@ REQUIRED = {
         ("libcublasLt.so.<major>", r"libcublasLt\.so\.\d+"),
     ),
 }
-# The MSVC runtime every Windows build links. A fresh Windows image ships an older
-# msvcp140 in System32, and the engine faults inside it before listing a device.
-WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+# The MSVC runtime every Windows build links, with the OpenMP runtime ggml imports.
+# A fresh Windows image ships an older msvcp140 and no vcomp140, so the engine
+# faults or fails to load before listing a device.
+WINDOWS_CRT = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcomp140.dll")
 # What a ROCm wheel carries beside its backend. Matched on the library, not its
 # SONAME version, which moves every release. The kernels are the easy one to miss:
 # rocBLAS loads them as data, so without them the engine dies on the first matmul.
@@ -69,7 +93,6 @@ BACKEND_LIBRARY = {
     "cpu": "ggml-cpu",
     "metal": "ggml-metal",
     "rocm": "ggml-hip",
-    "sycl": "ggml-sycl",
     "vulkan": "ggml-vulkan",
 }
 # Cells built with GGML_CPU_ALL_VARIANTS ship the CPU backend as one module per
@@ -92,8 +115,10 @@ _LIBRARY_FORMS = {
     "linux": ("lib{name}.so", r"lib{name}\.so(\.[\d.]+)?"),
     "macos": ("lib{name}.dylib", r"lib{name}(\.[\d.]+)?\.dylib"),
 }
-# "lilbee_engine-0.6.90-1.rocm-py3-none-manylinux_2_17_x86_64.whl". PEP 427 puts
-# the build tag third, and build_pep503_indexes.py writes it as 1.<backend>.
+# The runner OS names a directory bundle's platform, as a wheel's file name does.
+_RUNNER_PLATFORMS = {"Linux": "linux", "macOS": "macos", "Windows": "win_amd64"}
+# "lilbee_engine_llama_cpp-0.6.90-1.rocm-py3-none-manylinux_2_17_x86_64.whl". PEP 427 puts
+# the build tag third, and build_wheel_indexes.py writes it as 1.<backend>.
 _BUILD_TAG = re.compile(r"^[^-]+-[^-]+-\d+\.(?P<backend>[a-z0-9]+)-")
 
 
@@ -114,7 +139,7 @@ def _backend_of(wheel_name: str) -> str | None:
 
 
 def _missing_backend_library(
-    name: str, backend: str, platform: str, entries: list[str]
+    name: str, backend: str, platform: str, entries: list[str], kind: str
 ) -> str | None:
     """The problem with *entries* not holding *backend*'s ggml library, if it doesn't."""
     if backend == "cpu" and (backend, platform) in DISPATCH_CELLS:
@@ -128,13 +153,13 @@ def _missing_backend_library(
     if any(re.fullmatch(pattern, entry) for entry in entries):
         return None
     return (
-        f"{name}: {backend} wheel is missing {display} from {BIN_DIR} "
+        f"{name}: {backend} {kind} is missing {display} from {BIN_DIR} "
         f"(the build produced no {backend} backend, so this engine runs on CPU)"
     )
 
 
 def _missing_dispatch_modules(
-    name: str, backend: str, platform: str, entries: list[str]
+    name: str, backend: str, platform: str, entries: list[str], kind: str
 ) -> list[str]:
     """The problems with *entries* not holding a runtime-dispatch CPU backend."""
     if (backend, platform) not in DISPATCH_CELLS:
@@ -144,7 +169,7 @@ def _missing_dispatch_modules(
     variants = [e for e in entries if re.fullmatch(pattern, e)]
     if len(variants) < 2:
         problems.append(
-            f"{name}: {backend} wheel has {len(variants)} {display} modules in {BIN_DIR} "
+            f"{name}: {backend} {kind} has {len(variants)} {display} modules in {BIN_DIR} "
             f"(runtime CPU dispatch needs at least two; a single module carries only "
             f"the build host's instruction set)"
         )
@@ -152,7 +177,7 @@ def _missing_dispatch_modules(
         loader_display, loader_pattern = _VULKAN_LOADER
         if not any(re.fullmatch(loader_pattern, e) for e in entries):
             problems.append(
-                f"{name}: vulkan wheel is missing {loader_display} from {BIN_DIR} "
+                f"{name}: vulkan {kind} is missing {loader_display} from {BIN_DIR} "
                 f"(the vulkan module dlopens the loader; without it the engine "
                 f"silently runs on CPU)"
             )
@@ -170,38 +195,66 @@ def _oversized(wheel: Path) -> str | None:
     )
 
 
-def _bin_entries(wheel: Path) -> list[str]:
-    with zipfile.ZipFile(wheel) as zf:
+def _bin_entries(bundle: Path) -> list[str]:
+    """The files under ``lilbee_engine_llama_cpp/bin`` of a wheel, or under a bin directory."""
+    if bundle.is_dir():
+        return sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if not p.is_dir())
+    with zipfile.ZipFile(bundle) as zf:
         names = zf.namelist()
     return [n[len(BIN_DIR) :] for n in names if n.startswith(BIN_DIR) and not n.endswith("/")]
 
 
-def check(wheel: Path, backend: str | None = None) -> list[str]:
-    """Return a list of problems with *wheel*; empty means it is correct.
+def _server_problems(
+    bundle: Path, name: str, tool: str | None, libraries: tuple[str, ...]
+) -> list[str]:
+    """The store's server check on a wheel; a directory or no *tool* has none."""
+    if not tool or bundle.is_dir():
+        return []
+    with zipfile.ZipFile(bundle) as archive:
+        found = wheel_server.server_problems(archive, tool, libraries)
+    return [f"{name}: {p}" for p in found]
 
-    *backend* names the flavor the wheel was built as. Pass it at build time, when
-    the wheel has no build tag to read it from yet.
+
+def check(
+    bundle: Path,
+    backend: str | None = None,
+    runner_os: str | None = None,
+    tool: str | None = None,
+    libraries: tuple[str, ...] = (),
+) -> list[str]:
+    """Return a list of problems with *bundle*; empty means it is correct.
+
+    *bundle* is a wheel, or the ``lilbee_engine_llama_cpp/bin`` directory of an executable.
+    *backend* names the flavor it was built as. Pass it at build time, when a wheel
+    has no build tag to read it from yet. A directory has no file name to read
+    the platform from, so it needs *runner_os*. *tool* names the engine server of
+    the pin; a wheel must then hold a runnable server and each of *libraries*.
     """
-    name = wheel.name
-    oversized = _oversized(wheel)
-    problems = [oversized] if oversized else []
-    entries = _bin_entries(wheel)
+    if bundle.is_dir():
+        name, kind, problems = str(bundle), "executable", []
+        platform = _RUNNER_PLATFORMS.get(runner_os or "", "other")
+    else:
+        name, kind = bundle.name, "wheel"
+        oversized = _oversized(bundle)
+        problems = [oversized] if oversized else []
+        platform = _platform_of(name)
+    entries = _bin_entries(bundle)
     if not entries:
         return [*problems, f"{name}: no {BIN_DIR} payload at all"]
 
-    platform = _platform_of(name)
+    problems.extend(_server_problems(bundle, name, tool, libraries))
     backend = backend or _backend_of(name)
-    missing = _missing_backend_library(name, backend, platform, entries) if backend else None
+    missing = _missing_backend_library(name, backend, platform, entries, kind) if backend else None
     if missing:
         problems.append(missing)
     if backend:
-        problems.extend(_missing_dispatch_modules(name, backend, platform, entries))
+        problems.extend(_missing_dispatch_modules(name, backend, platform, entries, kind))
 
     if backend == "rocm" and platform == "linux" and not missing:
         # Only worth asking once the backend is actually there: a wheel with no
         # libggml-hip.so has a bigger problem than a missing runtime beside it.
         problems.extend(
-            f"{name}: rocm wheel is missing {display} from {BIN_DIR} "
+            f"{name}: rocm {kind} is missing {display} from {BIN_DIR} "
             f"(libggml-hip links it, and only the kernel driver comes from the host)"
             for display, pattern in ROCM_RUNTIME
             if not any(re.fullmatch(pattern, entry) for entry in entries)
@@ -209,7 +262,7 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
 
     if platform == "win_amd64":
         problems.extend(
-            f"{name}: windows wheel is missing {crt} from {BIN_DIR} "
+            f"{name}: windows {kind} is missing {crt} from {BIN_DIR} "
             "(the engine links the MSVC runtime; a fresh Windows image ships an older copy)"
             for crt in WINDOWS_CRT
             if crt not in entries
@@ -223,7 +276,7 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
         stowaways = sorted(e for e in entries if ANY_CUDA_RUNTIME.search(e))
         if stowaways:
             problems.append(
-                f"{name}: non-CUDA wheel ships CUDA runtime libraries: {', '.join(stowaways)}"
+                f"{name}: non-CUDA {kind} ships CUDA runtime libraries: {', '.join(stowaways)}"
             )
         return problems
 
@@ -231,7 +284,7 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
         return problems  # A CUDA engine on a platform we ship no CUDA runtime for.
 
     problems.extend(
-        f"{name}: CUDA wheel is missing {display} from {BIN_DIR} "
+        f"{name}: CUDA {kind} is missing {display} from {BIN_DIR} "
         f"(ggml-cuda links it; only libcuda/nvcuda comes from the driver)"
         for display, pattern in REQUIRED[platform]
         if not any(re.fullmatch(pattern, e) for e in entries)
@@ -239,32 +292,62 @@ def check(wheel: Path, backend: str | None = None) -> list[str]:
     return problems
 
 
-def main(argv: list[str]) -> int:
-    backend = None
-    if len(argv) >= 2 and argv[0] == "--backend":
-        backend, argv = argv[1], argv[2:]
+def _parse(argv: list[str]) -> tuple[dict[str, str], list[str], list[str]]:
+    """Split *argv* into the single-value flags, the ``--library`` names and the paths."""
+    values: dict[str, str] = {}
+    libraries: list[str] = []
+    while len(argv) >= 2 and argv[0] in ("--backend", "--platform", "--tool", "--library"):
+        if argv[0] == "--library":
+            libraries.append(argv[1])
+        else:
+            values[argv[0]] = argv[1]
+        argv = argv[2:]
+    return values, libraries, argv
 
-    wheels = [Path(a) for a in argv]
-    if not wheels:
+
+def _refusal(bundle: Path, runner_os: str | None, backend: str | None, tool: str | None) -> str:
+    """Why *bundle* cannot be checked with these flags; empty when it can."""
+    if not bundle.is_dir():
+        return "" if bundle.is_file() else f"{bundle}: not a file"
+    if runner_os not in _RUNNER_PLATFORMS:
+        return f"{bundle}: a directory needs --platform Linux, macOS or Windows"
+    if backend is None:
+        return f"{bundle}: a directory needs --backend <flavor>"
+    if tool:
+        return f"{bundle}: --tool reads a wheel, not a directory"
+    return ""
+
+
+def main(argv: list[str]) -> int:
+    values, libraries, argv = _parse(argv)
+    backend = values.get("--backend")
+    runner_os = values.get("--platform")
+    tool = values.get("--tool")
+
+    bundles = [Path(a) for a in argv]
+    if not bundles or (libraries and not tool):
         print(
-            "usage: assert_engine_bundle.py [--backend <flavor>] <wheel> [<wheel> ...]",
+            "usage: assert_engine_bundle.py [--backend <flavor>] "
+            "[--tool <server> [--library <name> ...]] <wheel> [<wheel> ...]\n"
+            "       assert_engine_bundle.py [--backend <flavor>] --platform <runner OS> <bin dir>",
             file=sys.stderr,
         )
         return 2
 
     problems: list[str] = []
-    for wheel in wheels:
-        if not wheel.is_file():
-            problems.append(f"{wheel}: not a file")
+    for bundle in bundles:
+        refusal = _refusal(bundle, runner_os, backend, tool)
+        if refusal:
+            problems.append(refusal)
             continue
-        problems.extend(check(wheel, backend))
-        print(f"checked {wheel.name}")
+        problems.extend(check(bundle, backend, runner_os, tool, tuple(libraries)))
+        print(f"checked {bundle if bundle.is_dir() else bundle.name}")
 
     for problem in problems:
         print(f"FAIL: {problem}", file=sys.stderr)
     if problems:
         return 1
-    print(f"all {len(wheels)} wheel(s) carry the backend they claim")
+    print(f"all {len(bundles)} bundle(s) carry the backend they claim")
     return 0
 
 

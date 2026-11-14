@@ -1,4 +1,4 @@
-"""A model ref that names a stored server preset: parsing, role and address checks, the wire."""
+"""A model ref that names a stored server preset: parsing, role checks, the wire."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def _isolated_config(tmp_path: Any) -> Iterator[None]:
 
 @pytest.fixture
 def dns(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
-    """The DNS the request check sees: a host maps to its answers, any other host has none."""
+    """The DNS the save-time check sees: a host maps to its answers, any other host has none."""
     table = {PUBLIC_HOST: ["93.184.216.34"]}
 
     def getaddrinfo(host: str, _port: Any) -> list[Any]:
@@ -286,7 +286,7 @@ class TestRegistryRef:
 
 class TestSdkProviderRouting:
     def test_chat_goes_to_the_preset_with_its_own_key(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
+        self, provider: SdkLLMProvider, backend: _Backend
     ) -> None:
         _store(_preset(api_key=PRESET_KEY))
         cfg.llm_api_key = LLM_KEY
@@ -296,7 +296,7 @@ class TestSdkProviderRouting:
         assert request.ref.name == "m"
 
     def test_a_keyless_preset_never_sends_the_llm_api_key(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
+        self, provider: SdkLLMProvider, backend: _Backend
     ) -> None:
         _store(_preset())
         cfg.llm_api_key = LLM_KEY
@@ -310,9 +310,7 @@ class TestSdkProviderRouting:
         provider.chat([{"role": "user", "content": "hi"}], model="lm_studio/m")
         assert backend.complete_calls[0].api_key == LLM_KEY
 
-    def test_embed_goes_to_the_preset(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
-    ) -> None:
+    def test_embed_goes_to_the_preset(self, provider: SdkLLMProvider, backend: _Backend) -> None:
         _store(_preset(api_key=PRESET_KEY))
         cfg.embedding_model = "wired/e"
         provider.embed(["a"])
@@ -321,7 +319,7 @@ class TestSdkProviderRouting:
 
     @pytest.mark.parametrize("wire", list(RerankWire))
     def test_rerank_carries_the_wire_of_the_preset(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]], wire: Any
+        self, provider: SdkLLMProvider, backend: _Backend, wire: Any
     ) -> None:
         _store(_preset(rerank_wire=wire.value))
         cfg.reranker_model = "wired/r"
@@ -338,7 +336,7 @@ class TestSdkProviderRouting:
         assert (request.api_base, request.rerank_wire) == (None, RerankWire.V1)
 
     def test_vision_ocr_needs_the_vision_role_not_the_chat_role(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
+        self, provider: SdkLLMProvider, backend: _Backend
     ) -> None:
         _store(_preset(roles=["chat"]))
         with pytest.raises(ProviderError, match="does not serve the vision role"):
@@ -346,14 +344,14 @@ class TestSdkProviderRouting:
         assert backend.requests == 0
 
     def test_vision_ocr_reaches_a_preset_that_serves_vision(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
+        self, provider: SdkLLMProvider, backend: _Backend
     ) -> None:
         _store(_preset(roles=["vision"]))
         assert provider.vision_ocr(b"png", "wired/v") == "hello"
         assert backend.complete_calls[0].api_base == URL
 
     def test_vision_ocr_with_a_timeout_checks_the_vision_role_too(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
+        self, provider: SdkLLMProvider, backend: _Backend
     ) -> None:
         _store(_preset(roles=["chat"]))
         with pytest.raises(ProviderError, match="does not serve the vision role"):
@@ -375,7 +373,6 @@ class TestSdkProviderRouting:
         self,
         provider: SdkLLMProvider,
         backend: _Backend,
-        dns: dict[str, list[str]],
         role: WorkerRole,
         call: Any,
     ) -> None:
@@ -384,56 +381,6 @@ class TestSdkProviderRouting:
         cfg.reranker_model = "wired/r"
         with pytest.raises(ProviderError, match=f"does not serve the {role.value} role"):
             call(provider)
-        assert backend.requests == 0
-
-    @pytest.mark.parametrize("address", ["169.254.169.254", "0.0.0.0", "224.0.0.1", "240.0.0.1"])
-    def test_a_host_that_turned_blocked_since_the_save_sends_no_request_and_no_key(
-        self,
-        provider: SdkLLMProvider,
-        backend: _Backend,
-        dns: dict[str, list[str]],
-        address: str,
-    ) -> None:
-        _store(_preset(api_key=PRESET_KEY))
-        dns[PUBLIC_HOST] = [address]
-        with pytest.raises(ProviderError, match=f"blocked address {address}") as err:
-            provider.chat([{"role": "user", "content": "x"}], model="wired/m")
-        assert err.value.kind is ProviderErrorKind.BAD_REQUEST
-        assert PRESET_KEY not in str(err.value)
-        assert backend.requests == 0
-
-    @pytest.mark.parametrize(
-        "call",
-        [
-            lambda p: p.embed(["x"]),
-            lambda p: p.rerank("q", ["x"]),
-            lambda p: p.vision_ocr(b"png", "wired/v"),
-        ],
-        ids=["embed", "rerank", "vision"],
-    )
-    def test_a_blocked_host_sends_no_request_and_no_key_on_every_other_role(
-        self,
-        provider: SdkLLMProvider,
-        backend: _Backend,
-        dns: dict[str, list[str]],
-        call: Any,
-    ) -> None:
-        _store(_preset(api_key=PRESET_KEY))
-        cfg.embedding_model = "wired/e"
-        cfg.reranker_model = "wired/r"
-        dns[PUBLIC_HOST] = ["169.254.169.254"]
-        with pytest.raises(ProviderError, match=r"blocked address 169\.254\.169\.254") as err:
-            call(provider)
-        assert PRESET_KEY not in str(err.value)
-        assert backend.requests == 0
-
-    def test_a_host_with_no_dns_answer_sends_no_request(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
-    ) -> None:
-        _store(_preset())
-        dns.clear()
-        with pytest.raises(ProviderError, match="no DNS answer"):
-            provider.chat([{"role": "user", "content": "x"}], model="wired/m")
         assert backend.requests == 0
 
     def test_a_ref_whose_preset_was_removed_before_the_call_is_refused(
@@ -450,9 +397,8 @@ class TestSdkProviderRouting:
         assert backend.requests == 0
 
     def test_two_presets_with_one_model_name_each_reach_their_own_server(
-        self, provider: SdkLLMProvider, backend: _Backend, dns: dict[str, list[str]]
+        self, provider: SdkLLMProvider, backend: _Backend
     ) -> None:
-        dns["two.test"] = ["93.184.216.35"]
         _store(
             _preset("one", URL, api_key="key-one"),  # pragma: allowlist secret
             _preset("two", "http://two.test/v1", api_key="key-two"),  # pragma: allowlist secret

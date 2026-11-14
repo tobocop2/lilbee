@@ -156,6 +156,7 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
     """One spec per worker, dividing the corpus, the cards and the CPU pools."""
     from lilbee.providers.fleet.gpu_env import shard_visible_devices
 
+    deals_cards = _deals_cards(config)
     cpu_share = max(1, cpu_quota() // processes)
     plan_share = max(1, available_cpu_count() // processes)
     root = config.data_root / SHARDS_DIRNAME
@@ -168,10 +169,32 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
             # fleet, workers on different cards never see each other's.
             engine_dir=root / f"gpu{index % devices}" / "engine",
             cpu_share=cpu_share,
-            visible_devices=shard_visible_devices(index % devices),
+            visible_devices=shard_visible_devices(index % devices) if deals_cards else {},
         )
         for index in range(processes)
     ]
+
+
+def _deals_cards(config: Config) -> bool:
+    """Whether each worker gets one card as its mask.
+
+    The mask pins the embed role to one card. With embed on the CPU it pins
+    nothing, and it would hide the card a named role asks for. An auto role
+    still needs its worker held to one card, so the mask stays for it, unless
+    another role names a card, which the mask would hide.
+    """
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+
+    if not config.placement:
+        return True
+    roles = PlacementSpec.from_json(config.placement).roles
+    embed = roles.get(WorkerRole.EMBED)
+    if embed is None or embed.device_target is not RoleTarget.CPU:
+        return True
+    others = [entry for role, entry in roles.items() if role is not WorkerRole.EMBED]
+    named = any(entry.devices for entry in others)
+    return not named and any(entry.device_target is RoleTarget.AUTO for entry in others)
 
 
 def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -> Config:

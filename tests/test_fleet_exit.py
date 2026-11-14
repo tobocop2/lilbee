@@ -427,7 +427,7 @@ def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothi
     assert answer.status_code == 503
     detail = answer.json()["detail"]
     assert detail.startswith(_NO_ENGINE_DETAIL)
-    assert "lilbee[engine]" in detail
+    assert "lilbee engine install" in detail
     assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
     assert not any(line.startswith("joined") for line in server.lines), server.lines
     _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())

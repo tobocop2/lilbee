@@ -13,8 +13,11 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, discover_adapters
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+from lilbee.providers.fleet.engines.lemonade import LEMONADE
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.engines.mlx import MLX
+from lilbee.providers.fleet.engines.openvino import OPENVINO
 from lilbee.providers.fleet.engines.tei import TEI
 
 _EXTRA_MODULE = """\
@@ -38,6 +41,9 @@ def test_the_shipped_adapters_are_found() -> None:
         EngineName.IK_LLAMA: IK_LLAMA,
         EngineName.MISTRAL: MISTRAL,
         EngineName.TEI: TEI,
+        EngineName.MLX: MLX,
+        EngineName.OPENVINO: OPENVINO,
+        EngineName.LEMONADE: LEMONADE,
     }
 
 
@@ -54,10 +60,11 @@ def test_the_order_is_the_order_of_the_engine_names() -> None:
 def test_a_new_module_is_found_without_an_edit_to_the_choice_module(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _add_module(monkeypatch, tmp_path, EngineName.MLX, "extra_mlx_engine")
+    _add_module(monkeypatch, tmp_path, EngineName.OPENVINO, "extra_openvino_engine")
+    monkeypatch.setattr(engines_pkg, "__path__", [str(tmp_path)])
     found = discover_adapters()
-    assert EngineName.MLX in found
-    assert found[EngineName.MLX].name == EngineName.MLX
+    assert list(found) == [EngineName.OPENVINO]
+    assert found[EngineName.OPENVINO].name == EngineName.OPENVINO
     assert list(found) == sorted(found, key=list(EngineName).index)
 
 
@@ -87,7 +94,7 @@ def test_an_adapter_with_an_unknown_name_is_refused(
         discover_adapters()
 
 
-_SHARED_MODULES = frozenset({"base"})
+_SHARED_MODULES = frozenset({"base", "host_gate", "proof"})
 
 
 def _engine_module_imports(source: str) -> list[str]:

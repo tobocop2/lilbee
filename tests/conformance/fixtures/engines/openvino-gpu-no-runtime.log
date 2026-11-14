@@ -1,0 +1,6 @@
+source: machine: thinkpad (nuclearwork), Intel i7-10750H, UHD 630 iGPU, no Intel OpenCL/Level Zero runtime installed; Manjaro kernel 5.10.205; llama.cpp b12020 ubuntu-openvino-2026.4.1-x64; GGML_OPENVINO_DEVICE=GPU; recorded 2026-11-03
+result: llama-server --list-devices and llama-server both abort (core dumped), exit before listening. No CPU fallback.
+key lines (excerpt, trace frames cut):
+/home/runner/work/llama.cpp/llama.cpp/ggml/src/ggml-openvino/ggml-openvino-extra.cpp:84: GGML OpenVINO Backend: GGML_OPENVINO_DEVICE=GPU is not available. Set it to one of the available OpenVINO devices:
+  CPU: Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz
+Aborted (core dumped)

@@ -80,6 +80,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Install the index builder
+        # dumb-pypi, pinned with hashes in uv.lock.
+        run: uv sync --locked --only-group index --no-install-project
+
       - name: Resolve wheel-source run id
         id: wheels
         env:
@@ -128,7 +137,7 @@ jobs:
           set -euo pipefail
           mkdir -p wheel-indexes
           if [ -d artifacts ] && [ -n "$(ls -A artifacts 2>/dev/null)" ]; then
-            python3 tools/build_pep503_indexes.py artifacts wheel-indexes
+            uv run --no-sync python tools/build_wheel_indexes.py engines artifacts wheel-indexes
           else
             # Keep the dir non-empty so upload-artifact / download-artifact
             # have a deterministic payload to round-trip.
@@ -143,7 +152,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           rm -f wheel-indexes/.empty
-          python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
+          uv run --no-sync python tools/build_wheel_indexes.py compat wheel-indexes --repo tobocop2/lancedb
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7

@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import json
-import platform
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from lilbee.catalog.refs import model_format
+from lilbee.catalog.runnable import session_host
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
     EngineAssignment,
     EngineChoice,
-    HostFacts,
     NoEngineError,
     RoleEngine,
     choose_engine,
@@ -30,11 +29,6 @@ _UNREADABLE_CHOICES = (
 
 if TYPE_CHECKING:
     from lilbee.core.config import Config
-
-
-def host_facts() -> HostFacts:
-    """The facts about this host that the default rule reads."""
-    return HostFacts(system=platform.system().lower(), machine=platform.machine().lower())
 
 
 def _parse_choices(raw: str | None) -> dict[str, str] | None:
@@ -62,7 +56,7 @@ def _choice_for(config: Config, ref: str, role: WorkerRole | None = None) -> Eng
     stored = _parse_choices(config.engine_choices)
     chosen = choose_engine(
         fmt=model_format(ref),
-        host=host_facts(),
+        host=session_host,
         installed=installed_engines(),
         preferred=str(config.preferred_engine),
         override=(stored or {}).get(ref),
@@ -88,7 +82,7 @@ def engine_for_format(fmt: ModelFormat, config: Config) -> EngineAdapter:
     """The adapter that loads *fmt* under *config*; raises ``NoEngineError`` when none does."""
     choice = choose_engine(
         fmt=fmt,
-        host=host_facts(),
+        host=session_host,
         installed=installed_engines(),
         preferred=str(config.preferred_engine),
         override=None,

@@ -1961,17 +1961,12 @@ def _engine_write_refused() -> dict[str, Any] | None:
 @_tool_named("engine_list")
 def engine_list_tool() -> dict[str, Any]:
     """List the engine builds installed beside the models."""
-    from lilbee.server.models import EngineBuildResponse, EngineBuildsResponse
+    from lilbee.server.models import EngineBuildsResponse
 
     if (refused := _engine_read_refused()) is not None:
         return refused
     return _engine_result(
-        lambda: EngineBuildsResponse(
-            builds=[
-                EngineBuildResponse(engine=v.engine, version=v.version, backend=v.backend)
-                for v in engine_service.builds()
-            ]
-        )
+        lambda: EngineBuildsResponse.model_validate(engine_service.engine_list().payload())
     )
 
 
@@ -2054,7 +2049,11 @@ def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]
     def install() -> EngineInstalledResponse:
         built = engine_service.install(engine)
         return EngineInstalledResponse(
-            engine=built.engine, version=built.version, backend=built.backend, note=built.note
+            engine=built.engine,
+            version=built.version,
+            backend=built.backend,
+            note=built.note,
+            not_run_on=list(built.not_run_on),
         )
 
     return _engine_result(install)

@@ -7,6 +7,7 @@ scheduled ollama-pypi lane in qa-matrix.yml.
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 import time
@@ -18,10 +19,6 @@ import httpx
 import numpy as np
 import pytest
 
-from lilbee.providers.factory import sdk_library
-
-pytest.importorskip(sdk_library().module)
-
 from lilbee.core.config import cfg
 from lilbee.providers.backends.liter_llm import backend as _backend_mod
 from lilbee.providers.backends.liter_llm import config as _config_mod
@@ -32,10 +29,13 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCallDelta,
 )
+from lilbee.providers.factory import sdk_library
 from lilbee.providers.fleet.swap_manager import _pick_free_ports
 from lilbee.providers.local_servers import OLLAMA
 from lilbee.providers.local_servers.spec import LocalServerSpec
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+importlib.import_module(sdk_library().module)
 
 _STUB = Path(__file__).parent / "_ollama_stub.py"
 # Ollama keeps its own ``name:tag`` shape; lilbee's config layer requires

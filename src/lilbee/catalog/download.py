@@ -6,8 +6,9 @@ import shutil
 import time
 from collections.abc import Callable, Iterable
 from http import HTTPStatus
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
@@ -17,11 +18,8 @@ from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.formats import select_files
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
-    HF_API_URL,
     HfToken,
-    hf_headers,
     hf_token,
-    repo_has_mmproj,
 )
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import (
@@ -32,7 +30,8 @@ from lilbee.catalog.refs import (
     rank_gguf_candidates,
     split_shard_filenames,
 )
-from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelFormat
+from lilbee.catalog.xdna import write_ticket
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
@@ -48,6 +47,9 @@ LoadCheck = Callable[[str, str], None]
 ProbeCallback = Callable[[str | None], None]
 
 log = logging.getLogger(__name__)
+
+# Seconds the projector check waits on the Hub listing; a hung Hub must not stall a re-pull.
+PROJECTOR_LISTING_TIMEOUT = 3.0
 
 
 class RemoteFile(NamedTuple):
@@ -182,14 +184,41 @@ def _raise_if_disk_exhausted(
 
 _TRANSFER_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 5
+_CANCEL_POLL_SECONDS = 0.2
 
 
 class _TransientDownloadError(RuntimeError):
     """A transfer fault another attempt can clear: a network or an I/O error."""
 
 
-def _retry_transient(work: Callable[[], _T]) -> _T:
+RetryCallback = Callable[[int, int, str], None]
+"""Receives (attempt, attempts, cause) when a failed attempt is about to repeat."""
+
+
+def _backoff(seconds: float, cancel: CancelSignal | None) -> None:
+    """Wait *seconds*; a set *cancel* ends the wait at once with ``TaskCancelledError``."""
+    if cancel is None:
+        time.sleep(seconds)
+        return
+    deadline = time.monotonic() + seconds
+    while True:
+        if cancel.is_set():
+            raise TaskCancelledError
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_CANCEL_POLL_SECONDS, remaining))
+
+
+def _retry_transient(
+    work: Callable[[], _T],
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
+) -> _T:
     """Run *work*, retrying only the faults another attempt can clear.
+
+    *on_retry* hears each failed attempt that another attempt follows. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
 
     Every other error propagates on the first attempt, cancellation included,
     so a defect or a configuration error is never hidden behind a retry. A
@@ -204,38 +233,82 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
             last_error = exc
             log.warning("%s (attempt %d/%d)", exc, attempt + 1, _TRANSFER_RETRIES + 1)
         if attempt < _TRANSFER_RETRIES:
-            time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            if on_retry is not None:
+                on_retry(attempt + 1, _TRANSFER_RETRIES + 1, str(last_error))
+            _backoff(_RETRY_BACKOFF_SECONDS * (attempt + 1), cancel)
     raise RuntimeError(
         f"{last_error}. The transfer failed {_TRANSFER_RETRIES + 1} times. Check the "
         "network connection and retry; the files that finished are kept."
     ) from last_error
 
 
-def retry_transfer(work: Callable[[], _T]) -> _T:
-    """Run *work* with the model download's retry rule: network and I/O faults retry.
+def url_filename(url: str) -> str:
+    """The last path segment of *url*."""
+    return PurePosixPath(urlparse(url).path).name
 
-    A repository, revision or file the hub does not have is permanent and propagates at once.
+
+_PERMANENT_STATUSES = frozenset(
+    {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND, HTTPStatus.GONE}
+)
+
+
+def download_url(
+    url: str,
+    dest: Path,
+    size: int,
+    *,
+    on_progress: ProgressCallback | None = None,
+    on_retry: RetryCallback | None = None,
+    cancel: CancelSignal | None = None,
+) -> Path:
+    """Download *url* into *dest*, resuming a partial file; return the file path.
+
+    Network and I/O faults retry. A refusal the server will repeat, and the hub's
+    offline switch, end the transfer at once.
+    *on_progress* receives byte counts and *on_retry* each failed attempt. A set
+    *cancel* ends the wait between attempts with ``TaskCancelledError``.
     """
-    from huggingface_hub.errors import (
-        EntryNotFoundError,
-        RepositoryNotFoundError,
-        RevisionNotFoundError,
-    )
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
+    from huggingface_hub.file_download import http_get
 
-    def attempt() -> _T:
+    dest.mkdir(parents=True, exist_ok=True)
+    target = dest / url_filename(url)
+    tqdm_class = _ProgressTracker(on_progress).make_tqdm_class() if on_progress else None
+
+    def fetch() -> Path:
+        done = target.stat().st_size if target.exists() else 0
         try:
-            return work()
-        except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
-            raise
-        except (httpx.TimeoutException, httpx.ConnectError, OSError) as exc:
+            with target.open("ab") as handle:
+                http_get(
+                    url,
+                    handle,
+                    resume_size=done,
+                    expected_size=size,
+                    tqdm_class=tqdm_class,
+                )
+        except HfHubHTTPError as exc:
+            if exc.response.status_code in _PERMANENT_STATUSES:
+                raise RuntimeError(
+                    f"The server cannot give the file at {url} (HTTP {exc.response.status_code})."
+                ) from exc
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+        except OfflineModeIsEnabled as exc:
+            raise RuntimeError(f"Downloads are switched off, so {url} was not fetched.") from exc
+        except (httpx.RequestError, OSError) as exc:
+            raise _TransientDownloadError(f"Transfer failed: {exc}") from None
+        return target
 
-    return _retry_transient(attempt)
+    return _retry_transient(fetch, on_retry, cancel)
 
 
-def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run one file's transfer, retrying the faults another attempt can clear."""
-    return _retry_transient(lambda: _hf_download_or_translate(entry, config))
+def _download_with_retry(
+    entry: CatalogModel, config: DownloadConfig, cancel: CancelSignal | None = None
+) -> Path:
+    """Run one file's transfer, retrying the faults another attempt can clear.
+
+    A set *cancel* ends the wait between attempts with ``TaskCancelledError``.
+    """
+    return _retry_transient(lambda: _hf_download_or_translate(entry, config), cancel=cancel)
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
@@ -310,6 +383,8 @@ def download_model(
         TaskCancelledError: the cancel signal was set
     """
     models_dir = _models_dir()
+    if entry.format is ModelFormat.XDNA:
+        return write_ticket(models_dir, entry.hf_repo)
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
     # circular: download -> download_process via fetch_model_files
@@ -357,7 +432,9 @@ def fetch_model_files(
         if on_progress is not None:
             size = sum((models_dir / shard).stat().st_size for shard in shards)
             on_progress(size, size)  # Report 100% immediately (every shard)
-        _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+        _ensure_projector(
+            entry, models_dir, token, dest, on_progress=on_progress, on_probe=on_probe
+        )
         return dest
 
     shard_paths = _fetch_files(entry, models_dir, token, shards, on_progress, on_probe)
@@ -366,7 +443,9 @@ def fetch_model_files(
     if on_progress:
         total_size = sum(path.stat().st_size for path in shard_paths)
         on_progress(total_size, total_size)
-    _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+    _ensure_projector(
+        entry, models_dir, token, first_shard_path, on_progress=on_progress, on_probe=on_probe
+    )
     return first_shard_path
 
 
@@ -485,35 +564,56 @@ def _probed_shard(entry: CatalogModel, shard: str, on_probe: ProbeCallback | Non
     return _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
 
 
+def _projector_on_disk(model_path: Path) -> bool:
+    """True when the engine launch finds a projector beside *model_path*."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+    try:
+        find_mmproj_for_model(model_path)
+    except ProviderError:
+        return False
+    return True
+
+
 def _ensure_projector(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
+    model_path: Path,
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
 ) -> None:
-    """Fetch the projector whenever the repo ships one, not only for VISION entries.
+    """Fetch the projector the Hub lists for the repo when none sits beside *model_path*.
 
-    Dual-use VL repos (Qwen-VL, InternVL, SmolVLM, gemma-3) classify as chat by
-    name and arch, and without their projector the vision role dies at plan
-    time with a missing-mmproj warning a re-pull cannot cure.
+    The Hub listing alone says whether the repo ships one, so dual-use VL repos
+    (Qwen-VL, InternVL, SmolVLM, gemma-3), which classify as chat, get theirs.
+    A failed transfer raises. An unreadable listing is no answer: the pull of
+    the model stands and the caller re-checks the listing and warns.
     """
-    if entry.task == ModelTask.VISION or repo_has_mmproj(entry.hf_repo):
+    if _projector_on_disk(model_path):
+        return
+    try:
         _fetch_mmproj(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
+    except ProjectorListingError as exc:
+        log.info("Could not check %s for a projector: %s", entry.hf_repo, exc)
 
 
 def download_mmproj(
     entry: CatalogModel,
     *,
     on_progress: ProgressCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Download the mmproj (CLIP projection) file for a vision model.
-    Returns the path to the downloaded file, or None if no mmproj is configured.
+    Returns the path to the downloaded file, or None if the repo lists none.
+    Raises ``ProjectorListingError`` when the repo listing cannot be read.
+    A set *cancel* ends the wait between attempts with ``TaskCancelledError``.
     The optional ``on_progress`` callback receives ``(downloaded, total)`` byte
     counts and is wired through the same tqdm hook used by the main download.
     """
-    return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress)
+    return _fetch_mmproj(entry, _models_dir(), hf_token(), on_progress=on_progress, cancel=cancel)
 
 
 def _fetch_mmproj(
@@ -523,11 +623,12 @@ def _fetch_mmproj(
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Fetch *entry*'s mmproj into *models_dir*, or None when the repo names none."""
     mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
     if not mmproj_filename:
-        log.warning("Could not resolve mmproj file for %s", entry.hf_repo)
+        log.info("%s lists no mmproj file", entry.hf_repo)
         return None
 
     tracker = _ProgressTracker(on_progress) if on_progress else None
@@ -545,6 +646,7 @@ def _fetch_mmproj(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         ),
+        cancel,
     )
     if on_progress is not None and (not tracker or not tracker.was_used):
         # Cache hit: HF returned the cached path without invoking tqdm.
@@ -553,31 +655,28 @@ def _fetch_mmproj(
     return path
 
 
-def _repo_sibling_files(hf_repo: str) -> list[str]:
-    """Every filename the HuggingFace API lists for *hf_repo*.
+def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """Every filename the HuggingFace Hub lists for *hf_repo*.
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the listing could not be fetched.
+        RuntimeError: the listing could not be fetched, or offline mode is on.
     """
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import HfHubHTTPError
+
     try:
-        resp = httpx.get(
-            f"{HF_API_URL}/{hf_repo}",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        if resp.status_code == HTTPStatus.UNAUTHORIZED:
+        info = HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
+    except HfHubHTTPError as exc:
+        if exc.response.status_code == HTTPStatus.UNAUTHORIZED:
             raise PermissionError(
                 f"{hf_repo} requires HuggingFace authentication. "
                 "Set HF_TOKEN env var or visit the repo page to request access."
-            )
-        resp.raise_for_status()
-        siblings = resp.json().get("siblings", [])
-    except PermissionError:
-        raise
+            ) from exc
+        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
-    return [s.get("rfilename", "") for s in siblings]
+    return [s.rfilename for s in info.siblings or []]
 
 
 def _mmproj_rank(filename: str) -> tuple[bool, str]:
@@ -585,15 +684,21 @@ def _mmproj_rank(filename: str) -> tuple[bool, str]:
     return (quant_label(filename) not in FLOAT_QUANTS, filename)
 
 
+class ProjectorListingError(RuntimeError):
+    """The Hub listing that names a repo's projector could not be read."""
+
+
 def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
-    """Resolve an mmproj filename pattern to a concrete filename via the HF API."""
+    """Resolve an mmproj filename pattern via the HF API; None when the repo lists none."""
     if WILDCARD not in pattern:
         return pattern
     try:
-        names = _repo_sibling_files(hf_repo)
+        names = _repo_sibling_files(hf_repo, timeout=PROJECTOR_LISTING_TIMEOUT)
     except (PermissionError, RuntimeError) as exc:
-        log.warning("Cannot query mmproj files for %s: %s", hf_repo, exc)
-        return None
+        raise ProjectorListingError(
+            f"Could not look for the vision projector of {hf_repo}: {exc}. "
+            "Run the pull again to fetch it."
+        ) from exc
     matches = [name for name in names if fnmatch.fnmatch(name, pattern)]
     return min(matches, key=_mmproj_rank) if matches else None
 

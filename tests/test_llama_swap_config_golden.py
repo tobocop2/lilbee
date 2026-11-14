@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from lilbee.providers.fleet import adapters
+from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import build_swap_config
-from tests._llama_swap_scenario import BASE_PORT, BINARY, CONFIGS, THREADS, members
+from tests._llama_swap_scenario import BASE_PORT, BINARY, CONFIGS, LOG_DIR, THREADS, members
+
+# The ingest pool size the golden was written with; the pool size scales with the CPU count.
+INGEST_WORKERS = 14
 
 # The text origin/main writes for the same model set, one string per config.
 GOLDEN = Path(__file__).parent / "llama_swap_config_main_golden.json"
@@ -39,8 +43,9 @@ def _launches() -> list[InstanceLaunch]:
 
 
 @pytest.fixture(autouse=True)
-def _fixed_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fixed_host_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: THREADS)
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: INGEST_WORKERS)
 
 
 def test_the_model_set_covers_every_role_and_a_replica() -> None:
@@ -53,6 +58,14 @@ def test_every_config_has_a_golden() -> None:
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert CONFIGS
     assert set(golden) == set(CONFIGS)
+
+
+def test_the_scenario_paths_render_the_same_on_every_host() -> None:
+    paths = [BINARY, LOG_DIR]
+    for member in members():
+        paths += [value for value in member.argv.values() if isinstance(value, PurePosixPath)]
+    assert len(paths) > 2
+    assert {type(path) for path in paths} == {PurePosixPath}
 
 
 @pytest.mark.parametrize("name", sorted(CONFIGS))

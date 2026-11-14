@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from lilbee.app import engine_choice
 from lilbee.app.engine_choice import EngineBook
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
@@ -112,7 +113,7 @@ def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineN
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
     publish(monkeypatch, name, sha)
     pin = ADAPTERS[name].pin_record()
-    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
+    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, tool)
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
     return ADAPTERS[name].binary()
 
@@ -131,9 +132,11 @@ def _install_host(
     """*session* with the bundled llama-server and every store engine installed."""
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
+    # The engine rule holds its own reference to the host read, so it needs the patch too.
+    monkeypatch.setattr(engine_choice, "session_host", lambda: session)
     # The real read builds the process-wide services, and those start a warm-up thread.
     monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
-    bundled = tmp_path / "lilbee_engine" / "bin" / _BUNDLED
+    bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(llama, "resolve_llama_server", lambda: bundled)

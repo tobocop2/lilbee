@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from lilbee.providers.fleet.host_caps import Feature
+from lilbee.providers.fleet.host_caps import Feature, HostCaps, NpuVendor
 
 
 @dataclass(frozen=True)
@@ -38,3 +38,29 @@ def gate_on(*features: Feature) -> HostGate:
 
 
 PASS = HostGate(True)
+PLATFORM_UNREAD = HostGate(
+    True, "The OS or CPU architecture of this host could not be read.", known=False
+)
+
+
+def npu_gate(host: HostCaps, vendor: NpuVendor, generation: str | None = None) -> HostGate:
+    """Whether *host* has an NPU of *vendor*, and of *generation* when one is named.
+
+    An NPU list that could not be read is unknown, not absent. So is an NPU of the right
+    vendor whose generation the host does not say. A Qualcomm accelerator on Linux is
+    never a Snapdragon X NPU: the Linux class lists data-centre cards under that vendor.
+    """
+    if not host.npu_known:
+        return HostGate(True, host.npu_reason, known=False)
+    mine = [npu for npu in host.npus if npu.vendor is vendor]
+    if vendor is NpuVendor.QUALCOMM and mine:
+        return HostGate(False, f"{mine[0].name} found, which is not a Snapdragon X NPU.")
+    if not mine:
+        return HostGate(False, f"This computer has no {vendor.value} NPU.")
+    if generation is None or any(npu.generation == generation for npu in mine):
+        return PASS
+    if any(npu.generation is None for npu in mine):
+        return HostGate(
+            True, f"The generation of the {mine[0].name} could not be read.", known=False
+        )
+    return HostGate(False, f"{mine[0].name} is not {generation}.")

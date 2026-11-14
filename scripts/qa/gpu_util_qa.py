@@ -47,7 +47,7 @@ _RAW_COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "CUDA": (
         "nvidia-smi",
         (
-            "--query-gpu=index,utilization.gpu,memory.used,memory.total",
+            "--query-gpu=index,utilization.gpu,temperature.gpu,memory.used,memory.total",
             "--format=csv,noheader,nounits",
         ),
     ),

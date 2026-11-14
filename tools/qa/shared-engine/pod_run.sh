@@ -19,7 +19,7 @@ if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
     sleep 5
   done
   python3 -c "import zipfile; zipfile.ZipFile('/tmp/engwheel/engine.whl').extractall('/tmp/engwheel/x')"
-  cp -a /tmp/engwheel/x/lilbee_engine/bin/. "$ENGINE_CACHE/"
+  cp -a /tmp/engwheel/x/lilbee_engine_llama_cpp/bin/. "$ENGINE_CACHE/"
 fi
 # zipfile.extractall drops the executable bits; gguf-parser missing +x silently
 # degrades planning to file-size estimates.

@@ -259,7 +259,7 @@ jobs:
           bin="smoke-venv/bin"
           [ -d "smoke-venv/Scripts" ] && bin="smoke-venv/Scripts"
           lilbee_whls=(wheels/lilbee-*.whl); lilbee_whl="${lilbee_whls[0]}"
-          engine_whls=(engine/lilbee_engine-*.whl); engine_whl="${engine_whls[0]}"
+          engine_whls=(engine/lilbee_engine_llama_cpp-*.whl); engine_whl="${engine_whls[0]}"
           [ -f "${lilbee_whl}" ] || { echo "no lilbee wheel in wheels/" >&2; ls -la wheels/; exit 1; }
           [ -f "${engine_whl}" ] || { echo "no engine wheel in engine/" >&2; ls -la engine/; exit 1; }
           # Install the engine wheel first, then the lilbee wheel straight off

@@ -390,7 +390,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         binary.write_bytes(b"")
         self._engine(monkeypatch, binary)
         planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ()
+        assert planning_mod._no_device_pin(engine=LLAMA) == ()
 
         binary.write_bytes(b"the real engine")
         # Every listed GPU was refused, so the selection is empty and the engine
@@ -401,7 +401,7 @@ class TestAnEngineThatChangesUnderARunningServe:
             lambda _b, engine: planning_mod.DeviceReading([], EngineBackend.CPU, True),
         )
 
-        assert planning_mod._cpu_pin_when_every_device_was_refused(engine=LLAMA) == ("none",)
+        assert planning_mod._no_device_pin(engine=LLAMA) == ("none",)
 
     def test_a_planning_pass_answers_about_one_binary(self, monkeypatch, tmp_path) -> None:
         # A pass reads the snapshot several times. An engine that lands between

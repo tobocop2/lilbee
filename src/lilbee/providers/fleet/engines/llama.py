@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,8 +12,10 @@ from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.adapters import (
+    FLAG_DEVICE,
     FLAG_FIT_TARGET,
     FLAG_KV_UNIFIED_PER_SLOT,
+    NO_DEVICE,
     ROLE_SPECS,
     RoleServerSpec,
     build_server_argv,
@@ -20,6 +23,7 @@ from lilbee.providers.fleet.adapters import (
     rerank_spec,
 )
 from lilbee.providers.fleet.binary import (
+    EngineTool,
     engine_binary_identity,
     llama_server_runtime_env,
     resolve_llama_server,
@@ -31,14 +35,14 @@ from lilbee.providers.fleet.engines.base import (
     RequestProfile,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import HostCaps
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.loadability import assert_engine_can_load
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory
 from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.gguf_meta import read_gguf_metadata
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _PROFILE = RequestProfile(
     embed_fields={"embd_normalize": -1},
@@ -53,7 +57,41 @@ _PROFILE = RequestProfile(
     reasoning_field="reasoning_content",
 )
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
+_PIN_LIBRARIES = ["ggml-base"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
+_CPU_PACK = "cpu"
+# The CUDA pack is built with CUDA 12.4: it needs a driver that offers 12.4 and a card of
+# compute capability 5.0 or newer (the oldest architecture the pack targets).
+_CUDA_DRIVER_FLOOR = (12, 4)
+_CUDA_MIN_COMPUTE = (5, 0)
+_CUDA_BACKEND = "cuda"
+_CUDA_HOSTS = {
+    (HostOS.LINUX, HostArch.X86_64),
+    (HostOS.WINDOWS, HostArch.X86_64),
+}
+_PACK_LICENCES = ["MIT"]
+_CUDA_PACK_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+# The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
+# engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
+_WHEEL_VERSION = "1.12032.1"
+
+
+def _has_usable_cuda(host: HostCaps) -> bool:
+    """Whether the NVIDIA driver and a card of *host* can run the CUDA pack."""
+    if not host.nvidia_known or not host.gpus:
+        return False
+    if (host.nvidia_driver_cuda or (0, 0)) < _CUDA_DRIVER_FLOOR:
+        return False
+    return max(gpu.compute for gpu in host.gpus) >= _CUDA_MIN_COMPUTE
+
+
+def pack_backend(host: HostCaps) -> str:
+    """The backend of the llama.cpp pack that *host* installs."""
+    if (host.os, host.arch) == (HostOS.MACOS, HostArch.ARM64):
+        return "metal"
+    if (host.os, host.arch) in _CUDA_HOSTS and _has_usable_cuda(host):
+        return _CUDA_BACKEND
+    return _CPU_PACK
 
 
 def _starts_with_gguf_magic(path: Path) -> bool:
@@ -89,15 +127,38 @@ class LlamaCppAdapter:
         return engine_binary_identity(binary)
 
     def pin_record(self) -> Mapping[str, Any]:
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engine_manifest import pack_platforms
+
+        host = session_host()
+        backend = pack_backend(host)
+        platforms = pack_platforms(self.name.value, _WHEEL_VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": ENGINE_LLAMA_CPP_REF,
             "backend": None,
+            "tool": EngineTool.LLAMA_SERVER.value,
+            "libraries": _PIN_LIBRARIES,
             "launch": _PIN_LAUNCH,
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
-            "licenses": ["MIT"],
+            "licenses": _CUDA_PACK_LICENCES if backend == _CUDA_BACKEND else _PACK_LICENCES,
         }
+
+    def pack_pin(self) -> Mapping[str, Any]:
+        """The pin of the llama.cpp pack for the first-use install; its backend follows the host."""
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engine_manifest import pack_digest
+
+        host = session_host()
+        backend = pack_backend(host)
+        pin = dict(self.pin_record())
+        pin.update(
+            version=_WHEEL_VERSION,
+            backend=backend,
+            sha256=pack_digest(self.name.value, _WHEEL_VERSION, host, backend),
+        )
+        return pin
 
     def role_spec(
         self, role: WorkerRole, rerank_mode: RerankMode | None, meta: dict[str, str] | None
@@ -109,6 +170,10 @@ class LlamaCppAdapter:
         return ROLE_SPECS[role]
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
+        if request.target is RoleTarget.CPU:
+            # Zero layers alone still opens the card (424 MiB measured), so the
+            # adapter pairs them with the no-device name whatever the caller sent.
+            request = replace(request, n_gpu_layers=0, fit_target_mib=(), device_names=(NO_DEVICE,))
         return build_server_argv(
             binary=request.binary,
             spec=spec,
@@ -134,6 +199,12 @@ class LlamaCppAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return probe_devices(binary)
 
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        """A build whose help lists no device flag keeps the card, so it has no cpu target."""
+        if engine_advertises(binary, FLAG_DEVICE):
+            return frozenset({RoleTarget.GPU, RoleTarget.CPU})
+        return frozenset({RoleTarget.GPU})
+
     def model_meta(self, path: Path) -> dict[str, str] | None:
         if not _starts_with_gguf_magic(path):
             return None
@@ -144,6 +215,9 @@ class LlamaCppAdapter:
 
     def runtime_env(self) -> Mapping[str, str]:
         return llama_server_runtime_env()
+
+    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+        return {}
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return estimate_memory(ModelFormat.GGUF, request)

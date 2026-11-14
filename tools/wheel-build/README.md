@@ -13,7 +13,7 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; ROCm when
   `BACKEND=rocm`; no-op on macOS where Metal ships with the OS).
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
-  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine` wheel
+  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine-llama-cpp` wheel
   package's `bin/` for the requested backend.
 - `bundle_rocm_runtime.sh` — packs the ROCm userspace `llama-server` links
   (discovered by walking `DT_NEEDED`, plus the rocBLAS Tensile kernels) beside
@@ -29,7 +29,7 @@ Scripts read these env vars:
 - `LLAMA_CPP_REPO` / `LLAMA_CPP_REF` — the llama.cpp repo and ref to build
   from (optional; the build script defaults to the pin in engine-versions.env).
 - `BACKEND` — one of `cpu`, `vulkan`, `metal`, `cu121`, `cu122`, `cu123`,
-  `cu124`, `rocm`, `sycl`.
+  `cu124`, `rocm`.
 - `LLAMA_BUILD_DIR` — output directory for the built/fetched wheel.
 - `RUNNER_OS` — `Linux`, `macOS`, or `Windows`. (CI sets this; locally,
   scripts auto-detect.)

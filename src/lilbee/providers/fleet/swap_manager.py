@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -91,6 +91,7 @@ _STATE_TMP_SUFFIX = ".tmp"
 _CREATE_TIME_TOLERANCE_S = 1.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
 _LLAMA_SERVER_PROCESS_NAME = "llama-server"
+_LEMONADE_PROCESS_NAME = "lemond"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
@@ -901,6 +902,22 @@ def stop_engine(data_dir: Path) -> list[str]:
     reap_stale: they may be a sibling's in-flight write. Returns the group tokens
     whose engine was actually alive, so a caller reports only real stops.
     """
+    return _stop_recorded_engines(data_dir, _stop_recorded_engine)
+
+
+def kill_engine(data_dir: Path) -> list[str]:
+    """Kill every engine the dir's state files record, with no SIGTERM grace.
+
+    The exit's stop of an engine whose start never finished: it holds no state
+    worth a graceful stop, and a server that traps SIGTERM would hold the exit
+    for the whole grace. Records and the persistence opt-in go as in
+    ``stop_engine``. Returns the group tokens whose engine was alive.
+    """
+    return _stop_recorded_engines(data_dir, _kill_recorded_engine)
+
+
+def _stop_recorded_engines(data_dir: Path, stop: Callable[[SwapState], bool]) -> list[str]:
+    """Run *stop* on each recorded engine and drop its record; the groups *stop* found alive."""
     _clean_stale_configs(data_dir)
     # The persistence opt-in describes the engine instance being stopped, so it
     # dies with it. Cleared here rather than at each call site so no stop path
@@ -911,7 +928,7 @@ def stop_engine(data_dir: Path) -> list[str]:
         state = _load_state(state_path)
         if state is None:
             continue
-        if _stop_recorded_engine(state):
+        if stop(state):
             group = _state_group(state_path.name)
             if group is not None:
                 stopped.append(group)
@@ -1177,15 +1194,70 @@ def _stop_recorded_engine(state: SwapState) -> bool:
     return bool(orphans)
 
 
-def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
-    """Live llama-server processes serving one of *ports*.
+def _kill_recorded_engine(state: SwapState) -> bool:
+    """SIGKILL a live llama-swap's group and its servers at once; whether any was alive.
 
-    Both the binary name and the ``--port`` value must match, so an unrelated
+    The recorded pid's children are read only once it is still llama-swap, as the
+    graceful stop does: a reused pid's children belong to another program.
+    """
+    servers: list[psutil.Process] = []
+    swaps: list[psutil.Process] = []
+    if _is_live_llama_swap(state):
+        servers = _live_children(state.pid)
+        with contextlib.suppress(psutil.NoSuchProcess):
+            swaps.append(psutil.Process(state.pid))
+        _signal_stale(state, _SIGKILL)
+    servers.extend(_find_orphan_servers(state.member_ports))
+    for server in servers:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            server.kill()
+    _await_killed(swaps + servers)
+    return bool(swaps or servers)
+
+
+def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
+    """Live servers that outlived their swap: those on a member port, and Lemonade ones.
+
+    A port match needs the binary name and the ``--port`` value, so an unrelated
     process on a recycled port is never killed; a server whose parent is a
     live llama-swap belongs to a current run on a reused port and is spared.
     """
     if not ports:
         return []
+    return [*_port_orphans(ports), *_lemonade_orphans()]
+
+
+def _lemonade_orphans() -> list[psutil.Process]:
+    """Live ``lemond`` processes that run from a Lemonade role folder.
+
+    ``lemond`` listens on a port that lilbee never chose, so the member ports
+    do not find it. The role folder in its command line does. A process below a
+    live llama-swap belongs to a current run and is spared.
+    """
+    from lilbee.providers.fleet.engines.lemonade import data_root
+
+    root = str(data_root())
+    orphans: list[psutil.Process] = []
+    for proc in _processes_named(_LEMONADE_PROCESS_NAME):
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if any(arg.startswith(root) for arg in cmdline) and not _has_live_swap_ancestor(proc):
+            orphans.append(proc)
+    return orphans
+
+
+def _has_live_swap_ancestor(proc: psutil.Process) -> bool:
+    """True when any parent of *proc* is a live llama-swap."""
+    try:
+        return any(_LLAMA_SWAP_PROCESS_NAME in parent.name() for parent in proc.parents())
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
+def _port_orphans(ports: tuple[int, ...]) -> list[psutil.Process]:
+    """Live llama-server processes whose ``--port`` is one of *ports*."""
     targets = {str(port) for port in ports}
     orphans: list[psutil.Process] = []
     for proc in _processes_named(_LLAMA_SERVER_PROCESS_NAME):

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.proc import run_bounded
 
 _SMI_TIMEOUT_S = 5.0
@@ -32,6 +33,9 @@ class UtilSample:
 
 class UtilBackend(Protocol):
     """One vendor's live-util probe: given indices, returns per-index samples."""
+
+    @property
+    def pci_vendor(self) -> PCIVendorID | None: ...
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]: ...
 
