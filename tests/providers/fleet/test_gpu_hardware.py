@@ -151,7 +151,7 @@ class TestLinuxSysfs:
     def test_a_permission_error_on_one_entry_spares_the_other_devices(
         self, unreadable: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One unreadable entry drops only its own device; the scan reaches the rest."""
+        """One unreadable entry leaves out only its own device; the scan reaches the rest."""
         _write_pci_device(
             tmp_path, "0000-00-02.0", class_code=VGA_CONTROLLER_CLASS, vendor="0x8086"
         )
@@ -180,8 +180,7 @@ class TestLinuxSysfs:
         monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
 
         assert gpu_hardware.installed_gpu_counts() == {INTEL: 1, NVIDIA: 1}
-        undriven = frozenset({AMD}) if unreadable == "driver" else frozenset()
-        assert gpu_hardware.undriven_gpu_vendor_ids() == undriven
+        assert gpu_hardware.undriven_gpu_vendor_ids() == frozenset()
 
     def test_an_unreadable_sysfs_directory_reports_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
