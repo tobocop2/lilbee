@@ -384,7 +384,7 @@ def download_model(
     """
     models_dir = _models_dir()
     if entry.format is ModelFormat.XDNA:
-        return write_ticket(models_dir, entry.hf_repo)
+        return write_ticket(models_dir, entry.hf_repo, entry.task)
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
     # circular: download -> download_process via fetch_model_files

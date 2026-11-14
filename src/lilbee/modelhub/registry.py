@@ -34,7 +34,7 @@ from lilbee.catalog.refs import (
     split_shard_filenames,
 )
 from lilbee.catalog.types import ModelFormat, ModelTask
-from lilbee.catalog.xdna import ticket_path
+from lilbee.catalog.xdna import read_checkpoint, read_task, ticket_path, ticket_paths
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.providers import gguf_meta
@@ -293,9 +293,28 @@ class ModelRegistry:
     def _resolve_ticket(self, ref: str, tag: str) -> Path:
         """The ticket of the installed NPU model *tag*; ``KeyError`` if not installed."""
         ticket = ticket_path(self._root, tag)
-        if not ticket.is_file():
+        if self._ticket_manifest(ticket) is None:
             raise KeyError(f"Model {ref} not installed")
         return ticket
+
+    def _ticket_manifest(self, ticket: Path) -> ModelManifest | None:
+        """The manifest an NPU ticket stands for, or None when it is absent or unreadable."""
+        try:
+            tag = read_checkpoint(ticket)
+            task = read_task(ticket)
+        except ValueError:
+            if ticket.is_file():
+                log.warning("Corrupt ticket: %s", ticket)
+            return None
+        return ModelManifest(
+            hf_repo=tag,
+            gguf_filename="",
+            size_bytes=0,
+            task=task,
+            downloaded_at=datetime.fromtimestamp(ticket.stat().st_mtime, UTC).isoformat(),
+            total_size_bytes=0,
+            format=ModelFormat.XDNA,
+        )
 
     def _resolve_gguf(self, ref: str) -> Path:
         """Resolve a GGUF ref, or a bare ``<org>/<repo>``, to a loadable path."""
@@ -763,6 +782,11 @@ class ModelRegistry:
         An absent manifest tree is an empty list. A tree that is present but
         cannot be read raises ``OSError``, because "unknown" is not "none".
         """
+        tickets = (self._ticket_manifest(t) for t in ticket_paths(self._root))
+        return [*self._list_file_manifests(), *(m for m in tickets if m is not None)]
+
+    def _list_file_manifests(self) -> list[ModelManifest]:
+        """The installed models that have a manifest file and blobs on disk."""
         manifests: list[ModelManifest] = []
         try:
             repo_dirs = sorted(self._manifests_dir.iterdir())
@@ -801,6 +825,9 @@ class ModelRegistry:
     def get_manifest(self, ref: str) -> ModelManifest | None:
         """Return the manifest for *ref* or None if not installed."""
         try:
+            parsed = parse_model_ref(ref)
+            if parsed.format is ModelFormat.XDNA:
+                return self._ticket_manifest(ticket_path(self._root, parsed.hf_repo))
             hf_repo, gguf_filename, fmt = _ref_key(ref)
         except ValueError:
             return None

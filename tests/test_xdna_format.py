@@ -7,16 +7,22 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.app.models import remove_model_data
 from lilbee.catalog import xdna
 from lilbee.catalog.download import download_model
 from lilbee.catalog.formats import formats_from_tags, select_files
 from lilbee.catalog.query import resolve_pull_target
 from lilbee.catalog.refs import ModelRef, model_format, parse_model_ref
-from lilbee.catalog.types import ModelFormat
+from lilbee.catalog.types import ModelFormat, ModelTask
+from lilbee.cli.commands.setup import _installed_model_path
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
+from lilbee.modelhub.model_manager.validation import _first_installed_local_ref
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.modelhub.role_validator import validate_model_task_assignment
 from lilbee.providers.fleet import model_memory as mm
+from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.model_ref import routes_to_native_model
 
@@ -64,10 +70,26 @@ class TestHubSide:
 
 class TestTicket:
     def test_the_ticket_names_the_tag(self, tmp_path: Path) -> None:
-        path = xdna.write_ticket(tmp_path, "qwen3:0.6b")
+        path = xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.CHAT)
         assert path == tmp_path / "xdna" / "qwen3@0.6b.json"
-        assert json.loads(path.read_text(encoding="utf-8")) == {"checkpoint": "qwen3:0.6b"}
+        assert json.loads(path.read_text(encoding="utf-8")) == {
+            "checkpoint": "qwen3:0.6b",
+            "task": "chat",
+        }
         assert xdna.read_checkpoint(path) == "qwen3:0.6b"
+        assert xdna.read_task(path) == ModelTask.CHAT
+
+    @pytest.mark.parametrize("body", [{"checkpoint": "qwen3:0.6b"}, {"task": "bogus"}, []])
+    def test_a_ticket_that_names_no_task_is_refused(self, tmp_path: Path, body: object) -> None:
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(ValueError, match="no model task"):
+            xdna.read_task(path)
+
+    def test_no_ticket_dir_lists_no_ticket(self, tmp_path: Path) -> None:
+        assert xdna.ticket_paths(tmp_path) == []
+        written = xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.CHAT)
+        assert xdna.ticket_paths(tmp_path) == [written]
 
     def test_a_ticket_that_names_no_tag_is_refused(self, tmp_path: Path) -> None:
         path = tmp_path / "t.json"
@@ -101,7 +123,7 @@ class TestPullAndResolve:
     def test_an_installed_tag_resolves_to_its_ticket(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         assert not registry.is_installed("qwen3:0.6b#xdna")
-        ticket = xdna.write_ticket(tmp_path, "qwen3:0.6b")
+        ticket = xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.CHAT)
         assert registry.resolve("qwen3:0.6b#xdna") == ticket
         assert registry.is_installed("qwen3:0.6b#xdna")
 
@@ -111,11 +133,104 @@ class TestPullAndResolve:
 
     def test_removing_a_tag_deletes_its_ticket_once(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
-        ticket = xdna.write_ticket(tmp_path, "qwen3:0.6b")
+        ticket = xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.CHAT)
         assert registry.remove("qwen3:0.6b#xdna") is True
         assert not ticket.exists()
         assert not registry.is_installed("qwen3:0.6b#xdna")
         assert registry.remove("qwen3:0.6b#xdna") is False
+
+
+class TestInstalledList:
+    REF = "qwen3:0.6b#xdna"
+
+    def _pull(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = resolve_pull_target(self.REF)
+        assert entry is not None
+        download_model(entry, None)
+
+    def test_a_pulled_tag_is_listed_and_assignable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pull(tmp_path, monkeypatch)
+        assert [m.ref for m in ModelRegistry(tmp_path).list_installed()] == [self.REF]
+        assert (
+            validate_model_task_assignment("chat_model", self.REF, allow_bypass=False) == self.REF
+        )
+
+    def test_the_listed_entry_carries_the_tag_and_the_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pull(tmp_path, monkeypatch)
+        (manifest,) = ModelRegistry(tmp_path).list_installed()
+        assert (manifest.hf_repo, manifest.format, manifest.task) == (
+            "qwen3:0.6b",
+            ModelFormat.XDNA,
+            ModelTask.CHAT,
+        )
+        assert manifest.disk_size_bytes == 0
+        assert manifest.downloaded_at
+
+    def test_the_task_of_the_ticket_decides_the_role(self, tmp_path: Path) -> None:
+        xdna.write_ticket(tmp_path, "embed-gemma:300m", ModelTask.EMBEDDING)
+        ref = "embed-gemma:300m#xdna"
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cfg, "models_dir", tmp_path)
+            assert validate_model_task_assignment("embedding_model", ref, allow_bypass=False) == ref
+            with pytest.raises(ValueError, match="embedding"):
+                validate_model_task_assignment("chat_model", ref, allow_bypass=False)
+
+    def test_a_missing_ticket_is_not_listed_and_not_assignable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        assert ModelRegistry(tmp_path).list_installed() == []
+        assert ModelRegistry(tmp_path).get_manifest(self.REF) is None
+        with pytest.raises(ValueError, match="not installed"):
+            validate_model_task_assignment("chat_model", self.REF, allow_bypass=False)
+
+    def test_a_ticket_without_a_task_is_not_installed(self, tmp_path: Path) -> None:
+        path = xdna.ticket_path(tmp_path, "qwen3:0.6b")
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"checkpoint": "qwen3:0.6b"}), encoding="utf-8")
+        registry = ModelRegistry(tmp_path)
+        assert registry.list_installed() == []
+        assert registry.get_manifest(self.REF) is None
+        assert not registry.is_installed(self.REF)
+
+    def test_the_self_check_never_takes_a_ticket_for_a_gguf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pull(tmp_path, monkeypatch)
+        assert _installed_model_path(ModelTask.CHAT, self.REF) is None
+
+    def test_a_substitute_model_needs_an_engine_that_loads_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pull(tmp_path, monkeypatch)
+        monkeypatch.setattr(choice, "installed_engines", lambda: {})
+        assert _first_installed_local_ref(ModelTask.CHAT) is None
+        monkeypatch.setattr(
+            choice,
+            "installed_engines",
+            lambda: {EngineName.LEMONADE: frozenset({ModelFormat.XDNA})},
+        )
+        assert _first_installed_local_ref(ModelTask.CHAT) == self.REF
+
+    def test_removing_a_listed_tag_reports_no_freed_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._pull(tmp_path, monkeypatch)
+        result = remove_model_data(self.REF)
+        assert (result.deleted, result.freed_gb) == (True, 0.0)
+        assert ModelRegistry(tmp_path).list_installed() == []
+
+    def test_a_removed_tag_leaves_the_list(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.CHAT)
+        assert len(registry.list_installed()) == 1
+        assert registry.remove(self.REF) is True
+        assert registry.list_installed() == []
 
 
 class TestMemory:
