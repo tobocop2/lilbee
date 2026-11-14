@@ -13,6 +13,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
 from tests import _fake_sdk as fakes
 
@@ -118,6 +119,23 @@ def test_a_preset_404_after_the_first_chunk_names_the_url_and_the_role(
         _stream("wired/m", URL)(LiterLlmBackend())
     assert URL in str(err.value)
     assert "chat request" in str(err.value)
+
+
+@pytest.mark.parametrize("call", [LiterLlmBackend.complete, LiterLlmBackend.complete_stream])
+def test_a_vision_request_404_names_the_vision_role(
+    sdk: fakes.FakeSdk, call: Callable[..., object]
+) -> None:
+    request = CompletionRequest(
+        ref=parse_model_ref("wired/m"),
+        messages=MESSAGES,
+        api_base=URL,
+        role=WorkerRole.VISION,
+    )
+    with pytest.raises(ProviderError) as err:
+        list(call(LiterLlmBackend(), request))  # type: ignore[call-overload]
+    assert "vision request" in str(err.value)
+    assert "model loaded for the vision role" in str(err.value)
+    assert "chat" not in str(err.value)
 
 
 def test_a_preset_call_with_no_base_url_keeps_the_account_message(sdk: fakes.FakeSdk) -> None:

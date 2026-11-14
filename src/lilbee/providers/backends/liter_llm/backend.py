@@ -98,7 +98,7 @@ class LiterLlmBackend:
         """Run a single-shot completion through ``liter_llm.chat``."""
         liter_llm = _require_sdk()
         model = request.ref.for_display()
-        preset = _preset_call(request.ref, request.api_base, WorkerRole.CHAT)
+        preset = _preset_call(request.ref, request.api_base, request.role)
         try:
             fields = _chat_fields(request, stream=False)
             client = _client(
@@ -115,7 +115,7 @@ class LiterLlmBackend:
         choice = response.choices[0] if response.choices else None
         message = choice.message if choice is not None else None
         content = _text(message.content) if message is not None else ""
-        if message is not None and request.inline_reasoning:
+        if message is not None and request.role is WorkerRole.CHAT:
             content = inline_reasoning(_reasoning(message), content)
         return CompletionResult(
             content=content,
@@ -135,7 +135,7 @@ class LiterLlmBackend:
         """
         liter_llm = _require_sdk()
         model = request.ref.for_display()
-        preset = _preset_call(request.ref, request.api_base, WorkerRole.CHAT)
+        preset = _preset_call(request.ref, request.api_base, request.role)
         try:
             fields = _chat_fields(request, stream=True)
             client = _client(
@@ -148,7 +148,7 @@ class LiterLlmBackend:
             first = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
             raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
-        return self._stream_chunks(stream, first, model, preset, request.inline_reasoning)
+        return self._stream_chunks(stream, first, model, preset, request.role is WorkerRole.CHAT)
 
     @staticmethod
     def _stream_chunks(

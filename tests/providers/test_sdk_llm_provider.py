@@ -20,6 +20,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.local_servers import LocalServerSpec
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -296,6 +297,15 @@ class TestChatNonStream:
         assert req.ref.provider == "local"
         # A local HF ref is not a local-server ref, so it carries no api_base.
         assert req.api_base is None
+
+    def test_the_request_carries_the_role_of_the_call(self) -> None:
+        backend = FakeBackend()
+        provider = SdkLLMProvider(backend)
+        provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
+        provider.chat(
+            [{"role": "user", "content": "hi"}], model="openai/gpt-4o", role=WorkerRole.VISION
+        )
+        assert [req.role for req in backend.complete_calls] == [WorkerRole.CHAT, WorkerRole.VISION]
 
     def test_api_model_omits_api_base(self) -> None:
         backend = FakeBackend()
