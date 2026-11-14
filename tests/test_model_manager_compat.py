@@ -53,7 +53,7 @@ def test_pull_bypassed_with_allow_unsupported(
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, engine, on_bytes, cancel, allow_unsupported: (
+        lambda model, engine, on_bytes, on_notice, cancel, allow_unsupported: (
             captured.append(model) or models_dir / "x.gguf"
         ),
     )
@@ -73,7 +73,7 @@ def test_pull_proceeds_for_supported_arch(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, engine, on_bytes, cancel, allow_unsupported: (
+        lambda model, engine, on_bytes, on_notice, cancel, allow_unsupported: (
             captured.append(model) or models_dir / "x.gguf"
         ),
     )
@@ -92,7 +92,7 @@ def test_pull_proceeds_for_unknown_arch(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, engine, on_bytes, cancel, allow_unsupported: models_dir / "x.gguf",
+        lambda model, engine, on_bytes, on_notice, cancel, allow_unsupported: models_dir / "x.gguf",
     )
     result = mgr.pull("acme/foo-GGUF", ModelSource.NATIVE)
     assert result is not None
