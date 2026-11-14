@@ -18,6 +18,10 @@ def test_the_protocol_member_list_is_not_empty() -> None:
     assert {"target_env", "runtime_env", "launch_argv", "name", "bundled"} <= set(PROTOCOL_MEMBERS)
 
 
+def test_the_adapter_registry_is_not_empty() -> None:
+    assert len(ADAPTERS) > 0
+
+
 @pytest.mark.parametrize("adapter", ADAPTERS.values(), ids=lambda adapter: adapter.name)
 def test_an_adapter_defines_every_protocol_member(adapter: EngineAdapter) -> None:
     missing = [name for name in PROTOCOL_MEMBERS if not hasattr(adapter, name)]
