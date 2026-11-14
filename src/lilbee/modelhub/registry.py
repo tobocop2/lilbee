@@ -297,14 +297,23 @@ class ModelRegistry:
             raise KeyError(f"Model {ref} not installed")
         return ticket
 
+    def has_unreadable_ticket(self, ref: str) -> bool:
+        """True when *ref* is an NPU model whose ticket exists but cannot be read."""
+        try:
+            parsed = parse_model_ref(ref)
+        except ValueError:
+            return False
+        if parsed.format is not ModelFormat.XDNA:
+            return False
+        ticket = ticket_path(self._root, parsed.hf_repo)
+        return ticket.is_file() and self._ticket_manifest(ticket) is None
+
     def _ticket_manifest(self, ticket: Path) -> ModelManifest | None:
         """The manifest an NPU ticket stands for, or None when it is absent or unreadable."""
         try:
             tag = read_checkpoint(ticket)
             task = read_task(ticket)
         except ValueError:
-            if ticket.is_file():
-                log.warning("Corrupt ticket: %s", ticket)
             return None
         return ModelManifest(
             hf_repo=tag,
@@ -782,8 +791,14 @@ class ModelRegistry:
         An absent manifest tree is an empty list. A tree that is present but
         cannot be read raises ``OSError``, because "unknown" is not "none".
         """
-        tickets = (self._ticket_manifest(t) for t in ticket_paths(self._root))
-        return [*self._list_file_manifests(), *(m for m in tickets if m is not None)]
+        manifests = self._list_file_manifests()
+        for ticket in ticket_paths(self._root):
+            manifest = self._ticket_manifest(ticket)
+            if manifest is None:
+                log.warning("Ticket %s is unreadable. Pull the model again.", ticket)
+            else:
+                manifests.append(manifest)
+        return manifests
 
     def _list_file_manifests(self) -> list[ModelManifest]:
         """The installed models that have a manifest file and blobs on disk."""
