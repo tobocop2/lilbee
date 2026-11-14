@@ -247,7 +247,7 @@ def resolve_chat_ctx(
     from lilbee.providers.fleet.planning import fit_chat_ctx
 
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
-    ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
+    ceiling = chat_ctx_ceiling(meta, model_path)
     upper = chat_ctx_bound(meta, model_path)
     if engine.memory_kind is MemoryKind.FIXED_RESERVE:
         return upper

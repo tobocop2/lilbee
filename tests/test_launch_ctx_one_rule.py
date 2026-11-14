@@ -15,12 +15,13 @@ import pytest
 from lilbee.catalog import hf_client
 from lilbee.catalog.pull_fit import chat_pull_fit
 from lilbee.core.config import cfg
-from lilbee.providers import engine_params
+from lilbee.providers import engine_params, model_cache
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.mlx import MLX
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.roles import WorkerRole
 
@@ -128,3 +129,64 @@ def test_a_pin_is_priced_as_it_is_for_every_engine(
             )
             == 3000
         )
+
+
+_STATED = MemoryEstimate(
+    kind=MemoryKind.FIXED_RESERVE, device_bytes=_GB, host_bytes=0, shared_bytes=_GB
+)
+
+
+def _priced_contexts(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the context of every memory request an engine is asked to price."""
+    seen: list[int] = []
+
+    def estimate(self, request: MemoryRequest) -> MemoryEstimate:
+        seen.append(request.ctx)
+        return _STATED
+
+    for engine in (MISTRAL, MLX, LLAMA):
+        monkeypatch.setattr(type(engine), "estimate_memory", estimate)
+    return seen
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
+def test_the_role_estimate_prices_the_context_the_launch_serves(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, engine
+) -> None:
+    launched = _chat_launch(engine, 1).ctx
+    seen = _priced_contexts(monkeypatch)
+    planning._estimate_role(WorkerRole.CHAT, "ref", engine=engine, slots=1)
+    assert seen == [launched] == [_TARGET]
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
+def test_the_peak_estimator_prices_the_context_the_launch_serves(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, engine
+) -> None:
+    launched = _chat_launch(engine, 1).ctx
+    seen = _priced_contexts(monkeypatch)
+    planning._peak_estimator({WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: engine})(
+        WorkerRole.CHAT, (1,)
+    )
+    assert seen == [launched] == [_TARGET]
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
+def test_the_split_objective_aims_at_the_context_the_launch_serves(folder: Path, engine) -> None:
+    _fit, target = planning._chat_split_ctx_objective(
+        {WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: engine}
+    )
+    assert target == _chat_launch(engine, 1).ctx == _TARGET
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
+def test_the_fallback_floor_charges_the_cache_of_the_context_the_launch_serves(
+    folder: Path, engine
+) -> None:
+    weights = 4 * _GB
+    meta = engine.model_meta(folder)
+    slots = planning._placement_estimate_slots(WorkerRole.CHAT, meta)
+    cache_per_token = model_cache.kv_bytes_per_token(meta, 2, 2)
+    overhead = int(weights * model_cache._BUFFER_OVERHEAD_FRACTION)
+    floor = planning._fallback_floor_for(WorkerRole.CHAT, "ref", weights, engine=engine)
+    assert floor == weights + cache_per_token * _TARGET * slots + overhead
