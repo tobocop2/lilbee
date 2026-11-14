@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.app.models import remove_model_data
+from lilbee.app.models import remove_model_data, show_model_data
 from lilbee.catalog import xdna
 from lilbee.catalog.download import download_model
 from lilbee.catalog.formats import formats_from_tags, select_files
@@ -17,6 +17,7 @@ from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.commands.setup import _installed_model_path
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
+from lilbee.modelhub.model_manager import ModelNotFoundError
 from lilbee.modelhub.model_manager.validation import _first_installed_local_ref
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.modelhub.role_validator import validate_model_task_assignment
@@ -172,8 +173,8 @@ class TestInstalledList:
         assert manifest.downloaded_at
 
     def test_the_task_of_the_ticket_decides_the_role(self, tmp_path: Path) -> None:
-        xdna.write_ticket(tmp_path, "embed-gemma:300m", ModelTask.EMBEDDING)
-        ref = "embed-gemma:300m#xdna"
+        xdna.write_ticket(tmp_path, "qwen3:0.6b", ModelTask.EMBEDDING)
+        ref = "qwen3:0.6b#xdna"
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(cfg, "models_dir", tmp_path)
             assert validate_model_task_assignment("embedding_model", ref, allow_bypass=False) == ref
@@ -189,14 +190,43 @@ class TestInstalledList:
         with pytest.raises(ValueError, match="not installed"):
             validate_model_task_assignment("chat_model", self.REF, allow_bypass=False)
 
-    def test_a_ticket_without_a_task_is_not_installed(self, tmp_path: Path) -> None:
+    def _old_ticket(self, tmp_path: Path) -> None:
         path = xdna.ticket_path(tmp_path, "qwen3:0.6b")
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"checkpoint": "qwen3:0.6b"}), encoding="utf-8")
+
+    def test_a_ticket_without_a_task_is_not_installed(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._old_ticket(tmp_path)
         registry = ModelRegistry(tmp_path)
-        assert registry.list_installed() == []
         assert registry.get_manifest(self.REF) is None
         assert not registry.is_installed(self.REF)
+        assert registry.has_unreadable_ticket(self.REF)
+        assert "Pull the model again" not in caplog.text
+        assert registry.list_installed() == []
+        assert caplog.text.count("Pull the model again") == 1
+
+    def test_a_ticket_without_a_task_tells_the_user_to_pull_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        self._old_ticket(tmp_path)
+        with pytest.raises(ModelNotFoundError, match="Pull it again"):
+            show_model_data(self.REF)
+
+    @pytest.mark.parametrize("ref", ["qwen3:0.6b#xdna", "org/repo/m.gguf", "bad#nope"])
+    def test_no_unreadable_ticket_for_a_ref_without_one(self, tmp_path: Path, ref: str) -> None:
+        assert not ModelRegistry(tmp_path).has_unreadable_ticket(ref)
+
+    def test_the_self_check_says_it_skips_a_ticket(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._pull(tmp_path, monkeypatch)
+        assert _installed_model_path(ModelTask.CHAT, self.REF) is None
+        assert (
+            f"Skipping {self.REF}: the self-check loads GGUF files only." in capsys.readouterr().out
+        )
 
     def test_the_self_check_never_takes_a_ticket_for_a_gguf(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
