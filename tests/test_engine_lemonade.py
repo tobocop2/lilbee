@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from lilbee.app import engine_service
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import host_caps
@@ -348,3 +350,84 @@ def test_s9_a_store_never_takes_lemonade_vectors_by_default() -> None:
 
 def test_the_adapter_ships_in_the_choice_table() -> None:
     assert choice.ADAPTERS[EngineName.LEMONADE] is LEMONADE
+
+
+INSTALL_GUIDE = "https://lemonade-server.ai/docs/guide/install/"
+EMBEDDABLE = "https://github.com/lemonade-sdk/lemonade/releases/tag/v2026.44.1"
+USER_LEMOND = Path("/opt/lemonade/lemond")
+
+
+def _no_store_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(choice, "store_tool", lambda *_a: None)
+
+
+def test_g3_a_lemond_on_path_is_the_binary_when_the_store_has_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The upstream embeddable README names the ``lemond`` executable (``lemond.exe`` on
+    Windows) as the Lemonade instance:
+    https://github.com/lemonade-sdk/lemonade/blob/v2026.44.1/docs/embeddable/README.md
+    """
+    _no_store_build(monkeypatch)
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: str(USER_LEMOND))
+    assert LEMONADE.binary() == USER_LEMOND
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX execute bit")
+def test_g3_a_lemond_file_that_is_not_executable_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real mode-644 ``lemond`` on PATH is no binary; ``shutil.which`` is not mocked."""
+    _no_store_build(monkeypatch)
+    fake = tmp_path / "lemond"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o644)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert LEMONADE.user_binary() is None
+    assert EngineName.LEMONADE not in choice.installed_engines()
+    fake.chmod(0o755)
+    assert LEMONADE.user_binary() == fake
+
+
+def test_g3_a_store_build_wins_over_the_one_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(choice, "store_tool", lambda *_a: BINARY)
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: str(USER_LEMOND))
+    assert LEMONADE.binary() == BINARY
+
+
+def test_g3_the_lookup_asks_for_lemond(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: asked.append(name))
+    assert LEMONADE.user_binary() is None
+    assert asked == ["lemond"]
+
+
+def test_g3_a_missing_install_says_where_to_get_lemonade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_store_build(monkeypatch)
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: None)
+    with pytest.raises(ProviderError) as exc:
+        LEMONADE.binary()
+    text = str(exc.value)
+    assert INSTALL_GUIDE in text
+    assert EMBEDDABLE in text
+    assert "PATH" in text
+    assert "lilbee engine install" not in text
+
+
+def test_g3_a_lemond_on_path_counts_as_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: str(USER_LEMOND))
+    assert EngineName.LEMONADE in choice.installed_engines()
+    monkeypatch.setattr(lemonade.shutil, "which", lambda name: None)
+    assert EngineName.LEMONADE not in choice.installed_engines()
+
+
+def test_g3_install_refuses_with_the_user_install_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Lemonade pack is published, so ``engine install`` points at the upstream install."""
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: _host("amd-xdna2-linux"))
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install("lemonade")
+    text = str(exc.value)
+    assert "No pack of lemonade is published yet." in text
+    assert INSTALL_GUIDE in text
