@@ -6,10 +6,12 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import choice, lemonade, openvino
 from lilbee.providers.fleet.engines.base import LaunchRequest
+from lilbee.providers.fleet.host_caps import collect
 
 BINARY = PurePosixPath("/engines/bin/server")
 MODEL = PurePosixPath("/models/model.gguf")
@@ -26,6 +28,11 @@ def launch_argvs(
     both = staticmethod(lambda _binary: frozenset({"CPU", "GPU"}))
     monkeypatch.setattr(openvino.OpenvinoAdapter, "_listed", both)
     monkeypatch.setattr(cfg, "models_dir", models_dir)
+    monkeypatch.setattr(
+        runnable,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
+    )
     monkeypatch.setattr(lemonade, "resolve_llama_server", lambda: Path("/engines/llama-server"))
     request = LaunchRequest(
         binary=Path(BINARY),
