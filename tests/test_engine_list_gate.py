@@ -241,3 +241,20 @@ def test_a_host_refused_engine_with_no_build_gives_the_reason_not_the_list(
     assert "not offered on linux x86_64" in message
     assert "engine list" not in message
     assert not re.search(r"\. (?!mlx|ik_llama)[a-z]", message)
+
+
+@pytest.mark.parametrize("choose", [engine_service.prefer, None], ids=["prefer", "use"])
+@pytest.mark.parametrize(
+    ("engine", "model"),
+    [("mlx", "org/repo#mlx"), ("tei", "org/repo#safetensors")],
+    ids=["mlx", "tei"],
+)
+def test_an_unreadable_host_gives_prefer_and_use_the_answer_the_list_gives(
+    monkeypatch: pytest.MonkeyPatch, choose: object, engine: str, model: str
+) -> None:
+    _use_host(monkeypatch, "", "")
+    monkeypatch.setattr(engine_service, "installed_engines", lambda: {})
+    assert engine not in engine_service.not_installed()
+    message = str(_refuse(choose, model, engine))
+    assert message.startswith(f"Engine {engine} is not installed, and this computer cannot run it.")
+    assert "engine list" not in message

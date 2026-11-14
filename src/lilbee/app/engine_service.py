@@ -50,6 +50,7 @@ from lilbee.providers.fleet.engines.choice import (
     engines_loading,
     installed_engines,
 )
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
@@ -176,9 +177,10 @@ def _require_installed(name: EngineName, installed: InstalledEngines) -> None:
     """
     if name in installed:
         return
-    refusal = choice.host_answer(name, session_host)
+    has_build = name in installed_engines()
+    refusal = choice.host_answer(name, session_host) if has_build else _install_gate(name)
     if not refusal.ok:
-        state = "installed, but" if name in installed_engines() else "not installed, and"
+        state = "installed, but" if has_build else "not installed, and"
         raise EngineRefusedError(
             f"Engine {name} is {state} this computer cannot run it. {refusal.reason}".rstrip()
         )
@@ -301,9 +303,12 @@ def roles(config: Config = cfg) -> list[RoleView]:
     return views
 
 
-def _offered(adapter: EngineAdapter) -> bool:
-    """True when an install of *adapter* passes the host gate; a bundled engine reads nothing."""
-    return adapter.bundled or choice.install_answer(adapter, session_host()).ok
+def _install_gate(name: EngineName) -> HostGate:
+    """What the host says about installing the engine *name*; a bundled engine reads nothing."""
+    adapter = choice.ADAPTERS.get(name)
+    if adapter is None or adapter.bundled:
+        return PASS
+    return choice.install_answer(adapter, session_host())
 
 
 def offered_engines() -> choice.InstalledEngines:
@@ -318,11 +323,9 @@ def offered_engines() -> choice.InstalledEngines:
 def not_installed() -> list[str]:
     """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    missing = [
-        (name, adapter) for name, adapter in choice.ADAPTERS.items() if name not in installed
-    ]
-    offered = [str(name) for name, adapter in missing if _offered(adapter)]
-    hidden = [str(name) for name, _ in missing if str(name) not in offered]
+    missing = [name for name in choice.ADAPTERS if name not in installed]
+    offered = [str(name) for name in missing if _install_gate(name).ok]
+    hidden = [str(name) for name in missing if str(name) not in offered]
     host = session_host()
     if hidden and (host.os is None or host.arch is None):
         log.warning(
