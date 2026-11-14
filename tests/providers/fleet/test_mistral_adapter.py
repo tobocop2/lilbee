@@ -647,6 +647,26 @@ def test_an_uneven_split_is_refused_for_the_engine_that_cannot_run_it(
         _split_argv(tmp_path, split)
 
 
+@pytest.mark.parametrize("split", [(1, 1), (5, 3, 2)])
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
+def test_a_split_launch_passes_the_planned_context_with_the_layer_map(
+    role: WorkerRole, split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=len(split))
+    _gguf_layers(monkeypatch, {"block_count": "32"})
+    req = request(
+        tmp_path,
+        model_path=tmp_path / "m.gguf",
+        devices=tuple(range(len(split))),
+        tensor_split=split,
+        ctx_per_slot=2048,
+    )
+    argv = MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), req)
+    assert argv[argv.index("--max-model-len") + 1] == "2048"
+    assert len(_layer_map(argv).split(";")) == len(split)
+    assert argv.index("--max-model-len") < argv.index("-m")
+
+
 def test_one_card_and_the_cpu_target_name_no_layer_map(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -842,8 +862,19 @@ def test_a_split_estimate_of_a_folder_charges_each_card_its_layer_share(tmp_path
     folder = tmp_path / "st"
     folder.mkdir()
     (folder / "model.safetensors").write_bytes(b"x" * 4000)
-    (folder / "config.json").write_text('{"num_hidden_layers": 40}', encoding="utf-8")
-    assert _estimate(folder, (1, 1)).per_device == (2000, 2000)
+    config = {
+        "num_hidden_layers": 40,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 4,
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    cache = 2 * 40 * 1 * 4 * 2 * 4096
+    total = 4000 + cache + 512 * 1024**2
+    estimate = _estimate(folder, (1, 1))
+    assert estimate.size_known is True
+    assert estimate.device_bytes == total
+    assert estimate.per_device == (total // 2, total // 2)
 
 
 @pytest.mark.parametrize("meta", [None, {"block_count": "4"}])
