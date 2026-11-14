@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,18 +16,18 @@ def test_integration_target_runs_the_integration_directory() -> None:
     assert "tests/integration/" in match.group(1).split()
 
 
-def _makefile() -> str:
-    return (ROOT / "Makefile").read_text(encoding="utf-8")
-
-
-def test_check_runs_the_preset_replay_target() -> None:
-    match = re.search(r"^check:(.+?)(?:##.*)?$", _makefile(), re.MULTILINE)
-    assert match, "Makefile has no check target"
-    assert "test-presets" in match.group(1).split()
-
-
-def test_preset_target_runs_the_replay_file() -> None:
-    match = re.search(r"^test-presets:\n\t(.+)$", _makefile(), re.MULTILINE)
-    assert match, "Makefile has no test-presets target"
-    assert "tests/integration/test_preset_fixtures.py" in match.group(1).split()
-    assert (ROOT / "tests/integration/test_preset_fixtures.py").is_file()
+def test_check_runs_pytest_on_the_preset_replay() -> None:
+    replay = "tests/integration/test_preset_fixtures.py"
+    dry_run = subprocess.run(
+        ["make", "-n", "check"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    commands = [line.split() for line in dry_run.stdout.splitlines()]
+    assert any(words[:3] == ["uv", "run", "pytest"] and replay in words for words in commands), (
+        "make check does not run pytest on the preset replay"
+    )
+    assert (ROOT / replay).is_file()
