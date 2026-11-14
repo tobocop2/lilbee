@@ -21,7 +21,9 @@ from lilbee.providers.fleet.gpu_select import PCIVendorID
 _TOOL = "nvidia-smi"
 _QUERY = "index,utilization.gpu,temperature.gpu,memory.used,memory.total"
 _FIELDS = 5
-_CARD_QUERY = "index,uuid,name,memory.total,memory.free"
+# The name is the last column: it is the only field that can hold a comma, and the row splits at
+# the first four commas only.
+_CARD_QUERY = "index,uuid,memory.total,memory.free,name"
 _CARD_FIELDS = 5
 _COMPUTE_QUERY = "index,compute_cap"
 _COMPUTE_FIELDS = 2
@@ -67,8 +69,7 @@ class _Probe:
 
     def read(self) -> Reading:
         with self._lock:
-            ttl = _WEDGED_TTL_S if self._reading.timed_out else self._ttl_s
-            if self._primed and time.monotonic() - self._at < ttl:
+            if self._primed and time.monotonic() - self._at < self._ttl():
                 return self._reading
             started = time.monotonic()
             out = run_smi(_TOOL, self._args, _TIMEOUT_S)
@@ -78,6 +79,12 @@ class _Probe:
             self._at = time.monotonic()
             self._primed = True
             return self._reading
+
+    def _ttl(self) -> float:
+        """How long the last reading stays valid; only an answer lives for the full TTL."""
+        if self._reading.timed_out:
+            return _WEDGED_TTL_S
+        return self._ttl_s if self._reading.out else min(self._ttl_s, _CACHE_TTL_S)
 
     def reset(self) -> None:
         with self._lock:
@@ -122,7 +129,8 @@ class SmiCache:
 
 _cache = SmiCache()
 _cards_probe = _Probe(_CARD_ARGS, _CACHE_TTL_S)
-# The compute capability and the driver CUDA version do not change while the process runs.
+# The compute capability and the driver CUDA version do not change while the process runs;
+# an answer stays for the process and a failure is read again.
 _compute_probe = _Probe(_COMPUTE_ARGS, math.inf)
 _cuda_probe = _Probe(_CUDA_ARGS, math.inf)
 
@@ -136,6 +144,24 @@ class NvidiaCard:
     name: str
     total_bytes: int
     free_bytes: int
+
+
+@dataclass(frozen=True)
+class _Listed:
+    """One row of the card query; a memory figure is ``None`` when nvidia-smi prints [N/A]."""
+
+    index: int
+    uuid: str
+    name: str
+    total_mib: int | None
+    free_mib: int | None
+
+    def card(self) -> NvidiaCard | None:
+        if self.total_mib is None or self.free_mib is None:
+            return None
+        return NvidiaCard(
+            self.index, self.uuid, self.name, self.total_mib * MIB, self.free_mib * MIB
+        )
 
 
 class NvidiaBackend:
@@ -153,12 +179,19 @@ def card_count() -> int:
 
 
 def cards() -> list[NvidiaCard]:
-    """Each card in driver order; empty when nvidia-smi cannot run or any row is unreadable.
+    """Each card in driver order; empty when nvidia-smi cannot run or any card's memory is unread.
 
     A card whose memory did not read is not dropped: dropping it would renumber the
     cards after it, so the whole answer is unknown instead.
     """
-    return _parse_cards(_cards_probe.read().out)
+    listed = _listed(_cards_probe.read().out)
+    found = [card for card in map(_Listed.card, listed) if card is not None]
+    return found if len(found) == len(listed) else []
+
+
+def readable_cards() -> list[NvidiaCard]:
+    """The cards whose memory read, in driver order; empty when nvidia-smi cannot run."""
+    return [card for card in map(_Listed.card, _listed(_cards_probe.read().out)) if card]
 
 
 def host_facts() -> dict[str, Any] | None:
@@ -171,7 +204,7 @@ def host_facts() -> dict[str, Any] | None:
     listed = _cards_probe.read()
     if listed.timed_out:
         return {"cuda_driver": None, "gpus": None}
-    found = _parse_cards(listed.out)
+    found = _listed(listed.out)
     if not found:
         return None
     caps = _compute_caps(_compute_probe.read().out)
@@ -200,16 +233,12 @@ def _compute_caps(out: str) -> dict[int, list[int]]:
     return caps
 
 
-def _parse_cards(out: str) -> list[NvidiaCard]:
-    """The cards in five-column CSV; empty when any row with an index lacks its memory."""
-    found = []
-    for index, parts in _rows(out, _CARD_FIELDS):
-        total_mib = _as_int(parts[3])
-        free_mib = _as_int(parts[4])
-        if total_mib is None or free_mib is None:
-            return []
-        found.append(NvidiaCard(index, parts[1], parts[2], total_mib * MIB, free_mib * MIB))
-    return found
+def _listed(out: str) -> list[_Listed]:
+    """Every card row of the card query, whether or not its memory read."""
+    return [
+        _Listed(index, parts[1], parts[4], _as_int(parts[2]), _as_int(parts[3]))
+        for index, parts in _rows(out, _CARD_FIELDS)
+    ]
 
 
 def _as_int(field: str) -> int | None:
@@ -223,7 +252,7 @@ def _as_int(field: str) -> int | None:
 def _rows(out: str, fields: int) -> Iterator[tuple[int, list[str]]]:
     """(index, fields) for each CSV row of *fields* columns; a row with no index names no card."""
     for line in out.splitlines():
-        parts = [p.strip() for p in line.split(",")]
+        parts = [p.strip() for p in line.split(",", fields - 1)]
         if len(parts) != fields:
             continue
         index = _as_int(parts[0])

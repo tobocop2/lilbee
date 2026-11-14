@@ -26,7 +26,7 @@ def _smi_prints(_tool: str, args: list[str], _timeout: float = 5.0) -> str:
         return "<nvidia_smi_log><cuda_version>12.8</cuda_version></nvidia_smi_log>\n"
     if any("compute_cap" in a for a in args):
         return "0, 8.6\n"
-    return "0, GPU-0, Test GPU, 1000, 900\n"
+    return "0, GPU-0, 1000, 900, Test GPU\n"
 
 
 def _recorded(name: str) -> dict:
