@@ -34,7 +34,7 @@ def _host(system: str, machine: str) -> host_caps.HostCaps:
         system=system,
         machine=machine,
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
-        nvml=None,
+        nvidia=None,
     )
 
 

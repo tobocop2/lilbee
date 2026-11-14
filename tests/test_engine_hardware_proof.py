@@ -113,7 +113,7 @@ def test_l2_the_install_response_carries_not_run_on(
 
 
 def test_l3_auto_skips_an_engine_with_a_device_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None, mac_ver="15.2")
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None, mac_ver="15.2")
     installed = {
         EngineName.MLX: frozenset({ModelFormat.MLX}),
         EngineName.LLAMA: frozenset({ModelFormat.MLX}),

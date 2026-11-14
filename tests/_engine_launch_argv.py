@@ -37,7 +37,7 @@ def launch_argvs(
     monkeypatch.setattr(
         runnable,
         "session_host",
-        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
     ticket = xdna.write_ticket(models_dir, "qwen3:0.6b")
     request = LaunchRequest(

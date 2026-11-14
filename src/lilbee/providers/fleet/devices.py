@@ -21,7 +21,6 @@ from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
-from lilbee.providers.fleet.host_caps import read_card_memory
 from lilbee.providers.fleet.proc import run_bounded
 from lilbee.providers.roles import EngineBackend
 
@@ -637,10 +636,12 @@ def _compose_visible(indices: list[int], parent_value: str | None) -> str:
 
 
 def visible_nvidia_cards() -> list[FleetDevice]:
-    """The NVIDIA cards a child would see, numbered as CUDA numbers them; starts no process."""
+    """The NVIDIA cards a child would see, in CUDA numbering; starts a cached nvidia-smi child."""
+    # circular: nvidia -> devices via MIB
+    from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
     from lilbee.providers.fleet.gpu_env import gpu_environ
 
-    cards = read_card_memory()
+    cards = read_cards()
     mask = gpu_environ().get(_CUDA_VISIBLE_VAR)
     if mask is not None:
         named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}

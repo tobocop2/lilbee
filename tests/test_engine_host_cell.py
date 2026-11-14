@@ -66,7 +66,7 @@ def mac(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     monkeypatch.setattr(cfg, "models_dir", models_dir)
-    host = collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None)
+    host = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     wheel = tmp_path / "fixture.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
