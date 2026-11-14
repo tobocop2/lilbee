@@ -76,7 +76,7 @@ Tests live under `tests/`, mirroring the source layout, with `tests/integration/
 
 ```bash
 make format        # auto-format (ruff)
-make check         # lint + license-check + format-check + typecheck + tests (same as CI)
+make check         # lint + license-check + format-check + typecheck + tests + preset replay (same as CI)
 ```
 
 `make check` is the gate CI runs. Run it locally and make sure it's green before opening a PR.
