@@ -178,7 +178,15 @@ class TestAPullOfAFolder:
 
 
 class TestAVisionFolderInAPlan:
-    def _plan(self, monkeypatch, tmp_path: Path, chat: int, vision: int, spec: str | None):
+    def _plan(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+        chat: int,
+        vision: int,
+        spec: str | None,
+        config: dict = _VISION_CONFIG,
+    ):
         """Plan a real-size chat GGUF and a vision folder through the real adapter."""
         real_mmproj = planning._vision_mmproj
         prepare_host(
@@ -187,7 +195,7 @@ class TestAVisionFolderInAPlan:
         monkeypatch.setattr(planning, "_vision_mmproj", real_mmproj)
         chat_file = tmp_path / "chat.gguf"
         state_size(chat_file, chat)
-        folder = _flat_folder(tmp_path, _VISION_CONFIG, vision)
+        folder = _flat_folder(tmp_path, config, vision)
         monkeypatch.setattr(
             engine_params,
             "resolve_model_path",
@@ -200,9 +208,17 @@ class TestAVisionFolderInAPlan:
         return folder, planning.plan_all_launches(engines=dict.fromkeys(WorkerRole, engine))
 
     def test_the_launch_passes_the_folder_and_no_projector(self, tmp_path, monkeypatch) -> None:
-        folder, plan = self._plan(monkeypatch, tmp_path, GIB, 2 * GIB, None)
+        config = {
+            **_VISION_CONFIG,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+        }
+        folder, plan = self._plan(monkeypatch, tmp_path, GIB, 2 * GIB, None, config)
         launch = next(item for item in plan.launches if item.role is WorkerRole.VISION)
-        assert launch.est_vram_bytes == 2 * GIB
+        cache = 2 * 2 * 1 * 4 * 2 * launch.ctx * launch.slots
+        assert launch.est_vram_bytes == 2 * GIB + cache + 512 * 1024**2
         assert launch.est_unreported_bytes == 0
         assert str(folder) in launch.argv
         assert not any("mmproj" in part for part in launch.argv)
