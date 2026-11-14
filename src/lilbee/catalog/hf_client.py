@@ -380,8 +380,8 @@ class HfClient:
     def fetch_engine_models(self, engine: ListsModels) -> list[CatalogModel]:
         """The rows of the model list that *engine* publishes, cached for ``CACHE_TTL``.
 
-        A failed read (HTTP error, network error, bad JSON, wrong shape) gives no rows and
-        is not cached, so the next browse reads again.
+        A failed read (HTTP error, network error, bad JSON, wrong shape) gives no rows, and
+        the empty answer is cached too, so a browse in the same window makes no request.
         """
         key = engine.models_url
         now = time.monotonic()
@@ -396,7 +396,7 @@ class HfClient:
             rows = engine.parse_models(resp.json())
         except (httpx.HTTPError, ValueError) as exc:
             self._log_fetch_failure(exc, source=f"the {engine.name} model list")
-            return []
+            rows = []
         with self._cache_lock:
             self._engine_cache[key] = (now, rows)
         return rows
