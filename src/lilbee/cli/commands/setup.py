@@ -98,12 +98,15 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
     so the check exercises the model the user actually runs.
     """
     from lilbee.catalog.query import reclassify_by_name
+    from lilbee.catalog.types import ModelFormat
     from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
     try:
         manifests = [
-            m for m in registry.list_installed() if reclassify_by_name(m.ref, m.task) == want
+            m
+            for m in registry.list_installed()
+            if m.format is ModelFormat.GGUF and reclassify_by_name(m.ref, m.task) == want
         ]
     except Exception:
         return None
