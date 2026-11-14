@@ -40,18 +40,26 @@ class UtilBackend(Protocol):
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]: ...
 
 
+def run_tool(tool: str, args: Sequence[str], timeout: float) -> tuple[str, int | None]:
+    """Resolve tool via shutil.which and run it: ``(stdout, exit code)``.
+
+    The exit code is ``None`` when the tool cannot start or hits the time limit.
+    """
+    binary = shutil.which(tool) or tool
+    try:
+        return run_bounded(
+            [binary, *args], timeout_s=timeout, kill_wait_s=_SMI_KILL_WAIT_S, label=tool
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "", None
+
+
 def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> str:
     """Resolve tool via shutil.which, run it, return stdout on rc==0 else "".
 
     Returns "" when the tool is not found, exits non-zero, or raises.
     """
-    binary = shutil.which(tool) or tool
-    try:
-        stdout, returncode = run_bounded(
-            [binary, *args], timeout_s=timeout, kill_wait_s=_SMI_KILL_WAIT_S, label=tool
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    stdout, returncode = run_tool(tool, args, timeout)
     return stdout if returncode == 0 else ""
 
 
