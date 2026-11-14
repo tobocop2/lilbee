@@ -43,7 +43,11 @@ def _amd_gpu_present() -> bool:
     and the failure this guards is precisely ROCm being installed wrong, so a
     tool-based check would report "no GPU" for the case it exists to catch.
     """
-    if not Path("/dev/kfd").exists():
+    try:
+        kfd_present = Path("/dev/kfd").exists()
+    except PermissionError:
+        kfd_present = True  # a node the user may not stat is still there
+    if not kfd_present:
         return False
     for vendor in Path("/sys/class/drm").glob("card*/device/vendor"):
         try:
