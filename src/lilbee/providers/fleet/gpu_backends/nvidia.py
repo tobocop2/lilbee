@@ -12,10 +12,11 @@ import threading
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any, NamedTuple
 
 from lilbee.providers.fleet.devices import MIB
-from lilbee.providers.fleet.gpu_backends.base import UtilSample, run_smi
+from lilbee.providers.fleet.gpu_backends.base import UtilSample, run_tool
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 
 _TOOL = "nvidia-smi"
@@ -41,13 +42,27 @@ _CUDA_VERSION = re.compile(r"<cuda_version>\s*(\d+)\.(\d+)\s*</cuda_version>")
 # CUDA 12.4 is 12040: the encoding the host answer reads its driver CUDA version in.
 CUDA_MAJOR_UNIT = 1000
 CUDA_MINOR_UNIT = 10
+_NA = "[N/A]"
+
+
+class _SmiExit(IntEnum):
+    """The nvidia-smi exit codes that say the host has no usable driver or no card."""
+
+    NO_DEVICES = 6
+    DRIVER_NOT_LOADED = 9
+    LIBRARY_NOT_FOUND = 12
+
+
+# A tool that cannot start has no exit code; it reads as no driver, as these exits do.
+_NO_DRIVER_EXITS = frozenset({None, *_SmiExit})
 
 
 class Reading(NamedTuple):
-    """What one probe printed, and whether it ended by hitting the time limit."""
+    """What one probe printed on exit 0, whether it hit the time limit, and its exit code."""
 
     out: str
     timed_out: bool
+    returncode: int | None
 
 
 class _Probe:
@@ -64,7 +79,7 @@ class _Probe:
         self._ttl_s = ttl_s
         self._lock = threading.Lock()
         self._at = 0.0
-        self._reading = Reading("", False)
+        self._reading = Reading("", False, None)
         self._primed = False
 
     def read(self) -> Reading:
@@ -72,9 +87,11 @@ class _Probe:
             if self._primed and time.monotonic() - self._at < self._ttl():
                 return self._reading
             started = time.monotonic()
-            out = run_smi(_TOOL, self._args, _TIMEOUT_S)
-            # run_bounded returns "" at the limit; a tool that fails at once returns "" quickly.
-            self._reading = Reading(out, not out and time.monotonic() - started >= _TIMEOUT_S)
+            printed, code = run_tool(_TOOL, self._args, _TIMEOUT_S)
+            out = printed if code == 0 else ""
+            # No exit code at the limit; a tool that fails at once returns quickly.
+            timed_out = code is None and time.monotonic() - started >= _TIMEOUT_S
+            self._reading = Reading(out, timed_out, code)
             # Stamp after the probe: a probe that takes seconds must not age its own entry.
             self._at = time.monotonic()
             self._primed = True
@@ -89,7 +106,7 @@ class _Probe:
     def reset(self) -> None:
         with self._lock:
             self._primed = False
-            self._reading = Reading("", False)
+            self._reading = Reading("", False, None)
 
 
 class SmiCache:
@@ -157,7 +174,7 @@ class _Listed:
     free_mib: int | None
 
     def card(self) -> NvidiaCard | None:
-        if self.total_mib is None or self.free_mib is None:
+        if self.total_mib is None or self.free_mib is None or _NA in (self.uuid, self.name):
             return None
         return NvidiaCard(
             self.index, self.uuid, self.name, self.total_mib * MIB, self.free_mib * MIB
@@ -179,41 +196,53 @@ def card_count() -> int:
 
 
 def cards() -> list[NvidiaCard]:
-    """Each card in driver order; empty when nvidia-smi cannot run or any card's memory is unread.
+    """Each card in driver order; empty when nvidia-smi cannot run or any card does not read.
 
-    A card whose memory did not read is not dropped: dropping it would renumber the
-    cards after it, so the whole answer is unknown instead.
+    A row that does not parse, or a card whose uuid, name or memory prints [N/A], is not
+    dropped: dropping it would renumber the cards after it, so the whole answer is unknown.
     """
     listed = _listed(_cards_probe.read().out)
-    found = [card for card in map(_Listed.card, listed) if card is not None]
-    return found if len(found) == len(listed) else []
+    found = [row.card() for row in listed if row is not None]
+    readable = [card for card in found if card is not None]
+    return readable if len(readable) == len(listed) else []
 
 
 def card_totals() -> list[tuple[str, int]]:
-    """``(uuid, total bytes)`` of each card whose total memory reads, in driver order."""
+    """``(uuid, total bytes)`` of each card whose row parses and whose total reads."""
     listed = _listed(_cards_probe.read().out)
-    return [(c.uuid, c.total_mib * MIB) for c in listed if c.total_mib is not None]
+    return [
+        (row.uuid, row.total_mib * MIB)
+        for row in listed
+        if row is not None and row.total_mib is not None
+    ]
 
 
 def host_facts() -> dict[str, Any] | None:
     """The driver CUDA version and each card's compute capability, or ``None`` with no driver.
 
-    ``None`` means nvidia-smi is absent or fails at once. A probe that hit its time limit
-    gives every field ``None``: the driver is there and its state is unknown. The
-    ``cuda_driver`` field is the CUDA version as ``major * 1000 + minor * 10``.
+    ``None`` means nvidia-smi is absent or exits with a code that names no driver or no
+    card. Any other failure gives every field ``None``: the driver is there and its state
+    is unknown. ``gpus`` is ``None`` when a card row does not read. The ``cuda_driver``
+    field is the CUDA version as ``major * 1000 + minor * 10``.
     """
-    listed = _cards_probe.read()
-    if listed.timed_out:
-        return {"cuda_driver": None, "gpus": None}
-    found = _listed(listed.out)
-    if not found:
-        return None
-    caps = _compute_caps(_compute_probe.read().out)
-    gpus = [{"name": c.name, "cc": caps[c.index]} for c in found if c.index in caps]
+    reading = _cards_probe.read()
+    if reading.returncode != 0:
+        return _failed_facts(reading)
+    listed = _listed(reading.out)
+    named = [row for row in listed if row is not None and row.name != _NA]
+    caps = _compute_caps(_compute_probe.read().out) if named else {}
+    gpus = [{"name": row.name, "cc": caps[row.index]} for row in named if row.index in caps]
     return {
         "cuda_driver": _cuda_code(_cuda_probe.read().out),
-        "gpus": gpus if len(gpus) == len(found) else None,
+        "gpus": gpus if len(gpus) == len(listed) else None,
     }
+
+
+def _failed_facts(reading: Reading) -> dict[str, Any] | None:
+    """The host facts of a card probe that did not exit 0."""
+    if not reading.timed_out and reading.returncode in _NO_DRIVER_EXITS:
+        return None
+    return {"cuda_driver": None, "gpus": None}
 
 
 def _cuda_code(xml: str) -> int | None:
@@ -227,16 +256,21 @@ def _cuda_code(xml: str) -> int | None:
 def _compute_caps(out: str) -> dict[int, list[int]]:
     """Compute capability ``[major, minor]`` per card index; a card that prints none is absent."""
     caps: dict[int, list[int]] = {}
-    for index, parts in _rows(out, _COMPUTE_FIELDS):
+    for index, parts in _numbered(out, _COMPUTE_FIELDS):
+        if parts is None:
+            continue
         major, _, minor = parts[1].partition(".")
         if major.isdigit() and minor.isdigit():
             caps[index] = [int(major), int(minor)]
     return caps
 
 
-def _listed(out: str) -> list[_Listed]:
-    """Every card row of the card query, whether or not its memory read."""
-    return [_listed_row(index, parts) for index, parts in _rows(out, len(_CARD_COLUMNS))]
+def _listed(out: str) -> list[_Listed | None]:
+    """Every row of the card query, ``None`` for a row that does not parse."""
+    return [
+        None if parts is None else _listed_row(index, parts)
+        for index, parts in _numbered(out, len(_CARD_COLUMNS))
+    ]
 
 
 def _listed_row(index: int, parts: list[str]) -> _Listed:
@@ -255,14 +289,28 @@ def _as_int(field: str) -> int | None:
         return None
 
 
+def _numbered(out: str, fields: int) -> Iterator[tuple[int, list[str] | None]]:
+    """(index, fields) for each CSV row; fields are ``None`` for a row that does not parse.
+
+    A row parses when it has *fields* columns and an index. An index that prints [N/A]
+    takes the row's position.
+    """
+    lines = [line for line in out.splitlines() if line.strip()]
+    for position, line in enumerate(lines):
+        parts = [p.strip() for p in line.split(",", fields - 1)]
+        index = None if len(parts) != fields else _row_index(parts[0], position)
+        yield (position, None) if index is None else (index, parts)
+
+
+def _row_index(field: str, position: int) -> int | None:
+    """The card index a row prints, its position for [N/A], or ``None`` for any other text."""
+    return position if field == _NA else _as_int(field)
+
+
 def _rows(out: str, fields: int) -> Iterator[tuple[int, list[str]]]:
     """(index, fields) for each CSV row of *fields* columns; a row with no index names no card."""
-    for line in out.splitlines():
-        parts = [p.strip() for p in line.split(",", fields - 1)]
-        if len(parts) != fields:
-            continue
-        index = _as_int(parts[0])
-        if index is not None:
+    for index, parts in _numbered(out, fields):
+        if parts is not None and parts[0] != _NA:
             yield index, parts
 
 
