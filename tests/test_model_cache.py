@@ -276,7 +276,7 @@ class TestTotalSystemMemory:
 
 def _smi_lists(monkeypatch, *totals_mib: int, output: str | None = None) -> None:
     """Make nvidia-smi list one card per figure, each with *total* MiB of memory."""
-    rows = "".join(f"{i}, GPU-{i}, card{i}, {mib}, {mib}\n" for i, mib in enumerate(totals_mib))
+    rows = "".join(f"{i}, GPU-{i}, {mib}, {mib}, card{i}\n" for i, mib in enumerate(totals_mib))
     text = rows if output is None else output
     monkeypatch.setattr(
         "lilbee.providers.fleet.gpu_backends.nvidia.run_smi", lambda *_a, **_k: text
@@ -292,11 +292,17 @@ class TestTryNvidiaMemory:
         _smi_lists(monkeypatch, output="")
         assert _try_nvidia_memory() is None
 
-    def test_returns_none_when_a_cards_memory_does_not_read(self, monkeypatch) -> None:
-        _smi_lists(
-            monkeypatch, output="0, GPU-0, card0, 8192, 8192\n1, GPU-1, card1, [N/A], [N/A]\n"
-        )
+    def test_returns_none_when_the_only_cards_memory_does_not_read(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output="0, GPU-0, [N/A], [N/A], card0\n")
         assert _try_nvidia_memory() is None
+        assert has_nvidia_gpu() is False
+
+    def test_keeps_the_good_card_of_a_fleet_with_one_unread_card(self, monkeypatch) -> None:
+        _smi_lists(
+            monkeypatch, output="0, GPU-0, 8192, 8192, card0\n1, GPU-1, [N/A], [N/A], card1\n"
+        )
+        assert _try_nvidia_memory() == 8 * 1024**3
+        assert has_nvidia_gpu() is True
 
 
 class TestHeterogeneousGpuSizing:

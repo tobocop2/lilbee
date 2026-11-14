@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -267,9 +271,10 @@ def test_registry_maps_cuda_to_nvidia_backend() -> None:
 # ---------------------------------------------------------------------------
 
 _CARDS_CSV = (
-    "0, GPU-a, NVIDIA GeForce RTX 3090, 24576, 23552\n"
-    "1, GPU-b, NVIDIA GeForce RTX 3060, 12288, 10240\n"
+    "0, GPU-a, 24576, 23552, NVIDIA GeForce RTX 3090\n"
+    "1, GPU-b, 12288, 10240, NVIDIA GeForce RTX 3060\n"
 )
+_NA_FIRST_CSV = "0, GPU-a, [N/A], [N/A], n0\n1, GPU-b, 8192, 8000, n1\n"
 _COMPUTE_CSV = "0, 8.6\n1, 8.6\n"
 _CUDA_XML = (
     "<nvidia_smi_log><driver_version>550.1</driver_version>"
@@ -312,12 +317,12 @@ def test_cards_are_unknown_when_one_memory_figure_does_not_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Keeping the other card would number it as if the unreadable one did not exist."""
-    _Smi(monkeypatch, cards="0, GPU-a, n0, [N/A], [N/A]\n1, GPU-b, n1, 8192, 8000\n")
+    _Smi(monkeypatch, cards=_NA_FIRST_CSV)
     assert nvidia_mod.cards() == []
 
 
 def test_cards_skip_a_row_without_all_columns(monkeypatch: pytest.MonkeyPatch) -> None:
-    _Smi(monkeypatch, cards="garbage\n1, GPU-b, n1, 8192\n0, GPU-a, n0, 8192, 8000\n")
+    _Smi(monkeypatch, cards="garbage\n1, GPU-b, 8192, n1\n0, GPU-a, 8192, 8000, n0\n")
     assert [c.uuid for c in nvidia_mod.cards()] == ["GPU-a"]
 
 
@@ -408,3 +413,59 @@ def test_a_probe_that_fails_at_once_is_run_again_after_the_short_cache(
     smi.answers["cards"] = _CARDS_CSV
     assert len(nvidia_mod.cards()) == 2
     assert smi.runs == ["cards", "cards"]
+
+
+def test_readable_cards_leave_out_a_card_whose_memory_does_not_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards=_NA_FIRST_CSV)
+    assert [c.uuid for c in nvidia_mod.readable_cards()] == ["GPU-b"]
+
+
+def test_host_facts_keep_a_card_whose_memory_does_not_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _Smi(monkeypatch, cards=_NA_FIRST_CSV)
+    assert nvidia_mod.host_facts() == {
+        "cuda_driver": 12040,
+        "gpus": [{"name": "n0", "cc": [8, 6]}, {"name": "n1", "cc": [8, 6]}],
+    }
+
+
+def test_a_gpu_name_with_a_comma_keeps_its_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    csv = "0, GPU-a, 24576, 23552, Acme, Inc. Card\n1, GPU-b, 8192, 8000, n1\n"
+    _Smi(monkeypatch, cards=csv)
+    assert [(c.uuid, c.name, c.total_bytes) for c in nvidia_mod.cards()] == [
+        ("GPU-a", "Acme, Inc. Card", 24576 * MIB),
+        ("GPU-b", "n1", 8192 * MIB),
+    ]
+
+
+@pytest.mark.parametrize("kind", ["compute", "cuda"])
+def test_a_fast_failure_of_a_host_query_is_run_again_after_the_short_cache(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    smi = _Smi(monkeypatch, **{kind: ""})
+    nvidia_mod.host_facts()
+    smi.now += nvidia_mod._CACHE_TTL_S + 0.1
+    smi.answers[kind] = {"compute": _COMPUTE_CSV, "cuda": _CUDA_XML}[kind]
+    facts = nvidia_mod.host_facts()
+    assert facts is not None
+    assert facts["cuda_driver"] == 12040
+    assert [g["cc"] for g in facts["gpus"]] == [[8, 6], [8, 6]]
+    assert smi.runs.count(kind) == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in tool is a shell script")
+def test_a_tool_that_never_answers_is_stopped_at_the_time_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool = tmp_path / "nvidia-smi"
+    tool.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(nvidia_mod, "_TIMEOUT_S", 0.5)
+    started = time.monotonic()
+    reading = nvidia_mod._cards_probe.read()
+    assert time.monotonic() - started < 3.0
+    assert reading == nvidia_mod.Reading("", True)
