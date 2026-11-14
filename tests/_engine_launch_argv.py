@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 import pytest
 
-from lilbee.catalog import runnable
+from lilbee.catalog import runnable, xdna
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import adapters
-from lilbee.providers.fleet.engines import choice, lemonade, openvino
-from lilbee.providers.fleet.engines.base import LaunchRequest
+from lilbee.providers.fleet.engines import choice, openvino
+from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.host_caps import collect
 
 BINARY = PurePosixPath("/engines/bin/server")
@@ -33,7 +34,7 @@ def launch_argvs(
         "session_host",
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvml=None),
     )
-    monkeypatch.setattr(lemonade, "resolve_llama_server", lambda: Path("/engines/llama-server"))
+    ticket = xdna.write_ticket(models_dir, "qwen3:0.6b")
     request = LaunchRequest(
         binary=Path(BINARY),
         model_path=Path(MODEL),
@@ -48,7 +49,10 @@ def launch_argvs(
     for name, adapter in choice.ADAPTERS.items():
         roles = sorted(adapter.served_roles, key=lambda role: role.value)
         found[name.value] = {
-            role.value: adapter.launch_argv(adapter.role_spec(role, None, None), request)
+            role.value: adapter.launch_argv(
+                adapter.role_spec(role, None, None),
+                replace(request, model_path=ticket) if name is EngineName.LEMONADE else request,
+            )
             for role in roles
         }
     return found
