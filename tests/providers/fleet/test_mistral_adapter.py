@@ -519,7 +519,7 @@ def test_binary_on_a_host_with_no_cell_says_the_engine_is_not_installed(
 ) -> None:
     row = {"url": "https://example.test/x.whl", "sha256": "b" * 64, "size": 1, "min_os": None}
     record = {**MISTRAL.pin_record(), "sha256": "a" * 64, "platforms": {"macos-arm64-cpu": row}}
-    monkeypatch.setattr(MISTRAL, "pin_record", lambda: record)
+    monkeypatch.setattr(type(MISTRAL), "pin_record", lambda _self: record)
     monkeypatch.setattr(cfg, "models_dir", tmp_path)
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64"))
     with pytest.raises(ProviderError, match="not installed"):

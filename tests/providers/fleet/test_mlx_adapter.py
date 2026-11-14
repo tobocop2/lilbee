@@ -350,7 +350,7 @@ def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prom
     monkeypatch.setattr(cfg, "chat_n_ctx_target", CONTEXT)
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "placement", "")
-    monkeypatch.setattr(MLX, "binary", lambda: tmp_path / "mlx-lm-server")
+    monkeypatch.setattr(type(MLX), "binary", lambda _self: tmp_path / "mlx-lm-server")
     launch = planning.build_single_role_launch(WorkerRole.CHAT, folder, engine=MLX)
     assert launch.ctx == CONTEXT
 
@@ -401,7 +401,7 @@ def test_mlx_launch_ctx_is_the_smaller_of_the_window_and_the_target(
     monkeypatch.setattr(cfg, "chat_n_ctx_target", target)
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "placement", "")
-    monkeypatch.setattr(MLX, "binary", lambda: tmp_path / "mlx-lm-server")
+    monkeypatch.setattr(type(MLX), "binary", lambda _self: tmp_path / "mlx-lm-server")
     launch = planning.build_single_role_launch(WorkerRole.CHAT, folder, engine=MLX)
     assert launch.ctx == want
     assert launch.ctx > 0

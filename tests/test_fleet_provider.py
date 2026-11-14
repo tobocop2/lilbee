@@ -989,7 +989,7 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
         planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     sentinel = object()
-    monkeypatch.setattr(LLAMA, "request_profile", lambda _role: sentinel)
+    monkeypatch.setattr(type(LLAMA), "request_profile", lambda _self, _role: sentinel)
     FleetProvider()._ensure_fleet()
     assert captured["profile"] is sentinel
 

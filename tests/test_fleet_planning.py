@@ -1264,7 +1264,9 @@ class TestBuildFleetWiring:
     def test_launch_for_carries_the_swap_keys_the_engine_asks_for(
         self, tmp_path, monkeypatch
     ) -> None:
-        monkeypatch.setattr(LLAMA, "swap_extras", lambda _launch: {"checkEndpoint": "/live"})
+        monkeypatch.setattr(
+            type(LLAMA), "swap_extras", lambda _self, _launch: {"checkEndpoint": "/live"}
+        )
         launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
         assert launch.swap_extras == {"checkEndpoint": "/live"}
 

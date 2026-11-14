@@ -185,7 +185,7 @@ def test_ik_llama_pin_record_holds_its_own_fields(monkeypatch: pytest.MonkeyPatc
 def test_ik_llama_pin_record_does_not_read_the_llama_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(LLAMA, "pin_record", lambda: {"llama-only-field": True})
+    monkeypatch.setattr(type(LLAMA), "pin_record", lambda _self: {"llama-only-field": True})
     pin = _pin(monkeypatch, EngineName.IK_LLAMA, "Linux", "x86_64")
     assert "llama-only-field" not in pin
     assert set(pin) == {

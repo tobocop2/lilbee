@@ -430,7 +430,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         ("supports_shared_kv", False),
         ("swap_extras", {}),
     ]:
-        monkeypatch.setattr(LLAMA, method, spy(method, result))
+        monkeypatch.setattr(type(LLAMA), method, spy(method, result))
     path = Path("/b/server")
     IK_LLAMA.identity(path)
     IK_LLAMA.discover_devices(path)
