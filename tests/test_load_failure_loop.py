@@ -7,6 +7,7 @@ from itertools import pairwise
 import pytest
 
 from lilbee.providers.base import ProviderErrorKind
+from lilbee.providers.fleet.engines import LLAMA
 
 _GB = 1024**3
 
@@ -145,9 +146,12 @@ class TestAnAutoContextStepsDownAfterAnOom:
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 32768, raising=False)
         monkeypatch.setattr(engine_params, "chat_ctx_ceiling", lambda *_: 32768)
         planning.clear_ctx_downshift()
-        full = planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None)
+        full = planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None, engine=LLAMA)
         planning.record_ctx_downshift(WorkerRole.CHAT)
-        assert planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None) == full // 2
+        assert (
+            planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None, engine=LLAMA)
+            == full // 2
+        )
         planning.clear_ctx_downshift()
 
 

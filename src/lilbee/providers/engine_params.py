@@ -210,6 +210,11 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
     return training_ctx
 
 
+def chat_ctx_bound(meta: dict[str, str] | None, model_path: Path) -> int:
+    """The unpinned chat context of a launch: the trained window and cap, within the target."""
+    return min(chat_ctx_ceiling(meta, model_path), cfg.chat_n_ctx_target)
+
+
 def resolve_chat_ctx(
     model_path: Path,
     meta: dict[str, str] | None,
@@ -243,7 +248,7 @@ def resolve_chat_ctx(
 
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
-    upper = min(training_ctx, ceiling, cfg.chat_n_ctx_target)
+    upper = chat_ctx_bound(meta, model_path)
     if engine.memory_kind is MemoryKind.FIXED_RESERVE:
         return upper
     if available_bytes is None:

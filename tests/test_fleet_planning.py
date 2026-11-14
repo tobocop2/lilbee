@@ -25,7 +25,7 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
-from lilbee.providers.fleet.engines.mistral import MistralAdapter
+from lilbee.providers.fleet.engines.mistral import MISTRAL, MistralAdapter
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
@@ -682,7 +682,10 @@ def test_placement_estimate_ctx_chat_reserves_target(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 24576
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
+        == 24576
+    )
 
 
 def test_placement_estimate_ctx_chat_floored_when_target_tiny(monkeypatch) -> None:
@@ -691,7 +694,7 @@ def test_placement_estimate_ctx_chat_floored_when_target_tiny(monkeypatch) -> No
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
     assert (
-        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {})
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
         == planning_mod._MIN_USABLE_CHAT_CTX
     )
 
@@ -700,7 +703,10 @@ def test_placement_estimate_ctx_chat_capped_by_short_ceiling(monkeypatch) -> Non
     """A short-context model reserves only its ceiling, below the usable floor."""
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 2048)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 2048
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
+        == 2048
+    )
 
 
 def test_planned_chat_ctx_without_a_trained_window_stops_at_the_default_window() -> None:
@@ -714,11 +720,19 @@ def test_planned_chat_ctx_is_the_target_under_a_longer_trained_window() -> None:
     assert planning_mod.planned_chat_ctx(Path("/m"), {"context_length": "40960"}) == 16384
 
 
-def test_the_chat_placement_estimate_is_the_planned_chat_ctx() -> None:
-    meta = {"context_length": "4096"}
-    assert planning_mod._placement_estimate_ctx(
-        WorkerRole.CHAT, Path("/m"), meta
-    ) == planning_mod.planned_chat_ctx(Path("/m"), meta)
+def test_a_fixed_reserve_chat_placement_estimate_is_the_planned_chat_ctx(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 2048)
+    meta = {"context_length": "40960"}
+    estimate = planning_mod._placement_estimate_ctx(
+        WorkerRole.CHAT, Path("/m"), meta, engine=MISTRAL
+    )
+    assert estimate == planning_mod.planned_chat_ctx(Path("/m"), meta) == 2048
+
+
+def test_planned_chat_ctx_has_no_floor_under_a_tiny_target(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
+    assert planning_mod.planned_chat_ctx(Path("/m"), {"context_length": "40960"}) == 1024
 
 
 def test_configured_chat_ctx_is_the_pin_when_set(monkeypatch) -> None:
@@ -741,7 +755,10 @@ def test_configured_chat_ctx_floors_a_tiny_target(monkeypatch) -> None:
 
 def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", 16384)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
+        == 16384
+    )
 
 
 def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
@@ -773,7 +790,10 @@ def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
 
 def test_placement_estimate_ctx_non_chat_delegates_to_aux_role_ctx(monkeypatch) -> None:
     monkeypatch.setattr(planning_mod, "_aux_role_ctx", lambda _r, _p, _m: 512)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.EMBED, Path("/m.gguf"), {}) == 512
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.EMBED, Path("/m.gguf"), {}, engine=LLAMA)
+        == 512
+    )
 
 
 def test_placement_estimate_slots_per_role(monkeypatch) -> None:
@@ -802,7 +822,7 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
     )
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 2)
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 1000)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 1000)
     seen: dict = {}
 
     def _est(_path, *, ctx, slots, tensor_split, mmproj_path=None, **_k) -> GgufVramEstimate:
@@ -828,7 +848,7 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 1)
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 100)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 100)
     seen: dict = {}
 
     def _est(_path, *, mmproj_path=None, **_k) -> GgufVramEstimate:
@@ -851,7 +871,9 @@ def test_peak_estimator_reserves_single_sequence_total_for_split_chat(monkeypatc
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
     )
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 196608)
+    monkeypatch.setattr(
+        planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 196608
+    )
     seen: dict = {}
 
     def _est(_path, *, ctx, slots, tensor_split, **_k) -> GgufVramEstimate:
@@ -2281,7 +2303,7 @@ class TestChatSplitCtxObjective:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {"arch": "x"}
         )
-        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
+        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a, **_k: 8192)
         captured: dict[str, object] = {}
 
         def _fake_fit(model_path, **kw):
@@ -2316,7 +2338,7 @@ class TestChatSplitCtxObjective:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {"arch": "x"}
         )
-        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
+        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a, **_k: 8192)
         monkeypatch.setattr(planning_mod, "_peak_estimator", lambda _refs, engine: lambda *_a: (1,))
         captured: dict[str, object] = {}
 

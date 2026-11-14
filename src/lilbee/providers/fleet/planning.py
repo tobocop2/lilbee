@@ -974,7 +974,7 @@ def _estimate_role(
     # KV floor for chat), so a model that fits weights-only on one card but not
     # weights + a usable context falls through to a tensor-split instead of being
     # single-carded into a tiny n_ctx. Non-chat roles keep their launch ctx.
-    ctx = _placement_estimate_ctx(role, path, meta)
+    ctx = _placement_estimate_ctx(role, path, meta, engine=engine)
     rerank_mode = _role_rerank_mode(role, meta)
     if slots is None:
         slots = _slots_for(
@@ -1052,18 +1052,27 @@ def configured_chat_ctx() -> int:
     return max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX)
 
 
-def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
+def _placement_estimate_ctx(
+    role: WorkerRole, model_path: Path, meta: dict[str, str] | None, *, engine: EngineAdapter
+) -> int:
     """Per-slot context the placement estimate sizes a role against.
 
-    For chat this reserves KV for a usable floor (``_MIN_USABLE_CHAT_CTX``, or the
+    A fixed-reserve chat engine is charged the context its launch serves. A sized
+    chat engine reserves KV for a usable floor (``_MIN_USABLE_CHAT_CTX``, or the
     user's ``cfg.num_ctx`` pin), capped by the model's trained ceiling -- not the
     single-GPU dynamic ctx (which shrinks to fit one card and then confirms a
     single-card placement) nor the full trained ceiling (which over-reserves). A
     model that cannot hold weights + this floor on one card is tensor-split.
     """
-    if role is WorkerRole.CHAT:
-        return apply_ctx_downshift(role, planned_chat_ctx(model_path, meta))
-    return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))
+    from lilbee.core.config import cfg
+
+    if role is not WorkerRole.CHAT:
+        return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))
+    if cfg.num_ctx is None and engine.memory_kind is not MemoryKind.FIXED_RESERVE:
+        ctx = min(engine_params.chat_ctx_ceiling(meta, model_path), configured_chat_ctx())
+    else:
+        ctx = planned_chat_ctx(model_path, meta)
+    return apply_ctx_downshift(role, ctx)
 
 
 def planned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
@@ -1072,7 +1081,7 @@ def planned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
 
     if cfg.num_ctx is not None:
         return _pinned_chat_ctx(model_path, meta)
-    return min(engine_params.chat_ctx_ceiling(meta, model_path), configured_chat_ctx())
+    return engine_params.chat_ctx_bound(meta, model_path)
 
 
 def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> int:
@@ -1109,7 +1118,7 @@ def _peak_estimator(
         meta = engine.model_meta(path)
         mmproj = vision_mmproj(model_refs[role]) if role is WorkerRole.VISION else None
         slots = _placement_estimate_slots(role, meta)
-        ctx = _placement_estimate_ctx(role, path, meta)
+        ctx = _placement_estimate_ctx(role, path, meta, engine=engine)
         rerank_mode = _role_rerank_mode(role, meta)
         est = engine.estimate_memory(
             MemoryRequest(
@@ -1146,7 +1155,7 @@ def _chat_split_ctx_objective(
     engine = engines[WorkerRole.CHAT]
     path = engine_params.resolve_model_path(model_refs[WorkerRole.CHAT])
     meta = engine.model_meta(path)
-    target = _placement_estimate_ctx(WorkerRole.CHAT, path, meta)
+    target = _placement_estimate_ctx(WorkerRole.CHAT, path, meta, engine=engine)
 
     def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
         return fleet_ctx.fit_split_ctx(
@@ -1544,7 +1553,11 @@ def _fallback_floor_for(role: WorkerRole, ref: str, weights: int, *, engine: Eng
     except (ProviderError, OSError, ValueError):
         meta = None
         path = None
-    ctx = _placement_estimate_ctx(role, path, meta) if path is not None else _MIN_USABLE_CHAT_CTX
+    ctx = (
+        _placement_estimate_ctx(role, path, meta, engine=engine)
+        if path is not None
+        else _MIN_USABLE_CHAT_CTX
+    )
     return _analytic_footprint_floor(
         weights,
         role=role,
@@ -2006,7 +2019,9 @@ def _launch_for(
                 gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
                 flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
-                ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
+                ctx_ceiling=_placement_estimate_ctx(
+                    WorkerRole.CHAT, model_path, meta, engine=engine
+                ),
                 expert_offload=_role_expert_offload(model_path, engine=engine),
             )
 

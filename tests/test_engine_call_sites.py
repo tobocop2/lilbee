@@ -493,7 +493,7 @@ class TestMemoryEstimates:
         assert fitter is not None
         assert spy.meta_paths
         assert target == planning._placement_estimate_ctx(
-            WorkerRole.CHAT, spy.meta_paths[0], dict(SPY_META)
+            WorkerRole.CHAT, spy.meta_paths[0], dict(SPY_META), engine=spy
         )
         assert target == 4096
 
@@ -534,7 +534,9 @@ class TestModelMeta:
             1 << 30,
             role=WorkerRole.CHAT,
             meta=dict(SPY_META),
-            ctx=planning._placement_estimate_ctx(WorkerRole.CHAT, model_file, dict(SPY_META)),
+            ctx=planning._placement_estimate_ctx(
+                WorkerRole.CHAT, model_file, dict(SPY_META), engine=spy
+            ),
             slots=planning._placement_estimate_slots(WorkerRole.CHAT, dict(SPY_META)),
             engine=spy,
         )

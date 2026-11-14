@@ -63,7 +63,7 @@ class TestChatPullFit:
         )
         assert sorted(calls) == [("config", "t"), ("counts", "t")]
 
-    def test_mistral_at_default_settings_says_the_context_its_launch_passes(
+    def test_mistral_at_default_settings_says_the_context_the_placement_estimate_uses(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """One installed model: the pull verdict and the planner work out the same context."""
@@ -74,7 +74,7 @@ class TestChatPullFit:
         folder.mkdir()
         (folder / "config.json").write_text(json.dumps(QWEN3_4B), encoding="utf-8")
         planned = planning._placement_estimate_ctx(
-            WorkerRole.CHAT, folder, MISTRAL.model_meta(folder)
+            WorkerRole.CHAT, folder, MISTRAL.model_meta(folder), engine=MISTRAL
         )
         assert chat_pull_fit("org/model", MISTRAL).ctx == planned == 8192
 
