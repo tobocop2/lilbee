@@ -28,9 +28,9 @@ count=0
 for file in "${bundle_dir}"/llama-server "${bundle_dir}"/*.so*; do
   [ -f "${file}" ] || continue
   count=$((count + 1))
-  # ld.so --list is what ldd runs; it exits non-zero for a library it cannot find.
-  listing="$(docker run --rm --entrypoint "${loader}" -v "${bundle_dir}:/bundle:ro" "${image}" \
-    --list "/bundle/$(basename "${file}")" 2>&1 || true)"
+  # The trace mode is what ldd runs; it names every missing library, where --list stops at the first.
+  listing="$(docker run --rm -e LD_TRACE_LOADED_OBJECTS=1 --entrypoint "${loader}" -v "${bundle_dir}:/bundle:ro" "${image}" \
+    "/bundle/$(basename "${file}")" 2>&1 || true)"
   missing="${missing}$(printf '%s\n' "${listing}" | sed -n 's/^[[:space:]]*\([^ ]*\) => not found.*/\1/p')"$'\n'
 done
 [ "${count}" -gt 0 ] || { echo "no file to check in ${bundle_dir}" >&2; exit 1; }
