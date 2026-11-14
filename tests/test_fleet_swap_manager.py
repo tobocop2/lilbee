@@ -1800,6 +1800,51 @@ class TestLiveStateHelpers:
         state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is True
 
+    @pytest.mark.parametrize("model_state", ["starting", "stopping", "shutdown"])
+    def test_a_model_that_is_not_ready_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, model_state: str
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": model_state}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is True  # the proxy answers: reap keeps it
+        assert sm.unready_model(state) == f"chat-0 is {model_state}"
+
+    def test_a_ready_model_is_not_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        assert sm.unready_model(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is None
+
+    def test_one_unready_model_among_ready_ones_is_named(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {
+            "running": [
+                {"model": "chat-0", "state": "ready"},
+                {"model": "embed-0", "state": "starting"},
+            ]
+        }
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.unready_model(state) == "embed-0 is starting"
+
+    def test_an_idle_engine_with_no_model_loaded_is_not_unready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # llama-swap's /running lists only processes that are not stopped, so an
+        # engine whose weights were unloaded reads empty and must stay bindable.
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": []}))
+        assert sm.unready_model(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is None
+
+    def test_an_unanswering_proxy_names_no_unready_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, _raise_connect_error)
+        assert sm.unready_model(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is None
+
+    def test_a_record_without_a_port_names_no_unready_model(self) -> None:
+        assert sm.unready_model(sm.SwapState(pid=1, pgid=None)) is None
+
     def test_state_without_a_port_is_unhealthy(self) -> None:
         state = sm.SwapState(pid=1, pgid=None)
         assert sm.state_is_healthy(state) is False

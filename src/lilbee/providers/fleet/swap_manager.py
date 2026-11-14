@@ -869,9 +869,8 @@ def find_live_state(data_dir: Path, group: SwapGroup) -> SwapState | None:
     return best
 
 
-def _running_endpoint_answers(base_url: str) -> bool:
-    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not
-    just liveness).
+def _running_entries(base_url: str) -> list[dict[str, object]] | None:
+    """The ``running`` list *base_url* serves, or ``None`` when it is not llama-swap.
 
     Proxy ports are ephemeral: after an engine dies, any unrelated local service
     that later binds the recorded port and returns a 2xx/3xx to an unknown path
@@ -883,13 +882,21 @@ def _running_endpoint_answers(base_url: str) -> bool:
     try:
         resp = _probe_client().get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
     except (OSError, httpx.HTTPError):
-        return False
+        return None
     if resp.status_code >= httpx.codes.BAD_REQUEST:
-        return False
+        return None
     try:
-        return isinstance(resp.json().get(_KEY_RUNNING), list)
+        entries = resp.json().get(_KEY_RUNNING)
     except (ValueError, AttributeError):
-        return False
+        return None
+    if not isinstance(entries, list):
+        return None
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _running_endpoint_answers(base_url: str) -> bool:
+    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not liveness)."""
+    return _running_entries(base_url) is not None
 
 
 def state_is_healthy(state: SwapState) -> bool:
@@ -897,6 +904,21 @@ def state_is_healthy(state: SwapState) -> bool:
     if state.proxy_port is None:
         return False
     return _running_endpoint_answers(f"http://{_HOST}:{state.proxy_port}")
+
+
+def unready_model(state: SwapState) -> str | None:
+    """``"<model> is <state>"`` for a model *state*'s engine lists that is not ready.
+
+    llama-swap lists a model in ``/running`` from the moment it starts loading until
+    it stops, so a listed model in any state but ``ready`` is still loading or going
+    down. An engine with nothing listed has its weights unloaded and stays usable.
+    """
+    if state.proxy_port is None:
+        return None
+    for entry in _running_entries(f"http://{_HOST}:{state.proxy_port}") or []:
+        if entry.get(_KEY_STATE) != _STATE_READY:
+            return f"{entry.get(_KEY_MODEL)} is {entry.get(_KEY_STATE)}"
+    return None
 
 
 def engine_record_exists(data_dir: Path) -> bool:

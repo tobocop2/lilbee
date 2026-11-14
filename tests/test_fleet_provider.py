@@ -177,6 +177,7 @@ def _install_engine(
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: None)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
@@ -5041,6 +5042,7 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "kill_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     # Everything the test configures is placeable and buildable unless overridden.
     monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda engine: 0)
@@ -5157,6 +5159,45 @@ def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) 
     # this process is actively using -- the multi-process bug the ladder exists
     # to prevent. Only the build path asserted this before.
     assert list((machine / "engine-users").glob("*.lock"))
+
+
+def test_ladder_starts_its_own_engine_when_the_orphan_never_got_ready(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A proxy that answers, with no user and a model stuck before ready, is not bound."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: "m-chat is starting")
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    with caplog.at_level(logging.INFO, logger=prov_mod.log.name):
+        assert FleetProvider()._ensure_fleet() is True
+    assert swap.binds == []  # the orphan is not bound...
+    assert len(swap.started) == 1  # ...a new engine is started in its place
+    assert machine in stopped
+    assert "m-chat is starting" in caplog.text
+
+
+def test_ladder_binds_an_engine_still_loading_for_a_live_user(monkeypatch, tmp_path: Path) -> None:
+    """A model still loading for a live user is waited for, not duplicated."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: "m-chat is starting")
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_777)
+    try:
+        assert FleetProvider()._ensure_fleet() is True
+    finally:
+        holder.release_and_check_last()
+    assert len(swap.binds) == 1
+    assert swap.started == []
 
 
 def test_a_bind_makes_sure_a_reaper_watches_the_engine(

@@ -76,6 +76,7 @@ from lilbee.providers.fleet.swap_manager import (
     reap_stale,
     state_is_healthy,
     stop_engine,
+    unready_model,
 )
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.model_ref import parse_model_ref
@@ -285,6 +286,26 @@ def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
         if state is not None and state_is_healthy(state):
             found[group] = state
     return found
+
+
+def _without_unready(
+    engine_dir: Path, states: dict[SwapGroup, SwapState]
+) -> dict[SwapGroup, SwapState]:
+    """*states* minus the engines whose proxy answers while a model is not ready.
+
+    Only for an engine no live user holds: its starter is gone, so a model still
+    not ready will not become ready, and binding it would serve a dead engine.
+    """
+    kept: dict[SwapGroup, SwapState] = {}
+    for group, state in states.items():
+        unready = unready_model(state)
+        if unready is None:
+            kept[group] = state
+        else:
+            log.info(
+                "The engine at %s has no user and %s; starting a new engine", engine_dir, unready
+            )
+    return kept
 
 
 class _SlotOwed(NamedTuple):
@@ -1527,6 +1548,8 @@ class FleetProvider:
             return False
         if states is None:
             states = _healthy_states(engine_dir)
+        if not live_users_exist(engine_dir, exclude_self=True):
+            states = _without_unready(engine_dir, states)
         if not self._bind_all_in_dir(engine_dir, states, pin, demand):
             return False
         self._hold_membership(engine_dir)
