@@ -303,7 +303,7 @@ def test_a_failed_read_gives_no_rows_and_one_warning(
     warned = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warned) == 1
     assert "lemonade model list" in warned[0].getMessage()
-    assert len(router.urls) == 2
+    assert len(router.urls) == 1
 
 
 @pytest.mark.real_hf_client
@@ -322,14 +322,30 @@ def test_an_offline_browse_warns_once_for_each_source(
 
 
 @pytest.mark.real_engine_model_lists
-def test_a_read_that_failed_is_tried_again_and_then_cached(router: _Router) -> None:
+def test_a_failed_read_is_not_repeated_until_the_cache_expires(
+    monkeypatch: pytest.MonkeyPatch, router: _Router
+) -> None:
     client = get_services().hf_client
     router.mode = "500"
     assert client.fetch_engine_models(LEMONADE) == []
     router.mode = "ok"
+    assert client.fetch_engine_models(LEMONADE) == []
+    assert len(router.urls) == 1
+    monkeypatch.setattr(HfClient, "CACHE_TTL", 0.0)
     assert len(client.fetch_engine_models(LEMONADE)) == 42
-    client.fetch_engine_models(LEMONADE)
     assert len(router.urls) == 2
+
+
+@pytest.mark.real_engine_model_lists
+def test_a_second_browse_with_the_publisher_down_makes_no_request(
+    monkeypatch: pytest.MonkeyPatch, router: _Router
+) -> None:
+    router.mode = "connect"
+    monkeypatch.setattr(_query, "session_host", lambda: NO_NPU)
+    stub_hf_listing(monkeypatch, {"text-generation": [_hub_row("hub/one")]})
+    get_catalog(task=ModelTask.CHAT)
+    get_catalog(task=ModelTask.CHAT)
+    assert router.urls == [LEMONADE.models_url]
 
 
 @pytest.mark.real_engine_model_lists
