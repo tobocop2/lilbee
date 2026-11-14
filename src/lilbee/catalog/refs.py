@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 
 from lilbee.catalog.types import ModelFormat
+from lilbee.catalog.xdna import XDNA_TAG_RE
 
 # A native GGUF ref ``<org>/<repo>/<file>.gguf`` has at least two ``/`` separators;
 # the filename may add more when a quant lives in a repo subdir (``Q4_K_M/...``).
@@ -260,6 +261,10 @@ def parse_model_ref(raw: str) -> ModelRef:
         ) from None
     if fmt == ModelFormat.GGUF:
         return _gguf_ref(base)
+    if fmt == ModelFormat.XDNA:
+        if not XDNA_TAG_RE.fullmatch(base):
+            raise ValueError(f"Model ref {raw!r} must be '<name>:<tag>#{fmt}'.")
+        return ModelRef(base, "", fmt)
     if base.count("/") != 1:
         raise ValueError(f"Model ref {raw!r} must be '<org>/<repo>#{fmt}'.")
     return ModelRef(base, "", fmt)

@@ -31,6 +31,7 @@ from lilbee.catalog.refs import (
     split_shard_filenames,
 )
 from lilbee.catalog.types import ModelCompat, ModelFormat
+from lilbee.catalog.xdna import write_ticket
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
@@ -382,6 +383,8 @@ def download_model(
         TaskCancelledError: the cancel signal was set
     """
     models_dir = _models_dir()
+    if entry.format is ModelFormat.XDNA:
+        return write_ticket(models_dir, entry.hf_repo)
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
     # circular: download -> download_process via fetch_model_files

@@ -21,6 +21,7 @@ class ModelFormat(StrEnum):
     MLX = "mlx"
     OPENVINO = "openvino"
     SAFETENSORS = "safetensors"
+    XDNA = "xdna"
 
 
 class ModelSource(StrEnum):
