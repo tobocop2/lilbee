@@ -331,6 +331,10 @@ def show_model_data(ref: str) -> ShowModelResult:
     from lilbee.catalog import find_pick
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
+    if ModelRegistry(cfg.models_dir).has_unreadable_ticket(ref):
+        raise ModelNotFoundError(
+            f"model not found: {ref}. Its ticket is unreadable. Pull it again."
+        )
     entry = find_pick(ref)
     source = get_services().model_manager.get_source(ref)
     if entry is None and source is None:
