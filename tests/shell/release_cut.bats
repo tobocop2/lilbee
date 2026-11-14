@@ -42,7 +42,8 @@ make_repo() {  # tag.gpgsign value, then the seed version (default 1.2.3b7)
   printf '{\n  "name": "lilbee",\n  "version": "%s",\n  "license": "MIT"\n}\n' "${seed}" > "${WORK}/plugins/lilbee/.claude-plugin/plugin.json"
   mkdir -p "${WORK}/packages/lilbee"
   npm_files "${seed}"
-  git -C "${WORK}" add pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json packages/lilbee/package.json packages/lilbee/package-lock.json
+  printf '{\n  "version": "9.9.9",\n  "packages": [\n    {\n      "registryType": "npm",\n      "version": "9.9.9"\n    }\n  ]\n}\n' > "${WORK}/server.json"
+  git -C "${WORK}" add pyproject.toml uv.lock plugins/lilbee/.claude-plugin/plugin.json packages/lilbee/package.json packages/lilbee/package-lock.json server.json
   git -C "${WORK}" commit -q -m "Initial"
   git -C "${WORK}" remote add origin "${ORIGIN}"
   git -C "${WORK}" push -q -u origin main
@@ -181,7 +182,7 @@ detect() {  # tag: run detect_promotion.sh at the checked-out release commit
 
 @test "a promotion of a tag from before the plugin and npm package existed changes only the Python version files" {
   make_repo false
-  git -C "${WORK}" rm -q -r plugins packages
+  git -C "${WORK}" rm -q -r plugins packages server.json
   git -C "${WORK}" commit -q -m "No plugin"
   git -C "${WORK}" push -q origin main
   seed_source_tag
@@ -205,6 +206,38 @@ detect() {  # tag: run detect_promotion.sh at the checked-out release commit
   [[ "$output" == *"packages/lilbee/package.json"* ]]
   [[ "$output" == *"packages/lilbee/package-lock.json"* ]]
   [[ "$output" == *"plugins/lilbee/.claude-plugin/plugin.json"* ]]
+}
+
+@test "cutting a release stamps both version fields of the registry listing" {
+  make_repo false 1.2.3b999
+  run cut
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.version' "${WORK}/server.json")" = "1.2.3-beta.1000" ]
+  [ "$(jq -r '.packages[0].version' "${WORK}/server.json")" = "1.2.3-beta.1000" ]
+  [ "$(jq -r '.packages[0].registryType' "${WORK}/server.json")" = "npm" ]
+  run git -C "${WORK}" show --stat --format= HEAD
+  [[ "$output" == *"server.json"* ]]
+}
+
+@test "a promotion moves the registry listing to the new version" {
+  make_repo false
+  seed_source_tag
+  run promote
+  [ "$status" -eq 0 ]
+  git -C "${WORK}" fetch -q origin tag v1.2.3b8
+  [ "$(git -C "${WORK}" show v1.2.3b8:server.json | jq -r '[.version, .packages[].version] | unique | join(",")')" = "1.2.3-beta.8" ]
+}
+
+@test "a release stops, with nothing changed, when the registry listing does not take the version" {
+  make_repo false
+  printf '{ not json\n' > "${WORK}/server.json"
+  git -C "${WORK}" commit -q -a -m "Drift"
+  git -C "${WORK}" push -q origin main
+  run cut
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"server.json did not take version 1.2.3-beta.8"* ]]
+  [ -z "$(git -C "${WORK}" status --porcelain)" ]
+  [ -z "$(git -C "${WORK}" tag -l)" ]
 }
 
 @test "a release stops, with nothing changed, when the npm package does not take the version" {
@@ -251,10 +284,12 @@ detect() {  # tag: run detect_promotion.sh at the checked-out release commit
   [ -z "$(git -C "${ORIGIN}" tag -l v1.2.3rc1)" ]
 }
 
-check_publish() {  # tag, package version, package lilbee.release
+check_publish() {  # tag, package version, package lilbee.release, listing version, listing package version, mcpName, listing name
   mkdir -p "${FIXTURE}/pkg/packages/lilbee"
-  printf '{"version": "%s", "lilbee": {"release": "%s"}}\n' "$2" "$3" \
+  printf '{"version": "%s", "mcpName": "%s", "lilbee": {"release": "%s"}}\n' "$2" "${6-io.example/lilbee}" "$3" \
     > "${FIXTURE}/pkg/packages/lilbee/package.json"
+  printf '{"name": "%s", "version": "%s", "packages": [{"version": "%s"}]}\n' "${7-io.example/lilbee}" "${4:-$2}" "${5:-${4:-$2}}" \
+    > "${FIXTURE}/pkg/server.json"
   cd "${FIXTURE}/pkg" && bash "${REPO_ROOT}/scripts/release_version.sh" check "$1"
 }
 
@@ -270,4 +305,25 @@ check_publish() {  # tag, package version, package lilbee.release
   run check_publish v1.2.3b1000 1.2.3-beta.1000 v1.2.3b691
   [ "$status" -eq 1 ]
   [[ "$output" == *"needs version 1.2.3-beta.1000"* ]]
+}
+
+@test "the publish check refuses a registry listing that is not the tag's version" {
+  run check_publish v1.2.3b1000 1.2.3-beta.1000 v1.2.3b1000 1.2.3-beta.691
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"server.json does not carry version 1.2.3-beta.1000"* ]]
+  run check_publish v1.2.3b1000 1.2.3-beta.1000 v1.2.3b1000 1.2.3-beta.1000 1.2.3-beta.691
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"server.json does not carry version 1.2.3-beta.1000"* ]]
+}
+
+@test "the publish check refuses a registry name that is not the package mcpName" {
+  run check_publish v1.2.3b1000 1.2.3-beta.1000 v1.2.3b1000 "" "" io.example/lilbee io.example/other
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"mcpName 'io.example/lilbee' must equal the name in server.json"* ]]
+}
+
+@test "the publish check refuses a package with no mcpName" {
+  run check_publish v1.2.3b1000 1.2.3-beta.1000 v1.2.3b1000 "" "" "" io.example/lilbee
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"must equal the name in server.json"* ]]
 }

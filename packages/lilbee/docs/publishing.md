@@ -27,10 +27,23 @@ The beta number is a separate identifier (`beta.691`), so semver sorts it as a
 number: `beta.1000` is newer than `beta.691`. Dev builds (`.devN`) are never
 published to npm. A version with no mapping (`a`, `rc`, `post`) stops the release.
 
-The `npm` job checks out the tag and stops when `package.json` does not carry
-the npm version of that tag. It publishes with `--tag latest`, because npm 11
-refuses a prerelease publish without a dist-tag. If the version is already on
-npm, the job skips the publish.
+The release also sets both `version` fields of `server.json`, the MCP Registry
+listing, to the npm version.
+
+The `npm` job checks out the tag and stops when `package.json` or `server.json`
+does not carry the npm version of that tag, or when the `server.json` name is
+not the `mcpName` of `package.json`. It publishes with `--tag latest`,
+because npm 11 refuses a prerelease publish without a dist-tag. If the version
+is already on npm, the job skips the publish.
+
+After the npm publish, the job lists the version in the MCP Registry. The
+registry checks the published package for `mcpName`, and the login uses the
+job's OIDC token. The job asks the registry first, so a re-run after a failed
+listing lists the version. The job asks npm for the published version three
+times, waiting ten seconds between attempts, if npm does not show it yet. A
+published version whose `mcpName` is missing is refused by the registry, which
+fails the job: cut a new release so npm publishes a package that carries it.
+The job also fails if npm still lacks the version after the attempts.
 
 ## One-time setup
 

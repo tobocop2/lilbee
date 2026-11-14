@@ -5,7 +5,7 @@
 #   release_version.sh npm-version 0.6.90b691      -> 0.6.90-beta.691
 #   release_version.sh files                       -> the files a release stamps
 #   release_version.sh stamp <root> <old> <new>    -> stamp those files under <root>
-#   release_version.sh check v0.6.90b691           -> fail unless package.json is that release
+#   release_version.sh check v0.6.90b691           -> fail unless package.json and server.json are that release
 #
 # Mapping: X.Y.Z -> X.Y.Z, X.Y.ZbN -> X.Y.Z-beta.N, a trailing .devM adds a
 # dev.M prerelease identifier (dev builds are never published to npm).
@@ -20,6 +20,7 @@ FILES=(
   plugins/lilbee/.claude-plugin/plugin.json
   packages/lilbee/package.json
   packages/lilbee/package-lock.json
+  server.json
 )
 
 npm_version() {
@@ -60,9 +61,16 @@ stamp() {
       npm pkg set "lilbee.release=v${new}"
     ) || fail_stamp package.json "$npm"
   fi
+  # The MCP Registry listing names the npm version, in the entry and in its npm package.
+  if [ -f "${root}/server.json" ]; then
+    local listing
+    listing=$(jq --arg v "$npm" '.version = $v | .packages[].version = $v' "${root}/server.json") \
+      || fail_stamp server.json "$npm"
+    printf '%s\n' "$listing" > "${root}/server.json"
+  fi
 }
 
-# The npm publish job runs this: package.json must be the release the tag names.
+# The npm publish job runs this: package.json and server.json must be the release the tag names.
 check() {
   local tag="$1" expected version release
   expected=$(npm_version "${tag#v}")
@@ -70,6 +78,16 @@ check() {
   release=$(node -p 'require("./packages/lilbee/package.json").lilbee.release')
   if [ "$version" != "$expected" ] || [ "$release" != "$tag" ]; then
     echo "release_version: package.json has version ${version} and lilbee.release ${release}; ${tag} needs version ${expected} and lilbee.release ${tag}" >&2
+    return 1
+  fi
+  local mcp_name
+  mcp_name=$(node -p 'require("./packages/lilbee/package.json").mcpName || ""')
+  if [ -z "$mcp_name" ] || ! jq -e --arg n "$mcp_name" '.name == $n' server.json > /dev/null; then
+    echo "release_version: package.json mcpName '${mcp_name}' must equal the name in server.json" >&2
+    return 1
+  fi
+  if ! jq -e --arg v "$expected" '.version == $v and (.packages | length > 0) and all(.packages[]; .version == $v)' server.json > /dev/null; then
+    echo "release_version: server.json does not carry version ${expected} in every version field" >&2
     return 1
   fi
 }
