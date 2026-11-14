@@ -39,11 +39,11 @@ def _run(
     stubs.mkdir()
     cases = []
     for name, dump in files.items():
-        (pack / name).write_text("elf")
+        (pack / name).write_text("elf", encoding="utf-8")
         cases.append(f"  {name}) cat <<'DUMP'\n{dump}DUMP\n  ;;")
     objdump = stubs / "objdump"
     header = '#!/usr/bin/env bash\ncase "$(basename "${!#}")" in\n'
-    objdump.write_text(header + "\n".join(cases) + "\n  *) ;;\nesac\n")
+    objdump.write_text(header + "\n".join(cases) + "\n  *) ;;\nesac\n", encoding="utf-8")
     objdump.chmod(objdump.stat().st_mode | stat.S_IEXEC)
     for tool in _TOOLS:
         found = shutil.which(tool)
@@ -56,6 +56,7 @@ def _run(
         [bash, str(_SCRIPT), str(pack)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={"PATH": str(stubs), **(env or {})},
         check=False,
     )

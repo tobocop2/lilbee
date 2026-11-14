@@ -34,7 +34,7 @@ jobs:
             runner: windows-2022
             asset: llama-b12032-bin-win-cpu-x64.zip
             platform: win_amd64
-            license: MIT
+            license: MIT AND Apache-2.0 WITH LLVM-exception
             timeout: 45
           - cell: windows-x86_64-cuda
             backend: cuda
@@ -77,7 +77,7 @@ jobs:
             runner: ubuntu-22.04
             build: source
             platform: manylinux_2_34_x86_64
-            license: MIT AND NCSA AND Apache-2.0 WITH LLVM-exception
+            license: MIT AND BSD-3-Clause AND NCSA AND Apache-2.0 WITH LLVM-exception
             timeout: 350
     defaults:
       run:
