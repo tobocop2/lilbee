@@ -4960,7 +4960,16 @@ class TestLaunchStateRoundTrip:
 
 
 def _engine_state_file(
-    engine_dir: Path, group: str, *, pin: str, model: str, role: str, ctx: int = 0, slots: int = 1
+    engine_dir: Path,
+    group: str,
+    *,
+    pin: str,
+    model: str,
+    role: str,
+    ctx: int = 0,
+    slots: int = 1,
+    argv: tuple[str, ...] = ("/bin/llama-server",),
+    env: dict[str, str] | None = None,
 ) -> Path:
     """A live engine's state record as another process would have written it."""
     import json
@@ -4978,8 +4987,8 @@ def _engine_state_file(
                 "launches": [
                     {
                         "role": role,
-                        "argv": ["/bin/llama-server"],
-                        "env_overrides": {},
+                        "argv": list(argv),
+                        "env_overrides": env or {},
                         "model": model,
                         "ctx": ctx,
                         "slots": slots,
@@ -6027,7 +6036,12 @@ def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(
 
 
 def _ladder_against_live_chat_engine(
-    monkeypatch, tmp_path: Path, recorded_pin: str
+    monkeypatch,
+    tmp_path: Path,
+    recorded_pin: str,
+    *,
+    argv: tuple[str, ...] = ("/bin/llama-server",),
+    env: dict[str, str] | None = None,
 ) -> tuple[_BindableSwap, Path, list[Path], list[Path]]:
     """Run this lilbee's ladder against a live chat engine recorded with *recorded_pin*."""
     from lilbee.providers.fleet import binary as binary_mod
@@ -6041,7 +6055,9 @@ def _ladder_against_live_chat_engine(
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
-    _engine_state_file(machine, "chat", pin=recorded_pin, model="m-chat", role="chat")
+    _engine_state_file(
+        machine, "chat", pin=recorded_pin, model="m-chat", role="chat", argv=argv, env=env
+    )
     holder = hold_user_lock(machine, pid=999_888)  # the other process still serves from it
     monkeypatch.setattr(cfg, "data_root", tmp_path / "root", raising=False)
     try:
@@ -6065,6 +6081,30 @@ def test_ladder_does_not_adopt_an_engine_started_with_an_older_swap_config(
     older_pin = f"{binary_mod.engine_build_id()}|swap-config=older"
     swap, machine, built, stopped = _ladder_against_live_chat_engine(
         monkeypatch, tmp_path, older_pin
+    )
+    assert swap.binds == []
+    assert stopped == []
+    assert built and machine not in built
+
+
+def test_ladder_does_not_adopt_a_split_launch_recorded_before_tensor_parallel(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A mistral.rs layer-map engine from revision 1 is not bound after the upgrade.
+
+    That launch carried the collective-library opt-out and a layer map, and
+    answered with garbage on two cards. The record's pin names revision 1, so
+    the ladder refuses the bind and builds its own engine.
+    """
+    from lilbee.providers.fleet import binary as binary_mod
+
+    revision_one_pin = f"{binary_mod.engine_build_id()}|swap-config=1"
+    swap, machine, built, stopped = _ladder_against_live_chat_engine(
+        monkeypatch,
+        tmp_path,
+        revision_one_pin,
+        argv=("/bin/mistralrs", "--device-layers", "0:16;1:16"),
+        env={"MISTRALRS_NO_NCCL": "1"},
     )
     assert swap.binds == []
     assert stopped == []
