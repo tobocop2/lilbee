@@ -1,10 +1,10 @@
 name: Llama pack cells (trial)
 
-# Builds the Windows x86_64 CPU, macOS arm64 CPU and the two x86_64 CUDA llama.cpp wheels,
-# repairs them, starts llama-server from the installed wheel, and keeps each wheel with its
-# sha256 as a run artifact. The Windows cells repack the upstream release assets. The Linux
-# CUDA cell builds from source in the manylinux_2_34 image, because the upstream Linux CUDA
-# assets need glibc 2.38. It publishes nothing and makes no release.
+# Builds the llama.cpp wheels for Windows x86_64 (CPU, CUDA, Vulkan), macOS arm64 (Metal) and
+# Linux x86_64 (CUDA, Vulkan, ROCm), repairs them, starts llama-server from the installed wheel,
+# and keeps each wheel with its sha256 as a run artifact. The Windows cells repack the upstream
+# release assets. The Linux cells build from source in the manylinux_2_34 image, because the
+# upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30. It publishes nothing and makes no release.
 # A workflow_dispatch trigger needs the file on the default branch, so this runs on a push
 # to one branch instead.
 on:
@@ -34,7 +34,7 @@ jobs:
             runner: windows-2022
             asset: llama-b12032-bin-win-cpu-x64.zip
             platform: win_amd64
-            license: MIT
+            license: MIT AND Apache-2.0 WITH LLVM-exception
             timeout: 45
           - cell: windows-x86_64-cuda
             backend: cuda
@@ -46,7 +46,7 @@ jobs:
             timeout: 60
           - cell: macos-arm64-metal
             backend: metal
-            runner: macos-14
+            runner: macos-15
             asset: llama-b12032-bin-macos-arm64.tar.gz
             platform: macosx_14_0_arm64
             license: MIT
@@ -57,6 +57,27 @@ jobs:
             build: source
             platform: manylinux_2_34_x86_64
             license: MIT AND LicenseRef-NVIDIA-CUDA-EULA
+            timeout: 350
+          - cell: windows-x86_64-vulkan
+            backend: vulkan
+            runner: windows-2022
+            asset: llama-b12032-bin-win-vulkan-x64.zip
+            platform: win_amd64
+            license: MIT AND Apache-2.0 WITH LLVM-exception
+            timeout: 45
+          - cell: linux-x86_64-vulkan
+            backend: vulkan
+            runner: ubuntu-22.04
+            build: source
+            platform: manylinux_2_34_x86_64
+            license: MIT
+            timeout: 120
+          - cell: linux-x86_64-rocm
+            backend: rocm
+            runner: ubuntu-22.04
+            build: source
+            platform: manylinux_2_34_x86_64
+            license: MIT AND BSD-3-Clause AND NCSA AND Apache-2.0 WITH LLVM-exception
             timeout: 350
     defaults:
       run:
@@ -70,6 +91,15 @@ jobs:
       BACKEND: ${{ matrix.backend }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Free disk space for the Vulkan and ROCm build
+        if: matrix.build == 'source' && matrix.backend != 'cuda'
+        run: |
+          set -euo pipefail
+          # The ROCm packages and the build need more disk than the runner image leaves free.
+          # This runs before setup-go and setup-python, so the later tool installs survive it.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
+          df -h / | tail -1
 
       - name: Read the engine pins
         run: grep -E '^ENGINE_[A-Z_]+=' engine-versions.env >> "$GITHUB_ENV"
@@ -162,8 +192,23 @@ jobs:
           PY
           wc -c packaging/engine-wheel/NOTICE-NVIDIA-CUDA
 
+      - name: Build llama.cpp with Vulkan or ROCm in the manylinux_2_34 image
+        if: matrix.build == 'source' && matrix.backend != 'cuda'
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+          docker run --rm -v "${PWD}:/work" -w /work \
+            -e BACKEND -e UPSTREAM_REPO -e UPSTREAM_TAG \
+            -e BIN_DIR=/work/packaging/engine-wheel/lilbee_engine_llama_cpp/bin \
+            -e LICENSE_DIR=/work/packaging/engine-wheel \
+            -e "OWNER=$(id -u):$(id -g)" \
+            quay.io/pypa/manylinux_2_34_x86_64@sha256:e0b7a1bdb4a0b7d519b29b301e2d3c626a33ea78e9bb5bb1590ce2d99d0ae62f \
+            bash /work/tools/wheel-build/llama_gpu_manylinux.sh
+          ls -l packaging/engine-wheel/lilbee_engine_llama_cpp/bin
+          df -h / | tail -1
+
       - name: Build llama.cpp with CUDA 12.4 in the manylinux_2_34 image
-        if: matrix.build == 'source'
+        if: matrix.build == 'source' && matrix.backend == 'cuda'
         run: |
           set -euo pipefail
           # The runner disk is small; the build and the toolkit need several GB.
@@ -212,6 +257,10 @@ jobs:
                   if len(roots) != 1:
                       raise SystemExit(f"{archive.name}: expected one folder to repack, found {len(roots)}")
                   (root,) = roots
+                  # The archive carries the LLVM OpenMP licence beside libomp.dll.
+                  omp_licence = root / "LICENSE-LLVM-OpenMP"
+                  if with_server and omp_licence.is_file():
+                      shutil.copy2(omp_licence, bin_dir.parents[1] / omp_licence.name)
                   for entry in sorted(root.iterdir()):
                       if entry.is_symlink():
                           continue  # a link only repeats a file that the loop copies once
@@ -226,6 +275,8 @@ jobs:
               repack(extra, False)
           if not any((bin_dir / n).exists() for n in server):
               raise SystemExit(f"{archives[0].name}: no llama-server in the tree")
+          if (bin_dir / "libomp.dll").exists() and not (bin_dir.parents[1] / "LICENSE-LLVM-OpenMP").is_file():
+              raise SystemExit(f"{archives[0].name}: libomp.dll without LICENSE-LLVM-OpenMP")
           PY
           ls -l packaging/engine-wheel/lilbee_engine_llama_cpp/bin
 
@@ -301,6 +352,17 @@ jobs:
             (cd out && shasum -a 256 "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
           fi
           cat out/*.sha256
+          if [ "${BACKEND}" = rocm ]; then
+            # The lists of gfx targets that the rocBLAS kernels in the pack cover.
+            shopt -s nullglob
+            for kernels in packaging/engine-wheel/lilbee_engine_llama_cpp/bin/rocblas/library/TensileLibrary_lazy_gfx*.dat; do
+              name="${kernels##*/}"
+              name="${name#TensileLibrary_lazy_}"
+              echo "${name%.dat}"
+            done | sort -u > out/lilbee-linux-x86_64-rocm.gfx.txt
+            [ -s out/lilbee-linux-x86_64-rocm.gfx.txt ] || { echo "the pack carries no rocBLAS kernels"; exit 1; }
+            cat out/lilbee-linux-x86_64-rocm.gfx.txt
+          fi
           ls -l out
 
       - name: Start llama-server from the installed wheel
@@ -326,6 +388,33 @@ jobs:
           for lic in llama.cpp llama-swap gguf-parser; do
             unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-${lic}$" || { echo "wheel lacks the ${lic} licence"; exit 1; }
           done
+          if [ -f "${bindir}/libomp.dll" ]; then
+            unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }
+          fi
+          if [ "${BACKEND}" = vulkan ]; then
+            if [ "${RUNNER_OS}" = Windows ]; then
+              test -f "${bindir}/ggml-vulkan.dll"
+            else
+              test -f "${bindir}/libggml-vulkan.so"
+              test "$(find "${bindir}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
+              if find "${bindir}" -name 'libvulkan*' | grep .; then echo "the Vulkan loader must stay with the host"; exit 1; fi
+              if ldd "${bindir}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
+              bash "${GITHUB_WORKSPACE}/tools/wheel-build/check_glibc_floor.sh" "${bindir}"
+            fi
+          fi
+          if [ "${BACKEND}" = rocm ]; then
+            test -f "${bindir}/libggml-hip.so"
+            test -d "${bindir}/rocblas/library"
+            test "$(find "${bindir}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
+            for lic in hsa-rocr comgr hip-runtime-amd rocblas hipblas hipblaslt rocm-llvm; do
+              unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-ROCm-${lic}$" || { echo "wheel lacks the ${lic} licence"; exit 1; }
+            done
+            if ldd "${bindir}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
+            bash "${GITHUB_WORKSPACE}/tools/wheel-build/check_glibc_floor.sh" "${bindir}"
+            # A clean container names exactly the six host libraries; with them installed, everything resolves.
+            bash "${GITHUB_WORKSPACE}/tools/qa/assert_rocm_host_libs.sh" "${bindir}"
+            bash "${GITHUB_WORKSPACE}/tools/qa/assert_rocm_bundle_loads.sh" "${bindir}"
+          fi
           if [ "${BACKEND}" = cuda ]; then
             unzip -l out/*.whl | grep -q "dist-info/licenses/NOTICE-NVIDIA-CUDA$" || { echo "wheel lacks the NVIDIA notice"; exit 1; }
             if [ "${RUNNER_OS}" = Windows ]; then
@@ -355,7 +444,7 @@ jobs:
           fi
           cd /
           "${exe}" --version
-          if [ "${BACKEND}" = cuda ]; then "${exe}" --list-devices; fi
+          case "${BACKEND}" in cuda | vulkan | rocm) "${exe}" --list-devices ;; esac
 
       - uses: actions/upload-artifact@v7
         with:
