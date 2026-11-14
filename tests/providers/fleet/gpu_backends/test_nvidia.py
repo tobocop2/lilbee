@@ -362,9 +362,15 @@ def test_cards_are_unknown_when_a_row_does_not_parse(
     assert nvidia_mod.cards() == []
 
 
-def test_card_totals_keep_the_rows_that_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_card_totals_keep_a_row_that_does_not_parse_as_an_unread_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row takes its position as index, so a mask can still name it."""
     _Smi(monkeypatch, cards=_LOST_CARD0_CSV)
-    assert nvidia_mod.card_totals() == [nvidia_mod.CardTotal(1, "GPU-b", 12288 * MIB)]
+    assert nvidia_mod.card_totals() == [
+        nvidia_mod.CardTotal(0, "", None),
+        nvidia_mod.CardTotal(1, "GPU-b", 12288 * MIB),
+    ]
 
 
 def test_host_facts_leave_the_gpus_unknown_when_a_row_does_not_parse(

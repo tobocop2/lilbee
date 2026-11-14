@@ -217,12 +217,16 @@ def cards() -> list[NvidiaCard]:
 
 
 def card_totals() -> list[CardTotal]:
-    """Each card whose row parses, by printed index; a total that does not read is ``None``."""
+    """Each row by printed index; a total that does not read is ``None``.
+
+    A row that does not parse takes its position as index and has no uuid or total.
+    """
     listed = _listed(_cards_probe.read().out)
     return [
-        CardTotal(row.index, row.uuid, None if row.total_mib is None else row.total_mib * MIB)
-        for row in listed
-        if row is not None
+        CardTotal(position, "", None)
+        if row is None
+        else CardTotal(row.index, row.uuid, None if row.total_mib is None else row.total_mib * MIB)
+        for position, row in enumerate(listed)
     ]
 
 
