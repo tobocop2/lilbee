@@ -2049,7 +2049,11 @@ def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]
     def install() -> EngineInstalledResponse:
         built = engine_service.install(engine)
         return EngineInstalledResponse(
-            engine=built.engine, version=built.version, backend=built.backend, note=built.note
+            engine=built.engine,
+            version=built.version,
+            backend=built.backend,
+            note=built.note,
+            not_run_on=list(built.not_run_on),
         )
 
     return _engine_result(install)

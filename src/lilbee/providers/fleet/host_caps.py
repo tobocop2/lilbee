@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import platform
 import re
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from types import ModuleType
 from typing import Any, TypeVar
 
@@ -22,6 +23,8 @@ NVIDIA_UNREADABLE = "the NVIDIA driver answers could not be read"
 MACOS_UNREADABLE = "The macOS version of this computer could not be read."
 _NVML_CUDA_MAJOR_DIVISOR = 1000
 _NVML_CUDA_MINOR_DIVISOR = 10
+_SYSFS_ACCEL_DIR = Path("/sys/class/accel")
+NPU_UNREAD = "The NPU list of this computer could not be read."
 
 
 class HostOS(StrEnum):
@@ -32,12 +35,41 @@ class HostOS(StrEnum):
     WINDOWS = "windows"
 
 
+_OS_DISPLAY = {HostOS.LINUX: "Linux", HostOS.MACOS: "macOS", HostOS.WINDOWS: "Windows"}
+
+
 class HostArch(StrEnum):
     """CPU architectures an engine archive targets."""
 
     X86_64 = "x86_64"
     ARM64 = "arm64"
 
+
+class NpuVendor(StrEnum):
+    """Makers of the NPUs the host can report."""
+
+    INTEL = "intel"
+    AMD = "amd"
+    QUALCOMM = "qualcomm"
+
+
+# PCI vendor id of an accelerator, as sysfs writes it. Vendor ids are public PCI data. A
+# Qualcomm id on Linux names any Qualcomm accelerator, a data-centre card among them. The
+# vendor id alone makes an NPU, so an AMD or Intel accelerator that is not an NPU reads as
+# one; that errs toward a refused engine, not a false pass.
+_NPU_VENDOR_BY_PCI = {
+    "0x8086": NpuVendor.INTEL,
+    "0x1022": NpuVendor.AMD,
+    "0x17cb": NpuVendor.QUALCOMM,
+}
+_NPU_DISPLAY = {
+    NpuVendor.INTEL: "Intel NPU",
+    NpuVendor.AMD: "AMD NPU",
+    NpuVendor.QUALCOMM: "Qualcomm accelerator",
+}
+# AMD device id to generation. Only ids this table names have a generation; any other
+# AMD id reads as an NPU of unknown generation. Unverified against the amdxdna driver.
+_AMD_GENERATION_BY_DEVICE = {"0x1502": "XDNA", "0x17f0": "XDNA2"}
 
 _OS_BY_SYSTEM = {"Linux": HostOS.LINUX, "Darwin": HostOS.MACOS, "Windows": HostOS.WINDOWS}
 _ARCH_BY_MACHINE = {
@@ -70,6 +102,15 @@ class NvidiaGpu:
 
 
 @dataclass(frozen=True)
+class Npu:
+    """One neural processing unit; ``generation`` is ``None`` when the host does not say."""
+
+    vendor: NpuVendor
+    name: str
+    generation: str | None = None
+
+
+@dataclass(frozen=True)
 class HostCaps:
     """The capabilities of one host."""
 
@@ -86,6 +127,10 @@ class HostCaps:
     macos_reason: str = ""
     macos_known: bool = True
     """False only on macOS when the version could not be read; then ``macos_reason`` says so."""
+    npus: tuple[Npu, ...] = ()
+    npu_known: bool = False
+    """False when the NPU list could not be read, as on Windows; ``npus`` then says nothing."""
+    npu_reason: str = NPU_UNREAD
 
 
 def _decoded(value: str | bytes) -> str:
@@ -274,6 +319,29 @@ def _macos_version(host_os: HostOS | None, raw: str) -> tuple[int, ...] | None:
     return version_numbers(raw) or None
 
 
+def _npu(vendor_id: str, device_id: str) -> Npu | None:
+    vendor = _NPU_VENDOR_BY_PCI.get(vendor_id.lower())
+    if vendor is None:
+        return None
+    generation = (
+        _AMD_GENERATION_BY_DEVICE.get(device_id.lower()) if vendor is NpuVendor.AMD else None
+    )
+    return Npu(vendor, _NPU_DISPLAY[vendor], generation)
+
+
+def _npus(
+    host_os: HostOS | None, accel: Sequence[tuple[str, str]] | None
+) -> tuple[tuple[Npu, ...], bool, str]:
+    """The NPUs, whether the list was read, and why not. Only Linux lists accelerators."""
+    if host_os is not HostOS.LINUX:
+        where = _OS_DISPLAY[host_os] if host_os else "this OS"
+        return (), False, f"lilbee cannot read the NPU list on {where}."
+    if accel is None:
+        return (), False, NPU_UNREAD
+    found = (_npu(vendor, device) for vendor, device in accel)
+    return tuple(npu for npu in found if npu is not None), True, ""
+
+
 def collect(
     *,
     system: str,
@@ -281,6 +349,7 @@ def collect(
     cpu_info: dict[str, Any],
     nvml: dict[str, Any] | None,
     mac_ver: str = "",
+    accel_devices: Sequence[tuple[str, str]] | None = None,
 ) -> HostCaps:
     """Build the host answer from raw readings; a value that cannot be read is unknown."""
     host_os = _OS_BY_SYSTEM.get(system)
@@ -290,6 +359,7 @@ def collect(
     nvidia_known = gpus is not None and (cuda is not None or not nvml)
     macos_version = _macos_version(host_os, mac_ver)
     macos_known = host_os is not HostOS.MACOS or macos_version is not None
+    npus, npu_known, npu_reason = _npus(host_os, accel_devices)
     return HostCaps(
         os=host_os,
         arch=arch,
@@ -302,6 +372,9 @@ def collect(
         macos_version=macos_version,
         macos_reason="" if macos_known else MACOS_UNREADABLE,
         macos_known=macos_known,
+        npus=npus,
+        npu_known=npu_known,
+        npu_reason=npu_reason,
     )
 
 
@@ -309,6 +382,27 @@ def _nvidia_reason(nvml: dict[str, Any] | None, known: bool) -> str:
     if not nvml:
         return NO_NVIDIA_DRIVER
     return "" if known else NVIDIA_UNREADABLE
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _accel_devices() -> list[tuple[str, str]]:
+    """``(vendor, device)`` PCI ids of each device in the Linux accelerator class."""
+    try:
+        folders = sorted(_SYSFS_ACCEL_DIR.glob("accel*/device"))
+    except OSError:
+        return []
+    found = []
+    for folder in folders:
+        vendor, device = _read_text(folder / "vendor"), _read_text(folder / "device")
+        if vendor is not None:
+            found.append((vendor, device or ""))
+    return found
 
 
 def _cpu_info() -> dict[str, Any]:
@@ -326,4 +420,5 @@ def detect() -> HostCaps:
         cpu_info=_read_or_none(_cpu_info) or {},
         nvml=read_nvml(),
         mac_ver=platform.mac_ver()[0],
+        accel_devices=_accel_devices() if platform.system() == "Linux" else None,
     )

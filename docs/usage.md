@@ -472,6 +472,11 @@ server the removal needs `allow_http_engines`.
 If the build of an engine differs from the pin, `engine list` prints one line:
 the engine is not installed, and the line names the build that differs.
 
+If lilbee has no recorded run of an engine on a device, the line ends with
+`, not run on <device>`. The install output prints the same words. Each build in
+the JSON list has a `not_run_on` field with the same devices. `auto` never
+chooses an engine that has a device in this list.
+
 #### The saved choice
 
 The engine commands write two keys to `config.toml`: `preferred_engine` and
@@ -525,9 +530,9 @@ formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
 ### Install an engine
 
 An engine that is not bundled needs a pack. Packs of ik_llama.cpp, mistral.rs and
-TEI are published for Linux x86_64. No pack of mlx is published yet, so mlx refuses
-to install and prints the no-pack text. A host with no pack for its platform gets the
-same text. Nothing is installed, and llama.cpp stays in use.
+TEI are published for Linux x86_64. No pack of mlx, openvino or lemonade is published
+yet, so those engines refuse to install and print the no-pack text. A host with no pack
+for its platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 
 If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that
 wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel

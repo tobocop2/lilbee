@@ -1,0 +1,41 @@
+source: ssh thinkpad, 2026-11-03, lemonade-embeddable-2026.44.1-ubuntu-x64 (sha256 16f156a7...8e90), script p3.sh in this folder; auto-load by request; second chat model evicts the first; unload; kill -9 of a child; extra_models_dir change; kill -9 lemond
+--- G: GET /live and /v1/health before any load
+live=200
+{"all_models_loaded":[],"max_models":{"classification":1,"embedding":1,"image":1,"llm":1,"reranking":1,"transcription":1,"tts":1},"model_loaded":null,"pinned_helper_models":{"classification":0,"embedding":0,"image":0,"llm":0,"reranking":0,"transcription":0,"tts":0},"pinned_models":{"classification":
+
+--- H: no explicit load: chat request auto-loads
+{"choices":[{"finish_reason":"length","index":0,"message":{"content":"Hello! How can","role":"assistant"}}],"created":1793746169,"id":"chatcmpl-kRidhYOkS7ntKve3OfuD5VCUZ87Ua9FM","model":"lilbee-chat",
+
+    PID    PPID COMMAND
+ 174642  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/chat/lilbee-chat.gguf --ctx-size 18776 --port 8001 --jinja --metrics --parallel 1
+--- I: load lilbee-chat2 (second chat model): does it evict lilbee-chat?
+{"checkpoint":"/home/tobias/f5b/view/chat/lilbee-chat2.gguf","model_name":"lilbee-chat2","recipe":"llamacpp","status":"success"}
+    PID    PPID COMMAND
+ 174672  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/chat/lilbee-chat2.gguf --ctx-size 2048 --port 8002 --jinja --metrics --parallel 1
+LISTEN 0      512        127.0.0.1:8002       0.0.0.0:*    users:(("llama-server",pid=174672,fd=3))
+LISTEN 0      4096       127.0.0.1:9000       0.0.0.0:*    users:(("lemond",pid=174537,fd=9))      
+LISTEN 0      5          127.0.0.1:18160      0.0.0.0:*    users:(("lemond",pid=174537,fd=10))     
+--- J: load embed + rerank, then /v1/unload lilbee-embed
+{"checkpoint":"/home/tobias/f5b/view/embeddings/lilbee-embed.gguf","model_name":"lilbee-embed","recipe":"llamacpp","status":"success"}
+{"checkpoint":"/home/tobias/f5b/view/reranking/lilbee-rerank.gguf","model_name":"lilbee-rerank","recipe":"llamacpp","status":"success"}
+{"message":"Model unloaded successfully","model_name":"lilbee-embed","status":"success"}
+    PID    PPID COMMAND
+ 174672  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/chat/lilbee-chat2.gguf --ctx-size 2048 --port 8002 --jinja --metrics --parallel 1
+ 174765  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/reranking/lilbee-rerank.gguf --ctx-size 8192 --port 8004 --jinja --metrics --reranking --parallel 1
+--- E: kill -9 one llama-server child; next request
+{"model":"lilbee-rerank","object":"list","results":[{"index":0,"relevance_score":-3.1632080078125},{"index":1,"relevance_score":-4.746957778930664}],"usage":{"prompt_tokens":10,"total_tokens":10}}
+
+    PID    PPID COMMAND
+ 174672  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/chat/lilbee-chat2.gguf --ctx-size 2048 --port 8002 --jinja --metrics --parallel 1
+ 174808  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/reranking/lilbee-rerank.gguf --ctx-size 8192 --port 8005 --jinja --metrics --reranking --parallel 1
+--- K: change extra_models_dir at runtime via /internal/set to an empty folder
+{"status":"success","updated":{"extra_models_dir":"/home/tobias/f5b/empty"}}
+
+[]
+    PID    PPID COMMAND
+ 174672  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/chat/lilbee-chat2.gguf --ctx-size 2048 --port 8002 --jinja --metrics --parallel 1
+ 174808  174537 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/reranking/lilbee-rerank.gguf --ctx-size 8192 --port 8005 --jinja --metrics --reranking --parallel 1
+--- F: kill -9 lemond; children left?
+174672 /home/tobias/f5b/data/cache/bin/llamacpp/cpu/llama-server -m /home/tobias/f5b/view/chat/lilbee-chat2.gguf --ctx-size 2048 --port 8002 --jinja --metrics --parallel 1
+(end F)
+(end cleanup)

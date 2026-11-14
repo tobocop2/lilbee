@@ -34,6 +34,7 @@ class EngineName(StrEnum):
     TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
+    LEMONADE = "lemonade"
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class LaunchRequest:
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
     target: RoleTarget = RoleTarget.GPU
+    replica: int = 0
 
 
 @dataclass(frozen=True)
