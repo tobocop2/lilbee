@@ -969,7 +969,7 @@ def _staged_chat_peak(
     _cuda_host(monkeypatch, system, cards=len(card_gib))
     _gguf_meta(monkeypatch, meta or {**_HEADS, "block_count": "32"})
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
-    monkeypatch.setattr(planning, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
+    monkeypatch.setattr(planning, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 4096)
     return planning._peak_estimator({WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL})
 
 

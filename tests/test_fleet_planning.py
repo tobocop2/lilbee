@@ -849,7 +849,7 @@ def test_peak_estimator_sizes_an_uneven_split_for_llama_cpp(monkeypatch) -> None
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
     )
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 1000)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 1000)
     seen: dict = {}
 
     def _est(_path, *, tensor_split, **_k) -> GgufVramEstimate:
