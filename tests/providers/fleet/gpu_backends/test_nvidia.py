@@ -364,7 +364,7 @@ def test_cards_are_unknown_when_a_row_does_not_parse(
 
 def test_card_totals_keep_the_rows_that_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     _Smi(monkeypatch, cards=_LOST_CARD0_CSV)
-    assert nvidia_mod.card_totals() == [("GPU-b", 12288 * MIB)]
+    assert nvidia_mod.card_totals() == [nvidia_mod.CardTotal(1, "GPU-b", 12288 * MIB)]
 
 
 def test_host_facts_leave_the_gpus_unknown_when_a_row_does_not_parse(
@@ -408,7 +408,10 @@ def test_a_card_whose_index_does_not_read_takes_its_row_position(
         compute="0, 8.6\n[N/A], 7.5\n",
     )
     assert [(c.index, c.uuid) for c in nvidia_mod.cards()] == [(0, "GPU-a"), (1, "GPU-b")]
-    assert nvidia_mod.card_totals() == [("GPU-a", 24576 * MIB), ("GPU-b", 8192 * MIB)]
+    assert nvidia_mod.card_totals() == [
+        nvidia_mod.CardTotal(0, "GPU-a", 24576 * MIB),
+        nvidia_mod.CardTotal(1, "GPU-b", 8192 * MIB),
+    ]
     assert nvidia_mod.host_facts() == {
         "cuda_driver": 12040,
         "gpus": [{"name": "n0", "cc": [8, 6]}, {"name": "n1", "cc": [7, 5]}],
@@ -544,18 +547,24 @@ def test_a_probe_that_fails_at_once_is_run_again_after_the_short_cache(
     assert smi.runs == ["cards", "cards"]
 
 
-def test_card_totals_leave_out_a_card_whose_total_does_not_read(
+def test_card_totals_keep_a_card_whose_total_does_not_read_with_its_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _Smi(monkeypatch, cards=_NA_FIRST_CSV)
-    assert nvidia_mod.card_totals() == [("GPU-b", 8192 * MIB)]
+    assert nvidia_mod.card_totals() == [
+        nvidia_mod.CardTotal(0, "GPU-a", None),
+        nvidia_mod.CardTotal(1, "GPU-b", 8192 * MIB),
+    ]
 
 
 def test_card_totals_keep_a_card_whose_free_memory_does_not_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _Smi(monkeypatch, cards="0, GPU-a, 24576, 20000, n0\n1, GPU-b, 12288, [N/A], n1\n")
-    assert nvidia_mod.card_totals() == [("GPU-a", 24576 * MIB), ("GPU-b", 12288 * MIB)]
+    assert nvidia_mod.card_totals() == [
+        nvidia_mod.CardTotal(0, "GPU-a", 24576 * MIB),
+        nvidia_mod.CardTotal(1, "GPU-b", 12288 * MIB),
+    ]
 
 
 _CARD_TABLE = (
@@ -594,7 +603,10 @@ def test_the_card_query_and_its_parser_name_the_same_columns(
         nvidia_mod.NvidiaCard(0, "GPU-a", "Acme, Inc. Card", 24576 * MIB, 23552 * MIB),
         nvidia_mod.NvidiaCard(1, "GPU-b", "NVIDIA GeForce RTX 3060", 12288 * MIB, 10240 * MIB),
     ]
-    assert nvidia_mod.card_totals() == [("GPU-a", 24576 * MIB), ("GPU-b", 12288 * MIB)]
+    assert nvidia_mod.card_totals() == [
+        nvidia_mod.CardTotal(0, "GPU-a", 24576 * MIB),
+        nvidia_mod.CardTotal(1, "GPU-b", 12288 * MIB),
+    ]
     facts = nvidia_mod.host_facts()
     assert facts is not None
     assert [g["name"] for g in facts["gpus"]] == ["Acme, Inc. Card", "NVIDIA GeForce RTX 3060"]

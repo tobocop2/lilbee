@@ -164,6 +164,15 @@ class NvidiaCard:
 
 
 @dataclass(frozen=True)
+class CardTotal:
+    """A card's printed index and uuid, and its total memory in bytes (``None`` if unread)."""
+
+    index: int
+    uuid: str
+    total_bytes: int | None
+
+
+@dataclass(frozen=True)
 class _Listed:
     """One row of the card query; a memory figure is ``None`` when nvidia-smi prints [N/A]."""
 
@@ -207,13 +216,13 @@ def cards() -> list[NvidiaCard]:
     return readable if len(readable) == len(listed) else []
 
 
-def card_totals() -> list[tuple[str, int]]:
-    """``(uuid, total bytes)`` of each card whose row parses and whose total reads."""
+def card_totals() -> list[CardTotal]:
+    """Each card whose row parses, by printed index; a total that does not read is ``None``."""
     listed = _listed(_cards_probe.read().out)
     return [
-        (row.uuid, row.total_mib * MIB)
+        CardTotal(row.index, row.uuid, None if row.total_mib is None else row.total_mib * MIB)
         for row in listed
-        if row is not None and row.total_mib is not None
+        if row is not None
     ]
 
 
