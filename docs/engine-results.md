@@ -30,8 +30,7 @@ No recording is taken yet. Each row changes when its recording lands. A recordin
 | mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |
 | tei-cpu | embed, rerank | CPU host | not recorded |
 | tei-cuda | embed, rerank | NVIDIA GPU | not recorded |
-| lemonade-cpu | chat, embed, rerank, vision | CPU host | not recorded |
-| lemonade-ryzen-ai | chat, embed, rerank | Ryzen AI machine | not recorded, no machine |
+| lemonade-ryzen-ai | chat, embed | Ryzen AI machine with an XDNA2 NPU | not recorded, no machine |
 | ik-llama-cuda | chat, embed | NVIDIA GPU | not recorded |
 | mlx-chat-metal | chat | Apple silicon Mac | not recorded |
 | mlx-embed-rerank-metal | embed, rerank | Apple silicon Mac | not recorded |
