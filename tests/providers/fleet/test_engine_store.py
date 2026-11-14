@@ -1583,6 +1583,54 @@ def test_prune_engines_keeps_a_pinned_build_with_no_record(
     assert pinned.is_dir()
 
 
+@pytest.mark.parametrize(("pin_version", "stale"), [("3", "3-1-cpu"), ("1.0.0", "1.0.0-rc1-cpu")])
+def test_prune_engines_keeps_a_stale_build_with_no_record_that_starts_with_the_pinned_version(
+    tmp_path: Path, monkeypatch, pin_version: str, stale: str
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter(pin_version, "cpu"), ("1",))
+    ambiguous = tmp_path / "engines" / "fx" / stale
+    ambiguous.mkdir()
+    assert [p.name for p in engine_store.prune_engines(models)] == ["1-cpu"]
+    assert ambiguous.is_dir()
+
+
+def test_prune_goes_on_after_a_build_it_must_keep(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1", "2"))
+    gone = store.prune(keep={("fx", "9", "cpu")}, in_use=lambda e, v, b: v == "1")
+    assert [p.name for p in gone] == ["2-cpu"]
+    assert (store.root / "fx" / "1-cpu").is_dir()
+
+
+def test_build_dirs_skip_hidden_stage_and_trash_folders(store: EngineStore) -> None:
+    for hidden in (".stage-1", ".trash-1"):
+        (store.root / "fx" / hidden).mkdir(parents=True)
+    assert store.build_dirs() == []
+
+
+def test_build_dirs_skip_a_file_beside_the_builds(store: EngineStore) -> None:
+    (store.root / "fx").mkdir(parents=True)
+    (store.root / "fx" / "0-note").write_text("x", encoding="utf-8")
+    build = store.root / "fx" / "5-cpu"
+    build.mkdir()
+    assert store.build_dirs() == [("fx", "5", "cpu", build)]
+
+
+def test_build_dirs_list_every_complete_build_of_an_engine(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path, ("1", "2"))
+    assert [(v, b, p.name) for _, v, b, p in store.build_dirs()] == [
+        ("1", "cpu", "1-cpu"),
+        ("2", "cpu", "2-cpu"),
+    ]
+
+
+def test_build_dirs_read_a_one_letter_backend(store: EngineStore) -> None:
+    build = store.root / "fx" / "3-x"
+    build.mkdir(parents=True)
+    assert store.build_dirs() == [("fx", "3", "x", build)]
+
+
 def test_prune_does_not_wait_for_an_install_lock(store: EngineStore, tmp_path: Path) -> None:
     installed_store(store, tmp_path, ("1",))
     seen: list[float] = []
