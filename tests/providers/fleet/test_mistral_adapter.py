@@ -19,7 +19,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet import devices, engine_manifest, host_caps, swap_config
+from lilbee.providers.fleet import devices, engine_manifest, host_caps, planning, swap_config
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
@@ -34,12 +34,14 @@ from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.host_caps import CardMemory
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
+from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
 L4 = ("NVIDIA L4", (8, 9))
 A40 = ("NVIDIA A40", (8, 6))
 TURING = ("NVIDIA T4", (7, 5))
+GIB = 1 << 30
 
 
 def caps(
@@ -656,7 +658,9 @@ def test_a_folder_without_a_layer_count_is_refused_on_a_split(
     folder.mkdir()
     if config is not None:
         (folder / "config.json").write_text(config, encoding="utf-8")
-    with pytest.raises(ProviderError, match=r"mistral\.rs cannot split st_folder across 2 cards"):
+    with pytest.raises(
+        ProviderError, match=r"mistral\.rs cannot split st_folder across 2 cards.*llama\.cpp engine"
+    ):
         _split_argv(tmp_path, (1, 1), model_path=folder)
     assert "--device-layers" not in _split_argv(tmp_path, (1,), model_path=folder)
 
@@ -667,7 +671,9 @@ def test_a_gguf_without_a_layer_count_is_refused_on_a_split(
 ) -> None:
     _cuda_host(monkeypatch)
     _gguf_layers(monkeypatch, meta)
-    with pytest.raises(ProviderError, match=r"mistral\.rs cannot split m\.gguf across 2 cards"):
+    with pytest.raises(
+        ProviderError, match=r"mistral\.rs cannot split m\.gguf across 2 cards.*llama\.cpp engine"
+    ):
         _split_argv(tmp_path, (1, 1))
     assert "--device-layers" not in _split_argv(tmp_path, (1,))
 
@@ -678,7 +684,7 @@ def test_a_split_that_leaves_a_card_empty_is_refused(
 ) -> None:
     _cuda_host(monkeypatch, cards=len(split))
     _gguf_layers(monkeypatch, {"block_count": "4"})
-    with pytest.raises(ProviderError, match=r"m\.gguf.*no layer"):
+    with pytest.raises(ProviderError, match=r"m\.gguf.*no layer.*llama\.cpp engine"):
         _split_argv(tmp_path, split)
 
 
@@ -691,8 +697,28 @@ def test_a_build_that_cannot_split_refuses_a_split(
 ) -> None:
     _cuda_host(monkeypatch, system, cards=cards)
     _gguf_layers(monkeypatch, {"block_count": "32"})
-    with pytest.raises(ProviderError, match=rf"mistral\.rs cannot split m\.gguf.*{label}"):
+    with pytest.raises(
+        ProviderError, match=rf"mistral\.rs cannot split m\.gguf.*{label}.*llama\.cpp engine"
+    ):
         _split_argv(tmp_path, (1, 1))
+
+
+def test_a_two_card_launch_pins_the_cards_in_order_and_maps_layers_to_that_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 1000)
+    _cuda_host(monkeypatch)
+    _gguf_layers(monkeypatch, {"block_count": "33"})
+    monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: tmp_path / "mistralrs")
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+    monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+    cards = {i: FleetDevice("CUDA", i, f"card{i}", 24 * GIB, 22 * GIB) for i in (0, 1)}
+    plan = InstancePlan(role=WorkerRole.CHAT, devices=(1, 0), tensor_split=(2, 1))
+    launch = planning._launch_for(plan, "ref", cards, engine=MISTRAL)
+    assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == "1,0"
+    assert launch.env_overrides["MISTRALRS_NO_NCCL"] == "1"
+    assert _layer_map(launch.argv) == "0:22;1:11"
 
 
 def test_the_runtime_env_turns_the_collective_library_off_so_the_map_holds() -> None:
