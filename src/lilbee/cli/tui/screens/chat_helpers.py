@@ -10,12 +10,14 @@ import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+from lilbee.data.ingest.discovery import path_within_roots
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -65,14 +67,21 @@ def open_local_file(href: str) -> None:
     """Open a ``file:`` URL with the OS opener so it lands in the default app
     for its type (an editor for markdown, a viewer for PDF), not a browser
     rendering raw text. Platforms without a known opener fall back to the
-    webbrowser module."""
+    webbrowser module. A path outside the document roots opens nothing."""
+    path = url2pathname(urlparse(href).path)
+    try:
+        inside = path_within_roots(Path(path).resolve(strict=False))
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        log.warning("Refused to open a file outside the document roots: %s", path)
+        return
     argv = _opener_argv(sys.platform)
     if argv is None:
         webbrowser.open(href)
         return
-    path = url2pathname(urlparse(href).path)
     try:
-        subprocess.run([*argv, path], check=False, timeout=10)  # noqa: S603 - fixed opener command; path comes from lilbee's own store
+        subprocess.run([*argv, path], check=False, timeout=10)  # noqa: S603 - fixed opener command; path is inside the document roots
     except (OSError, subprocess.TimeoutExpired):
         log.warning("Could not open source file: %s", path)
 
