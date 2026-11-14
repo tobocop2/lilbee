@@ -12,6 +12,7 @@ import pytest
 
 from lilbee.core import system as system_mod
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal
 from lilbee.providers.model_cache import (
     _BUFFER_OVERHEAD_FRACTION,
     _DYNAMIC_CTX_FLOOR,
@@ -330,7 +331,7 @@ class TestHasNvidiaGpu:
     def test_true_when_a_device_is_detected(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "lilbee.providers.model_cache._nvidia_device_totals",
-            lambda: [("GPU-aaa", 8 * 1024**3)],
+            lambda: [CardTotal(0, "GPU-aaa", 8 * 1024**3)],
         )
         assert has_nvidia_gpu() is True
 
@@ -348,7 +349,7 @@ class TestHasNvidiaGpu:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         monkeypatch.setattr(
             "lilbee.providers.model_cache._nvidia_device_totals",
-            lambda: [("GPU-aaa", 8 * 1024**3)],
+            lambda: [CardTotal(0, "GPU-aaa", 8 * 1024**3)],
         )
         assert has_nvidia_gpu() is True
 
@@ -360,7 +361,11 @@ class TestCudaVisibleDevicesMask:
     budgets taken straight off it describe a machine the engine does not have.
     """
 
-    _FLEET = (("GPU-aaa", 24 * 1024**3), ("GPU-bbb", 8 * 1024**3), ("GPU-ccc", 16 * 1024**3))
+    _FLEET = (
+        CardTotal(0, "GPU-aaa", 24 * 1024**3),
+        CardTotal(1, "GPU-bbb", 8 * 1024**3),
+        CardTotal(2, "GPU-ccc", 16 * 1024**3),
+    )
 
     def _totals(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -408,6 +413,59 @@ class TestCudaVisibleDevicesMask:
         monkeypatch.setattr(cfg, "gpu_devices", "1")
         assert _try_nvidia_memory(sum) == 8 * 1024**3
         assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
+class TestMaskNamesCardsByIndex:
+    """CUDA_VISIBLE_DEVICES names the index nvidia-smi prints, not a place in the list.
+
+    Card 0 of this stand-in does not read, so the readable cards sit at list
+    positions 0 and 1 while their indexes are 1 and 2.
+    """
+
+    _OUTPUT = (
+        "0, GPU-0, [N/A], [N/A], card0\n"
+        "1, GPU-1, 16384, 16384, card1\n"
+        "2, GPU-2, 8192, 8192, card2\n"
+    )
+
+    def test_a_mask_picks_the_cards_it_names(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,2")
+        assert _try_nvidia_memory(sum) == 24 * 1024**3
+        assert _try_nvidia_memory() == 8 * 1024**3
+
+    def test_a_mask_naming_the_last_card_does_not_run_off_the_list(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+        assert _try_nvidia_memory(sum) == 8 * 1024**3
+
+    def test_a_uuid_entry_picks_its_card(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-2")
+        assert _try_nvidia_memory() == 8 * 1024**3
+
+    def test_a_mask_naming_the_unread_card_leaves_the_budget_unknown(self, monkeypatch) -> None:
+        """A card that exists but does not read is in the mask: unknown, not the other cards."""
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+        assert _try_nvidia_memory(sum) is None
+
+    @pytest.mark.parametrize(
+        ("mask", "expected_gib"),
+        [("2,1", 24), ("2,9,1", 8), ("1x", None), ("3", None), (" 2 , 1 ", 24)],
+    )
+    def test_mask_order_junk_and_missing_indexes(
+        self, monkeypatch, mask: str, expected_gib: int | None
+    ) -> None:
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        expected = None if expected_gib is None else expected_gib * 1024**3
+        assert _try_nvidia_memory(sum) == expected
+
+    def test_no_mask_still_sizes_from_the_cards_that_read(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output=self._OUTPUT)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        assert _try_nvidia_memory(sum) == 24 * 1024**3
 
 
 class TestSystemMemoryUnderACgroupCap:

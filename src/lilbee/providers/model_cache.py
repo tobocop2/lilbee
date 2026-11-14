@@ -8,7 +8,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
-from lilbee.providers.fleet.gpu_backends.nvidia import card_totals
+from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal, card_totals
 from lilbee.providers.fleet.gpu_env import gpu_environ
 
 log = logging.getLogger(__name__)
@@ -222,30 +222,35 @@ def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
     if not totals:
         return None
     visible = _apply_cuda_visible_mask(totals)
-    return reducer([total for _uuid, total in visible]) if visible else None
+    if not visible or any(card.total_bytes is None for card in visible):
+        return None
+    return reducer([card.total_bytes for card in visible if card.total_bytes is not None])
 
 
-def _nvidia_device_totals() -> list[tuple[str, int]] | None:
-    """``[(uuid, total_bytes), ...]`` in driver enumeration order, or ``None``.
+def _nvidia_device_totals() -> list[CardTotal] | None:
+    """The cards in driver enumeration order, or ``None`` when no card's total reads.
 
     ``None`` means no NVIDIA GPU was detectable at all, which is the expected
     outcome on every non-NVIDIA host.
     """
-    return card_totals() or None
+    cards = card_totals()
+    return cards if any(card.total_bytes is not None for card in cards) else None
 
 
-def _apply_cuda_visible_mask(devices: list[tuple[str, int]]) -> list[tuple[str, int]]:
+def _apply_cuda_visible_mask(devices: list[CardTotal]) -> list[CardTotal]:
     """The subset of *devices* ``CUDA_VISIBLE_DEVICES`` exposes, in its order.
 
     Entries are driver indexes or ``GPU-``/``MIG-`` UUIDs. An unset variable
-    masks nothing; an empty one exposes nothing. CUDA stops enumerating at the
-    first entry that names no device, and so does this, which is what makes
-    ``0,9,1`` on a two-card host mean one card rather than two.
+    exposes every card whose total reads; an empty one exposes nothing. CUDA
+    stops enumerating at the first entry that names no device, and so does
+    this, which is what makes ``0,9,1`` on a two-card host mean one card
+    rather than two. A named card whose total does not read stays in the
+    result, so the caller sees that the budget is unknown.
     """
     raw = gpu_environ().get("CUDA_VISIBLE_DEVICES")
     if raw is None:
-        return devices
-    visible: list[tuple[str, int]] = []
+        return [card for card in devices if card.total_bytes is not None]
+    visible: list[CardTotal] = []
     for entry in (part.strip() for part in raw.split(",")):
         matched = _resolve_cuda_entry(entry, devices)
         if matched is None:
@@ -254,13 +259,12 @@ def _apply_cuda_visible_mask(devices: list[tuple[str, int]]) -> list[tuple[str, 
     return visible
 
 
-def _resolve_cuda_entry(entry: str, devices: list[tuple[str, int]]) -> tuple[str, int] | None:
-    """The device an entry of ``CUDA_VISIBLE_DEVICES`` names, ``None`` if it names none."""
+def _resolve_cuda_entry(entry: str, devices: list[CardTotal]) -> CardTotal | None:
+    """The card an entry of ``CUDA_VISIBLE_DEVICES`` names, ``None`` if it names none."""
     if entry.isdigit():
-        index = int(entry)
-        return devices[index] if index < len(devices) else None
+        return next((card for card in devices if card.index == int(entry)), None)
     # UUIDs may be abbreviated to any unique prefix.
     if entry.startswith(("GPU-", "MIG-")):
-        matches = [device for device in devices if device[0].startswith(entry)]
+        matches = [card for card in devices if card.uuid.startswith(entry)]
         return matches[0] if len(matches) == 1 else None
     return None
