@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { cacheDir, installRelease } from "./cache.mjs";
 import { detectHost } from "./detect.mjs";
 import { progressReporter } from "./download.mjs";
-import { channelIncludesDev, exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
+import { exitCodeForSignal, HELP, mcpExec, passthroughExec, remoteExec, routeArgv, selectMode } from "./plan.mjs";
 import { resolveBinary } from "./resolve.mjs";
 
 const log = (msg) => console.error(msg);
@@ -157,9 +157,7 @@ async function resolveLocalBinary(env, { refresh = false, tag = null } = {}) {
     pinned,
     tag,
     refresh,
-    includeDev: channelIncludesDev(env),
     repo: env.LILBEE_REPO || repo,
-    log: say,
   });
   if (plan.download) {
     for (const msg of pending.splice(0)) log(msg);
@@ -197,8 +195,8 @@ export async function run(argv) {
   }
 
   if (route.kind === "prepare") {
-    // prepare is the explicit "get me the newest release": it re-resolves
-    // latest even when a binary is already cached.
+    // prepare is the explicit "get me the binary now": it resolves the release
+    // again even when a binary is cached, so a hardware change picks its build.
     const resolved = await resolveLocalBinary(env, { refresh: true, tag: route.tag });
     log(`lilbee: ready (${resolved.path}).`);
     return;

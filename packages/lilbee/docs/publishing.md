@@ -8,14 +8,29 @@ is attested automatically.
 
 ## Versions
 
-CI publishes `packages/lilbee/package.json` exactly as committed. The launcher
-downloads the latest GitHub release at run time, so npm needs a new version
-only when the launcher itself changes.
+The npm version is the lilbee version. `scripts/release.sh` and
+`scripts/promote_release.sh` set `version` in `package.json` and
+`package-lock.json`, and `lilbee.release` in `package.json`, in the same commit
+that sets the lilbee version. Nobody edits them by hand.
 
-To ship a new npm version, bump `version` in a PR. In the same PR, move
-`lilbee.release` to a recent tested release. The launcher uses that release
-when it cannot look up the latest one. If the version is already on npm, the
-job skips the publish.
+The launcher runs exactly `lilbee.release`. It downloads that release on first
+use and never looks up a newer one.
+
+`scripts/release_version.sh npm-version` maps the lilbee version to semver:
+
+| lilbee version | npm version | `lilbee.release` |
+| --- | --- | --- |
+| `0.6.90b691` | `0.6.90-beta.691` | `v0.6.90b691` |
+| `0.6.90` | `0.6.90` | `v0.6.90` |
+
+The beta number is a separate identifier (`beta.691`), so semver sorts it as a
+number: `beta.1000` is newer than `beta.691`. Dev builds (`.devN`) are never
+published to npm. A version with no mapping (`a`, `rc`, `post`) stops the release.
+
+The `npm` job checks out the tag and stops when `package.json` does not carry
+the npm version of that tag. It publishes with `--tag latest`, because npm 11
+refuses a prerelease publish without a dist-tag. If the version is already on
+npm, the job skips the publish.
 
 ## One-time setup
 
@@ -58,6 +73,6 @@ publishing, and passes. Releases do not break.
   and prints the version.
 - OIDC needs `id-token: write` on the job. The `npm` job sets it.
 - To run the job by hand, dispatch the workflow with only this channel:
-  `gh workflow run publish-packages.yml -f tag=v0.6.90b423 -f channels=npm`.
-  It publishes the committed version, and only if that version is not on npm
-  yet.
+  `gh workflow run publish-packages.yml -f tag=<tag> -f channels=npm`.
+  It publishes the version the tag carries, and only if that version is not on
+  npm yet.

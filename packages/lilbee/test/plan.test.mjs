@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  channelIncludesDev,
   exitCodeForSignal,
   routeArgv,
   parseMcpArgs,
@@ -78,12 +77,6 @@ test("exitCodeForSignal maps known signals and defaults to 128", () => {
   assert.equal(exitCodeForSignal("SIGINT"), 130);
   assert.equal(exitCodeForSignal("SIGTERM"), 143);
   assert.equal(exitCodeForSignal("SIGWEIRD"), 128);
-});
-
-test("channelIncludesDev: only LILBEE_CHANNEL=dev opens the dev channel", () => {
-  assert.equal(channelIncludesDev({}), false);
-  assert.equal(channelIncludesDev({ LILBEE_CHANNEL: "stable" }), false);
-  assert.equal(channelIncludesDev({ LILBEE_CHANNEL: "dev" }), true);
 });
 
 test("routeArgv: prepare takes an optional release tag", () => {
