@@ -330,7 +330,7 @@ def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
 
 
 def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
-    return _weights_estimate(UNKNOWN_SIZE_RESERVE_BYTES)
+    return _sized_estimate(UNKNOWN_SIZE_RESERVE_BYTES)
 
 
 def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
