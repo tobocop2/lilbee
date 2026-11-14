@@ -709,14 +709,17 @@ def test_placement_estimate_ctx_chat_capped_by_short_ceiling(monkeypatch) -> Non
     )
 
 
-def test_planned_chat_ctx_without_a_trained_window_stops_at_the_default_window() -> None:
+def test_planned_chat_ctx_without_a_trained_window_stops_at_the_default_window(
+    monkeypatch,
+) -> None:
     """A model with no header window is planned at 8192 under the 16384 target."""
     assert cfg.num_ctx is None
-    assert cfg.chat_n_ctx_target == 16384
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
     assert planning_mod.planned_chat_ctx(Path("/m"), None) == 8192
 
 
-def test_planned_chat_ctx_is_the_target_under_a_longer_trained_window() -> None:
+def test_planned_chat_ctx_is_the_target_under_a_longer_trained_window(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
     assert planning_mod.planned_chat_ctx(Path("/m"), {"context_length": "40960"}) == 16384
 
 

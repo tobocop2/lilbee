@@ -647,13 +647,13 @@ def test_an_uneven_split_is_refused_for_the_engine_that_cannot_run_it(
         _split_argv(tmp_path, split)
 
 
-@pytest.mark.parametrize("split", [(1, 1), (5, 3, 2)])
+@pytest.mark.parametrize("split", [(1, 1), (22, 22), (1, 1, 1, 1)])
 @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
-def test_a_split_launch_passes_the_planned_context_with_the_layer_map(
+def test_an_equal_split_launch_passes_the_planned_context(
     role: WorkerRole, split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_host(monkeypatch, cards=len(split))
-    _gguf_layers(monkeypatch, {"block_count": "32"})
+    _gguf_meta(monkeypatch, _HEADS)
     req = request(
         tmp_path,
         model_path=tmp_path / "m.gguf",
@@ -663,7 +663,7 @@ def test_a_split_launch_passes_the_planned_context_with_the_layer_map(
     )
     argv = MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), req)
     assert argv[argv.index("--max-model-len") + 1] == "2048"
-    assert len(_layer_map(argv).split(";")) == len(split)
+    assert "--device-layers" not in argv
     assert argv.index("--max-model-len") < argv.index("-m")
 
 

@@ -68,7 +68,7 @@ class TestChatPullFit:
     ) -> None:
         """One installed model: the pull verdict and the planner work out the same context."""
         assert cfg.num_ctx is None
-        assert cfg.chat_n_ctx_target == 16384
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
         _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
         folder = tmp_path / "model"
         folder.mkdir()
@@ -89,6 +89,7 @@ class TestChatPullFit:
     def test_a_window_past_the_target_leaves_the_target(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
         _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
         assert chat_pull_fit("org/model", MLX).ctx == 16384
 

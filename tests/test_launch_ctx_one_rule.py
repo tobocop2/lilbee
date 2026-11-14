@@ -48,8 +48,8 @@ def folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (model / "model.safetensors").write_bytes(len(header).to_bytes(8, "little") + header)
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: model)
     monkeypatch.setattr(planning, "plan_sizing_budget", lambda *_a, **_k: 64 * _GB)
-    monkeypatch.setattr(type(MISTRAL), "binary", lambda self: Path("/x/engine"))
-    monkeypatch.setattr(type(MLX), "binary", lambda self: Path("/x/engine"))
+    monkeypatch.setattr(MISTRAL, "binary", lambda: Path("/x/engine"))
+    monkeypatch.setattr(MLX, "binary", lambda: Path("/x/engine"))
     monkeypatch.setattr(
         type(MISTRAL), "_device_flags", lambda self, target: ["--paged-attn", "off"]
     )
