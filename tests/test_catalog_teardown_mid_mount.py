@@ -117,6 +117,8 @@ async def test_a_remount_mounts_every_section_before_it_returns() -> None:
     async with _chat_grid() as (screen, _pilot):
         screen._remount_grid_sections(_sections("First", "Second"), hf_count=0)
         assert _shown_grid_names(screen) == ["First", "Second"]
+        hints = [w for w in screen._grid_container.displayed_children if w.has_class("scroll-hint")]
+        assert len(hints) == 1, f"the remount left {len(hints)} scroll hints below the sections"
 
 
 async def test_back_to_back_remounts_leave_focus_on_a_shown_grid() -> None:
