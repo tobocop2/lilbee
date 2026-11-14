@@ -85,7 +85,7 @@ def undriven_gpu_vendor_ids() -> frozenset[int]:
 
 
 def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
-    """Yield each sysfs PCI display controller's vendor ID and whether a driver is bound."""
+    """Yield each readable display controller's vendor ID and whether a driver is bound."""
     try:
         devices = sorted(_SYSFS_PCI_DEVICE_DIR.iterdir())
     except OSError:
@@ -97,16 +97,13 @@ def _linux_display_controllers() -> Iterator[tuple[int, bool]]:
         if class_code >> _PCI_CLASS_CODE_BASE_SHIFT != _PCI_DISPLAY_CONTROLLER_CLASS:
             continue
         vendor_id = _read_sysfs_hex(device / _SYSFS_VENDOR_FILE)
-        if vendor_id is not None:
-            yield vendor_id, _has_driver_link(device)
-
-
-def _has_driver_link(device: Path) -> bool:
-    """Whether the device has a bound kernel driver; an unreadable link counts as none."""
-    try:
-        return (device / _SYSFS_DRIVER_LINK).exists()
-    except OSError:
-        return False
+        if vendor_id is None:
+            continue
+        try:
+            bound = (device / _SYSFS_DRIVER_LINK).exists()
+        except OSError:
+            continue
+        yield vendor_id, bound
 
 
 def _read_sysfs_hex(path: Path) -> int | None:

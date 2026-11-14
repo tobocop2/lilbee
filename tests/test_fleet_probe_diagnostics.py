@@ -147,6 +147,36 @@ class TestEveryVendorGetsTheWarning:
         assert "NVIDIA GPU" in caplog.text
         assert "no kernel driver" in caplog.text
 
+    def test_a_card_with_an_unreadable_driver_link_is_not_called_driverless(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        from lilbee.providers.fleet import gpu_hardware
+        from lilbee.providers.fleet import planning as planning_mod
+
+        card = tmp_path / "0000-01-00.0"
+        card.mkdir()
+        (card / "class").write_text("0x030000\n", encoding="utf-8")
+        (card / "vendor").write_text("0x1002\n", encoding="utf-8")
+        denied = card / "driver"
+        real_stat = Path.stat
+        real_undriven = gpu_hardware.undriven_gpu_vendor_ids
+
+        def stat(path: Path, **kwargs):
+            if path == denied:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, **kwargs)
+
+        self._probe_reporting_nothing(monkeypatch, set())
+        monkeypatch.setattr(Path, "stat", stat)
+        monkeypatch.setattr(gpu_hardware.sys, "platform", "linux")
+        monkeypatch.setattr(gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_hardware.undriven_gpu_vendor_ids", real_undriven
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
+        assert "no kernel driver" not in caplog.text
+
     def test_a_host_with_no_gpu_at_all_stays_quiet(self, monkeypatch, caplog) -> None:
         from lilbee.providers.fleet import planning as planning_mod
 
