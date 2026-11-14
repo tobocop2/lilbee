@@ -100,12 +100,12 @@ def test_the_store_folder_and_the_install_message_on_apple_silicon_say_metal(
 def _nvidia(
     system: str, machine: str, *, cuda: int | None = 12040, cards: tuple[tuple[int, int], ...]
 ) -> HostCaps:
-    nvml = {
+    facts = {
         "driver": "550.135",
         "cuda_driver": cuda,
         "gpus": [{"name": f"card{i}", "cc": list(cc)} for i, cc in enumerate(cards)],
     }
-    return collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=nvml)
+    return collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=facts)
 
 
 PASCAL = ((6, 1),)
@@ -173,5 +173,5 @@ def test_a_newer_driver_than_the_floor_selects_the_cuda_pack() -> None:
     assert pack_backend(_nvidia("Linux", "x86_64", cuda=13010, cards=((12, 0),))) == "cuda"
 
 
-def test_apple_silicon_stays_on_metal_whatever_nvml_reports() -> None:
+def test_apple_silicon_stays_on_metal_whatever_the_driver_reports() -> None:
     assert pack_backend(_nvidia("Darwin", "arm64", cards=PASCAL)) == "metal"
