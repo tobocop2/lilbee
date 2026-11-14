@@ -9061,10 +9061,6 @@ async def test_catalog_grid_renders_hf_overflow_cta():
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):
                 screen._refresh_grid()
-                # Two pauses: first lets call_after_refresh schedule
-                # _mount_remaining_grid_sections, the second lets it mount
-                # the CTA that surfaces the "{count} loaded" hint.
-                await _pilot.pause()
                 await _pilot.pause()
             grid_text = " ".join(str(s.render()) for s in screen.query("#grid-chat > Static"))
             assert any(c.isdigit() for c in grid_text)
@@ -17147,8 +17143,8 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     assert loaded_arch == [arch_payload]
 
 
-async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
-    """_mount_remaining_grid_sections mounts each remaining section after the first paint."""
+async def test_catalog_remount_grid_sections_mounts_every_section():
+    """_remount_grid_sections mounts a heading for each section it is given."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
@@ -17177,35 +17173,17 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            # The screen's own first paint queues a tail mount through
-            # call_after_refresh. Left pending, it lands on the pause below the
-            # mount and reaches _remount_grid_sections, which clears the
-            # container's children before remounting the real sections -- so the
-            # section mounted here disappears and the count reads unchanged.
-            # Drain it now, while nothing has been counted yet. Stubbing the
-            # method cannot help: call_after_refresh captured the bound method
-            # when it scheduled.
-            for _ in range(3):
-                await _pilot.pause()
-            # Hand the screen one extra section to mount; the iteration
-            # is the previously-uncovered branch.
-            sections = [GridSection(heading="Extras", rows=[row])]
-            # _mount_remaining_grid_sections returns early unless the container
-            # is running; assert it so a regression reads as the precondition
-            # failing, not as a bare "no heading appeared".
-            assert screen._grid_container.is_running
-            before = len(list(screen._grid_container.query(".section-heading")))
-            mounts = screen._mount_remaining_grid_sections(
-                screen._grid_container, sections, hf_count=1
-            )
-            # Awaited: pause only settles the widgets that existed when it was
-            # called, so it never waits for the ones just mounted.
-            assert mounts, "expected the iteration to mount the remaining section"
-            for mount in mounts:
-                await mount
-            await _pilot.pause()
-            after = len(list(screen._grid_container.query(".section-heading")))
-            assert after > before, "expected an additional section heading"
+            sections = [
+                GridSection(heading="Picks", rows=[row]),
+                GridSection(heading="Extras", rows=[row]),
+            ]
+            screen._remount_grid_sections(sections, hf_count=1)
+            headings = [
+                str(w.render())
+                for w in screen._grid_container.displayed_children
+                if w.has_class("section-heading")
+            ]
+            assert headings == ["Picks", "Extras"]
 
 
 class TestWikiSafeCoerce:

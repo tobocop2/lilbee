@@ -12,14 +12,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
+from textual.pilot import Pilot
 from textual.widgets import Footer, TabbedContent
 
 from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
 from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT, LocalCatalogRow
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, pump_until
 
 
@@ -82,15 +86,17 @@ _CATALOG_FETCHES = (
 )
 
 
-async def test_deferred_section_mount_after_grid_teardown_is_clean() -> None:
-    """The staged tail mount must bail once the tab's grid container is gone.
+def _sections(*headings: str) -> list[GridSection]:
+    return [GridSection(heading=h, rows=[_row(f"{h}-row")]) for h in headings]
 
-    ``_remount_grid_sections`` mounts the first section, then defers the rest
-    via ``call_after_refresh``. When the pane is unmounted before that callback
-    runs (screen teardown, tab remount), the callback used to re-query
-    '#grid-chat' and crash with NoMatches. Capture the deferred callable and
-    run it after removing the container so the ordering is forced, not timed.
-    """
+
+def _shown_grid_names(screen: CatalogScreen) -> list[str | None]:
+    return [g.name for g in screen._grid_container.displayed_children if isinstance(g, ModelGrid)]
+
+
+@contextlib.asynccontextmanager
+async def _chat_grid() -> AsyncIterator[tuple[CatalogScreen, Pilot[None]]]:
+    """The catalog on its Chat tab with every fetch stubbed, so only the test remounts."""
     app = _CatalogApp()
     with contextlib.ExitStack() as stack:
         for name in _CATALOG_FETCHES:
@@ -100,23 +106,54 @@ async def test_deferred_section_mount_after_grid_teardown_is_clean() -> None:
             await app.push_screen(screen)
             tabs = app.screen.query_one("#catalog-tabs", TabbedContent)
             await pump_until(pilot, lambda: tabs.active == TAB_CHAT)
-            sections = [
-                GridSection(heading="First", rows=[_row("row-one")]),
-                GridSection(heading="Second", rows=[_row("row-two")]),
-            ]
-            container = screen._grid_container
-            deferred: list = []
-            with patch.object(
-                screen,
-                "call_after_refresh",
-                side_effect=lambda cb, *a, **kw: deferred.append((cb, a, kw)),
-            ):
-                screen._remount_grid_sections(sections, hf_count=0)
-            assert deferred, "expected the tail mount to be deferred"
-            # Unmount the pane before the deferred tail mount runs.
-            await container.remove()
-            await pilot.pause()
-            assert not container.is_running
-            callback, args, kwargs = deferred[-1]
-            callback(*args, **kwargs)
-            assert not screen.query(".section-heading")
+            # The screen's own first paint of the tab must land before a test remounts.
+            painted = await wait_until(pilot, lambda: TAB_CHAT in screen._grid_cache_keys)
+            assert painted, "the Chat tab never painted"
+            yield screen, pilot
+
+
+async def test_a_remount_mounts_every_section_before_it_returns() -> None:
+    """Every section is in the pane when the remount returns; nothing is left to run later."""
+    async with _chat_grid() as (screen, _pilot):
+        screen._remount_grid_sections(_sections("First", "Second"), hf_count=0)
+        assert _shown_grid_names(screen) == ["First", "Second"]
+
+
+async def test_back_to_back_remounts_leave_focus_on_a_shown_grid() -> None:
+    """Two remounts in one tick end with one copy of each section and a live grid focused."""
+    async with _chat_grid() as (screen, pilot):
+        screen._remount_grid_sections(_sections("Picks", "Chat"), hf_count=0)
+        screen._remount_grid_sections(_sections("Picks", "Installed", "Chat"), hf_count=0)
+        settled = await wait_until(
+            pilot, lambda: all(w.is_attached for w in screen.query(ModelGrid))
+        )
+        assert settled
+        focused = screen.focused
+        assert isinstance(focused, ModelGrid), focused
+        assert focused.is_attached, "focus is on a grid that was removed"
+        assert focused.name == "Picks"
+        assert _shown_grid_names(screen) == ["Picks", "Installed", "Chat"]
+
+
+async def test_a_refresh_during_a_removal_counts_only_the_shown_grids() -> None:
+    """Grids still being removed do not count as sections an in-place update can reuse."""
+    async with _chat_grid() as (screen, _pilot):
+        screen._remount_grid_sections(_sections("Picks"), hf_count=0)
+        screen._remount_grid_sections(_sections("Picks", "Chat"), hf_count=0)
+        sections = _sections("Picks", "Installed", "Chat")
+        assert not screen._extend_grid_sections_in_place(sections, hf_count=0)
+
+
+async def test_a_remount_returns_the_cursor_to_the_focused_section() -> None:
+    """The section that held focus keeps it across a remount, at the same card."""
+    async with _chat_grid() as (screen, _pilot):
+        two_rows = GridSection(heading="Chat", rows=[_row("a"), _row("b")])
+        screen._remount_grid_sections([*_sections("Picks"), two_rows], hf_count=0)
+        chat = next(g for g in screen.query(ModelGrid) if g.name == "Chat")
+        chat.highlighted = 1
+        screen.set_focus(chat)
+        screen._remount_grid_sections([*_sections("Picks", "Installed"), two_rows], hf_count=0)
+        focused = screen.focused
+        assert isinstance(focused, ModelGrid)
+        assert focused is not chat
+        assert (focused.name, focused.highlighted) == ("Chat", 1)
