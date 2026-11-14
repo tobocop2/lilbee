@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email import message_from_string
 from enum import StrEnum
+from functools import partial
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from lilbee.catalog.download import (
@@ -331,6 +332,17 @@ def _unpack(wheel: Path, stage: Path) -> None:
                 target.chmod(target.stat().st_mode | stat.S_IXUSR)
 
 
+def _any_in_use(
+    in_use: Callable[[str, str, str], bool],
+    readings: list[tuple[str, str, str]],
+    engine: str,
+    version: str,
+    backend: str,
+) -> bool:
+    """True when a launch uses any reading of one build folder."""
+    return any(in_use(*reading) for reading in readings)
+
+
 def _read_record(directory: Path) -> InstalledEngine | None:
     """The record of *directory* when it is a complete build, else None."""
     try:
@@ -523,11 +535,21 @@ class EngineStore:
         if not keep:
             raise ValueError("Prune needs at least one build to keep.")
         gone: list[Path] = []
+        readings: dict[Path, list[tuple[str, str, str]]] = {}
         for engine, version, backend, path in self.build_dirs():
-            if (engine, version, backend) in keep:
+            readings.setdefault(path, []).append((engine, version, backend))
+        for path, names in readings.items():
+            if any(name in keep for name in names):
                 continue
+            engine, version, backend = names[0]
             try:
-                self.remove(engine, version, backend, in_use=in_use, wait_s=_NO_WAIT_S)
+                self.remove(
+                    engine,
+                    version,
+                    backend,
+                    in_use=partial(_any_in_use, in_use, names),
+                    wait_s=_NO_WAIT_S,
+                )
             except (
                 BundledEngineError,
                 EngineInUseError,
@@ -542,7 +564,11 @@ class EngineStore:
         return gone
 
     def build_dirs(self) -> list[tuple[str, str, str, Path]]:
-        """Every build folder by name, damaged ones too: (engine, version, backend, path)."""
+        """Every build folder, damaged ones too: (engine, version, backend, path).
+
+        A complete build is listed once, as its record says. A name holds no mark between
+        version and backend, so a damaged build is listed once for each hyphen of its name.
+        """
         if not self.root.is_dir():
             return []
         found = []
@@ -550,9 +576,17 @@ class EngineStore:
             if engine.name.startswith(".") or engine.name == _PACK_DIR or not engine.is_dir():
                 continue
             for build in sorted(engine.iterdir()):
-                version, _, backend = build.name.rpartition("-")
-                if not build.name.startswith(".") and version and build.is_dir():
-                    found.append((engine.name, version, backend, build))
+                if build.name.startswith(".") or not build.is_dir():
+                    continue
+                record = _read_record(build)
+                if record is not None:
+                    found.append((engine.name, record.version, record.backend, build))
+                    continue
+                found.extend(
+                    (engine.name, build.name[:cut], build.name[cut + 1 :], build)
+                    for cut in range(1, len(build.name) - 1)
+                    if build.name[cut] == "-"
+                )
         return found
 
     def sweep(self) -> list[Path]:

@@ -1481,6 +1481,108 @@ def test_prune_engines_keeps_every_installed_backend_of_the_current_pin(
     assert sorted(p.name for p in (tmp_path / "engines" / "fx").iterdir()) == ["3-cpu", "3-cuda"]
 
 
+_HYPHEN_BACKEND = "cuda128-sm89"
+
+
+def _install_hyphen_backend(tmp_path: Path, version: str = "3") -> Path:
+    """Install an fx build whose backend holds a hyphen; return the build directory."""
+    path = tmp_path / "fx-hyphen.whl"
+    sha = make_wheel(path)
+    lock = PinLock("fx", version, _HYPHEN_BACKEND, {}, ("MIT",), sha, "server")
+    return EngineStore(tmp_path / "engines").install_from_wheel(lock, path)
+
+
+def test_prune_engines_keeps_the_current_pin_when_its_backend_holds_a_hyphen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    adapter = _PinnedAdapter("3", _HYPHEN_BACKEND)
+    models = _pruned_models(tmp_path, monkeypatch, adapter, ("1",))
+    build = _install_hyphen_backend(tmp_path)
+    assert [p.name for p in engine_store.prune_engines(models)] == ["1-cpu"]
+    assert build.is_dir()
+    assert [(b.version, b.backend) for b in EngineStore(tmp_path / "engines").installed()] == [
+        ("3", _HYPHEN_BACKEND)
+    ]
+
+
+def test_a_cli_start_keeps_an_install_whose_backend_holds_a_hyphen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from lilbee.cli.app import app
+    from lilbee.core.config import cfg
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", _HYPHEN_BACKEND), ("1", "3"))
+    build = _install_hyphen_backend(tmp_path)
+    monkeypatch.setattr(cfg, "models_dir", models)
+    stale = tmp_path / "engines" / "fx" / "1-cpu"
+    CliRunner().invoke(app, ["version"])
+    assert (build / RECORD_NAME).is_file()
+    assert (tmp_path / "engines" / "fx" / "3-cpu").is_dir()
+    assert not stale.exists()
+
+
+def test_build_dirs_report_the_record_of_a_complete_build(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    build = _install_hyphen_backend(tmp_path)
+    assert store.build_dirs() == [("fx", "3", _HYPHEN_BACKEND, build)]
+
+
+def test_build_dirs_report_a_hyphenated_version_from_its_record(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "fx-rc.whl"
+    lock = PinLock("fx", "1-rc1", "cpu", {}, ("MIT",), make_wheel(path), "server")
+    build = store.install_from_wheel(lock, path)
+    assert store.build_dirs() == [("fx", "1-rc1", "cpu", build)]
+
+
+def test_build_dirs_list_a_damaged_build_once_for_each_hyphen(store: EngineStore) -> None:
+    damaged = store.root / "fx" / f"3-{_HYPHEN_BACKEND}"
+    damaged.mkdir(parents=True)
+    for unreadable in ("-cpu", "3-", "3"):
+        (store.root / "fx" / unreadable).mkdir()
+    assert store.build_dirs() == [
+        ("fx", "3", _HYPHEN_BACKEND, damaged),
+        ("fx", "3-cuda128", "sm89", damaged),
+    ]
+
+
+def test_prune_keeps_a_damaged_build_when_a_launch_uses_any_reading(store: EngineStore) -> None:
+    damaged = store.root / "fx" / f"1-{_HYPHEN_BACKEND}"
+    damaged.mkdir(parents=True)
+    gone = store.prune(
+        keep={("fx", "9", "cpu")},
+        in_use=lambda engine, version, backend: (version, backend) == ("1-cuda128", "sm89"),
+    )
+    assert gone == []
+    assert damaged.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("version", "backend"),
+    [
+        ("git-0123456789ab", "cpu"),
+        ("1.0.0-rc1", "cpu"),
+        ("1.0.0-rc1", _HYPHEN_BACKEND),
+    ],
+)
+def test_prune_engines_keeps_a_pinned_build_with_no_record(
+    tmp_path: Path, monkeypatch, version: str, backend: str
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter(version, backend), ("1",))
+    pinned = tmp_path / "engines" / "fx" / f"{version}-{backend}"
+    pinned.mkdir()
+    stale = tmp_path / "engines" / "fx" / f"0.1-{_HYPHEN_BACKEND}"
+    stale.mkdir()
+    assert sorted(p.name for p in engine_store.prune_engines(models)) == sorted(
+        ["1-cpu", stale.name]
+    )
+    assert pinned.is_dir()
+
+
 def test_prune_does_not_wait_for_an_install_lock(store: EngineStore, tmp_path: Path) -> None:
     installed_store(store, tmp_path, ("1",))
     seen: list[float] = []
