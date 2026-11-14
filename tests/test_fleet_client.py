@@ -17,7 +17,14 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from lilbee.providers.base import ProviderError, StreamFinish, TokenUsage
+from lilbee.providers.base import (
+    ChosenSeed,
+    ProviderError,
+    StreamFinish,
+    TokenUsage,
+    aux_options,
+)
+from lilbee.providers.engine_params import chat_options_to_kwargs
 from lilbee.providers.fleet.client import (
     _RERANK_PAIR_SEPARATOR,
     ChatDeadlineError,
@@ -29,6 +36,8 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
 )
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.reasoning import ThinkInliner
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -3503,6 +3512,8 @@ def test_stream_cut_before_first_frame_keeps_the_transport_error() -> None:
     with pytest.raises(httpx.TransportError):
         next(stream)
     server.close()
+
+
 def _no_route_client(handler, cap: int | None = None, **changes) -> LlamaServerClient:
     """A client whose engine has no tokenize or detokenize route, plus any other profile changes."""
     profile = dataclasses.replace(
@@ -3629,3 +3640,53 @@ def test_llama_profile_keeps_tokenize_routes_and_has_no_rerank_route() -> None:
     profile = LLAMA.request_profile(WorkerRole.RERANK)
     assert (profile.tokenize_path, profile.detokenize_path) == ("/tokenize", "/detokenize")
     assert profile.rerank_path is None
+
+
+_MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_CALLS = {
+    "chat": lambda c, o: c.chat(_MESSAGES, options=o),
+    "chat_stream": lambda c, o: list(c.chat(_MESSAGES, options=o, stream=True)),
+    "chat_result": lambda c, o: c.chat_result(_MESSAGES, options=o),
+    "chat_stream_items": lambda c, o: list(c.chat_stream_items(_MESSAGES, options=o)),
+    "chat_abortable": lambda c, o: c.chat_abortable(_MESSAGES, options=o),
+    "chat_tools": lambda c, o: c.chat_tools(_MESSAGES, tools=[], options=o),
+}
+
+
+def _body_sent_by(engine, call: str) -> dict:
+    """The chat body that *call* sends to *engine*'s server for an internal call's options."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body.get("stream"):
+            return httpx.Response(200, text=_STREAM_BODY)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Hello"}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        async_transport=httpx.MockTransport(handler),
+        profile=engine.request_profile(WorkerRole.CHAT),
+    )
+    client._needs_alternation = False
+    options = chat_options_to_kwargs(aux_options(64, seed=ChosenSeed(42), cache_prompt=False))
+    _CHAT_CALLS[call](client, options)
+    return bodies[-1]
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_the_prompt_cache_flag_reaches_no_other_engine(engine, call) -> None:
+    """cache_prompt is a llama-server field. A chosen seed is not yet told from a user seed here."""
+    assert "cache_prompt" not in _body_sent_by(engine, call)
+
+
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_llama_engine_gets_the_prompt_cache_flag(call) -> None:
+    body = _body_sent_by(LLAMA, call)
+    assert body["cache_prompt"] is False
+    assert body["seed"] == 42

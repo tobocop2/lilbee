@@ -91,6 +91,8 @@ class RequestProfile:
     """
     batch_count_refusal: re.Pattern[str] | None = None
     """Matches an error body that refuses a request for holding too many inputs, or None."""
+    takes_cache_prompt: bool = False
+    """True when the engine reads the ``cache_prompt`` field of a chat body; others never get it."""
 
 
 class EngineAdapter(Protocol, Hashable):

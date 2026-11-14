@@ -744,7 +744,11 @@ class LlamaServerClient:
         ``timeout`` overrides the client default for either path, so a
         caller-enforced deadline (vision OCR) ends the request itself.
         """
-        payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            **self._wire_options(options),
+        }
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
         if stream:
             return self._chat_stream(payload, request_timeout)
@@ -797,7 +801,12 @@ class LlamaServerClient:
         (total seconds, ``None`` for no limit) raises :class:`ChatDeadlineError`;
         a set *cancel* raises ``TaskCancelledError``.
         """
-        payload = {"model": self._model, "messages": messages, **(options or {}), "stream": True}
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            **self._wire_options(options),
+            "stream": True,
+        }
         with self._track():
             return asyncio.run(self._chat_until_stopped(payload, deadline_s, cancel))
 
@@ -858,7 +867,7 @@ class LlamaServerClient:
             "messages": self._prepare_chat_messages(messages),
             "tools": tools,
             "stream": False,
-            **(options or {}),
+            **self._wire_options(options),
         }
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
@@ -1027,8 +1036,15 @@ class LlamaServerClient:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        payload.update(options or {})
+        payload.update(self._wire_options(options))
         return payload
+
+    def _wire_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
+        """*options* without the fields this server's engine does not read."""
+        wire = dict(options or {})
+        if not self._profile.takes_cache_prompt:
+            wire.pop("cache_prompt", None)
+        return wire
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]

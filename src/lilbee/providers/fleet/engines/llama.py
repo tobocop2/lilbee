@@ -43,6 +43,7 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 _PROFILE = RequestProfile(
     embed_fields={"embd_normalize": -1},
     stream_fields={"return_progress": True},
+    takes_cache_prompt=True,
     tokenize_path="/tokenize",
     detokenize_path="/detokenize",
     apply_template_path="/apply-template",
