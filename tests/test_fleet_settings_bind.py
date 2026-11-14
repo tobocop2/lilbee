@@ -90,7 +90,7 @@ def _new_process_ladder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, states: _States
 ) -> tuple[bool | None, FleetProvider]:
     """Run the real ladder as a new process on the current config, with live users present."""
-    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir: dict(states))
+    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir, **_kw: dict(states))
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
@@ -402,7 +402,7 @@ def _peer_mid_call_over_an_owner_restart(
     # bind builds there.
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda d, **_kw: Path(d) == tmp_path)
     monkeypatch.setattr(
-        prov_mod, "_healthy_states", lambda d: dict(states) if Path(d) == tmp_path else {}
+        prov_mod, "_healthy_states", lambda d, **_kw: dict(states) if Path(d) == tmp_path else {}
     )
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
     monkeypatch.setattr(prov_mod, "engine_record_exists", lambda _d: False)

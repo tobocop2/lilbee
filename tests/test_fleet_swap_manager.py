@@ -379,6 +379,10 @@ class TestEndpoint:
             SwapManager(tmp_path, _GROUP).endpoint()
 
 
+def _own_record(tmp_path: Path) -> dict:
+    return json.loads(_own_state_path(tmp_path).read_text(encoding="utf-8"))
+
+
 class TestRoleReady:
     def _started(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, responder) -> SwapManager:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
@@ -425,6 +429,195 @@ class TestRoleReady:
         # ProviderError; the read-only probe must report False, not throw.
         mgr = SwapManager(tmp_path, _GROUP)  # never started -> _port is None
         assert mgr.role_ready(WorkerRole.CHAT) is False
+
+    def test_a_ready_member_stamps_the_state_file_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
+        assert "ready_at" not in _own_record(tmp_path)
+        assert mgr.role_ready(WorkerRole.CHAT) is True
+        first = _own_record(tmp_path)["ready_at"]
+        assert mgr.role_ready(WorkerRole.CHAT) is True
+        assert _own_record(tmp_path)["ready_at"] == first
+
+    def test_a_starting_member_leaves_the_state_file_unstamped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "starting"}]}
+        mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
+        mgr.role_ready(WorkerRole.CHAT)
+        assert "ready_at" not in _own_record(tmp_path)
+
+    def test_a_bound_manager_never_stamps(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr._bound = True
+        mgr.record_ready()
+        assert not mgr._state_path.exists()
+
+    def test_a_restart_clears_the_previous_engines_stamp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._started(
+            tmp_path, monkeypatch, lambda _url: _fake_response(payload={"running": []})
+        )
+        mgr.record_ready()
+        assert "ready_at" in _own_record(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        assert "ready_at" not in _own_record(tmp_path)
+
+    def test_the_stamp_survives_a_state_rewrite(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._started(
+            tmp_path, monkeypatch, lambda _url: _fake_response(payload={"running": []})
+        )
+        mgr.record_ready()
+        mgr._write_state()
+        state = sm._load_state(_own_state_path(tmp_path))
+        assert state is not None and state.ready_at is not None
+
+
+def _readiness_state(
+    *, ready_at: float | None = None, created_at: float | None = 1000.0
+) -> sm.SwapState:
+    launches = tuple(launch.to_state() for launch in [_launch(WorkerRole.CHAT)])
+    return sm.SwapState(
+        pid=1,
+        pgid=None,
+        created_at=created_at,
+        proxy_port=4100,
+        launches=launches,
+        ready_at=ready_at,
+    )
+
+
+class TestEngineReadiness:
+    _deadline = sm.health_check_timeout_s([_launch(WorkerRole.CHAT)]) + sm._BOOT_TIMEOUT_S
+
+    def _listing(self, monkeypatch: pytest.MonkeyPatch, *states: str) -> None:
+        running = {"running": [{"model": f"m{i}", "state": s} for i, s in enumerate(states)]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+
+    @pytest.mark.parametrize(
+        ("listed", "expected"),
+        [
+            (("ready",), sm.EngineReadiness.READY),
+            (("starting", "ready"), sm.EngineReadiness.READY),
+            (("starting",), sm.EngineReadiness.LOADING),
+            (("stopping", "starting"), sm.EngineReadiness.LOADING),
+        ],
+    )
+    def test_a_listed_member_decides_at_any_age(
+        self, monkeypatch: pytest.MonkeyPatch, listed: tuple[str, ...], expected
+    ) -> None:
+        self._listing(monkeypatch, *listed)
+        state = _readiness_state()
+        assert sm.engine_readiness(state, now=1000.0 + 10 * self._deadline) is expected
+
+    @pytest.mark.parametrize("state", [[1], {"a": 1}, 7])
+    def test_a_member_state_that_is_not_a_string_is_a_failed_read(
+        self, monkeypatch: pytest.MonkeyPatch, state: object
+    ) -> None:
+        running = {"running": [{"model": "m0", "state": state}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        assert sm.engine_readiness(_readiness_state(), now=1e12) is None
+
+    def test_nothing_loaded_and_young_is_idle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch)
+        state = _readiness_state()
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline - 1) is (
+            sm.EngineReadiness.IDLE
+        )
+
+    def test_nothing_loaded_and_old_is_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch, "stopping")
+        state = _readiness_state()
+        assert sm.engine_readiness(state, now=1000.0 + self._deadline) is (
+            sm.EngineReadiness.FAILED
+        )
+
+    def test_a_stamped_record_is_idle_at_any_age(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._listing(monkeypatch)
+        state = _readiness_state(ready_at=1500.0)
+        assert sm.engine_readiness(state, now=1000.0 + 10 * self._deadline) is (
+            sm.EngineReadiness.IDLE
+        )
+
+    def test_a_record_without_a_creation_time_is_idle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        state = _readiness_state(created_at=None)
+        assert sm.engine_readiness(state, now=1e12) is sm.EngineReadiness.IDLE
+
+    def test_the_deadline_follows_the_slowest_recorded_member(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        heavy = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=["/bin/llama-server"],
+            env_overrides={},
+            model="big",
+            weights_bytes=600 * (1 << 30),
+        )
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=(heavy.to_state(),)
+        )
+        slow = sm.health_check_timeout_s([heavy]) + sm._BOOT_TIMEOUT_S
+        assert slow > self._deadline
+        assert sm.engine_readiness(state, now=slow - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=slow) is sm.EngineReadiness.FAILED
+
+    def test_an_undecodable_contract_uses_the_default_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._listing(monkeypatch)
+        state = sm.SwapState(
+            pid=1, pgid=None, created_at=0.0, proxy_port=4100, launches=({"role": "chat"},)
+        )
+        ceiling = sm.health_check_timeout_s([]) + sm._BOOT_TIMEOUT_S
+        assert sm.engine_readiness(state, now=ceiling - 1) is sm.EngineReadiness.IDLE
+        assert sm.engine_readiness(state, now=ceiling) is sm.EngineReadiness.FAILED
+
+    def test_a_silent_proxy_is_not_answering(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http(monkeypatch, _raise_connect_error)
+        assert sm.engine_readiness(_readiness_state(), now=1e12) is None
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"ok": True}))
+        assert sm.engine_readiness(_readiness_state(), now=1e12) is None
+
+    def test_a_record_without_a_port_is_not_answering(self) -> None:
+        state = sm.SwapState(pid=1, pgid=None)
+        assert sm.engine_readiness(state, now=1e12) is None
+
+    def test_one_read_of_running_serves_the_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls: list[str] = []
+
+        def _record(url: str) -> object:
+            urls.append(url)
+            return _fake_response(payload={"running": []})
+
+        _patch_http(monkeypatch, _record)
+        sm.engine_readiness(_readiness_state(), now=1e12)
+        assert urls == ["http://127.0.0.1:4100/running"]
+
+    def test_a_non_object_entry_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": ["junk"]}))
+        assert sm.engine_readiness(_readiness_state(), now=1000.0) is sm.EngineReadiness.IDLE
+
+    def test_an_old_record_written_without_ready_at_loads_unstamped(self, tmp_path: Path) -> None:
+        path = tmp_path / sm._state_filename(222, _GROUP.value)
+        path.write_text(
+            json.dumps({"pid": 2, "member_ports": [], "created_at": 5.0}), encoding="utf-8"
+        )
+        state = sm._load_state(path)
+        assert state is not None and state.ready_at is None
 
 
 class TestLifecycle:
