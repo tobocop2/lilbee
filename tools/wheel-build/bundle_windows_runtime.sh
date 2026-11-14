@@ -10,6 +10,7 @@
 #   VSWHERE           the vswhere.exe path (default: the Visual Studio Installer copy)
 # Argument:
 #   the wheel's bin/ directory, holding the freshly built engine
+#   optional second: the path that receives the Microsoft redistribution notice
 
 set -euo pipefail
 
@@ -52,3 +53,25 @@ for dll in "${crt_dir}/msvcp140.dll" "${crt_dir}/vcruntime140.dll" \
   [ -f "${dll}" ] || { echo "no ${dll##*/} under ${dll%/*}: the Windows bundle is incomplete" >&2; exit 1; }
   cp -L "${dll}" "${pkg_bin_dir}/"
 done
+
+# The redistribution terms are in the REDIST.TXT of the Visual Studio install that supplied the files.
+notice_file="${2:-}"
+if [ -n "${notice_file}" ]; then
+  vs_root="$(cd "${redist_dir}/../../../../.." && pwd)"
+  redist_txt="$(find "${vs_root}" -maxdepth 5 -iname 'redist*.txt' 2>/dev/null | sort | head -n 1 || true)"
+  [ -n "${redist_txt}" ] || {
+    echo "no REDIST.TXT under ${vs_root}; licence-like files:" >&2
+    find "${vs_root}" -maxdepth 5 -iname '*licen*' 2>/dev/null | head -n 20 >&2
+    exit 1
+  }
+  {
+    echo "This wheel carries Microsoft Visual C++ runtime files: msvcp140.dll, vcruntime140.dll and"
+    echo "vcruntime140_1.dll. They are distributable code under the Microsoft Visual Studio licence"
+    echo "terms (https://visualstudio.microsoft.com/license-terms/). The files are not modified."
+    echo "The text that follows is ${redist_txt##*/} from the Visual Studio install that supplied them."
+    echo
+    tr -d '\r' < "${redist_txt}"
+  } > "${notice_file}"
+  [ -s "${redist_txt}" ] || { echo "${redist_txt} is empty" >&2; exit 1; }
+  echo "Visual C++ runtime notice: ${redist_txt}, $(wc -c < "${redist_txt}") bytes"
+fi
