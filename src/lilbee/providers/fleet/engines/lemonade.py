@@ -37,18 +37,17 @@ _BACKEND = "cpu"
 _HOST = "127.0.0.1"
 _LICENCES = ["Apache-2.0"]
 _XDNA2 = "XDNA2"
+_NPU_SYSTEMS = frozenset({HostOS.LINUX, HostOS.WINDOWS})
 _RESERVE_BYTES = 2 * 1024**3
 """The figure charged for one role; the recorded chat, embed and rerank models fit under it."""
 _ENDPOINTS = {
     WorkerRole.CHAT: "/v1/chat/completions",
     WorkerRole.EMBED: "/v1/embeddings",
-    WorkerRole.RERANK: "/v1/reranking",
 }
 _DATA_DIRNAME = "lemonade-data"
 _MODES = {
     WorkerRole.CHAT: "chat",
     WorkerRole.EMBED: "embeddings",
-    WorkerRole.RERANK: "reranking",
 }
 _TMP_SUFFIX = ".tmp"
 _INSTALL_HINT = (
@@ -69,7 +68,6 @@ _PROFILE = RequestProfile(
     batch_overflow=None,
     unreadable_embedding_hint="Lemonade answers embeddings as lists of floats.",
     reasoning_field="reasoning_content",
-    rerank_path="/v1/reranking",
 )
 
 
@@ -160,10 +158,10 @@ def _prepare(spec: RoleServerSpec, request: LaunchRequest) -> Path:
 
 
 class LemonadeAdapter:
-    """Lemonade behind the engine contract; chat, embed and rerank, on an AMD XDNA2 host."""
+    """Lemonade behind the engine contract; chat and embed on the AMD XDNA2 NPU."""
 
     name = EngineName.LEMONADE
-    formats = frozenset({ModelFormat.GGUF})
+    formats = frozenset({ModelFormat.XDNA})
     architectures: frozenset[str] = frozenset()
     served_roles = frozenset(_ENDPOINTS)
     memory_kind = MemoryKind.FIXED_RESERVE
@@ -175,10 +173,10 @@ class LemonadeAdapter:
         return True
 
     def host_gate(self, host: HostCaps) -> HostGate:
-        """Linux on x86_64 with an AMD XDNA2 NPU; an unread NPU list is unknown, not absent."""
+        """Linux or Windows on x86_64 with an AMD XDNA2 NPU; an unread NPU list is unknown."""
         if host.os is None or host.arch is None:
             return PLATFORM_UNREAD
-        if (host.os, host.arch) != (HostOS.LINUX, HostArch.X86_64):
+        if host.os not in _NPU_SYSTEMS or host.arch is not HostArch.X86_64:
             return HostGate(False, f"Lemonade is not offered on {host.os.value} {host.arch.value}.")
         gate = npu_gate(host, NpuVendor.AMD, _XDNA2)
         return (
@@ -245,7 +243,7 @@ class LemonadeAdapter:
         ]
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
-        return frozenset({RoleTarget.CPU})
+        return frozenset({RoleTarget.NPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return DeviceProbe(devices=[], output="", spoke_protocol=False)
