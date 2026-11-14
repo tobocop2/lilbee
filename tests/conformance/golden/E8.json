@@ -1,0 +1,20 @@
+{
+  "id": "E8",
+  "rows": [
+    10,
+    17,
+    30,
+    32,
+    44,
+    46,
+    54
+  ],
+  "request": {
+    "input": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
+  },
+  "assert": "float and base64: 3 vectors in order, one dimension, finite, not all zero, all different."
+}

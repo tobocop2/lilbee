@@ -27,6 +27,7 @@ from lilbee.data.ingest.adaptive import (
     profile_for,
     resolve_mode,
 )
+from lilbee.providers.fleet.engines import LLAMA
 
 MIN, MAX = 1, 100
 
@@ -395,19 +396,20 @@ def test_sampler_without_gpu_telemetry_is_none(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_enumerate_devices_returns_probe_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lilbee.providers.fleet import binary, planning
+    from lilbee.providers.fleet import planning
 
     sentinel = [object()]
-    monkeypatch.setattr(binary, "resolve_llama_server", lambda: "llama-server")
-    monkeypatch.setattr(planning, "resolve_devices", lambda _binary: sentinel)
-    assert enumerate_fleet_devices() == sentinel
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: "llama-server"
+    )
+    monkeypatch.setattr(planning, "resolve_devices", lambda _binary, engine: sentinel)
+    assert enumerate_fleet_devices(engine=LLAMA) == sentinel
 
 
 def test_enumerate_devices_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lilbee.providers.fleet import binary
 
     def boom() -> str:
         raise RuntimeError("no engine")
 
-    monkeypatch.setattr(binary, "resolve_llama_server", boom)
-    assert enumerate_fleet_devices() == []
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.resolve_llama_server", boom)
+    assert enumerate_fleet_devices(engine=LLAMA) == []

@@ -1,0 +1,12 @@
+{
+  "id": "M3",
+  "rows": [
+    4,
+    16,
+    25,
+    37,
+    41
+  ],
+  "request": null,
+  "assert": "The sizing command prints bytes, or the pin declares a rule (fallback)."
+}

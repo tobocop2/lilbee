@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from lilbee.providers.fleet.gpu_env import gpu_environ
+from lilbee.providers.fleet.host_caps import nvml_device_totals
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ def compute_dynamic_ctx(
 def get_available_memory(fraction: float, *, total: bool = False) -> int:
     """Return usable GPU/unified memory in bytes, scaled by *fraction*.
     - macOS (Apple Silicon): unified memory via psutil
-    - Linux with NVIDIA GPU: pynvml -> nvidia-smi -> psutil fallback
+    - Linux with NVIDIA GPU: NVML -> nvidia-smi -> psutil fallback
     - Other: psutil system memory
 
     With multiple NVIDIA GPUs, *total* sums every card's memory (whole-fleet
@@ -230,24 +231,9 @@ def _nvidia_device_totals() -> list[tuple[str, int]] | None:
     ``None`` means no NVIDIA GPU was detectable at all, which is the expected
     outcome on every non-NVIDIA host.
     """
-    try:
-        import pynvml  # type: ignore[import-untyped]
-
-        pynvml.nvmlInit()
-        totals = []
-        for i in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            totals.append(
-                (
-                    _decoded(pynvml.nvmlDeviceGetUUID(handle)),
-                    int(pynvml.nvmlDeviceGetMemoryInfo(handle).total),
-                )
-            )
-        pynvml.nvmlShutdown()
-        if totals:
-            return totals
-    except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
-        pass
+    totals = nvml_device_totals()
+    if totals:
+        return totals
 
     try:
         import subprocess
@@ -271,11 +257,6 @@ def _nvidia_device_totals() -> list[tuple[str, int]] | None:
         pass
 
     return None
-
-
-def _decoded(value: str | bytes) -> str:
-    """pynvml returns ``str`` on recent versions and ``bytes`` on older ones."""
-    return value.decode() if isinstance(value, bytes) else value
 
 
 def _parse_smi_row(line: str) -> tuple[str, int] | None:

@@ -32,6 +32,7 @@ from lilbee.catalog import CatalogModel, download_model
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.task_queue import TERMINAL_STATUSES, TaskStatus
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+from lilbee.providers.fleet.engines import LLAMA
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 pytestmark = [
@@ -161,7 +162,7 @@ def _repo_gguf_count(models_dir: Path, hf_repo: str) -> int:
 def test_every_role_downloads_over_xet(
     entry: CatalogModel, models_dir: Path, xet_calls: list[str]
 ) -> None:
-    path = download_model(entry)
+    path = download_model(entry, engine=LLAMA)
 
     assert path.exists(), f"{entry.hf_repo} reported success but nothing is on disk"
     assert path.stat().st_size > 0
@@ -172,7 +173,7 @@ def test_vision_model_brings_its_projector(models_dir: Path, xet_calls: list[str
     """The mmproj is a second file on a separate path, and a vision model is
     unusable without it: the role dies at plan time with a warning no re-pull
     cures, so 'the GGUF arrived' is not enough."""
-    download_model(VISION)
+    download_model(VISION, engine=LLAMA)
 
     names = _gguf_names(models_dir)
     assert any("mmproj" in n.lower() for n in names), f"no projector among {sorted(names)}"

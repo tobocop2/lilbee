@@ -5,6 +5,7 @@ import pytest
 
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement import InstancePlan, Placement
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -17,17 +18,17 @@ def test_read_device_cache_collapses_repeat_probes(monkeypatch):
     cache = planning._ReadDeviceCache(ttl_s=1000, failure_ttl_s=1000)
     calls = {"n": 0}
 
-    def fake(_binary):
+    def fake(_binary, engine):
         calls["n"] += 1
         return planning.DeviceReading([FleetDevice("CUDA", 0, "A", GIB, GIB)], EngineBackend.CUDA)
 
     monkeypatch.setattr(planning, "_read_devices", fake)
-    first = cache.get(Path("/x"))
-    second = cache.get(Path("/x"))
+    first = cache.get(Path("/x"), engine=LLAMA)
+    second = cache.get(Path("/x"), engine=LLAMA)
     assert calls["n"] == 1
     assert first == second
     cache.clear()
-    cache.get(Path("/x"))
+    cache.get(Path("/x"), engine=LLAMA)
     assert calls["n"] == 2  # cleared -> re-probe
 
 
@@ -36,13 +37,13 @@ def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
     cache = planning._ReadDeviceCache(ttl_s=0, failure_ttl_s=0)
     calls = {"n": 0}
 
-    def fake(_binary):
+    def fake(_binary, engine):
         calls["n"] += 1
         return planning.DeviceReading([], EngineBackend.CPU)
 
     monkeypatch.setattr(planning, "_read_devices", fake)
-    cache.get(Path("/x"))
-    cache.get(Path("/x"))
+    cache.get(Path("/x"), engine=LLAMA)
+    cache.get(Path("/x"), engine=LLAMA)
     assert calls["n"] == 2
 
 
@@ -52,24 +53,26 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     planning.clear_read_device_cache()
     calls = {"n": 0}
 
-    def counting(_binary):
+    def counting(_binary, engine):
         calls["n"] += 1
         return planning.DeviceReading([], EngineBackend.CPU)
 
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
     monkeypatch.setattr(planning, "_read_devices", counting)
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
     )
     monkeypatch.setattr(
         planning,
         "_resolve_placement",
         lambda *a, **k: Placement(instances=(), unplaceable_roles=()),
     )
-    planning.resolve_placement_plan(None)
-    planning.resolve_placement_plan(None)
+    planning.resolve_placement_plan(None, engine=LLAMA)
+    planning.resolve_placement_plan(None, engine=LLAMA)
     assert calls["n"] == 1
     planning.clear_read_device_cache()
 
@@ -92,13 +95,15 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None: ([], {WorkerRole.CHAT: "ref"}, 0, {}),
+        lambda roles, *, unified_budget=None, engine: ([], {WorkerRole.CHAT: "ref"}, 0, {}),
     )
-    monkeypatch.setattr(planning, "_peak_estimator", lambda refs: lambda role, ratio: (GIB,))
+    monkeypatch.setattr(
+        planning, "_peak_estimator", lambda refs, engine: lambda role, ratio: (GIB,)
+    )
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
 
     placement = planning._resolve_placement(
-        spec, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None
+        spec, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None, engine=LLAMA
     )
 
     assert captured["spec"] is spec
@@ -118,7 +123,7 @@ def test_auto_planner_charged_against_total_capacity(monkeypatch):
         return Placement(instances=(), unplaceable_roles=())
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
-    planning._resolve_placement(None, [], {}, devices, unified_budget=None)
+    planning._resolve_placement(None, [], {}, devices, unified_budget=None, engine=LLAMA)
     assert captured["devs"] == [(0, 80 * GIB)]  # total, not the 5 GiB free
 
 
@@ -139,7 +144,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
 
     with caplog.at_level(logging.WARNING):
         placement, spec_applied = planning._placement_or_auto(
-            spec, [], {WorkerRole.EMBED: "ref"}, devices, unified_budget=None
+            spec, [], {WorkerRole.EMBED: "ref"}, devices, unified_budget=None, engine=LLAMA
         )
 
     assert placement is auto
@@ -157,7 +162,7 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
 
     placement, spec_applied = planning._placement_or_auto(
-        spec, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None
+        spec, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None, engine=LLAMA
     )
 
     assert placement is manual
@@ -171,7 +176,7 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", lambda *_a, **_kw: auto)
 
     placement, spec_applied = planning._placement_or_auto(
-        None, [], {}, devices, unified_budget=None
+        None, [], {}, devices, unified_budget=None, engine=LLAMA
     )
 
     assert placement is auto
@@ -182,14 +187,16 @@ def test_interactive_resolve_still_raises(monkeypatch):
     """Without the fallback opt-in an unfittable spec raises, so an apply fails loud."""
 
     planning.clear_read_device_cache()
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(
-        planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
+    monkeypatch.setattr(
+        planning, "_read_devices", lambda _b, engine: planning.DeviceReading([], EngineBackend.CPU)
     )
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
     )
 
     def refuse(*_a, **_kw):
@@ -199,7 +206,7 @@ def test_interactive_resolve_still_raises(monkeypatch):
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
 
     with pytest.raises(PlacementError):
-        planning.resolve_placement_plan(spec)
+        planning.resolve_placement_plan(spec, engine=LLAMA)
     planning.clear_read_device_cache()
 
 
@@ -207,14 +214,16 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     """The view path opts into the fallback and marks the spec as not applied."""
 
     planning.clear_read_device_cache()
-    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(
-        planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
+        "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/fake")
+    )
+    monkeypatch.setattr(
+        planning, "_read_devices", lambda _b, engine: planning.DeviceReading([], EngineBackend.CPU)
     )
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engine: ([], {}, 0, {}),
     )
 
     def refuse(spec, *_a, **_kw):
@@ -225,7 +234,7 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
 
-    resolved = planning.resolve_placement_plan(spec, fall_back_to_auto=True)
+    resolved = planning.resolve_placement_plan(spec, fall_back_to_auto=True, engine=LLAMA)
 
     assert resolved.spec_applied is False
     planning.clear_read_device_cache()
@@ -241,7 +250,7 @@ def test_no_spec_uses_auto_planner(monkeypatch):
             called.setdefault("auto", True) or Placement(instances=(), unplaceable_roles=())
         ),
     )
-    planning._resolve_placement(None, [], {}, devices, unified_budget=None)
+    planning._resolve_placement(None, [], {}, devices, unified_budget=None, engine=LLAMA)
     assert called.get("auto") is True
 
 

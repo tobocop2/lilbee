@@ -27,7 +27,8 @@ from lilbee.providers.fleet.client import (
     _ThinkInliner,
     is_connection_failure,
 )
-from lilbee.providers.roles import RerankMode
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cancellation import TaskCancelledError
 
 
@@ -76,7 +77,11 @@ def _unprobed_client(handler=_handler) -> LlamaServerClient:
     """A client whose template has not yet been probed for strict alternation."""
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
     return LlamaServerClient(
-        "http://gpu0", "test-model", http=http, async_transport=httpx.MockTransport(handler)
+        "http://gpu0",
+        "test-model",
+        http=http,
+        async_transport=httpx.MockTransport(handler),
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
     )
 
 
@@ -360,7 +365,13 @@ def test_first_token_top_logprobs_empty_on_missing_fields() -> None:
 
 def _llm_rerank_client(handler) -> LlamaServerClient:
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
-    return LlamaServerClient("http://gpu0", "rerank-0", http=http, rerank_mode=RerankMode.LLM)
+    return LlamaServerClient(
+        "http://gpu0",
+        "rerank-0",
+        http=http,
+        rerank_mode=RerankMode.LLM,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
 
 
 def _think_token_response() -> httpx.Response:
@@ -908,7 +919,9 @@ def test_embed_empty_returns_empty_without_request() -> None:
 
 def _capped_client(handler, cap: int) -> LlamaServerClient:
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
-    return LlamaServerClient("http://gpu0", "m", http=http, token_cap=cap)
+    return LlamaServerClient(
+        "http://gpu0", "m", http=http, token_cap=cap, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
 
 
 def test_embed_truncates_oversize_input_via_server_tokenizer() -> None:
@@ -1259,7 +1272,13 @@ def test_a_clients_death_error_names_its_model_and_engine_log(monkeypatch, tmp_p
 
     monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: "")
     log = tmp_path / "engine-chat-0.log"
-    client = LlamaServerClient("http://x", "chat-0", model_ref="acme/m-GGUF/m.gguf", engine_log=log)
+    client = LlamaServerClient(
+        "http://x",
+        "chat-0",
+        model_ref="acme/m-GGUF/m.gguf",
+        engine_log=log,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     with pytest.raises(ProviderError) as excinfo:
         client._raise_for_status(_premature_exit_response())
     assert str(excinfo.value) == (
@@ -1303,6 +1322,7 @@ def _dead_engine_client(tmp_path, handler, **kwargs) -> tuple[LlamaServerClient,
         async_transport=transport,
         model_ref=_DEAD_MODEL_REF,
         engine_log=log,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
         **kwargs,
     )
     client._needs_alternation = False
@@ -1645,7 +1665,9 @@ def test_in_flight_resets_after_chat() -> None:
 
 
 def test_close_closes_owned_client() -> None:
-    c = LlamaServerClient("http://gpu0", "m")  # owns its httpx.Client
+    c = LlamaServerClient(
+        "http://gpu0", "m", profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )  # owns its httpx.Client
     c.close()
     assert c._http.is_closed
 
@@ -1675,7 +1697,7 @@ def test_owned_client_uses_shared_context_not_default(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(client_mod.httpx, "Client", _spy_client)
     monkeypatch.setattr(client_mod.ssl, "create_default_context", _boom_create_default_context)
-    LlamaServerClient("http://gpu0", "m")
+    LlamaServerClient("http://gpu0", "m", profile=LLAMA.request_profile(WorkerRole.CHAT))
     assert captured["verify"] is client_mod._LOOPBACK_SSL_CONTEXT
 
 
@@ -1685,31 +1707,47 @@ def _boom_create_default_context(*_a: object, **_k: object) -> object:
 
 def test_close_leaves_injected_client_open() -> None:
     http = httpx.Client(transport=httpx.MockTransport(_handler))
-    c = LlamaServerClient("http://gpu0", "m", http=http)
+    c = LlamaServerClient(
+        "http://gpu0", "m", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     c.close()
     assert not http.is_closed
 
 
 class TestParseSseDeltas:
     def test_non_data_line_is_empty(self) -> None:
-        assert _parse_sse_deltas("event: message") == ("", "")
+        assert _parse_sse_deltas(
+            "event: message", reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("", "")
 
     def test_done_sentinel_is_empty(self) -> None:
-        assert _parse_sse_deltas("data: [DONE]") == ("", "")
+        assert _parse_sse_deltas(
+            "data: [DONE]", reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("", "")
 
     def test_invalid_json_is_empty(self) -> None:
-        assert _parse_sse_deltas("data: {not json") == ("", "")
+        assert _parse_sse_deltas(
+            "data: {not json",
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        ) == ("", "")
 
     def test_no_choices_is_empty(self) -> None:
-        assert _parse_sse_deltas('data: {"choices": []}') == ("", "")
+        assert _parse_sse_deltas(
+            'data: {"choices": []}',
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        ) == ("", "")
 
     def test_extracts_content(self) -> None:
         line = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
-        assert _parse_sse_deltas(line) == ("", "hi")
+        assert _parse_sse_deltas(
+            line, reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("", "hi")
 
     def test_extracts_reasoning(self) -> None:
         line = 'data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}'
-        assert _parse_sse_deltas(line) == ("hmm", "")
+        assert _parse_sse_deltas(
+            line, reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field
+        ) == ("hmm", "")
 
 
 def _tools() -> list[dict]:
@@ -2226,13 +2264,31 @@ def test_coerce_finish_reason_non_string_is_stop() -> None:
 def test_parse_sse_stream_items_skips_malformed_json() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
-    assert list(_parse_sse_stream_items("data: {not json", _ThinkInliner(enabled=True))) == []
+    assert (
+        list(
+            _parse_sse_stream_items(
+                "data: {not json",
+                _ThinkInliner(enabled=True),
+                reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+            )
+        )
+        == []
+    )
 
 
 def test_parse_sse_stream_items_skips_empty_choices() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
-    assert list(_parse_sse_stream_items('data: {"choices": []}', _ThinkInliner(enabled=True))) == []
+    assert (
+        list(
+            _parse_sse_stream_items(
+                'data: {"choices": []}',
+                _ThinkInliner(enabled=True),
+                reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+            )
+        )
+        == []
+    )
 
 
 def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
@@ -2240,7 +2296,13 @@ def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": "length"}]}'
-    items = list(_parse_sse_stream_items(line, _ThinkInliner(enabled=True)))
+    items = list(
+        _parse_sse_stream_items(
+            line,
+            _ThinkInliner(enabled=True),
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        )
+    )
     assert items == ["x", StreamFinish(reason=FinishReason.LENGTH)]
 
 
@@ -2249,7 +2311,13 @@ def test_parse_sse_stream_items_no_finish_frame_without_reason() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": null}]}'
-    items = list(_parse_sse_stream_items(line, _ThinkInliner(enabled=True)))
+    items = list(
+        _parse_sse_stream_items(
+            line,
+            _ThinkInliner(enabled=True),
+            reasoning_field=LLAMA.request_profile(WorkerRole.CHAT).reasoning_field,
+        )
+    )
     assert not any(isinstance(i, StreamFinish) for i in items)
 
 
@@ -2483,14 +2551,22 @@ def _reasoning_handler(request: httpx.Request) -> httpx.Response:
 
 def test_chat_result_inlines_reasoning_for_chat_clients() -> None:
     http = httpx.Client(transport=httpx.MockTransport(_reasoning_handler), base_url="http://gpu0")
-    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    c = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        inline_reasoning=True,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     result = c.chat_result([{"role": "user", "content": "q"}])
     assert result.text == "<think>Let me think.</think>The answer."
 
 
 def test_chat_result_drops_reasoning_when_disabled() -> None:
     http = httpx.Client(transport=httpx.MockTransport(_reasoning_handler), base_url="http://gpu0")
-    c = LlamaServerClient("http://gpu0", "m", http=http)
+    c = LlamaServerClient(
+        "http://gpu0", "m", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     assert c.chat_result([{"role": "user", "content": "q"}]).text == "The answer."
 
 
@@ -2508,7 +2584,13 @@ def test_chat_stream_inlines_reasoning_deltas() -> None:
     http = httpx.Client(
         transport=httpx.MockTransport(_reasoning_sse_handler), base_url="http://gpu0"
     )
-    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    c = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        inline_reasoning=True,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     text = "".join(c.chat([{"role": "user", "content": "2+2?"}], stream=True))
     assert text == "<think>hmm ok</think>4"
 
@@ -2523,7 +2605,13 @@ def test_chat_stream_closes_unterminated_reasoning() -> None:
     http = httpx.Client(
         transport=httpx.MockTransport(_unterminated_reasoning_sse_handler), base_url="http://gpu0"
     )
-    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    c = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        inline_reasoning=True,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     text = "".join(c.chat([{"role": "user", "content": "q"}], stream=True))
     assert text == "<think>endless</think>"
 
@@ -2532,7 +2620,13 @@ def test_chat_stream_items_closes_unterminated_reasoning() -> None:
     http = httpx.Client(
         transport=httpx.MockTransport(_unterminated_reasoning_sse_handler), base_url="http://gpu0"
     )
-    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    c = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        inline_reasoning=True,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     items = list(c.chat_stream_items([{"role": "user", "content": "q"}]))
     text = "".join(i for i in items if isinstance(i, str))
     assert text == "<think>endless</think>"
@@ -2690,7 +2784,13 @@ def test_chat_stream_items_requests_return_progress() -> None:
 def _prefill_client(handler, events: list) -> LlamaServerClient:
     """A probed-lenient client whose constructor carries the prefill callback."""
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
-    client = LlamaServerClient("http://gpu0", "test-model", http=http, on_prefill=events.append)
+    client = LlamaServerClient(
+        "http://gpu0",
+        "test-model",
+        http=http,
+        on_prefill=events.append,
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     client._needs_alternation = False
     return client
 
@@ -3001,7 +3101,9 @@ def test_abort_streams_wakes_a_reader_blocked_after_headers(
     """A cancel stops a read that waits on a silent body and drops the connection."""
     server = _HeadersOnlyServer()
     http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(30.0))
-    client = LlamaServerClient(server.url, "test-model", http=http)
+    client = LlamaServerClient(
+        server.url, "test-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client._needs_alternation = False
     registered = threading.Event()
     register = client._abortable
@@ -3229,7 +3331,12 @@ def test_a_response_read_whole_on_arrival_is_not_registered() -> None:
 
 
 def _real_client(url: str) -> LlamaServerClient:
-    client = LlamaServerClient(url, "test-model", http=httpx.Client(base_url=url))
+    client = LlamaServerClient(
+        url,
+        "test-model",
+        http=httpx.Client(base_url=url),
+        profile=LLAMA.request_profile(WorkerRole.CHAT),
+    )
     client._needs_alternation = False
     return client
 
@@ -3247,13 +3354,16 @@ def test_stream_cut_after_first_frame_says_the_answer_is_cut() -> None:
     assert not isinstance(caught.value, httpx.HTTPError)
     assert not is_connection_failure(caught.value)
     assert isinstance(caught.value.__cause__, httpx.TransportError)
+    assert caught.value.provider == LLAMA.request_profile(WorkerRole.CHAT).label
 
 
 def test_stream_cut_by_a_read_timeout_keeps_its_cause_and_text() -> None:
     """The engine is alive but silent: nothing restarted, and the text says so."""
     server = _ClosingServer(frames=1, mode="silent")
     http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(0.2))
-    client = LlamaServerClient(server.url, "test-model", http=http)
+    client = LlamaServerClient(
+        server.url, "test-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client._needs_alternation = False
     stream = client.chat_stream_items([{"role": "user", "content": "hi"}])
     assert next(stream) == "Hi"
@@ -3333,6 +3443,7 @@ def test_stream_ending_with_no_finish_and_no_sentinel_is_cut() -> None:
     server.close()
     assert "The model server stopped answering and the answer is cut." in str(caught.value)
     assert "Send your message again." in str(caught.value)
+    assert caught.value.provider == LLAMA.request_profile(WorkerRole.CHAT).label
 
 
 def test_stream_with_no_frame_at_all_is_not_called_cut() -> None:

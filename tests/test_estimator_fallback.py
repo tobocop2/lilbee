@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
@@ -30,6 +31,7 @@ class TestTheFallbackIncludesTheCacheItWillAllocate:
             },
             ctx=8192,
             slots=4,
+            engine=LLAMA,
         )
         assert floor > weights
 
@@ -42,9 +44,11 @@ class TestTheFallbackIncludesTheCacheItWillAllocate:
             "key_length": "128",
             "value_length": "128",
         }
-        one = _analytic_footprint_floor(4 * _GB, role=WorkerRole.CHAT, meta=meta, ctx=8192, slots=1)
+        one = _analytic_footprint_floor(
+            4 * _GB, role=WorkerRole.CHAT, meta=meta, ctx=8192, slots=1, engine=LLAMA
+        )
         four = _analytic_footprint_floor(
-            4 * _GB, role=WorkerRole.CHAT, meta=meta, ctx=8192, slots=4
+            4 * _GB, role=WorkerRole.CHAT, meta=meta, ctx=8192, slots=4, engine=LLAMA
         )
         assert four > one
 
@@ -54,7 +58,9 @@ class TestTheFallbackIncludesTheCacheItWillAllocate:
         from lilbee.providers.fleet.planning import _analytic_footprint_floor
 
         assert (
-            _analytic_footprint_floor(4 * _GB, role=WorkerRole.CHAT, meta=None, ctx=8192, slots=1)
+            _analytic_footprint_floor(
+                4 * _GB, role=WorkerRole.CHAT, meta=None, ctx=8192, slots=1, engine=LLAMA
+            )
             > 4 * _GB
         )
 
@@ -70,7 +76,7 @@ class TestTheFallbackIsUsedAndSaidOutLoud:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 4096)
         monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 4 * _GB)
-        monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
+        monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref, *, engine: False)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
@@ -80,6 +86,7 @@ class TestTheFallbackIsUsedAndSaidOutLoud:
                 RuntimeError("parser died"),
                 device_count=1,
                 total_vram=80 * _GB,
+                engine=LLAMA,
             )
         assert placed is not None
         assert placed.est_vram_bytes > 4 * _GB
@@ -140,7 +147,9 @@ class TestTheFloorWhenTheModelFileIsGone:
             raise ProviderError("not installed")
 
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _missing)
-        floor = planning_mod._fallback_floor_for(WorkerRole.CHAT, "org/m.gguf", 4 * _GB)
+        floor = planning_mod._fallback_floor_for(
+            WorkerRole.CHAT, "org/m.gguf", 4 * _GB, engine=LLAMA
+        )
         # No header to read, so the per-token fallback and a usable-context floor
         # apply rather than charging the weights alone.
         assert floor > 4 * _GB

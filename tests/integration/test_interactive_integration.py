@@ -25,6 +25,7 @@ from lilbee.cli.app import app
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
+from lilbee.providers.fleet.engines import LLAMA
 
 pytestmark = pytest.mark.slow
 
@@ -142,8 +143,8 @@ def real_models():
     chat_entry = _chat_model_entry()
     embed_entry = _embedding_model_entry()
 
-    chat_path = download_model(chat_entry)
-    embed_path = download_model(embed_entry)
+    chat_path = download_model(chat_entry, engine=LLAMA)
+    embed_path = download_model(embed_entry, engine=LLAMA)
 
     return chat_path, embed_path
 

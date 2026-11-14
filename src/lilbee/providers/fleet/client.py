@@ -38,11 +38,11 @@ from lilbee.providers.base import (
     ToolCallDelta,
 )
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
+from lilbee.providers.fleet.engines.base import RequestProfile
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.roles import RerankMode
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
-_PROVIDER_NAME = "llama-server"
 # Shown when a stream breaks after its first frame. The client cannot know why.
 _STREAM_INTERRUPTED_MESSAGE = (
     "The model server stopped answering and the answer is cut. Send your message again."
@@ -95,8 +95,6 @@ _UPSTREAM_DIED_MARKER = "exited prematurely"
 # transient: llama-swap re-spawns on the next request against the same port
 # and normally binds.
 _BIND_FAILURE_MARKER = "couldn't bind HTTP server socket"
-# llama-server's 500 body when one input exceeds the physical batch (n_batch).
-_BATCH_OVERFLOW_MARKER = "too large to process"
 
 
 class _ChatToolSpecFunction(TypedDict, total=False):
@@ -298,7 +296,7 @@ def is_rebuildable_failure(exc: BaseException) -> bool:
     return isinstance(exc, ProviderError) and exc.kind in _REBUILDABLE_KINDS
 
 
-def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
+def _classify_error(status_code: int, body: str, profile: RequestProfile) -> ProviderErrorKind:
     """Error kind from a llama-server/llama-swap error status and body.
 
     An input past the server's n_batch is a 500 whose body says "too large to
@@ -312,7 +310,7 @@ def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
     it is SERVER, which the gateway retry treats as transient.
     """
-    if _BATCH_OVERFLOW_MARKER in body:
+    if profile.batch_overflow.search(body):
         return ProviderErrorKind.CONTEXT_OVERFLOW
     if _UPSTREAM_DIED_MARKER in body:
         return ProviderErrorKind.CONNECTION
@@ -377,12 +375,6 @@ def _fetch_log_tail(url: str) -> str:
     return "".join(chunks)[-_UPSTREAM_LOG_TAIL_CHARS:]
 
 
-# llama-server L2-normalizes pooled embeddings by default (embd_normalize=2);
-# every embeddings request sends embd_normalize=-1 so the engine returns raw
-# vectors, and so a rank-pooling rerank score (a single value per pair) is not
-# collapsed to +-1 by normalization. The server only exposes this per request
-# body, not as a startup flag.
-_EMBD_NORMALIZE_NONE = -1
 # Vectors come back as a base64 float32 buffer: parsing thousands of JSON float
 # literals per batch is CPU-bound and holds the GIL, which caps embedding
 # throughput below what the GPUs can feed regardless of how many are dispatching.
@@ -393,18 +385,14 @@ _EMBED_VECTOR_DTYPE = "<f4"
 # Rank pooling puts the pair's relevance score in the vector's first slot.
 _RANK_SCORE_INDEX = 0
 _UNREADABLE_EMBEDDING_ERROR = (
-    "The embedding server returned vectors lilbee could not read. Update the "
-    "inference engine: base64 embedding responses need llama-server b4391 or newer."
+    "The embedding server returned vectors lilbee could not read. Update the inference engine: "
 )
 _NO_RERANK_SCORE_ERROR = "The reranker returned no relevance score for a candidate."
 _HEALTH_PATH = "/health"
 _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
-_TOKENIZE_PATH = "/tokenize"
-_DETOKENIZE_PATH = "/detokenize"
-_APPLY_TEMPLATE_PATH = "/apply-template"
-# llama-swap proxies native (non-OpenAI) llama.cpp routes only under
-# /upstream/<model>/...; the bare /tokenize path 404s (it routes /v1/* by the
+# llama-swap proxies native (non-OpenAI) engine routes only under
+# /upstream/<model>/...; the bare tokenize path 404s (it routes /v1/* by the
 # body's model field, but a native route carries no such field).
 _UPSTREAM_PREFIX = "/upstream"
 # Match the in-process tokenizer call (llm.tokenize(text, add_bos=True, special=False)):
@@ -484,8 +472,8 @@ class ChatDeadlineError(ProviderError):
 class StreamInterruptedError(ProviderError):
     """A chat stream broke after it had sent frames, so its answer is cut."""
 
-    def __init__(self) -> None:
-        super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=_PROVIDER_NAME)
+    def __init__(self, provider: str = "") -> None:
+        super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=provider)
 
 
 def retry_on_gateway_error(
@@ -535,7 +523,10 @@ class LlamaServerClient:
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
         model_ref: str | None = None,
+        profile: RequestProfile,
     ) -> None:
+        # The request fields and native paths of this server's engine.
+        self._profile = profile
         self._base = base_url.rstrip("/")
         # The file this server's own engine writes its output to; None when the
         # launch writes none or no swap manager fronts the client (the self-check).
@@ -608,13 +599,11 @@ class LlamaServerClient:
         # user-facing message so the chat route returns a clean context_length_exceeded
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
-        if resp.status_code == _HTTP_BAD_REQUEST and (
-            "exceed_context_size" in body.lower() or "context size" in body.lower()
-        ):
+        if resp.status_code == _HTTP_BAD_REQUEST and self._profile.context_overflow.search(body):
             raise ProviderError(
                 "The conversation exceeds this model's context window. "
                 "Start a new conversation or shorten the input.",
-                provider=_PROVIDER_NAME,
+                provider=self._profile.label,
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         # llama-swap answers 429 once its concurrency limit for the model is reached.
@@ -623,10 +612,10 @@ class LlamaServerClient:
         if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
             raise ProviderError(
                 "The model is busy with too many requests. Try again in a moment.",
-                provider=_PROVIDER_NAME,
+                provider=self._profile.label,
                 kind=ProviderErrorKind.RATE_LIMIT,
             )
-        kind = _classify_error(resp.status_code, body)
+        kind = _classify_error(resp.status_code, body, self._profile)
         # llama-swap masks a dead server as "exited prematurely". The server's own
         # captured output goes to the log (in _upstream_failure_tail) and decides the
         # kind; the message the user sees stays one plain line.
@@ -636,13 +625,13 @@ class LlamaServerClient:
                 kind = classified
             raise ProviderError(
                 _upstream_death_message(kind, resp.status_code, self.model_ref, self.engine_log),
-                provider=_PROVIDER_NAME,
+                provider=self._profile.label,
                 kind=kind,
             )
         detail = f": {body[:600]}" if body else ""
         raise ProviderError(
-            f"llama-server returned HTTP {resp.status_code}{detail}",
-            provider=_PROVIDER_NAME,
+            f"{self._profile.label} returned HTTP {resp.status_code}{detail}",
+            provider=self._profile.label,
             kind=kind,
         )
 
@@ -757,7 +746,9 @@ class LlamaServerClient:
             # content is null for a refusal / content-filter stop / empty completion;
             # coerce to "" (like chat_result/chat_tools) so callers never see "None".
             return _inline_message_reasoning(
-                resp.json()["choices"][0]["message"], enabled=self._inline_reasoning
+                resp.json()["choices"][0]["message"],
+                enabled=self._inline_reasoning,
+                reasoning_field=self._profile.reasoning_field,
             )
 
     def _chat_stream(
@@ -773,7 +764,7 @@ class LlamaServerClient:
             self._raise_for_status(resp)
             self._abortable(resp)
             for line in resp.iter_lines():
-                delta = inliner.feed(*_parse_sse_deltas(line))
+                delta = inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field))
                 if delta:
                     yield delta
             tail = inliner.finish()
@@ -818,8 +809,8 @@ class LlamaServerClient:
                         await asyncio.wait({chat}, timeout=_CANCEL_POLL_S)
             except TimeoutError:
                 raise ChatDeadlineError(
-                    f"llama-server chat exceeded its {deadline_s:g}s deadline.",
-                    provider=_PROVIDER_NAME,
+                    f"{self._profile.label} chat exceeded its {deadline_s:g}s deadline.",
+                    provider=self._profile.label,
                 ) from None
             finally:
                 chat.cancel()
@@ -834,7 +825,7 @@ class LlamaServerClient:
                 await resp.aread()
             self._raise_for_status(resp)
             async for line in resp.aiter_lines():
-                parts.append(inliner.feed(*_parse_sse_deltas(line)))
+                parts.append(inliner.feed(*_parse_sse_deltas(line, self._profile.reasoning_field)))
         parts.append(inliner.finish())
         return "".join(parts)
 
@@ -865,7 +856,9 @@ class LlamaServerClient:
             resp = self._http.post(_CHAT_PATH, json=payload)
             self._raise_for_status(resp)
             message = resp.json()["choices"][0]["message"]
-        content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
+        content = _inline_message_reasoning(
+            message, enabled=self._inline_reasoning, reasoning_field=self._profile.reasoning_field
+        )
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
             return ChatToolResult(content=content, tool_calls=native)
@@ -899,7 +892,9 @@ class LlamaServerClient:
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
         message = choice["message"]
-        content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
+        content = _inline_message_reasoning(
+            message, enabled=self._inline_reasoning, reasoning_field=self._profile.reasoning_field
+        )
         finish_reason = _coerce_finish_reason(choice.get("finish_reason"))
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
@@ -977,7 +972,9 @@ class LlamaServerClient:
                         if progress is not None:
                             prefilling = True
                             on_prefill(progress)
-                    for item in _parse_sse_stream_items(line, inliner):
+                    for item in _parse_sse_stream_items(
+                        line, inliner, self._profile.reasoning_field
+                    ):
                         if prefilling and on_prefill is not None:
                             # The first real frame proves prefill is over.
                             prefilling = False
@@ -989,11 +986,11 @@ class LlamaServerClient:
                 tail = inliner.finish()
                 if tail:
                     yield tail
-                _raise_if_cut(started=started, ended=ended)
+                _raise_if_cut(started=started, ended=ended, provider=self._profile.label)
         except httpx.TransportError as exc:
             if not started:
                 raise
-            raise StreamInterruptedError from exc
+            raise StreamInterruptedError(self._profile.label) from exc
         finally:
             # A stream that dies or is closed mid-prefill must not leave a
             # stale in-progress reading on the status surface.
@@ -1015,9 +1012,7 @@ class LlamaServerClient:
             # include_usage makes llama-server emit a final SSE chunk carrying the
             # token usage (with an empty choices list) just before [DONE].
             payload["stream_options"] = {"include_usage": True}
-            # return_progress makes llama-server stream prompt_progress frames
-            # during prefill, so a long first turn is observable server-side.
-            payload["return_progress"] = True
+            payload.update(self._profile.stream_fields)
         if tools is not None:
             payload["tools"] = tools
         if tool_choice is not None:
@@ -1104,7 +1099,7 @@ class LlamaServerClient:
         vectors: list[Vector] = []
         for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
             data = self._embed_subbatch(sub_batch)
-            vectors.extend(_embedding_vector(item) for item in data)
+            vectors.extend(_embedding_vector(item, self._profile) for item in data)
         return vectors
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
@@ -1148,7 +1143,7 @@ class LlamaServerClient:
         scores: list[float] = []
         for start in range(0, len(pairs), _EMBED_N_SEQ_MAX):
             data = self._rerank_batch(pairs[start : start + _EMBED_N_SEQ_MAX])
-            scores.extend(_rerank_score(item) for item in data)
+            scores.extend(_rerank_score(item, self._profile) for item in data)
         return scores
 
     def _fit_estimated(self, text: str) -> str:
@@ -1183,7 +1178,7 @@ class LlamaServerClient:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             scores = list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
         if all(score is None for score in scores):
-            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR, provider=_PROVIDER_NAME)
+            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR, provider=self._profile.label)
         return [0.0 if score is None else score for score in scores]
 
     def _llm_rerank_one(self, template: str, query: str, candidate: str) -> float | None:
@@ -1220,7 +1215,7 @@ class LlamaServerClient:
                     json={
                         "model": self._model,
                         "input": inputs,
-                        "embd_normalize": _EMBD_NORMALIZE_NONE,
+                        **self._profile.embed_fields,
                         "encoding_format": _EMBED_ENCODING_FORMAT,
                     },
                 )
@@ -1229,7 +1224,7 @@ class LlamaServerClient:
             if len(data) != len(inputs):
                 raise ProviderError(
                     f"Embedder returned {len(data)} vectors for {len(inputs)} inputs",
-                    provider=_PROVIDER_NAME,
+                    provider=self._profile.label,
                 )
             return list(data)
 
@@ -1299,7 +1294,7 @@ class LlamaServerClient:
 
         def _call() -> list[int]:
             resp = self._http.post(
-                self._native_route(_TOKENIZE_PATH),
+                self._native_route(self._profile.tokenize_path),
                 json={
                     "content": text,
                     "add_special": _TOKENIZE_ADD_SPECIAL,
@@ -1354,10 +1349,12 @@ class LlamaServerClient:
         )
 
         def _call() -> str:
-            resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)
+            resp = self._http.post(
+                self._native_route(self._profile.apply_template_path), json=payload
+            )
             if _route_is_absent(resp):
                 raise NotImplementedError(
-                    f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
+                    f"This inference engine has no {self._profile.apply_template_path} route."
                 )
             self._raise_for_status(resp)
             return str(resp.json()["prompt"])
@@ -1365,7 +1362,9 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
-        resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})
+        resp = self._http.post(
+            self._native_route(self._profile.detokenize_path), json={"tokens": tokens}
+        )
         self._raise_for_status(resp)
         return str(resp.json()["content"])
 
@@ -1483,23 +1482,27 @@ def _shut_down_socket(resp: httpx.Response) -> bool:
     return True
 
 
-def _embedding_vector(item: dict[str, Any]) -> npt.NDArray[np.float32]:
+def _embedding_vector(item: dict[str, Any], profile: RequestProfile) -> npt.NDArray[np.float32]:
     """Decode one ``/v1/embeddings`` item's vector from its base64 float buffer."""
     embedding = item.get("embedding")
     # Untyped server JSON: a non-string means the encoding format was not honored.
     if not isinstance(embedding, str):
-        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR, provider=_PROVIDER_NAME)
+        raise ProviderError(
+            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint, provider=profile.label
+        )
     try:
         return np.frombuffer(base64.b64decode(embedding), dtype=_EMBED_VECTOR_DTYPE)
     except ValueError as exc:
-        raise ProviderError(_UNREADABLE_EMBEDDING_ERROR, provider=_PROVIDER_NAME) from exc
+        raise ProviderError(
+            _UNREADABLE_EMBEDDING_ERROR + profile.unreadable_embedding_hint, provider=profile.label
+        ) from exc
 
 
-def _rerank_score(item: dict[str, Any]) -> float:
+def _rerank_score(item: dict[str, Any], profile: RequestProfile) -> float:
     """Pull one relevance score from a rank-pooling ``/v1/embeddings`` item."""
-    vector = _embedding_vector(item)
+    vector = _embedding_vector(item, profile)
     if not vector.size:
-        raise ProviderError(_NO_RERANK_SCORE_ERROR, provider=_PROVIDER_NAME)
+        raise ProviderError(_NO_RERANK_SCORE_ERROR, provider=profile.label)
     return float(vector[_RANK_SCORE_INDEX])
 
 
@@ -1536,7 +1539,7 @@ def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float | None:
     return yes_e / (yes_e + no_e)
 
 
-def _parse_sse_deltas(line: str) -> tuple[str, str]:
+def _parse_sse_deltas(line: str, reasoning_field: str) -> tuple[str, str]:
     """Extract the (reasoning, content) deltas from one OpenAI SSE line."""
     if not line.startswith(_DATA_PREFIX):
         return "", ""
@@ -1551,7 +1554,7 @@ def _parse_sse_deltas(line: str) -> tuple[str, str]:
     if not choices:
         return "", ""
     delta = choices[0].get("delta") or {}
-    return str(delta.get("reasoning_content") or ""), str(delta.get("content") or "")
+    return str(delta.get(reasoning_field) or ""), str(delta.get("content") or "")
 
 
 class _ThinkInliner:
@@ -1593,10 +1596,12 @@ class _ThinkInliner:
         return ""
 
 
-def _inline_message_reasoning(message: Mapping[str, Any], *, enabled: bool) -> str:
+def _inline_message_reasoning(
+    message: Mapping[str, Any], *, enabled: bool, reasoning_field: str
+) -> str:
     """A non-streaming message's text with any extracted reasoning re-inlined."""
     content = str(message.get("content") or "")
-    reasoning = str(message.get("reasoning_content") or "") if enabled else ""
+    reasoning = str(message.get(reasoning_field) or "") if enabled else ""
     if reasoning:
         return f"{THINK_OPEN_TAG}{reasoning}{THINK_CLOSE_TAG}{content}"
     return content
@@ -1682,14 +1687,14 @@ def _prefill_progress(line: str) -> tuple[int, int] | None:
         return None
 
 
-def _raise_if_cut(*, started: bool, ended: bool) -> None:
+def _raise_if_cut(*, started: bool, ended: bool, provider: str) -> None:
     """Raise when a started stream's body ended with neither a finish frame nor ``[DONE]``.
 
     The engine died but its proxy closed the body cleanly, so no transport error
     was raised. A stream with no frame at all is left to the caller's retry path.
     """
     if started and not ended:
-        raise StreamInterruptedError
+        raise StreamInterruptedError(provider)
 
 
 def _is_done_line(line: str) -> bool:
@@ -1705,7 +1710,7 @@ def _sse_data_body(line: str) -> str | None:
 
 
 def _parse_sse_stream_items(
-    line: str, inliner: _ThinkInliner
+    line: str, inliner: _ThinkInliner, reasoning_field: str
 ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
     """Yield text tokens, tool-call deltas, and the finish frame from one SSE line.
 
@@ -1732,7 +1737,7 @@ def _parse_sse_stream_items(
             yield usage
         return
     delta = choices[0].get("delta") or {}
-    text = inliner.feed(str(delta.get("reasoning_content") or ""), str(delta.get("content") or ""))
+    text = inliner.feed(str(delta.get(reasoning_field) or ""), str(delta.get("content") or ""))
     if text:
         yield text
     raw_calls = delta.get("tool_calls") or []
