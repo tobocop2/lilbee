@@ -55,9 +55,10 @@ PORT_FLAG = "--port"
 # many processes, each at its own ceiling: the larger of the slots and the
 # ingest pool, whose every thread can hold one embed or OCR request.
 _CONCURRENCY_PROCESSES = 4
-# Part of the engine pin, so a peer never binds an engine whose config lacks a
-# key it relies on. 1: every model carries concurrencyLimit.
-SWAP_CONFIG_REVISION = 1
+# Part of the engine pin, so a peer never binds an engine launched under another
+# contract. Raise it when a launch rule changes. 1: every model carries
+# concurrencyLimit. 2: an equal mistral.rs split runs tensor parallel.
+SWAP_CONFIG_REVISION = 2
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
