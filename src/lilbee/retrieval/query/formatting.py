@@ -245,15 +245,6 @@ FILE_LINK_RE = re.compile(r"\[(?P<label>[^\n]+)\]\((?P<url>file://[^)\s]+)\)")
 _FENCE_PROBE = "\n\n# probe"
 
 
-def format_sources_block(results: list[SearchChunk], titles: Mapping[str, str]) -> str:
-    """The authoritative numbered ``Sources:`` block appended to an answer. Each
-    unique source is numbered to match the ``[n]`` markers the model emitted, so
-    every inline citation resolves to a line here; *titles* holds the stored title
-    of each crawled page. '' when there are no sources."""
-    refs = source_refs(results, titles)
-    return _sources_list(refs, source_ref_line) if refs else ""
-
-
 @dataclass(frozen=True)
 class AnswerSources:
     """Emitted once after a grounded answer's last token: the retrieved *results* the
@@ -271,7 +262,8 @@ class AnswerSources:
         refs = self.refs()
         if not refs:
             return ""
-        return close_open_fence(answer).removeprefix(answer) + _sources_list(refs, source_ref_line)
+        # Sliced at the rstripped answer: the text after it is the fence close and the list.
+        return append_sources_block(answer, refs)[len(answer.rstrip()) :]
 
 
 def append_sources_block(
@@ -393,7 +385,7 @@ def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
     """The sources the answer actually referenced, in order (empty if none).
 
     ``[n]`` markers are the primary signal, and ``n`` indexes the unique sources
-    (matching ``build_context``/``format_sources_block``). Name mentions count
+    (matching ``build_context`` and the Sources list). Name mentions count
     too: context blocks show the model each source's name, and models often
     attribute by name ("according to survey_report.pdf") instead of by marker,
     which otherwise reads as an ungrounded answer to JSON consumers.

@@ -15,8 +15,8 @@ from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
+    AnswerSources,
     SourceRef,
-    format_sources_block,
     source_label,
 )
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, StoredSourceRef
@@ -117,11 +117,13 @@ def _chunk(
 
 def _legacy_tui_content(answer: str, sources: list[str], titles: dict[str, str]) -> str:
     """An answer as the TUI saved it before ``source_refs``: its Sources list in the text."""
-    return answer + format_sources_block([_chunk(s) for s in sources], titles)
+    return answer + AnswerSources([_chunk(s) for s in sources], titles).block(answer)
 
 
-def _located_chunks() -> list[SearchChunk]:
-    return [_chunk("manual.pdf", "pdf", page=3), _chunk("tool.py", "code", lines=(10, 20))]
+def _legacy_located_content() -> str:
+    """An answer as the TUI saved it before ``source_refs``, its list holding two locators."""
+    chunks = [_chunk("manual.pdf", "pdf", page=3), _chunk("tool.py", "code", lines=(10, 20))]
+    return "See [1], [2]." + AnswerSources(chunks, {}).block("See [1], [2].")
 
 
 def _located_refs() -> tuple[StoredSourceRef, ...]:
@@ -184,7 +186,7 @@ class TestMessageSources:
         assert refs == [SourceRef("notes/a.md", "notes/a.md", 1), SourceRef("b.md", "b.md", 2)]
 
     def test_a_legacy_tui_turn_keeps_the_locator_of_each_list_line(self, services):
-        content = "See [1], [2]." + format_sources_block(_located_chunks(), {})
+        content = _legacy_located_content()
         assert ", page 3\n" in content and content.endswith(", lines 10-20")
         text, refs = message_sources(SessionMessage(MessageRole.ASSISTANT, content))
         assert text == "See [1], [2]."
@@ -301,7 +303,7 @@ class TestHttp:
         assert _refs_of(message) == []
 
     def test_a_legacy_tui_turn_sends_its_locators(self, client, store):
-        content = "See [1], [2]." + format_sources_block(_located_chunks(), {})
+        content = _legacy_located_content()
         session_id = _session(
             store, SessionMessage(MessageRole.ASSISTANT, content), origin=SessionOrigin.TUI
         )

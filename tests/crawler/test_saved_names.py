@@ -1514,11 +1514,11 @@ class TestEverySurfaceShowsTheStoredTitle:
     async def test_the_sources_block_of_an_answer(
         self, library: Store, monkeypatch: pytest.MonkeyPatch
     ):
-        from lilbee.retrieval.query.formatting import format_sources_block
+        from lilbee.retrieval.query.formatting import AnswerSources
 
         source = await _crawled_forum(monkeypatch)
         chunks = library.get_chunks_by_source(source)
-        block = format_sources_block(chunks, library.web_titles([source, "notes.md"]))
+        block = AnswerSources(chunks, library.web_titles([source, "notes.md"])).block("")
         assert f"1. [{_FORUM_LABEL}](file://" in block
 
     @pytest.mark.timeout(120)
@@ -1564,14 +1564,14 @@ class TestEverySurfaceShowsTheStoredTitle:
     async def test_a_page_with_no_stored_title_keeps_its_slug(
         self, library: Store, monkeypatch: pytest.MonkeyPatch
     ):
-        from lilbee.retrieval.query.formatting import format_sources_block
+        from lilbee.retrieval.query.formatting import AnswerSources
 
         source = await _crawled_forum(monkeypatch)
         unknown = "_web/title.test/never-crawled~0123456789abcdef.md"
         assert library.web_titles([unknown, "notes.md"]) == {}
         assert library.web_titles(["notes.md"]) == {}
         chunks = library.get_chunks_by_source(source)
-        block = format_sources_block(chunks, {})
+        block = AnswerSources(chunks, {}).block("")
         assert f"1. [title.test · {Path(source).name.rpartition('~')[0]}](file://" in block
 
     @pytest.mark.timeout(120)

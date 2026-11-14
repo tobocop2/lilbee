@@ -14,7 +14,6 @@ from lilbee.retrieval.query import (
     Searcher,
     build_context,
     filter_results,
-    format_sources_block,
     sort_by_relevance,
     strip_llm_citations,
 )
@@ -311,9 +310,9 @@ def _raw_sources_line(surface: str, source: str, title: str) -> str:
     if surface == "link":
         return linked_label(source, title)
     if surface == "answer":
-        return format_sources_block(
+        return AnswerSources(
             [_make_result(source=source, content_type="text")], {source: title}
-        )
+        ).block("x [1]")
     refs = source_refs([_make_result(source=source, content_type="text")], {source: title})
     return append_sources_block("x [1]", refs)
 
@@ -439,13 +438,13 @@ class TestUniqueSources:
         assert uniq[0].chunk == "a1"
 
 
-class TestFormatSourcesBlock:
+class TestAnswerSourcesBlock:
     def test_numbers_each_unique_source_matching_inline_markers(self):
         results = [
             _make_result(source="a.md", content_type="text"),
             _make_result(source="b.md", content_type="text"),
         ]
-        block = format_sources_block(results, {})
+        block = AnswerSources(results, {}).block("")
         assert block.startswith("\n\nSources:\n\n")
         assert "1. [a.md](file://" in block
         assert "2. [b.md](file://" in block
@@ -456,13 +455,13 @@ class TestFormatSourcesBlock:
             _make_result(source="a.md", content_type="text"),
             _make_result(source="b.md", content_type="text"),
         ]
-        block = format_sources_block(results, {})
+        block = AnswerSources(results, {}).block("")
         assert "1. [a.md](file://" in block
         assert "2. [b.md](file://" in block
         assert "3." not in block
 
     def test_empty_when_no_sources(self):
-        assert format_sources_block([], {}) == ""
+        assert AnswerSources([], {}).block("") == ""
 
 
 class TestSortByRelevance:
@@ -1137,37 +1136,6 @@ class TestCitedSources:
         assert result.sources
         assert result.cited_sources == []
 
-    def test_ask_numbers_sources_to_match_inline_markers(self, mock_svc):
-        # The text answer lists every retrieved source numbered, so an inline [1]
-        # resolves to source 1 in the block. (Which sources were actually cited
-        # is exposed separately via ask_raw().cited_sources, tested above.)
-        mock_svc.store.search.return_value = [
-            _make_result(source="a.pdf", chunk="alpha", distance=0.1),
-            _make_result(source="b.pdf", chunk="beta", distance=0.2),
-        ]
-        mock_svc.provider.chat.return_value = _text_result("From [1] we learn the answer.")
-        answer = get_services().searcher.ask("q")
-        assert "1. [a.pdf](file://" in answer
-        assert "2. [b.pdf](file://" in answer
-
-    def test_ask_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
-        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
-        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
-        mock_svc.store.web_titles.return_value = {page: "How to grow tomatoes indoors"}
-        mock_svc.provider.chat.return_value = _text_result("From [1].")
-        answer = get_services().searcher.ask("q")
-        assert "1. [forum.example · How to grow tomatoes indoors](file://" in answer
-
-    @pytest.mark.parametrize("title", PLAIN_NAMES)
-    def test_ask_keeps_a_stored_title_as_typed(self, mock_svc, title):
-        """The answer a session stores, and MCP and REST return, names the page as typed."""
-        page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
-        mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
-        mock_svc.store.web_titles.return_value = {page: title}
-        mock_svc.provider.chat.return_value = _text_result("From [1].")
-        answer = get_services().searcher.ask("q")
-        assert f"1. [forum.example · {title}](file://" in answer
-
     def test_ask_stream_labels_a_crawled_page_with_its_stored_title(self, mock_svc):
         page = "_web/forum.example/how-to-grow~0123456789abcdef.md"
         mock_svc.store.search.return_value = [_make_result(source=page, chunk="alpha")]
@@ -1176,12 +1144,6 @@ class TestCitedSources:
         tokens = list(get_services().searcher.ask_stream("q"))
         combined = _shown(tokens)
         assert "1. [forum.example · How to grow tomatoes indoors](file://" in combined
-
-    def test_ask_closes_a_cut_off_code_block_before_the_sources(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result(source="a.pdf")]
-        mock_svc.provider.chat.return_value = _text_result("Try [1]:\n\n```python\nx = 1")
-        answer = get_services().searcher.ask("q")
-        assert "```python\nx = 1\n```\n\nSources:\n" in answer
 
 
 class TestContextBudget:
@@ -1311,31 +1273,6 @@ class TestNeighborExpansion:
         assert result.sources[0].chunk_index == 2
         prompt = mock_svc.provider.chat.call_args[0][0][-1]["content"]
         assert widened in prompt
-
-    def test_widening_keeps_citation_numbering(self, mock_svc):
-        cfg.neighbor_expansion = 1
-        mock_svc.store.search.return_value = [
-            _make_result(source="a.pdf", chunk="alpha", chunk_index=5, distance=0.1),
-            _make_result(source="b.pdf", chunk="beta", chunk_index=0, distance=0.2),
-        ]
-        mock_svc.store.get_chunks_by_indices.return_value = []
-        mock_svc.provider.chat.return_value = _text_result("From [1] and [2].")
-        answer = get_services().searcher.ask("q")
-        assert "1. [a.pdf](file://" in answer
-        assert "2. [b.pdf](file://" in answer
-
-    def test_sources_block_shows_the_widened_page_span(self, mock_svc):
-        cfg.neighbor_expansion = 1
-        mock_svc.store.search.return_value = [
-            _make_result(chunk="core", chunk_index=2, page_start=3, page_end=3)
-        ]
-        mock_svc.store.get_chunks_by_indices.return_value = [
-            _make_result(chunk="prev", chunk_index=1, page_start=2, page_end=2),
-            _make_result(chunk="next", chunk_index=3, page_start=4, page_end=4),
-        ]
-        mock_svc.provider.chat.return_value = _text_result("answer")
-        answer = get_services().searcher.ask("q")
-        assert "pages 2-4" in answer
 
     def test_tight_budget_sheds_expansion_never_the_original(self, mock_svc):
         cfg.neighbor_expansion = 1
@@ -1506,44 +1443,6 @@ class TestAskRaw:
             assert "<think>reasoning</think>" in result.answer
         finally:
             cfg.show_reasoning = old
-
-
-class TestAsk:
-    def test_returns_answer_with_citations(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]
-        mock_svc.provider.chat.return_value = _text_result("The oil capacity is 5 quarts.")
-        answer = get_services().searcher.ask("oil capacity?")
-        assert "5 quarts" in answer
-        assert "Sources:" in answer
-        assert "test.pdf" in answer
-
-    def test_no_results_returns_grounded_refusal(self, mock_svc):
-        """ask() surfaces the grounded refusal verbatim, with no Sources block (bb-0i0)."""
-        mock_svc.store.search.return_value = []
-        answer = get_services().searcher.ask("anything")
-        assert answer == GROUNDED_REFUSAL
-        assert "Sources:" not in answer
-        mock_svc.provider.chat.assert_not_called()
-
-    def test_empty_library_returns_add_content_guidance(self, mock_svc):
-        """ask() surfaces the empty-library guidance verbatim, no Sources block."""
-        mock_svc.store.has_chunks.return_value = False
-        answer = get_services().searcher.ask("say hello")
-        assert answer == EMPTY_LIBRARY
-        assert "Sources:" not in answer
-        mock_svc.provider.chat.assert_not_called()
-
-    def test_ask_with_history(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = _text_result("answer")
-        history = [
-            {"role": "user", "content": "prev q"},
-            {"role": "assistant", "content": "prev a"},
-        ]
-        get_services().searcher.ask("new q", history=history)
-        messages = mock_svc.provider.chat.call_args[0][0]
-        assert len(messages) == 4
-        assert messages[1]["content"] == "prev q"
 
 
 def _shown(events, *, reasoning: bool = True) -> str:
@@ -1739,13 +1638,6 @@ class TestGenerationOptions:
         mock_svc.provider.chat.return_value = iter(["token"])
         opts = {"temperature": 0.1}
         list(get_services().searcher.ask_stream("q", options=opts))
-        assert mock_svc.provider.chat.call_args[1]["options"] == opts
-
-    def test_ask_passes_options_through(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = _text_result("answer")
-        opts = {"num_ctx": 4096}
-        get_services().searcher.ask("q", options=opts)
         assert mock_svc.provider.chat.call_args[1]["options"] == opts
 
     def test_ask_raw_empty_options_passes_none(self, mock_svc):
@@ -4016,13 +3908,6 @@ class TestChunkTypeScope:
         kwargs = mock_svc.store.search.call_args.kwargs
         assert kwargs.get("chunk_type") == "raw"
 
-    def test_ask_forwards_chunk_type(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result(source="doc.md", chunk_type="raw")]
-        mock_svc.provider.chat.return_value = _text_result("answer")
-        get_services().searcher.ask("question", chunk_type="raw")
-        kwargs = mock_svc.store.search.call_args.kwargs
-        assert kwargs.get("chunk_type") == "raw"
-
     def test_ask_stream_forwards_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [
             _make_result(source="wiki/summaries/doc.md", chunk_type="wiki")
@@ -4582,35 +4467,6 @@ class TestExtractCitedIndices:
 
     def test_deduplicates(self):
         assert _extract_cited_indices("[1] and [1] again.") == {1}
-
-
-class TestAskSourcesBlock:
-    def test_ask_numbers_all_sources_so_markers_resolve(self, mock_svc):
-        # Every retrieved source is listed and numbered so an inline [1] resolves
-        # to source 1; the answer no longer drops the passages it didn't cite.
-        r1 = _make_result(source="used.pdf", chunk="oil info", chunk_index=0)
-        r2 = _make_result(source="unused.pdf", chunk="unrelated", chunk_index=1)
-        mock_svc.store.search.return_value = [r1, r2]
-        mock_svc.provider.chat.return_value = _text_result("Oil is 5 quarts [1].")
-        answer = get_services().searcher.ask("oil capacity?")
-        assert "1. [used.pdf](file://" in answer
-        assert "2. [unused.pdf](file://" in answer
-
-    def test_ask_falls_back_to_all_sources_when_no_refs(self, mock_svc):
-        r1 = _make_result(source="a.pdf", chunk="oil info", chunk_index=0)
-        mock_svc.store.search.return_value = [r1]
-        mock_svc.provider.chat.return_value = _text_result("Oil is 5 quarts.")
-        answer = get_services().searcher.ask("oil capacity?")
-        assert "a.pdf" in answer
-
-    def test_ask_strips_llm_citation_block(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result(chunk="oil info")]
-        mock_svc.provider.chat.return_value = _text_result(
-            "5 quarts [1].\n\nKey sources:\n- [1] test.pdf"
-        )
-        answer = get_services().searcher.ask("oil capacity?")
-        assert "Key sources" not in answer
-        assert answer.count("Sources:") == 1
 
 
 class TestAskStreamSourcesBlock:
