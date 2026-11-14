@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,8 @@ from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
-from lilbee.app.engine_choice import engine_for_ref
+from lilbee.app.engine_choice import engine_for_ref, resolve_engines
+from lilbee.catalog.picks import seed_picks
 from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
@@ -32,12 +34,14 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
+from tests.conftest import make_test_catalog_model
 from tests.test_engine_service import (
     GGUF_ENGINE,
     GGUF_REF,
     MLX_ENGINE,
     MLX_REF,
     NOT_INSTALLED,
+    OPENVINO_ENGINE,
     UNREADABLE_NOTICE,
 )
 
@@ -869,3 +873,98 @@ def test_the_model_tool_is_refused_on_a_mounted_server_with_the_http_flag_off() 
 def test_the_slash_usage_names_use_model() -> None:
     assert "use-model MODEL ENGINE" in USAGE
     assert run_engine_command("use-model onlyone").text == USAGE
+
+
+@pytest.fixture
+def checked_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn the test-suite bypass of the model check off, as it is in a real run."""
+    monkeypatch.delenv("LILBEE_SKIP_MODEL_TASK_VALIDATION")
+
+
+@pytest.fixture
+def with_openvino(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second engine that loads GGUF, so a saved choice differs from the host default."""
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.OPENVINO, OPENVINO_ENGINE)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_model_of_a_role_is_refused_an_engine_that_does_not_serve_that_role(
+    surface: str,
+) -> None:
+    cfg.reranker_model = GGUF_REF
+    expected = _service_refusal("rerank", GGUF_REF, "mistral.rs")
+    assert expected.startswith("Engine mistral.rs does not serve rerank.")
+    assert _model_refusal(surface, GGUF_REF, "mistral.rs") == expected
+    assert _stored("engine_choices") is None
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("model", ["no-such-model-anywhere", "Qwen3:8B"])
+def test_a_model_that_is_not_a_model_is_refused_on_every_surface(
+    surface: str, model: str, checked_names: None
+) -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.use(model, "llama.cpp")
+    expected = str(exc.value)
+    assert model in expected
+    assert _model_refusal(surface, model, "llama.cpp") == expected
+    assert _stored("engine_choices") is None
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_malformed_format_is_refused_on_every_surface(surface: str) -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.use("org/repo#bad", "llama.cpp")
+    assert "names format 'bad'" in str(exc.value)
+    assert _model_refusal(surface, "org/repo#bad", "llama.cpp") == str(exc.value)
+    assert _stored("engine_choices") is None
+
+
+def test_a_pick_that_is_not_pulled_yet_takes_its_engine(checked_names: None) -> None:
+    seed_picks((make_test_catalog_model(hf_repo="org/picked"),))
+    assert engine_service.use("org/picked", "llama.cpp") == "llama.cpp"
+    assert json.loads(str(_stored("engine_choices"))) == {"org/picked": "llama.cpp"}
+
+
+def test_a_loose_gguf_file_takes_its_engine(tmp_path: Path, checked_names: None) -> None:
+    loose = tmp_path / "loose.gguf"
+    loose.write_bytes(b"GGUF")
+    engine_service.use(str(loose), "llama.cpp")
+    assert json.loads(str(_stored("engine_choices"))) == {str(loose): "llama.cpp"}
+
+
+def test_auto_removes_the_choice_of_a_model_that_nobody_knows_any_more(
+    checked_names: None,
+) -> None:
+    cfg.engine_choices = json.dumps({"gone/model/file.gguf": "llama.cpp"})
+    assert engine_service.use("gone/model/file.gguf", "auto") == "auto"
+    assert _stored("engine_choices") is None
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_padded_model_name_is_stored_stripped_on_every_surface(surface: str) -> None:
+    padded = f"  {MLX_REF}  "
+    if surface == "cli":
+        assert _run_cli("use-model", padded, "mlx")[0] == 0
+    elif surface == "rest":
+        assert _rest("PUT", "/api/engines/models", {"model": padded, "engine": "mlx"})[0] == 200
+    elif surface == "mcp":
+        assert mcp_server.engine_use_model_tool(padded, "mlx") == {"engine": "mlx"}
+    else:
+        assert run_engine_command(f"use-model {shlex.quote(padded)} mlx").ok
+    assert json.loads(str(_stored("engine_choices"))) == {MLX_REF: "mlx"}
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_saved_model_choice_is_the_engine_the_launch_runs(
+    surface: str, with_openvino: None
+) -> None:
+    assert resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter is GGUF_ENGINE
+    _write_model(surface, GGUF_REF, "openvino")
+    assert resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter is OPENVINO_ENGINE
+    assert engine_for_ref(GGUF_REF, cfg) is OPENVINO_ENGINE
+
+
+def test_the_slash_command_says_which_model_uses_which_engine() -> None:
+    out = run_engine_command(f"use-model {MLX_REF} mlx")
+    assert (out.ok, out.text) == (True, "Model org/repo#mlx uses engine mlx.")

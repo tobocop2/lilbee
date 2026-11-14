@@ -15,11 +15,12 @@ from lilbee.app.services import peek_services
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import make_download_callback
 from lilbee.catalog.models import DownloadProgress
-from lilbee.catalog.refs import model_format
+from lilbee.catalog.refs import model_format, parse_model_ref
 from lilbee.catalog.runnable import refresh_session_host, session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.modelhub.role_validator import known_model_ref
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
 from lilbee.providers.fleet.engine_store import (
@@ -533,23 +534,46 @@ def use_for_role(
         raise EngineRefusedError(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
-    if name != AUTO:
-        _require_serves(_engine_name(name), role)
     return use(model, name, confirmed)
 
 
-def _require_serves(name: EngineName, role: WorkerRole) -> None:
+def _require_serves(name: EngineName, model: str) -> None:
+    """Refuse an engine that does not serve a role whose model is *model*."""
     adapter = choice.ADAPTERS.get(name)
-    if adapter is not None and role not in adapter.served_roles:
-        raise EngineRefusedError(unserved_role_message(name, role, adapter.served_roles))
+    if adapter is None:
+        return
+    for role, info in ROLE_REGISTRY.items():
+        if (
+            str(getattr(cfg, info.config_field)).strip() == model
+            and role not in adapter.served_roles
+        ):
+            raise EngineRefusedError(unserved_role_message(name, role, adapter.served_roles))
+
+
+def _known_model(model: str) -> str:
+    """The ref a role holds for *model*; refuses a malformed ref and a model nobody knows."""
+    try:
+        parse_model_ref(model)
+    except ValueError as exc:
+        raise EngineRefusedError(str(exc)) from exc
+    known = known_model_ref(model)
+    if known is None:
+        raise EngineRefusedError(
+            f"Model {model!r} is not installed and is not in the catalog. "
+            "Install it with lilbee model pull, or check the name."
+        )
+    return known
 
 
 def use(model: str, name: str, confirmed: bool = False) -> str:
     """Store the engine for *model*; ``auto`` removes it. Refuses an engine that cannot run it."""
-    if not model.strip():
+    model = model.strip()
+    if not model:
         raise EngineRefusedError("Give the model to choose an engine for.")
     if name != AUTO:
         engine = _engine_name(name)
+        model = _known_model(model)
+        _require_serves(engine, model)
         installed = offered_engines()
         _require_installed(engine, installed)
         fmt = model_format(model)

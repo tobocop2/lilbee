@@ -446,7 +446,9 @@ lilbee engine prefer <engine>
 
 `engine roles` shows the engine of each role, with a notice when a role fell
 back to another engine. `engine use` sets the engine for the model of one role.
-`engine use-model` sets the engine for one model that no role uses yet.
+`engine use-model` sets the engine for one model that no role uses yet. The
+model must be installed or in the catalog, and the engine must serve the role
+of a model that a role already uses.
 `engine prefer` sets the engine for every model with no choice of its own. Give
 `auto` to either command to remove the choice. The same actions exist as the
 `/engine` chat command, the MCP tools `engine_roles`, `engine_use`,

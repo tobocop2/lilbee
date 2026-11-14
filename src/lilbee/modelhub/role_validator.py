@@ -138,6 +138,26 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     raise _not_installed(installed_ref)
 
 
+def known_model_ref(ref: str, *, allow_bypass: bool = True) -> str | None:
+    """The ref a role stores for *ref*, or ``None`` when *ref* is no installed model or pick.
+
+    A bare ``<org>/<repo>`` reads as its installed quant, so the answer is the
+    string a role holds and the engine lookup at launch finds. A pick that is
+    not installed yet is accepted: the engine may be chosen before the pull.
+    """
+    if _skips_catalog_check(ref, allow_bypass=allow_bypass):
+        return ref
+    registry = ModelRegistry(cfg.models_dir)
+    if is_bare_hf_repo(ref):
+        ref = registry.installed_ref_for_repo(ref) or ref
+    if install_state(ref, registry) is not InstallState.MISSING:
+        return ref
+    entry = find_pick(ref)
+    if entry is None:
+        return None
+    return ref if is_native_gguf_ref(ref) else str(entry.ref)
+
+
 _MISSING_ROLE_WARNING = (
     "%s is set to '%s', which the model registry does not hold. No model listing "
     "shows it and the HTTP chat route cannot resolve it. Install a model with "

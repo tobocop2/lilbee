@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from conftest import PICKS_CHAT, PICKS_EMBEDDING, install_fake_model
-from lilbee.modelhub.role_validator import TaskMismatchError, validate_model_task_assignment
+from lilbee.modelhub.role_validator import (
+    TaskMismatchError,
+    known_model_ref,
+    validate_model_task_assignment,
+)
 
 
 class TestPickRefs:
@@ -142,3 +146,22 @@ class TestRecoveredModelWithProjector:
         ref = install_fake_model("other/Plain-Chat-GGUF", "plain-Q4_K_M.gguf", "chat")
         with pytest.raises(TaskMismatchError):
             validate_model_task_assignment("vision_model", ref, allow_bypass=False)
+
+
+class TestKnownModelRef:
+    def test_an_installed_bare_repo_reads_as_its_quant(self) -> None:
+        ref = install_fake_model("other/Chat-Model-GGUF", "chat-Q4_K_M.gguf", "chat")
+        assert known_model_ref("other/Chat-Model-GGUF", allow_bypass=False) == ref
+        assert known_model_ref(ref, allow_bypass=False) == ref
+
+    def test_a_bare_pick_reads_as_the_pick_and_a_full_ref_is_kept(self) -> None:
+        pick = PICKS_CHAT[0]
+        full = f"{pick.hf_repo}/some-quant-Q4_K_M.gguf"
+        assert known_model_ref(pick.hf_repo, allow_bypass=False) == pick.ref
+        assert known_model_ref(full, allow_bypass=False) == full
+
+    def test_a_name_that_is_neither_installed_nor_a_pick_is_unknown(self) -> None:
+        assert known_model_ref("nobody/Not-A-Pick-GGUF", allow_bypass=False) is None
+
+    def test_the_bypass_keeps_the_name_as_given(self) -> None:
+        assert known_model_ref("nobody/Not-A-Pick-GGUF") == "nobody/Not-A-Pick-GGUF"
