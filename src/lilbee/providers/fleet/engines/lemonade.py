@@ -8,7 +8,7 @@ import re
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from lilbee.catalog.types import ModelFormat
 from lilbee.catalog.xdna import read_checkpoint
@@ -25,12 +25,19 @@ from lilbee.providers.fleet.engines.base import (
     RequestProfile,
 )
 from lilbee.providers.fleet.engines.host_gate import PLATFORM_UNREAD, HostGate, npu_gate
+from lilbee.providers.fleet.engines.lemonade_models import parse_models
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
+if TYPE_CHECKING:
+    from lilbee.catalog.models import CatalogModel
+
 _VERSION = "2026.44.1"
+_FLM_TAG = "v1.0.7"
+"""The ``flm.npu`` tag in ``backend_versions.json`` of the Lemonade release ``_VERSION``."""
+_MODELS_URL = f"https://raw.githubusercontent.com/ROCm/FastFlowLM/{_FLM_TAG}/src/model_list.json"
 _TOOL = "lemond"
 _BACKEND = "npu"
 _HOST = "127.0.0.1"
@@ -133,6 +140,10 @@ class LemonadeAdapter:
     takes_device_names = False
     bundled = False
     install_hint = _INSTALL_HINT
+    models_url = _MODELS_URL
+
+    def parse_models(self, payload: Any) -> list[CatalogModel]:
+        return parse_models(payload)
 
     def supports_architecture(self, architecture: str) -> bool:
         return True

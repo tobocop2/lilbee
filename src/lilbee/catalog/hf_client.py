@@ -23,6 +23,7 @@ from lilbee.catalog.models import (
     CatalogModel,
     HfGgufMeta,
     HfPage,
+    ListsModels,
     estimate_min_ram_gb,
     estimate_size_gb,
 )
@@ -277,6 +278,7 @@ class HfClient:
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
+        self._engine_cache: dict[str, tuple[float, list[CatalogModel]]] = {}
         # -inf, not 0.0: on a freshly booted machine ``time.monotonic()`` can be
         # smaller than the window, which would push the first failure to DEBUG.
         self._last_fetch_failure_warn: float = float("-inf")
@@ -374,6 +376,30 @@ class HfClient:
                 del self._cache[oldest_key]
         return page
 
+    def fetch_engine_models(self, engine: ListsModels) -> list[CatalogModel]:
+        """The rows of the model list that *engine* publishes, cached for ``CACHE_TTL``.
+
+        A failed read (HTTP error, network error, bad JSON, wrong shape) gives no rows and
+        is not cached, so the next browse reads again.
+        """
+        key = engine.models_url
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._engine_cache.get(key)
+            if cached and now - cached[0] < self.CACHE_TTL:
+                return cached[1]
+        try:
+            resp = httpx.get(key, timeout=DEFAULT_TIMEOUT)
+            if resp.status_code >= HTTPStatus.BAD_REQUEST:
+                raise ValueError(f"HTTP {resp.status_code}")
+            rows = engine.parse_models(resp.json())
+        except (httpx.HTTPError, ValueError) as exc:
+            self._log_fetch_failure(exc, source=f"the {engine.name} model list")
+            return []
+        with self._cache_lock:
+            self._engine_cache[key] = (now, rows)
+        return rows
+
     def _catalog_row(
         self, raw: dict[str, Any], fmt: ModelFormat, engine: EngineAdapter | None
     ) -> CatalogModel | None:
@@ -410,8 +436,8 @@ class HfClient:
             formats=formats_from_tags(item.tags or []) | {fmt},
         )
 
-    def _log_fetch_failure(self, exc: Exception) -> None:
-        """Log an HF fetch failure, rate-limited so offline use doesn't spam.
+    def _log_fetch_failure(self, exc: Exception, source: str = "HuggingFace") -> None:
+        """Log a fetch failure from *source*, rate-limited so offline use doesn't spam.
 
         First failure of each ``FETCH_FAILURE_WARN_INTERVAL_S`` window logs
         at WARNING; repeats within the window log at DEBUG. The interval
@@ -420,7 +446,7 @@ class HfClient:
         """
         now = time.monotonic()
         if now - self._last_fetch_failure_warn >= self.FETCH_FAILURE_WARN_INTERVAL_S:
-            log.warning("Failed to fetch models from HuggingFace: %s", exc)
+            log.warning("Failed to fetch models from %s: %s", source, exc)
             self._last_fetch_failure_warn = now
         else:
-            log.debug("Suppressed repeat HF fetch failure: %s", exc)
+            log.debug("Suppressed repeat fetch failure from %s: %s", source, exc)

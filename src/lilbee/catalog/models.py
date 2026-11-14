@@ -3,6 +3,7 @@
 import functools
 import re
 from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -194,6 +195,24 @@ class CatalogResult:
     has_more: bool = False
     truncated: bool = False
     hidden: tuple[HiddenModel, ...] = ()
+
+
+@runtime_checkable
+class ListsModels(Protocol):
+    """An engine whose models no Hub listing shows: it publishes a list of its own.
+
+    The catalog reads ``models_url`` and passes the decoded JSON to ``parse_models``.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    models_url: str
+    """Where the engine's own model list is published."""
+
+    def parse_models(self, payload: Any) -> list[CatalogModel]:
+        """The catalog rows of *payload*; ``ValueError`` when it has the wrong shape."""
+        ...
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
     HiddenModel,
+    ListsModels,
     page_window,
 )
 from lilbee.catalog.picks import get_picks
@@ -25,6 +26,7 @@ from lilbee.catalog.refs import (
 )
 from lilbee.catalog.runnable import (
     EngineOffer,
+    EngineState,
     default_offers,
     explain,
     runnable_formats,
@@ -107,10 +109,15 @@ def get_catalog(
         featured=featured,
     )
     leading = _sort_models([m for m in picks if keep(m)], sort)
+    if not featured:
+        engine_rows = _engine_rows(offers)
+        leading += [m for m in _runnable_rows(engine_rows, host, offers, refused) if keep(m)]
     wanted = offset + limit + 1 - len(leading)
     hf_matches: list[CatalogModel] = []
     scan = _HfScan(
-        task, search, sorted({ModelFormat(f) for o in offers for f in o.adapter.formats})
+        task,
+        search,
+        sorted({ModelFormat(f) for o in offers for f in o.adapter.formats} - {ModelFormat.XDNA}),
     )
     if not featured and wanted > 0:
         pick_repos = {m.hf_repo for m in all_picks}
@@ -131,6 +138,18 @@ def get_catalog(
         truncated=scan.truncated,
         hidden=tuple({h.hf_repo: h for m, h in refused if keep(m)}.values()),
     )
+
+
+def _engine_rows(offers: Sequence[EngineOffer]) -> list[CatalogModel]:
+    """The rows of the model lists that the offered engines publish, in file order."""
+    hf_client = get_services().hf_client
+    # isinstance: only some engines publish a model list, so the offers are narrowed by capability
+    return [
+        m
+        for o in offers
+        if isinstance(o.adapter, ListsModels) and o.state is not EngineState.UNAVAILABLE
+        for m in hf_client.fetch_engine_models(o.adapter)
+    ]
 
 
 def _runnable_rows(
@@ -200,9 +219,10 @@ def _installed_filter(
     """Row predicate for the installed filter, or None when it is off."""
     if installed is None or model_manager is None:
         return None
+    refs = _get_installed_models(model_manager)
     # A repo is installed if any of its quants has a manifest.
-    installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
-    return lambda m: (m.hf_repo in installed_repos) == installed
+    installed_repos = {hf_repo_from_ref(ref) for ref in refs}
+    return lambda m: (m.hf_repo in installed_repos or m.pull_ref in refs) == installed
 
 
 def _row_filter(
