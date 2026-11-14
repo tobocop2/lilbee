@@ -27,7 +27,7 @@ because they block the shared embedder.
 ## Install
 
 Install the skills and the MCP server for your agent with the commands in the
-[install table](https://github.com/tobocop2/lilbee#a-reference-for-ai-agents) in the lilbee README.
+[install table](https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#install-in-your-agent) in the lilbee usage guide.
 
 To register lilbee as an MCP server by hand (opencode example):
 

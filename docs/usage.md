@@ -531,7 +531,7 @@ command: npx      args: [-y, lilbee, mcp]
 command: uvx      args: [--from, "lilbee>=0.6.90b0", lilbee, mcp]
 ```
 
-The first `npx` start downloads the lilbee binary. It took 281 seconds on the test machine, so an agent can time out. Later starts took 18 seconds. The first `uvx` start installs lilbee's Python packages, which took 82 seconds. The `--from` version lets `uvx` pick a lilbee pre-release without pulling pre-releases of other packages.
+The first `npx` start downloads the lilbee binary, and the first `uvx` start installs lilbee's Python packages. Either can take long enough for an agent to time out, so run the command once in a terminal first. The `--from` version lets `uvx` pick a lilbee pre-release without pulling pre-releases of other packages.
 
 ### Client config blocks
 
