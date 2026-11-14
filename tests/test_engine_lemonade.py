@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import socket
 import sys
 from dataclasses import replace
@@ -12,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.app import engine_service
+from lilbee.catalog import xdna
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
@@ -41,11 +41,11 @@ def _host(name: str) -> HostCaps:
     )
 
 
-LLAMA_SERVER = Path("/engines/llama/llama-server")
 MODES = {
     WorkerRole.CHAT: "chat",
     WorkerRole.EMBED: "embeddings",
 }
+TAGS = {WorkerRole.CHAT: "qwen3:0.6b", WorkerRole.EMBED: "embed-gemma:300m"}
 
 
 def _request(model: Path, replica: int = 0, slots: int = 1, ctx: int = 2048) -> LaunchRequest:
@@ -66,19 +66,19 @@ def _launch(
     replica: int = 0,
     slots: int = 1,
 ) -> list[str]:
-    request = _request(model or Path("/models/m.gguf"), replica, slots)
+    ticket = model or xdna.write_ticket(cfg.models_dir, TAGS[role])
+    request = _request(ticket, replica, slots)
     return LEMONADE.launch_argv(LEMONADE.role_spec(role, None, None), request)
 
 
-def _config(role: WorkerRole = WorkerRole.CHAT, replica: int = 0) -> dict[str, object]:
-    path = lemonade.role_dir(role, replica) / "config" / "config.json"
+def _config_file(role: WorkerRole, name: str, replica: int = 0) -> dict[str, object]:
+    path = lemonade.role_dir(role, replica) / "config" / name
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
 def _data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
-    monkeypatch.setattr(lemonade, "resolve_llama_server", lambda: LLAMA_SERVER)
 
 
 def test_b1_an_xdna2_host_passes() -> None:
@@ -150,101 +150,55 @@ def test_s7_the_command_starts_lemond_with_its_own_data_folders() -> None:
 
 
 @pytest.mark.parametrize("role", list(MODES))
-def test_r1_each_role_gets_folders_a_config_and_a_link_to_the_model(role: WorkerRole) -> None:
-    model = Path("/models/m.gguf")
-    _launch(role, model)
+def test_r1_each_role_registers_one_model_on_the_npu_recipe(role: WorkerRole) -> None:
+    _launch(role)
     root = lemonade.role_dir(role, 0)
-    link = root / "view" / MODES[role] / f"lilbee-{role.value}.gguf"
-    assert link.is_symlink()
-    assert link.readlink() == model
     assert (root / "cache").is_dir()
-    config = _config(role)
-    assert config["extra_models_dir"] == str(root / "view")
-    assert config["websocket_port"] == "auto"
-    assert config["llamacpp"] == {"backend": "cpu", "cpu_bin": str(LLAMA_SERVER.parent)}
-    options = json.loads((root / "config" / "recipe_options.json").read_text(encoding="utf-8"))
-    assert options == {
-        f"extra.lilbee-{role.value}": {"ctx_size": 2048, "llamacpp_args": "--parallel 1"}
+    registered = _config_file(role, "user_models.json")
+    entry = registered[f"lilbee-{role.value}"]
+    assert entry["recipe"] == "flm"
+    assert entry["checkpoint"] == TAGS[role]
+    assert entry.get("labels") == (["embeddings"] if role is WorkerRole.EMBED else None)
+    assert _config_file(role, "recipe_options.json") == {
+        f"user.lilbee-{role.value}": {"ctx_size": 2048}
     }
 
 
-def test_r1_the_recipe_scales_context_and_parallel_with_the_slots() -> None:
+@pytest.mark.parametrize("role", list(MODES))
+def test_r1_the_config_names_no_model_folder_and_no_llama_backend(role: WorkerRole) -> None:
+    _launch(role)
+    assert _config_file(role, "config.json") == {"websocket_port": "auto"}
+
+
+def test_r1_the_context_scales_with_the_slots() -> None:
     _launch(slots=3)
-    path = lemonade.role_dir(WorkerRole.CHAT, 0) / "config" / "recipe_options.json"
-    options = json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-chat"]
-    assert options == {"ctx_size": 6144, "llamacpp_args": "--parallel 3"}
+    options = _config_file(WorkerRole.CHAT, "recipe_options.json")
+    assert options["user.lilbee-chat"] == {"ctx_size": 6144}
 
 
 def test_r2_a_second_call_changes_nothing() -> None:
-    _launch()
+    first = _launch()
     root = lemonade.role_dir(WorkerRole.CHAT, 0)
-    files = [root / "config" / "config.json", root / "config" / "recipe_options.json"]
-    link = root / "view" / "chat" / "lilbee-chat.gguf"
+    files = sorted((root / "config").iterdir())
     before = [f.read_bytes() for f in files]
-    link_before = (link.lstat().st_ino, link.lstat().st_mtime_ns)
-    assert _launch() == _launch()
+    assert _launch() == first
+    assert sorted((root / "config").iterdir()) == files
     assert [f.read_bytes() for f in files] == before
-    assert (link.lstat().st_ino, link.lstat().st_mtime_ns) == link_before
 
 
-def test_r2_a_repeat_call_never_removes_the_live_link(monkeypatch: pytest.MonkeyPatch) -> None:
-    model = Path("/models/m.gguf")
-    _launch(model=model)
-    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
-    gone: list[Path] = []
-    real_unlink = Path.unlink
-
-    def watch(self: Path, missing_ok: bool = False) -> None:
-        gone.append(self)
-        real_unlink(self, missing_ok=missing_ok)
-
-    monkeypatch.setattr(Path, "unlink", watch)
-    _launch(model=Path("/models/other.gguf"))
-    assert link not in gone
-    assert link.readlink() == Path("/models/other.gguf")
+def test_r2_a_new_ticket_changes_the_registered_tag() -> None:
+    _launch()
+    ticket = xdna.write_ticket(cfg.models_dir, "llama3.2:1b")
+    _launch(model=ticket)
+    entry = _config_file(WorkerRole.CHAT, "user_models.json")["lilbee-chat"]
+    assert entry["checkpoint"] == "llama3.2:1b"
 
 
-def test_r2_a_new_model_path_moves_the_link() -> None:
-    _launch(model=Path("/models/a.gguf"))
-    _launch(model=Path("/models/b.gguf"))
-    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
-    assert link.readlink() == Path("/models/b.gguf")
-
-
-def test_r8_the_embed_recipe_records_the_context_lemond_serves(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """bge-m3 asked for 4096 in the recording and ran with the 8192 it was trained on."""
-    served = int(_p4_embed_ctx())
-    monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: {"context_length": str(served)})
-    _launch(WorkerRole.EMBED)
-    path = lemonade.role_dir(WorkerRole.EMBED, 0) / "config" / "recipe_options.json"
-    options = json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-embed"]
-    assert options["ctx_size"] == served
-
-
-def test_r8_chat_records_the_context_it_asked_for(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: {"context_length": "32768"})
-    _launch(WorkerRole.CHAT)
-    path = lemonade.role_dir(WorkerRole.CHAT, 0) / "config" / "recipe_options.json"
-    assert json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-chat"]["ctx_size"] == 2048
-
-
-def test_r8_an_unreadable_embed_model_keeps_the_asked_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: None)
-    _launch(WorkerRole.EMBED)
-    path = lemonade.role_dir(WorkerRole.EMBED, 0) / "config" / "recipe_options.json"
-    assert json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-embed"]["ctx_size"] == 2048
-
-
-def _p4_embed_ctx() -> str:
-    from tests.conformance.test_f3_recordings import _p4_children
-
-    return _p4_children()["embed"]["--ctx-size"]
+def test_r2_a_model_path_that_is_not_a_ticket_is_refused(tmp_path: Path) -> None:
+    weights = tmp_path / "m.gguf"
+    weights.write_bytes(b"GGUF")
+    with pytest.raises(ValueError, match="no NPU model tag"):
+        _launch(model=weights)
 
 
 def test_r3_the_swap_entry_names_the_model_and_checks_live() -> None:
@@ -253,11 +207,11 @@ def test_r3_the_swap_entry_names_the_model_and_checks_live() -> None:
             role=role, argv=_launch(role), env_overrides={}, model="m", replica=0
         )
         extras = LEMONADE.swap_extras(launch)
-        assert extras == {"checkEndpoint": "/live", "useModelName": f"lilbee-{role.value}"}
+        assert extras == {"checkEndpoint": "/live", "useModelName": f"user.lilbee-{role.value}"}
         launch = replace(launch, swap_extras=extras)
         config = json.loads(build_swap_config([launch], {launch.model_id: 5800}))
         entry = config["models"][launch.model_id]
-        assert entry["useModelName"] == f"lilbee-{role.value}"
+        assert entry["useModelName"] == f"user.lilbee-{role.value}"
         assert entry["checkEndpoint"] == "/live"
 
 
@@ -284,76 +238,18 @@ def test_r4_the_fixed_port_helpers_are_gone() -> None:
         assert not hasattr(lemonade, name)
 
 
-def test_r5_a_failed_symlink_falls_back_to_a_hard_link(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    model = tmp_path / "m.gguf"
-    model.write_bytes(b"weights")
-    monkeypatch.setattr(os, "symlink", _refuse)
-    _launch(model=model)
-    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
-    assert not link.is_symlink()
-    assert os.path.samefile(link, model)
-
-
-def test_r5_a_failed_hard_link_falls_back_to_a_copy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    model = tmp_path / "m.gguf"
-    model.write_bytes(b"weights")
-    monkeypatch.setattr(os, "symlink", _refuse)
-    monkeypatch.setattr(os, "link", _refuse)
-    _launch(model=model)
-    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
-    assert link.read_bytes() == b"weights"
-    assert not os.path.samefile(link, model)
-
-
-def test_r5_a_copy_is_replaced_when_the_model_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first, second = tmp_path / "a.gguf", tmp_path / "b.gguf"
-    first.write_bytes(b"one")
-    second.write_bytes(b"two")
-    monkeypatch.setattr(os, "symlink", _refuse)
-    monkeypatch.setattr(os, "link", _refuse)
-    _launch(model=first)
-    _launch(model=second)
-    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
-    assert link.read_bytes() == b"two"
-
-
-def test_r5_no_way_to_place_the_model_is_a_clear_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(os, "symlink", _refuse)
-    monkeypatch.setattr(os, "link", _refuse)
-    monkeypatch.setattr(lemonade.shutil, "copyfile", _refuse)
-    with pytest.raises(ProviderError, match="cannot link the model"):
-        _launch(model=tmp_path / "m.gguf")
-
-
-def test_r5_a_plain_file_in_place_of_the_link_is_replaced_when_the_model_is_missing() -> None:
-    link = lemonade.role_dir(WorkerRole.CHAT, 0) / "view" / "chat" / "lilbee-chat.gguf"
-    link.parent.mkdir(parents=True)
-    link.write_bytes(b"old")
-    _launch(model=Path("/models/gone.gguf"))
-    assert link.readlink() == Path("/models/gone.gguf")
-
-
 def test_r6_every_role_and_replica_has_its_own_folder() -> None:
     folders = {lemonade.role_dir(role, r) for role in MODES for r in (0, 1)}
     assert len(folders) == 4
     _launch(WorkerRole.CHAT, replica=0)
     _launch(WorkerRole.CHAT, replica=1)
-    assert (
-        _config(WorkerRole.CHAT, 0)["extra_models_dir"]
-        != _config(WorkerRole.CHAT, 1)["extra_models_dir"]
-    )
+    assert (lemonade.role_dir(WorkerRole.CHAT, 0) / "config" / "user_models.json").is_file()
+    assert (lemonade.role_dir(WorkerRole.CHAT, 1) / "config" / "user_models.json").is_file()
 
 
-def _refuse(*_args: object, **_kwargs: object) -> None:
-    raise OSError("not allowed")
+def test_the_adapter_names_no_model_folder_and_no_llama_server() -> None:
+    for name in ("resolve_llama_server", "_place_model", "_links_to", "read_gguf_metadata"):
+        assert not hasattr(lemonade, name)
 
 
 def test_s14_a_role_the_server_does_not_answer_is_refused() -> None:
