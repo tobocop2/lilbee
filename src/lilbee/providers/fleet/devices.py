@@ -636,7 +636,11 @@ def _compose_visible(indices: list[int], parent_value: str | None) -> str:
 
 
 def visible_nvidia_cards() -> list[FleetDevice]:
-    """The NVIDIA cards a child would see, in CUDA numbering; starts a cached nvidia-smi child."""
+    """The NVIDIA cards a child would see, in CUDA numbering; starts a cached nvidia-smi child.
+
+    The list is empty when the cards do not read or the mask names one card twice, which
+    NVIDIA documents no rule for.
+    """
     # circular: nvidia -> devices via MIB
     from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
     from lilbee.providers.fleet.gpu_env import gpu_environ
@@ -647,6 +651,8 @@ def visible_nvidia_cards() -> list[FleetDevice]:
         named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}
         wanted = [token.strip() for token in mask.split(",")]
         cards = [named[token] for token in itertools.takewhile(named.__contains__, wanted)]
+        if len({card.index for card in cards}) != len(cards):
+            return []
     return [
         FleetDevice("CUDA", index, card.name, card.total_bytes, card.free_bytes)
         for index, card in enumerate(cards)
