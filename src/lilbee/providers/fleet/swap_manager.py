@@ -84,6 +84,7 @@ _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
+_STATE_KEY_READY_SEEN = "ready_seen"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -217,6 +218,7 @@ class SwapState:
     launches: tuple[dict, ...] = ()
     engine_pin: str | None = None
     origin: PlanOrigin | None = None
+    ready_seen: bool = False
 
 
 @dataclass(frozen=True)
@@ -248,6 +250,8 @@ class SwapManager:
         self._placement_warnings: dict[str, HealthWarning] = {}
         self._warnings_lock = threading.Lock()
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
+        # Whether this manager's engine has listed a model as ready; recorded in the state file.
+        self._ready_seen = False
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
         # Where this boot's output starts in the append-mode log file.
@@ -396,6 +400,7 @@ class SwapManager:
             _STATE_KEY_PROXY_PORT: self._port,
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
+            _STATE_KEY_READY_SEEN: self._ready_seen,
         }
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
@@ -427,6 +432,9 @@ class SwapManager:
         prefix = role_model_prefix(role)
         ready = self._ready_models()
         self._check_estimates(ready)
+        if ready and not self._ready_seen and self._proc is not None:
+            self._ready_seen = True
+            self._write_state()
         return any(model.startswith(prefix) for model in ready)
 
     def _check_estimates(self, ready: set[str]) -> None:
@@ -906,19 +914,19 @@ def state_is_healthy(state: SwapState) -> bool:
     return _running_endpoint_answers(f"http://{_HOST}:{state.proxy_port}")
 
 
-def unready_model(state: SwapState) -> str | None:
-    """``"<model> is <state>"`` for a model *state*'s engine lists that is not ready.
+def never_loaded(state: SwapState) -> bool:
+    """Whether *state*'s engine lists no model and its record never saw one ready.
 
-    llama-swap lists a model in ``/running`` from the moment it starts loading until
-    it stops, so a listed model in any state but ``ready`` is still loading or going
-    down. An engine with nothing listed has its weights unloaded and stays usable.
+    ``/running`` lists a model from the start of its load, and a load goes on without
+    the process that asked for it, so a listed model may still become ready. A model
+    that fails its health check goes back to stopped and leaves the list. An empty
+    list is therefore an idle engine only when the record shows a model was once ready.
+    A failed read is not an answer: it never counts as an empty list.
     """
-    if state.proxy_port is None:
-        return None
-    for entry in _running_entries(f"http://{_HOST}:{state.proxy_port}") or []:
-        if entry.get(_KEY_STATE) != _STATE_READY:
-            return f"{entry.get(_KEY_MODEL)} is {entry.get(_KEY_STATE)}"
-    return None
+    if state.ready_seen or state.proxy_port is None:
+        return False
+    entries = _running_entries(f"http://{_HOST}:{state.proxy_port}")
+    return entries is not None and not entries
 
 
 def engine_record_exists(data_dir: Path) -> bool:
@@ -1196,6 +1204,7 @@ def _load_state(path: Path) -> SwapState | None:
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
             engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
             origin=origin,
+            ready_seen=payload.get(_STATE_KEY_READY_SEEN) is True,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

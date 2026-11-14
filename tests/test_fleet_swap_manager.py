@@ -411,6 +411,29 @@ class TestRoleReady:
         mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response(payload=running))
         assert mgr.role_ready(WorkerRole.CHAT) is False
 
+    def test_the_first_ready_model_is_stamped_in_the_state_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._started(tmp_path, monkeypatch, lambda _url: _fake_response())
+        assert mgr.role_ready(WorkerRole.CHAT) is False
+        assert json.loads(mgr._state_path.read_text(encoding="utf-8"))["ready_seen"] is False
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        assert mgr.role_ready(WorkerRole.CHAT) is True
+        assert json.loads(mgr._state_path.read_text(encoding="utf-8"))["ready_seen"] is True
+        mgr.restamp(sm.PlanOrigin("/root/a", None))  # a later write keeps the stamp
+        assert json.loads(mgr._state_path.read_text(encoding="utf-8"))["ready_seen"] is True
+
+    def test_a_bound_manager_writes_no_stamp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = {"running": [{"model": "chat-0", "state": "ready"}]}
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
+        mgr = SwapManager(tmp_path, _GROUP)
+        assert mgr.bind(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is True
+        assert mgr.role_ready(WorkerRole.CHAT) is True
+        assert not mgr._state_path.exists()
+
     def test_false_when_running_probe_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1800,50 +1823,44 @@ class TestLiveStateHelpers:
         state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is True
 
-    @pytest.mark.parametrize("model_state", ["starting", "stopping", "shutdown"])
-    def test_a_model_that_is_not_ready_is_named(
+    def test_an_empty_list_with_no_ready_stamp_is_never_loaded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A model that fails its health check goes back to stopped and leaves /running.
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": []}))
+        assert sm.never_loaded(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is True
+
+    def test_an_empty_list_with_a_ready_stamp_is_an_idle_engine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": []}))
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100, ready_seen=True)
+        assert sm.never_loaded(state) is False
+
+    @pytest.mark.parametrize("model_state", ["starting", "ready", "stopping"])
+    def test_a_listed_model_is_not_never_loaded(
         self, monkeypatch: pytest.MonkeyPatch, model_state: str
     ) -> None:
         running = {"running": [{"model": "chat-0", "state": model_state}]}
         _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
-        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
-        assert sm.state_is_healthy(state) is True  # the proxy answers: reap keeps it
-        assert sm.unready_model(state) == f"chat-0 is {model_state}"
+        assert sm.never_loaded(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is False
 
-    def test_a_ready_model_is_not_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        running = {"running": [{"model": "chat-0", "state": "ready"}]}
-        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
-        assert sm.unready_model(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is None
-
-    def test_one_unready_model_among_ready_ones_is_named(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        running = {
-            "running": [
-                {"model": "chat-0", "state": "ready"},
-                {"model": "embed-0", "state": "starting"},
-            ]
-        }
-        _patch_http(monkeypatch, lambda _url: _fake_response(payload=running))
-        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
-        assert sm.unready_model(state) == "embed-0 is starting"
-
-    def test_an_idle_engine_with_no_model_loaded_is_not_unready(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # llama-swap's /running lists only processes that are not stopped, so an
-        # engine whose weights were unloaded reads empty and must stay bindable.
-        _patch_http(monkeypatch, lambda _url: _fake_response(payload={"running": []}))
-        assert sm.unready_model(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is None
-
-    def test_an_unanswering_proxy_names_no_unready_model(
+    def test_an_unanswering_proxy_is_not_never_loaded(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, _raise_connect_error)
-        assert sm.unready_model(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is None
+        assert sm.never_loaded(sm.SwapState(pid=1, pgid=None, proxy_port=4100)) is False
 
-    def test_a_record_without_a_port_names_no_unready_model(self) -> None:
-        assert sm.unready_model(sm.SwapState(pid=1, pgid=None)) is None
+    def test_a_record_without_a_port_is_not_never_loaded(self) -> None:
+        assert sm.never_loaded(sm.SwapState(pid=1, pgid=None)) is False
+
+    def test_a_ready_stamp_round_trips_and_an_old_record_has_none(self, tmp_path: Path) -> None:
+        stamped = tmp_path / sm._state_filename(1, _GROUP.value)
+        stamped.write_text(json.dumps({"pid": 1, "ready_seen": True}), encoding="utf-8")
+        old = tmp_path / sm._state_filename(2, _GROUP.value)
+        old.write_text(json.dumps({"pid": 2}), encoding="utf-8")
+        assert sm._load_state(stamped).ready_seen is True  # type: ignore[union-attr]
+        assert sm._load_state(old).ready_seen is False  # type: ignore[union-attr]
 
     def test_state_without_a_port_is_unhealthy(self) -> None:
         state = sm.SwapState(pid=1, pgid=None)

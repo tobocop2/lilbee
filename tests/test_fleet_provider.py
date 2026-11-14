@@ -177,7 +177,7 @@ def _install_engine(
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
-    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: None)
+    monkeypatch.setattr(prov_mod, "never_loaded", lambda _state: False)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
@@ -4971,6 +4971,7 @@ def _engine_state_file(
     slots: int = 1,
     argv: tuple[str, ...] = ("/bin/llama-server",),
     env: dict[str, str] | None = None,
+    ready_seen: bool | None = None,
 ) -> Path:
     """A live engine's state record as another process would have written it."""
     import json
@@ -4979,26 +4980,25 @@ def _engine_state_file(
 
     engine_dir.mkdir(parents=True, exist_ok=True)
     path = engine_dir / sm._state_filename(999_999, group)
-    path.write_text(
-        json.dumps(
+    record: dict[str, object] = {
+        "pid": 999_998,
+        "member_ports": [4000],
+        "proxy_port": 4100,
+        "launches": [
             {
-                "pid": 999_998,
-                "member_ports": [4000],
-                "proxy_port": 4100,
-                "launches": [
-                    {
-                        "role": role,
-                        "argv": list(argv),
-                        "env_overrides": env or {},
-                        "model": model,
-                        "ctx": ctx,
-                        "slots": slots,
-                    }
-                ],
-                "engine_pin": pin,
+                "role": role,
+                "argv": list(argv),
+                "env_overrides": env or {},
+                "model": model,
+                "ctx": ctx,
+                "slots": slots,
             }
-        )
-    )
+        ],
+        "engine_pin": pin,
+    }
+    if ready_seen is not None:
+        record["ready_seen"] = ready_seen
+    path.write_text(json.dumps(record), encoding="utf-8")
     return path
 
 
@@ -5042,7 +5042,7 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "kill_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
-    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: None)
+    monkeypatch.setattr(prov_mod, "never_loaded", lambda _state: False)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     # Everything the test configures is placeable and buildable unless overridden.
     monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda engine: 0)
@@ -5161,41 +5161,120 @@ def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) 
     assert list((machine / "engine-users").glob("*.lock"))
 
 
-def test_ladder_starts_its_own_engine_when_the_orphan_never_got_ready(
+def _serve_running(monkeypatch, entries: list[dict[str, object]] | None) -> None:
+    """Make every engine's ``/running`` read return *entries* (``None`` is a failed read)."""
+    from lilbee.providers.fleet import swap_manager as sm
+
+    monkeypatch.setattr(prov_mod, "never_loaded", sm.never_loaded)
+    monkeypatch.setattr(sm, "_running_entries", lambda _base_url: entries)
+
+
+def _chat_only_config(monkeypatch) -> None:
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+
+
+def test_ladder_starts_its_own_engine_when_the_recorded_one_never_loaded(
     monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A proxy that answers, with no user and a model stuck before ready, is not bound."""
+    """A proxy that answers with nothing loaded and no ready stamp is a hung engine: not bound."""
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: "m-chat is starting")
-    monkeypatch.setattr(
-        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
-    )
+    _serve_running(monkeypatch, [])
+    _chat_only_config(monkeypatch)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
     with caplog.at_level(logging.INFO, logger=prov_mod.log.name):
         assert FleetProvider()._ensure_fleet() is True
-    assert swap.binds == []  # the orphan is not bound...
-    assert len(swap.started) == 1  # ...a new engine is started in its place
+    assert swap.binds == []
+    assert len(swap.started) == 1
     assert machine in stopped
-    assert "m-chat is starting" in caplog.text
+    assert "never loaded a model" in caplog.text
 
 
-def test_ladder_binds_an_engine_still_loading_for_a_live_user(monkeypatch, tmp_path: Path) -> None:
-    """A model still loading for a live user is waited for, not duplicated."""
+def test_ladder_binds_an_idle_engine_that_was_once_ready(monkeypatch, tmp_path: Path) -> None:
+    """An idle keep-warm engine lists nothing, but its record shows a model was ready."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    _serve_running(monkeypatch, [])
+    _chat_only_config(monkeypatch)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat", ready_seen=True)
+    assert FleetProvider()._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert swap.started == []
+
+
+def test_ladder_binds_a_model_still_loading_with_no_user(monkeypatch, tmp_path: Path) -> None:
+    """A listed model keeps loading after its starter is gone, so the engine is still bound."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    _serve_running(monkeypatch, [{"model": "chat-0", "state": "starting"}])
+    _chat_only_config(monkeypatch)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    assert FleetProvider()._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert swap.started == []
+
+
+def test_ladder_binds_a_never_loaded_engine_that_a_live_user_holds(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A live user may be loading the engine's first model, so a peer waits on it."""
     from lilbee.runtime.engine_lock import hold_user_lock
 
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
-    monkeypatch.setattr(prov_mod, "unready_model", lambda _state: "m-chat is starting")
-    monkeypatch.setattr(
-        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
-    )
+    _serve_running(monkeypatch, [])
+    _chat_only_config(monkeypatch)
     _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
     holder = hold_user_lock(machine, pid=999_777)
     try:
         assert FleetProvider()._ensure_fleet() is True
     finally:
         holder.release_and_check_last()
+    assert len(swap.binds) == 1
+    assert swap.started == []
+
+
+def test_one_failed_running_read_does_not_stop_an_engine_in_use(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """One group's read fails and another is healthy: the engine a live user holds stays."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(
+        monkeypatch, tmp_path, launches=[_chat_launch(), _embed_launch()]
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod,
+        "state_is_healthy",
+        lambda state: state.launches[0]["role"] == "chat",  # the embed group's read fails
+    )
+    _serve_running(monkeypatch, [])
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed"}.get(role.value, ""),
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat", ready_seen=True)
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-embed", role="embed")
+    holder = hold_user_lock(machine, pid=999_888)
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    try:
+        assert FleetProvider()._ensure_fleet() is True
+    finally:
+        holder.release_and_check_last()
+    assert stopped == []
+    assert built[-1] != machine  # the peer's own engine is built elsewhere
+
+
+def test_a_failed_running_read_is_not_an_empty_engine(monkeypatch, tmp_path: Path) -> None:
+    """With no user, a failed read of an unstamped record does not count as nothing loaded."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    _serve_running(monkeypatch, None)
+    _chat_only_config(monkeypatch)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    assert FleetProvider()._ensure_fleet() is True
     assert len(swap.binds) == 1
     assert swap.started == []
 

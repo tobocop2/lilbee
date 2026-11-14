@@ -73,10 +73,10 @@ from lilbee.providers.fleet.swap_manager import (
     ensure_engine_reaper,
     find_live_state,
     kill_engine,
+    never_loaded,
     reap_stale,
     state_is_healthy,
     stop_engine,
-    unready_model,
 )
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.model_ref import parse_model_ref
@@ -288,23 +288,19 @@ def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
     return found
 
 
-def _without_unready(
+def _without_never_loaded(
     engine_dir: Path, states: dict[SwapGroup, SwapState]
 ) -> dict[SwapGroup, SwapState]:
-    """*states* minus the engines whose proxy answers while a model is not ready.
+    """*states* minus the engines that list no model and never had one ready.
 
-    Only for an engine no live user holds: its starter is gone, so a model still
-    not ready will not become ready, and binding it would serve a dead engine.
+    Only for an engine no live user holds: its proxy answers, but no model loaded.
     """
     kept: dict[SwapGroup, SwapState] = {}
     for group, state in states.items():
-        unready = unready_model(state)
-        if unready is None:
-            kept[group] = state
+        if never_loaded(state):
+            log.info("The engine at %s never loaded a model; starting a new engine", engine_dir)
         else:
-            log.info(
-                "The engine at %s has no user and %s; starting a new engine", engine_dir, unready
-            )
+            kept[group] = state
     return kept
 
 
@@ -1549,7 +1545,7 @@ class FleetProvider:
         if states is None:
             states = _healthy_states(engine_dir)
         if not live_users_exist(engine_dir, exclude_self=True):
-            states = _without_unready(engine_dir, states)
+            states = _without_never_loaded(engine_dir, states)
         if not self._bind_all_in_dir(engine_dir, states, pin, demand):
             return False
         self._hold_membership(engine_dir)
