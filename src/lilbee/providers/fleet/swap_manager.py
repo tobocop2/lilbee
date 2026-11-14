@@ -33,7 +33,7 @@ from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
 from lilbee.providers.fleet.gpu_env import engine_environ
 from lilbee.providers.fleet.groups import SwapGroup
-from lilbee.providers.fleet.launch import role_model_prefix
+from lilbee.providers.fleet.launch import InstanceLaunch, role_model_prefix
 from lilbee.providers.fleet.planning import clear_ctx_downshift, log_role_launches
 from lilbee.providers.fleet.readback import (
     MEMORY_FLAG,
@@ -41,12 +41,15 @@ from lilbee.providers.fleet.readback import (
     check_memory_report,
     report_missing_log,
 )
-from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
+from lilbee.providers.fleet.swap_config import (
+    PORT_FLAG,
+    build_swap_config,
+    health_check_timeout_s,
+)
 from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter
-    from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -84,6 +87,7 @@ _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
+_STATE_KEY_READY_AT = "ready_at"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -156,6 +160,7 @@ _KEY_RUNNING = "running"
 _KEY_MODEL = "model"
 _KEY_STATE = "state"
 _STATE_READY = "ready"
+_STATE_STARTING = "starting"
 
 
 def _platform_const(module: object, name: str, default: int) -> int:
@@ -217,6 +222,7 @@ class SwapState:
     launches: tuple[dict, ...] = ()
     engine_pin: str | None = None
     origin: PlanOrigin | None = None
+    ready_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +231,15 @@ class PlanOrigin:
 
     config_root: str
     fleet_view: str | None
+
+
+class EngineReadiness(StrEnum):
+    """What an answering engine's /running listing says about binding to it."""
+
+    READY = "ready"  # a member passed its health check
+    LOADING = "loading"  # a member is starting; llama-swap queues requests behind it
+    IDLE = "idle"  # nothing loaded, but a load was proved or the first one may not have begun
+    FAILED = "failed"  # nothing loaded, no load ever proved, and the cold-load window is over
 
 
 class SwapManager:
@@ -266,6 +281,9 @@ class SwapManager:
         # True when this manager uses an engine another process built: it then
         # never writes state, never reaps, and never signals engine processes.
         self._bound = False
+        # When this builder first saw a member ready; persisted so a binder can
+        # tell an idle-unloaded engine from one whose first load never finished.
+        self._ready_at: float | None = None
 
     def start(
         self,
@@ -316,6 +334,7 @@ class SwapManager:
         self._launches_payload = [launch.to_state() for launch in launches]
         self._launch_by_model = {launch.model_id: launch for launch in launches}
         self._estimate_checked.clear()
+        self._ready_at = None
         with self._warnings_lock:
             self._placement_warnings.clear()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -400,11 +419,20 @@ class SwapManager:
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
             state[_STATE_KEY_FLEET_VIEW] = self._origin.fleet_view
+        if self._ready_at is not None:
+            state[_STATE_KEY_READY_AT] = self._ready_at
         _atomic_write(self._state_path, json.dumps(state))
 
     def restamp(self, origin: PlanOrigin) -> None:
         """Record *origin* for the running swap: its plan still matches config.toml."""
         self._origin = origin
+        self._write_state()
+
+    def record_ready(self) -> None:
+        """Stamp the state file once when a load first succeeds; a binder writes nothing."""
+        if self._bound or self._ready_at is not None:
+            return
+        self._ready_at = time.time()
         self._write_state()
 
     @property
@@ -427,6 +455,8 @@ class SwapManager:
         prefix = role_model_prefix(role)
         ready = self._ready_models()
         self._check_estimates(ready)
+        if ready:
+            self.record_ready()
         return any(model.startswith(prefix) for model in ready)
 
     def _check_estimates(self, ready: set[str]) -> None:
@@ -869,9 +899,8 @@ def find_live_state(data_dir: Path, group: SwapGroup) -> SwapState | None:
     return best
 
 
-def _running_endpoint_answers(base_url: str) -> bool:
-    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not
-    just liveness).
+def _running_listing(base_url: str) -> list[dict] | None:
+    """The ``running`` entries at *base_url*, or ``None`` when it is not llama-swap.
 
     Proxy ports are ephemeral: after an engine dies, any unrelated local service
     that later binds the recorded port and returns a 2xx/3xx to an unknown path
@@ -883,13 +912,19 @@ def _running_endpoint_answers(base_url: str) -> bool:
     try:
         resp = _probe_client().get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
     except (OSError, httpx.HTTPError):
-        return False
+        return None
     if resp.status_code >= httpx.codes.BAD_REQUEST:
-        return False
+        return None
     try:
-        return isinstance(resp.json().get(_KEY_RUNNING), list)
+        listing = resp.json().get(_KEY_RUNNING)
     except (ValueError, AttributeError):
-        return False
+        return None
+    return listing if isinstance(listing, list) else None
+
+
+def _running_endpoint_answers(base_url: str) -> bool:
+    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not liveness)."""
+    return _running_listing(base_url) is not None
 
 
 def state_is_healthy(state: SwapState) -> bool:
@@ -897,6 +932,46 @@ def state_is_healthy(state: SwapState) -> bool:
     if state.proxy_port is None:
         return False
     return _running_endpoint_answers(f"http://{_HOST}:{state.proxy_port}")
+
+
+def _bind_deadline_s(state: SwapState) -> float:
+    """Seconds after spawn at which a record that never loaded is called failed.
+
+    The slowest member's cold-load ceiling (llama-swap's own health-check timeout)
+    plus the window the builder gets to bring the proxy up before it warms.
+    """
+    try:
+        launches = [InstanceLaunch.from_state(item) for item in state.launches]
+    except (KeyError, TypeError, ValueError):
+        launches = []
+    return health_check_timeout_s(launches) + _BOOT_TIMEOUT_S
+
+
+def _unloaded_readiness(state: SwapState, now: float) -> EngineReadiness:
+    """IDLE or FAILED for an answering engine with no member loading or ready."""
+    if state.ready_at is not None or state.created_at is None:
+        return EngineReadiness.IDLE
+    if now - state.created_at < _bind_deadline_s(state):
+        return EngineReadiness.IDLE
+    return EngineReadiness.FAILED
+
+
+def engine_readiness(state: SwapState, *, now: float) -> EngineReadiness | None:
+    """The bind verdict from one ``/running`` read, ``None`` when the engine does not answer."""
+    listing = (
+        None if state.proxy_port is None else _running_listing(f"http://{_HOST}:{state.proxy_port}")
+    )
+    if listing is None:
+        return None
+    # /running is an untyped body: a state that is not a string cannot name a member state.
+    members = [entry.get(_KEY_STATE) for entry in listing if isinstance(entry, dict)]
+    if not all(member is None or isinstance(member, str) for member in members):
+        return None
+    if _STATE_READY in members:
+        return EngineReadiness.READY
+    if _STATE_STARTING in members:
+        return EngineReadiness.LOADING
+    return _unloaded_readiness(state, now)
 
 
 def engine_record_exists(data_dir: Path) -> bool:
@@ -1165,6 +1240,7 @@ def _load_state(path: Path) -> SwapState | None:
             if raw_root is None
             else PlanOrigin(str(raw_root), payload.get(_STATE_KEY_FLEET_VIEW))
         )
+        raw_ready = payload.get(_STATE_KEY_READY_AT)
         return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
@@ -1174,6 +1250,7 @@ def _load_state(path: Path) -> SwapState | None:
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
             engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
             origin=origin,
+            ready_at=float(raw_ready) if raw_ready is not None else None,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

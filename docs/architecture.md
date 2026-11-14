@@ -1102,7 +1102,11 @@ under the table.
   on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
-  member servers' ports, plus the owner's pid and create time; before the next build
+  member servers' ports, plus the owner's pid and create time, and `ready_at` once the builder sees a load succeed. A
+  later lilbee binds an answering engine only when `/running` lists a member ready or starting, or the record has
+  `ready_at`, or the record is younger than the slowest member's cold-load ceiling plus 30 s, or another lilbee holds
+  the engine (a holder that never warmed leaves no proof of a load); an older record that never loaded and has no
+  holder is rebuilt. Before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped
