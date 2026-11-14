@@ -181,6 +181,40 @@ def test_a_missing_redist_file_fails(tree) -> None:
     assert "vcomp140.dll" in result.stderr
 
 
+def _run_with_notice(tree: pathlib.Path, vswhere: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if k != "VCToolsRedistDir"}
+    env["VSWHERE"] = str(vswhere)
+    env["PATH"] = f"{tree / 'fake'}:{env['PATH']}"
+    return subprocess.run(
+        ["bash", str(_SCRIPT), str(tree / "bin"), str(tree / "NOTICE-VC")],
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def test_writes_the_redistribution_notice_from_the_install_terms(tree) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    terms = "Distributable Code terms for the runtime files. " * 40
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(terms.replace(" ", "\r\n", 1).encode())
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe")
+    assert result.returncode == 0, result.stderr
+    notice = (tree / "NOTICE-VC").read_bytes()
+    assert notice.startswith(b"This wheel carries Microsoft Visual C++ runtime files")
+    assert b"Distributable Code terms for the runtime files." in notice
+    assert b"\r" not in notice
+
+
+def test_fails_when_the_install_has_no_redistribution_terms(tree) -> None:
+    _vs_install(tree, ("14.44.35112",))
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe")
+    assert result.returncode != 0
+    assert "no REDIST.TXT" in result.stderr
+    assert not (tree / "NOTICE-VC").exists()
+
+
 @pytest.mark.parametrize(
     "workflow",
     [

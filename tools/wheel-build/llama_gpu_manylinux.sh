@@ -59,19 +59,7 @@ REPO
       hipcc rocm-llvm rocm-device-libs hip-devel hipblas-devel rocblas-devel hipblaslt
     rpm -qa --qf '%{SIZE} %{NAME}-%{VERSION}-%{RELEASE}\n' | sort -n | tail -40
     df -h / | tail -1
-    # The wheel ships the licence texts of the packages whose libraries it carries.
     : "${LICENSE_DIR:?}"
-    for pkg in hsa-rocr comgr hip-runtime-amd rocblas hipblas hipblaslt rocm-llvm; do
-      rpm -q --qf "${pkg}: %{LICENSE}\n" "${pkg}"
-      out="${LICENSE_DIR}/LICENSE-ROCm-${pkg}"
-      : > "${out}"
-      while IFS= read -r f; do
-        [ -f "${f}" ] || continue
-        { echo "== ${f}"; cat "${f}"; echo; } >> "${out}"
-      done < <(rpm -ql "${pkg}" | grep -E '/share/doc/[^/]+/LICENSE[^/]*$')
-      [ -s "${out}" ] || { echo "${pkg} ships no licence file" >&2; exit 1; }
-      chown "${OWNER}" "${out}"
-    done
     export ROCM_PATH="/opt/rocm-${ENGINE_ROCM_VERSION}"
     [ -d "${ROCM_PATH}" ] || { echo "no ROCm install at ${ROCM_PATH}" >&2; exit 1; }
     export HIP_PATH="${ROCM_PATH}"
@@ -134,6 +122,28 @@ case "${BACKEND}" in
   rocm)
     test -f "${BIN_DIR}/libggml-hip.so"
     ROCM_TARGETS="${rocm_targets}" "${script_dir}/bundle_rocm_runtime.sh" "${BIN_DIR}"
+    # The wheel ships the licence texts of the packages that own the libraries it carries.
+    packages="$(for f in "${BIN_DIR}"/*; do
+      for dir in "${ROCM_PATH}/lib" "${ROCM_PATH}/lib/llvm/lib"; do
+        if [ -f "${dir}/${f##*/}" ]; then
+          rpm -qf --qf '%{NAME}\n' "$(readlink -f "${dir}/${f##*/}")"
+        fi
+      done
+    done | sort -u)"
+    [ -n "${packages}" ] || { echo "no ROCm package owns a shipped library" >&2; exit 1; }
+    # libamd_comgr embeds the LLVM compiler, so the licence of rocm-llvm ships with it.
+    packages="$(printf '%s\nrocm-llvm\n' "${packages}" | sort -u)"
+    for pkg in ${packages}; do
+      rpm -q --qf "${pkg}: %{LICENSE}\n" "${pkg}"
+      out="${LICENSE_DIR}/LICENSE-ROCm-${pkg}"
+      : > "${out}"
+      while IFS= read -r f; do
+        [ -f "${f}" ] || continue
+        { echo "== ${f}"; cat "${f}"; echo; } >> "${out}"
+      done < <(rpm -ql "${pkg}" | grep -E '/share/doc/[^/]+/LICENSE[^/]*$')
+      [ -s "${out}" ] || { echo "${pkg} ships no licence file" >&2; exit 1; }
+      chown "${OWNER}" "${out}"
+    done
     ;;
 esac
 test "$(find "${BIN_DIR}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
