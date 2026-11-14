@@ -1271,7 +1271,8 @@ class FleetProvider:
         The exit test and the clear of ``_fleet_work`` are one lock hold, and a caller
         changes what it wants and reads the field in one lock hold, so a request either
         reaches this loop or starts the next one. A failed pass with a later write runs
-        again, since the fresh plan can succeed; any other failure ends the work.
+        again, since the fresh plan can succeed; any other failure ends the work. The
+        owed roles clear in the lock hold that finds no further forced pass.
         """
         step: Callable[[], None] | None = None
         failure: BaseException | None = None
@@ -1284,12 +1285,15 @@ class FleetProvider:
                     if step != self._build_fleet:
                         log.error("The engine reload failed: %s", failure)
                     step = None
+                if step == self._forced_pass:
+                    self._reload_owed = frozenset(WorkerRole)
+                else:
+                    self._reload_owed = frozenset()
+                    self._reload_done.notify_all()
                 if step is None:
                     self._end_fleet_work(failure)
                     break
                 seen = self._writes_wanted
-                if step == self._forced_pass:
-                    self._reload_owed = frozenset(WorkerRole)
             try:
                 step()
             except BaseException as exc:  # the waiters hear it through result()
@@ -1300,7 +1304,6 @@ class FleetProvider:
                     self._writes_done = seen
             finally:
                 with self._lock:
-                    self._reload_owed = frozenset()
                     self._reload_done.notify_all()
         if failure is not None:
             raise failure

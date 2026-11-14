@@ -248,3 +248,34 @@ def test_a_rerun_pass_owes_every_role_until_its_plan_is_known(monkeypatch) -> No
     assert owed_at_pass_start == [frozenset(WorkerRole), frozenset(WorkerRole)]
     assert provider._reload_owed == frozenset()
     assert provider._fleet_work is None
+
+
+def test_a_request_between_a_failed_pass_and_its_rerun_keeps_waiting(monkeypatch) -> None:
+    provider = _provider(monkeypatch, owed=frozenset())
+    provider._swaps = {SwapGroup.EMBED: MagicMock()}
+    provider._writes_wanted = 1
+    passes: list[int] = []
+    owed_at_wake: list[tuple[int, frozenset[WorkerRole]]] = []
+    wake = provider._reload_done.notify_all
+
+    def notify_and_record() -> None:
+        owed_at_wake.append((len(passes), provider._reload_owed))
+        wake()
+
+    monkeypatch.setattr(provider._reload_done, "notify_all", notify_and_record)
+
+    def pass_that_fails_once_then_adopts(force=frozenset()) -> None:
+        passes.append(1)
+        if len(passes) == 1:
+            with provider._lock:
+                provider._writes_wanted += 1
+            raise ProviderError("the first pass fails")
+
+    monkeypatch.setattr(provider, "_reload_pass", pass_that_fails_once_then_adopts)
+    provider._run_fleet_work()
+    assert len(passes) == 2
+    wakes_between_the_passes = [owed for count, owed in owed_at_wake if count == 1]
+    assert wakes_between_the_passes
+    assert all(owed == frozenset(WorkerRole) for owed in wakes_between_the_passes)
+    assert provider._reload_owed == frozenset()
+    assert owed_at_wake[-1] == (2, frozenset())
