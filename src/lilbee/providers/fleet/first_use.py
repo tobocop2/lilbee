@@ -27,7 +27,7 @@ from lilbee.providers.fleet.engine_store import (
     fetch_frozen,
 )
 from lilbee.providers.fleet.engines.choice import pin_lock
-from lilbee.providers.fleet.engines.llama import LLAMA, pack_backend
+from lilbee.providers.fleet.engines.llama import LLAMA, cuda_pack_gap, pack_backend
 from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.gguf_meta import forget_unanswered_reads
@@ -118,7 +118,11 @@ def installed_tool(tool: str) -> Path | None:
 
 def warn_if_gpu_unserved() -> None:
     """Warn when the CPU pack installs on a computer with an AMD or Intel GPU."""
-    if pack_backend(session_host()) != "cpu":
+    host = session_host()
+    if pack_backend(host) != "cpu":
+        return
+    if gap := cuda_pack_gap(host):
+        log.warning("%s", gap)
         return
     present = installed_gpu_vendor_ids()
     for vendor, name in _UNSERVED_GPU_VENDORS.items():

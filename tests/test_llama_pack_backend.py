@@ -12,7 +12,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.providers.fleet import engine_manifest, first_use
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.llama import LlamaCppAdapter, pack_backend
+from lilbee.providers.fleet.engines.llama import LlamaCppAdapter, cuda_pack_gap, pack_backend
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from tests._published import render_table, wheel_name
 
@@ -175,3 +175,56 @@ def test_a_newer_driver_than_the_floor_selects_the_cuda_pack() -> None:
 
 def test_apple_silicon_stays_on_metal_whatever_the_driver_reports() -> None:
     assert pack_backend(_nvidia("Darwin", "arm64", cards=PASCAL)) == "metal"
+
+
+def test_a_card_older_than_the_pack_reaches_is_named_with_the_missing_build() -> None:
+    gap = cuda_pack_gap(_nvidia("Linux", "x86_64", cards=((3, 7),)))
+    assert "card0" in gap
+    assert "compute capability 3.7" in gap
+    assert "5.0" in gap
+    assert "CPU" in gap
+
+
+def test_a_driver_older_than_the_pack_needs_is_named_with_the_missing_build() -> None:
+    gap = cuda_pack_gap(_nvidia("Linux", "x86_64", cuda=12030, cards=PASCAL))
+    assert "CUDA 12.3" in gap
+    assert "CUDA 12.4" in gap
+    assert "card0" in gap
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        pytest.param(_nvidia("Linux", "x86_64", cards=((12, 0),)), id="blackwell-served"),
+        pytest.param(_nvidia("Linux", "x86_64", cards=((3, 7), (8, 6))), id="one-card-served"),
+        pytest.param(_nvidia("Linux", "x86_64", cards=()), id="no-card"),
+        pytest.param(_nvidia("Linux", "aarch64", cards=((3, 7),)), id="no-cuda-pack-for-host"),
+        pytest.param(_nvidia("Darwin", "arm64", cards=((3, 7),)), id="metal"),
+        pytest.param(
+            collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=UNREADABLE),
+            id="driver-unreadable",
+        ),
+    ],
+)
+def test_a_host_the_cuda_pack_serves_or_never_had_has_no_gap(host: HostCaps) -> None:
+    assert cuda_pack_gap(host) == ""
+
+
+def test_the_first_use_warning_names_an_nvidia_card_the_pack_cannot_use(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host = _nvidia("Linux", "x86_64", cards=((3, 7),))
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    assert "compute capability 3.7" in caplog.text
+
+
+def test_the_first_use_warning_is_silent_for_a_card_the_pack_serves(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host = _nvidia("Linux", "x86_64", cards=((12, 0),))
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    assert caplog.records == []

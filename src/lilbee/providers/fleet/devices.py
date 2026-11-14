@@ -255,7 +255,8 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     indices are unambiguous when a build exposes several backends. A probe that
     does not respond within *timeout_s* raises a ``ProviderError`` naming the
     stuck probe: that is a wedged GPU driver, not a GPU-less host, and treating
-    it as "no devices" would silently plan a CPU fleet on a GPU box.
+    it as "no devices" would silently plan a CPU fleet on a GPU box. A probe
+    stopped by a signal before it listed anything raises the same way.
     """
     try:
         output, returncode = _run_list_devices(binary, timeout_s)
@@ -292,6 +293,18 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             provider=_PROVIDER,
             kind=ProviderErrorKind.CPU_UNSUPPORTED,
         )
+    if returncode < 0 and not answered:
+        raise ProviderError(
+            f"The GPU device probe ({binary.name} --list-devices) was stopped by signal "
+            f"{-returncode} ({_signal_name(-returncode)}) before it listed any device, so "
+            "the engine cannot start. Something ended the probe: a GPU driver fault, "
+            "the out-of-memory killer or a service manager. lilbee does not guess a GPU "
+            "from the host's Vulkan loader here, because the engine would then fail the "
+            "same way.\n"
+            f"The probe reported: {_probe_tail(output)}",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        )
     spoke = returncode == 0 and answered
     if not spoke and answered:
         # It knew the flag and started answering, then died. Blaming the flag
@@ -304,15 +317,6 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             binary.name,
             returncode,
             _probe_tail(output),
-        )
-    elif returncode < 0:
-        # A negative status is a signal that stopped the probe, which says
-        # nothing about whether the engine knows the flag.
-        log.warning(
-            "%s --list-devices was stopped by signal %d before it printed its device "
-            "header, so the device list is unknown.",
-            binary.name,
-            -returncode,
         )
     elif not spoke:
         log.warning(
@@ -330,6 +334,14 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
         refused_all=bool(offered) and not selected,
         backend=_selected_backend(selected, spoke=spoke),
     )
+
+
+def _signal_name(number: int) -> str:
+    """The name of POSIX signal *number*, or ``unknown signal``."""
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return "unknown signal"
 
 
 def _selected_backend(selected: list[FleetDevice], *, spoke: bool) -> EngineBackend:

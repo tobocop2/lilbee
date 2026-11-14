@@ -15,6 +15,7 @@ import pytest
 from lilbee.app import placement as app_placement
 from lilbee.app.engine_choice import BookReading
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices as fleet_devices
 from lilbee.providers.fleet import gpu_select, planning
 from lilbee.providers.fleet.devices import FleetDevice
@@ -303,15 +304,13 @@ class TestTheDriverChoice:
 
 
 class TestAProbeStoppedByASignal:
-    def test_the_warning_does_not_blame_the_flag(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    def test_the_error_names_the_signal_and_does_not_blame_the_flag(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fleet_devices, "_run_list_devices", lambda _binary, _t: ("", -15))
-        with caplog.at_level(logging.WARNING, logger=fleet_devices.log.name):
+        with pytest.raises(ProviderError, match="stopped by signal 15 \\(SIGTERM\\)") as caught:
             fleet_devices.probe_devices(Path("llama-server"))
-        text = " ".join(record.getMessage() for record in caplog.records)
-        assert "stopped by signal 15" in text
-        assert "does not appear to support" not in text
+        assert "does not appear to support" not in str(caught.value)
 
     def test_an_engine_without_the_flag_still_says_so(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

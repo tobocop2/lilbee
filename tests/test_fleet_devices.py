@@ -1042,9 +1042,47 @@ def test_a_probe_killed_by_an_illegal_instruction_after_its_header_keeps_the_pro
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and a shell-script fake binary")
-def test_a_probe_killed_by_another_signal_does_not_name_the_cpu(tmp_path: Path) -> None:
+def test_a_probe_killed_by_another_signal_is_a_probe_failure_not_a_cpu_host(
+    tmp_path: Path,
+) -> None:
     script = tmp_path / "llama-server"
-    script.write_text("#!/bin/sh\nkill -SEGV $$\n", encoding="utf-8")
+    script.write_text("#!/bin/sh\necho 'driver fault'\nkill -SEGV $$\n", encoding="utf-8")
     script.chmod(0o755)
-    probe = probe_devices(script)
-    assert probe.devices == []
+    with pytest.raises(ProviderError, match=r"stopped by signal 11 \(SIGSEGV\)") as caught:
+        probe_devices(script)
+    assert caught.value.kind is ProviderErrorKind.SERVER
+    assert "driver fault" in str(caught.value)
+    assert "does not appear to support" not in str(caught.value)
+
+
+def test_a_probe_killed_by_sigterm_names_the_signal_and_the_probe_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("ggml_cuda_init: failed\n", -15))
+    with pytest.raises(ProviderError, match=r"stopped by signal 15 \(SIGTERM\)") as caught:
+        probe_devices(Path("llama-server"))
+    assert "ggml_cuda_init: failed" in str(caught.value)
+    assert "does not appear to support" not in str(caught.value)
+
+
+def test_a_status_that_is_no_known_signal_is_still_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", -200))
+    with pytest.raises(ProviderError, match=r"stopped by signal 200 \(unknown signal\)"):
+        probe_devices(Path("llama-server"))
+
+
+def test_a_killed_probe_is_not_replaced_by_the_host_vulkan_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The planner reads the failure; it never asks the loader for devices instead."""
+    from lilbee.providers.fleet import gpu_select, planning
+    from lilbee.providers.fleet.engines.llama import LLAMA
+
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", -15))
+    asked: list[str] = []
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: asked.append("loader") or [])
+    with pytest.raises(ProviderError, match="stopped by signal 15"):
+        planning._read_devices(Path("llama-server"), LLAMA)
+    assert asked == []

@@ -87,6 +87,30 @@ def _has_usable_cuda(host: HostCaps) -> bool:
     return max(gpu.compute for gpu in host.gpus) >= _CUDA_MIN_COMPUTE
 
 
+def cuda_pack_gap(host: HostCaps) -> str:
+    """Why the CUDA pack cannot serve the NVIDIA card of *host*; empty when it can."""
+    if (host.os, host.arch) not in _CUDA_HOSTS or not host.nvidia_known or not host.gpus:
+        return ""
+    if _has_usable_cuda(host):
+        return ""
+    card = max(host.gpus, key=lambda gpu: gpu.compute)
+    compute = f"{card.compute[0]}.{card.compute[1]}"
+    need = f"{_CUDA_MIN_COMPUTE[0]}.{_CUDA_MIN_COMPUTE[1]}"
+    floor = f"{_CUDA_DRIVER_FLOOR[0]}.{_CUDA_DRIVER_FLOOR[1]}"
+    if card.compute < _CUDA_MIN_COMPUTE:
+        return (
+            f"The NVIDIA GPU {card.name} has compute capability {compute}, and the llama.cpp "
+            f"CUDA build supports {need} or newer. lilbee installs the CPU build."
+        )
+    # A host that knows its GPUs knows the driver's CUDA version too (host_caps.collect).
+    driver_cuda = host.nvidia_driver_cuda or (0, 0)
+    driver = f"{driver_cuda[0]}.{driver_cuda[1]}"
+    return (
+        f"The NVIDIA driver for {card.name} offers CUDA {driver}, and the llama.cpp CUDA "
+        f"build needs CUDA {floor}. Update the driver. lilbee installs the CPU build."
+    )
+
+
 def pack_backend(host: HostCaps) -> str:
     """The backend of the llama.cpp pack that *host* installs."""
     if (host.os, host.arch) == (HostOS.MACOS, HostArch.ARM64):
