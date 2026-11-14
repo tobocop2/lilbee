@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.app import engine_service
+from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import host_caps
@@ -22,7 +23,7 @@ from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.swap_config import build_swap_config
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RoleTarget, WorkerRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "host_caps"
 BINARY = Path("/engines/bin/lemond")
@@ -44,7 +45,6 @@ LLAMA_SERVER = Path("/engines/llama/llama-server")
 MODES = {
     WorkerRole.CHAT: "chat",
     WorkerRole.EMBED: "embeddings",
-    WorkerRole.RERANK: "reranking",
 }
 
 
@@ -108,8 +108,31 @@ def test_b1_an_unread_generation_is_unknown_and_not_auto_selectable() -> None:
     assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
 
 
-def test_b1_windows_is_not_offered() -> None:
-    assert not LEMONADE.host_gate(_host("windows-amd64")).ok
+def test_b1_windows_is_unknown_and_never_automatic() -> None:
+    gate = LEMONADE.host_gate(_host("windows-amd64"))
+    assert (gate.ok, gate.known, gate.auto_selectable) == (True, False, False)
+
+
+def test_b1_a_mac_is_refused() -> None:
+    gate = LEMONADE.host_gate(_host("mac-arm64"))
+    assert not gate.ok
+    assert "not offered on macos" in gate.reason
+
+
+def test_b1_windows_on_arm_is_refused() -> None:
+    caps = host_caps.collect(system="Windows", machine="arm64", cpu_info={}, nvml=None)
+    assert not LEMONADE.host_gate(caps).ok
+
+
+def test_b3_the_engine_serves_chat_and_embed_on_the_npu() -> None:
+    assert LEMONADE.served_roles == {WorkerRole.CHAT, WorkerRole.EMBED}
+    assert LEMONADE.device_targets(BINARY) == {RoleTarget.NPU}
+    assert LEMONADE.formats == {ModelFormat.XDNA}
+
+
+def test_b3_rerank_is_refused_because_no_npu_recipe_serves_it() -> None:
+    with pytest.raises(ProviderError, match="does not serve"):
+        LEMONADE.role_spec(WorkerRole.RERANK, None, None)
 
 
 def test_b2_the_memory_rule_is_a_fixed_reserve() -> None:
@@ -200,17 +223,13 @@ def test_r8_the_embed_recipe_records_the_context_lemond_serves(
     assert options["ctx_size"] == served
 
 
-def test_r8_chat_and_rerank_record_the_context_they_asked_for(
+def test_r8_chat_records_the_context_it_asked_for(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(lemonade, "read_gguf_metadata", lambda _p: {"context_length": "32768"})
-    for role in (WorkerRole.CHAT, WorkerRole.RERANK):
-        _launch(role)
-        path = lemonade.role_dir(role, 0) / "config" / "recipe_options.json"
-        assert (
-            json.loads(path.read_text(encoding="utf-8"))[f"extra.lilbee-{role.value}"]["ctx_size"]
-            == 2048
-        )
+    _launch(WorkerRole.CHAT)
+    path = lemonade.role_dir(WorkerRole.CHAT, 0) / "config" / "recipe_options.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["extra.lilbee-chat"]["ctx_size"] == 2048
 
 
 def test_r8_an_unreadable_embed_model_keeps_the_asked_context(
@@ -324,7 +343,7 @@ def test_r5_a_plain_file_in_place_of_the_link_is_replaced_when_the_model_is_miss
 
 def test_r6_every_role_and_replica_has_its_own_folder() -> None:
     folders = {lemonade.role_dir(role, r) for role in MODES for r in (0, 1)}
-    assert len(folders) == 6
+    assert len(folders) == 4
     _launch(WorkerRole.CHAT, replica=0)
     _launch(WorkerRole.CHAT, replica=1)
     assert (
