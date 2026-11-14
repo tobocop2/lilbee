@@ -14,7 +14,9 @@ import pytest
 
 from lilbee.catalog import hf_client
 from lilbee.catalog.pull_fit import chat_pull_fit
+from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params, model_cache
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
@@ -22,6 +24,7 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
 from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.roles import WorkerRole
 
@@ -169,6 +172,22 @@ def test_the_peak_estimator_prices_the_context_the_launch_serves(
         WorkerRole.CHAT, (1,)
     )
     assert seen == [launched] == [_TARGET]
+
+
+@pytest.mark.parametrize("ctx", [_TARGET, 40960])
+def test_an_xdna_model_keeps_the_unknown_size_reserve_at_any_context(
+    folder: Path, ctx: int
+) -> None:
+    request = MemoryRequest(
+        model_path=folder,
+        ctx=ctx,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.F16,
+    )
+    estimate = estimate_memory(ModelFormat.XDNA, request)
+    assert estimate.device_bytes == UNKNOWN_SIZE_RESERVE_BYTES
 
 
 @pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
