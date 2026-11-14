@@ -44,6 +44,7 @@ _PROFILE = RequestProfile(
     embed_fields={"embd_normalize": -1},
     stream_fields={"return_progress": True},
     takes_cache_prompt=True,
+    takes_seed=True,
     tokenize_path="/tokenize",
     detokenize_path="/detokenize",
     apply_template_path="/apply-template",

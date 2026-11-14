@@ -26,6 +26,7 @@ from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     ChatResult,
     ChatToolResult,
+    ChosenSeed,
     ClosableIterator,
     FinishReason,
     ProviderError,
@@ -1044,6 +1045,8 @@ class LlamaServerClient:
         wire = dict(options or {})
         if not self._profile.takes_cache_prompt:
             wire.pop("cache_prompt", None)
+        if not self._profile.takes_seed and isinstance(wire.get("seed"), ChosenSeed):
+            wire.pop("seed")
         return wire
 
     def _prepare_chat_messages(

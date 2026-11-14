@@ -93,6 +93,8 @@ class RequestProfile:
     """Matches an error body that refuses a request for holding too many inputs, or None."""
     takes_cache_prompt: bool = False
     """True when the engine reads the ``cache_prompt`` field of a chat body; others never get it."""
+    takes_seed: bool = False
+    """True when the engine reads ``seed``; others never get a seed that lilbee chose."""
 
 
 class EngineAdapter(Protocol, Hashable):

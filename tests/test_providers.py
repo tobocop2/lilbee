@@ -2490,6 +2490,12 @@ class TestLLMOptions:
 
 
 class TestFilterOptions:
+    def test_a_chosen_seed_keeps_its_type_and_a_user_seed_stays_plain(self) -> None:
+        from lilbee.providers.base import ChosenSeed, filter_options
+
+        assert isinstance(filter_options({"seed": ChosenSeed(42)})["seed"], ChosenSeed)
+        assert not isinstance(filter_options({"seed": 42})["seed"], ChosenSeed)
+
     def test_filters_valid_options(self) -> None:
         from lilbee.providers.base import filter_options
 

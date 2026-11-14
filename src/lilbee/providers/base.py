@@ -109,17 +109,20 @@ class LLMOptions(BaseModel):
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
-def filter_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Validate and filter generation options through LLMOptions model."""
-    return LLMOptions(**options).to_dict()
-
-
 class ChosenSeed(int):
     """A seed lilbee picked for an internal call, not one the user set.
 
     A provider with no seed field drops it and answers the call. A seed that is
     a plain ``int`` came from the user, and that provider refuses it.
     """
+
+
+def filter_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Validate and filter generation options through LLMOptions model, keeping a ChosenSeed."""
+    filtered = LLMOptions(**options).to_dict()
+    if isinstance(options.get("seed"), ChosenSeed):
+        filtered["seed"] = options["seed"]
+    return filtered
 
 
 def aux_options(num_predict: int, **extra: Any) -> dict[str, Any]:

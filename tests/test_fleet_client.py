@@ -3653,7 +3653,7 @@ _CHAT_CALLS = {
 }
 
 
-def _body_sent_by(engine, call: str) -> dict:
+def _body_sent_by(engine, call: str, seed: int = ChosenSeed(42)) -> dict:
     """The chat body that *call* sends to *engine*'s server for an internal call's options."""
     bodies: list[dict] = []
 
@@ -3673,7 +3673,7 @@ def _body_sent_by(engine, call: str) -> dict:
         profile=engine.request_profile(WorkerRole.CHAT),
     )
     client._needs_alternation = False
-    options = chat_options_to_kwargs(aux_options(64, seed=ChosenSeed(42), cache_prompt=False))
+    options = chat_options_to_kwargs(aux_options(64, seed=seed, cache_prompt=False))
     _CHAT_CALLS[call](client, options)
     return bodies[-1]
 
@@ -3681,8 +3681,22 @@ def _body_sent_by(engine, call: str) -> dict:
 @pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
 @pytest.mark.parametrize("call", list(_CHAT_CALLS))
 def test_the_prompt_cache_flag_reaches_no_other_engine(engine, call) -> None:
-    """cache_prompt is a llama-server field. A chosen seed is not yet told from a user seed here."""
+    """cache_prompt is a llama-server field, so no other engine gets it."""
     assert "cache_prompt" not in _body_sent_by(engine, call)
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_seed_lilbee_chose_reaches_no_engine_that_takes_none(engine, call) -> None:
+    assert "seed" not in _body_sent_by(engine, call)
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+@pytest.mark.parametrize("call", list(_CHAT_CALLS))
+def test_a_seed_the_user_set_reaches_every_engine(engine, call) -> None:
+    body = _body_sent_by(engine, call, seed=7)
+    assert body["seed"] == 7
+    assert "cache_prompt" not in body
 
 
 @pytest.mark.parametrize("call", list(_CHAT_CALLS))
