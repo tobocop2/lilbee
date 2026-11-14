@@ -28,6 +28,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, Host
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import estimate_installed_encoder
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "1.9.4"
@@ -38,8 +39,6 @@ _CUDA_PREFIX = "cuda-sm"
 _MIN_COMPUTE = (7, 5)
 _CUDA_CELLS = (75, 80, 86, 89, 90, 100, 120)
 """The compute capabilities (major * 10 + minor) a CUDA build exists for."""
-_RESERVE_BYTES = 2 * 1024**3
-"""The figure charged for one instance; two small models peaked at 886 MiB in the recording."""
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
 _RERANK_QUERY_TOKENS = 128
@@ -181,7 +180,7 @@ class TeiAdapter:
             "tool": _TOOL,
             "launch": _PIN_LAUNCH,
             "platforms": platforms,
-            "memory": {"sizing": None, "rule": f"fixed {_RESERVE_BYTES} bytes"},
+            "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
             "licenses": ["Apache-2.0"],
         }
 
@@ -223,12 +222,12 @@ class TeiAdapter:
         return frozenset({RoleTarget.GPU, RoleTarget.CPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        return MemoryEstimate(
-            kind=self.memory_kind,
-            device_bytes=_RESERVE_BYTES,
-            host_bytes=0,
-            shared_bytes=_RESERVE_BYTES,
-        )
+        """The weights plus a runtime allowance; a CUDA build holds float32 weights as float16."""
+        from lilbee.catalog.runnable import session_host
+
+        backend = self.pick_build(session_host()).backend
+        narrow_f32 = backend is not None and backend.startswith(_CUDA_PREFIX)
+        return estimate_installed_encoder(request.model_path, narrow_f32=narrow_f32)
 
     def check_readback(self, binary: Path) -> bool:
         return False

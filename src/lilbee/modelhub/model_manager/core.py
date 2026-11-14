@@ -12,7 +12,7 @@ from cachetools import TTLCache
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import model_format
-from lilbee.catalog.types import ModelFormat, ModelSource
+from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
 from lilbee.modelhub.model_manager.types import ModelNotFoundError
@@ -270,6 +270,7 @@ class ModelManager:
                 "Pass a HuggingFace repo id (owner/name) or a featured model name."
             )
         entry = self._resolved_entry(entry, engine, verify=not allow_unsupported)
+        self._log_memory_need(entry)
         path = download_model(
             entry,
             engine,
@@ -279,6 +280,21 @@ class ModelManager:
         )
         log.info("Downloaded %s to %s", model, path)
         return path
+
+    @staticmethod
+    def _log_memory_need(entry: CatalogModel) -> None:
+        """Log the memory a safetensors chat model needs, before its weights download."""
+        if entry.format not in (ModelFormat.SAFETENSORS, ModelFormat.MLX):
+            return
+        if entry.task is not ModelTask.CHAT:
+            return
+        # heavy: lilbee.catalog and lilbee.providers.fleet (>50ms)
+        from lilbee.catalog.hf_client import hf_token
+        from lilbee.catalog.pull_fit import chat_pull_fit
+        from lilbee.providers.fleet.planning import configured_chat_ctx
+
+        fit = chat_pull_fit(entry.hf_repo, configured_chat_ctx(), token=hf_token())
+        log.info("%s: %s", entry.hf_repo, fit.text())
 
     def _resolved_entry(
         self, entry: CatalogModel, engine: "EngineAdapter", *, verify: bool

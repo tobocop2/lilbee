@@ -995,6 +995,15 @@ def _chat_serve_budget_footprint(footprint: int) -> int:
     return int(footprint * max(1.0, usable_vram_fraction() / cfg.gpu_memory_fraction))
 
 
+def configured_chat_ctx() -> int:
+    """The chat window the settings ask for: the ``num_ctx`` pin, else the target above a floor."""
+    from lilbee.core.config import cfg
+
+    if cfg.num_ctx is not None:
+        return cfg.num_ctx
+    return max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX)
+
+
 def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
     """Per-slot context the placement estimate sizes a role against.
 
@@ -1013,7 +1022,7 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
             role,
             min(
                 engine_params.chat_ctx_ceiling(meta, model_path),
-                max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX),
+                configured_chat_ctx(),
             ),
         )
     return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))

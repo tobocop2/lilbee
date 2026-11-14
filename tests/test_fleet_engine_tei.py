@@ -28,6 +28,7 @@ from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
@@ -151,23 +152,94 @@ def test_choosing_auto_for_a_role_skips_the_served_roles_check(
     assert engine_service.use_for_role(WorkerRole.CHAT, "org/repo/file.gguf", "auto") == "auto"
 
 
-def test_memory_charges_the_fixed_reserve_whatever_the_file_size(tmp_path: Path) -> None:
-    estimates = []
-    for size in (1_000, 50_000):
-        model = tmp_path / f"model-{size}.bin"
-        model.write_bytes(b"\0" * size)
-        request = MemoryRequest(
-            model_path=model,
-            ctx=512,
-            slots=1,
-            gpu_layers=0,
-            flash_attn=False,
-            kv_cache_type=KvCacheType.F16,
-        )
-        estimates.append(TEI.estimate_memory(request))
-    assert estimates[0] == estimates[1]
-    assert estimates[0].kind is MemoryKind.FIXED_RESERVE
-    assert estimates[0].device_bytes == estimates[0].shared_bytes == 2 * 1024**3
+def _encoder_folder(root: Path, weight_bytes: int, dtype: str | None) -> Path:
+    folder = root / "encoder"
+    folder.mkdir()
+    (folder / "model.safetensors").write_bytes(b"\0" * weight_bytes)
+    config = {"torch_dtype": dtype} if dtype is not None else {}
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return folder
+
+
+def _encoder_request(model_path: Path, ctx: int = 512) -> MemoryRequest:
+    return MemoryRequest(
+        model_path=model_path,
+        ctx=ctx,
+        slots=1,
+        gpu_layers=0,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.F16,
+    )
+
+
+def test_memory_is_the_weights_plus_the_runtime_allowance_on_a_cpu_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    estimate = TEI.estimate_memory(_encoder_request(folder))
+    assert estimate.kind is MemoryKind.FIXED_RESERVE
+    assert estimate.device_bytes == estimate.shared_bytes == 4_000 + ENCODER_RUNTIME_BYTES
+    assert estimate.size_known is True
+
+
+def test_a_cuda_build_holds_float32_weights_as_float16(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
+    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        2_000 + ENCODER_RUNTIME_BYTES
+    )
+
+
+def test_a_cuda_build_leaves_bfloat16_weights_whole(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps(gpu=L4))
+    folder = _encoder_folder(tmp_path, 4_000, "bfloat16")
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        4_000 + ENCODER_RUNTIME_BYTES
+    )
+
+
+def test_a_metal_build_holds_float32_weights_whole(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps("Darwin", "arm64"))
+    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        4_000 + ENCODER_RUNTIME_BYTES
+    )
+
+
+def test_a_host_with_no_build_holds_float32_weights_whole(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps("Windows"))
+    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    assert TEI.estimate_memory(_encoder_request(folder)).device_bytes == (
+        4_000 + ENCODER_RUNTIME_BYTES
+    )
+
+
+def test_a_longer_context_leaves_the_charge_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    folder = _encoder_folder(tmp_path, 4_000, "float32")
+    assert TEI.estimate_memory(_encoder_request(folder, 512)) == TEI.estimate_memory(
+        _encoder_request(folder, 32768)
+    )
+
+
+def test_a_model_with_no_weights_is_the_unknown_size_reserve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    estimate = TEI.estimate_memory(_encoder_request(tmp_path / "absent"))
+    assert estimate.device_bytes == UNKNOWN_SIZE_RESERVE_BYTES
+    assert estimate.size_known is False
 
 
 def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path) -> None:

@@ -173,9 +173,30 @@ def test_chat_and_vision_serve_on_the_cpu_with_the_cpu_build(
             PORT_SLOT,
             subcommand,
             "--cpu",
+            "--max-model-len",
+            "4096",
             "-m",
             str(tmp_path / "model"),
         ]
+
+
+def test_chat_passes_the_planned_context_of_each_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, ctx_per_slot=2048, slots=4))
+    assert argv[argv.index("--max-model-len") + 1] == "2048"
+    assert argv.index("--max-model-len") > argv.index("text")
+
+
+def test_a_gguf_chat_launch_passes_the_context_before_the_file_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=tmp_path / "m.gguf"))
+    assert argv[-6:] == ["--max-model-len", "4096", "-m", str(tmp_path), "-f", "m.gguf"]
 
 
 def test_embed_names_the_embedding_command_after_the_serve_flags(
@@ -185,6 +206,7 @@ def test_embed_names_the_embedding_command_after_the_serve_flags(
     spec = MISTRAL.role_spec(WorkerRole.EMBED, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path))
     assert argv[1:8] == ["serve", "--host", "127.0.0.1", "--port", PORT_SLOT, "embedding", "--cpu"]
+    assert "--max-model-len" not in argv
 
 
 def _split_like_the_swap(command: str) -> list[str]:
@@ -314,10 +336,12 @@ def test_the_memory_estimate_is_a_fixed_reserve_of_the_file_size(tmp_path: Path)
         1000,
         1000,
     )
+    assert estimate.size_known is True
     missing = MISTRAL.estimate_memory(
         MemoryRequest(tmp_path / "gone", 4096, 1, 99, True, cfg.kv_cache_type)
     )
     assert missing.device_bytes == UNKNOWN_SIZE_RESERVE_BYTES
+    assert missing.size_known is False
 
 
 def _no_read() -> list[CardMemory]:

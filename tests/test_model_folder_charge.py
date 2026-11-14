@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,26 @@ def _snapshot(root: Path, size: int) -> Path:
     return folder
 
 
+_CACHE_BYTES_PER_TOKEN = 2 * 2 * 1 * 4 * 2
+"""Two layers, one key-value head of width 4, a key and a value, 2 bytes each."""
+
+
+def _write_cache_config(folder: Path) -> None:
+    """A config.json whose cache is 32 bytes per token."""
+    config = {
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 4,
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+def _charged(weights: int) -> int:
+    """What one slot of `_request` costs: weights, its cache, and the runtime allowance."""
+    return weights + _CACHE_BYTES_PER_TOKEN * 4096 + model_memory.CHAT_RUNTIME_BYTES
+
+
 def _request(path: Path) -> MemoryRequest:
     return MemoryRequest(
         model_path=path,
@@ -100,19 +121,22 @@ def _pin(engine, role: WorkerRole, path: Path, devices: tuple[int, ...], monkeyp
 class TestTheFolderTotal:
     def test_the_adapter_sums_the_shards_of_a_folder(self, tmp_path: Path) -> None:
         folder = _folder(tmp_path, 4 * GIB, 3 * GIB)
+        _write_cache_config(folder)
         estimate = MISTRAL.estimate_memory(_request(folder))
-        assert estimate.device_bytes == 7 * GIB
-        assert estimate.shared_bytes == 7 * GIB
+        assert estimate.device_bytes == _charged(7 * GIB)
+        assert estimate.shared_bytes == _charged(7 * GIB)
         assert estimate.host_bytes == 0
+        assert estimate.size_known is True
 
     def test_the_adapter_follows_the_symlinks_of_a_snapshot(self, tmp_path: Path) -> None:
-        assert MISTRAL.estimate_memory(_request(_snapshot(tmp_path, 3 * GIB))).device_bytes == (
-            3 * GIB
-        )
+        snapshot = _snapshot(tmp_path, 3 * GIB)
+        _write_cache_config(snapshot)
+        assert MISTRAL.estimate_memory(_request(snapshot)).device_bytes == _charged(3 * GIB)
 
     def test_an_empty_folder_is_charged_the_reserve(self, tmp_path: Path) -> None:
         estimate = MISTRAL.estimate_memory(_request(_folder(tmp_path)))
         assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert estimate.size_known is False
 
     def test_a_single_file_is_charged_its_size(self, tmp_path: Path) -> None:
         model = tmp_path / "m.gguf"
@@ -122,6 +146,7 @@ class TestTheFolderTotal:
     def test_a_missing_file_is_charged_the_reserve(self, tmp_path: Path) -> None:
         estimate = MISTRAL.estimate_memory(_request(tmp_path / "gone.gguf"))
         assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert estimate.size_known is False
 
 
 class TestTheFolderWeights:
@@ -257,8 +282,9 @@ def test_a_folder_larger_than_the_hardware_is_not_placeable(tmp_path, monkeypatc
 def test_the_adapter_sums_a_folder_named_like_a_shard(tmp_path: Path) -> None:
     folder = tmp_path / "m-00001-of-00002.gguf"
     _sparse(folder / "model.safetensors", GIB)
+    _write_cache_config(folder)
     estimate = MISTRAL.estimate_memory(_request(folder))
-    assert (estimate.device_bytes, estimate.shared_bytes) == (GIB, GIB)
+    assert (estimate.device_bytes, estimate.shared_bytes) == (_charged(GIB), _charged(GIB))
 
 
 class TestOversizeModelOnSeveralCards:

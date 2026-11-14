@@ -23,7 +23,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, Host
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
+from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.9.5"
@@ -37,8 +37,9 @@ _CPU = "cpu"
 _SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
 # The model subcommand each role names; the device flags go after it.
+_EMBEDDING = "embedding"
 _SUBCOMMAND = {
-    WorkerRole.EMBED: "embedding",
+    WorkerRole.EMBED: _EMBEDDING,
     WorkerRole.VISION: "multimodal",
 }
 _TEXT = "text"
@@ -183,7 +184,11 @@ class MistralAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The serve command; the engine places the model itself, so layers and context stay unset.
+        """The serve command; the engine places the model itself, so layers stay unset.
+
+        Chat and vision pass the planned context as ``--max-model-len``, the figure the
+        memory estimate prices. An embedding model takes none: its context is its
+        tokenizer limit, and no cache grows with it.
 
         A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
         decides the device flags: a CPU build gets ``--cpu``, and
@@ -196,8 +201,11 @@ class MistralAdapter:
         several quantizations is open for slice 8.
         """
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
-        argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
+        subcommand = _SUBCOMMAND.get(spec.role, _TEXT)
+        argv.append(subcommand)
         argv += self._device_flags(request.target)
+        if subcommand != _EMBEDDING:
+            argv += ["--max-model-len", str(request.ctx_per_slot)]
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
@@ -230,11 +238,8 @@ class MistralAdapter:
         try:
             weights = request.model_path.stat().st_size
         except OSError:
-            weights = 0
-        weights = weights if weights > 0 else UNKNOWN_SIZE_RESERVE_BYTES
-        return MemoryEstimate(
-            kind=MemoryKind.FIXED_RESERVE, device_bytes=weights, host_bytes=0, shared_bytes=weights
-        )
+            weights = None
+        return fixed_weights_estimate(weights)
 
     def check_readback(self, binary: Path) -> bool:
         return False

@@ -160,7 +160,7 @@ class MlxAdapter:
         return frozenset({RoleTarget.GPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        """The weights of the model folder, charged as a fixed reserve; the cache is not priced."""
+        """The weights of the model folder plus its cache at the planned context and slots."""
         return estimate_memory(ModelFormat.MLX, request)
 
     def check_readback(self, binary: Path) -> bool:

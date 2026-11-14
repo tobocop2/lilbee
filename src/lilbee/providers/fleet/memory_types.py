@@ -51,6 +51,8 @@ class MemoryEstimate:
     """Discrete-GPU model: bytes on each device."""
     per_device_shared: tuple[int, ...] = ()
     """Unified-memory model: bytes on each device."""
+    size_known: bool = True
+    """False when the figures are a stated reserve because the model's size could not be read."""
 
     def footprint(self, *, unified: bool) -> int:
         """Total bytes to charge against a shared budget for this memory model."""
