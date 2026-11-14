@@ -8,7 +8,7 @@ from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
-from lilbee.providers.fleet.gpu_backends.nvidia import cards as nvidia_cards
+from lilbee.providers.fleet.gpu_backends.nvidia import readable_cards
 from lilbee.providers.fleet.gpu_env import gpu_environ
 
 log = logging.getLogger(__name__)
@@ -231,7 +231,7 @@ def _nvidia_device_totals() -> list[tuple[str, int]] | None:
     ``None`` means no NVIDIA GPU was detectable at all, which is the expected
     outcome on every non-NVIDIA host.
     """
-    return [(card.uuid, card.total_bytes) for card in nvidia_cards()] or None
+    return [(card.uuid, card.total_bytes) for card in readable_cards()] or None
 
 
 def _apply_cuda_visible_mask(devices: list[tuple[str, int]]) -> list[tuple[str, int]]:
