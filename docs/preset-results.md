@@ -19,7 +19,7 @@ The Fixture column names the fixture that backs each pass row and each fail row.
 
 ## Results
 
-The TEI, Lemonade and mistral.rs runs used CPU only, on a Linux host. The MLX server runs used the host class "hosted macos-15, Metal, paravirtual GPU". Each version is the version of the server in the run.
+The TEI, Infinity, Lemonade and mistral.rs runs used CPU only, on a Linux host. The MLX server runs used the host class "hosted macos-15, Metal, paravirtual GPU". Each version is the version of the server in the run.
 
 | Server | Role | Result | Version | Fixture |
 |---|---|---|---|---|
@@ -27,6 +27,11 @@ The TEI, Lemonade and mistral.rs runs used CPU only, on a Linux host. The MLX se
 | TEI | rerank (wire `tei`) | pass | 1.9.4, `cpu-1.9` image, model `BAAI/bge-reranker-base` | `tei-rerank` |
 | TEI | rerank (wire `v1`) | fail: TEI documents no `POST /v1/rerank` route and answers HTTP 404, and lilbee reports "The provider doesn't offer ... on your account" | 1.9.4 | `tei-rerank-v1` |
 | TEI | chat, vision | not supported for this role: TEI documents no route | 1.9.4 |  |
+| Infinity | embed | pass (384 values per vector), started with `--url-prefix /v1`; fail without the prefix: `POST /v1/embeddings` answers HTTP 404 and lilbee reports "The provider doesn't offer ... on your account" | 0.0.80, `torch` engine, CPU, model `BAAI/bge-small-en-v1.5` | `infinity-embed`, `infinity-embed-root` (fail) |
+| Infinity | named | pass for embed: the log line and the status name the preset; fail without `--url-prefix /v1` | 0.0.80, `torch` engine, CPU | `infinity-embed`, `infinity-embed-root` (fail) |
+| Infinity | rerank (wire `v1`) | pass, started with `--url-prefix /v1`; fail without the prefix: `POST /v1/rerank` answers HTTP 404 | 0.0.80, `torch` engine, CPU, model `BAAI/bge-reranker-base` | `infinity-rerank`, `infinity-rerank-root` (fail) |
+| Infinity | named | pass for rerank: the log line and the status name the preset; fail without `--url-prefix /v1` | 0.0.80, `torch` engine, CPU | `infinity-rerank`, `infinity-rerank-root` (fail) |
+| Infinity | chat, vision | not supported for this role: its `openapi.json` lists no chat route | 0.0.80 |  |
 | Lemonade | chat template | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
 | Lemonade | tool call | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
 | Lemonade | context overflow | pass | 2026.44.1, llama.cpp b11393 CPU | `lemonade` |
@@ -70,6 +75,7 @@ The models in the runs:
 | Server | Chat | Embed | Rerank | Vision |
 |---|---|---|---|---|
 | TEI | none | `BAAI/bge-small-en-v1.5` | `BAAI/bge-reranker-base` | none |
+| Infinity | none | `BAAI/bge-small-en-v1.5` | `BAAI/bge-reranker-base` | none |
 | Lemonade | `Qwen3-0.6B-GGUF` | `Qwen3-Embedding-0.6B-GGUF` | `bge-reranker-v2-m3-GGUF` | `Qwen2.5-VL-3B-Instruct-GGUF` |
 | mistral.rs | `Qwen/Qwen3-0.6B` | `Qwen/Qwen3-Embedding-0.6B` | none | `HuggingFaceTB/SmolVLM-256M-Instruct` |
 | mlx-lm | `mlx-community/Qwen3-0.6B-4bit` | none | none | `mlx-community/Qwen3-VL-2B-Instruct-4bit` (fails) |
@@ -84,6 +90,8 @@ The models in the runs:
 **TEI embed limit.** The output check passes for TEI embed. The server answers `encoding_format` values `float` and `base64` with HTTP 200, and the base64 text holds 384 floats. A stock TEI server refuses more than 32 inputs in one request: it answers HTTP 422 with "batch size 33 > maximum allowed batch size 32". lilbee sends at most 32 inputs per embed request to a preset, and joins the vectors in input order, so an ingest never meets this limit. The wire check E8 of the conformance harness still fails on a stock TEI server, because its largest batch holds 33 inputs and the harness sends it straight to the server. Start TEI with `--max-client-batch-size 64` only to make E8 pass.
 
 **TEI rerank wire.** TEI answers `POST /rerank` with `texts`. It answers `POST /v1/rerank` with HTTP 404. lilbee reports this 404 as "The provider doesn't offer ... on your account", which blames the account, not the wire. The fixture `tei-rerank-v1.json` records this failure. Use the `tei` wire for a TEI preset.
+
+**Infinity route prefix.** Infinity 0.0.80 serves `/embeddings` and `/rerank` at the root by default. lilbee calls `/v1/embeddings` and `/v1/rerank`, so both roles answer HTTP 404 `{"detail":"Not Found"}`, and lilbee reports "The provider doesn't offer ... on your account". Start Infinity with `--url-prefix /v1` for a preset. The fixtures `infinity-embed-root.json` and `infinity-rerank-root.json` record the failure, and `infinity-embed.json` and `infinity-rerank.json` record the pass. The rerank answer to the `v1` wire holds `document` as null and sorts the results by score. The runs used the `torch` engine on CPU with both models in one server.
 
 **Lemonade backend install.** In the run, `lemonade backends install llamacpp:cpu` printed a "Download cancelled" error once. The pulls of `Qwen3-0.6B-GGUF` and `Qwen3-Embedding-0.6B-GGUF` also failed with "Could not connect". The server then downloaded both models on first use, and all steps ran.
 
@@ -113,4 +121,4 @@ The fixtures `mlxlm-chat.json`, `vmlx-chat.json` and `vllmmlx-chat.json` hold te
 
 ## Servers not run
 
-GenieX is not verified. FastFlowLM and Infinity are targets for presets, but this check does not cover them.
+GenieX is not verified. FastFlowLM is a target for presets, but this check does not cover it.

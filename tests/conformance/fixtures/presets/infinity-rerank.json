@@ -1,0 +1,58 @@
+{
+ "server": "infinity-rerank",
+ "version": "0.0.80 BAAI/bge-reranker-base torch-cpu",
+ "roles": [
+  "rerank"
+ ],
+ "models": {
+  "rerank": "BAAI/bge-reranker-base"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": true,
+ "results": {
+  "rerank": {
+   "ok": true,
+   "detail": "best=1"
+  },
+  "named": {
+   "ok": true,
+   "detail": "log=['served by engine=infinity-rerank version=preset role=rerank model=infinity-rerank/BAAI/bge-reranker-base'] status={<WorkerRole.RERANK: 'rerank'>: 'infinity-rerank'}"
+  }
+ },
+ "error_answers": [],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"object\":\"rerank\",\"results\":[{\"relevance_score\":0.997886598110199,\"index\":1,\"document\":null},{\"relevance_score\":0.0000373988805222325,\"index\":2,\"document\":null},{\"relevance_score\":0.00003729769014171325,\"index\":0,\"document\":null}],\"model\":\"BAAI/bge-reranker-base\",\"usage\":{\"prompt_tokens\":150,\"total_tokens\":150},\"id\":\"infinity-7ad9589a-890f-48f5-9ee9-eb33b89399a3\",\"created\":1794648624}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/rerank",
+   "request": {
+    "documents": [
+     "Bananas are yellow.",
+     "Paris is the capital of France.",
+     "Dogs bark."
+    ],
+    "model": "BAAI/bge-reranker-base",
+    "query": "What is the capital of France?"
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"object\":\"rerank\",\"results\":[{\"relevance_score\":0.997886598110199,\"index\":1,\"document\":null},{\"relevance_score\":0.0000373988805222325,\"index\":2,\"document\":null},{\"relevance_score\":0.00003729769014171325,\"index\":0,\"document\":null}],\"model\":\"BAAI/bge-reranker-base\",\"usage\":{\"prompt_tokens\":150,\"total_tokens\":150},\"id\":\"infinity-14e66933-afdd-4de7-8654-e97549786967\",\"created\":1794648624}"
+  }
+ ]
+}

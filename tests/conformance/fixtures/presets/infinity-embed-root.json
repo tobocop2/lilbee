@@ -1,0 +1,62 @@
+{
+ "server": "infinity-embed-root",
+ "version": "0.0.80 BAAI/bge-small-en-v1.5 torch-cpu",
+ "roles": [
+  "embed"
+ ],
+ "models": {
+  "embed": "BAAI/bge-small-en-v1.5"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 384,
+ "strict": true,
+ "results": {
+  "embed": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer infinity-embed-root/BAAI/bge-small-en-v1.5 on your account. Pick a different model or check the name."
+  },
+  "named": {
+   "ok": false,
+   "detail": "ProviderError: The provider doesn't offer infinity-embed-root/BAAI/bge-small-en-v1.5 on your account. Pick a different model or check the name."
+  }
+ },
+ "error_answers": [
+  [
+   404,
+   "{\"detail\":\"Not Found\"}"
+  ],
+  [
+   404,
+   "{\"detail\":\"Not Found\"}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/embeddings",
+   "request": {
+    "input": [
+     "alpha",
+     "beta gamma"
+    ],
+    "model": "BAAI/bge-small-en-v1.5"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"Not Found\"}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/embeddings",
+   "request": {
+    "input": [
+     "alpha"
+    ],
+    "model": "BAAI/bge-small-en-v1.5"
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"detail\":\"Not Found\"}"
+  }
+ ]
+}
