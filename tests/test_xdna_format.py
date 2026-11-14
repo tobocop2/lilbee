@@ -75,6 +75,13 @@ class TestTicket:
         with pytest.raises(ValueError, match="no NPU model tag"):
             xdna.read_checkpoint(path)
 
+    @pytest.mark.parametrize("tag", ["../x:1", "qwen3", "qwen3:0.6b --ctx-len 9", ""])
+    def test_a_ticket_with_a_malformed_tag_is_refused(self, tmp_path: Path, tag: str) -> None:
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps({"checkpoint": tag}), encoding="utf-8")
+        with pytest.raises(ValueError, match="no NPU model tag"):
+            xdna.read_checkpoint(path)
+
     def test_a_missing_ticket_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="no NPU model tag"):
             xdna.read_checkpoint(tmp_path / "absent.json")
