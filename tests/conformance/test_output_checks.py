@@ -472,6 +472,19 @@ def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -
     assert fronted.splitlines()[5] == "front: llama-swap v267"
 
 
+def test_a_failed_step_names_the_harness_address_not_its_random_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_setup: Setup) -> preset_check.Outcome:
+        raise ValueError("no route at http://127.0.0.1:54321 or http://127.0.0.1:7")
+
+    monkeypatch.setitem(preset_check._STEP_FUNCTIONS, "embed", refused)
+    results = preset_check.run_steps(Setup(roles=("embed",), models={"embed": "m"}))
+    assert results["embed"] == preset_check.Outcome(
+        False, "ValueError: no route at http://harness or http://harness"
+    )
+
+
 def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
     args = record_presets.build_parser().parse_args(
         [*_ARGS[:-2], "--backend", "cuda", "--out", str(tmp_path / "e.json")]
