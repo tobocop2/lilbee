@@ -180,8 +180,8 @@ class EngineAdapter(Protocol, Hashable):
         """Extra environment variables for a spawned engine process."""
         ...
 
-    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
-        """Environment variables that pin a process to *target*, beyond ``launch_argv`` flags."""
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
+        """Environment variables for a process on *target* with *cards* pinned cards."""
         ...
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...

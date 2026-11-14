@@ -448,8 +448,8 @@ def test_a_cuda_build_runs_a_role_on_the_card_or_the_cpu(monkeypatch: pytest.Mon
 
 
 def test_a_cpu_role_hides_every_card_from_the_cuda_build() -> None:
-    assert TEI.target_env(RoleTarget.CPU) == {"CUDA_VISIBLE_DEVICES": ""}
-    assert TEI.target_env(RoleTarget.GPU) == {}
+    assert TEI.target_env(RoleTarget.CPU, 1) == {"CUDA_VISIBLE_DEVICES": ""}
+    assert TEI.target_env(RoleTarget.GPU, 1) == {}
 
 
 def test_a_cpu_role_charges_the_fixed_reserve_to_system_memory(

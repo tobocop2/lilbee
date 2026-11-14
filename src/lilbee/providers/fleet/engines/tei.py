@@ -248,7 +248,7 @@ class TeiAdapter:
     def runtime_env(self) -> Mapping[str, str]:
         return {}
 
-    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         """A CPU role hides every card: the CUDA build of TEI has no CPU flag."""
         return {_CUDA_VISIBLE_VAR: ""} if target is RoleTarget.CPU else {}
 

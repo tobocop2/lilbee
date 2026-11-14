@@ -437,7 +437,7 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     IK_LLAMA.model_meta(path)
     IK_LLAMA.assert_loadable("repo", "file", None)
     IK_LLAMA.runtime_env()
-    IK_LLAMA.target_env(RoleTarget.CPU)
+    IK_LLAMA.target_env(RoleTarget.CPU, 0)
     IK_LLAMA.estimate_memory(None)  # type: ignore[arg-type]
     IK_LLAMA.check_readback(path)
     IK_LLAMA.supports_fit_target(path)
