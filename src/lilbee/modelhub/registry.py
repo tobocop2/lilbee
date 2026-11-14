@@ -264,6 +264,14 @@ class ModelRegistry:
             return self._resolve_file_set(ref, *non_gguf)
         return self._resolve_gguf(ref)
 
+    def _remove_ticket(self, tag: str) -> bool:
+        """Delete the ticket of the NPU model *tag*; the engine keeps its own download."""
+        ticket = ticket_path(self._root, tag)
+        if not ticket.is_file():
+            return False
+        ticket.unlink()
+        return True
+
     def _resolve_ticket(self, ref: str, tag: str) -> Path:
         """The ticket of the installed NPU model *tag*; ``KeyError`` if not installed."""
         ticket = ticket_path(self._root, tag)
@@ -554,6 +562,9 @@ class ModelRegistry:
         deleted model leaves no orphan bytes behind.
         """
         try:
+            parsed = parse_model_ref(ref)
+            if parsed.format is ModelFormat.XDNA:
+                return self._remove_ticket(parsed.hf_repo)
             hf_repo, gguf_filename, fmt = _ref_key(ref)
         except ValueError:
             return False
