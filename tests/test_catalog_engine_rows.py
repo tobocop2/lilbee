@@ -306,6 +306,21 @@ def test_a_failed_read_gives_no_rows_and_one_warning(
     assert len(router.urls) == 2
 
 
+@pytest.mark.real_hf_client
+@pytest.mark.real_engine_model_lists
+def test_an_offline_browse_warns_once_for_each_source(
+    router: _Router, caplog: pytest.LogCaptureFixture
+) -> None:
+    router.mode = "connect"
+    with caplog.at_level(logging.DEBUG, logger="lilbee.catalog.hf_client"):
+        get_catalog(task=ModelTask.CHAT)
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert [w.split(":")[0] for w in warned] == [
+        "Failed to fetch models from the lemonade model list",
+        "Failed to fetch models from HuggingFace",
+    ]
+
+
 @pytest.mark.real_engine_model_lists
 def test_a_read_that_failed_is_tried_again_and_then_cached(router: _Router) -> None:
     client = get_services().hf_client

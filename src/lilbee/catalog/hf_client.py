@@ -279,9 +279,10 @@ class HfClient:
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
         self._engine_cache: dict[str, tuple[float, list[CatalogModel]]] = {}
-        # -inf, not 0.0: on a freshly booted machine ``time.monotonic()`` can be
-        # smaller than the window, which would push the first failure to DEBUG.
-        self._last_fetch_failure_warn: float = float("-inf")
+        # A source that never warned reads as -inf, not 0.0: on a freshly booted machine
+        # ``time.monotonic()`` can be smaller than the window, which would push the first
+        # failure to DEBUG.
+        self._last_fetch_failure_warn: dict[str, float] = {}
 
     def get_cached_arch(self, ref: str) -> str | None:
         """Return the cached `general.architecture` for *ref*, or None if not cached."""
@@ -442,11 +443,13 @@ class HfClient:
         First failure of each ``FETCH_FAILURE_WARN_INTERVAL_S`` window logs
         at WARNING; repeats within the window log at DEBUG. The interval
         starts from the last WARNING so a flapping network produces one
-        line every five minutes, not one per UI tick.
+        line every five minutes, not one per UI tick. Each source has its
+        own window, so one source's warning never hides another's.
         """
         now = time.monotonic()
-        if now - self._last_fetch_failure_warn >= self.FETCH_FAILURE_WARN_INTERVAL_S:
+        last = self._last_fetch_failure_warn.get(source, float("-inf"))
+        if now - last >= self.FETCH_FAILURE_WARN_INTERVAL_S:
             log.warning("Failed to fetch models from %s: %s", source, exc)
-            self._last_fetch_failure_warn = now
+            self._last_fetch_failure_warn[source] = now
         else:
             log.debug("Suppressed repeat fetch failure from %s: %s", source, exc)
