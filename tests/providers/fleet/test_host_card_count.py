@@ -11,8 +11,10 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import gpu_hardware, planning
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.gpu_backends import nvidia as nvidia_mod
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import CardEngine, Role, engines_for_all_roles, model_file, prepare_host
+from tests._nvidia_smi import prints
 
 GIB = 1 << 30
 C, E = WorkerRole.CHAT, WorkerRole.EMBED
@@ -30,6 +32,10 @@ def _card(index: int, name: str, backend: str = _VULKAN) -> FleetDevice:
     return FleetDevice(backend, index, name, 8 * GIB, 8 * GIB)
 
 
+def _driver_cards(count: int) -> list[nvidia_mod.NvidiaCard]:
+    return [nvidia_mod.NvidiaCard(i, f"GPU-{i}", "n", 8 * GIB, 8 * GIB) for i in range(count)]
+
+
 class _Host:
     """The host's two tables, with a count of how often each was read."""
 
@@ -38,15 +44,15 @@ class _Host:
         self.tree = Counter[int]()
         self.driver_reads = 0
         self.tree_reads = 0
-        monkeypatch.setattr(planning, "card_count", self._driver)
+        monkeypatch.setattr(planning, "nvidia_cards", self._driver)
         monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", self._tree)
 
-    def _driver(self) -> int:
-        """The next scripted answer; the driver fails once the script is spent."""
+    def _driver(self) -> list[nvidia_mod.NvidiaCard]:
+        """The next scripted card count; the driver fails once the script is spent."""
         self.driver_reads += 1
         if not self.driver_answers:
-            return 0
-        return self.driver_answers.pop(0)
+            return []
+        return _driver_cards(self.driver_answers.pop(0))
 
     def _tree(self) -> Counter[int]:
         self.tree_reads += 1
@@ -114,6 +120,24 @@ class TestHostCardsTotal:
         host.driver_answers = [3]
         host.tree = Counter({_NVIDIA_ID: 5})
         assert planning.HostCards([]).nvidia_driver == 3
+
+    @pytest.mark.parametrize(
+        "memory", ["[N/A], [N/A]", "8192, [N/A]"], ids=["total-unread", "free-unread"]
+    )
+    def test_a_card_whose_memory_does_not_read_leaves_the_gate_count_at_zero(
+        self, monkeypatch: pytest.MonkeyPatch, memory: str
+    ) -> None:
+        """The driver's card list is unknown, so the gate falls back as for no answer."""
+        csv = f"0, GPU-a, 8192, 8000, {_NV_NAME}\n1, GPU-b, {memory}, {_NV_NAME}\n"
+        monkeypatch.setattr(nvidia_mod, "run_tool", prints(lambda *_a, **_k: csv))
+        assert planning.HostCards([]).nvidia_driver == 0
+
+    def test_the_gate_counts_every_card_of_a_readable_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        csv = f"0, GPU-a, 8192, 8000, {_NV_NAME}\n1, GPU-b, 8192, 8000, {_NV_NAME}\n"
+        monkeypatch.setattr(nvidia_mod, "run_tool", prints(lambda *_a, **_k: csv))
+        assert planning.HostCards([]).nvidia_driver == 2
 
     def test_each_table_is_read_once_for_the_value(self, host: _Host) -> None:
         host.driver_answers = [2]

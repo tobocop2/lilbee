@@ -25,6 +25,7 @@ from lilbee.providers.model_cache import (
     kv_bytes_per_token,
     total_system_memory,
 )
+from tests._nvidia_smi import prints
 
 
 class TestKvBytesPerToken:
@@ -279,7 +280,7 @@ def _smi_lists(monkeypatch, *totals_mib: int, output: str | None = None) -> None
     rows = "".join(f"{i}, GPU-{i}, {mib}, {mib}, card{i}\n" for i, mib in enumerate(totals_mib))
     text = rows if output is None else output
     monkeypatch.setattr(
-        "lilbee.providers.fleet.gpu_backends.nvidia.run_smi", lambda *_a, **_k: text
+        "lilbee.providers.fleet.gpu_backends.nvidia.run_tool", prints(lambda *_a, **_k: text)
     )
 
 

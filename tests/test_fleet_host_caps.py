@@ -16,6 +16,7 @@ from lilbee.providers.fleet.host_caps import (
     collect,
     detect,
 )
+from tests._nvidia_smi import prints
 
 FIXTURES = Path(__file__).parent / "fixtures" / "host_caps"
 
@@ -141,7 +142,7 @@ class TestDetect:
         assert caps.nvidia_reason == "no NVIDIA driver"
 
     def test_detect_reports_the_gpus_nvidia_smi_lists(self, monkeypatch) -> None:
-        monkeypatch.setattr(nvidia_mod, "run_smi", _smi_prints)
+        monkeypatch.setattr(nvidia_mod, "run_tool", prints(_smi_prints))
         caps = detect()
         assert caps.nvidia_known
         assert [(g.name, g.compute) for g in caps.gpus] == [("Test GPU", (8, 6))]

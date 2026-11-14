@@ -39,7 +39,7 @@ from lilbee.providers.fleet.devices import (
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
-from lilbee.providers.fleet.gpu_backends.nvidia import card_count
+from lilbee.providers.fleet.gpu_backends.nvidia import cards as nvidia_cards
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -3507,8 +3507,8 @@ class HostCards:
 
     @functools.cached_property
     def nvidia_driver(self) -> int:
-        """The NVIDIA driver's own card count, zero when the driver does not answer."""
-        return card_count()
+        """The NVIDIA driver's own card count, zero when its card list does not read."""
+        return len(nvidia_cards())
 
     @functools.cached_property
     def total(self) -> int:
