@@ -550,7 +550,7 @@ def _cuda_host(monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards:
     monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
 
 
-def _gguf_layers(monkeypatch: pytest.MonkeyPatch, meta: dict[str, str] | None) -> None:
+def _gguf_meta(monkeypatch: pytest.MonkeyPatch, meta: dict[str, str] | None) -> None:
     monkeypatch.setattr(mistral_module, "read_gguf_metadata", lambda _path: meta)
 
 
@@ -562,29 +562,11 @@ def _split_argv(
     return MISTRAL.launch_argv(MISTRAL.role_spec(role, None, None), req)
 
 
-def _layer_map(argv: list[str]) -> str:
-    return argv[argv.index("--device-layers") + 1]
+_HEADS = {"head_count": "32", "head_count_kv": "8"}
 
 
-@pytest.mark.parametrize(
-    ("layers", "split", "expected"),
-    [
-        (32, (1, 1), "0:16;1:16"),
-        (33, (1, 1), "0:17;1:16"),
-        (32, (3, 1), "0:24;1:8"),
-        (32, (5, 3, 2), "0:16;1:10;2:6"),
-    ],
-)
-def test_a_gguf_split_gives_each_card_its_share_of_the_layers(
-    layers: int,
-    split: tuple[int, ...],
-    expected: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _cuda_host(monkeypatch, cards=len(split))
-    _gguf_layers(monkeypatch, {"block_count": str(layers)})
-    assert _layer_map(_split_argv(tmp_path, split)) == expected
+def _one_card_argv(tmp_path: Path, role: WorkerRole = WorkerRole.CHAT, **over: Any) -> list[str]:
+    return _split_argv(tmp_path, (1,), role, **over)
 
 
 @pytest.mark.parametrize(
@@ -595,47 +577,111 @@ def test_a_gguf_split_gives_each_card_its_share_of_the_layers(
         (WorkerRole.VISION, "multimodal"),
     ],
 )
-def test_the_layer_map_follows_the_role_subcommand(
-    role: WorkerRole, subcommand: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("split", [(1, 1), (22, 22), (1, 1, 1, 1)])
+def test_an_equal_split_launches_the_one_card_command_for_every_role(
+    role: WorkerRole,
+    subcommand: str,
+    split: tuple[int, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _cuda_host(monkeypatch)
-    _gguf_layers(monkeypatch, {"block_count": "32"})
-    argv = _split_argv(tmp_path, (1, 1), role)
-    assert argv.index("--device-layers") > argv.index(subcommand)
-    assert argv.index("--device-layers") < argv.index("-m")
+    _cuda_host(monkeypatch, cards=len(split))
+    _gguf_meta(monkeypatch, _HEADS)
+    argv = _split_argv(tmp_path, split, role)
+    assert argv == _one_card_argv(tmp_path, role)
+    assert argv[argv.index(subcommand) + 1 :][:2] == ["--paged-attn", "off"]
+    assert "--device-layers" not in argv
+
+
+@pytest.mark.parametrize("split", [(3, 1), (22, 21), (5, 3, 2), (1, 2)])
+def test_an_uneven_split_is_refused_for_the_engine_that_cannot_run_it(
+    split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=len(split))
+    _gguf_meta(monkeypatch, _HEADS)
+    with pytest.raises(
+        ProviderError,
+        match=r"mistral\.rs splits m\.gguf only evenly across cards.*llama\.cpp engine",
+    ):
+        _split_argv(tmp_path, split)
 
 
 def test_one_card_and_the_cpu_target_name_no_layer_map(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_host(monkeypatch)
-    _gguf_layers(monkeypatch, None)
+    _gguf_meta(monkeypatch, None)
     assert "--device-layers" not in _split_argv(tmp_path, (1,))
     assert "--device-layers" not in _split_argv(tmp_path, ())
     spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
-    cpu = request(tmp_path, target=RoleTarget.CPU, tensor_split=(1, 1))
+    cpu = request(tmp_path, target=RoleTarget.CPU, tensor_split=(3, 1))
     assert "--device-layers" not in MISTRAL.launch_argv(spec, cpu)
 
 
 @pytest.mark.parametrize(
-    ("config", "layers"),
+    ("meta", "cards"),
     [
-        ({"num_hidden_layers": 40}, "0:20;1:20"),
-        ({"text_config": {"num_hidden_layers": 28}}, "0:14;1:14"),
-        ({"num_hidden_layers": 10, "text_config": {"num_hidden_layers": 28}}, "0:5;1:5"),
+        ({"head_count": "32", "head_count_kv": "8"}, 4),
+        ({"head_count": "32", "head_count_kv": "2"}, 4),
+        ({"head_count": "16", "head_count_kv": "16"}, 2),
+        ({"head_count": "16"}, 2),
+        ({"head_count": "16", "head_count_kv": "8", "block_count": "many"}, 2),
     ],
 )
-def test_a_safetensors_split_reads_the_layer_count_from_the_config(
-    config: dict[str, Any],
-    layers: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_gguf_whose_heads_divide_over_the_cards_splits(
+    meta: dict[str, str], cards: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=cards)
+    _gguf_meta(monkeypatch, meta)
+    assert _split_argv(tmp_path, (1,) * cards) == _one_card_argv(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("meta", "cards"),
+    [
+        ({"head_count": "32", "head_count_kv": "8"}, 3),
+        ({"head_count": "32", "head_count_kv": "3"}, 2),
+        ({"head_count": "32", "head_count_kv": "5"}, 4),
+        ({"head_count": "30", "head_count_kv": "2"}, 4),
+        ({"head_count": "16", "head_count_kv": "0"}, 2),
+        ({"head_count": "0", "head_count_kv": "0"}, 2),
+        (None, 2),
+        ({}, 2),
+        ({"block_count": "32"}, 2),
+        ({"head_count": "many", "head_count_kv": "8"}, 2),
+    ],
+)
+def test_a_gguf_whose_heads_do_not_divide_over_the_cards_is_refused(
+    meta: dict[str, str] | None, cards: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=cards)
+    _gguf_meta(monkeypatch, meta)
+    with pytest.raises(
+        ProviderError,
+        match=rf"mistral\.rs cannot split m\.gguf across {cards} cards.*heads.*llama\.cpp engine",
+    ):
+        _split_argv(tmp_path, (1,) * cards)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"num_attention_heads": 32, "num_key_value_heads": 8},
+        {"text_config": {"num_attention_heads": 16, "num_key_value_heads": 16}},
+        {"num_attention_heads": 32, "text_config": {"num_attention_heads": 7}},
+        {"num_attention_heads": 8},
+    ],
+)
+def test_a_safetensors_folder_reads_its_heads_from_the_config(
+    config: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_host(monkeypatch)
     folder = tmp_path / "st"
     folder.mkdir()
     (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
-    assert _layer_map(_split_argv(tmp_path, (1, 1), model_path=folder)) == layers
+    assert _split_argv(tmp_path, (1, 1), model_path=folder) == _one_card_argv(
+        tmp_path, model_path=folder
+    )
 
 
 @pytest.mark.parametrize(
@@ -645,13 +691,14 @@ def test_a_safetensors_split_reads_the_layer_count_from_the_config(
         "not json",
         "[1, 2]",
         '{"model_type": "llama"}',
-        '{"num_hidden_layers": "forty"}',
-        '{"num_hidden_layers": true}',
-        '{"num_hidden_layers": 0}',
+        '{"num_attention_heads": "many"}',
+        '{"num_attention_heads": true}',
+        '{"num_attention_heads": 0}',
+        '{"num_attention_heads": 32, "num_key_value_heads": 3}',
         '{"text_config": [1]}',
     ],
 )
-def test_a_folder_without_a_layer_count_is_refused_on_a_split(
+def test_a_folder_whose_heads_cannot_be_read_or_divided_is_refused_on_a_split(
     config: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_host(monkeypatch)
@@ -660,33 +707,11 @@ def test_a_folder_without_a_layer_count_is_refused_on_a_split(
     if config is not None:
         (folder / "config.json").write_text(config, encoding="utf-8")
     with pytest.raises(
-        ProviderError, match=r"mistral\.rs cannot split st_folder across 2 cards.*llama\.cpp engine"
+        ProviderError,
+        match=r"mistral\.rs cannot split st_folder across 2 cards.*heads.*llama\.cpp engine",
     ):
         _split_argv(tmp_path, (1, 1), model_path=folder)
     assert "--device-layers" not in _split_argv(tmp_path, (1,), model_path=folder)
-
-
-@pytest.mark.parametrize("meta", [None, {}, {"block_count": "many"}, {"block_count": "0"}])
-def test_a_gguf_without_a_layer_count_is_refused_on_a_split(
-    meta: dict[str, str] | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _cuda_host(monkeypatch)
-    _gguf_layers(monkeypatch, meta)
-    with pytest.raises(
-        ProviderError, match=r"mistral\.rs cannot split m\.gguf across 2 cards.*llama\.cpp engine"
-    ):
-        _split_argv(tmp_path, (1, 1))
-    assert "--device-layers" not in _split_argv(tmp_path, (1,))
-
-
-@pytest.mark.parametrize("split", [(100, 100, 1), (1, 0), (0, 0)])
-def test_a_split_that_leaves_a_card_empty_is_refused(
-    split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _cuda_host(monkeypatch, cards=len(split))
-    _gguf_layers(monkeypatch, {"block_count": "4"})
-    with pytest.raises(ProviderError, match=r"m\.gguf.*no layer.*llama\.cpp engine"):
-        _split_argv(tmp_path, split)
 
 
 @pytest.mark.parametrize(
@@ -697,33 +722,63 @@ def test_a_build_that_cannot_split_refuses_a_split(
     system: str, cards: int, label: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cuda_host(monkeypatch, system, cards=cards)
-    _gguf_layers(monkeypatch, {"block_count": "32"})
+    _gguf_meta(monkeypatch, _HEADS)
     with pytest.raises(
         ProviderError, match=rf"mistral\.rs cannot split m\.gguf.*{label}.*llama\.cpp engine"
     ):
         _split_argv(tmp_path, (1, 1))
 
 
-def test_a_two_card_launch_pins_the_cards_in_order_and_maps_layers_to_that_order(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _launch_two_cards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    devices: tuple[int, ...],
+    ratio: tuple[int, ...],
+) -> Any:
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x" * 1000)
-    _cuda_host(monkeypatch)
-    _gguf_layers(monkeypatch, {"block_count": "33"})
+    _cuda_host(monkeypatch, cards=len(devices))
+    _gguf_meta(monkeypatch, _HEADS)
     monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: tmp_path / "mistralrs")
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
-    cards = {i: FleetDevice("CUDA", i, f"card{i}", 24 * GIB, 22 * GIB) for i in (0, 1)}
-    plan = InstancePlan(role=WorkerRole.CHAT, devices=(1, 0), tensor_split=(2, 1))
-    launch = planning._launch_for(plan, "ref", cards, engine=MISTRAL)
+    cards = {i: FleetDevice("CUDA", i, f"card{i}", 24 * GIB, 22 * GIB) for i in devices}
+    plan = InstancePlan(role=WorkerRole.CHAT, devices=devices, tensor_split=ratio)
+    return planning._launch_for(plan, "ref", cards, engine=MISTRAL)
+
+
+def test_a_two_card_launch_pins_the_cards_in_order_and_runs_tensor_parallel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch = _launch_two_cards(tmp_path, monkeypatch, (1, 0), (1, 1))
     assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == "1,0"
-    assert launch.env_overrides["MISTRALRS_NO_NCCL"] == "1"
-    assert _layer_map(launch.argv) == "0:22;1:11"
+    assert "MISTRALRS_NO_NCCL" not in launch.env_overrides
+    assert "--device-layers" not in launch.argv
 
 
-def test_the_runtime_env_turns_the_collective_library_off_so_the_map_holds() -> None:
-    assert MISTRAL.runtime_env() == {"MISTRALRS_NO_NCCL": "1"}
+def test_an_uneven_two_card_launch_is_refused_before_any_env_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ProviderError, match=r"mistral\.rs splits m\.gguf only evenly"):
+        _launch_two_cards(tmp_path, monkeypatch, (0, 1), (3, 1))
+
+
+@pytest.mark.parametrize(
+    ("target", "cards", "env"),
+    [
+        (RoleTarget.GPU, 0, {"MISTRALRS_NO_NCCL": "1"}),
+        (RoleTarget.GPU, 1, {"MISTRALRS_NO_NCCL": "1"}),
+        (RoleTarget.GPU, 2, {}),
+        (RoleTarget.GPU, 4, {}),
+        (RoleTarget.CPU, 0, {"MISTRALRS_NO_NCCL": "1"}),
+        (RoleTarget.CPU, 2, {"MISTRALRS_NO_NCCL": "1"}),
+    ],
+)
+def test_the_collective_library_stays_off_unless_the_launch_is_tensor_parallel(
+    target: RoleTarget, cards: int, env: dict[str, str]
+) -> None:
+    assert MISTRAL.target_env(target, cards) == env
+    assert MISTRAL.runtime_env() == {}
 
 
 def _estimate(model: Path, split: tuple[int, ...]) -> Any:
@@ -736,7 +791,7 @@ def test_a_split_estimate_charges_each_card_its_layer_share(
 ) -> None:
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x" * 3200)
-    _gguf_layers(monkeypatch, {"block_count": "32"})
+    _gguf_meta(monkeypatch, {"block_count": "32"})
     estimate = _estimate(model, (3, 1))
     assert estimate.per_device == (2400, 800)
     assert (estimate.kind, estimate.device_bytes) == (MemoryKind.FIXED_RESERVE, 3200)
@@ -756,7 +811,18 @@ def test_an_estimate_without_a_usable_split_has_no_per_card_vector(
 ) -> None:
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x" * 1000)
-    _gguf_layers(monkeypatch, meta)
+    _gguf_meta(monkeypatch, meta)
     assert _estimate(model, (100, 100, 1)).per_device == ()
     assert _estimate(model, (1,)).per_device == ()
     assert _estimate(model, ()).per_device == ()
+    assert _estimate(model, (0, 0)).per_device == ()
+
+
+def test_an_estimate_of_a_folder_without_a_layer_count_has_no_per_card_vector(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "st"
+    folder.mkdir()
+    (folder / "model.safetensors").write_bytes(b"x" * 4000)
+    (folder / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
+    assert _estimate(folder, (1, 1)).per_device == ()

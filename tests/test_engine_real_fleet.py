@@ -80,7 +80,7 @@ class _Gguf(BundledFakeAdapter):
     def runtime_env(self) -> dict[str, str]:
         return {}
 
-    def target_env(self, target):
+    def target_env(self, target, cards):
         return {}
 
     def swap_extras(self, launch: Any) -> dict[str, str]:

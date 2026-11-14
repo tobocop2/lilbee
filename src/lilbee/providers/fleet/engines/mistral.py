@@ -28,15 +28,17 @@ from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, esti
 from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
-# The flag that gives each visible card a count of layers; the engine runs equal
-# tensor-parallel shards instead of that map unless its collective library is off.
-_DEVICE_LAYERS = "--device-layers"
 _MIN_SPLIT_CARDS = 2
+# With two or more visible cards the engine starts tensor parallelism unless this is "1".
 _NO_COLLECTIVE_ENV = "MISTRALRS_NO_NCCL"
 _CONFIG = "config.json"
 _LAYERS_KEY = "num_hidden_layers"
+_HEADS_KEY = "num_attention_heads"
+_KV_HEADS_KEY = "num_key_value_heads"
 _TEXT_CONFIG_KEY = "text_config"
 _GGUF_LAYERS_KEY = "block_count"
+_GGUF_HEADS_KEY = "head_count"
+_GGUF_KV_HEADS_KEY = "head_count_kv"
 _SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
@@ -129,22 +131,55 @@ def _positive_int(value: object) -> int | None:
     return count if count > 0 else None
 
 
+def _config_sections(path: Path) -> list[Mapping[str, Any]]:
+    """The top level and the text section of a model folder's config, as far as they are objects."""
+    try:
+        config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(config, dict):
+        return []
+    return [s for s in (config, config.get(_TEXT_CONFIG_KEY)) if isinstance(s, dict)]
+
+
 def _layer_count(path: Path) -> int | None:
     """The layer count a GGUF file or a model folder declares, or ``None``."""
     if path.suffix.lower() == _GGUF_SUFFIX:
         meta = read_gguf_metadata(path)
         return _positive_int(meta.get(_GGUF_LAYERS_KEY)) if meta else None
-    try:
-        config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(config, dict):
-        return None
-    for section in (config, config.get(_TEXT_CONFIG_KEY)):
-        count = _positive_int(section.get(_LAYERS_KEY)) if isinstance(section, dict) else None
+    for section in _config_sections(path):
+        count = _positive_int(section.get(_LAYERS_KEY))
         if count is not None:
             return count
     return None
+
+
+def _heads_in(section: Mapping[str, Any], heads_key: str, kv_key: str) -> tuple[int, int] | None:
+    """Query and key-value head counts of *section*; an absent key-value count equals the first."""
+    heads = _positive_int(section.get(heads_key))
+    if heads is None:
+        return None
+    kv_heads = section.get(kv_key)
+    return heads, heads if kv_heads is None else (_positive_int(kv_heads) or 0)
+
+
+def _head_counts(path: Path) -> tuple[int, int] | None:
+    """Query and key-value head counts a GGUF file or a model folder declares, or ``None``."""
+    if path.suffix.lower() == _GGUF_SUFFIX:
+        meta = read_gguf_metadata(path)
+        return _heads_in(meta, _GGUF_HEADS_KEY, _GGUF_KV_HEADS_KEY) if meta else None
+    for section in _config_sections(path):
+        counts = _heads_in(section, _HEADS_KEY, _KV_HEADS_KEY)
+        if counts is not None:
+            return counts
+    return None
+
+
+def _heads_divide(heads: int, kv_heads: int, cards: int) -> bool:
+    """Whether the heads shard over *cards*: queries divide, key-value heads divide or repeat."""
+    if heads % cards or kv_heads <= 0:
+        return False
+    return kv_heads % cards == 0 if cards <= kv_heads else cards % kv_heads == 0
 
 
 def _apportion(layers: int, ratio: tuple[int, ...]) -> tuple[int, ...] | None:
@@ -236,7 +271,7 @@ class MistralAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The serve command; context stays unset, and several cards get a layer map.
+        """The serve command; context stays unset, and an equal split over cards adds no flag.
 
         A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
         decides the device flags: a CPU build gets ``--cpu``, and
@@ -251,7 +286,7 @@ class MistralAdapter:
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
         argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
         argv += self._device_flags(request.target)
-        argv += self._split_flags(request)
+        self._check_split(request)
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
@@ -264,11 +299,11 @@ class MistralAdapter:
             return ["--cpu"]
         return ["--paged-attn", "off"]
 
-    def _split_flags(self, request: LaunchRequest) -> list[str]:
-        """The layer map for a split over several cards; it refuses a split it cannot run."""
+    def _check_split(self, request: LaunchRequest) -> None:
+        """Refuse a split over several cards unless the engine can run it as equal shards."""
         ratio = request.tensor_split
         if request.target is RoleTarget.CPU or len(ratio) < _MIN_SPLIT_CARDS:
-            return []
+            return
         from lilbee.catalog.runnable import session_host
 
         name = request.model_path.name
@@ -280,20 +315,18 @@ class MistralAdapter:
                 f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
                 f"{_SPLIT_FIX}"
             )
-        layers = _layer_count(request.model_path)
-        if layers is None:
+        if len(set(ratio)) != 1:
+            raise ProviderError(
+                f"mistral.rs splits {name} only evenly across cards. "
+                f"Use the {EngineName.LLAMA.value} engine for an uneven split."
+            )
+        heads = _head_counts(request.model_path)
+        if heads is None or not _heads_divide(*heads, cards):
             raise ProviderError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
-                f"the model does not list its layer count. {_SPLIT_FIX}"
+                f"the attention heads of the model do not divide over {cards} cards, "
+                f"or the model does not list its heads. {_SPLIT_FIX}"
             )
-        shares = _apportion(layers, ratio)
-        if shares is None:
-            raise ProviderError(
-                f"mistral.rs cannot split {name} across {cards} cards: "
-                "the split leaves a card with no layer. "
-                f"Use the {EngineName.LLAMA.value} engine for this role."
-            )
-        return [_DEVICE_LAYERS, ";".join(f"{card}:{count}" for card, count in enumerate(shares))]
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
@@ -351,10 +384,13 @@ class MistralAdapter:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
-        return {_NO_COLLECTIVE_ENV: "1"}
-
-    def target_env(self, target: RoleTarget) -> Mapping[str, str]:
         return {}
+
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
+        """Tensor parallelism needs the collective library; any other launch turns it off."""
+        if target is not RoleTarget.CPU and cards >= _MIN_SPLIT_CARDS:
+            return {}
+        return {_NO_COLLECTIVE_ENV: "1"}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"useModelName": _SERVED_NAME}

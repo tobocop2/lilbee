@@ -40,7 +40,9 @@ def test_an_adapter_cannot_remove_or_change_an_opt_out(
 ) -> None:
     hostile = {k: "0" for k in OPT_OUT}
     monkeypatch.setattr(type(adapter), "runtime_env", lambda self: hostile, raising=False)
-    monkeypatch.setattr(type(adapter), "target_env", lambda self, target: hostile, raising=False)
+    monkeypatch.setattr(
+        type(adapter), "target_env", lambda self, target, cards: hostile, raising=False
+    )
     env = planning._launch_env(adapter, (), RoleTarget.GPU)
     assert {k: env[k] for k in OPT_OUT} == OPT_OUT
 

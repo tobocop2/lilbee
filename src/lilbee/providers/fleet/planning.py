@@ -1890,7 +1890,7 @@ def _launch_env(
     return {
         **visible_env(chosen),
         **engine.runtime_env(),
-        **engine.target_env(target),
+        **engine.target_env(target, len(chosen)),
         **ENGINE_TELEMETRY_OPT_OUT,
     }
 
