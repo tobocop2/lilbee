@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from lilbee.catalog import hf_client
 from lilbee.catalog.pull_fit import PullFit, chat_pull_fit
+from lilbee.core.config import cfg
+from lilbee.providers.fleet import planning
+from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.model_memory import CHAT_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
+from lilbee.providers.roles import WorkerRole
 
 GIB = 1024**3
 QWEN3_4B = {
@@ -42,11 +50,11 @@ def _hub(
 
 
 class TestChatPullFit:
-    def test_charges_weights_cache_and_runtime_at_the_configured_context(
+    def test_charges_weights_cache_and_runtime_at_the_launch_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls = _hub(monkeypatch, QWEN3_4B, {"BF16": WEIGHTS // 2})
-        fit = chat_pull_fit("org/model", 8192, token="t")
+        fit = chat_pull_fit("org/model", MISTRAL, token="t")
         assert fit == PullFit(
             device_bytes=WEIGHTS + KV_QWEN3_4B * 8192 + CHAT_RUNTIME_BYTES,
             ctx=8192,
@@ -55,45 +63,66 @@ class TestChatPullFit:
         )
         assert sorted(calls) == [("config", "t"), ("counts", "t")]
 
-    def test_the_context_is_capped_by_the_trained_context_of_the_fetched_config(
+    def test_mistral_at_default_settings_says_the_context_its_launch_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """One installed model: the pull verdict and the planner work out the same context."""
+        assert cfg.num_ctx is None
+        assert cfg.chat_n_ctx_target == 16384
+        _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
+        folder = tmp_path / "model"
+        folder.mkdir()
+        (folder / "config.json").write_text(json.dumps(QWEN3_4B), encoding="utf-8")
+        planned = planning._placement_estimate_ctx(
+            WorkerRole.CHAT, folder, MISTRAL.model_meta(folder)
+        )
+        assert chat_pull_fit("org/model", MISTRAL).ctx == planned == 8192
+
+    def test_an_engine_that_reads_the_trained_window_caps_the_context_with_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _hub(monkeypatch, {**QWEN3_4B, "max_position_embeddings": 4096}, {"BF16": 100})
-        fit = chat_pull_fit("org/model", 8192)
+        fit = chat_pull_fit("org/model", MLX)
         assert fit.ctx == 4096
         assert fit.device_bytes == 200 + KV_QWEN3_4B * 4096 + CHAT_RUNTIME_BYTES
+
+    def test_a_window_past_the_target_leaves_the_target(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
+        assert chat_pull_fit("org/model", MLX).ctx == 16384
 
     def test_a_trained_context_in_the_text_section_caps_the_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         text = {**QWEN3_4B, "max_position_embeddings": 2048}
         _hub(monkeypatch, {"text_config": text}, {"BF16": 100})
-        assert chat_pull_fit("org/model", 8192).ctx == 2048
+        assert chat_pull_fit("org/model", MLX).ctx == 2048
 
     @pytest.mark.parametrize("trained", [None, 0, -5, "long", True])
-    def test_a_trained_context_that_is_unusable_leaves_the_context_alone(
+    def test_a_trained_context_that_is_unusable_leaves_the_engine_default(
         self, monkeypatch: pytest.MonkeyPatch, trained: object
     ) -> None:
         _hub(monkeypatch, {**QWEN3_4B, "max_position_embeddings": trained}, {"BF16": 100})
-        assert chat_pull_fit("org/model", 8192).ctx == 8192
+        assert chat_pull_fit("org/model", MLX).ctx == 8192
 
-    def test_a_context_below_the_trained_context_is_kept(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_pinned_context_is_the_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", 2048)
         _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
-        assert chat_pull_fit("org/model", 2048).ctx == 2048
+        assert chat_pull_fit("org/model", MISTRAL).ctx == 2048
 
     def test_each_slot_holds_its_own_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", 1000)
         _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
-        one = chat_pull_fit("org/model", 1000, slots=1)
-        two = chat_pull_fit("org/model", 1000, slots=2)
+        one = chat_pull_fit("org/model", MISTRAL, slots=1)
+        two = chat_pull_fit("org/model", MISTRAL, slots=2)
         assert two.device_bytes - one.device_bytes == KV_QWEN3_4B * 1000
 
     def test_a_sliding_window_makes_the_figure_an_upper_bound(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _hub(monkeypatch, {**QWEN3_4B, "sliding_window": 1024}, {"BF16": 100})
-        assert chat_pull_fit("org/model", 8192).upper_bound is True
+        assert chat_pull_fit("org/model", MISTRAL).upper_bound is True
 
     @pytest.mark.parametrize(
         ("config", "counts"),
@@ -109,7 +138,7 @@ class TestChatPullFit:
         self, monkeypatch: pytest.MonkeyPatch, config: dict | None, counts: dict[str, int]
     ) -> None:
         _hub(monkeypatch, config, counts)
-        fit = chat_pull_fit("org/model", 8192)
+        fit = chat_pull_fit("org/model", MISTRAL)
         assert (fit.device_bytes, fit.size_known, fit.upper_bound) == (
             UNKNOWN_SIZE_RESERVE_BYTES,
             False,
@@ -119,10 +148,7 @@ class TestChatPullFit:
     def test_the_figure_matches_the_estimate_of_the_installed_folder(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        import json
-
         from lilbee.core.config.enums import KvCacheType
-        from lilbee.providers.fleet.engines.mistral import MISTRAL
         from lilbee.providers.fleet.memory_types import MemoryRequest
 
         folder = tmp_path / "model"
@@ -133,7 +159,7 @@ class TestChatPullFit:
         installed = MISTRAL.estimate_memory(
             MemoryRequest(folder, 8192, 1, -1, True, KvCacheType.F16)
         )
-        assert chat_pull_fit("org/model", 8192).device_bytes == installed.device_bytes
+        assert chat_pull_fit("org/model", MISTRAL).device_bytes == installed.device_bytes
 
 
 class TestPullFitText:

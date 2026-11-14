@@ -961,6 +961,14 @@ def _estimate_role(
             expert_offload=_role_expert_offload(path, engine=engine),
         )
     )
+    if not est.size_known:
+        log.warning(
+            "The size of the %s model %s is unknown, so %.1f GiB is reserved for it "
+            "when the models are placed.",
+            role.value,
+            model_ref,
+            est.device_bytes / 1024**3,
+        )
     one_pool = unified_budget is not None or gpu_layers == 0
     fp = est.footprint(unified=one_pool)
     if role is WorkerRole.CHAT and not one_pool and est.kind is MemoryKind.SIZED:
@@ -1013,19 +1021,18 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
     single-card placement) nor the full trained ceiling (which over-reserves). A
     model that cannot hold weights + this floor on one card is tensor-split.
     """
+    if role is WorkerRole.CHAT:
+        return apply_ctx_downshift(role, planned_chat_ctx(model_path, meta))
+    return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))
+
+
+def planned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """The per-slot chat context of a launch: the pin, else the target within the ceiling."""
     from lilbee.core.config import cfg
 
-    if role is WorkerRole.CHAT:
-        if cfg.num_ctx is not None:
-            return _pinned_chat_ctx(model_path, meta)
-        return apply_ctx_downshift(
-            role,
-            min(
-                engine_params.chat_ctx_ceiling(meta, model_path),
-                configured_chat_ctx(),
-            ),
-        )
-    return apply_ctx_downshift(role, _aux_role_ctx(role, model_path, meta))
+    if cfg.num_ctx is not None:
+        return _pinned_chat_ctx(model_path, meta)
+    return min(engine_params.chat_ctx_ceiling(meta, model_path), configured_chat_ctx())
 
 
 def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> int:

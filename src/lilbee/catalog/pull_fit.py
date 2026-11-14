@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from lilbee.catalog import hf_client
 from lilbee.providers.fleet.model_memory import (
@@ -11,10 +14,13 @@ from lilbee.providers.fleet.model_memory import (
     safetensors_chat_estimate,
     weights_from_header,
 )
+from lilbee.providers.fleet.planning import planned_chat_ctx
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.engines.base import EngineAdapter
 
 _GIB = 1024**3
-_CONFIG_TEXT_KEY = "text_config"
-_CONFIG_TRAINED_KEY = "max_position_embeddings"
+_CONFIG_FILE = "config.json"
 
 
 @dataclass(frozen=True)
@@ -36,27 +42,30 @@ class PullFit:
         return f"This model needs {qualifier}{gib:.1f} GiB at a context of {self.ctx} tokens."
 
 
-def _trained_ctx(config: dict[str, Any]) -> int | None:
-    """The context the model was trained for, from its fetched ``config.json``."""
-    section = config.get(_CONFIG_TEXT_KEY)
-    for keys in (section, config):
-        value = keys.get(_CONFIG_TRAINED_KEY) if isinstance(keys, dict) else None
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-    return None
+def _launch_ctx(repo: str, config: dict[str, Any] | None, engine: EngineAdapter) -> int:
+    """The context a launch of *repo* on *engine* is planned at, worked out as the planner does.
+
+    The engine reads the window from the ``config.json`` in a model folder, so the
+    fetched config goes into a scratch folder named for the repo.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        folder = Path(scratch) / repo.rsplit("/", 1)[-1]
+        folder.mkdir()
+        if config is not None:
+            (folder / _CONFIG_FILE).write_text(json.dumps(config), encoding="utf-8")
+        return planned_chat_ctx(folder, engine.model_meta(folder))
 
 
 def chat_pull_fit(
-    repo: str, configured_ctx: int, *, token: str | bool | None = None, slots: int = 1
+    repo: str, engine: EngineAdapter, *, token: str | bool | None = None, slots: int = 1
 ) -> PullFit:
-    """The fit of *repo* as a chat model at *configured_ctx*, capped by its trained context.
+    """The fit of *repo* as a chat model at the context *engine* launches it with.
 
     Reads the Hub twice: one request for the tensor counts and one for ``config.json``.
     A read that fails gives an unknown size, never an error.
     """
     config = hf_client.read_model_config(repo, token=token)
-    trained = _trained_ctx(config) if config is not None else None
-    ctx = configured_ctx if trained is None else min(configured_ctx, trained)
+    ctx = _launch_ctx(repo, config, engine)
     kv = kv_per_token_from_config(config) if config is not None else None
     weights = weights_from_header(hf_client.read_parameter_count(repo, token=token))
     estimate = safetensors_chat_estimate(weights, kv, ctx, slots)

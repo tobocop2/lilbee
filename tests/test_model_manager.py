@@ -800,7 +800,9 @@ class TestModelManagerPull:
         assert entry.featured is False
 
     @staticmethod
-    def _pull_entry(tmp_path: Path, fmt: ModelFormat, task: ModelTask) -> list[object]:
+    def _pull_entry(
+        tmp_path: Path, fmt: ModelFormat, task: ModelTask, *, size_known: bool = True
+    ) -> list[object]:
         """Pull one entry through ``_pull_native``; return the fit and download steps in order."""
         from lilbee.catalog.pull_fit import PullFit
 
@@ -819,9 +821,13 @@ class TestModelManagerPull:
         )
         steps: list[object] = []
 
-        def fit(repo: str, ctx: int, *, token: object = None) -> PullFit:
-            steps.append(("fit", repo, ctx))
-            return PullFit(device_bytes=5 * 1024**3, ctx=ctx, size_known=True, upper_bound=False)
+        engine = mock.Mock()
+
+        def fit(repo: str, picked: object, *, token: object = None) -> PullFit:
+            steps.append(("fit", repo, picked is engine))
+            return PullFit(
+                device_bytes=5 * 1024**3, ctx=8192, size_known=size_known, upper_bound=False
+            )
 
         def download(*_args: object, **_kwargs: object) -> Path:
             steps.append("download")
@@ -832,19 +838,25 @@ class TestModelManagerPull:
             mock.patch("lilbee.catalog.pull_fit.chat_pull_fit", side_effect=fit),
             mock.patch("lilbee.catalog.download_model", side_effect=download),
         ):
-            ModelManager(models_dir, cfg)._pull_native("acme/test-model", mock.Mock())
+            ModelManager(models_dir, cfg)._pull_native("acme/test-model", engine)
         return steps
 
     @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
     def test_a_safetensors_chat_pull_works_out_the_memory_need_before_the_download(
         self, fmt: ModelFormat, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from lilbee.providers.fleet.planning import configured_chat_ctx
-
         with caplog.at_level(logging.INFO, logger="lilbee.modelhub.model_manager.core"):
             steps = self._pull_entry(tmp_path, fmt, ModelTask.CHAT)
-        assert steps == [("fit", "acme/test-model", configured_chat_ctx()), "download"]
+        assert steps == [("fit", "acme/test-model", True), "download"]
         assert "acme/test-model: This model needs 5.0 GiB at a context of" in caplog.text
+        assert [r.levelno for r in caplog.records if "needs 5.0 GiB" in r.message] == [logging.INFO]
+
+    def test_an_unknown_size_reaches_the_user_at_the_default_log_level(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.model_manager.core"):
+            self._pull_entry(tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False)
+        assert "acme/test-model: The size of this model is unknown, so 5.0 GiB" in caplog.text
 
     @pytest.mark.parametrize(
         ("fmt", "task"),

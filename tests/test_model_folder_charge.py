@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -367,3 +368,29 @@ class TestACpuRoleWindow:
 
         monkeypatch.setattr(planning, "total_system_memory", unreadable)
         assert planning._cpu_sizing_budget() == 0
+
+
+class TestAnUnknownSizeInThePlan:
+    def _estimate(self, folder: Path, monkeypatch) -> ModelPlacementInput:
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        return planning._estimate_role(WorkerRole.CHAT, _REF, engine=MISTRAL, slots=1)
+
+    def test_the_plan_says_the_size_is_unknown_and_names_the_reserve(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger=planning.log.name):
+            placed = self._estimate(_folder(tmp_path), monkeypatch)
+        assert placed.est_vram_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert (
+            f"The size of the chat model {_REF} is unknown, so 8.0 GiB is reserved for it"
+            in caplog.text
+        )
+
+    def test_a_known_size_adds_no_warning(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        with caplog.at_level(logging.WARNING, logger=planning.log.name):
+            self._estimate(folder, monkeypatch)
+        assert "is unknown" not in caplog.text
