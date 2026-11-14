@@ -125,10 +125,10 @@ def test_lemonade_health_check_uses_the_recorded_live_route() -> None:
     assert OPENVINO.swap_extras(launch) == {}
 
 
-def test_lemonade_targets_the_cpu_only() -> None:
+def test_lemonade_targets_the_npu_only() -> None:
     from lilbee.providers.roles import RoleTarget
 
-    assert LEMONADE.device_targets(BINARY) == {RoleTarget.CPU}
+    assert LEMONADE.device_targets(BINARY) == {RoleTarget.NPU}
 
 
 def test_openvino_reads_the_model_header_with_the_gguf_parser(
