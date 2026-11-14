@@ -589,7 +589,7 @@ class TestARefusedRoleDoesNotStopTheOthers:
         monkeypatch.setattr(
             planning, "_launch_for", lambda plan, _ref, _by, **_k: SimpleNamespace(role=plan.role)
         )
-        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch: None)
+        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch, _devices: None)
         monkeypatch.setattr(
             planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
         )
@@ -645,7 +645,7 @@ class TestAGoneCardRefusesOnlyItsRole:
         monkeypatch.setattr(
             planning, "_launch_for", lambda plan, _ref, _by, **_k: SimpleNamespace(role=plan.role)
         )
-        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch: None)
+        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda _launch, _devices: None)
         monkeypatch.setattr(
             planning, "_peak_estimator", lambda *_a: lambda _r, ratio: (1,) * len(ratio)
         )

@@ -114,7 +114,7 @@ def test_model_bar_picker_hides_a_format_no_engine_loads() -> None:
     buckets: dict[ModelTask, list] = {task: [] for task in ModelTask}
     with (
         patch.object(ModelRegistry, "list_installed", return_value=manifests),
-        patch.object(model_bar, "_has_vision_sidecar", return_value=False),
+        patch.object(ModelRegistry, "has_vision_projector", return_value=False),
         patch(ENGINES, return_value=LLAMA_ONLY),
     ):
         model_bar._collect_native_models(buckets, set())

@@ -55,6 +55,11 @@ async def test_cancelling_a_pull_during_the_projector_backoff_ends_it_before_the
         "is_installed",
         lambda self, ref, source: True,
     )
+    monkeypatch.setattr(
+        app_models.get_services().model_manager.__class__,
+        "is_registered",
+        lambda self, ref: True,
+    )
     app = _ChatApp()
     async with app.run_test(size=(120, 40)) as pilot:
         chat = await await_chat(app, pilot)

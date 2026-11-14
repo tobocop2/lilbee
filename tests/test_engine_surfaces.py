@@ -728,6 +728,8 @@ def test_every_role_view_shows_why_the_host_refused_an_engine(
             nvidia=None,
         ),
     )
-    cfg.engine_choices = json.dumps({GGUF_REF: "ik_llama.cpp"})
+    choices = json.dumps({GGUF_REF: "ik_llama.cpp"})
+    settings.update_values(cfg.data_root, {"engine_choices": choices})
+    cfg.engine_choices = choices
     for surface, text in _roles_texts().items():
         assert "Xeon lacks AVX2" in " ".join(text.split()), surface

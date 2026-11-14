@@ -850,7 +850,10 @@ class TestProviderCallersAskTheRoleEngine:
             return True
 
         plan = SimpleNamespace(
-            launches=[SimpleNamespace(role=role) for role in (WorkerRole.CHAT, WorkerRole.EMBED)],
+            launches=[
+                SimpleNamespace(role=role, settings={})
+                for role in (WorkerRole.CHAT, WorkerRole.EMBED)
+            ],
             skipped_not_installed={},
             refused_roles={},
         )

@@ -10,7 +10,6 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 from urllib.parse import urlparse
 
-import httpx
 import httpx2
 from pydantic import BaseModel
 
@@ -295,7 +294,7 @@ def download_url(
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
         except OfflineModeIsEnabled as exc:
             raise RuntimeError(f"Downloads are switched off, so {url} was not fetched.") from exc
-        except (httpx.RequestError, OSError) as exc:
+        except (httpx2.RequestError, OSError) as exc:
             raise _TransientDownloadError(f"Transfer failed: {exc}") from None
         return target
 

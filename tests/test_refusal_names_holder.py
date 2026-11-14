@@ -204,6 +204,7 @@ class TestEachSurfaceReadsTheRefusal:
     def saved_refusal(self, tmp_path, monkeypatch) -> None:
         roles = (Role(WorkerRole.EMBED, 6), Role(WorkerRole.CHAT, 4), Role(WorkerRole.RERANK, 1))
         prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
+        monkeypatch.setenv("LILBEE_PLACEMENT", PIN_BOTH_AND_CPU_RERANK)
         monkeypatch.setattr(cfg, "placement", PIN_BOTH_AND_CPU_RERANK)
         engine = CardEngine("engine-a", tmp_path / "engine-server", roles, cards_of((8,)))
         reading = BookReading(adapters=engines_for_all_roles(engine), notices={})

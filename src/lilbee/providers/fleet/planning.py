@@ -3399,7 +3399,8 @@ def _launching_instances(
                 reserved_by_device=reserved,
                 est_vram_bytes=0,
                 engine=engines[inst.role],
-            )
+            ),
+            [],
         )
         is None
     ]

@@ -55,7 +55,9 @@ class _Hub:
         monkeypatch.setattr(dl, "_repo_sibling_files", self._list)
         monkeypatch.setattr(dl, "resolve_filename", lambda entry, engine: _MODEL)
         monkeypatch.setattr(
-            dl, "_shard_is_cached", lambda entry, d, shard, probe: (d / shard).exists()
+            dl,
+            "_cached_shard",
+            lambda entry, d, shard, probe: d / shard if (d / shard).exists() else None,
         )
         monkeypatch.setattr(dl, "_fetch_files", self._fetch_model)
         monkeypatch.setattr(dl, "fetch_remote_file", lambda *a: dl.RemoteFile(size=1, blob="b"))

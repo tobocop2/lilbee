@@ -355,7 +355,9 @@ class TestARoleThatDoesNotLaunchChargesNothing:
     ) -> None:
         roles = (Role(WorkerRole.CHAT, 20), Role(WorkerRole.EMBED, 6))
         engine = _host(monkeypatch, tmp_path, roles, cards_of((24,)), 8, NAMED_CHAT_CPU_EMBED)
-        monkeypatch.setattr(planning, "_unusable_chat_ctx_reason", lambda launch: "below the floor")
+        monkeypatch.setattr(
+            planning, "_unusable_chat_ctx_reason", lambda launch, devices: "below the floor"
+        )
         held = ModelPlacementInput(WorkerRole.CHAT, 20 * GIB, est_ram_bytes=4 * GIB)
         embed = ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=6 * GIB)
         placed = Placement(
@@ -609,7 +611,7 @@ class TestASavedRefusedSpecIsReadable:
     def test_the_cli_shows_the_refusal_of_a_saved_spec(
         self, cpu_host: CardEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cfg, "placement", self.SAVED)
+        monkeypatch.setenv("LILBEE_PLACEMENT", self.SAVED)
         result = CliRunner().invoke(placement_app, ["show"])
         assert result.exit_code == 0
         assert TOO_BIG in " ".join(result.output.split())

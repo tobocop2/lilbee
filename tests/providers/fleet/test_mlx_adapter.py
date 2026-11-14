@@ -368,7 +368,8 @@ def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prom
             "lilbee.providers.fleet.client.LlamaServerClient." + method,
             lambda *a, **k: calls.append("http"),
         )
-    provider._adopt_group(SwapGroup("chat"), swap, [launch])
+    with provider._lock:
+        provider._adopt_group(SwapGroup("chat"), swap, [launch])
     assert provider._chat_ctx == CONTEXT
     monkeypatch.setattr(cfg, "chat_model", "org/repo#mlx")
     prompt = "word " * PROMPT_TOKENS

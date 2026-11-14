@@ -1043,7 +1043,7 @@ class TestEveryEntryPoint:
                 force=False,
                 cancel_event=threading.Event(),
                 rollback=rollback,
-                synced=[],
+                sync_results=[],
             )
 
         assert payload is not None
@@ -1518,7 +1518,7 @@ class TestACancelledJsonAdd:
                 force=False,
                 cancel_event=threading.Event(),
                 rollback=rollback,
-                synced=[],
+                sync_results=[],
             )
         with pytest.raises(SystemExit):
             ingest_sync._exit_cancelled(rollback)
