@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.base import TokenUsage
 from lilbee.providers.local_servers import LocalServerSpec, detect_local_server
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import RerankWire
 
 if TYPE_CHECKING:
@@ -158,8 +159,9 @@ class CompletionRequest:
     to the wire format its SDK expects. ``messages`` is the raw lilbee
     message list (may contain ``images`` bytes); the adapter formats it
     for its SDK. ``api_base`` is populated for local/Ollama deployments
-    and omitted for API-hosted models. ``inline_reasoning`` asks the adapter to
-    re-inline server-extracted reasoning as ``<think>`` text (the chat role).
+    and omitted for API-hosted models. ``role`` is the role the call serves:
+    the adapter names it in an error and re-inlines server-extracted reasoning
+    as ``<think>`` text for the chat role only.
     """
 
     ref: ProviderModelRef
@@ -167,7 +169,7 @@ class CompletionRequest:
     options: dict[str, Any] = field(default_factory=dict)
     api_base: str | None = None
     api_key: str | None = None
-    inline_reasoning: bool = False
+    role: WorkerRole = WorkerRole.CHAT
 
 
 @dataclass(frozen=True)

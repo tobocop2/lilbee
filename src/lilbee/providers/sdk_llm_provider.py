@@ -217,7 +217,7 @@ class SdkLLMProvider(LLMProvider):
             options=translated,
             api_base=_api_base_for(ref, route),
             api_key=_api_key_for(ref, route),
-            inline_reasoning=role is WorkerRole.CHAT,
+            role=role,
         )
         if stream:
             return self._chat_stream(request)
