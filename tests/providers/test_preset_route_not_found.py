@@ -118,6 +118,11 @@ def test_a_preset_404_after_the_first_chunk_names_the_url_and_the_role(
     assert "chat request" in str(err.value)
 
 
+def test_a_preset_call_with_no_base_url_keeps_the_account_message(sdk: fakes.FakeSdk) -> None:
+    with pytest.raises(ProviderError, match=HOSTED):
+        _chat("wired/m", None)(LiterLlmBackend())
+
+
 def test_a_preset_error_of_another_kind_keeps_its_message(sdk: fakes.FakeSdk) -> None:
     sdk.chat_error = sdk.error("AuthenticationError", "no")
     with pytest.raises(ProviderError, match="rejected your API key"):
