@@ -637,6 +637,7 @@ def _compose_visible(indices: list[int], parent_value: str | None) -> str:
 
 def visible_nvidia_cards() -> list[FleetDevice]:
     """The NVIDIA cards a child would see, numbered as CUDA numbers them; starts no process."""
+    # circular: nvidia -> devices via MIB
     from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
     from lilbee.providers.fleet.gpu_env import gpu_environ
 
