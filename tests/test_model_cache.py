@@ -450,6 +450,28 @@ class TestMaskNamesCardsByIndex:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
         assert _try_nvidia_memory(sum) is None
 
+    def test_a_mask_names_the_printed_index_not_the_list_position(self, monkeypatch) -> None:
+        """Cards that print indexes 1 and 2 sit at list positions 0 and 1."""
+        _smi_lists(monkeypatch, output="1, GPU-1, 16384, 16384, c1\n2, GPU-2, 8192, 8192, c2\n")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+        assert _try_nvidia_memory() == 8 * 1024**3
+
+    def test_a_mask_naming_a_card_after_an_unparsed_row_picks_that_card(self, monkeypatch) -> None:
+        _smi_lists(
+            monkeypatch, output="0, GPU-0, 16384, 16384, c0\ngarbage\n2, GPU-2, 8192, 8192, c2\n"
+        )
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+        assert _try_nvidia_memory() == 8 * 1024**3
+
+    @pytest.mark.parametrize("mask", ["1", "0,1", "1,0"])
+    def test_a_mask_naming_a_card_whose_row_does_not_parse_leaves_the_budget_unknown(
+        self, monkeypatch, mask: str
+    ) -> None:
+        """The card that reads never stands in for the one that does not."""
+        _smi_lists(monkeypatch, output="0, GPU-0, 16384, 16384, c0\ngarbage\n")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert _try_nvidia_memory() is None
+
     @pytest.mark.parametrize(
         ("mask", "expected_gib"),
         [("2,1", 24), ("2,9,1", 8), ("1x", None), ("3", None), (" 2 , 1 ", 24)],
@@ -461,6 +483,11 @@ class TestMaskNamesCardsByIndex:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         expected = None if expected_gib is None else expected_gib * 1024**3
         assert _try_nvidia_memory(sum) == expected
+
+    def test_no_mask_ignores_an_unparsed_row(self, monkeypatch) -> None:
+        _smi_lists(monkeypatch, output="0, GPU-0, 16384, 16384, c0\ngarbage\n")
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        assert _try_nvidia_memory(sum) == 16 * 1024**3
 
     def test_no_mask_still_sizes_from_the_cards_that_read(self, monkeypatch) -> None:
         _smi_lists(monkeypatch, output=self._OUTPUT)
