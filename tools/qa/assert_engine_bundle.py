@@ -39,7 +39,8 @@ from pathlib import Path
 
 _RULE = Path(__file__).resolve().parents[2] / "src/lilbee/providers/fleet/wheel_server.py"
 
-_spec = importlib.util.spec_from_file_location("wheel_server", _RULE)
+# The full module name keeps coverage tracing the file when a test loads this script first.
+_spec = importlib.util.spec_from_file_location("lilbee.providers.fleet.wheel_server", _RULE)
 assert _spec and _spec.loader
 wheel_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wheel_server)
