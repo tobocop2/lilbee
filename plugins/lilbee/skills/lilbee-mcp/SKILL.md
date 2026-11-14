@@ -6,8 +6,9 @@ description: Searches the user's local lilbee knowledge base (indexed code, docu
 # lilbee
 
 [lilbee](https://github.com/tobocop2/lilbee) is a local retrieval engine. It indexes the
-user's files into a `.lilbee/` store. Search needs no LLM call, and the data stays on the
-user's machine. Only the text you quote leaves it.
+user's files into a `.lilbee/` store. The data stays on the user's machine. Only the text
+you quote leaves it. Search asks the local chat model for query variants, so it can be slow
+while that model is busy.
 
 ## When to use it
 
