@@ -68,6 +68,8 @@ class ModelPlacementInput:
     replicas: int = 1
     est_ram_bytes: int = 0
     kind: MemoryKind = MemoryKind.SIZED
+    size_known: bool = True
+    """False when the figures are the unknown-size reserve, not a measured size."""
 
 
 @dataclass(frozen=True)

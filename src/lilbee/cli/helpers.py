@@ -68,8 +68,9 @@ def announce_ready(err: PlainConsole | None, role: object) -> None:
 
     A token arriving is not evidence the chat model came up: in RAG mode a grounded
     refusal streams without it. When warm-up recorded a load failure, that reason is
-    printed instead of a readiness line.
+    printed instead of a readiness line. A model of unknown size is named after it.
     """
+    from lilbee.app.placement import size_unknown_notices
     from lilbee.providers.roles import WorkerRole
 
     if err is None or not isinstance(role, WorkerRole):
@@ -79,6 +80,8 @@ def announce_ready(err: PlainConsole | None, role: object) -> None:
         err.print(failure, style=theme.ERROR, soft_wrap=True)
         return
     err.print(f"{role.value} engine ready.", style=theme.MUTED)
+    for notice in size_unknown_notices(role):
+        err.print(notice, style=theme.WARNING, soft_wrap=True)
 
 
 def announce_retrieval_query(query: str) -> None:

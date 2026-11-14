@@ -386,6 +386,41 @@ class TestAnUnknownSizeInThePlan:
             in caplog.text
         )
 
+    def test_the_input_records_that_the_size_is_unknown(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._estimate(_folder(tmp_path), monkeypatch).size_known is False
+
+    def test_the_input_records_a_known_size(self, tmp_path: Path, monkeypatch) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        assert self._estimate(folder, monkeypatch).size_known is True
+
+    def _resolved(self, folder: Path, monkeypatch):
+        from lilbee.providers.fleet.devices import FleetDevice
+        from lilbee.providers.roles import EngineBackend
+
+        card = FleetDevice(
+            backend="CUDA", index=0, name="card", total_bytes=24 * GIB, free_bytes=24 * GIB
+        )
+        reading = planning.DeviceReading(devices=[card], backend=EngineBackend.CUDA)
+        monkeypatch.setattr(cfg, "chat_model", _REF)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref, registry=None: folder)
+        monkeypatch.setattr(planning._read_device_cache, "get", lambda _binary, _engine: reading)
+        monkeypatch.setattr(MISTRAL, "binary", lambda: Path("/nonexistent/mistralrs"))
+        return planning.resolve_placement_plan(None, engines={WorkerRole.CHAT: MISTRAL})
+
+    def test_the_resolved_placement_lists_the_role_of_unknown_size(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        resolved = self._resolved(_folder(tmp_path), monkeypatch)
+        assert resolved.size_unknown_roles == (WorkerRole.CHAT,)
+
+    def test_the_resolved_placement_lists_no_role_of_known_size(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        assert self._resolved(folder, monkeypatch).size_unknown_roles == ()
+
     def test_a_known_size_adds_no_warning(
         self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -198,6 +198,30 @@ async def test_a_role_with_no_engine_shows_its_notice(monkeypatch, size):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(140, 44), (80, 30)])
+async def test_a_model_of_unknown_size_shows_its_notice(monkeypatch, size):
+    """A role placed on the unknown-size reserve says so in the fleet note, once."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import SizeUnknownRole
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    notice = "The size of the chat model org/m is unknown, so 8.0 GiB is reserved for it."
+    view = replace(_make_view(), size_unknown=(SizeUnknownRole(WorkerRole.CHAT, "org/m", notice),))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        assert str(note.render()) == notice
+
+
+@pytest.mark.asyncio
 async def test_no_skipped_note_when_all_models_installed(monkeypatch):
     """With every configured model installed the note stays hidden."""
     from textual.widgets import Static

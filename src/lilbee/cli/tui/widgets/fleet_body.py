@@ -344,6 +344,7 @@ class FleetBody(Widget):
             msg.FLEET_ROLE_WITHOUT_ENGINE.format(role=skipped.role.value, notice=skipped.notice)
             for skipped in view.skipped_no_engine
         )
+        lines.extend(unknown.notice for unknown in view.size_unknown)
         if view.refusal:
             lines.append(view.refusal)
         if view.hidden_note:
