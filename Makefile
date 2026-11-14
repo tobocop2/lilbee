@@ -1,4 +1,4 @@
-.PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration test-presets imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py tools/record_profile_responses.py hatch_build.py
@@ -66,10 +66,15 @@ imports-check:
 test-integration:
 	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py -v
 
+# The preset replay needs the client library, so the plain test job cannot collect it.
+# It is offline and takes about a minute, so the local gate runs it by name.
+test-presets:
+	uv run pytest tests/integration/test_preset_fixtures.py -v $(XDIST)
+
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke
 
-check: lint license-check format-check typecheck test test-shell  ## Run all checks (same as CI)
+check: lint license-check format-check typecheck test test-presets test-shell  ## Run all checks (same as CI)
 
 install:
 	uv tool install ".[crawler]" --force --reinstall --compile-bytecode
