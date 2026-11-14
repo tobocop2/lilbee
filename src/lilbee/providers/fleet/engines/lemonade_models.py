@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -27,9 +28,9 @@ _DESCRIPTION_LIMIT = 120
 
 
 def _number(value: Any) -> bool:
-    """True for a real number; a bool is not one."""
+    """True for a finite number; a bool, ``NaN`` and infinity are not one."""
     # isinstance: the value is untyped JSON from the network
-    return isinstance(value, int | float) and not isinstance(value, bool)
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _on_xdna2(entry: Mapping[str, Any]) -> bool:
@@ -64,7 +65,7 @@ def _row(ref: str, entry: Mapping[str, Any]) -> CatalogModel:
     # isinstance: the name is untyped JSON from the network
     if not (isinstance(name, str) and name and _number(size) and size > 0 and _number(context)):
         raise ValueError("bad name, size or context")
-    if footprint is not None and not _number(footprint):
+    if footprint is not None and not (_number(footprint) and footprint > 0):
         raise ValueError("bad footprint")
     size_gb = round(size / _BYTES_PER_GIB, 1)
     is_embedding = _LABEL_EMBEDDINGS in (entry.get("label") or [])
