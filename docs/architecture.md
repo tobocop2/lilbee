@@ -897,7 +897,10 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
 - **A mistral.rs role on several cards**: the launch runs as equal tensor-parallel
   shards and carries no layer flag. The card order is the order of
   `CUDA_VISIBLE_DEVICES`. A launch that is not a split sets `MISTRALRS_NO_NCCL=1`: one
-  card, no card pinned, or the CPU target. The engine drops a layer map when
+  card, no card pinned, or the CPU target. A split sets `NCCL_P2P_LEVEL=NVL`, so
+  peer-to-peer runs only over NVLink and a PCIe pair does not stall at start. To
+  choose otherwise, set `NCCL_P2P_LEVEL` or `NCCL_P2P_DISABLE` in the environment;
+  the launch then adds neither. The engine drops a layer map when
   collectives are on, and the map it keeps with collectives off answered wrongly on
   two cards. So the launch refuses an uneven ratio (every entry must be the same
   number) and a model whose attention heads do not divide over the card count (the

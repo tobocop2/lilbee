@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -31,6 +32,11 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 _MIN_SPLIT_CARDS = 2
 # With two or more visible cards the engine starts tensor parallelism unless this is "1".
 _NO_COLLECTIVE_ENV = "MISTRALRS_NO_NCCL"
+# A split uses peer-to-peer only over NVLink; a PCIe pair in a VM can stall without this.
+_P2P_LEVEL_ENV = "NCCL_P2P_LEVEL"
+_P2P_NVLINK_ONLY = "NVL"
+# A user who sets either variable keeps their choice.
+_P2P_USER_ENV = (_P2P_LEVEL_ENV, "NCCL_P2P_DISABLE")
 _CONFIG = "config.json"
 _LAYERS_KEY = "num_hidden_layers"
 _HEADS_KEY = "num_attention_heads"
@@ -394,7 +400,9 @@ class MistralAdapter:
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         """Tensor parallelism needs the collective library; any other launch turns it off."""
         if target is not RoleTarget.CPU and cards >= _MIN_SPLIT_CARDS:
-            return {}
+            if any(name in os.environ for name in _P2P_USER_ENV):
+                return {}
+            return {_P2P_LEVEL_ENV: _P2P_NVLINK_ONLY}
         return {_NO_COLLECTIVE_ENV: "1"}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:

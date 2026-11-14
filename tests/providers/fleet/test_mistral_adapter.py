@@ -811,10 +811,59 @@ def _launch_two_cards(
 def test_a_two_card_launch_pins_the_cards_in_order_and_runs_tensor_parallel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
+    monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
     launch = _launch_two_cards(tmp_path, monkeypatch, (1, 0), (1, 1))
     assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == "1,0"
+    assert launch.env_overrides["NCCL_P2P_LEVEL"] == "NVL"
     assert "MISTRALRS_NO_NCCL" not in launch.env_overrides
     assert "--device-layers" not in launch.argv
+    assert "NCCL" not in " ".join(launch.argv)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("NCCL_P2P_LEVEL", "PHB"),
+        ("NCCL_P2P_LEVEL", ""),
+        ("NCCL_P2P_DISABLE", "1"),
+        ("NCCL_P2P_DISABLE", "0"),
+    ],
+)
+def test_a_user_p2p_variable_keeps_the_launch_from_adding_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
+    monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
+    monkeypatch.setenv(name, value)
+    launch = _launch_two_cards(tmp_path, monkeypatch, (0, 1), (1, 1))
+    assert "NCCL_P2P_LEVEL" not in launch.env_overrides
+    assert "NCCL_P2P_DISABLE" not in launch.env_overrides
+    assert "MISTRALRS_NO_NCCL" not in launch.env_overrides
+    assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == "0,1"
+
+
+def test_other_nccl_variables_are_not_a_p2p_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
+    monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
+    monkeypatch.setenv("NCCL_DEBUG", "INFO")
+    monkeypatch.setenv("NCCL_SOCKET_IFNAME", "eth0")
+    launch = _launch_two_cards(tmp_path, monkeypatch, (0, 1), (1, 1))
+    assert launch.env_overrides["NCCL_P2P_LEVEL"] == "NVL"
+
+
+@pytest.mark.parametrize("cards", [2, 4])
+def test_a_tensor_parallel_launch_env_carries_the_p2p_level(
+    monkeypatch: pytest.MonkeyPatch, cards: int
+) -> None:
+    monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
+    monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
+    chosen = tuple(FleetDevice("CUDA", i, f"card{i}", 24 * GIB, 22 * GIB) for i in range(cards))
+    env = planning._launch_env(MISTRAL, chosen, RoleTarget.GPU)
+    assert env["NCCL_P2P_LEVEL"] == "NVL"
+    assert "MISTRALRS_NO_NCCL" not in env
 
 
 def test_an_uneven_two_card_launch_is_refused_before_any_env_is_built(
@@ -829,15 +878,17 @@ def test_an_uneven_two_card_launch_is_refused_before_any_env_is_built(
     [
         (RoleTarget.GPU, 0, {"MISTRALRS_NO_NCCL": "1"}),
         (RoleTarget.GPU, 1, {"MISTRALRS_NO_NCCL": "1"}),
-        (RoleTarget.GPU, 2, {}),
-        (RoleTarget.GPU, 4, {}),
+        (RoleTarget.GPU, 2, {"NCCL_P2P_LEVEL": "NVL"}),
+        (RoleTarget.GPU, 4, {"NCCL_P2P_LEVEL": "NVL"}),
         (RoleTarget.CPU, 0, {"MISTRALRS_NO_NCCL": "1"}),
         (RoleTarget.CPU, 2, {"MISTRALRS_NO_NCCL": "1"}),
     ],
 )
 def test_the_collective_library_stays_off_unless_the_launch_is_tensor_parallel(
-    target: RoleTarget, cards: int, env: dict[str, str]
+    monkeypatch: pytest.MonkeyPatch, target: RoleTarget, cards: int, env: dict[str, str]
 ) -> None:
+    monkeypatch.delenv("NCCL_P2P_LEVEL", raising=False)
+    monkeypatch.delenv("NCCL_P2P_DISABLE", raising=False)
     assert MISTRAL.target_env(target, cards) == env
     assert MISTRAL.runtime_env() == {}
 
