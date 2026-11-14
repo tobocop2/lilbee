@@ -239,6 +239,8 @@ def test_an_unavailable_engine_lists_no_rows(
 
 
 class _Router:
+    """Serves the pinned list; ``"500json"`` is a server error whose body is a valid list."""
+
     def __init__(self, mode: str = "ok") -> None:
         self.mode = mode
         self.urls: list[str] = []
@@ -250,6 +252,8 @@ class _Router:
             raise httpx.ConnectError("offline", request=request)
         if self.mode == "500":
             return httpx.Response(500, text="oops", request=request)
+        if self.mode == "500json":
+            return httpx.Response(500, json=PINNED, request=request)
         if self.mode == "badjson":
             return httpx.Response(200, text="{not json", request=request)
         if self.mode == "list":
@@ -291,7 +295,7 @@ def test_a_cached_list_expires(monkeypatch: pytest.MonkeyPatch, router: _Router)
 
 
 @pytest.mark.real_engine_model_lists
-@pytest.mark.parametrize("mode", ["500", "connect", "badjson", "list"])
+@pytest.mark.parametrize("mode", ["500", "500json", "connect", "badjson", "list"])
 def test_a_failed_read_gives_no_rows_and_one_warning(
     router: _Router, mode: str, caplog: pytest.LogCaptureFixture
 ) -> None:
