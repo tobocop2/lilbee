@@ -822,6 +822,13 @@ def test_a_model_engine_that_is_not_installed_is_refused_with_the_same_text(
     assert _stored("engine_choices") is None
 
 
+def test_the_cli_prints_a_plain_line_for_a_model_write() -> None:
+    result = CliRunner().invoke(cli_app, ["engine", "use-model", MLX_REF, "mlx"])
+    assert result.exit_code == 0
+    assert f"Model {MLX_REF} uses engine mlx." in " ".join(result.stdout.split())
+    assert json.loads(str(_stored("engine_choices"))) == {MLX_REF: "mlx"}
+
+
 def test_the_role_path_stores_through_the_same_write(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[tuple[str, str]] = []
     real = engine_service.use
