@@ -636,11 +636,11 @@ MCP. The shape mirrors the MCP tools: one JSON object per stdout line, errors
 return non-zero exit with `{"error": "..."}`, and `distance` scores are
 lower-is-more-relevant. Vectors are stripped from output.
 
-**Read (inline, no LLM):**
+**Read (inline):**
 
 ```bash
 lilbee --json status                           # indexed sources, models, totals
-lilbee --json search "query" --top-k 12        # cited chunks (no LLM at query time)
+lilbee --json search "query" --top-k 12        # cited chunks (may ask the chat model for query variants)
 lilbee --json chunks manual.pdf                # inspect how one source was chunked
 lilbee --json topics "auth"                    # concept-graph view of a query
 lilbee --json model list                       # installed models
