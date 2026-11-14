@@ -72,15 +72,10 @@ def _browse(monkeypatch: pytest.MonkeyPatch, host: host_caps.HostCaps) -> None:
 
 
 async def _search_chat_tab(pilot: Pilot[None], screen: CatalogScreen, text: str) -> None:
-    """Type *text* into the filter of the Chat tab, the tab the catalog opens on.
-
-    The first loads remount the grids and leave focus on a grid that is gone, and a key
-    sent to a removed widget is dropped. Wait for the loads to end, then open the filter
-    through the screen action, so the focus moves to the input before any key is typed.
-    """
+    """Open the filter of the Chat tab with "/" after the first loads, and type *text*."""
     await pilot.app.workers.wait_for_complete()
     assert screen._active_tab_id() == TAB_CHAT
-    screen.action_focus_search()
+    await pilot.press("slash")
     typing = await wait_until(pilot, lambda: screen._filter_open and screen._search_focused)
     assert typing, "the filter input never took focus"
     for char in text:
