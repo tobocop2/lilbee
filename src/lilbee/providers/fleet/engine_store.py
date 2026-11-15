@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import logging
@@ -115,15 +116,17 @@ NOTICE_RULES: Mapping[str, NoticeRule] = {
     "MPL-2.0": NoticeRule("SOURCE-MPL-2.0", _mpl_pointer),
 }
 
-# A licence file, by its file name, that is a GPL, AGPL or LGPL text.
-_COPYLEFT_NAME = re.compile(r"(?i)(?<![a-z])(?:[al]?gpl|lesser|affero)(?![a-z])")
-_COPYLEFT_TITLE = re.compile(r"GNU (?:AFFERO |LESSER |LIBRARY )?GENERAL PUBLIC LICENSE")
-_LICENCE_FILE = re.compile(r"(?i)(?:copying|licen[cs]e|notice|copyright|unlicense)(?![a-z])")
-# Shared libraries whose source licence is LGPL or GPL, as a bundled library name.
+# A GPL, AGPL or LGPL text, by its file name or by its title line (case and spacing ignored).
+# The title needs "version" right after it, so a notice that only names the licence passes.
+_COPYLEFT_NAME = re.compile(r"(?i)(?<![a-z])(?:[al]?gpl|lesser|affero)")
+_COPYLEFT_TITLE = re.compile(r"gnu (?:(?:affero|lesser|library) )?general public license version")
+_LICENCE_FILE = re.compile(r"(?i)licen[cs]e|copying|notice|gpl|copyright")
+# Libraries whose source licence is LGPL or GPL, as a bundled library name.
 _COPYLEFT_LIBRARIES = re.compile(
-    r"(?i)(?:lib)?(?P<name>quadmath|gmp|gmpxx|mpfr|readline)(?:[-.][\w.-]*)?"
+    r"(?i)(?:lib)?(?P<name>quadmath|gmp|gmpxx|mpfr|readline|history)(?:[-.][\w.-]*)?"
 )
 _LIBRARY_SUFFIXES = (".so", ".dylib", ".dll")
+_STATIC_ARCHIVE_SUFFIX = ".a"
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
@@ -315,7 +318,7 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         _refuse_copyleft_files(
             lock,
             (
-                (info.filename, partial(_read_entry, archive, info))
+                (info.filename, partial(archive.read, info))
                 for info in archive.infolist()
                 if not info.is_dir()
             ),
@@ -338,17 +341,27 @@ def _refuse_repeated_notices(lock: PinLock, entries: list[str]) -> None:
         )
 
 
-def _is_copyleft_file(name: str, read: Callable[[], str]) -> bool:
+def _licence_text(data: bytes) -> str:
+    """Decode a file for the title test: UTF-16 when it has a byte order mark, else UTF-8."""
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8", errors="replace")
+
+
+def _is_copyleft_file(name: str, read: Callable[[], bytes]) -> bool:
     """True when the file *name* is a GPL, AGPL or LGPL licence, or a library under one."""
     base = PurePosixPath(name).name
     if _COPYLEFT_LIBRARIES.fullmatch(base):
-        return any(suffix in base.lower() for suffix in _LIBRARY_SUFFIXES)
-    if not (_LICENCE_FILE.match(base) or "/licenses/" in f"/{name}"):
+        lower = base.lower()
+        return lower.endswith(_STATIC_ARCHIVE_SUFFIX) or any(s in lower for s in _LIBRARY_SUFFIXES)
+    if not (_LICENCE_FILE.search(base) or "/licenses/" in f"/{name}"):
         return False
-    return bool(_COPYLEFT_NAME.search(base) or _COPYLEFT_TITLE.search(read()))
+    if _COPYLEFT_NAME.search(base):
+        return True
+    return bool(_COPYLEFT_TITLE.search(" ".join(_licence_text(read()).split()).casefold()))
 
 
-def _refuse_copyleft_files(lock: PinLock, files: Iterable[tuple[str, Callable[[], str]]]) -> None:
+def _refuse_copyleft_files(lock: PinLock, files: Iterable[tuple[str, Callable[[], bytes]]]) -> None:
     """Refuse a build that carries a GPL, AGPL or LGPL file, whatever its METADATA declares."""
     for name, read in files:
         if _is_copyleft_file(name, read):
@@ -393,10 +406,7 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
     _refuse_copyleft_files(
         lock,
         (
-            (
-                path.relative_to(stage).as_posix(),
-                partial(path.read_text, encoding="utf-8", errors="replace"),
-            )
+            (path.relative_to(stage).as_posix(), path.read_bytes)
             for path in sorted(stage.rglob("*"))
             if path.is_file()
         ),
