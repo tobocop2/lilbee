@@ -70,6 +70,18 @@ class TestEngineTokenizerBudget:
         assert cfg.rag_system_prompt in text
         assert text.count("marker chunk") == 3
 
+    def test_counted_text_holds_every_history_message(self, _services):
+        _services.provider.count_chat_text_tokens.side_effect = len
+        history = [
+            {"role": "user", "content": "earlier question about marigolds"},
+            {"role": "assistant", "content": "earlier answer about marigolds"},
+        ]
+        results = [_make_result(source="0.pdf", chunk="marker chunk", chunk_index=0)]
+        get_services().searcher._finalize_context(results, "what is in them?", history)
+        (text,) = _services.provider.count_chat_text_tokens.call_args.args
+        assert "earlier question about marigolds" in text
+        assert "earlier answer about marigolds" in text
+
     def test_neighbor_widening_spends_the_engine_measured_leftover(self, _services):
         """Widening stops where the engine's count says the window is full."""
         cfg.neighbor_expansion = 3
