@@ -395,6 +395,23 @@ def scrub_home(text: str) -> str:
     return _HOME_DIR.sub(HOME_TOKEN, text)
 
 
+HOST_TOKEN = "<host>"
+
+
+def scrub_host(text: str, hostname: str) -> str:
+    """The text with the hostname and its short form replaced by the host token."""
+    names = {hostname, hostname.split(".")[0]} - {""}
+    if not names:
+        return text
+    pattern = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.sub(rf"(?<![\w-])(?:{pattern})(?![\w-])", HOST_TOKEN, text, flags=re.IGNORECASE)
+
+
+def scrub_recording(text: str, hostname: str) -> str:
+    """The text with each home directory and the hostname replaced by their tokens."""
+    return scrub_host(scrub_home(text), hostname)
+
+
 def _origin(url: str) -> tuple[str, str]:
     parts = urllib.parse.urlsplit(url)
     return parts.scheme, parts.netloc

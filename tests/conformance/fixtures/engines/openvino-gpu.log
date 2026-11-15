@@ -1,4 +1,4 @@
-source: machine: thinkpad (nuclearwork), Intel i7-10750H, UHD 630 iGPU, GTX 1650 Ti, no NPU; OS: Manjaro Linux kernel 5.10.205; recorded 2026-11-03; llama.cpp release b12020 ubuntu-openvino-2026.4.1-x64; GGML_OPENVINO_DEVICE=GPU
+source: machine: thinkpad (<host>), Intel i7-10750H, UHD 630 iGPU, GTX 1650 Ti, no NPU; OS: Manjaro Linux kernel 5.10.205; recorded 2026-11-03; llama.cpp release b12020 ubuntu-openvino-2026.4.1-x64; GGML_OPENVINO_DEVICE=GPU
 engine: openvino-gpu
 version: llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1
 --- llama-server --list-devices

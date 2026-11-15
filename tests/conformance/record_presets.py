@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import platform
+import socket
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from tests.conformance.preset_check import (
     fixture_json,
     recording,
     run_steps,
-    scrub_home,
+    scrub_recording,
 )
 
 
@@ -91,10 +92,11 @@ def run_log(args: argparse.Namespace, results: dict[str, Outcome]) -> str:
 
 
 def write_recording(out: Path, doc: dict[str, Any], log: str) -> str:
-    """Write the recording and its log with each home directory scrubbed; return the log text."""
+    """Write the recording and its log with each home directory and the hostname scrubbed."""
+    hostname = socket.gethostname()
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(scrub_home(json.dumps(doc, indent=1)) + "\n", encoding="utf-8")
-    log = scrub_home(log)
+    out.write_text(scrub_recording(json.dumps(doc, indent=1), hostname) + "\n", encoding="utf-8")
+    log = scrub_recording(log, hostname)
     out.with_suffix(".log").write_text(log, encoding="utf-8")
     return log
 
