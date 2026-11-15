@@ -1,4 +1,4 @@
-"""Public API for reading model architecture metadata from GGUF files."""
+"""Public API for reading model architecture metadata for the configured models."""
 
 from __future__ import annotations
 
@@ -59,16 +59,18 @@ def get_model_architecture() -> ModelArchInfo:
 
 
 def _read_chat_arch(info: ModelArchInfo) -> ModelArchInfo:
-    """Read chat model architecture from GGUF metadata."""
+    """Read the chat model architecture and its engine through the chat engine."""
     try:
+        from lilbee.app.engine_choice import resolve_engines
         from lilbee.providers.engine_params import resolve_model_path
-        from lilbee.providers.gguf_meta import read_gguf_metadata
+        from lilbee.providers.roles import WorkerRole
 
         path = resolve_model_path(cfg.chat_model)
-        meta = read_gguf_metadata(path)
+        engine = resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
+        info.active_handler = engine.request_profile(WorkerRole.CHAT).label
+        meta = engine.model_meta(path)
         if meta:
             info.chat_arch = meta.get("architecture", "unknown")
-            info.active_handler = "llama-server"
     except Exception:
         log.debug("Failed to read chat model architecture", exc_info=True)
     return info
