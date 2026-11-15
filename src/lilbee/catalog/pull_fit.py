@@ -15,7 +15,8 @@ from lilbee.providers.fleet.model_memory import (
     unknown_size_text,
     weights_from_header,
 )
-from lilbee.providers.fleet.planning import planned_chat_ctx
+from lilbee.providers.fleet.planning import downshifted_ctx, planned_chat_ctx
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.engines.base import EngineAdapter
@@ -46,6 +47,8 @@ class PullFit:
 def _launch_ctx(repo: str, config: dict[str, Any] | None, engine: EngineAdapter) -> int:
     """The context a launch of *repo* on *engine* is planned at, worked out as the planner does.
 
+    A downshift recorded after a load failure applies, as it does to the launch.
+
     The engine reads the window from the ``config.json`` in a model folder, so the
     fetched config goes into a scratch folder named for the repo.
     """
@@ -54,7 +57,8 @@ def _launch_ctx(repo: str, config: dict[str, Any] | None, engine: EngineAdapter)
         folder.mkdir()
         if config is not None:
             (folder / _CONFIG_FILE).write_text(json.dumps(config), encoding="utf-8")
-        return planned_chat_ctx(folder, engine.model_meta(folder))
+        planned = planned_chat_ctx(folder, engine.model_meta(folder))
+    return downshifted_ctx(WorkerRole.CHAT, planned)
 
 
 def chat_pull_fit(

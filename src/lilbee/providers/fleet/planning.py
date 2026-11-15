@@ -2642,12 +2642,27 @@ def apply_ctx_downshift(role: WorkerRole, ctx: int) -> int:
     than the one that was asked for, without being asked, is worse than failing
     to load and saying so.
     """
+    if not _downshift_exempt(role):
+        _ctx_downshift_store.note_base(role, ctx)
+    return downshifted_ctx(role, ctx)
+
+
+def downshifted_ctx(role: WorkerRole, ctx: int) -> int:
+    """What :func:`apply_ctx_downshift` returns for *ctx*, with no record of *ctx* as the base.
+
+    A caller that prices a launch it does not make (the pull verdict) reads the
+    recorded steps here and leaves the base of the model that is loaded alone.
+    """
+    if _downshift_exempt(role):
+        return ctx
+    return _shifted(ctx, _ctx_downshift_store.steps(role))
+
+
+def _downshift_exempt(role: WorkerRole) -> bool:
+    """True for a chat under a ``cfg.num_ctx`` pin, which no downshift touches."""
     from lilbee.core.config import cfg
 
-    if role is WorkerRole.CHAT and cfg.num_ctx is not None:
-        return ctx
-    _ctx_downshift_store.note_base(role, ctx)
-    return _shifted(ctx, _ctx_downshift_store.steps(role))
+    return role is WorkerRole.CHAT and cfg.num_ctx is not None
 
 
 def _shifted(ctx: int, steps: int) -> int:
@@ -2661,9 +2676,7 @@ def record_ctx_downshift(role: WorkerRole) -> bool:
     False means the retry would ask for the same thing again, so the caller must
     surface the load failure instead of respawning an identical launch.
     """
-    from lilbee.core.config import cfg
-
-    if role is WorkerRole.CHAT and cfg.num_ctx is not None:
+    if _downshift_exempt(role):
         return False
     base = _ctx_downshift_store.base(role)
     if base is None:
