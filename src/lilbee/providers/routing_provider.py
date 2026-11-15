@@ -132,6 +132,11 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
         return self._pick_backend(ref).count_tokens(text)
 
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Count on the backend the chat ref routes to; a remote backend has no tokenizer."""
+        ref = parse_model_ref(require_role_ref(cfg.chat_model, WorkerRole.CHAT))
+        return self._pick_backend(ref).count_chat_text_tokens(text)
+
     def count_chat_prompt_tokens(
         self,
         messages: list[ChatMessage],

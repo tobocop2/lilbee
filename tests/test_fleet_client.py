@@ -1391,6 +1391,7 @@ _CLIENT_REQUESTS = {
     "rerank_rank_pooling": ({}, lambda c: c.rerank("q", ["a"])),
     "rerank_llm": ({"rerank_mode": RerankMode.LLM}, lambda c: c.rerank("q", ["a"])),
     "count_tokens": ({}, lambda c: c.count_tokens("a")),
+    "count_text_tokens": ({}, lambda c: c.count_text_tokens("a")),
     "count_chat_prompt_tokens": ({}, lambda c: c.count_chat_prompt_tokens(_CHAT_MESSAGES)),
     "embed_truncation_detokenize": ({"token_cap": 1}, lambda c: c.embed([_LONG_TEXT])),
 }
@@ -2402,6 +2403,19 @@ def test_count_tokens_returns_tokenize_length() -> None:
 
     client = _client(handler)
     assert client.count_tokens("hello world") == 4
+
+
+def test_count_text_tokens_is_the_tokenize_length_of_the_text_sent() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+        return httpx.Response(404)
+
+    assert _client(handler).count_text_tokens("hello world") == 3
+    assert [body["content"] for body in sent] == ["hello world"]
 
 
 def test_count_tokens_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
@@ -3561,6 +3575,13 @@ def test_embed_without_tokenize_route_truncates_again_on_context_overflow() -> N
     out = _no_route_client(handler, cap=4).embed(["x" * 12])
     assert _as_lists(out) == [[0.5]]
     assert calls == [["x" * 12], ["x" * 12]]
+
+
+def test_count_text_tokens_without_tokenize_route_is_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    assert _no_route_client(handler).count_text_tokens("x" * 10) is None
 
 
 def test_count_tokens_without_tokenize_route_estimates_by_characters() -> None:

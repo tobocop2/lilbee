@@ -2389,6 +2389,20 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.count_tokens(text))
 
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the chat server's tokenizer, or None with no tokenize route.
+
+        Runs against the chat role, not the embed role that :meth:`count_tokens` uses, so
+        retrieval budgets with the tokenizer of the model that reads the prompt.
+        """
+        with self._lazy_warm_scope():
+            return self._with_rediscover(
+                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).count_text_tokens(
+                    text
+                ),
+                role=WorkerRole.CHAT,
+            )
+
     def count_chat_prompt_tokens(
         self,
         messages: list[ChatMessage],

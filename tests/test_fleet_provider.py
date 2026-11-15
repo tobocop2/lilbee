@@ -581,6 +581,23 @@ def test_count_tokens_routes_to_embed_server() -> None:
     client.count_tokens.assert_called_once_with("hello")
 
 
+def test_count_chat_text_tokens_routes_to_chat_server() -> None:
+    """Retrieval budgets with the chat model's tokenizer, not the embedder's."""
+    chat, embed = _fake_client(), _fake_client()
+    chat.count_text_tokens.return_value = 13
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    assert p.count_chat_text_tokens("hello") == 13
+    chat.count_text_tokens.assert_called_once_with("hello")
+    embed.count_text_tokens.assert_not_called()
+
+
+def test_count_chat_text_tokens_is_none_when_the_chat_engine_has_no_route() -> None:
+    chat = _fake_client()
+    chat.count_text_tokens.return_value = None
+    p = _provider_with_clients({WorkerRole.CHAT: [chat]})
+    assert p.count_chat_text_tokens("hello") is None
+
+
 _COUNT_MESSAGES = [{"role": "user", "content": "hello"}]
 
 

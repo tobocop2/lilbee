@@ -508,6 +508,29 @@ class TestRoutingProvider:
         with pytest.raises(NotImplementedError):
             rp.count_chat_prompt_tokens([{"role": "user", "content": "some text"}])
 
+    def test_routes_count_chat_text_tokens_to_local_engine_for_local_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.count_chat_text_tokens.return_value = 17
+        mock_sdk = mock.MagicMock()
+        rp._local = mock_llama
+        rp._sdk_provider = mock_sdk
+
+        cfg.chat_model = "vendor/Model-GGUF/model-Q4_K_M.gguf"
+        assert rp.count_chat_text_tokens("some text") == 17
+        mock_llama.count_chat_text_tokens.assert_called_once_with("some text")
+        mock_sdk.count_chat_text_tokens.assert_not_called()
+
+    def test_count_chat_text_tokens_for_remote_ref_is_none(self) -> None:
+        """A cloud model has no tokenize route, so the caller keeps the character rule."""
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        rp = self._make_provider()
+        rp._sdk_provider = SdkLLMProvider(mock.MagicMock())
+
+        cfg.chat_model = "ollama/qwen3:8b"
+        assert rp.count_chat_text_tokens("some text") is None
+
     def test_local_ref_never_falls_through_to_sdk(self) -> None:
         """Local HF refs stay on the local engine even when the providers extra is installed.
 
