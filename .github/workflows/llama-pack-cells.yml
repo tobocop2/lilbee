@@ -377,7 +377,7 @@ jobs:
 
       - name: Add the Visual C++ runtime beside the exe
         if: runner.os == 'Windows'
-        run: bash tools/wheel-build/bundle_windows_runtime.sh packaging/engine-wheel/lilbee_engine_llama_cpp/bin packaging/engine-wheel/NOTICE-Microsoft-VC-Runtime
+        run: bash tools/wheel-build/bundle_windows_runtime.sh packaging/engine-wheel/lilbee_engine_llama_cpp/bin packaging/engine-wheel/NOTICE-MICROSOFT-VC-RUNTIME
 
       - name: Drop vcomp140 when nothing imports it
         if: runner.os == 'Windows'
@@ -491,7 +491,7 @@ jobs:
           done
           grep -q "dist-info/licenses/LICENSE-Go$" wheel-listing.txt || { echo "wheel lacks the Go library licence"; exit 1; }
           if [ "${RUNNER_OS}" = Windows ]; then
-            grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime$" wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
+            grep -q "dist-info/licenses/NOTICE-MICROSOFT-VC-RUNTIME$" wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
           fi
           if [ -f "${bindir}/libomp.dll" ]; then
             grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" wheel-listing.txt || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }
