@@ -359,6 +359,8 @@ class HfClient:
         *cursor* names the page to fetch (None is the first). The returned page
         carries the next page's cursor from the ``Link: <...>; rel="next"``
         response header (RFC 5988), the pagination the HuggingFace API documents.
+        A failed read (HTTP error, network error, bad JSON) gives an empty page, and the
+        empty page is cached too, so a browse in the same window makes no request.
         """
         search_value = _hf_search_value(search, fmt)
         cache_key = f"{pipeline_tag}:{sort}:{limit}:{cursor}:{library}:{search_value}:{fmt}"
@@ -384,33 +386,42 @@ class HfClient:
             params = params.add("library", library)
         if cursor:
             params = params.add(_HF_CURSOR_PARAM, cursor)
-        try:
-            resp = httpx.get(
-                HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
-            )
-            if resp.status_code >= HTTPStatus.BAD_REQUEST:
-                log.warning("HuggingFace API returned HTTP %d", resp.status_code)
-                return _EMPTY_HF_PAGE
-            data = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            self._log_fetch_failure(exc)
-            return _EMPTY_HF_PAGE
-
-        next_cursor = _next_cursor(resp)
-
-        engine = self._page_engine(fmt)
-        models: list[CatalogModel] = []
-        for raw in data:
-            model = self._catalog_row(raw, fmt, engine)
-            if model is not None:
-                models.append(model)
-        page = HfPage(models=models, next_cursor=next_cursor)
+        read = self._read_listing(params)
+        page = _EMPTY_HF_PAGE if read is None else self._parse_page(*read, fmt)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)
             if len(self._cache) > self.CACHE_MAX_ENTRIES:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
                 del self._cache[oldest_key]
         return page
+
+    def _read_listing(
+        self, params: httpx.QueryParams
+    ) -> tuple[httpx.Response, list[dict[str, Any]]] | None:
+        """The listing response and its decoded rows, or None when the read failed."""
+        try:
+            resp = httpx.get(
+                HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
+            )
+            if resp.status_code >= HTTPStatus.BAD_REQUEST:
+                log.warning("HuggingFace API returned HTTP %d", resp.status_code)
+                return None
+            return resp, resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            self._log_fetch_failure(exc)
+            return None
+
+    def _parse_page(
+        self, resp: httpx.Response, data: list[dict[str, Any]], fmt: ModelFormat
+    ) -> HfPage:
+        """The page that the decoded rows of a successful listing response hold."""
+        engine = self._page_engine(fmt)
+        models: list[CatalogModel] = []
+        for raw in data:
+            model = self._catalog_row(raw, fmt, engine)
+            if model is not None:
+                models.append(model)
+        return HfPage(models=models, next_cursor=_next_cursor(resp))
 
     def fetch_engine_models(self, engine: ListsModels) -> list[CatalogModel]:
         """The rows of the model list that *engine* publishes, cached for ``CACHE_TTL``.
