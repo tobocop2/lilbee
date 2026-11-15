@@ -72,16 +72,25 @@ def _needs_refresh(dest: Path, bundled: str) -> bool:
     return True
 
 
-def _swap_in(staging: Path, dest: Path) -> None:
-    """Replace the existing *dest* with *staging*, restoring the old copy on failure."""
+def _swap_in(staging: Path, dest: Path) -> bool:
+    """Replace the existing *dest* with *staging*; return False if *dest* is in use.
+
+    A failure after the old copy moved aside restores it and raises.
+    """
     previous = dest.with_name(f".lilbee-mcp-old-{os.getpid()}")
-    os.replace(dest, previous)
+    try:
+        os.replace(dest, previous)
+    except OSError as exc:
+        log.warning("The lilbee skill at %s is in use and was not updated: %s", dest, exc)
+        shutil.rmtree(staging, ignore_errors=True)
+        return False
     try:
         os.replace(staging, dest)
     except BaseException:
         os.replace(previous, dest)
         raise
     shutil.rmtree(previous, ignore_errors=True)
+    return True
 
 
 def install_bundled_skill(dest: Path) -> Path | None:
@@ -101,8 +110,7 @@ def install_bundled_skill(dest: Path) -> Path | None:
                 (staging / entry.name).write_bytes(entry.read_bytes())
         (staging / _MARKER).write_text(bundled, encoding="utf-8")
         if replacing:
-            _swap_in(staging, dest)
-            return dest
+            return dest if _swap_in(staging, dest) else None
         try:
             os.replace(staging, dest)
         except OSError:

@@ -58,6 +58,23 @@ def test_keeps_a_user_edit_when_the_bundled_skill_changes(tmp_path, monkeypatch,
     assert "has local changes" in caplog.text
 
 
+def test_a_skill_folder_in_use_is_kept_and_the_launch_goes_on(tmp_path, monkeypatch, caplog):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    _bundle(tmp_path, monkeypatch, "old text")
+    install_bundled_skill(dest)
+    _bundle(tmp_path, monkeypatch, "new text")
+
+    def _in_use(_src, _dst):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(skill_install.os, "replace", _in_use)
+    with caplog.at_level("WARNING", logger=skill_install.__name__):
+        assert install_bundled_skill(dest) is None
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "old text"
+    assert "is in use" in caplog.text
+    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
+
+
 def test_a_failed_refresh_restores_the_old_copy(tmp_path, monkeypatch):
     dest = tmp_path / "skills" / "lilbee-mcp"
     _bundle(tmp_path, monkeypatch, "old text")
