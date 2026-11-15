@@ -1,7 +1,7 @@
 name: Llama pack cells (trial)
 
 # Builds the llama.cpp wheels for Windows x86_64 (CPU, CUDA, Vulkan), macOS arm64 (Metal) and
-# Linux x86_64 (CUDA, Vulkan, ROCm), repairs them, starts llama-server from the installed wheel,
+# Linux x86_64 (CPU, CUDA, Vulkan, ROCm), repairs them, starts llama-server from the installed wheel,
 # and keeps each wheel with its sha256 as a run artifact. The Windows cells repack the upstream
 # release assets. The Linux cells build from source in the manylinux_2_34 image, because the
 # upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30. It publishes nothing and makes no release.
@@ -9,7 +9,7 @@ name: Llama pack cells (trial)
 # to one branch instead.
 on:
   push:
-    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences, "feat/packs-*"]
+    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences, "feat/packs-*", fix/llama-pack-licences]
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ jobs:
             feat/packs-c) engine=ik ;;
             feat/packs-d) engine=mlx ;;
             feat/packs-e) engine=openvino ;;
-            feat/packs-llama) engine=llama ;;
+            feat/packs-llama | fix/llama-pack-licences) engine=llama ;;
             feat/packs-*) echo "::error::No engine is named for $BRANCH"; exit 1 ;;
             *) engine=all ;;
           esac
@@ -87,6 +87,13 @@ jobs:
             platform: manylinux_2_34_x86_64
             license: MIT AND LicenseRef-NVIDIA-CUDA-EULA
             timeout: 350
+          - cell: linux-x86_64-cpu
+            backend: cpu
+            runner: ubuntu-22.04
+            build: source
+            platform: manylinux_2_34_x86_64
+            license: MIT
+            timeout: 120
           - cell: windows-x86_64-vulkan
             backend: vulkan
             runner: windows-2022
@@ -296,7 +303,7 @@ jobs:
           PY
           wc -c packaging/engine-wheel/NOTICE-NVIDIA-CUDA
 
-      - name: Build llama.cpp with Vulkan or ROCm in the manylinux_2_34 image
+      - name: Build llama.cpp for CPU, Vulkan or ROCm in the manylinux_2_34 image
         if: matrix.build == 'source' && matrix.backend != 'cuda'
         run: |
           set -euo pipefail
@@ -488,6 +495,11 @@ jobs:
           fi
           if [ -f "${bindir}/libomp.dll" ]; then
             grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" wheel-listing.txt || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }
+          fi
+          if [ "${BACKEND}" = cpu ] && [ "${RUNNER_OS}" = Linux ]; then
+            test "$(find "${bindir}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
+            if ldd "${bindir}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
+            bash "${GITHUB_WORKSPACE}/tools/wheel-build/check_glibc_floor.sh" "${bindir}"
           fi
           if [ "${BACKEND}" = vulkan ]; then
             if [ "${RUNNER_OS}" = Windows ]; then
