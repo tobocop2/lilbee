@@ -36,7 +36,7 @@ typecheck:
 	# The GPU QA tools read lilbee's own types, so they rot silently when one
 	# changes: multi_gpu_smoke crashed on its first check from #540 until this
 	# was added. The rest of tools/qa/ is not clean yet and is not listed.
-	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
+	uv run mypy tools/qa/placement_matrix/ tools/qa/engine_demo/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
 	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py tools/record_profile_responses.py hatch_build.py
