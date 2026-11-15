@@ -1,7 +1,7 @@
 /**
  * Release-asset naming for the standalone lilbee binaries: plain CPU builds
  * per platform, CUDA/ROCm variants on Linux and Windows, and `-compat`
- * AVX-baseline builds for older x86-64 CPUs.
+ * builds for older x86-64 CPUs and, on macOS, for older macOS releases.
  */
 
 const VARIANTS = new Set(["", "cu121", "cu124", "cu125", "rocm", "compat", "compat-cu124", "compat-rocm"]);
@@ -34,17 +34,9 @@ export function assetNameFor(platform, arch, variant = "") {
   const gpu = gpuPart === "" ? "" : `-${gpuPart}`;
   const prefix = compat ? "lilbee-compat" : "lilbee";
 
-  if (platform === "darwin") {
-    if (arch === "arm64") {
-      if (variant !== "") {
-        throw new Error("macOS arm64 ships a single build; unset LILBEE_VARIANT.");
-      }
-      return "lilbee-macos-arm64";
-    }
-    if (arch === "x64") {
-      if (gpu) throw new Error("macOS has no GPU-variant builds; unset LILBEE_VARIANT.");
-      return `${prefix}-macos-x86_64`;
-    }
+  if (platform === "darwin" && (arch === "arm64" || arch === "x64")) {
+    if (gpu) throw new Error("macOS has no GPU-variant builds; unset LILBEE_VARIANT.");
+    return `${prefix}-macos-${arch === "arm64" ? "arm64" : "x86_64"}`;
   }
   if (platform === "linux" && arch === "x64") {
     return `${prefix}-linux-x86_64${gpu}`;

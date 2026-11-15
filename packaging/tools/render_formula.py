@@ -61,11 +61,27 @@ def _dest(flag: str) -> str:
     return flag[2:].replace("-", "_")
 
 
+# The old-Mac build is built apart from the release, so its digest may not exist yet.
+# Without one the formula drops that block instead of carrying a placeholder digest.
+_OLD_MAC_FLAG = "--sha-macos-arm64-compat"
+_OLD_MAC_ASSET = "lilbee-compat-macos-arm64"
+_OLD_MAC_BLOCK = re.compile(r"\n\n      on_ventura :or_older do\n.*?\n      end\n", re.DOTALL)
+
+
+def _render_old_mac(content: str, sha: str | None) -> str:
+    if sha:
+        return _replace_sha_for_asset(content, _OLD_MAC_ASSET, sha)
+    new_content, count = _OLD_MAC_BLOCK.subn("\n", content)
+    if count != 1:
+        raise SystemExit(f"expected one old-Mac block, found {count}")
+    return new_content
+
+
 def _render_default(content: str, args: argparse.Namespace) -> str:
     content = _replace_version(content, args.version)
     for asset, flag in _DEFAULT_ASSETS:
         content = _replace_sha_for_asset(content, asset, getattr(args, _dest(flag)))
-    return content
+    return _render_old_mac(content, getattr(args, _dest(_OLD_MAC_FLAG)))
 
 
 def _render_cuda(content: str, args: argparse.Namespace) -> str:
@@ -119,6 +135,7 @@ def main() -> None:
         )
     for _, flag in _DEFAULT_ASSETS:
         parser.add_argument(flag, dest=_dest(flag))
+    parser.add_argument(_OLD_MAC_FLAG, dest=_dest(_OLD_MAC_FLAG))
     for _, _, digest in _FLAVORS:
         parser.add_argument(f"--{digest.replace('_', '-')}")
     args = parser.parse_args()

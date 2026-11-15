@@ -8,6 +8,11 @@ class Lilbee < Formula
     on_arm do
       url "https://github.com/tobocop2/lilbee/releases/download/v#{version}/lilbee-macos-arm64"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+
+      on_ventura :or_older do
+        url "https://github.com/tobocop2/lilbee/releases/download/v#{version}/lilbee-compat-macos-arm64"
+        sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      end
     end
 
     on_intel do

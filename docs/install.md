@@ -105,6 +105,16 @@ For an older CPU with an NVIDIA GPU (AVX, 2011+), `lilbee-compat-cuda` is the co
 
 The crash comes from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2 wheels. The compat build uses a [lancedb fork](https://github.com/tobocop2/lance) that picks instructions at run time. A 👍 on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) helps it land.
 
+## On older macOS
+
+The main Mac build needs macOS 14 on Apple silicon. On macOS 12 or 13, use `lilbee-compat-macos-arm64`. Homebrew and the npm launcher pick it for you. It bundles old-macOS builds of the crawler and the model client, which the compat index at `https://lilbee.sh/compat/` serves. Pip users on an old Mac add that index and pin the builds:
+
+```bash
+pip install --only-binary crawlberg,liter-llm 'crawlberg==1.13.0+compat' 'liter-llm==2.7.0+compat' --extra-index-url https://lilbee.sh/compat/
+```
+
+A Mac on a newer macOS never needs the index.
+
 ## Linux runtime requirements
 
 The Linux wheel and binary bundle the Vulkan loader, so they start on any distro. GPU detection still reads adapters through the system loader: without `libvulkan1`, lilbee treats the machine as CPU-only. Most desktop distros (Ubuntu 22.04+, Pop!\_OS, Mint) ship it. On a bare image, install it once:
