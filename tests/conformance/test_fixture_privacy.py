@@ -1,9 +1,10 @@
-"""No committed recording holds the home directory of the machine that took it."""
+"""No committed recording holds the home directory or the hostname of the machine that took it."""
 
 from __future__ import annotations
 
 import json
 import re
+import socket
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -11,21 +12,69 @@ from pathlib import Path
 import pytest
 
 from tests.conformance import record_presets
-from tests.conformance.preset_check import HOME_TOKEN, Exchange, Outcome, _Tape, scrub_home
+from tests.conformance.preset_check import (
+    HOME_TOKEN,
+    HOST_TOKEN,
+    Exchange,
+    Outcome,
+    _Tape,
+    scrub_home,
+    scrub_host,
+)
 
 FIXTURES = Path(__file__).with_name("fixtures")
 _HOME_PATH = re.compile(r"/home/[a-z]|/Users/[A-Za-z]")
+_RECORDED_HOSTNAME = "nuclearwork"
+
+
+def _fixture_lines() -> list[tuple[str, int, str]]:
+    files = [p for p in FIXTURES.rglob("*") if p.is_file()]
+    assert files
+    return [
+        (str(p.relative_to(FIXTURES)), n, line)
+        for p in files
+        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+    ]
+
+
+def test_no_committed_recording_holds_the_recorded_hostname() -> None:
+    leaks = [
+        f"{name}:{n}" for name, n, line in _fixture_lines() if _RECORDED_HOSTNAME in line.lower()
+    ]
+    assert leaks == []
+
+
+def test_no_committed_recording_holds_the_hostname_of_this_machine() -> None:
+    hostname = socket.gethostname()
+    leaks = [
+        f"{name}:{n}" for name, n, line in _fixture_lines() if scrub_host(line, hostname) != line
+    ]
+    assert leaks == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "scrubbed"),
+    [
+        ("thinkpad (nuclearwork), Intel", f"thinkpad ({HOST_TOKEN}), Intel"),
+        ("NuclearWork twice nuclearwork", f"{HOST_TOKEN} twice {HOST_TOKEN}"),
+        ("nuclearwork.example.org and nuclearwork", f"{HOST_TOKEN} and {HOST_TOKEN}"),
+        (
+            "nuclearworks, my-nuclearwork, xnuclearwork",
+            "nuclearworks, my-nuclearwork, xnuclearwork",
+        ),
+        ("no name here", "no name here"),
+    ],
+)
+def test_scrub_host_replaces_the_hostname_and_its_short_form(raw: str, scrubbed: str) -> None:
+    assert scrub_host(raw, "nuclearwork.example.org") == scrubbed
+
+
+def test_scrub_host_with_an_empty_hostname_changes_nothing() -> None:
+    assert scrub_host("a b", "") == "a b"
 
 
 def test_no_committed_recording_holds_a_home_path() -> None:
-    files = [p for p in FIXTURES.rglob("*") if p.is_file()]
-    assert files
-    leaks = [
-        f"{p.relative_to(FIXTURES)}:{n}"
-        for p in files
-        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
-        if _HOME_PATH.search(line)
-    ]
+    leaks = [f"{name}:{n}" for name, n, line in _fixture_lines() if _HOME_PATH.search(line)]
     assert leaks == []
 
 
@@ -55,22 +104,37 @@ def test_scrub_home_is_idempotent() -> None:
     assert scrub_home(once) == once
 
 
-def test_write_recording_scrubs_the_json_and_the_log(tmp_path: Path) -> None:
+def test_write_recording_scrubs_the_json_and_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(record_presets.socket, "gethostname", lambda: "rec-box")
     out = tmp_path / "x.json"
     record_presets.write_recording(
-        out, {"model": "/home/alice/m.gguf", "n": 1}, "loaded /home/alice/m.gguf\n"
+        out,
+        {"model": "/home/alice/m.gguf", "src": "from rec-box", "n": 1},
+        "loaded /home/alice/m.gguf on rec-box\n",
     )
     assert json.loads(out.read_text(encoding="utf-8")) == {
         "model": f"{HOME_TOKEN}/m.gguf",
+        "src": f"from {HOST_TOKEN}",
         "n": 1,
     }
-    assert out.with_suffix(".log").read_text(encoding="utf-8") == f"loaded {HOME_TOKEN}/m.gguf\n"
+    assert out.with_suffix(".log").read_text(encoding="utf-8") == (
+        f"loaded {HOME_TOKEN}/m.gguf on {HOST_TOKEN}\n"
+    )
 
 
 def test_main_writes_no_home_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     tape = _Tape()
     tape.exchanges.append(
-        Exchange("GET", "/props", None, 200, "application/json", '{"model":"/home/alice/m.gguf"}')
+        Exchange(
+            "GET",
+            "/props",
+            None,
+            200,
+            "application/json",
+            '{"model":"/home/alice/m.gguf","host":"rec-box"}',
+        )
     )
     out = tmp_path / "rec" / "x.json"
     monkeypatch.setattr(
@@ -92,6 +156,7 @@ def test_main_writes_no_home_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             str(out),
         ],
     )
+    monkeypatch.setattr(record_presets.socket, "gethostname", lambda: "rec-box")
     monkeypatch.setattr(record_presets, "recording", lambda *a, **k: nullcontext(("u", tape)))
     monkeypatch.setattr(record_presets, "configured", lambda *a, **k: nullcontext())
     monkeypatch.setattr(
@@ -102,3 +167,5 @@ def test_main_writes_no_home_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         text = written.read_text(encoding="utf-8")
         assert "/home/alice" not in text
         assert HOME_TOKEN in text
+    assert "rec-box" not in out.read_text(encoding="utf-8")
+    assert HOST_TOKEN in out.read_text(encoding="utf-8")
