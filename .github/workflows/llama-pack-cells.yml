@@ -9,7 +9,7 @@ name: Llama pack cells (trial)
 # to one branch instead.
 on:
   push:
-    branches: [ci/llama-pack-cells, ci/pack-licences]
+    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences]
 
 permissions:
   contents: read
