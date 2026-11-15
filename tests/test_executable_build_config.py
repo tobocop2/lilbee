@@ -254,7 +254,7 @@ def _homebrew_render_args(tmp_path: Path, compat_sha: str) -> str:
     """Run the Homebrew render-args step's script and return the args it writes."""
     steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["homebrew"]["steps"]
     step = next(s for s in steps if s.get("name") == "Build render-args")
-    out = tmp_path / "output"
+    out = tmp_path / ("output-with" if compat_sha else "output-without")
     env = {
         "PATH": os.environ["PATH"],
         "VERSION": "1.2.3",
