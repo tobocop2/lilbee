@@ -628,6 +628,19 @@ def test_the_cuda_build_is_shared_and_the_workflow_checks_the_libraries_of_the_p
     assert json.loads(listed[1]) == ik_llama._CUDA_LIBRARIES == _CUDA_PACK_LIBRARIES
 
 
+def test_the_workflow_refuses_an_ik_wheel_without_the_notices_of_its_vendored_files() -> None:
+    workflow = (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
+    loop = re.search(r"for vendored in (\S+ \S+ \S+); do\n\s+grep -q (.+?) \|\| \{", workflow)
+    assert loop is not None
+    assert loop[1].split() == [
+        "vendor/nlohmann/json.hpp",
+        "vendor/cpp-httplib/httplib.h",
+        "ggml/src/llamafile/sgemm.cpp",
+    ]
+    assert "THIRD-PARTY/ik_llama.cpp/${vendored}.NOTICE$" in loop[2]
+    assert "wheel-listing.txt" in loop[2]
+
+
 def test_the_workflow_reads_the_commit_of_the_pin_and_names_no_other() -> None:
     workflow = (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
     cells = yaml.safe_load(workflow)["jobs"]["ik-cell"]["strategy"]["matrix"]["include"]

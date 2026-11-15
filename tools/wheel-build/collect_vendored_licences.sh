@@ -6,6 +6,9 @@
 #   - every licence file by name (LICENSE*, LICENCE*, COPYING*), copied at its own path;
 #   - every source file that opens with a licence grant (an MIT, BSD or Unlicense text in the
 #     first lines), whose leading comment is written as <path>.NOTICE;
+#   - every file under vendor/ that names the MIT licence in its first lines but carries no text (an
+#     SPDX tag or "MIT License"): its header lines, which hold the copyright, then the MIT terms of
+#     the checkout's own LICENSE file, written as <path>.NOTICE;
 #   - the licence texts at the end of the two single-header libraries that hold them there.
 # The trees that the build fetched (the _deps folder of a CMake build directory):
 #   - every licence file by name, copied under _deps/<name>/. A fetched tree with no licence file
@@ -60,6 +63,16 @@ header_comment() {
        {exit}' "$1"
 }
 
+# vendor_header <file>: the opening comment lines, up to the first blank line.
+vendor_header() {
+  awk '/^[ \t]*$/ {exit} !/^[ \t]*(\/\/|\/\*|\*)/ {exit} {print}' "$1"
+}
+
+# mit_terms: the permission text of the checkout's LICENSE, from its first grant line to the end.
+mit_terms() {
+  awk '/Permission is hereby granted/ {on = 1} on' "${src}/LICENSE"
+}
+
 # tail_text <file> <first line pattern> <marker>: the text from the pattern to the end of the file,
 # which must hold the marker, so a moved text fails the build instead of shipping nothing.
 tail_text() {
@@ -92,6 +105,14 @@ while IFS= read -r file; do
   if is_licence_name "${file}"; then
     [ "${rel}" = LICENSE ] && continue # the project's own licence ships as LICENSE-llama.cpp
     copy_to "${rel}" < "${file}"
+    found=$((found + 1))
+  elif [[ "${rel}" == vendor/* ]] && ! in_head "${file}" "Permission is hereby granted" \
+    && in_head "${file}" 'SPDX-License-Identifier: *MIT$|^[/ *#]*MIT License'; then
+    header="$(vendor_header "${file}")"
+    terms_text="$(mit_terms)"
+    { [ -n "${terms_text}" ] && printf '%s\n' "${header}" | grep -a -q -i 'copyright'; } \
+      || { echo "${rel}: no copyright line in the header, or no MIT terms in LICENSE" >&2; exit 1; }
+    printf '%s\n\n%s\n' "${header}" "${terms_text}" | copy_to "${rel}.NOTICE"
     found=$((found + 1))
   elif in_head "${file}" "${grant}" && ! in_head "${file}" "The ggml authors" -F; then
     header="$(header_comment "${file}")"
