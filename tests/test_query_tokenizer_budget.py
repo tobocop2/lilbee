@@ -17,11 +17,11 @@ _CHUNKS = 12
 def _services():
     services = make_mock_services()
     set_services(services)
-    old = (cfg.num_ctx, cfg.neighbor_expansion)
+    old = (cfg.num_ctx, cfg.neighbor_expansion, cfg.filter_structural_chunks)
     cfg.num_ctx = _WINDOW
     cfg.neighbor_expansion = 0
     yield services
-    cfg.num_ctx, cfg.neighbor_expansion = old
+    cfg.num_ctx, cfg.neighbor_expansion, cfg.filter_structural_chunks = old
     set_services(None)
 
 
@@ -101,6 +101,33 @@ class TestEngineTokenizerBudget:
         rag = get_services().searcher._finalize_context(centre, "what is in them?", None)
         assert len(rag.results[0].chunk) > len(rows[3].chunk)
         assert _prompt_chars(rag) <= prompt_token_budget(_WINDOW)
+
+    def test_history_takes_window_from_the_sources(self, _services):
+        _services.provider.count_chat_text_tokens.side_effect = len
+        results = [
+            _make_result(source=f"{i}.pdf", chunk=_DENSE_CHUNK, chunk_index=i)
+            for i in range(_CHUNKS)
+        ]
+        history = [{"role": "user", "content": "earlier question " * 150}]
+        searcher = get_services().searcher
+        bare = searcher._finalize_context(list(results), "what is in them?", None)
+        with_history = searcher._finalize_context(list(results), "what is in them?", history)
+        assert 0 < len(with_history.results) < len(bare.results)
+
+    def test_widening_leaves_out_a_neighbor_that_is_a_table_of_contents(self, _services):
+        cfg.neighbor_expansion = 1
+        cfg.filter_structural_chunks = True
+        toc = "A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n"
+        rows = [
+            _make_result(source="0.pdf", chunk=toc, chunk_index=1),
+            _make_result(source="0.pdf", chunk="the centre passage", chunk_index=2),
+            _make_result(source="0.pdf", chunk="the next prose passage", chunk_index=3),
+        ]
+        _services.store.get_chunks_by_indices.return_value = rows
+        _services.provider.count_chat_text_tokens.side_effect = len
+        rag = get_services().searcher._finalize_context([rows[1]], "what is in them?", None)
+        assert "the next prose passage" in rag.results[0].chunk
+        assert "Summary" not in rag.results[0].chunk
 
     def test_an_engine_without_a_route_keeps_the_character_rule(self, _services):
         _services.provider.count_chat_text_tokens.return_value = None
