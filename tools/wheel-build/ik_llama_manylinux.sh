@@ -9,6 +9,8 @@
 #   OWNER      uid:gid that owns the files left behind
 #   SHA_FILE   cuda only: where to write the sha256 of the three toolkit libraries
 #   DEPS_DIR   cuda only: where to copy the licence text of the toolkit code that the build compiles in
+#   BUILD_DIR  where to build (default /tmp/build-<backend>); a bind mounted folder keeps the objects
+#   BUILD_BUDGET_MIN  minutes the build may run; at the limit the script exits with 75
 #   STUB_DIR   cuda only: where to copy the stub of the driver library, for a start on a host with no GPU
 # Writes BIN_DIR/llama-server, plus the three NVIDIA runtime libraries beside it for the cuda build.
 #
@@ -45,9 +47,22 @@ if [ "${BACKEND}" = cuda ]; then
     "-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;86-real;89-real;90")
 fi
 
-build="/tmp/build-${BACKEND}"
+build="${BUILD_DIR:-/tmp/build-${BACKEND}}"
 cmake -S "${SRC}" -B "${build}" "${args[@]}"
-cmake --build "${build}" --parallel "${jobs}" --target llama-server
+# A runner has four cores and a job has a time limit. With a budget, the build stops in time and
+# leaves its objects in BUILD_DIR; the next run continues from them.
+rc=0
+if [ "${BUILD_BUDGET_MIN:-0}" -gt 0 ]; then
+  timeout "${BUILD_BUDGET_MIN}m" cmake --build "${build}" --parallel "${jobs}" --target llama-server || rc=$?
+else
+  cmake --build "${build}" --parallel "${jobs}" --target llama-server || rc=$?
+fi
+if [ "${rc}" -eq 124 ]; then
+  chown -R "${OWNER}" "${build}"
+  echo "the build ran out of its ${BUILD_BUDGET_MIN} minutes; its objects stay in ${build}" >&2
+  exit 75
+fi
+[ "${rc}" -eq 0 ] || exit "${rc}"
 
 mkdir -p "${BIN_DIR}"
 server="$(find "${build}" -name llama-server -type f -perm -u+x | head -1)"

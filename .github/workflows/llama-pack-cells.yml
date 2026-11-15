@@ -568,20 +568,52 @@ jobs:
           git -C ik-src checkout -q "${commit}"
           test "$(git -C ik-src rev-parse HEAD)" = "${commit}"
           echo "WHEEL_VERSION=0+git${commit:0:12}" >> "$GITHUB_ENV"
+          echo "IK_COMMIT=${commit}" >> "$GITHUB_ENV"
+          # A cached build tree is up to date for ninja only when its sources are older than its objects.
+          git -C ik-src ls-files -z | xargs -0 touch -d 2001-01-01
+
+      # The CUDA build takes longer than one job may run on four cores. The job stops the build in time
+      # and keeps its objects in a cache; the next run of the job continues from them.
+      - name: Restore the objects of an earlier CUDA build
+        if: matrix.backend == 'cuda'
+        uses: actions/cache/restore@v6
+        with:
+          path: ik-build
+          key: ik-cuda-build-${{ env.IK_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ik-cuda-build-${{ env.IK_COMMIT }}-
 
       - name: Build the server in the manylinux_2_34 image
+        id: build
         run: |
           set -euo pipefail
           bin=packaging/engine-wheel-ik/lilbee_engine_ik_llama_cpp/bin
-          mkdir -p "${bin}" deps-build/_deps cuda-stub
+          mkdir -p "${bin}" deps-build/_deps cuda-stub ik-build
+          budget=0
+          if [ "${BACKEND}" = cuda ]; then budget=285; fi
+          rc=0
           docker run --rm -v "${PWD}:/work" -w /work \
-            -e BACKEND -e SRC=/work/ik-src -e "BIN_DIR=/work/${bin}" \
+            -e BACKEND -e SRC=/work/ik-src -e BUILD_DIR=/work/ik-build -e "BUILD_BUDGET_MIN=${budget}" -e "BIN_DIR=/work/${bin}" \
             -e SHA_FILE=/work/cuda-libs.sha256 -e DEPS_DIR=/work/deps-build/_deps -e STUB_DIR=/work/cuda-stub \
             -e "OWNER=$(id -u):$(id -g)" \
             quay.io/pypa/manylinux_2_34_x86_64@sha256:e0b7a1bdb4a0b7d519b29b301e2d3c626a33ea78e9bb5bb1590ce2d99d0ae62f \
-            bash /work/tools/wheel-build/ik_llama_manylinux.sh
+            bash /work/tools/wheel-build/ik_llama_manylinux.sh || rc=$?
+          if [ "${rc}" -eq 75 ]; then echo "incomplete=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          [ "${rc}" -eq 0 ] || exit "${rc}"
           ls -l "${bin}"
           if [ "${BACKEND}" = cuda ]; then cat cuda-libs.sha256; fi
+
+      - name: Keep the objects of the CUDA build
+        if: always() && matrix.backend == 'cuda'
+        uses: actions/cache/save@v6
+        with:
+          path: ik-build
+          key: ik-cuda-build-${{ env.IK_COMMIT }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Stop when the build is not complete
+        if: steps.build.outputs.incomplete == 'true'
+        run: |
+          echo "::error::The build ran out of time. Its objects are cached: run this job again."
+          exit 1
 
       - name: Collect the licences of the server and the code it carries
         run: |
