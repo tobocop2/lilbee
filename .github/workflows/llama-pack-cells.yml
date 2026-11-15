@@ -4,7 +4,9 @@ name: Llama pack cells (trial)
 # Linux x86_64 (CPU, CUDA, Vulkan, ROCm), repairs them, starts llama-server from the installed wheel,
 # and keeps each wheel with its sha256 as a run artifact. The Windows cells repack the upstream
 # release assets. The Linux cells build from source in the manylinux_2_34 image, because the
-# upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30. It publishes nothing and makes no release.
+# upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30. The llama cells publish nothing and make no release.
+# The tei job builds the text-embeddings-inference router from source (the upstream release has no assets)
+# for Linux x86_64 (CPU and CUDA compute 7.5 to 12.0) and macOS arm64 (Metal). The tei cells publish nothing.
 # A workflow_dispatch trigger needs the file on the default branch, so this runs on a push
 # to one branch instead.
 on:
@@ -795,5 +797,180 @@ jobs:
         with:
           name: engine-pack-${{ matrix.cell }}
           path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  tei:
+    name: ${{ matrix.cell }}
+    needs: plan
+    if: needs.plan.outputs.engine == 'tei'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: tei-linux-x86_64-cpu
+            os: linux
+            backend: cpu
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 120
+          - cell: tei-linux-x86_64-cuda-sm75
+            os: linux
+            backend: cuda-sm75
+            cc: "75"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-linux-x86_64-cuda-sm80
+            os: linux
+            backend: cuda-sm80
+            cc: "80"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-linux-x86_64-cuda-sm86
+            os: linux
+            backend: cuda-sm86
+            cc: "86"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-linux-x86_64-cuda-sm89
+            os: linux
+            backend: cuda-sm89
+            cc: "89"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-linux-x86_64-cuda-sm90
+            os: linux
+            backend: cuda-sm90
+            cc: "90"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-linux-x86_64-cuda-sm100
+            os: linux
+            backend: cuda-sm100
+            cc: "100"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-linux-x86_64-cuda-sm120
+            os: linux
+            backend: cuda-sm120
+            cc: "120"
+            runner: ubuntu-22.04
+            platform: manylinux_2_34_x86_64
+            timeout: 350
+          - cell: tei-macos-arm64-metal
+            os: macos
+            backend: metal
+            runner: macos-15
+            platform: macosx_14_0_arm64
+            timeout: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      TEI_REPO: https://github.com/huggingface/text-embeddings-inference.git
+      TEI_TAG: v1.9.4
+      WHEEL_VERSION: 1.9.4
+      # The toolchain of rust-toolchain.toml at the tag; the build stops when the two differ.
+      RUSTC_VERSION: 1.92.0
+      CUDA_VERSION: 12.9.1
+      CUDA_PACKAGE_SUFFIX: 12-9
+      BACKEND: ${{ matrix.backend }}
+      CUDA_CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Free disk space for the CUDA build
+        if: matrix.cc != ''
+        run: |
+          set -euo pipefail
+          # The toolkit and the flash attention kernels need several GB beside the build tree.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
+      - name: Build the router wheel in the manylinux_2_34 image
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm -v "${PWD}:/work" -w /work \
+            -e TEI_REPO -e TEI_TAG -e RUSTC_VERSION -e WHEEL_VERSION -e BACKEND -e CUDA_CC -e CUDA_PACKAGE_SUFFIX -e CUDA_VERSION \
+            -e WORK=/work -e OUT=/work/out -e "OWNER=$(id -u):$(id -g)" \
+            quay.io/pypa/manylinux_2_34_x86_64@sha256:e0b7a1bdb4a0b7d519b29b301e2d3c626a33ea78e9bb5bb1590ce2d99d0ae62f \
+            bash /work/tools/wheel-build/tei_manylinux.sh
+          ls -l out out/repaired
+          df -h / | tail -1
+
+      - name: Build the router for Metal
+        if: matrix.os == 'macos'
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUSTC_VERSION}" --profile minimal
+          export RUSTUP_TOOLCHAIN="${RUSTC_VERSION}"
+          mkdir -p "${RUNNER_TEMP}/bin" out
+          bash tools/wheel-build/install_cargo_about.sh "${RUNNER_TEMP}/bin"
+          export PATH="${RUNNER_TEMP}/bin:${PATH}"
+          git clone -q --depth 1 --branch "${TEI_TAG}" "${TEI_REPO}" "${RUNNER_TEMP}/tei"
+          grep -q "channel = \"${RUSTC_VERSION}\"" "${RUNNER_TEMP}/tei/rust-toolchain.toml"
+          (cd "${RUNNER_TEMP}/tei" && cargo build --release --locked --bin text-embeddings-router --no-default-features --features candle,metal,http)
+          python -m pip install -q build wheel "delocate==0.13.0"
+          bash tools/wheel-build/tei_wheel.sh "${RUNNER_TEMP}/tei" "${RUNNER_TEMP}/tei/target/release/text-embeddings-router" \
+            candle,metal,http aarch64-apple-darwin "${BACKEND}" "${PLATFORM}" out
+          # Fails when any Mach-O needs a newer macOS than the tag (macosx_14_0) allows.
+          delocate-wheel --require-archs arm64 --require-target-macos-version 14.0 -w out/repaired out/dist/*.whl
+          python -m zipfile -l out/repaired/*.whl > wheel-listing.txt
+          if grep -q '\.dylibs/' wheel-listing.txt; then echo "delocate grafted a library into the wheel"; exit 1; fi
+          ls -l out out/repaired
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - name: Collect the wheel
+        run: |
+          set -euo pipefail
+          mkdir -p wheel
+          repaired=(out/repaired/*.whl)
+          test "${#repaired[@]}" -eq 1
+          case "${repaired[0]}" in *-"${{ matrix.platform }}.whl") ;; *) echo "wrong tag on ${repaired[0]}"; exit 1 ;; esac
+          cp "${repaired[0]}" wheel/
+          cp out/license-expression.txt wheel/
+          name="$(basename "${repaired[0]}")"
+          if command -v sha256sum >/dev/null; then
+            (cd wheel && sha256sum "${name}" > "${name}.sha256")
+          else
+            (cd wheel && shasum -a 256 "${name}" > "${name}.sha256")
+          fi
+          cat wheel/*.sha256
+          ls -l wheel
+
+      - name: Check the wheel and start the router from the installed wheel
+        run: |
+          set -euo pipefail
+          wheels=(wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python tools/wheel-build/check_tei_wheel.py "${wheels[0]}" "${BACKEND}" wheel/license-expression.txt
+          python -m venv check-venv
+          check-venv/bin/python -m pip install -q "${wheels[0]}"
+          router="$(check-venv/bin/python -c "import lilbee_engine_tei as m, pathlib; print(pathlib.Path(m.__file__).parent / 'bin' / 'text-embeddings-router')")"
+          echo "router: ${router}"
+          stubs=""
+          if [ -d out/stubs ]; then stubs="${PWD}/out/stubs"; fi
+          cd /
+          STUB_DIR="${stubs}" bash "${GITHUB_WORKSPACE}/tools/wheel-build/smoke_tei.sh" "${router}" "${BACKEND}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tei-pack-${{ matrix.cell }}
+          path: wheel/*
           if-no-files-found: error
           retention-days: 7
