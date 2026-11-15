@@ -53,13 +53,11 @@ def test_launcher_sizes_the_chat_window_with_the_selected_engine(
 ) -> None:
     import lilbee.providers.engine_params as engine_params
     import lilbee.providers.fleet.planning as planning
-    import lilbee.providers.gguf_meta as gguf_meta
 
     seen: list[Any] = []
     monkeypatch.setattr(cfg, "chat_model", "local/model.gguf")
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda ref: tmp_path / "m.gguf")
-    monkeypatch.setattr(gguf_meta, "read_gguf_metadata", lambda path: None)
     monkeypatch.setattr(planning, "plan_sizing_budget", lambda engine: 1)
 
     def _ctx(path: Path, meta: object, *, engine: Any, available_bytes: int) -> int:

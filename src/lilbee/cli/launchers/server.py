@@ -164,7 +164,6 @@ def planned_chat_ctx() -> int | None:
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
     from lilbee.providers.fleet.planning import plan_sizing_budget
-    from lilbee.providers.gguf_meta import read_gguf_metadata
     from lilbee.providers.model_ref import parse_model_ref
 
     ref = str(cfg.chat_model)
@@ -177,7 +176,7 @@ def planned_chat_ctx() -> int | None:
         engine = resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
         return resolve_chat_ctx(
             path,
-            read_gguf_metadata(path),
+            engine.model_meta(path),
             engine=engine,
             available_bytes=plan_sizing_budget(engine),
         )
