@@ -1063,6 +1063,14 @@ def test_a_probe_killed_by_sigterm_names_the_signal_and_the_probe_output(
         probe_devices(Path("llama-server"))
     assert "ggml_cuda_init: failed" in str(caught.value)
     assert "does not appear to support" not in str(caught.value)
+    assert caught.value.provider == "llama-server"
+    assert caught.value.kind == ProviderErrorKind.SERVER
+    assert (
+        "before it listed any device, so the engine cannot start. Something ended the "
+        "probe: a GPU driver fault, the out-of-memory killer or a service manager. lilbee "
+        "does not guess a GPU from the host's Vulkan loader here, because the engine would "
+        "then fail the same way.\nThe probe reported: ggml_cuda_init: failed"
+    ) in str(caught.value)
 
 
 def test_a_status_that_is_no_known_signal_is_still_reported(
