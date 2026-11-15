@@ -34,9 +34,11 @@ def loop_world(tmp_path, monkeypatch):
             "linked_roots": {},
         }
     )
+    # The vault lookup reads the process-wide cfg, not the scoped config.
+    monkeypatch.setattr(cfg, "documents_dir", docs)
+    monkeypatch.setattr(cfg, "vault_base", tmp_path)
     with config_scope(config):
         settings.set_value(config.data_root, "linked_roots", {})
-        monkeypatch.setattr(cfg, "vault_base", tmp_path)
         yield docs
 
 
@@ -59,6 +61,7 @@ class TestSymlinkLoopSource:
 
     def test_the_vault_path_of_a_real_loop_is_none(self, loop_world):
         assert resolve_vault_path("loop-a") is None
+        assert resolve_vault_path("good.md") == "docs/good.md"
 
     def test_a_resolve_that_raises_on_a_loop_gives_no_checked_path(self, loop_world):
         with mock.patch.object(Path, "resolve", _raising_loop):
@@ -69,5 +72,6 @@ class TestSymlinkLoopSource:
             assert "file:" not in source_ref_link(_ref("good.md"))
 
     def test_a_resolve_that_raises_on_a_loop_gives_no_vault_path(self, loop_world):
+        assert resolve_vault_path("good.md") == "docs/good.md"
         with mock.patch.object(Path, "resolve", _raising_loop):
             assert resolve_vault_path("good.md") is None
