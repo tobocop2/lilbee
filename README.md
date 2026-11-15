@@ -263,11 +263,13 @@ Standalone mode needs nothing but your machine. No cloud required. **Minimum:** 
 
 | Platform           | Minimum                                                                                                    | Recommended                                             |
 | ------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| **macOS arm64**    | Apple Silicon (M1 or newer), macOS 11+                                                                     | M-series Pro / Max / Ultra                              |
-| **macOS x86_64**   | Intel Mac with AVX (Ivy Bridge or newer), macOS 12+                                                        | Quad-core Intel with 16+ GB RAM                         |
+| **macOS arm64**    | Apple Silicon (M1 or newer), macOS 15+                                                                     | M-series Pro / Max / Ultra                              |
+| **macOS x86_64**   | Intel Mac with AVX (Ivy Bridge or newer), macOS 15+                                                        | Quad-core Intel with 16+ GB RAM                         |
 | **Linux x86_64**   | 64-bit Intel/AMD from 2013+ ([`x86-64-v3`](https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels)) | Modern Intel/AMD CPU + an NVIDIA, AMD, or Intel Arc GPU |
 | **Windows x86_64** | 64-bit Intel/AMD from 2013+ (`x86-64-v3`), Windows 10/11                                                   | Modern desktop / workstation CPU + GPU                  |
 | **Linux ARM64**    | ARMv8 NEON-capable (Raspberry Pi 4+, AWS Graviton, Ampere Altra)                                           | Modern ARM server with 16+ GB RAM                       |
+
+Macs older than macOS 15 use the [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) build (see [On older CPUs](#on-older-cpus-pre-avx2)).
 
 | Resource              | Minimum                        | Recommended                                                                                                                                               |
 | --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |

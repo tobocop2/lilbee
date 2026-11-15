@@ -23,29 +23,28 @@
   soft: true
   march: x86-64-v2
 # macos_floor is the OS this asset actually runs on, and every bundled
-# dylib is checked against it. `uv sync` resolves wheels for the runner,
-# so numpy/scipy arrive as macosx_14_0 and 14.0 is the honest floor here.
+# dylib is checked against it. The crawlberg wheels are macosx_15_0 only,
+# so 15.0 is the floor of the main macOS assets.
 - os: macos-latest
   asset_name: lilbee-macos-arm64
   backend: metal
-  macos_floor: "14.0"
+  macos_floor: "15.0"
 # Intel Mac: built natively on macos-15-intel, GitHub's Intel image
 # (Nuitka can't cross-compile arch from the arm64 runner). Required: the
 # default Homebrew formula carries an Intel url, and Homebrew refuses to
 # load a formula that has no url for the host architecture, so a release
 # without this asset breaks `brew install lilbee` on every Intel Mac.
-# The install below pins wheel resolution to the x86_64 target rather than
-# the runner, so the deps come in at their oldest macOS build (pyarrow's
-# 12.0 is the binding one) and reach every Ivy Bridge / Haswell Mac, which
-# cap at macOS 12. The engine picks its CPU variant at runtime (see
-# cmake_args.sh).
+# The crawlberg wheels are macosx_15_0 only, so this asset needs macOS 15.
+# Older Intel Macs use the compat asset below. The engine picks its CPU
+# variant at runtime (see cmake_args.sh).
 - os: macos-15-intel
   asset_name: lilbee-macos-x86_64
   backend: cpu
-  macos_floor: "12.0"
+  macos_floor: "15.0"
 # Pre-Haswell-safe Intel Mac build: same self-contained model as the
 # linux/windows compat cells (stock lancedb swapped for +compat, launcher
-# held to x86-64-v2). Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
+# held to x86-64-v2). It keeps the macOS 12 floor, so it is the build for
+# Macs older than macOS 15. Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
 # and guards against an AVX2-baselined stock lancedb SIGILL.
 - os: macos-15-intel
   asset_name: lilbee-compat-macos-x86_64
