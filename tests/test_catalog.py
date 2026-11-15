@@ -58,7 +58,7 @@ from lilbee.catalog import (
     query as _query,
 )
 from lilbee.catalog.header_probe import GgufHeader
-from lilbee.catalog.hf_client import hf_token
+from lilbee.catalog.hf_client import HfClient, hf_token
 from lilbee.catalog.models import HfPage
 from lilbee.catalog.refs import (
     GGUF_GLOB,
@@ -644,10 +644,183 @@ class TestFetchHfModels:
         assert client.fetch_models().models == []
         first_warn_at = dict(client._last_fetch_failure_warn)
         assert list(first_warn_at) == ["HuggingFace"]  # the WARNING branch ran and stamped it
+        client._cache.clear()  # a cached failure would end the second read before the log
         assert client.fetch_models().models == []
         # Still inside FETCH_FAILURE_WARN_INTERVAL_S: the repeat is throttled to
         # DEBUG and does not re-stamp the clock.
         assert client._last_fetch_failure_warn == first_warn_at
+
+    @pytest.mark.parametrize("failure", ["connect", "status", "badjson"])
+    def test_a_failed_read_is_cached_for_the_window(
+        self, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        """With the Hub unreachable, a second listing in the window makes no request."""
+        calls: list[None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(None)
+            request = httpx.Request("GET", "https://hub.test/api/models")
+            if failure == "connect":
+                raise httpx.ConnectError("offline", request=request)
+            if failure == "status":
+                return httpx.Response(503, request=request)
+            return httpx.Response(200, text="{not json", request=request)
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        first = client.fetch_models()
+        second = client.fetch_models()
+        assert (first.models, first.next_cursor) == ([], None)
+        assert (second.models, second.next_cursor) == ([], None)
+        assert len(calls) == 1
+
+    def test_a_failed_read_asks_again_after_the_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once the cache entry expires the Hub is asked again."""
+        calls: list[None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(None)
+            raise httpx.ConnectError("offline")
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        monkeypatch.setattr(HfClient, "CACHE_TTL", 0.0)
+        client = get_services().hf_client
+        client.fetch_models()
+        client.fetch_models()
+        assert len(calls) == 2
+
+    def test_a_success_replaces_a_cached_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After the window a good read replaces the cached empty page."""
+        answers: list[Any] = [
+            httpx.ConnectError("offline"),
+            httpx.Response(200, json=[{"id": "user/back", "downloads": 1, "siblings": []}]),
+        ]
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        assert client.fetch_models().models == []
+        monkeypatch.setattr(HfClient, "CACHE_TTL", 0.0)  # the window passes
+        assert [m.hf_repo for m in client.fetch_models().models] == ["user/back"]
+        monkeypatch.setattr(HfClient, "CACHE_TTL", 300.0)
+        assert [m.hf_repo for m in client.fetch_models().models] == ["user/back"]
+        assert answers == []
+
+    def test_a_row_that_cannot_be_read_still_raises_and_is_not_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A good row beside a garbage createdAt row is no read failure: it raises, uncached."""
+        rows = [
+            {"id": "user/good", "siblings": [{"rfilename": "good-Q4_K_M.gguf"}]},
+            {
+                "id": "user/bad",
+                "createdAt": "garbage",
+                "siblings": [{"rfilename": "bad-Q4_K_M.gguf"}],
+            },
+        ]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, json=rows))
+        client = get_services().hf_client
+        with pytest.raises(ValueError, match="Cannot parse 'garbage' as a datetime"):
+            client.fetch_models()
+        assert client._cache == {}
+
+    @patch("lilbee.catalog.hf_client.hf_token", return_value="tok")
+    def test_the_request_carries_the_listing_options(
+        self, _mock_token: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default listing asks for GGUF text models by downloads, 50 rows, with the token."""
+        seen: list[tuple[Any, dict[str, Any]]] = []
+
+        def mock_get(url: Any, **kwargs: Any) -> httpx.Response:
+            seen.append((url, kwargs))
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        client.fetch_models()
+        client.fetch_models(fmt=ModelFormat.MLX, search="qwen")
+        (url, kwargs), (_, mlx_kwargs) = seen
+        assert url == _hf_client.HF_API_URL
+        assert kwargs["timeout"] == _hf_client.DEFAULT_TIMEOUT
+        assert kwargs["headers"] == {"Authorization": "Bearer tok"}
+        params = kwargs["params"]
+        assert (params["pipeline_tag"], params["sort"], params["limit"]) == (
+            "text-generation",
+            "downloads",
+            "50",
+        )
+        assert (params["filter"], params["search"]) == ("gguf", "GGUF")
+        assert (mlx_kwargs["params"]["filter"], mlx_kwargs["params"]["search"]) == ("mlx", "qwen")
+
+    def test_a_400_status_is_a_failure_that_warns_with_the_code(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Status 400 is the lowest failure: the body is not read and the warning names the code."""
+        body = [{"id": "user/model", "downloads": 1, "siblings": []}]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(400, json=body))
+        with caplog.at_level(logging.WARNING, logger="lilbee.catalog.hf_client"):
+            page = get_services().hf_client.fetch_models()
+        assert page.models == []
+        assert [r.getMessage() for r in caplog.records] == ["HuggingFace API returned HTTP 400"]
+
+    def test_a_transport_failure_warns_with_the_error(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The first failure warning names the error that the read raised."""
+
+        def mock_get(*args: object, **kwargs: object) -> httpx.Response:
+            raise httpx.ConnectError("offline")
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        with caplog.at_level(logging.WARNING, logger="lilbee.catalog.hf_client"):
+            get_services().hf_client.fetch_models()
+        assert [r.getMessage() for r in caplog.records] == [
+            "Failed to fetch models from HuggingFace: offline"
+        ]
+
+    def test_the_cache_drops_its_oldest_page_past_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Past CACHE_MAX_ENTRIES the oldest page goes, not the first key in sort order."""
+        calls: list[str | None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["params"].get("cursor"))
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        monkeypatch.setattr(HfClient, "CACHE_MAX_ENTRIES", 2)
+        client = get_services().hf_client
+        for cursor in ("z", "m", "c", "m", "c", "z"):
+            client.fetch_models(cursor=cursor)
+        assert calls == ["z", "m", "c", "z"]
+
+    def test_a_page_is_stale_at_exactly_the_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A page aged exactly CACHE_TTL is read again."""
+        calls: list[None] = []
+        now = [100.0]
+
+        def mock_get(*args: object, **kwargs: object) -> httpx.Response:
+            calls.append(None)
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        monkeypatch.setattr("lilbee.catalog.hf_client.time.monotonic", lambda: now[0])
+        client = get_services().hf_client
+        client.fetch_models()
+        now[0] = 100.0 + HfClient.CACHE_TTL - 1
+        client.fetch_models()
+        assert len(calls) == 1
+        now[0] = 100.0 + HfClient.CACHE_TTL
+        client.fetch_models()
+        assert len(calls) == 2
 
 
 class TestGetCatalog:
