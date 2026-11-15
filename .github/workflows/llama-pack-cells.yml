@@ -20,6 +20,10 @@ env:
   UPSTREAM_REPO: ggml-org/llama.cpp
   WHEEL_VERSION: 1.12032.1
   MACOSX_DEPLOYMENT_TARGET: "14.0"
+  MISTRALRS_TAG: v0.9.5
+  MISTRALRS_REPO: EricLBuehler/mistral.rs
+  MISTRALRS_CHAT_MODEL: HuggingFaceTB/SmolLM2-135M-Instruct
+  CARGO_ABOUT_VERSION: 0.9.3
 
 jobs:
   # A push to feat/packs-<suffix> builds one engine. Every other branch builds everything.
@@ -272,44 +276,8 @@ jobs:
         if: matrix.backend == 'cuda'
         run: |
           set -euo pipefail
-          python - packaging/engine-wheel/NOTICE-NVIDIA-CUDA <<'PY'
-          import html.parser, sys, urllib.request
-
-          class Text(html.parser.HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.parts, self.skip = [], 0
-
-              def handle_starttag(self, tag, attrs):
-                  if tag in ("script", "style"):
-                      self.skip += 1
-                  elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "br", "tr"):
-                      self.parts.append("\n")
-
-              def handle_endtag(self, tag):
-                  if tag in ("script", "style"):
-                      self.skip -= 1
-
-              def handle_data(self, data):
-                  if not self.skip:
-                      self.parts.append(data)
-
-          url = "https://docs.nvidia.com/cuda/archive/12.4.1/eula/index.html"
-          page = urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
-          parser = Text()
-          parser.feed(page)
-          body = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
-          if "Attachment A" not in body or len(body) < 20000:
-              raise SystemExit("the EULA text from " + url + " looks incomplete")
-          head = (
-              "This wheel carries NVIDIA CUDA 12.4 runtime files: the CUDA Runtime (cudart) and the\n"
-              "CUDA BLAS libraries (cublas, cublasLt). They are named in Attachment A of the NVIDIA\n"
-              "CUDA Toolkit End User License Agreement (https://docs.nvidia.com/cuda/eula/index.html#attachment-a).\n"
-              "The files are not modified. The EULA terms apply to these files. The GPU driver\n"
-              "(libcuda, nvcuda) is not part of this wheel.\n\n"
-              "NVIDIA CUDA Toolkit EULA, version 12.4.1, from " + url + "\n\n")
-          open(sys.argv[1], "w", encoding="utf-8").write(head + body + "\n")
-          PY
+          python tools/wheel-build/write_cuda_notice.py 12.4.1 packaging/engine-wheel/NOTICE-NVIDIA-CUDA \
+            "the CUDA Runtime (cudart) and the CUDA BLAS libraries (cublas, cublasLt)."
           wc -c packaging/engine-wheel/NOTICE-NVIDIA-CUDA
 
       - name: Build llama.cpp for CPU, Vulkan or ROCm in the manylinux_2_34 image
@@ -570,6 +538,303 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: llama-pack-${{ matrix.cell }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  mistralrs:
+    name: ${{ matrix.cell }}
+    needs: plan
+    if: needs.plan.outputs.engine == 'all' || needs.plan.outputs.engine == 'mistralrs'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: mistralrs-linux-x86_64-cpu
+            backend: cpu
+            runner: ubuntu-22.04
+            asset: mistralrs-cpu-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            timeout: 60
+          - cell: mistralrs-linux-x86_64-cuda128-sm80
+            backend: cuda128_sm80
+            runner: ubuntu-22.04
+            asset: mistralrs-cuda128-sm80-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            rust_features: cuda flash-attn nccl
+            cuda: 12.8.1
+            timeout: 60
+          - cell: mistralrs-linux-x86_64-cuda128-sm86
+            backend: cuda128_sm86
+            runner: ubuntu-22.04
+            asset: mistralrs-cuda128-sm86-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            rust_features: cuda flash-attn nccl
+            cuda: 12.8.1
+            timeout: 60
+          - cell: mistralrs-linux-x86_64-cuda128-sm89
+            backend: cuda128_sm89
+            runner: ubuntu-22.04
+            asset: mistralrs-cuda128-sm89-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            rust_features: cuda flash-attn nccl
+            cuda: 12.8.1
+            timeout: 60
+          - cell: mistralrs-linux-x86_64-cuda128-sm90
+            backend: cuda128_sm90
+            runner: ubuntu-22.04
+            asset: mistralrs-cuda128-sm90-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            rust_features: cuda flash-attn nccl
+            cuda: 12.8.1
+            timeout: 60
+          - cell: mistralrs-linux-x86_64-cuda128-sm100
+            backend: cuda128_sm100
+            runner: ubuntu-22.04
+            asset: mistralrs-cuda128-sm100-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            rust_features: cuda flash-attn nccl
+            cuda: 12.8.1
+            timeout: 60
+          - cell: mistralrs-linux-x86_64-cuda128-sm120
+            backend: cuda128_sm120
+            runner: ubuntu-22.04
+            asset: mistralrs-cuda128-sm120-x86_64-unknown-linux-gnu.tar.gz
+            platform: manylinux_2_35_x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            about_target: x86_64-unknown-linux-musl
+            rust_features: cuda flash-attn nccl
+            cuda: 12.8.1
+            timeout: 60
+          - cell: mistralrs-windows-x86_64-cpu
+            backend: cpu
+            runner: windows-2022
+            asset: mistralrs-cpu-x86_64-pc-windows-msvc.zip
+            platform: win_amd64
+            rust_target: x86_64-pc-windows-msvc
+            about_target: x86_64-pc-windows-msvc
+            timeout: 60
+          - cell: mistralrs-macos-arm64-metal
+            backend: metal
+            runner: macos-14
+            asset: mistralrs-metal-aarch64-apple-darwin.tar.gz
+            platform: macosx_11_0_arm64
+            rust_target: aarch64-apple-darwin
+            about_target: aarch64-apple-darwin
+            rust_features: metal
+            timeout: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET: ${{ matrix.asset }}
+      BACKEND: ${{ matrix.backend }}
+      PLATFORM: ${{ matrix.platform }}
+      RUST_TARGET: ${{ matrix.rust_target }}
+      RUST_FEATURES: ${{ matrix.rust_features }}
+      CUDA_VERSION: ${{ matrix.cuda }}
+      WHEEL_TREE: packaging/engine-wheel-mistral-rs
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the upstream archive and check its digest
+        run: |
+          set -euo pipefail
+          gh release download "${MISTRALRS_TAG}" -R "${MISTRALRS_REPO}" --pattern "${ASSET}" --dir upstream
+          want="$(gh release view "${MISTRALRS_TAG}" -R "${MISTRALRS_REPO}" --json assets \
+            --jq ".assets[] | select(.name==\"${ASSET}\") | .digest")"
+          if command -v sha256sum >/dev/null; then
+            got="sha256:$(sha256sum "upstream/${ASSET}" | cut -d' ' -f1)"
+          else
+            got="sha256:$(shasum -a 256 "upstream/${ASSET}" | cut -d' ' -f1)"
+          fi
+          test "${want}" = "${got}" || { echo "digest mismatch ${ASSET}: ${want} ${got}"; exit 1; }
+          ls -l upstream
+
+      - name: Fetch cargo-about and check its digest
+        run: |
+          set -euo pipefail
+          name="cargo-about-${CARGO_ABOUT_VERSION}-${{ matrix.about_target }}.tar.gz"
+          gh release download "${CARGO_ABOUT_VERSION}" -R EmbarkStudios/cargo-about --pattern "${name}" --dir cargo-about
+          want="$(gh release view "${CARGO_ABOUT_VERSION}" -R EmbarkStudios/cargo-about --json assets \
+            --jq ".assets[] | select(.name==\"${name}\") | .digest")"
+          if command -v sha256sum >/dev/null; then
+            got="sha256:$(sha256sum "cargo-about/${name}" | cut -d' ' -f1)"
+          else
+            got="sha256:$(shasum -a 256 "cargo-about/${name}" | cut -d' ' -f1)"
+          fi
+          test "${want}" = "${got}" || { echo "digest mismatch ${name}: ${want} ${got}"; exit 1; }
+          tar -xzf "cargo-about/${name}" -C cargo-about
+          tool="$(find cargo-about -type f \( -name cargo-about -o -name cargo-about.exe \) | head -n 1)"
+          test -n "${tool}"
+          echo "CARGO_ABOUT_BIN=${PWD}/${tool}" >> "$GITHUB_ENV"
+
+      - name: Collect the licences of the crates that the binary links
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "${MISTRALRS_TAG}" "https://github.com/${MISTRALRS_REPO}.git" mistral.rs
+          third="${WHEEL_TREE}/THIRD-PARTY/mistral.rs"
+          features=()
+          if [ -n "${RUST_FEATURES}" ]; then features=(--features "${RUST_FEATURES}"); fi
+          # The graph is the one that the release job builds: the locked crates for this target and these features.
+          (cd mistral.rs && "${CARGO_ABOUT_BIN}" generate --format json --locked \
+            -c "${GITHUB_WORKSPACE}/tools/wheel-build/mistralrs-about.toml" \
+            -m mistralrs-cli/Cargo.toml --target "${RUST_TARGET}" ${features[@]+"${features[@]}"} \
+            -o "${GITHUB_WORKSPACE}/about.json")
+          python tools/wheel-build/rust_licences.py about.json "${third}" | tr -d '\r' > crate-licences.txt
+          cat crate-licences.txt
+          cp mistral.rs/LICENSE "${WHEEL_TREE}/LICENSE-mistral.rs"
+          find "${third}" -type f | wc -l
+
+      - name: Repack the upstream archive into the wheel tree
+        run: |
+          set -euo pipefail
+          python tools/wheel-build/repack_mistralrs.py "upstream/${ASSET}" "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin" | tee libs.txt
+          ls -lR "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
+
+      - name: Write the NVIDIA CUDA and NCCL notices
+        if: matrix.cuda != ''
+        run: |
+          set -euo pipefail
+          python tools/wheel-build/write_cuda_notice.py "${CUDA_VERSION}" "${WHEEL_TREE}/NOTICE-NVIDIA-CUDA" \
+            "the CUDA Runtime (cudart), the CUDA BLAS libraries (cublas, cublasLt) and the cuRAND library (curand)."
+          python tools/wheel-build/write_nccl_notice.py "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin/lib/libnccl.so.2" "${WHEEL_TREE}/NOTICE-NCCL"
+          wc -c "${WHEEL_TREE}"/NOTICE-*
+
+      - name: Add the Visual C++ runtime beside the exe
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          bin="${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
+          bash tools/wheel-build/bundle_windows_runtime.sh "${bin}" "${WHEEL_TREE}/NOTICE-Microsoft-VC-Runtime"
+          # The OpenMP runtime stays only when the exe imports it.
+          if ! grep -qiaF vcomp140 "${bin}/mistralrs.exe"; then rm -f "${bin}/vcomp140.dll"; fi
+          ls "${bin}"
+
+      - name: Name every licence in the wheel expression
+        run: |
+          set -euo pipefail
+          extra=""
+          if [ -n "${CUDA_VERSION}" ]; then extra="LicenseRef-NVIDIA-CUDA-EULA"$'\n'"BSD-3-Clause"; fi
+          if [ "${RUNNER_OS}" = Windows ]; then extra="${extra}"$'\n'"LicenseRef-Microsoft-VC-Runtime"; fi
+          terms="$({ echo MIT; cat crate-licences.txt; printf '%s\n' "${extra}"; } | tr -d '\r' | grep -v '^$' \
+            | awk '!seen[$0]++ { printf "%s%s", (n++ ? " AND " : ""), $0 } END { print "" }')"
+          echo "License-Expression: ${terms}"
+          echo "LICENSE_EXPRESSION=${terms}" >> "$GITHUB_ENV"
+          for f in "${WHEEL_TREE}"/LICENSE-* "${WHEEL_TREE}"/NOTICE-*; do
+            [ -e "${f}" ] || continue
+            test -s "${f}" || { echo "empty licence file ${f}"; exit 1; }
+          done
+
+      - name: Build the wheel
+        run: |
+          set -euo pipefail
+          cd "${WHEEL_TREE}"
+          python - "${MISTRALRS_TAG#v}" <<'PY'
+          import os, pathlib, re, sys
+          p = pathlib.Path("pyproject.toml")
+          text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
+          files = '["LICENSE-*", "NOTICE-*", "THIRD-PARTY/**"]'
+          text = text.replace('requires-python', 'license = "%s"\nlicense-files = %s\nrequires-python' % (os.environ["LICENSE_EXPRESSION"], files), 1)
+          p.write_text(text)
+          PY
+          python -m pip install build wheel
+          python -m build --wheel -C--build-option="--build-number=1.${BACKEND}"
+          python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
+          ls dist
+
+      - name: Collect the wheel
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "${WHEEL_TREE}"/dist/*.whl out/
+          wheels=(out/*.whl)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          if command -v sha256sum >/dev/null; then
+            (cd out && sha256sum "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
+          else
+            (cd out && shasum -a 256 "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
+          fi
+          cat out/*.sha256
+          ls -l out
+
+      - name: Check the licences in the installed wheel
+        run: |
+          set -euo pipefail
+          python -m zipfile -l out/*.whl > wheel-listing.txt
+          unzip -p out/*.whl '*.dist-info/METADATA' > wheel-metadata.txt
+          grep -x "License-Expression: ${LICENSE_EXPRESSION}" wheel-metadata.txt
+          grep -q "dist-info/licenses/LICENSE-mistral.rs " wheel-listing.txt || { echo "wheel lacks the mistral.rs licence"; exit 1; }
+          grep -q "dist-info/licenses/THIRD-PARTY/mistral.rs/" wheel-listing.txt || { echo "wheel lacks the crate licences"; exit 1; }
+          if [ -n "${CUDA_VERSION}" ]; then
+            for notice in NOTICE-NVIDIA-CUDA NOTICE-NCCL; do
+              grep -q "dist-info/licenses/${notice} " wheel-listing.txt || { echo "wheel lacks ${notice}"; exit 1; }
+            done
+          fi
+          if [ "${RUNNER_OS}" = Windows ]; then
+            grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime " wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
+          fi
+
+      - name: Start mistralrs from the installed wheel
+        run: |
+          set -euo pipefail
+          python -m venv check-venv
+          if [ "${RUNNER_OS}" = Windows ]; then py=check-venv/Scripts/python.exe; tool=mistralrs.exe; else py=check-venv/bin/python; tool=mistralrs; fi
+          "${py}" -m pip install -q out/*.whl
+          exe="$("${py}" -c "import lilbee_engine_mistral_rs as m, pathlib; print((pathlib.Path(m.__file__).parent / 'bin' / '${tool}').as_posix())")"
+          echo "mistralrs: ${exe}"
+          test -f "${exe}"
+          if [ "${RUNNER_OS}" != Windows ]; then test -x "${exe}" || { echo "the installed tool is not executable"; exit 1; }; fi
+          bindir="$(dirname "${exe}")"
+          ls -R "${bindir}"
+          if [ "${RUNNER_OS}" = Windows ]; then
+            for dll in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+              test -f "${bindir}/${dll}" || { echo "wheel lacks ${dll}"; exit 1; }
+            done
+          fi
+          if [ -n "${CUDA_VERSION}" ]; then
+            # The runner has no GPU and no driver: only the driver library may be unresolved.
+            ldd "${exe}" > ldd.txt
+            cat ldd.txt
+            if grep 'not found' ldd.txt | grep -v 'libcuda\.so'; then echo "the binary has an unresolved library"; exit 1; fi
+            for lib in libcublas.so.12 libcublasLt.so.12 libcudart.so.12 libcurand.so.10 libnccl.so.2; do
+              grep -q "${lib} => ${bindir}/lib/${lib}" ldd.txt || { echo "${lib} does not resolve to the wheel"; exit 1; }
+            done
+          fi
+          if [ "${RUNNER_OS}" = macOS ]; then
+            otool -L "${exe}"
+            if otool -L "${exe}" | awk 'NR > 1 {print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)'; then echo "the binary loads a library outside the system"; exit 1; fi
+          fi
+          cd /
+          "${exe}" --version
+          # A CUDA or Metal cell needs a device to serve a model: it stops at the version and the library check.
+          if [ "${BACKEND}" = cpu ]; then
+            HF_HOME="${RUNNER_TEMP}/hf" python "${GITHUB_WORKSPACE}/tools/qa/check_mistralrs_chat.py" "${exe}" "${MISTRALRS_CHAT_MODEL}"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: engine-pack-${{ matrix.cell }}
           path: out/*
           if-no-files-found: error
           retention-days: 7
