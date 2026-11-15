@@ -171,6 +171,35 @@ def test_the_main_skill_links_its_reference_files():
     assert sorted(links) == ["reference-settings.md", "reference-tuning.md"]
 
 
+def _registered_tool_names() -> list[str]:
+    """The wire name of every tool the MCP server can register, gated ones included."""
+    from lilbee import mcp_server
+
+    return sorted(name or fn.__name__ for fn, name, _gate in mcp_server._REGISTRATIONS)
+
+
+def _skill_text(skill_dir: Path) -> str:
+    files = sorted(skill_dir.glob("*.md"))
+    return "\n".join(f.read_text(encoding="utf-8") for f in files)
+
+
+def test_the_skills_name_every_tool_the_mcp_server_registers():
+    names = _registered_tool_names()
+    assert {"search", "profile_list", "analyze", "wiki_build"} <= set(names)
+    main_text = _skill_text(PLUGIN / "skills" / "lilbee-mcp")
+    wiki_text = _skill_text(PLUGIN / "skills" / "lilbee-mcp-wiki")
+    missing = []
+    for name in names:
+        if name.startswith("wiki_"):
+            word = name.removeprefix("wiki_").replace("_", " ")
+            found = re.search(rf"`{re.escape(word)}[` ]", wiki_text)
+        else:
+            found = re.search(rf"\blilbee_{re.escape(name)}\b", main_text)
+        if not found:
+            missing.append(name)
+    assert missing == []
+
+
 def test_launcher_installs_the_reference_files_with_the_skill(tmp_path):
     skill_dir = PLUGIN / "skills" / "lilbee-mcp"
     installed = skill_install.install_bundled_skill(tmp_path / "skills" / "lilbee-mcp")
