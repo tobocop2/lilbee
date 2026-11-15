@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build the Linux Vulkan or ROCm llama.cpp pack inside the manylinux_2_34 image (AlmaLinux 9,
+# Build the Linux CPU, Vulkan or ROCm llama.cpp pack inside the manylinux_2_34 image (AlmaLinux 9,
 # glibc 2.34). The upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30, so this builds
 # from the upstream tag. Runs as root in the container, with the repository mounted at /work.
 #
 # Reads:
-#   BACKEND                       vulkan or rocm
+#   BACKEND                       cpu, vulkan or rocm
 #   UPSTREAM_REPO, UPSTREAM_TAG   the llama.cpp source to build
 #   BIN_DIR                       the wheel bin/ directory (bind mounted)
 #   OWNER                         uid:gid that owns the files left behind
@@ -73,6 +73,9 @@ REPO
     backend_args=(-DGGML_HIP=ON -DGGML_VULKAN=OFF "-DGPU_TARGETS=${rocm_targets}"
       "-DCMAKE_HIP_COMPILER=${ROCM_PATH}/lib/llvm/bin/clang++"
       "-DCMAKE_HIP_FLAGS=--gcc-install-dir=${gcc13_dir}")
+    ;;
+  cpu)
+    backend_args=(-DGGML_VULKAN=OFF -DGGML_HIP=OFF)
     ;;
   *) echo "unknown BACKEND ${BACKEND}" >&2; exit 1 ;;
 esac
