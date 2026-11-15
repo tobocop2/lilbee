@@ -2940,24 +2940,49 @@ class TestKnownItemRoute:
         # Document order preserved after trimming: the head survives.
         assert [r.chunk_index for r in results] == list(range(len(results)))
 
-    def test_dense_text_budgets_conservatively(self, mock_svc):
-        """The private-corpus overflow: text tokenizing at ~2.5 chars/token
-        passed a chars/4 budget untrimmed. Budgeting must assume dense text,
-        so the kept set stays well under the window even at 3 chars/token."""
-        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
-        # Numeric-dense chunks: ~6000 chars each, real cost ~2400 tokens each.
-        dense = ("4471 0482 9001 " * 400).strip()
-        mock_svc.store.get_chunks_by_source.return_value = [
-            _make_result(source="survey_report.pdf", chunk=dense, chunk_index=i) for i in range(40)
+    # At the last four windows a budget that counts 16 tokens too few (the message
+    # overhead or the template) fits one more chunk, and the prompt passes the limit.
+    @pytest.mark.parametrize("window", [8192, 16384, 24576, 32768, 8256, 16440, 24624, 32808])
+    def test_dense_text_budgets_conservatively(self, mock_svc, window):
+        """A long document is trimmed so the prompt fills the window and no more.
+
+        Each chunk is small against the slack, so a miscount of the system
+        prompt, the message overhead, the template, the per-source cost, the
+        reserve or the neighbor widening changes the kept set. The prompt is
+        costed here with literals, not with the product's estimator: 3
+        characters per token, 8 tokens per message, and a window less 1024 for
+        the answer and 128 for the margin.
+        ``test_overflow_from_provider_retries_once_with_tighter_fit`` covers the
+        refit after an engine overflow, which this test does not.
+        """
+        # The long name makes each block's header cost what the budget reserves per source.
+        name = "survey_report_regional_household_panel_wave_two_v123.pdf"
+        mock_svc.store.get_sources.return_value = [self._source(name)]
+        body = ("4471 0482 9001 " * 20).strip()[:295]
+        given = 400
+        # Each chunk has 299 characters and differs from its neighbors, so widening
+        # cannot merge them.
+        document = [
+            _make_result(source=name, chunk=f"{i:03d} {body}", chunk_index=i) for i in range(given)
         ]
-        mock_svc.provider.served_chat_ctx.return_value = 24576
-        cfg.num_ctx = None
-        rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        chunk = document[0].chunk
+        mock_svc.store.get_chunks_by_source.return_value = document
+        mock_svc.store.get_chunks_by_indices.side_effect = lambda source, indices: [
+            document[i] for i in indices if i < given
+        ]
+        cfg.neighbor_expansion = 1
+        # The window is set here: without num_ctx the budget reads
+        # chat_n_ctx_target, whose default scales with the host's RAM.
+        cfg.num_ctx = window
+        mock_svc.provider.served_chat_ctx.return_value = window
+        rag = get_services().searcher.build_rag_context(f"summarize {name}")
         assert rag is not None
-        messages = rag.messages
-        # At 2.56 chars/token the real prompt cost must still fit the window.
-        real_tokens = sum(len(m["content"]) / 2.56 for m in messages)
-        assert real_tokens <= 24576 * 1.05
+        assert 0 < len(rag.results) < given
+        limit = window - 1024 - 128
+        prompt = sum(-(-len(m["content"]) // 3) + 8 for m in rag.messages)
+        # The budget may leave less than one chunk (and the 16-token template) unused.
+        one_chunk = -(-len(chunk) // 3) + 24
+        assert limit - one_chunk - 16 <= prompt <= limit, (prompt, limit, len(rag.results))
 
     def test_overflow_from_provider_retries_once_with_tighter_fit(self, mock_svc):
         """When the engine still reports overflow, ask refits and retries
