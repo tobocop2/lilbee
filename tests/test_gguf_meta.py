@@ -12,16 +12,14 @@ from pathlib import Path
 import pytest
 
 from lilbee.providers.gguf_meta import read_gguf_metadata, read_mmproj_projector_type
-from tests._gguf_fixture import has_gguf_parser, make_minimal_gguf
+from tests._gguf_fixture import make_minimal_gguf
+from tests._gguf_fixture import needs_gguf_parser as _needs_gguf_parser
 
-# These hand real GGUF bytes to the engine's parser. The unit lane installs no
-# engine helpers, where every one of them would pass for the wrong reason: with
-# no parser the read yields no metadata, which is the answer a corrupt header is
-# meant to produce. The mapping and the failure branches are covered against a
+# The tests marked _needs_gguf_parser hand real GGUF bytes to the engine's
+# parser. With no parser the read yields no metadata, which is the answer a
+# corrupt header is meant to produce, so each would pass for the wrong reason
+# and skips instead. The mapping and the failure branches are covered against a
 # stubbed parser in test_providers.py.
-_needs_gguf_parser = pytest.mark.skipif(
-    not has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
-)
 
 
 @pytest.mark.real_engine_resolution

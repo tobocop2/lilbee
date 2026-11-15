@@ -18,7 +18,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines import LLAMA
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
-from tests._gguf_fixture import has_gguf_parser
+from tests._gguf_fixture import needs_gguf_parser as _needs_gguf_parser
 from tests._sys_modules import inject_modules
 
 if TYPE_CHECKING:
@@ -1200,11 +1200,6 @@ class TestChatCapacityComesFromTheAdoptedLaunch:
         # Nothing adopted: serialize rather than assume an engine with room.
         assert FleetProvider().max_concurrent_chats() == 1
         assert FleetProvider().served_chat_slots() is None
-
-
-_needs_gguf_parser = pytest.mark.skipif(
-    not has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
-)
 
 
 class TestReadMmprojProjectorType:
