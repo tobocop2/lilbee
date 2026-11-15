@@ -166,6 +166,13 @@ class TestSurfaceColumns:
         assert "| `top_k` | `LILBEE_TOP_K` |" in text
 
     @pytest.mark.parametrize("key", sorted(MODEL_ROLE_FIELDS))
+    def test_the_cli_column_of_a_model_role_reads_the_command_text_of_that_role(
+        self, generator, key
+    ):
+        with patch.object(generator, "role_command", return_value="lilbee a-command <ref> now"):
+            assert generator._cli_cell(key) == "`lilbee a-command REF now`"
+
+    @pytest.mark.parametrize("key", sorted(MODEL_ROLE_FIELDS))
     def test_model_roles_are_http_role_api_not_patch_config(self, generator, key):
         # PATCH /api/config passes allow_model_roles=False, so the roles are only
         # settable through PUT /api/models/<role>.

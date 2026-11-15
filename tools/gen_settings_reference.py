@@ -31,7 +31,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lilbee.app.settings import _setting_help  # noqa: E402
+from lilbee.app.settings import _setting_help, role_command  # noqa: E402
 from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup  # noqa: E402
 from lilbee.config_meta import (  # noqa: E402
     ENV_UNSETTABLE_FIELDS,
@@ -45,7 +45,7 @@ from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS  # noqa: E402
 from lilbee.core.config.resolve import builtin_value  # noqa: E402
 from lilbee.core.config.schema import field_type_name  # noqa: E402
 from lilbee.mcp_server import TOOL_GATE_SETTINGS  # noqa: E402
-from lilbee.providers.roles import MODEL_ROLE_FIELDS  # noqa: E402
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, MODEL_ROLE_FIELDS  # noqa: E402
 
 OUTPUT = REPO_ROOT / "docs" / "settings.md"
 
@@ -66,11 +66,11 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.SYSTEM,
 )
 
-# The only CLI commands that write a setting to config.toml. Everything else
+# The CLI commands that write a setting to config.toml, besides the model
+# roles (those read their command from `role_command`). Everything else
 # reaches the CLI through the environment or the config file, so the column
 # stays honest rather than implying a `lilbee set` that does not exist.
 CLI_COMMANDS: dict[str, str] = {
-    "embedding_model": "`lilbee use-embedder REF`",
     "placement": "`lilbee placement set`",
 }
 
@@ -233,6 +233,8 @@ def _http_cell(key: str) -> str:
 
 
 def _cli_cell(key: str) -> str:
+    if key in MODEL_FIELD_TO_ROLE:
+        return f"`{role_command(MODEL_FIELD_TO_ROLE[key]).replace('<ref>', 'REF')}`"
     return CLI_COMMANDS.get(key, "no")
 
 

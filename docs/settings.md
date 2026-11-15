@@ -27,7 +27,7 @@ An environment value that its setting refuses stops every command with one line 
 
 `main_gpu` is not a setting. A `main_gpu` key in `config.toml` or a `LILBEE_MAIN_GPU` variable prints a warning and is ignored: choose the cards with `gpu_devices` or `placement`.
 
-There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
@@ -61,13 +61,13 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |
 |---|---|---|---|---|---|---|---|---|---|
-| `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | no | no | LLM used for chat generation (vision and reranking are separate slots). |
+| `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use chat REF` | no | LLM used for chat generation (vision and reranking are separate slots). |
 | `embedding_model` | `LILBEE_EMBEDDING_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee use-embedder REF` | no | Model used to embed document chunks. |
 | `include_uncensored` | `LILBEE_INCLUDE_UNCENSORED` | `bool` | `false` | yes | yes | yes | no | no | Recommend safety-stripped models in Picks and Discover (browse and search always list them). |
-| `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | no | Cross-encoder model for result reranking (empty = off). |
+| `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use rerank REF` | no | Cross-encoder model for result reranking (empty = off). |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `str` | `auto` | yes | yes | yes | no | yes | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
-| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | no | Picks the OCR engine: a set vision model reads scanned pages, an empty one (including an empty LILBEE_VISION_MODEL) leaves them to Tesseract. The ocr setting decides whether pages are read. |
+| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use vision REF` | no | Picks the OCR engine: a set vision model reads scanned pages, an empty one (including an empty LILBEE_VISION_MODEL) leaves them to Tesseract. The ocr setting decides whether pages are read. |
 
 ## Retrieval
 
