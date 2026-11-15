@@ -560,66 +560,6 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
             about_target: x86_64-unknown-linux-musl
             timeout: 60
-          - cell: mistralrs-linux-x86_64-cuda128-sm80
-            backend: cuda128_sm80
-            runner: ubuntu-22.04
-            asset: mistralrs-cuda128-sm80-x86_64-unknown-linux-gnu.tar.gz
-            platform: manylinux_2_35_x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            about_target: x86_64-unknown-linux-musl
-            rust_features: cuda flash-attn nccl
-            cuda: 12.8.1
-            timeout: 60
-          - cell: mistralrs-linux-x86_64-cuda128-sm86
-            backend: cuda128_sm86
-            runner: ubuntu-22.04
-            asset: mistralrs-cuda128-sm86-x86_64-unknown-linux-gnu.tar.gz
-            platform: manylinux_2_35_x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            about_target: x86_64-unknown-linux-musl
-            rust_features: cuda flash-attn nccl
-            cuda: 12.8.1
-            timeout: 60
-          - cell: mistralrs-linux-x86_64-cuda128-sm89
-            backend: cuda128_sm89
-            runner: ubuntu-22.04
-            asset: mistralrs-cuda128-sm89-x86_64-unknown-linux-gnu.tar.gz
-            platform: manylinux_2_35_x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            about_target: x86_64-unknown-linux-musl
-            rust_features: cuda flash-attn nccl
-            cuda: 12.8.1
-            timeout: 60
-          - cell: mistralrs-linux-x86_64-cuda128-sm90
-            backend: cuda128_sm90
-            runner: ubuntu-22.04
-            asset: mistralrs-cuda128-sm90-x86_64-unknown-linux-gnu.tar.gz
-            platform: manylinux_2_35_x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            about_target: x86_64-unknown-linux-musl
-            rust_features: cuda flash-attn nccl
-            cuda: 12.8.1
-            timeout: 60
-          - cell: mistralrs-linux-x86_64-cuda128-sm100
-            backend: cuda128_sm100
-            runner: ubuntu-22.04
-            asset: mistralrs-cuda128-sm100-x86_64-unknown-linux-gnu.tar.gz
-            platform: manylinux_2_35_x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            about_target: x86_64-unknown-linux-musl
-            rust_features: cuda flash-attn nccl
-            cuda: 12.8.1
-            timeout: 60
-          - cell: mistralrs-linux-x86_64-cuda128-sm120
-            backend: cuda128_sm120
-            runner: ubuntu-22.04
-            asset: mistralrs-cuda128-sm120-x86_64-unknown-linux-gnu.tar.gz
-            platform: manylinux_2_35_x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            about_target: x86_64-unknown-linux-musl
-            rust_features: cuda flash-attn nccl
-            cuda: 12.8.1
-            timeout: 60
           - cell: mistralrs-windows-x86_64-cpu
             backend: cpu
             runner: windows-2022
@@ -703,6 +643,8 @@ jobs:
           python tools/wheel-build/rust_licences.py about.json "${third}" | tr -d '\r' > crate-licences.txt
           cat crate-licences.txt
           cp mistral.rs/LICENSE "${WHEEL_TREE}/LICENSE-mistral.rs"
+          python tools/wheel-build/rust_notices.py about.json mistral.rs/Cargo.lock mistral.rs "${WHEEL_TREE}" | tr -d '\r' > notices.txt
+          cat notices.txt
           find "${third}" -type f | wc -l
 
       - name: Repack the upstream archive into the wheel tree
@@ -733,8 +675,8 @@ jobs:
       - name: Name every licence in the wheel expression
         run: |
           set -euo pipefail
-          extra=""
-          if [ -n "${CUDA_VERSION}" ]; then extra="LicenseRef-NVIDIA-CUDA-EULA"$'\n'"BSD-3-Clause"; fi
+          extra="Apache-2.0"$'\n'"BSD-3-Clause"
+          if [ -n "${CUDA_VERSION}" ]; then extra="${extra}"$'\n'"LicenseRef-NVIDIA-CUDA-EULA"; fi
           if [ "${RUNNER_OS}" = Windows ]; then extra="${extra}"$'\n'"LicenseRef-Microsoft-VC-Runtime"; fi
           terms="$({ echo MIT; cat crate-licences.txt; printf '%s\n' "${extra}"; } | tr -d '\r' | grep -v '^$' \
             | awk '!seen[$0]++ { printf "%s%s", (n++ ? " AND " : ""), $0 } END { print "" }')"
@@ -786,6 +728,12 @@ jobs:
           grep -x "License-Expression: ${LICENSE_EXPRESSION}" wheel-metadata.txt
           grep -q "dist-info/licenses/LICENSE-mistral.rs " wheel-listing.txt || { echo "wheel lacks the mistral.rs licence"; exit 1; }
           grep -q "dist-info/licenses/THIRD-PARTY/mistral.rs/" wheel-listing.txt || { echo "wheel lacks the crate licences"; exit 1; }
+          grep -q "dist-info/licenses/THIRD-PARTY/vendored/" wheel-listing.txt || { echo "wheel lacks the vendored notices"; exit 1; }
+          for id in MPL-2.0 OpenSSL; do
+            if grep -qx "${id}" crate-licences.txt; then
+              grep -q "dist-info/licenses/NOTICE-${id} " wheel-listing.txt || { echo "wheel lacks NOTICE-${id}"; exit 1; }
+            fi
+          done
           if [ -n "${CUDA_VERSION}" ]; then
             for notice in NOTICE-NVIDIA-CUDA NOTICE-NCCL; do
               grep -q "dist-info/licenses/${notice} " wheel-listing.txt || { echo "wheel lacks ${notice}"; exit 1; }

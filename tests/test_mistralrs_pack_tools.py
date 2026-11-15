@@ -24,6 +24,7 @@ def _load(name: str) -> ModuleType:
 
 repack = _load("repack_mistralrs")
 rust_licences = _load("rust_licences")
+rust_notices = _load("rust_notices")
 cuda_notice = _load("write_cuda_notice")
 nccl_notice = _load("write_nccl_notice")
 
@@ -163,3 +164,90 @@ def test_nccl_notice_names_the_tag() -> None:
     text = nccl_notice.notice("libnccl.so.2", "2.25.1", " LICENCE TEXT ")
     assert "bin/lib/libnccl.so.2 is NCCL 2.25.1" in text and "(tag v2.25.1-1)" in text
     assert text.endswith("LICENCE TEXT\n")
+
+
+_LOCK = """
+[[package]]
+name = "selectors"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc123"
+
+[[package]]
+name = "from-git"
+version = "1.0.0"
+source = "git+https://example.test/r#deadbeef"
+"""
+
+
+def _mpl_report(crate: str, version: str) -> dict:
+    entry = _entry("MPL-2.0", "mpl text", crate)
+    entry["used_by"][0]["crate"]["version"] = version
+    return {"licenses": [entry, _entry("MIT", "mit")]}
+
+
+def test_lock_checksums_keep_only_registry_packages() -> None:
+    assert rust_notices.lock_checksums(_LOCK) == {("selectors", "0.26.0"): "abc123"}
+
+
+def test_mpl_notice_names_the_exact_source_and_checksum() -> None:
+    text = rust_notices.mpl_notice(
+        _mpl_report("selectors", "0.26.0"), rust_notices.lock_checksums(_LOCK)
+    )
+    assert text is not None
+    assert "https://static.crates.io/crates/selectors/selectors-0.26.0.crate" in text
+    assert "sha256: abc123" in text
+    assert text.rstrip().endswith("mpl text")
+    assert "serde" not in text
+
+
+def test_mpl_notice_is_absent_without_an_mpl_crate() -> None:
+    assert rust_notices.mpl_notice({"licenses": [_entry("MIT", "mit")]}, {}) is None
+
+
+def test_mpl_notice_refuses_a_crate_outside_the_registry() -> None:
+    with pytest.raises(SystemExit, match="from-git 1.0.0 is not a crates.io package"):
+        rust_notices.mpl_notice(
+            _mpl_report("from-git", "1.0.0"), rust_notices.lock_checksums(_LOCK)
+        )
+
+
+def test_vendored_files_take_notices_and_third_party_licences(tmp_path: Path) -> None:
+    names = (
+        "LICENSE",
+        "NOTICE",
+        "a/NOTICE.md",
+        "a/third_party/x/LICENSE-BSD",
+        "a/third_party/x/main.rs",
+        "target/NOTICE",
+    )
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("t", encoding="utf-8")
+    found = [p.relative_to(tmp_path).as_posix() for p in rust_notices.vendored_files(tmp_path)]
+    assert found == ["NOTICE", "a/NOTICE.md", "a/third_party/x/LICENSE-BSD"]
+
+
+def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    (checkout / "sub").mkdir(parents=True)
+    (checkout / "sub" / "NOTICE").write_text("checkout notice", encoding="utf-8")
+    crate = tmp_path / "registry" / "index-1" / "aws-lc-sys-1.0.0"
+    crate.mkdir(parents=True)
+    (crate / "NOTICE").write_text("crate notice", encoding="utf-8")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    report = _mpl_report("selectors", "0.26.0")
+    report["licenses"].append(_entry("OpenSSL", "ssl text", "aws-lc-sys"))
+    names = rust_notices.write_notices(report, _LOCK, checkout, tmp_path / "registry", tree)
+    assert names == [
+        "NOTICE-MPL-2.0",
+        "NOTICE-OpenSSL",
+        "mistral.rs__sub__NOTICE",
+        "aws-lc-sys-1.0.0__NOTICE",
+    ]
+    assert "Eric Young" in (tree / "NOTICE-OpenSSL").read_text(encoding="utf-8")
+    vendored = tree / "THIRD-PARTY" / "vendored"
+    assert (vendored / "aws-lc-sys-1.0.0__NOTICE").read_text(encoding="utf-8") == "crate notice"
+    assert (vendored / "mistral.rs__sub__NOTICE").read_text(encoding="utf-8") == "checkout notice"
