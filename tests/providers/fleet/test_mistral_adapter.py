@@ -1092,6 +1092,27 @@ def test_a_refusal_is_logged_once_for_each_message(caplog: pytest.LogCaptureFixt
     assert refusals[0].endswith("chat: only evenly")
 
 
+def test_a_refused_ratio_leaves_the_other_ratios_of_that_card_count_to_try() -> None:
+    from lilbee.providers.fleet.engines.base import SplitRefusedError
+    from lilbee.providers.fleet.placement import ModelPlacementInput, _place_split
+
+    asked: list[tuple[int, ...]] = []
+
+    def estimate(_role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+        asked.append(ratio)
+        if len(asked) == 1:
+            raise SplitRefusedError("refused")
+        return (GIB, GIB)
+
+    remaining = {0: float(24 * GIB), 1: float(16 * GIB)}
+    chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
+    placed = _place_split(chat, remaining, estimate)
+    assert placed is not None
+    assert placed.plan.devices == (0, 1)
+    assert placed.plan.tensor_split == asked[1]
+    assert len(asked) == 2 and asked[0] != asked[1]
+
+
 def _unequal_cards() -> list[FleetDevice]:
     return [
         FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate((24, 16))
