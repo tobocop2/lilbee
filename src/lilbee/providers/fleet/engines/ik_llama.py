@@ -32,7 +32,7 @@ VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 # names the same floors); a test reads that script and fails when they stop agreeing.
 _CUDA_DRIVER_FLOOR = (12, 4)
 _CUDA_MIN_COMPUTE = (7, 5)
-_CUDA_LIBRARIES = ["cudart", "cublas", "cublasLt"]
+_CUDA_LIBRARIES = ["ggml", "llama", "cudart", "cublas", "cublasLt"]
 _CPU_LICENCES = ["MIT"]
 _CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]

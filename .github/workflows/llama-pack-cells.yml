@@ -689,7 +689,7 @@ jobs:
           spec = importlib.util.spec_from_file_location("wheel_server", "src/lilbee/providers/fleet/wheel_server.py")
           rule = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(rule)
-          libraries = ["cudart", "cublas", "cublasLt"] if os.environ["BACKEND"] == "cuda" else []
+          libraries = ["ggml", "llama", "cudart", "cublas", "cublasLt"] if os.environ["BACKEND"] == "cuda" else []
           problems = rule.server_problems(zipfile.ZipFile(sys.argv[1]), "llama-server", libraries)
           if problems:
               raise SystemExit("; ".join(problems))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import stat
 import zipfile
@@ -514,16 +515,24 @@ def test_the_cuda_pin_names_its_cell_its_libraries_and_its_licences(
     assert pin["backend"] == "cuda"
     assert pin["sha256"] == "ab" * 32
     assert list(pin["platforms"]) == ["linux-x86_64-cuda"]
-    assert pin["libraries"] == ["cudart", "cublas", "cublasLt"]
+    assert pin["libraries"] == _CUDA_PACK_LIBRARIES
     assert pin["licenses"] == ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
-    assert choice.pin_lock(pin).libraries == ("cudart", "cublas", "cublasLt")
+    assert choice.pin_lock(pin).libraries == tuple(_CUDA_PACK_LIBRARIES)
 
 
-def _make_cuda_wheel(path: Path, *, libraries: bool = True, notice: bool = True) -> str:
+_CUDA_PACK_LIBRARIES = ["ggml", "llama", "cudart", "cublas", "cublasLt"]
+
+
+def _make_cuda_wheel(
+    path: Path, *, libraries: bool = True, notice: bool = True, own: bool = True
+) -> str:
     with zipfile.ZipFile(path, "w") as archive:
         tool = zipfile.ZipInfo("lilbee_engine_ik/bin/llama-server")
         tool.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(tool, "#!/bin/sh\n")
+        if own:
+            for name in ("libggml.so", "libllama.so"):
+                archive.writestr(f"lilbee_engine_ik/bin/{name}", "x")
         if libraries:
             for name in ("libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12"):
                 archive.writestr(f"lilbee_engine_ik/bin/{name}", "x")
@@ -567,6 +576,17 @@ def test_the_cuda_pack_without_the_nvidia_libraries_is_refused(
 
 
 @pytest.mark.usefixtures("cuda_host")
+def test_the_cuda_pack_without_the_libraries_of_its_server_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "ik.whl"
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_cuda_wheel(wheel, own=False))
+    with pytest.raises(engine_service.EngineRefusedError, match="no library file for 'ggml'"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
+@pytest.mark.usefixtures("cuda_host")
 def test_the_cuda_pack_without_the_nvidia_notice_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -594,8 +614,18 @@ def test_the_floors_of_the_cuda_pick_are_the_floors_of_the_build_script() -> Non
     architectures = re.search(r"CMAKE_CUDA_ARCHITECTURES=([^\"]+)\"", code)
     assert architectures is not None
     named = [int(re.match(r"\d+", arch)[0]) for arch in architectures[1].split(";")]  # type: ignore[index]
-    assert len(named) == 5
+    assert len(named) == 4
     assert (min(named) // 10, min(named) % 10) == ik_llama._CUDA_MIN_COMPUTE
+
+
+def test_the_cuda_build_is_shared_and_the_workflow_checks_the_libraries_of_the_pin() -> None:
+    script = (_ROOT / "tools/wheel-build/ik_llama_manylinux.sh").read_text(encoding="utf-8")
+    assert re.search(r'^if \[ "\$\{BACKEND\}" = cuda \]; then shared=ON; fi$', script, re.M)
+    assert "BUILD_SHARED_LIBS=${shared}" in script
+    workflow = (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
+    listed = re.search(r'libraries = (\[[^\]]*\]) if os.environ\["BACKEND"\] == "cuda"', workflow)
+    assert listed is not None
+    assert json.loads(listed[1]) == ik_llama._CUDA_LIBRARIES == _CUDA_PACK_LIBRARIES
 
 
 def test_the_workflow_reads_the_commit_of_the_pin_and_names_no_other() -> None:

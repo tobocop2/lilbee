@@ -14,8 +14,9 @@
 #   STUB_DIR   cuda only: where to copy the stub of the driver library, for a start on a host with no GPU
 # Writes BIN_DIR/llama-server, plus the three NVIDIA runtime libraries beside it for the cuda build.
 #
-# The server links ggml statically, so BIN_DIR holds one binary. A cuda build adds only the files
-# that the NVIDIA EULA lists for redistribution; they are copied as they are: no strip, no patchelf (EULA 2.3).
+# The cpu server links ggml statically, so BIN_DIR holds one binary. The cuda build is shared: BIN_DIR
+# holds the server and its own libraries, and then the NVIDIA files that the EULA lists for
+# redistribution; those are copied as they are: no strip, no patchelf (EULA 2.3).
 
 set -euo pipefail
 
@@ -31,7 +32,9 @@ export PATH="/opt/python/cp312-cp312/bin:${PATH}"
 gcc13=/opt/rh/gcc-toolset-13/root/usr/bin
 "${gcc13}/g++" --version | head -1
 
-args=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+shared=OFF
+if [ "${BACKEND}" = cuda ]; then shared=ON; fi
+args=(-G Ninja -DCMAKE_BUILD_TYPE=Release "-DBUILD_SHARED_LIBS=${shared}"
   -DCMAKE_C_COMPILER="${gcc13}/gcc" -DCMAKE_CXX_COMPILER="${gcc13}/g++"
   -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_CURL=OFF
   -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF)
@@ -42,14 +45,11 @@ if [ "${BACKEND}" = cuda ]; then
     "cuda-driver-devel-${cuda_dash}" "cuda-cccl-${cuda_dash}"
   export PATH="${cuda_dir}/bin:${PATH}"
   nvcc --version | tail -2
-  # Turing is the oldest architecture (compute 7.5). The server links every kernel image into one file,
-  # and five images pass the 2 GB limit of the linker. Code for 8.0 runs on 8.6 and 8.9 cards, and
-  # Hopper compiles from the 7.5 PTX at its first start.
+  # Turing is the oldest architecture (compute 7.5). Code for 8.0 runs on 8.6 and 8.9 cards, and
+  # Hopper compiles from the 7.5 PTX at its first start. A static server cannot link these kernel
+  # images (the linker stops at 2 GB), so the build is shared and the libraries sit beside the server.
   args+=(-DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++"
-    "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-75-real;80-real;89-real;75-virtual}")
-  if [ -n "${EXTRA_CMAKE:-}" ]; then args+=("${EXTRA_CMAKE}"); fi
-  if [ -n "${CUDA_FLAGS:-}" ]; then args+=("-DCMAKE_CUDA_FLAGS=${CUDA_FLAGS}"); fi
-  if [ -n "${HOST_FLAGS:-}" ]; then args+=("-DCMAKE_CXX_FLAGS=${HOST_FLAGS}" "-DCMAKE_C_FLAGS=${HOST_FLAGS}"); fi
+    "-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;89-real;75-virtual")
 fi
 
 build="${BUILD_DIR:-/tmp/build-${BACKEND}}"
@@ -77,9 +77,12 @@ test -n "${server}" || { echo "llama-server was not built" >&2; exit 1; }
 cp "${server}" "${BIN_DIR}/llama-server"
 
 if [ "${BACKEND}" = cuda ]; then
-  # The server finds the NVIDIA files beside itself.
+  # The server finds its own libraries and the NVIDIA files beside itself.
+  find "${build}" \( -type f -o -type l \) -name '*.so*' -not -path '*/CMakeFiles/*' -exec cp -a {} "${BIN_DIR}/" \;
   # shellcheck disable=SC2016  # $ORIGIN is a literal for the dynamic loader
-  patchelf --set-rpath '$ORIGIN' "${BIN_DIR}/llama-server"
+  for elf in "${BIN_DIR}/llama-server" "${BIN_DIR}"/*.so*; do
+    [ -L "${elf}" ] || patchelf --set-rpath '$ORIGIN' "${elf}"
+  done
   : "${SHA_FILE:?}" "${DEPS_DIR:?}"
   for lib in libcudart.so.12 libcublas.so.12 libcublasLt.so.12; do
     cp -L "${cuda_dir}/targets/x86_64-linux/lib/${lib}" "${BIN_DIR}/${lib}"
