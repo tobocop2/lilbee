@@ -1604,6 +1604,7 @@ While `wiki` is off, generated pages are excluded from retrieval regardless of s
 - `lilbee search "query"`: vector search, no LLM generation
 - `lilbee sync` / `lilbee add` / `lilbee remove`: document management
 - `lilbee model pull <name>` / `model list` / `model rm`: native GGUF model management
+- `lilbee model use <chat|rerank|vision> <ref>`: set a role's model with the checks the `PUT /api/models` routes apply (the embedding model has `lilbee use-embedder`)
 - `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune` / `wiki wipe`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server

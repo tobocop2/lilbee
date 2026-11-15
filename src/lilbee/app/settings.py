@@ -56,10 +56,12 @@ from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
     MODEL_FIELD_TO_ROLE,
     ROLE_GATE_FIELD_TO_ROLE,
+    WorkerRole,
 )
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
+    from lilbee.catalog.types import ModelTask
     from lilbee.modelhub.registry import ModelRegistry
 
 log = logging.getLogger(__name__)
@@ -764,6 +766,22 @@ def _put_back(snapshot: SettingsSnapshot, *, invalidate_caches: bool = True) -> 
         _invalidate_caches(set(snapshot.values))
 
 
+def role_command(role: WorkerRole) -> str:
+    """The command line that sets the model of *role*."""
+    if role is WorkerRole.EMBED:
+        return "lilbee use-embedder <ref>"
+    return f"lilbee model use {role.value} <ref>"
+
+
+def task_command(task: ModelTask) -> str:
+    """The command line that sets the role that models of *task* belong to."""
+    # heavy: role_validator pulls catalog + modelhub transitively (~300 ms)
+    from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK
+
+    field = next(name for name, field_task in MODEL_FIELD_TO_TASK.items() if field_task == task)
+    return role_command(MODEL_FIELD_TO_ROLE[field])
+
+
 def _refuse_model_roles(keys: Iterable[str]) -> None:
     """Refuse model-role keys, which the dedicated model route owns."""
     rejected = MODEL_ROLE_FIELDS & set(keys)
@@ -771,7 +789,8 @@ def _refuse_model_roles(keys: Iterable[str]) -> None:
         offender = sorted(rejected)[0]
         raise ValueError(
             f"'{offender}' must be set through the dedicated model route "
-            "(on the command line, lilbee model), not the general settings update."
+            f"(on the command line, {role_command(MODEL_FIELD_TO_ROLE[offender])}), "
+            "not the general settings update."
         )
 
 
