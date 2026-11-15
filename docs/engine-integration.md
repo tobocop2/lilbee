@@ -197,6 +197,8 @@ Evidence: row 11, row 56. The Metal archive of mistral.rs panicked on macOS 14.6
 
 The licence list of the whole engine tree has at least one entry, no empty entry, and no GPL or AGPL entry.
 
+A pin has no archive, so it carries no notice file. The pin check screens the licence terms only: a term that needs a notice (MPL-2.0, OpenSSL, the NVIDIA CUDA EULA, the Visual C++ runtime) passes it. The install then checks the archive: the wheel or the unpacked tree must hold the notice file of each such term, and a build without it is refused. An MPL-2.0 notice, `SOURCE-MPL-2.0`, has one line for each crate: the crates.io download URL, then the sha256 of the crate. Every line must match a crate in `engine_crates.py`, which a pack build fills from its `Cargo.lock`. The check never reads the network. A wheel or tree that holds a GPL, AGPL or LGPL licence file, or a bundled libquadmath, libgmp, libmpfr or libreadline, is refused whatever it declares.
+
 Evidence: golden file `tests/conformance/golden/M5.json`. The rule comes from the licence decision of the engine items. The check runs offline.
 
 ### M6 Stop
