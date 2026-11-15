@@ -95,10 +95,9 @@ if [ "${BACKEND}" = cuda ]; then
   mkdir -p "${STUB_DIR}"
   cp -L "${cuda_dir}/targets/x86_64-linux/lib/stubs/libcuda.so" "${STUB_DIR}/libcuda.so.1"
   chown -R "${OWNER}" "${STUB_DIR}"
-  # The build compiles in the CUB headers of the toolkit; their licence text goes into the wheel.
+  # The build compiles in the CUB headers of the toolkit; the licence text of their package goes into the wheel.
   mkdir -p "${DEPS_DIR}/cub-src"
-  find "${cuda_dir}/include" -ipath '*cub*' \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -type f \
-    -exec cp {} "${DEPS_DIR}/cub-src/" \;
+  cp "/usr/share/licenses/cuda-cccl-${cuda_dash}/LICENSE" "${DEPS_DIR}/cub-src/LICENSE"
   chown -R "${OWNER}" "${DEPS_DIR}"
 fi
 

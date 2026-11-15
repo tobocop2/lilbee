@@ -628,6 +628,16 @@ def test_the_cuda_build_is_shared_and_the_workflow_checks_the_libraries_of_the_p
     assert json.loads(listed[1]) == ik_llama._CUDA_LIBRARIES == _CUDA_PACK_LIBRARIES
 
 
+def test_the_cuda_build_copies_the_licence_of_the_toolkit_package_that_holds_cub() -> None:
+    script = (_ROOT / "tools/wheel-build/ik_llama_manylinux.sh").read_text(encoding="utf-8")
+    copy = re.search(
+        r'^\s+cp "(/usr/share/licenses/[^"]+)" "\$\{DEPS_DIR\}/cub-src/LICENSE"$', script, re.M
+    )
+    assert copy is not None
+    assert copy[1] == "/usr/share/licenses/cuda-cccl-${cuda_dash}/LICENSE"
+    assert "cuda-cccl-${cuda_dash}" in script.split("dnf install -y", 2)[2]
+
+
 def test_the_workflow_refuses_an_ik_wheel_without_the_notices_of_its_vendored_files() -> None:
     workflow = (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
     loop = re.search(r"for vendored in (\S+ \S+ \S+); do\n\s+grep -q (.+?) \|\| \{", workflow)
