@@ -50,11 +50,7 @@ def mpl_notice(report: dict, checksums: dict[tuple[str, str], str]) -> str | Non
     entries = [entry for entry in report["licenses"] if entry["id"] == "MPL-2.0"]
     if not entries:
         return None
-    lines = [
-        "These crates are under the Mozilla Public License 2.0. The pack holds them unmodified.",
-        "The source of each crate is the download at the URL, with the sha256 that follows it.",
-        "",
-    ]
+    lines = []
     for name, version in graph_crates({"licenses": entries}):
         if (name, version) not in checksums:
             raise SystemExit(f"{name} {version} is not a crates.io package in Cargo.lock: no source URL")

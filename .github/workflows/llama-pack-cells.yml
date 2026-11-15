@@ -276,8 +276,44 @@ jobs:
         if: matrix.backend == 'cuda'
         run: |
           set -euo pipefail
-          python tools/wheel-build/write_cuda_notice.py 12.4.1 packaging/engine-wheel/NOTICE-NVIDIA-CUDA \
-            "the CUDA Runtime (cudart) and the CUDA BLAS libraries (cublas, cublasLt)."
+          python - packaging/engine-wheel/NOTICE-NVIDIA-CUDA <<'PY'
+          import html.parser, sys, urllib.request
+
+          class Text(html.parser.HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.parts, self.skip = [], 0
+
+              def handle_starttag(self, tag, attrs):
+                  if tag in ("script", "style"):
+                      self.skip += 1
+                  elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "br", "tr"):
+                      self.parts.append("\n")
+
+              def handle_endtag(self, tag):
+                  if tag in ("script", "style"):
+                      self.skip -= 1
+
+              def handle_data(self, data):
+                  if not self.skip:
+                      self.parts.append(data)
+
+          url = "https://docs.nvidia.com/cuda/archive/12.4.1/eula/index.html"
+          page = urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
+          parser = Text()
+          parser.feed(page)
+          body = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
+          if "Attachment A" not in body or len(body) < 20000:
+              raise SystemExit("the EULA text from " + url + " looks incomplete")
+          head = (
+              "This wheel carries NVIDIA CUDA 12.4 runtime files: the CUDA Runtime (cudart) and the\n"
+              "CUDA BLAS libraries (cublas, cublasLt). They are named in Attachment A of the NVIDIA\n"
+              "CUDA Toolkit End User License Agreement (https://docs.nvidia.com/cuda/eula/index.html#attachment-a).\n"
+              "The files are not modified. The EULA terms apply to these files. The GPU driver\n"
+              "(libcuda, nvcuda) is not part of this wheel.\n\n"
+              "NVIDIA CUDA Toolkit EULA, version 12.4.1, from " + url + "\n\n")
+          open(sys.argv[1], "w", encoding="utf-8").write(head + body + "\n")
+          PY
           wc -c packaging/engine-wheel/NOTICE-NVIDIA-CUDA
 
       - name: Build llama.cpp for CPU, Vulkan or ROCm in the manylinux_2_34 image
@@ -671,7 +707,7 @@ jobs:
             | awk '!seen[$0]++ { printf "%s%s", (n++ ? " AND " : ""), $0 } END { print "" }')"
           echo "License-Expression: ${terms}"
           echo "LICENSE_EXPRESSION=${terms}" >> "$GITHUB_ENV"
-          for f in "${WHEEL_TREE}"/LICENSE-* "${WHEEL_TREE}"/NOTICE-*; do
+          for f in "${WHEEL_TREE}"/LICENSE-* "${WHEEL_TREE}"/NOTICE-* "${WHEEL_TREE}"/SOURCE-*; do
             [ -e "${f}" ] || continue
             test -s "${f}" || { echo "empty licence file ${f}"; exit 1; }
           done
@@ -684,7 +720,7 @@ jobs:
           import os, pathlib, re, sys
           p = pathlib.Path("pyproject.toml")
           text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
-          files = '["LICENSE-*", "NOTICE-*", "THIRD-PARTY/**"]'
+          files = '["LICENSE-*", "NOTICE-*", "SOURCE-*", "THIRD-PARTY/**"]'
           text = text.replace('requires-python', 'license = "%s"\nlicense-files = %s\nrequires-python' % (os.environ["LICENSE_EXPRESSION"], files), 1)
           p.write_text(text)
           PY
