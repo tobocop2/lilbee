@@ -2742,12 +2742,6 @@ class TestSettingsMcp:
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" not in persisted
 
-    def test_settings_set_invalidates_model_arch_cache(self, isolated_env):
-        cfg.data_root = isolated_env
-        with mock.patch("lilbee.modelhub.model_info.invalidate_cache") as mock_invalidate:
-            settings_set({"chat_model": _CHAT_REF})
-        mock_invalidate.assert_called_once()
-
     def test_settings_reset_restores_default(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.top_k = 99

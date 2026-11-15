@@ -544,11 +544,6 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
         return
-    if changed_keys & MODEL_ROLE_FIELDS:
-        # heavy: model_info reads GGUF headers with the gguf parser (~130 ms)
-        from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
-
-        invalidate_arch_cache()
     if changed_keys & FLEET_RELOAD_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
