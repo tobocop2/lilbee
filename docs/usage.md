@@ -351,7 +351,7 @@ a `label` (the name a client shows), a `citation_number` (the `[n]` the answer
 cites it by, or null) and a `locator` (`page N`, `pages A-B`, `line N`,
 `lines A-B`, or empty). A client that appends a turn sends `source`,
 `citation_number` and `locator`, and lilbee adds the `label` on the way
-back. The `content` of a turn never holds the list. The older `sources`
+back. A turn saved with `source_refs` never holds the list in `content`. The older `sources`
 field, a plain list of names, stays for older clients. If a client sends both
 fields, `sources` is dropped and lilbee derives it from `source_refs`. If a client
 sends only `sources`, lilbee stores them as `source_refs` with no citation numbers.

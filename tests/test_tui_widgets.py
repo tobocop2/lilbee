@@ -7776,10 +7776,18 @@ class TestTerminalSafeSourcesList:
             assert "Sources:" in am._content_widget.source
 
     @pytest.mark.parametrize("markdown", [True, False])
+    @pytest.mark.parametrize(
+        "saved",
+        [
+            "colour \x1b[31mred\x1b[0m [1]\n\nSources:\n\n1. \x1b[31ma.md",
+            "ends with spaces and a newline  \n\n",
+            "```python\nprint(1)\n",
+        ],
+        ids=["control-characters", "trailing-whitespace", "open-fence"],
+    )
     async def test_a_restored_turn_with_no_source_refs_shows_its_saved_text_unchanged(
-        self, markdown: bool
+        self, markdown: bool, saved: str
     ) -> None:
-        saved = "colour \x1b[31mred\x1b[0m [1]\n\nSources:\n\n1. \x1b[31ma.md"
         app = _RestoredApp(saved)
         async with app.run_test() as pilot:
             await pilot.pause()
