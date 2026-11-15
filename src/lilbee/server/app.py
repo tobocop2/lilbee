@@ -16,6 +16,7 @@ from litestar.exceptions.responses import create_exception_response
 from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
+from litestar.openapi.spec import Components, SecurityScheme
 
 from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
@@ -30,7 +31,7 @@ from lilbee.core.config import cfg
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
-from lilbee.server.auth import AuthMiddleware, session_manager
+from lilbee.server.auth import BEARER_SCHEME, AuthMiddleware, GuardSchemaPlugin, session_manager
 from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, completions_error_body
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
@@ -371,6 +372,16 @@ def _validation_error_response(request: Request, exc: ValidationException) -> Re
     return _json_error_response(request, plain_validation(exc))
 
 
+class Utf8Request(Request[Any, Any, Any]):
+    """A request that refuses a body which is not UTF-8 with a validation error."""
+
+    async def json(self) -> Any:
+        try:
+            return await super().json()
+        except UnicodeDecodeError as exc:
+            raise ValidationException("The request body is not valid UTF-8") from exc
+
+
 def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     """Log an unmapped failure, then answer it as the same JSON 500.
 
@@ -393,6 +404,7 @@ def create_app() -> Litestar:
     return Litestar(
         lifespan=[_lifespan, mcp_session_lifespan],
         logging_config=None,
+        request_class=Utf8Request,
         middleware=[DefineMiddleware(AuthMiddleware), _LibraryOpenWait(), _ConfigFileReload()],
         exception_handlers={
             HTTPException: _json_error_response,
@@ -489,5 +501,9 @@ def create_app() -> Litestar:
             description="Local knowledge base REST API",
             version=get_version(),
             path="/schema",
+            components=Components(
+                security_schemes={BEARER_SCHEME: SecurityScheme(type="http", scheme="bearer")}
+            ),
         ),
+        plugins=[GuardSchemaPlugin()],
     )

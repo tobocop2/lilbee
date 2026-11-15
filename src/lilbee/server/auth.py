@@ -6,12 +6,19 @@ import hmac
 import json
 import logging
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
+from litestar import Router
 from litestar.exceptions import NotAuthorizedException
+from litestar.handlers import HTTPRouteHandler
+from litestar.plugins import InitPlugin
+from litestar.routes import HTTPRoute
 from litestar.types import ASGIApp, Receive, Scope, Send
+
+if TYPE_CHECKING:
+    from litestar.config.app import AppConfig
 
 from lilbee.core.config import cfg
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
@@ -195,3 +202,31 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         raise NotAuthorizedException("Missing or invalid bearer token")
+
+
+BEARER_SCHEME = "bearerAuth"
+
+
+def _document_guard(handlers: Iterable[Any]) -> None:
+    """Add the 401 and the bearer requirement to each handler the middleware guards."""
+    requirement: dict[str, list[str]] = {BEARER_SCHEME: []}
+    for handler in handlers:
+        if isinstance(handler, Router):
+            for route in handler.routes:
+                if isinstance(route, HTTPRoute):
+                    _document_guard(route.route_handlers)
+        elif isinstance(handler, HTTPRouteHandler) and not authenticates_itself(handler.fn):
+            raises = list(handler.raises or [])
+            if NotAuthorizedException not in raises:
+                handler.raises = [*raises, NotAuthorizedException]
+            security = list(handler.security or [])
+            if requirement not in security:
+                handler.security = [*security, requirement]
+
+
+class GuardSchemaPlugin(InitPlugin):
+    """Publish in the OpenAPI schema what ``AuthMiddleware`` enforces."""
+
+    def on_app_init(self, app_config: AppConfig) -> AppConfig:
+        _document_guard(app_config.route_handlers)
+        return app_config

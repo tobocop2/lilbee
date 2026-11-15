@@ -506,11 +506,6 @@ def test_an_upload_over_the_route_cap_is_refused(
     guard.check()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="every JSON route answers 500 when the body is not UTF-8: the decode error "
-    "is raised while the request is read, before any handler can refuse it",
-)
 @pytest.mark.parametrize("route", ["/api/profiles/validate", "/api/profiles/import"])
 def test_an_upload_body_that_is_not_utf8_is_refused(
     world: World, guard: _Guard, client: TestClient[Any], route: str

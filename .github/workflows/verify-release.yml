@@ -223,6 +223,9 @@ jobs:
           clash = schema["paths"].get("/api/profiles/{name}/duplicate", {}).get("post", {})
           if "409" not in clash.get("responses", {}):
               sys.exit("published schema no longer documents the 409 a profile name clash answers")
+          search = schema["paths"].get("/api/search", {}).get("get", {})
+          if "401" not in search.get("responses", {}):
+              sys.exit("published schema no longer documents the 401 a guarded route answers")
           print(f"{len(schema['paths'])} paths, {len(streamed)} streaming")
           PY
 

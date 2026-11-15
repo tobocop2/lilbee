@@ -119,6 +119,31 @@ class TestGpuStatsStreamRoute:
         assert '"utilization_pct": 71' in resp.text
 
 
+class TestNonUtf8JsonBody:
+    @pytest.mark.parametrize("route", ["/api/chat", "/api/ask", "/api/config"])
+    def test_a_body_that_is_not_utf8_gets_400(self, route, client):
+        body = b'{"question": "\xff\xfe"}'
+        resp = client.request(
+            "PATCH" if route == "/api/config" else "POST",
+            route,
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == "The request body is not valid UTF-8"
+
+    @pytest.mark.parametrize(
+        ("route", "envelope_key"),
+        [("/v1/chat/completions", "error"), ("/v1/messages", "error")],
+    )
+    def test_a_compat_route_answers_in_its_own_envelope(self, route, envelope_key, client):
+        resp = client.post(
+            route, content=b'{"model": "\xff"}', headers={"content-type": "application/json"}
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()[envelope_key]["message"] == "The request body is not valid UTF-8"
+
+
 class TestSearchRoute:
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
     def test_empty_results(self, mock_search, client):
@@ -1778,12 +1803,12 @@ class TestOpenAPISchema:
         """A client reads each profile route's errors from the schema: 404 for a
         missing name, 409 for a name clash, 413 for an upload over the cap, 400 for
         a refusal and 503 for an unreadable or unwritable file."""
-        ok_503 = {"200", "503"}
-        refusal = {"200", "400", "503"}
-        named = {"200", "400", "404", "503"}
-        write = {"200", "400", "409", "503"}
-        named_write = {"200", "400", "404", "409", "503"}
-        upload = {"413"}
+        ok_503 = {"200", "401", "503"}
+        refusal = {"200", "400", "401", "503"}
+        named = {"200", "400", "401", "404", "503"}
+        write = {"200", "400", "401", "409", "503"}
+        named_write = {"200", "400", "401", "404", "409", "503"}
+        upload = {"401", "413"}
         expected = {
             ("get", "/api/profiles"): ok_503,
             ("get", "/api/profiles/active"): ok_503,
@@ -1809,6 +1834,39 @@ class TestOpenAPISchema:
             for method, operation in operations.items()
         }
         assert published == expected
+
+    def test_guarded_routes_publish_the_401_and_the_bearer_scheme(self, client):
+        """The schema lists a 401 and the bearer requirement on each route the
+        auth middleware guards, and neither on a route that checks the token itself."""
+        from litestar.routes import HTTPRoute
+
+        from lilbee.server.auth import BEARER_SCHEME, authenticates_itself
+
+        schema = client.get("/schema/openapi.json").json()
+        assert schema["components"]["securitySchemes"][BEARER_SCHEME] == {
+            "type": "http",
+            "scheme": "bearer",
+        }
+        guarded, self_checked = set(), set()
+        for route in client.app.routes:
+            if not isinstance(route, HTTPRoute):
+                continue
+            for handler in route.route_handlers:
+                for method in handler.http_methods:
+                    key = (method.lower(), route.path_format)
+                    if key[1] in schema["paths"] and key[0] in schema["paths"][key[1]]:
+                        (self_checked if authenticates_itself(handler.fn) else guarded).add(key)
+        assert guarded, "no guarded route is in the schema"
+        assert self_checked, "no self-authenticating route is in the schema"
+
+        def published(key):
+            operation = schema["paths"][key[1]][key[0]]
+            return "401" in operation["responses"], {BEARER_SCHEME: []} in operation.get(
+                "security", []
+            )
+
+        assert {key for key in guarded if published(key) != (True, True)} == set()
+        assert {key for key in self_checked if published(key) != (False, False)} == set()
 
     def test_export_publishes_the_octet_stream_media_type(self, client):
         """/api/export answers with a parquet or jsonl body. It set its media
@@ -3216,6 +3274,24 @@ class TestUnhandledErrorsReachTheLog:
         assert "GET" in caplog.text
         assert "/api/health" in caplog.text
         assert "engine exploded" in caplog.text
+
+
+class TestServerSideDecodeErrorStaysAServerError:
+    """A decode error raised by server code is a 500; only the request body decode is a 400."""
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    )
+    def test_a_decode_error_after_the_body_is_parsed_is_a_500_and_is_logged(
+        self, mock_health, client, caplog
+    ):
+        with caplog.at_level(logging.ERROR, logger="lilbee.server.app"):
+            resp = client.get("/api/health")
+
+        assert resp.status_code == 500
+        assert "invalid start byte" in caplog.text
 
 
 class TestBodyOfTheWrongKind:
