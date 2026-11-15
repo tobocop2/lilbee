@@ -4,12 +4,13 @@
 #
 # Nuitka bundles these dylibs into the onefile, and dyld enforces each one's
 # LC_BUILD_VERSION minos independently of the launcher's. A dependency built on
-# a macOS 15 runner therefore ships a binary that dies at load on macOS 11-14
-# even though the launcher itself is pinned to 11.0 -- the failure lands on the
-# user, not on the build, so nothing here catches it without an explicit check.
+# a macOS 15 runner therefore ships a binary that dies at load on any Mac older
+# than the dependency's minos, even though the launcher itself is pinned lower --
+# the failure lands on the user, not on the build, so nothing here catches it
+# without an explicit check.
 #
 # Usage:
-#   MACOSX_DEPLOYMENT_TARGET=11.0 tools/wheel-build/check_macos_floor.sh
+#   MACOSX_DEPLOYMENT_TARGET=15.0 tools/wheel-build/check_macos_floor.sh
 # No-op off macOS.
 set -euo pipefail
 

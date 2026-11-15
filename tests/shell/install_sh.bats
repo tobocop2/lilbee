@@ -59,10 +59,12 @@ tool_dir() {
   cells="${REPO_ROOT}/.github/release-cells.yml"
   arm=$(awk '/asset_name: lilbee-macos-arm64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${cells}")
   intel=$(awk '/asset_name: lilbee-macos-x86_64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${cells}")
+  compat=$(awk '/asset_name: lilbee-compat-macos-x86_64$/ { f = 1 } f && /macos_floor/ { gsub(/[" ]|macos_floor:/, ""); print; exit }' "${cells}")
   glibc=$(grep -o 'manylinux_2_[0-9]*' "${cells}" | head -n 1 | sed 's/manylinux_2_//')
-  [ -n "${arm}" ] && [ -n "${intel}" ] && [ -n "${glibc}" ]
+  [ -n "${arm}" ] && [ -n "${intel}" ] && [ -n "${compat}" ] && [ -n "${glibc}" ]
   grep -qx "MACOS_FLOOR_ARM64=\"${arm}\"" "${SCRIPT}"
   grep -qx "MACOS_FLOOR_X86_64=\"${intel}\"" "${SCRIPT}"
+  grep -qx "MACOS_FLOOR_COMPAT_X86_64=\"${compat}\"" "${SCRIPT}"
   grep -qx "GLIBC_FLOOR=\"2.${glibc}\"" "${SCRIPT}"
 }
 
@@ -219,20 +221,35 @@ tool_dir() {
   publish lilbee-macos-arm64 "body"
   UNAME_S=Darwin UNAME_M=arm64 MACOS=13.6 install_lilbee
   [ "$status" -ne 0 ]
-  [[ "$output" == *"needs macOS 14.0 or newer. This Mac runs 13.6"* ]]
+  [[ "$output" == *"needs macOS 15.0 or newer. This Mac runs 13.6"* ]]
 }
 
 @test "macOS at the floor of the arm64 build installs" {
   publish lilbee-macos-arm64 "body"
-  UNAME_S=Darwin UNAME_M=arm64 MACOS=14.0 install_lilbee
+  UNAME_S=Darwin UNAME_M=arm64 MACOS=15.0 install_lilbee
   [ "$status" -eq 0 ]
 }
 
-@test "an Intel Mac needs macOS 12 and gets the plain Intel build" {
+@test "an Intel Mac needs macOS 15 and gets the plain Intel build" {
   publish lilbee-macos-x86_64 "intel"
-  UNAME_S=Darwin MACOS=12.0 install_lilbee
+  UNAME_S=Darwin MACOS=15.0 install_lilbee
   [ "$status" -eq 0 ]
   [ "$(cat "${LILBEE_INSTALL_DIR}/lilbee")" = "intel" ]
+}
+
+@test "an Intel Mac below macOS 15 is pointed at the compat build" {
+  publish lilbee-macos-x86_64 "intel"
+  UNAME_S=Darwin MACOS=14.7 install_lilbee
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs macOS 15.0 or newer. This Mac runs 14.7. For an older macOS, use the compat build: LILBEE_VARIANT=compat."* ]]
+}
+
+@test "the compat Intel build installs on macOS 12" {
+  publish lilbee-macos-x86_64 "intel"
+  publish lilbee-compat-macos-x86_64 "compat"
+  UNAME_S=Darwin MACOS=12.0 LILBEE_VARIANT=compat install_lilbee
+  [ "$status" -eq 0 ]
+  [ "$(cat "${LILBEE_INSTALL_DIR}/lilbee")" = "compat" ]
 }
 
 @test "a folder that is not on PATH is added to the shell startup file once" {

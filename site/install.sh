@@ -7,8 +7,9 @@ set -eu
 
 REPO="tobocop2/lilbee"
 RELEASES_URL="https://github.com/${REPO}/releases"
-MACOS_FLOOR_ARM64="14.0"
-MACOS_FLOOR_X86_64="12.0"
+MACOS_FLOOR_ARM64="15.0"
+MACOS_FLOOR_X86_64="15.0"
+MACOS_FLOOR_COMPAT_X86_64="12.0"
 GLIBC_FLOOR="2.34"
 MIN_FREE_KB=2097152
 # Tests point this at a fake root holding /proc, /sys, /dev and /opt.
@@ -220,13 +221,22 @@ detect_gfx() {
   if [ -z "${dg_names}" ]; then echo "-"; else echo "${dg_names}" | tr ' ' '\n' | grep . | sort -u | paste -sd, -; fi
 }
 
+# The floor check for os arch asset: each Mac asset has its own macOS floor.
 check_platform_floor() {
   case "$1" in
     darwin)
-      cf_floor="${MACOS_FLOOR_X86_64}"
-      [ "$2" != arm64 ] || cf_floor="${MACOS_FLOOR_ARM64}"
+      cf_hint=""
+      case "$3" in
+        lilbee-macos-arm64) cf_floor="${MACOS_FLOOR_ARM64}" ;;
+        lilbee-compat-macos-x86_64) cf_floor="${MACOS_FLOOR_COMPAT_X86_64}" ;;
+        *)
+          cf_floor="${MACOS_FLOOR_X86_64}"
+          cf_hint=" For an older macOS, use the compat build: LILBEE_VARIANT=compat."
+          ;;
+      esac
       cf_macos=$(sw_vers -productVersion 2>/dev/null || echo "${cf_floor}")
-      version_ge "${cf_macos}" "${cf_floor}" || die "this build needs macOS ${cf_floor} or newer. This Mac runs ${cf_macos}."
+      version_ge "${cf_macos}" "${cf_floor}" \
+        || die "this build needs macOS ${cf_floor} or newer. This Mac runs ${cf_macos}.${cf_hint}"
       ;;
     linux)
       if ldd --version 2>&1 | grep -qi musl; then
@@ -342,7 +352,7 @@ main() {
   asset=$(select_asset "${os}" "${arch}" "${avx2}" "${cuda}" "${kfd}" "${gfx}" "${userland}" "${forced}") \
     || die "no lilbee build for this machine in this release. ${NPM_HINT}"
   expected=$(sum_of "${SUMS_FILE}" "${asset}")
-  check_platform_floor "${os}" "${arch}"
+  check_platform_floor "${os}" "${arch}" "${asset}"
   install_dir="${LILBEE_INSTALL_DIR:-${XDG_BIN_HOME:-${HOME}/.local/bin}}"
   dest="${install_dir}/lilbee"
   mkdir -p "${install_dir}"
