@@ -13,11 +13,13 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import Config, cfg
 from lilbee.providers.fleet import engine_manifest, first_use
+from lilbee.providers.fleet.engine_digests import MANIFESTS
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import (
     _CUDA_DRIVER_FLOOR,
     _CUDA_MIN_COMPUTE,
+    _WHEEL_VERSION,
     LlamaCppAdapter,
     cuda_pack_gap,
     pack_backend,
@@ -295,3 +297,10 @@ def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032()
     assert "-DGGML_NATIVE=OFF" in linux_build
     assert [o for o in _CUDA_ARCHITECTURE_OVERRIDES if o in linux_build + workflow] == []
     assert _CUDA_MIN_COMPUTE == (5, 0)
+
+
+def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow() -> None:
+    shipped = set(MANIFESTS["llama.cpp"][_WHEEL_VERSION])
+    built = {cell["cell"] for cell in _pack_matrix(_pack_cells())}
+    assert shipped
+    assert shipped - built == set()
