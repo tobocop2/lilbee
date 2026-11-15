@@ -63,6 +63,12 @@ class TestEngineTokenizerBudget:
         _build()
         assert _services.provider.count_chat_text_tokens.call_count == 1
 
+    def test_texts_are_joined_by_newlines_and_a_one_character_text_costs_one_token(self, _services):
+        _services.provider.count_chat_text_tokens.side_effect = len
+        cost = get_services().searcher._token_cost(["ab", "cd"])
+        assert _services.provider.count_chat_text_tokens.call_args.args == ("ab\ncd",)
+        assert cost("x") == 1
+
     def test_counted_text_holds_the_system_prompt_and_every_candidate(self, _services):
         _services.provider.count_chat_text_tokens.side_effect = len
         _build(chunk="marker chunk", count=3)
