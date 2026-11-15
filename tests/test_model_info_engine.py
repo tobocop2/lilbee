@@ -50,7 +50,7 @@ def test_an_mlx_folder_reports_the_mlx_engine_as_its_handler(
     )
     _serve_chat_with(monkeypatch, MLX, tmp_path)
     info = model_info.get_model_architecture()
-    assert info.active_handler == "mlx-lm"
+    assert (info.chat_arch, info.active_handler) == ("unknown", "mlx-lm")
 
 
 def test_an_mlx_folder_without_a_window_still_reports_the_mlx_engine(
