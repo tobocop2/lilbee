@@ -13,6 +13,7 @@
       "types": "./lib/api.d.ts",
       "default": "./lib/api.mjs"
     },
+    "./server": "./plugin/server.js",
     "./package.json": "./package.json"
   },
   "sideEffects": false,
@@ -23,12 +24,16 @@
   "files": [
     "bin",
     "lib",
+    "plugin",
+    "skills",
     "README.md"
   ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
+    "prepack": "node scripts/copy-skills.mjs",
+    "pretest": "node scripts/copy-skills.mjs",
     "test": "node --test"
   },
   "lilbee": {
@@ -52,9 +57,19 @@
     "semantic-search",
     "embeddings",
     "ai-search",
-    "privacy"
+    "privacy",
+    "pi-package",
+    "opencode-plugin"
   ],
   "optionalDependencies": {
     "undici": "^6.29.1"
+  },
+  "pi": {
+    "extensions": [
+      "./plugin/extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
   }
 }

@@ -6,9 +6,10 @@
 #   DRY_RUN=1 bash scripts/promote_release.sh v0.6.90b420.dev726 0.6.90b420
 #
 # release-candidate.yml calls a tag a promotion when the parent of its commit is
-# another tag's commit and nothing but pyproject.toml and uv.lock differs between
-# the two. It then copies the source release's notes instead of generating new
-# ones. This builds exactly that commit: the version bump alone, on top of FROM.
+# another tag's commit and nothing but pyproject.toml, uv.lock and the Claude plugin
+# manifest (which carries the release version) differs between the two. It then
+# copies the source release's notes instead of generating new ones.
+# This builds exactly that commit: the version bump alone, on top of FROM.
 #
 # The work happens in a throwaway worktree, so the checkout you are sitting in is
 # never touched, and only the tag is pushed. The commit is deliberately not
@@ -52,12 +53,21 @@ cur=$(awk -F'"' '/^version *= */ { print $2; exit }' "$work/pyproject.toml")
 perl -pi -e 's/^version = "\Q'"$cur"'\E"$/version = "'"$to"'"/' \
   "$work/pyproject.toml" "$work/uv.lock"
 
-# The promotion is only detected when these two files are the whole diff, so
+# The promoted tag is a new release version, so the plugin manifest carries it too.
+# A source tag from before the plugin existed has no manifest.
+claude_manifest=plugins/lilbee/.claude-plugin/plugin.json
+if [ -f "$work/$claude_manifest" ]; then
+  perl -pi -e 's/^(\s*"version": ")\Q'"$cur"'\E(",?)$/${1}'"$to"'${2}/' "$work/$claude_manifest"
+  grep -q "\"version\": \"${to}\"" "$work/$claude_manifest" \
+    || { echo "promote: ${claude_manifest} did not take version ${to}" >&2; exit 1; }
+fi
+
+# The promotion is only detected when these files are the whole diff, so
 # check it here rather than finding out from a release that generated its notes
 # from scratch.
-changed=$(git -C "$work" diff --name-only | sort | tr '\n' ' ')
-if [ "$changed" != "pyproject.toml uv.lock " ]; then
-  echo "promote: expected only pyproject.toml and uv.lock to change, got: ${changed}" >&2
+changed=$(git -C "$work" diff --name-only | grep -v -x -e pyproject.toml -e uv.lock -e "$claude_manifest" || true)
+if [ -n "$changed" ]; then
+  echo "promote: expected only the version files to change, got: $(echo "$changed" | tr '\n' ' ')" >&2
   exit 1
 fi
 
@@ -69,8 +79,8 @@ if [ -n "${DRY_RUN:-}" ]; then
   exit 0
 fi
 
-git -C "$work" add pyproject.toml uv.lock
-git -C "$work" commit -q -m "Release ${to}"
+git -C "$work" diff --name-only -z | xargs -0 git -C "$work" add --
+git -C "$work" commit -q -m "Promote ${to}"
 # Lightweight: tag.gpgsign must not turn this into a signed tag, which needs a message.
 git -C "$work" tag --no-sign "v${to}"
 git -C "$work" push origin "v${to}"

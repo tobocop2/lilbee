@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Detect a same-source promotion: a tag whose parent is itself a v* tag and
-# whose only change is the version line. Prints promoted_from= for $GITHUB_OUTPUT.
+# Detect a same-source promotion: a tag whose parent is itself a v* tag, whose
+# only change is the version files, and whose commit subject starts with "Promote ".
+# A back-to-back release changes the same files, so the subject tells them apart. Prints promoted_from= for $GITHUB_OUTPUT.
 set -euo pipefail
 
 tag="$1"
@@ -11,8 +12,10 @@ if [ -n "${parent}" ]; then
   # sha only on its ^{} peel line, so match that too and strip the suffix.
   from_tag=$(git ls-remote --tags origin \
     | awk -v sha="${parent}" '$1 == sha && $2 ~ /^refs\/tags\/v/ { sub(/\^\{\}$/, "", $2); sub("refs/tags/", "", $2); print $2; exit }')
-  if [ -n "${from_tag}" ] && [ "${from_tag}" != "${tag}" ] \
-    && git diff --quiet HEAD^ HEAD -- . ':(exclude)pyproject.toml' ':(exclude)uv.lock'; then
+  subject=$(git log -1 --format=%s HEAD)
+  if [ -n "${from_tag}" ] && [ "${from_tag}" != "${tag}" ] && [[ "${subject}" == "Promote "* ]] \
+    && git diff --quiet HEAD^ HEAD -- . ':(exclude)pyproject.toml' ':(exclude)uv.lock' \
+      ':(exclude)plugins/lilbee/.claude-plugin/plugin.json'; then
     promoted_from="${from_tag}"
     echo "${tag} is a same-source promotion of ${from_tag}" >&2
   fi
