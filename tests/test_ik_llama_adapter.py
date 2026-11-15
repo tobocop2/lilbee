@@ -614,7 +614,7 @@ def test_the_floors_of_the_cuda_pick_are_the_floors_of_the_build_script() -> Non
     architectures = re.search(r"CMAKE_CUDA_ARCHITECTURES=([^\"]+)\"", code)
     assert architectures is not None
     named = [int(re.match(r"\d+", arch)[0]) for arch in architectures[1].split(";")]  # type: ignore[index]
-    assert len(named) == 4
+    assert named == [80, 75]
     assert (min(named) // 10, min(named) % 10) == ik_llama._CUDA_MIN_COMPUTE
 
 

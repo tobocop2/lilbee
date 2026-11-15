@@ -46,10 +46,11 @@ if [ "${BACKEND}" = cuda ]; then
   export PATH="${cuda_dir}/bin:${PATH}"
   nvcc --version | tail -2
   # Turing is the oldest architecture (compute 7.5). Code for 8.0 runs on 8.6 and 8.9 cards, and
-  # Hopper compiles from the 7.5 PTX at its first start. A static server cannot link these kernel
-  # images (the linker stops at 2 GB), so the build is shared and the libraries sit beside the server.
+  # Turing and Hopper compile from the 7.5 PTX at their first start. One library holds every kernel
+  # image, and the linker stops at 2 GB: three real images (3.2 GB of objects) do not link even as a
+  # shared library, so the build has one real image.
   args+=(-DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++"
-    "-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;89-real;75-virtual")
+    "-DCMAKE_CUDA_ARCHITECTURES=80-real;75-virtual")
 fi
 
 build="${BUILD_DIR:-/tmp/build-${BACKEND}}"
