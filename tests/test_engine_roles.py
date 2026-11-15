@@ -173,7 +173,6 @@ def test_the_launcher_sizes_the_chat_window_with_the_chat_engine(
         lambda ref: SimpleNamespace(is_local=True),
     )
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda ref: Path(ref))
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda path: {})
     monkeypatch.setattr(
         "lilbee.providers.fleet.planning.plan_sizing_budget",
         lambda engine: seen.append(_tag(engine)) or 1,
