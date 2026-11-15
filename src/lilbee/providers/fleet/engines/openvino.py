@@ -24,7 +24,7 @@ from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 # The wheel version follows the llama.cpp rule: 1.<upstream build>.<wheel build>.
-_VERSION = "1.12020.1"
+_VERSION = "1.12032.1"
 _BACKEND = "openvino"
 _TOOL = "llama-server"
 _LICENCES = ["MIT", "Apache-2.0"]

@@ -23,6 +23,7 @@ _ENGINES = {
     "ik_llama_cpp": "ik_llama.cpp",
     "llama_cpp": "llama.cpp",
     "mlx": "mlx",
+    "openvino": "openvino",
 }
 _WHEEL = re.compile(
     r"lilbee_engine_(?P<slug>[a-z0-9_]+)-(?P<version>[^-]+)-(?P<build>[^-]+)"

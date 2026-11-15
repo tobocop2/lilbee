@@ -1,0 +1,18 @@
+# Separate distribution: a per-platform wheel that holds the llama-server built on
+# OpenVINO, with its runtime libraries. CI fills lilbee_engine_openvino/bin/ and sets
+# the version, the licence expression and the licence files before it builds.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilbee-engine-openvino"
+version = "0.0.0"
+description = "llama-server on OpenVINO for lilbee"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["lilbee_engine_openvino"]
+
+[tool.setuptools.package-data]
+lilbee_engine_openvino = ["bin/*", "bin/**/*"]

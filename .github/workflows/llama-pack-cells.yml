@@ -551,3 +551,178 @@ jobs:
           path: out/*
           if-no-files-found: error
           retention-days: 7
+
+  # The OpenVINO packs repack the upstream llama.cpp OpenVINO archives; the upstream Linux archive
+  # needs glibc 2.38, so its wheel carries that floor in its platform tag.
+  openvino:
+    name: ${{ matrix.cell }}
+    needs: plan
+    if: needs.plan.outputs.engine == 'all' || needs.plan.outputs.engine == 'openvino'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: openvino-linux-x86_64
+            runner: ubuntu-24.04
+            asset: llama-b12032-bin-ubuntu-openvino-2026.4.1-x64.tar.gz
+            platform: manylinux_2_38_x86_64
+            license: MIT AND Apache-2.0 AND BSD-3-Clause
+          - cell: openvino-windows-x86_64
+            runner: windows-2022
+            asset: llama-b12032-bin-win-openvino-2026.4.1-x64.zip
+            platform: win_amd64
+            license: MIT AND Apache-2.0 AND BSD-3-Clause AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET: ${{ matrix.asset }}
+      LICENSE_TERMS: ${{ matrix.license }}
+      PLATFORM: ${{ matrix.platform }}
+      WHEEL_DIR: packaging/engine-wheel-openvino
+      SMOKE_MODEL_URL: https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/60b85c0e3d8fe0f6474f406922a26d12aca4550d/Qwen_Qwen3-0.6B-Q4_K_M.gguf
+      SMOKE_MODEL_SHA256: 9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the upstream archive and check its digest
+        run: |
+          set -euo pipefail
+          gh release download "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --pattern "${ASSET}" --dir upstream
+          want="$(gh release view "${UPSTREAM_TAG}" -R "${UPSTREAM_REPO}" --json assets \
+            --jq ".assets[] | select(.name==\"${ASSET}\") | .digest")"
+          if command -v sha256sum >/dev/null; then
+            got="sha256:$(sha256sum "upstream/${ASSET}" | cut -d' ' -f1)"
+          else
+            got="sha256:$(shasum -a 256 "upstream/${ASSET}" | cut -d' ' -f1)"
+          fi
+          test "${want}" = "${got}" || { echo "digest mismatch ${ASSET}: ${want} ${got}"; exit 1; }
+
+      - name: Repack the archive and collect the llama.cpp and OpenVINO licences
+        run: |
+          set -euo pipefail
+          python tools/wheel-build/repack_openvino.py "upstream/${ASSET}" "${WHEEL_DIR}"
+          work="$(mktemp -d)"
+          lic="${PWD}/${WHEEL_DIR}"
+          git clone -q --depth 1 --branch "${UPSTREAM_TAG}" "https://github.com/${UPSTREAM_REPO}.git" "${work}/llama.cpp"
+          deps=""
+          if [ "${RUNNER_OS}" = Windows ]; then
+            # The Windows server comes from the upstream CPU build, which links the fetched BoringSSL.
+            cmake -S "${work}/llama.cpp" -B "${work}/deps-build" -DLLAMA_BUILD_BORINGSSL=ON \
+              -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DGGML_NATIVE=OFF
+            deps="${work}/deps-build/_deps"
+          fi
+          bash tools/wheel-build/collect_vendored_licences.sh \
+            "${work}/llama.cpp" "${lic}/THIRD-PARTY/llama.cpp" "${work}/vendored-terms.txt" "${deps}"
+          terms="${LICENSE_TERMS}"
+          while IFS= read -r id; do
+            [ -n "${id}" ] || continue
+            printf '%s\n' "${terms// AND /$'\n'}" | grep -qxF "${id}" || terms="${terms} AND ${id}"
+          done < <(tr -d '\r' < "${work}/vendored-terms.txt" | sort -u)
+          echo "License-Expression: ${terms}"
+          echo "LICENSE_EXPRESSION=${terms}" >> "$GITHUB_ENV"
+          for f in "${lic}"/LICENSE-*; do test -s "${f}" || { echo "empty licence file ${f}"; exit 1; }; done
+          find "${lic}/THIRD-PARTY" -type f | wc -l
+
+      - name: Add the Visual C++ runtime beside the exe
+        if: runner.os == 'Windows'
+        run: bash tools/wheel-build/bundle_windows_runtime.sh "${WHEEL_DIR}/lilbee_engine_openvino/bin" "${WHEEL_DIR}/NOTICE-Microsoft-VC-Runtime"
+
+      - name: Build the wheel
+        run: |
+          set -euo pipefail
+          cd "${WHEEL_DIR}"
+          python - "${WHEEL_VERSION}" <<'PY'
+          import os, pathlib, re, sys
+          p = pathlib.Path("pyproject.toml")
+          text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
+          files = '["LICENSE-*", "NOTICE-*", "THIRD-PARTY/**"]'
+          text = text.replace('requires-python', 'license = "%s"\nlicense-files = %s\nrequires-python' % (os.environ["LICENSE_EXPRESSION"], files), 1)
+          p.write_text(text)
+          PY
+          python -m pip install build wheel
+          python -m build --wheel -C--build-option="--build-number=1.openvino"
+          python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
+          ls dist
+
+      - name: Collect the wheel
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "${WHEEL_DIR}"/dist/*.whl out/
+          wheels=(out/*.whl)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          if command -v sha256sum >/dev/null; then
+            (cd out && sha256sum "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
+          else
+            (cd out && shasum -a 256 "$(basename "${wheel}")" > "$(basename "${wheel}").sha256")
+          fi
+          cat out/*.sha256
+          ls -l out
+
+      - name: Check the wheel and start llama-server from it on the CPU device
+        run: |
+          set -euo pipefail
+          python -m venv check-venv
+          if [ "${RUNNER_OS}" = Windows ]; then py=check-venv/Scripts/python.exe; else py=check-venv/bin/python; fi
+          "${py}" -m pip install -q out/*.whl
+          # The listing goes to a file: grep -q ends a pipe early, and unzip then fails with SIGPIPE under pipefail.
+          unzip -l out/*.whl > wheel-listing.txt
+          unzip -p out/*.whl '*.dist-info/METADATA' > wheel-metadata.txt
+          grep -x "License-Expression: ${LICENSE_EXPRESSION}" wheel-metadata.txt
+          for name in LICENSE-llama.cpp LICENSE-OpenVINO; do
+            grep -q "dist-info/licenses/${name}$" wheel-listing.txt || { echo "wheel lacks ${name}"; exit 1; }
+          done
+          for third in llama.cpp OpenVINO; do
+            grep -q "dist-info/licenses/THIRD-PARTY/${third}/" wheel-listing.txt || { echo "wheel lacks the ${third} third-party licences"; exit 1; }
+          done
+          if [ "${RUNNER_OS}" = Windows ]; then
+            grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime$" wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
+            grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" wheel-listing.txt || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }
+          fi
+          bindir="$("${py}" -c "import lilbee_engine_openvino, pathlib; print((pathlib.Path(lilbee_engine_openvino.__file__).parent / 'bin').as_posix())")"
+          ls "${bindir}"
+          exe="$(ls "${bindir}"/llama-server*)"
+          test -f "${bindir}/libggml-openvino.so" -o -f "${bindir}/ggml-openvino.dll"
+          if [ "${RUNNER_OS}" = Linux ]; then
+            if ldd "${bindir}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
+            # The upstream build ran on Ubuntu 24.04: glibc 2.38 and libstdc++ 3.4.32 are its floor.
+            MAX_GLIBC=2.38 MAX_GLIBCXX=3.4.32 bash "${GITHUB_WORKSPACE}/tools/wheel-build/check_glibc_floor.sh" "${bindir}"
+            test -x "${bindir}/llama-server"
+          fi
+          cd /
+          "${exe}" --version
+          export GGML_OPENVINO_DEVICE=CPU
+          "${exe}" --list-devices
+          curl -fsSL --retry 5 --retry-delay 10 -o "${RUNNER_TEMP}/smoke.gguf" "${SMOKE_MODEL_URL}"
+          if command -v sha256sum >/dev/null; then got="$(sha256sum "${RUNNER_TEMP}/smoke.gguf" | cut -d' ' -f1)"; else got="$(shasum -a 256 "${RUNNER_TEMP}/smoke.gguf" | cut -d' ' -f1)"; fi
+          test "${got}" = "${SMOKE_MODEL_SHA256}" || { echo "smoke model digest ${got}"; exit 1; }
+          "${exe}" --model "${RUNNER_TEMP}/smoke.gguf" --host 127.0.0.1 --port 18080 > "${RUNNER_TEMP}/server.log" 2>&1 &
+          server=$!
+          up=0
+          for _ in $(seq 1 90); do
+            if curl -fs http://127.0.0.1:18080/health > /dev/null; then up=1; break; fi
+            kill -0 "${server}" 2> /dev/null || break
+            sleep 2
+          done
+          if [ "${up}" -ne 1 ]; then tail -40 "${RUNNER_TEMP}/server.log"; exit 1; fi
+          curl -fs http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: application/json' \
+            -d '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":16,"temperature":0}' > "${RUNNER_TEMP}/chat.json"
+          cat "${RUNNER_TEMP}/chat.json"
+          kill "${server}" || true
+          python -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['usage']['completion_tokens'] > 0, r" "${RUNNER_TEMP}/chat.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: llama-pack-${{ matrix.cell }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7

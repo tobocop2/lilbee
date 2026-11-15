@@ -97,6 +97,7 @@ def test_the_platform_tag_gives_the_cell_and_the_floor(
         ("tei", "tei"),
         ("ik_llama_cpp", "ik_llama.cpp"),
         ("llama_cpp", "llama.cpp"),
+        ("openvino", "openvino"),
     ],
 )
 def test_the_project_slug_gives_the_engine_name(gen: ModuleType, slug: str, engine: str) -> None:
