@@ -570,7 +570,7 @@ jobs:
           echo "WHEEL_VERSION=0+git${commit:0:12}" >> "$GITHUB_ENV"
           echo "IK_COMMIT=${commit}" >> "$GITHUB_ENV"
           # A cached build tree is up to date for ninja only when its sources are older than its objects.
-          git -C ik-src ls-files -z | xargs -0 touch -d 2001-01-01
+          find ik-src -path ik-src/.git -prune -o -type f -exec touch -d 2001-01-01 {} +
 
       # The CUDA build takes longer than one job may run on four cores. The job stops the build in time
       # and keeps its objects in a cache; the next run of the job continues from them.

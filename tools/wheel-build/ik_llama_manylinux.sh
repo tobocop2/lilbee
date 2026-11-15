@@ -42,9 +42,11 @@ if [ "${BACKEND}" = cuda ]; then
     "cuda-driver-devel-${cuda_dash}" "cuda-cccl-${cuda_dash}"
   export PATH="${cuda_dir}/bin:${PATH}"
   nvcc --version | tail -2
-  # Turing is the oldest architecture (compute 7.5). Hopper also ships PTX, so newer cards JIT from it.
+  # Turing is the oldest architecture (compute 7.5). The server links every kernel image into one file,
+  # and five images pass the 2 GB limit of the linker. Code for 8.0 runs on 8.6 and 8.9 cards, and
+  # Hopper compiles from the 7.5 PTX at its first start.
   args+=(-DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++"
-    "-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;86-real;89-real;90")
+    "-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;89-real;75-virtual")
 fi
 
 build="${BUILD_DIR:-/tmp/build-${BACKEND}}"
