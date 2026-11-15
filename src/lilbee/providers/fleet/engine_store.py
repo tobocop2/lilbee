@@ -35,7 +35,9 @@ from lilbee.runtime.cancellation import CancelSignal
 log = logging.getLogger(__name__)
 
 RECORD_NAME = "ENGINE-RECORD.json"
-PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"})
+PERMISSIVE_LICENCES = frozenset(
+    {"MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0", "Unlicense"}
+)
 REDISTRIBUTABLE_REFS = frozenset({"LicenseRef-NVIDIA-CUDA-EULA"})
 NVIDIA_NOTICE = "NOTICE-NVIDIA-CUDA"
 _LOCK_DIR = ".locks"

@@ -280,6 +280,8 @@ def test_wheel_without_metadata_is_refused(store: EngineStore, tmp_path: Path) -
         ("MIT AND Apache-2.0", True),
         ("MIT AND PSF-2.0", True),
         ("PSF-2.0", True),
+        ("MIT AND Unlicense AND MIT-0", True),
+        ("Unlicense OR GPL-3.0-only", False),
         ("GPL-3.0-only", False),
         ("PSF-2.0 AND GPL-3.0-only", False),
         ("PSF-2.0 OR GPL-3.0-only", False),
