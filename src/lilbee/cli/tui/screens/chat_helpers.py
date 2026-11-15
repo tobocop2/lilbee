@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import stat
 import subprocess
 import sys
 import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -63,12 +65,61 @@ def _opener_argv(platform: str) -> list[str] | None:
     return None
 
 
-def open_local_file(href: str) -> bool:
+class LinkOpenResult(StrEnum):
+    """What opening a ``file:`` link did."""
+
+    OPENED = "opened"
+    OUTSIDE_ROOTS = "outside_roots"
+    NOT_A_DOCUMENT = "not_a_document"
+
+
+LINK_REFUSAL_NOTICES = {
+    LinkOpenResult.OUTSIDE_ROOTS: msg.LINK_NOT_OPENED,
+    LinkOpenResult.NOT_A_DOCUMENT: msg.LINK_NOT_A_DOCUMENT,
+}
+
+# The OS opener starts these types as programs instead of showing them.
+_PROGRAM_SUFFIXES = frozenset(
+    {
+        ".app",
+        ".command",
+        ".terminal",
+        ".tool",
+        ".workflow",
+        ".action",
+        ".scpt",
+        ".scptd",
+        ".sh",
+        ".desktop",
+        ".bat",
+        ".cmd",
+        ".com",
+        ".exe",
+        ".msi",
+        ".ps1",
+        ".lnk",
+    }
+)
+
+
+def _is_program_or_container(path: Path) -> bool:
+    """Whether the opener would start or enter *path*: a program type, an execute
+    bit, or anything that is not a regular file (an app bundle, a folder)."""
+    if path.suffix.lower() in _PROGRAM_SUFFIXES:
+        return True
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return False
+    return not stat.S_ISREG(mode) or bool(mode & 0o111)
+
+
+def open_local_file(href: str) -> LinkOpenResult:
     """Open a ``file:`` URL with the OS opener so it lands in the default app
     for its type (an editor for markdown, a viewer for PDF), not a browser
     rendering raw text. Platforms without a known opener fall back to the
-    webbrowser module. Only the resolved path inside the document roots is
-    opened; any other path opens nothing and returns False."""
+    webbrowser module. Only a document inside the document roots is opened;
+    any other path, program or folder opens nothing."""
     path = url2pathname(urlparse(href).path)
     try:
         resolved = Path(path).resolve(strict=False)
@@ -77,16 +128,19 @@ def open_local_file(href: str) -> bool:
         inside = False
     if not inside:
         log.warning("Refused to open a file outside the document roots: %s", path)
-        return False
+        return LinkOpenResult.OUTSIDE_ROOTS
+    if _is_program_or_container(resolved):
+        log.warning("Refused to open a program or folder: %s", resolved)
+        return LinkOpenResult.NOT_A_DOCUMENT
     argv = _opener_argv(sys.platform)
     if argv is None:
         webbrowser.open(resolved.as_uri())
-        return True
+        return LinkOpenResult.OPENED
     try:
-        subprocess.run([*argv, str(resolved)], check=False, timeout=10)  # noqa: S603 - fixed opener command; resolved path is inside the document roots
+        subprocess.run([*argv, str(resolved)], check=False, timeout=10)  # noqa: S603 - fixed opener command; resolved path is a document inside the document roots
     except (OSError, subprocess.TimeoutExpired):
         log.warning("Could not open source file: %s", resolved)
-    return True
+    return LinkOpenResult.OPENED
 
 
 def detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:

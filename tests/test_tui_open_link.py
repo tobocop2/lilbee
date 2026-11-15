@@ -3,6 +3,9 @@ the source file with the OS opener instead of a browser."""
 
 from __future__ import annotations
 
+import sys
+import threading
+import time
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlparse
@@ -11,10 +14,19 @@ from urllib.request import url2pathname
 import pytest
 from textual.widgets import Markdown
 
+from lilbee.app.services import set_services
+from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens import chat as chat_screen
-from lilbee.cli.tui.screens.chat_helpers import _opener_argv, open_local_file
+from lilbee.cli.tui.screens.chat_helpers import (
+    LinkOpenResult,
+    _opener_argv,
+    open_local_file,
+)
 from lilbee.cli.tui.widgets.message import _answer_markdown_parser
 from lilbee.core.config import cfg
+from tests._async_wait import wait_until
+from tests._lilbee_app_test_host import await_chat
+from tests.conftest import make_mock_services
 
 
 class TestAnswerMarkdownParser:
@@ -108,17 +120,39 @@ class TestOpenAnswerLink:
         monkeypatch.setattr(chat_screen, "open_local_file", opened)
         screen = mock.Mock()
         chat_screen.ChatScreen._open_answer_link(screen, self._click("file:///tmp/doc.md"))
-        opened.assert_called_once_with("file:///tmp/doc.md")
+        screen._open_file_link.assert_called_once_with("file:///tmp/doc.md")
+        opened.assert_not_called()
         screen.app.open_url.assert_not_called()
-        screen.notify.assert_not_called()
 
-    def test_refused_file_link_tells_the_user(self, monkeypatch):
-        monkeypatch.setattr(chat_screen, "open_local_file", mock.Mock(return_value=False))
+    @pytest.mark.parametrize(
+        ("result", "notice"),
+        [
+            (
+                LinkOpenResult.OUTSIDE_ROOTS,
+                "Link not opened: the file is outside your document folders",
+            ),
+            (
+                LinkOpenResult.NOT_A_DOCUMENT,
+                "Link not opened: the target is a program or a folder, not a document",
+            ),
+        ],
+    )
+    def test_refused_file_link_tells_the_user(self, monkeypatch, result, notice):
+        monkeypatch.setattr(chat_screen, "open_local_file", mock.Mock(return_value=result))
+        told = mock.Mock()
+        monkeypatch.setattr(chat_screen, "call_from_thread", told)
         screen = mock.Mock()
-        chat_screen.ChatScreen._open_answer_link(screen, self._click("file:///etc/passwd"))
-        screen.notify.assert_called_once_with(
-            "Link not opened: the file is outside your document folders", severity="warning"
+        chat_screen.ChatScreen._open_file_link.__wrapped__(screen, "file:///etc/passwd")
+        told.assert_called_once_with(screen, screen.notify, notice, severity="warning")
+
+    def test_opened_file_link_shows_no_notice(self, monkeypatch):
+        monkeypatch.setattr(
+            chat_screen, "open_local_file", mock.Mock(return_value=LinkOpenResult.OPENED)
         )
+        told = mock.Mock()
+        monkeypatch.setattr(chat_screen, "call_from_thread", told)
+        chat_screen.ChatScreen._open_file_link.__wrapped__(mock.Mock(), "file:///tmp/doc.md")
+        told.assert_not_called()
 
     def test_web_link_opens_in_browser(self, monkeypatch):
         opened = mock.Mock()
@@ -127,3 +161,92 @@ class TestOpenAnswerLink:
         chat_screen.ChatScreen._open_answer_link(screen, self._click("https://example.com/page"))
         screen.app.open_url.assert_called_once_with("https://example.com/page")
         opened.assert_not_called()
+
+
+class TestProgramsAndFoldersAreNotOpened:
+    """The opener shows documents; it never starts a program or enters a folder."""
+
+    @pytest.fixture()
+    def run(self, monkeypatch):
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "darwin")
+        run = mock.Mock()
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
+        return run
+
+    @pytest.mark.parametrize("name", ["Tool.command", "Shell.terminal", "run.SH", "a.exe"])
+    def test_a_program_type_is_refused(self, run, name):
+        target = cfg.documents_dir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("echo hi", encoding="utf-8")
+        assert open_local_file(target.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_an_app_bundle_folder_is_refused(self, run):
+        bundle = cfg.documents_dir / "Tool.app"
+        bundle.mkdir(parents=True)
+        assert open_local_file(bundle.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_a_plain_folder_is_refused(self, run):
+        folder = cfg.documents_dir / "sub"
+        folder.mkdir(parents=True)
+        assert open_local_file(folder.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
+    def test_a_file_with_the_execute_bit_is_refused(self, run):
+        script = cfg.documents_dir / "notes.txt"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        script.chmod(0o755)
+        assert open_local_file(script.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_a_regular_document_still_opens(self, run):
+        doc = cfg.documents_dir / "notes.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("hi", encoding="utf-8")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
+
+class TestOpenerKeepsTheScreenResponsive:
+    @pytest.fixture(autouse=True)
+    def _chat_setup(self):
+        store = mock.MagicMock()
+        store.get_sources.return_value = []
+        set_services(make_mock_services(store=store))
+        with (
+            mock.patch("lilbee.cli.tui.app.chat_ready", return_value=True),
+            mock.patch("lilbee.cli.tui.app.embedding_ready", return_value=True),
+            mock.patch(
+                "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=False
+            ),
+            mock.patch("lilbee.cli.tui.widgets.model_bar.ModelBar.on_mount"),
+        ):
+            yield
+        set_services(None)
+
+    async def test_a_slow_opener_does_not_block_the_event_loop(self, monkeypatch):
+        started, release = threading.Event(), threading.Event()
+
+        def slow_opener(href: str) -> LinkOpenResult:
+            started.set()
+            release.wait(timeout=15)
+            return LinkOpenResult.NOT_A_DOCUMENT
+
+        monkeypatch.setattr(chat_screen, "open_local_file", slow_opener)
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            chat = await await_chat(app, pilot)
+            chat.post_message(Markdown.LinkClicked(mock.Mock(spec=Markdown), "file:///tmp/a.md"))
+            began = time.monotonic()
+            assert await wait_until(pilot, started.is_set, timeout=5)
+            await pilot.pause()
+            assert time.monotonic() - began < 5, "the opener held the event loop"
+            release.set()
+            assert await wait_until(
+                pilot,
+                lambda: any("not a document" in n.message for n in app._notifications),
+                timeout=5,
+            )

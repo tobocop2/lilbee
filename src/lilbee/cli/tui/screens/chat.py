@@ -64,6 +64,7 @@ from lilbee.cli.tui.command_registry import (
 from lilbee.cli.tui.log_routing import tui_log_path
 from lilbee.cli.tui.screens.analyze_report import open_report, start_analysis
 from lilbee.cli.tui.screens.chat_helpers import (
+    LINK_REFUSAL_NOTICES,
     add_indexed_anything,
     build_add_progress_callback,
     build_import_progress_callback,
@@ -2585,10 +2586,16 @@ class ChatScreen(Screen[None]):
         default app for the file type; web links open in the browser."""
         event.stop()
         if event.href.startswith("file://"):
-            if not open_local_file(event.href):
-                self.notify(msg.LINK_NOT_OPENED, severity="warning")
+            self._open_file_link(event.href)
         else:
             self.app.open_url(event.href)
+
+    @work(thread=True, name="open_file_link", exit_on_error=False)
+    def _open_file_link(self, href: str) -> None:
+        """Open a ``file:`` link off the UI thread and tell the user when it is refused."""
+        notice = LINK_REFUSAL_NOTICES.get(open_local_file(href))
+        if notice is not None:
+            call_from_thread(self, self.notify, notice, severity="warning")
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""

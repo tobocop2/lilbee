@@ -15,7 +15,7 @@ from unittest import mock
 import pytest
 
 from lilbee.app.session_sources import message_sources, posted_message
-from lilbee.cli.tui.screens.chat_helpers import open_local_file
+from lilbee.cli.tui.screens.chat_helpers import LinkOpenResult, open_local_file
 from lilbee.core import settings
 from lilbee.core.config import cfg, config_scope
 from lilbee.retrieval.query.formatting import (
@@ -269,7 +269,7 @@ class TestOpenTime:
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "win32")
         _, browser = opener
         href = (world["docs"] / "a.md").as_uri()
-        assert open_local_file(href) is True
+        assert open_local_file(href) is LinkOpenResult.OPENED
         browser.assert_called_once_with((world["docs"] / "a.md").resolve().as_uri())
 
     def test_the_browser_gets_the_checked_path_without_the_host(self, world, opener, monkeypatch):
@@ -285,7 +285,9 @@ class TestOpenTime:
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
         run, browser = opener
         monkeypatch.setattr(f"{_HELPERS}.Path.resolve", lambda self, strict=False: self)
-        assert open_local_file(f"{world['docs'].as_uri()}/a.md%00.txt") is False
+        assert (
+            open_local_file(f"{world['docs'].as_uri()}/a.md%00.txt") is LinkOpenResult.OUTSIDE_ROOTS
+        )
         assert run.call_count == 0
         assert browser.call_count == 0
 
@@ -308,7 +310,7 @@ class TestOpenTime:
         # platforms return the path unchanged, which lies inside the root.
         opened = open_local_file(loop_a.as_uri())
         assert browser.call_count == 0
-        assert run.call_count == int(opened)
+        assert run.call_count == int(opened is LinkOpenResult.OPENED)
 
     def test_a_resolve_that_raises_on_a_loop_is_refused(self, world, opener, monkeypatch):
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
@@ -316,14 +318,14 @@ class TestOpenTime:
         monkeypatch.setattr(
             f"{_HELPERS}.Path.resolve", mock.Mock(side_effect=RuntimeError("Symlink loop"))
         )
-        assert open_local_file((world["docs"] / "a.md").as_uri()) is False
+        assert open_local_file((world["docs"] / "a.md").as_uri()) is LinkOpenResult.OUTSIDE_ROOTS
         assert run.call_count == 0
         assert browser.call_count == 0
 
-    def test_a_refusal_returns_false_and_an_open_returns_true(self, world, opener, monkeypatch):
+    def test_a_refusal_and_an_open_return_different_results(self, world, opener, monkeypatch):
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
-        assert open_local_file((world["docs"] / "a.md").as_uri()) is True
-        assert open_local_file("file:///etc/passwd") is False
+        assert open_local_file((world["docs"] / "a.md").as_uri()) is LinkOpenResult.OPENED
+        assert open_local_file("file:///etc/passwd") is LinkOpenResult.OUTSIDE_ROOTS
 
 
 class TestRootThatIsASymlink:
@@ -356,5 +358,7 @@ class TestRootThatIsASymlink:
                 _ref("notes/a.md")
             )
             assert "file:" not in source_ref_link(_ref("../outside.md"))
-            assert open_local_file((real_docs / "a.md").as_uri()) is True
-            assert open_local_file((tmp_path / "outside.md").as_uri()) is False
+            assert open_local_file((real_docs / "a.md").as_uri()) is LinkOpenResult.OPENED
+            assert (
+                open_local_file((tmp_path / "outside.md").as_uri()) is LinkOpenResult.OUTSIDE_ROOTS
+            )
