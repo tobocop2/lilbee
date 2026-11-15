@@ -35,7 +35,7 @@ src=/tmp/llama.cpp
 git clone -q --depth 1 --branch "${UPSTREAM_TAG}" "https://github.com/${UPSTREAM_REPO}.git" "${src}"
 
 # CMAKE_CUDA_ARCHITECTURES is left to the upstream default for CUDA 12.4:
-# 50 61 70 75 80 89 90 as virtual, 86 and 89 as real.
+# 50 61 70 75 80 90 as virtual, 86 and 89 as real.
 cmake -S "${src}" -B "${src}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER="${gcc13}/gcc" -DCMAKE_CXX_COMPILER="${gcc13}/g++" \
   -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++" \
