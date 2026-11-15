@@ -64,7 +64,7 @@ class TestOpenLocalFile:
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.webbrowser.open", opened)
         href = (cfg.documents_dir / "doc.md").as_uri()
         open_local_file(href)
-        opened.assert_called_once_with(href)
+        opened.assert_called_once_with((cfg.documents_dir / "doc.md").resolve().as_uri())
 
     def test_opener_failure_is_logged_not_raised(self, monkeypatch, caplog):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "linux")
@@ -110,6 +110,15 @@ class TestOpenAnswerLink:
         chat_screen.ChatScreen._open_answer_link(screen, self._click("file:///tmp/doc.md"))
         opened.assert_called_once_with("file:///tmp/doc.md")
         screen.app.open_url.assert_not_called()
+        screen.notify.assert_not_called()
+
+    def test_refused_file_link_tells_the_user(self, monkeypatch):
+        monkeypatch.setattr(chat_screen, "open_local_file", mock.Mock(return_value=False))
+        screen = mock.Mock()
+        chat_screen.ChatScreen._open_answer_link(screen, self._click("file:///etc/passwd"))
+        screen.notify.assert_called_once_with(
+            "Link not opened: the file is outside your document folders", severity="warning"
+        )
 
     def test_web_link_opens_in_browser(self, monkeypatch):
         opened = mock.Mock()

@@ -269,5 +269,80 @@ class TestOpenTime:
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "win32")
         _, browser = opener
         href = (world["docs"] / "a.md").as_uri()
-        open_local_file(href)
-        browser.assert_called_once_with(href)
+        assert open_local_file(href) is True
+        browser.assert_called_once_with((world["docs"] / "a.md").resolve().as_uri())
+
+    def test_the_browser_gets_the_checked_path_without_the_host(self, world, opener, monkeypatch):
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "win32")
+        _, browser = opener
+        local = (world["docs"] / "a.md").resolve()
+        open_local_file(f"file://attacker.example{local.as_posix()}")
+        browser.assert_called_once_with(local.as_uri())
+
+    def test_the_opener_gets_the_resolved_path(self, world, opener, monkeypatch):
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
+        run, _ = opener
+        open_local_file(f"{world['docs'].as_uri()}/sub/../a.md")
+        (argv,), _kw = run.call_args
+        assert argv == ["xdg-open", str((world["docs"] / "a.md").resolve())]
+
+    def test_a_symlink_loop_is_refused_without_an_error(self, world, opener, monkeypatch):
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
+        run, browser = opener
+        loop_a, loop_b = world["docs"] / "loop-a", world["docs"] / "loop-b"
+        os.symlink(loop_b, loop_a)
+        os.symlink(loop_a, loop_b)
+        # Resolving a loop raises RuntimeError on Python 3.11 and 3.12 on Linux; other
+        # platforms return the path unchanged, which lies inside the root.
+        opened = open_local_file(loop_a.as_uri())
+        assert browser.call_count == 0
+        assert run.call_count == int(opened)
+
+    def test_a_resolve_that_raises_on_a_loop_is_refused(self, world, opener, monkeypatch):
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
+        run, browser = opener
+        monkeypatch.setattr(
+            f"{_HELPERS}.Path.resolve", mock.Mock(side_effect=RuntimeError("Symlink loop"))
+        )
+        assert open_local_file((world["docs"] / "a.md").as_uri()) is False
+        assert run.call_count == 0
+        assert browser.call_count == 0
+
+    def test_a_refusal_returns_false_and_an_open_returns_true(self, world, opener, monkeypatch):
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
+        assert open_local_file((world["docs"] / "a.md").as_uri()) is True
+        assert open_local_file("file:///etc/passwd") is False
+
+
+class TestRootThatIsASymlink:
+    """A root reached through a symlink still contains the files it holds."""
+
+    def test_files_under_symlinked_roots_link_and_others_do_not(
+        self, tmp_path, opener, monkeypatch
+    ):
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
+        real_docs, real_notes = tmp_path / "real-docs", tmp_path / "real-notes"
+        for folder in (real_docs, real_notes):
+            folder.mkdir()
+            (folder / "a.md").write_text("x", encoding="utf-8")
+        (tmp_path / "outside.md").write_text("x", encoding="utf-8")
+        docs, notes = tmp_path / "docs-link", tmp_path / "notes-link"
+        os.symlink(real_docs, docs, target_is_directory=True)
+        os.symlink(real_notes, notes, target_is_directory=True)
+        (tmp_path / "data").mkdir()
+        config = cfg.model_copy(
+            update={
+                "data_root": tmp_path / "data",
+                "documents_dir": docs,
+                "linked_roots": {"notes": str(notes)},
+            }
+        )
+        with config_scope(config):
+            settings.set_value(config.data_root, "linked_roots", {"notes": str(notes)})
+            assert f"]({(real_docs / 'a.md').resolve().as_uri()})" in source_ref_link(_ref("a.md"))
+            assert f"]({(real_notes / 'a.md').resolve().as_uri()})" in source_ref_link(
+                _ref("notes/a.md")
+            )
+            assert "file:" not in source_ref_link(_ref("../outside.md"))
+            assert open_local_file((real_docs / "a.md").as_uri()) is True
+            assert open_local_file((tmp_path / "outside.md").as_uri()) is False
