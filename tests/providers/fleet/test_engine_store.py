@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -404,23 +405,39 @@ def test_the_openvino_runtime_is_not_on_the_list(term: str) -> None:
 
 
 _CRATE_URL = "https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate"
-_CHECKSUM = "0" * 64
+_CHECKSUM = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+_OTHER_URL = "https://static.crates.io/crates/dtoa-short/dtoa-short-0.3.5.crate"
+_OTHER_CHECKSUM = "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87"
 
 
 @pytest.mark.parametrize(
     ("text", "ok"),
     [
         (f"{_CRATE_URL} {_CHECKSUM}\n", True),
-        (f"Mozilla Public License text\n{_CRATE_URL}\t{_CHECKSUM}\n", True),
+        (f"{_CRATE_URL}\t{_CHECKSUM}\n\n{_OTHER_URL}  {_OTHER_CHECKSUM}\n", True),
+        # the value is checked against the committed list, not only its form
+        (f"{_CRATE_URL} {'0' * 64}\n", False),
+        (f"{_CRATE_URL} {_OTHER_CHECKSUM}\n", False),
+        # every line must pass
+        (f"{_CRATE_URL} {_CHECKSUM}\n{_OTHER_URL} {'0' * 64}\n", False),
+        (f"{_CRATE_URL} {_CHECKSUM}\nMozilla Public License text\n", False),
+        # a version the list does not hold
+        (f"https://static.crates.io/crates/option-ext/option-ext-0.2.1.crate {_CHECKSUM}\n", False),
+        # text before the URL
+        (f"x{_CRATE_URL} {_CHECKSUM}\n", False),
+        (f"https://evil.example/{_CRATE_URL} {_CHECKSUM}\n", False),
+        (f"see {_CRATE_URL} {_CHECKSUM}\n", False),
         ("https://github.com/mozilla/option-ext\n", False),
         (f"{_CRATE_URL}\n", False),
-        (f"{_CRATE_URL} {'0' * 63}\n", False),
+        (f"{_CRATE_URL} {_CHECKSUM[:-1]}\n", False),
         (f"{_CRATE_URL} {'G' * 64}\n", False),
+        (f"{_CRATE_URL} {_CHECKSUM.upper()}\n", False),
         (f"https://crates.io/crates/option-ext/option-ext-0.2.0.crate {_CHECKSUM}\n", False),
         (f"https://static.crates.io/crates/option-ext/other-0.2.0.crate {_CHECKSUM}\n", False),
         (f"https://static.crates.io/crates/option-ext/option-ext-0.2.0.zip {_CHECKSUM}\n", False),
         (f"{_CRATE_URL.replace('https', 'http')} {_CHECKSUM}\n", False),
         ("", False),
+        ("\n\n", False),
     ],
 )
 def test_the_mpl_source_pointer_names_the_crate_download_and_its_checksum(
@@ -454,6 +471,7 @@ def _cuda_wheel(
     tool: str = "server",
     notice_path: str = "p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA",
     notice_text: str | bytes = "notice",
+    extras: tuple[tuple[str, str], ...] = (),
 ) -> str:
     with zipfile.ZipFile(path, "w") as archive:
         server = zipfile.ZipInfo(f"p/bin/{tool}")
@@ -462,6 +480,8 @@ def _cuda_wheel(
         archive.writestr("p-1.dist-info/METADATA", f"Name: p\nLicense-Expression: {licence}\n")
         if notice:
             archive.writestr(notice_path, notice_text)
+        for name, text in extras:
+            archive.writestr(name, text)
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -724,6 +744,151 @@ def test_a_pin_may_state_a_vendor_term_and_mpl_without_a_notice() -> None:
 def test_a_pin_with_a_copyleft_term_is_refused() -> None:
     with pytest.raises(LicenceRefusedError, match=r"LGPL-2\.1-only"):
         engine_store._check_licences(pin("0" * 64, licences=("MIT AND LGPL-2.1-only",)))
+
+
+_GPL_TEXT = "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"
+_LGPL_TEXT = "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n"
+_DIST_LICENSES = "p-1.dist-info/licenses/"
+
+
+@pytest.mark.parametrize(
+    ("member", "text", "named"),
+    [
+        (_DIST_LICENSES + "COPYING.LESSER", "any text", "COPYING.LESSER"),
+        (_DIST_LICENSES + "LICENSE-AGPL-3.0", "any text", "LICENSE-AGPL-3.0"),
+        (_DIST_LICENSES + "LICENSE.GPL", "any text", "LICENSE.GPL"),
+        (_DIST_LICENSES + "COPYING", _GPL_TEXT, "COPYING"),
+        (_DIST_LICENSES + "THIRD-PARTY/gmp/LICENSE", _LGPL_TEXT, "LICENSE"),
+        (_DIST_LICENSES + "THIRD-PARTY/gmp/terms.txt", _LGPL_TEXT, "terms.txt"),
+        ("p/COPYING", "GNU AFFERO GENERAL PUBLIC LICENSE\n", "p/COPYING"),
+        ("p/LICENSE", "GNU LIBRARY GENERAL PUBLIC LICENSE\n", "p/LICENSE"),
+        ("p/NOTICE.txt", _GPL_TEXT, "p/NOTICE.txt"),
+        ("p.libs/libquadmath-96973f99.so.0.0.0", "ELF", "libquadmath"),
+        ("p/lib/libgmp.so.10", "ELF", "libgmp"),
+        ("p/lib/libmpfr.6.dylib", "Mach-O", "libmpfr"),
+        ("p/bin/readline.dll", "PE", "readline.dll"),
+    ],
+)
+def test_a_wheel_that_carries_a_copyleft_file_is_refused_whatever_it_declares(
+    store: EngineStore, tmp_path: Path, member: str, text: str, named: str
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _cuda_wheel(path, notice=False, licence="MIT", extras=((member, text),))
+    with pytest.raises(LicenceRefusedError, match=rf"GPL.*{re.escape(named)}"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
+
+
+@pytest.mark.parametrize(
+    ("member", "text"),
+    [
+        (_DIST_LICENSES + "LICENSE", "MIT License\nPermission is hereby granted\n"),
+        (
+            _DIST_LICENSES + "THIRD-PARTY/x/COPYING",
+            "BSD 3-Clause, not the GNU general public license",
+        ),
+        ("p/lib/libquadmathx.so", "ELF"),
+        ("p/lib/libgmpish.so", "ELF"),
+        ("p/data/gpl-notes.txt", "a data file that is not a licence file"),
+        ("p/doc/copying.txt.gz", "binary"),
+        ("p/lib/libgmp.a", "ar archive"),
+        ("p/doc/readline.txt", "a text file"),
+        ("p/doc/terms.txt", _LGPL_TEXT),
+    ],
+)
+def test_a_wheel_with_permissive_licence_files_still_installs(
+    store: EngineStore, tmp_path: Path, member: str, text: str
+) -> None:
+    path = tmp_path / "ok.whl"
+    sha = _cuda_wheel(path, notice=False, licence="MIT", extras=((member, text),))
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
+@pytest.mark.parametrize(
+    ("member", "text"),
+    [
+        ("p-1.dist-info/licenses/COPYING.LESSER", "any text"),
+        ("p-1.dist-info/licenses/COPYING", _GPL_TEXT),
+        ("p.libs/libquadmath-96973f99.so.0.0.0", "ELF"),
+    ],
+)
+def test_a_staged_tree_with_a_copyleft_file_is_refused_whatever_it_declares(
+    tmp_path: Path, member: str, text: str
+) -> None:
+    _staged_cuda_tree(tmp_path, notice=False)
+    (tmp_path / "p-1.dist-info" / "METADATA").write_text(
+        "Name: p\nLicense-Expression: MIT\n", encoding="utf-8"
+    )
+    target = tmp_path / member
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    with pytest.raises(LicenceRefusedError, match="GPL"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
+def test_a_staged_tree_with_a_permissive_licence_file_passes(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=False)
+    (tmp_path / "p-1.dist-info" / "METADATA").write_text(
+        "Name: p\nLicense-Expression: MIT\n", encoding="utf-8"
+    )
+    (tmp_path / "p-1.dist-info" / "licenses" / "COPYING").write_text("MIT", encoding="utf-8")
+    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
+
+
+def test_a_wheel_with_two_entries_of_one_notice_is_refused(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "d.whl"
+    sha = _cuda_wheel(
+        path,
+        notice=True,
+        licence="MIT AND OpenSSL",
+        notice_path=_DIST_LICENSES + "NOTICE-OpenSSL",
+        notice_text=_OPENSSL_TEXT,
+    )
+    with zipfile.ZipFile(path, "a") as archive, pytest.warns(UserWarning, match="Duplicate name"):
+        archive.writestr(_DIST_LICENSES + "NOTICE-OpenSSL", "")
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(LicenceRefusedError, match=r"two entries.*NOTICE-OpenSSL"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
+
+
+def test_a_wheel_with_two_entries_of_a_file_that_is_no_notice_still_installs(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "d.whl"
+    _cuda_wheel(path, notice=False, licence="MIT", extras=((_DIST_LICENSES + "LICENSE", "MIT"),))
+    with zipfile.ZipFile(path, "a") as archive, pytest.warns(UserWarning, match="Duplicate name"):
+        archive.writestr(_DIST_LICENSES + "LICENSE", "MIT")
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
+@pytest.mark.parametrize("term", ["MPL-2.0", "OpenSSL", "LicenseRef-Microsoft-VC-Runtime"])
+def test_a_pin_names_a_notice_term_and_the_archive_is_the_gate(
+    store: EngineStore, tmp_path: Path, term: str
+) -> None:
+    path = tmp_path / "n.whl"
+    sha = _cuda_wheel(path, notice=False, licence=f"MIT AND {term}")
+    lock = pin(sha, licences=(f"MIT AND {term}",))
+    engine_store._check_licences(lock)
+    with pytest.raises(LicenceRefusedError, match=re.escape(term)):
+        store.install_from_wheel(lock, path)
+    with pytest.raises(LicenceRefusedError, match=re.escape(term)):
+        store.ensure(lock, lambda _lock, _scratch: path)
+    assert store.installed() == []
+
+
+def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
+    workflow = (
+        Path(__file__).parents[3] / ".github" / "workflows" / "llama-pack-cells.yml"
+    ).read_text(encoding="utf-8")
+    name = engine_store.NOTICE_RULES["LicenseRef-Microsoft-VC-Runtime"].file
+    assert workflow.count(name) == 2
+    assert workflow.lower().count(name.lower()) == 2
 
 
 def test_a_staged_cuda_tree_without_its_notice_is_refused(tmp_path: Path) -> None:

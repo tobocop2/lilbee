@@ -28,6 +28,7 @@ from lilbee.catalog.download import (
 )
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
+from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS
 from lilbee.providers.fleet.engine_digests import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
 from lilbee.runtime.cancellation import CancelSignal
@@ -65,35 +66,64 @@ PERMISSIVE_LICENCES = frozenset(
 
 @dataclass(frozen=True)
 class NoticeRule:
-    """The notice file that a term needs, and the text that file must hold."""
+    """The notice file that a term needs, and the test that its text must pass."""
 
     file: str
-    pattern: re.Pattern[str]
+    accepts: Callable[[str], bool]
 
 
+def _holds(pattern: str) -> Callable[[str], bool]:
+    compiled = re.compile(pattern)
+    return lambda text: compiled.search(text) is not None
+
+
+_CRATE_HOST = "static.crates.io"
+"""The host of the crate download URL in a pack notice. Nothing fetches it."""
+_CRATE_LINE = re.compile(
+    rf"https://{re.escape(_CRATE_HOST)}/crates/(?P<crate>[\w-]+)/(?P=crate)"
+    r"-(?P<version>\d[\w.+-]*)\.crate[ \t]+(?P<sha256>[0-9a-f]{64})"
+)
+
+
+def _mpl_pointer(text: str) -> bool:
+    """True when every line is a crates.io download URL and the sha256 that the list holds."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    matches = [_CRATE_LINE.fullmatch(line) for line in lines]
+    return bool(lines) and all(
+        match is not None
+        and MPL_CRATE_CHECKSUMS.get((match["crate"], match["version"])) == match["sha256"]
+        for match in matches
+    )
+
+
+# The pin of an engine carries no archive, so the pin check only screens the licence terms. The
+# wheel check and the staged-tree check hold every install, and each one needs the notice file
+# of a term in this table: a pin that names the term gets no build without it.
 NOTICE_RULES: Mapping[str, NoticeRule] = {
-    "LicenseRef-NVIDIA-CUDA-EULA": NoticeRule("NOTICE-NVIDIA-CUDA", re.compile(r"\S")),
+    "LicenseRef-NVIDIA-CUDA-EULA": NoticeRule("NOTICE-NVIDIA-CUDA", _holds(r"\S")),
     "LicenseRef-Microsoft-VC-Runtime": NoticeRule(
         "NOTICE-MICROSOFT-VC-RUNTIME",
-        re.compile(
+        _holds(
             re.escape(
                 "These files are licensed under the Microsoft terms below, "
                 "not under the other terms of this wheel."
             )
         ),
     ),
-    "OpenSSL": NoticeRule(
-        "NOTICE-OpenSSL", re.compile(r"(?s)(?=.*OpenSSL Project)(?=.*Eric Young)")
-    ),
-    # One line per crate: the crates.io download URL of the unmodified crate, then its sha256.
-    "MPL-2.0": NoticeRule(
-        "SOURCE-MPL-2.0",
-        re.compile(
-            r"(?<=https://)static\.crates\.io/crates/(?P<crate>[\w-]+)/(?P=crate)-\d[\w.+-]*\.crate"
-            r"[ \t]+[0-9a-f]{64}\b"
-        ),
-    ),
+    "OpenSSL": NoticeRule("NOTICE-OpenSSL", _holds(r"(?s)(?=.*OpenSSL Project)(?=.*Eric Young)")),
+    # One line per crate: the crates.io download URL of the crate, then its sha256.
+    "MPL-2.0": NoticeRule("SOURCE-MPL-2.0", _mpl_pointer),
 }
+
+# A licence file, by its file name, that is a GPL, AGPL or LGPL text.
+_COPYLEFT_NAME = re.compile(r"(?i)(?<![a-z])(?:[al]?gpl|lesser|affero)(?![a-z])")
+_COPYLEFT_TITLE = re.compile(r"GNU (?:AFFERO |LESSER |LIBRARY )?GENERAL PUBLIC LICENSE")
+_LICENCE_FILE = re.compile(r"(?i)(?:copying|licen[cs]e|notice|copyright|unlicense)(?![a-z])")
+# Shared libraries whose source licence is LGPL or GPL, as a bundled library name.
+_COPYLEFT_LIBRARIES = re.compile(
+    r"(?i)(?:lib)?(?P<name>quadmath|gmp|gmpxx|mpfr|readline)(?:[-.][\w.-]*)?"
+)
+_LIBRARY_SUFFIXES = (".so", ".dylib", ".dll")
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
@@ -249,7 +279,7 @@ def _verified_notices(found: Iterable[tuple[str, str]]) -> frozenset[str]:
         rule.file
         for rule in NOTICE_RULES.values()
         for name, text in pairs
-        if name == rule.file and rule.pattern.search(text)
+        if name == rule.file and rule.accepts(text)
     )
 
 
@@ -279,13 +309,53 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         _refuse_linked_binary(lock, archive)
         names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         text = archive.read(names[0]).decode("utf-8") if names else None
-        notices = _verified_notices(
-            (name, archive.read(info).decode("utf-8", errors="replace"))
-            for info in archive.infolist()
-            if (name := _notice_name(info))
+        found = [(name, info) for info in archive.infolist() if (name := _notice_name(info))]
+        _refuse_repeated_notices(lock, [info.filename for _, info in found])
+        notices = _verified_notices((name, _read_entry(archive, info)) for name, info in found)
+        _refuse_copyleft_files(
+            lock,
+            (
+                (info.filename, partial(_read_entry, archive, info))
+                for info in archive.infolist()
+                if not info.is_dir()
+            ),
         )
         _check_declared_licence(lock, text, notices)
         _refuse_unusable_server(lock, archive)
+
+
+def _read_entry(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
+    return archive.read(info).decode("utf-8", errors="replace")
+
+
+def _refuse_repeated_notices(lock: PinLock, entries: list[str]) -> None:
+    """Refuse a wheel that holds one notice entry twice: the check and the unpack differ."""
+    repeated = sorted(name for name in set(entries) if entries.count(name) > 1)
+    if repeated:
+        raise LicenceRefusedError(
+            f"The wheel for engine {lock.engine} {lock.version} holds two entries named "
+            f"{repeated[0]!r}, so lilbee cannot tell which one is the notice."
+        )
+
+
+def _is_copyleft_file(name: str, read: Callable[[], str]) -> bool:
+    """True when the file *name* is a GPL, AGPL or LGPL licence, or a library under one."""
+    base = PurePosixPath(name).name
+    if _COPYLEFT_LIBRARIES.fullmatch(base):
+        return any(suffix in base.lower() for suffix in _LIBRARY_SUFFIXES)
+    if not (_LICENCE_FILE.match(base) or "/licenses/" in f"/{name}"):
+        return False
+    return bool(_COPYLEFT_NAME.search(base) or _COPYLEFT_TITLE.search(read()))
+
+
+def _refuse_copyleft_files(lock: PinLock, files: Iterable[tuple[str, Callable[[], str]]]) -> None:
+    """Refuse a build that carries a GPL, AGPL or LGPL file, whatever its METADATA declares."""
+    for name, read in files:
+        if _is_copyleft_file(name, read):
+            raise LicenceRefusedError(
+                f"The build of engine {lock.engine} {lock.version} carries a GPL, AGPL or "
+                f"LGPL file: {name!r}. That licence is not on the permissive list."
+            )
 
 
 def _notice_name(info: zipfile.ZipInfo) -> str | None:
@@ -320,6 +390,17 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
                 f"{path.relative_to(stage).as_posix()!r}, which points outside the engine "
                 f"directory."
             )
+    _refuse_copyleft_files(
+        lock,
+        (
+            (
+                path.relative_to(stage).as_posix(),
+                partial(path.read_text, encoding="utf-8", errors="replace"),
+            )
+            for path in sorted(stage.rglob("*"))
+            if path.is_file()
+        ),
+    )
     metadata = sorted(stage.glob("*.dist-info/METADATA"))
     notices = _verified_notices(
         (rule.file, path.read_text(encoding="utf-8", errors="replace"))
