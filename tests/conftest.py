@@ -50,13 +50,16 @@ from lilbee.cli.app import clear_overrides
 from lilbee.core import profile_files
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import profile_folders
-from lilbee.core.system import default_data_dir
+from lilbee.core.system import canonical_models_dir, default_data_dir
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
-from lilbee.providers.fleet.binary import EngineTool
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
+from lilbee.providers.fleet.engine_install import engine_install_hint
+from lilbee.providers.fleet.first_use import installed_tool
 from lilbee.runtime.lock import _no_sync_running
 
 # The literal name, not read from the code under test: a wrong name must fail the tests.
@@ -72,6 +75,8 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # The developer's platform data root, read before any test redirects it.
 REAL_GLOBAL_ROOT = default_data_dir()
+# The developer's models folder; the engine pack installs beside it.
+REAL_MODELS_DIR = canonical_models_dir()
 # The package's own profiles folder; the suite reads a session copy of it.
 REAL_PACKAGE_PROFILES_DIR = profile_files.PACKAGE_PROFILES_DIR
 # The variables that root derives from, with their real values.
@@ -355,6 +360,27 @@ def _sealed_engine_resolution(request, monkeypatch):
         return None if cmd in sealed else real_which(cmd, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "which", _engineless_which)
+
+
+@pytest.fixture
+def real_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the test at the developer's own engine store and return its gguf-parser.
+
+    The product lookup runs first, with no install: the bundled wheel, then PATH.
+    If it raises, the fixture reads the installed engine pack itself, in the real
+    engine store. Nothing is installed: a host with no gguf-parser skips.
+    """
+    monkeypatch.setattr(cfg, "models_dir", REAL_MODELS_DIR)
+    try:
+        return resolve_engine_tool(EngineTool.GGUF_PARSER, install=False)
+    except ProviderError:
+        packed = installed_tool(EngineTool.GGUF_PARSER.value)
+    if packed is None:
+        pytest.skip(
+            "gguf-parser is not on PATH and the engine pack is not installed under "
+            f"{REAL_MODELS_DIR.parent}. {engine_install_hint()}"
+        )
+    return packed
 
 
 @pytest.fixture(autouse=True)
