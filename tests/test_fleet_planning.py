@@ -2282,6 +2282,9 @@ class TestEstimateLaunchParity:
                 f"{role}: launch flag {flag} is unclassified; add it to the sizing map "
                 "(and thread it into the gguf-parser estimate) or the non-sizing set"
             )
+            if flag == "--n-gpu-layers" and value == "-1":
+                # The server fits the auto count itself; the parser sizes a full offload.
+                value = "-2"
             assert estimator_flags.get(estimator_flag) == value, (
                 f"{role}: launch {flag}={value} not reflected as estimator "
                 f"{estimator_flag}={estimator_flags.get(estimator_flag)}"
