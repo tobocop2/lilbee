@@ -630,7 +630,7 @@ jobs:
             timeout: 60
           - cell: mistralrs-macos-arm64-metal
             backend: metal
-            runner: macos-14
+            runner: macos-15
             asset: mistralrs-metal-aarch64-apple-darwin.tar.gz
             platform: macosx_11_0_arm64
             rust_target: aarch64-apple-darwin
@@ -826,7 +826,8 @@ jobs:
             if otool -L "${exe}" | awk 'NR > 1 {print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)'; then echo "the binary loads a library outside the system"; exit 1; fi
           fi
           cd /
-          "${exe}" --version
+          # A CUDA binary links the driver library, which a runner without a GPU lacks: its check is the library list above.
+          if [ -z "${CUDA_VERSION}" ]; then "${exe}" --version; fi
           # A CUDA or Metal cell needs a device to serve a model: it stops at the version and the library check.
           if [ "${BACKEND}" = cpu ]; then
             HF_HOME="${RUNNER_TEMP}/hf" python "${GITHUB_WORKSPACE}/tools/qa/check_mistralrs_chat.py" "${exe}" "${MISTRALRS_CHAT_MODEL}"
