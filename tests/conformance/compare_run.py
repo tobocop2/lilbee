@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.providers.fleet.engine_digests import MANIFESTS
-from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
+from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.roles import WorkerRole
 from tests.conformance import compare_record as cr
 from tests.conformance import compare_verdicts as cv
@@ -45,6 +46,7 @@ from tests.conformance.request_set import (
     EMBED_TEXTS,
     JSON_ASK,
     JSON_SCHEMA,
+    NO_THINKING,
     OVERSIZE,
     REASONING_ASK,
     REQUEST_SET_VERSION,
@@ -158,12 +160,13 @@ def _tool(model: str) -> list[Body]:
 
 def _json_object(model: str) -> list[Body]:
     ask = [{"role": "user", "content": JSON_ASK}]
-    return [_chat(model, ask, max_tokens=256, response_format={"type": "json_object"})]
+    body = _chat(model, ask, max_tokens=256, response_format={"type": "json_object"}, **NO_THINKING)
+    return [body]
 
 
 def _json_schema(model: str) -> list[Body]:
     ask = [{"role": "user", "content": JSON_ASK}]
-    return [_chat(model, ask, max_tokens=256, response_format=_wrapped_schema())]
+    return [_chat(model, ask, max_tokens=256, response_format=_wrapped_schema(), **NO_THINKING)]
 
 
 def _reasoning(model: str) -> list[Body]:
@@ -182,8 +185,19 @@ def _embed(model: str) -> list[Body]:
     return [{"model": model, "input": EMBED_TEXTS}]
 
 
-def _rerank(model: str) -> list[Body]:
-    return [{"model": model, "query": RERANK_QUERY, "documents": RERANK_DOCS}]
+def _rerank_profile(engine: str) -> RequestProfile:
+    return ADAPTERS[EngineName(engine)].request_profile(WorkerRole.RERANK)
+
+
+def _rerank(model: str, engine: str) -> list[Body]:
+    profile = _rerank_profile(engine)
+    if profile.rerank_path is None:
+        return [{"model": model, "query": RERANK_QUERY, "documents": RERANK_DOCS}]
+    return [{"query": RERANK_QUERY, "texts": RERANK_DOCS, **profile.rerank_fields}]
+
+
+def _rerank_path(engine: str) -> str:
+    return _rerank_profile(engine).rerank_path or _RERANK_PATH
 
 
 _REQUESTS: Mapping[Step, Callable[[str], list[Body]]] = {
@@ -195,21 +209,23 @@ _REQUESTS: Mapping[Step, Callable[[str], list[Body]]] = {
     Step.OVERFLOW: _overflow,
     Step.VISION: _vision,
     Step.EMBED: _embed,
-    Step.RERANK: _rerank,
 }
 
 
-def step_requests(step: Step, model: str) -> list[Body]:
-    """The request bodies of *step*, in the order they are sent, for the model id *model*."""
+def step_requests(step: Step, model: str, engine: str = cr.ORACLE_ENGINE) -> list[Body]:
+    """The request bodies of *step* for *model* on *engine*, in the order they are sent."""
+    if step is Step.RERANK:
+        return _rerank(model, engine)
     return _REQUESTS[step](model)
 
 
-_PATHS: Mapping[WorkerRole, str] = {
-    WorkerRole.CHAT: _CHAT_PATH,
-    WorkerRole.VISION: _CHAT_PATH,
-    WorkerRole.EMBED: _EMBED_PATH,
-    WorkerRole.RERANK: _RERANK_PATH,
-}
+def _path(role: WorkerRole, engine: str) -> str:
+    """The route of *role* on *engine*; a rerank route is the one the adapter declares."""
+    if role is WorkerRole.RERANK:
+        return _rerank_path(engine)
+    return _EMBED_PATH if role is WorkerRole.EMBED else _CHAT_PATH
+
+
 _STEP_ROLE: Mapping[Step, WorkerRole] = {
     step: role for role, steps in ROLE_STEPS.items() for step in steps
 }
@@ -232,15 +248,16 @@ def _post(url: str, path: str, body: Body, timeout: float) -> Exchange:
         return Exchange(0, "")
 
 
-def _ask(roles: Mapping[WorkerRole, Served], step: Step) -> tuple[Exchange, ...]:
-    """The exchanges of *step* with the side that serves its role; none when it serves no role."""
+def _ask(roles: Mapping[WorkerRole, Served], step: Step, engine: str) -> tuple[Exchange, ...]:
+    """The exchanges of *step* with the *engine* that serves its role; none when it serves none."""
     role = _STEP_ROLE[step]
     served = roles.get(role)
     if served is None:
         return ()
     timeout = OVERFLOW_CAP_S if step is Step.OVERFLOW else TIMEOUT_S
+    path = _path(role, engine)
     return tuple(
-        _post(served.url, _PATHS[role], body, timeout) for body in step_requests(step, served.id)
+        _post(served.url, path, body, timeout) for body in step_requests(step, served.id, engine)
     )
 
 
@@ -281,7 +298,7 @@ def _twice(
     roles: Mapping[WorkerRole, Served], step: Step, first: tuple[Exchange, ...]
 ) -> tuple[Exchange, Exchange]:
     """The oracle's first answer to *step* and a second answer to the same request."""
-    (again,) = _ask(roles, step)
+    (again,) = _ask(roles, step, cr.ORACLE_ENGINE)
     return first[0], again
 
 
@@ -301,7 +318,7 @@ def _null(spec: Spec, oracle: Mapping[Step, tuple[Exchange, ...]]) -> NullBlock:
     same = tuple(zip(first, second, strict=True))
     quant: tuple[tuple[tuple[float, ...], tuple[float, ...]], ...] = ()
     if spec.quant_embed is not None:
-        (other,) = _ask({WorkerRole.EMBED: spec.quant_embed}, Step.EMBED)
+        (other,) = _ask({WorkerRole.EMBED: spec.quant_embed}, Step.EMBED, cr.ORACLE_ENGINE)
         quant = tuple(zip(first, _vectors(other, "quant embed"), strict=True))
     return NullBlock(
         prompt_tokens=tokens, same_file_vectors=same, quant_vectors=quant, rerank_scores=scores
@@ -348,8 +365,8 @@ def compare(
 ) -> CompareRecord:
     """Send every step to the engine and to the oracle and return the sealed record."""
     _check_spec(spec)
-    engine = {step: _ask(spec.engine_roles, step) for step in Step}
-    oracle = {step: _ask(spec.oracle_roles, step) for step in Step}
+    engine = {step: _ask(spec.engine_roles, step, spec.engine) for step in Step}
+    oracle = {step: _ask(spec.oracle_roles, step, cr.ORACLE_ENGINE) for step in Step}
     null = _null(spec, oracle)
     try:
         bound = cv.embed_bound(null, spec.embed_kind)

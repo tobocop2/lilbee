@@ -183,7 +183,7 @@ class TestFormat:
             cr.parse("not json")
 
     def test_a_stored_body_that_is_not_an_object_is_refused(self, fake: CompareRecord) -> None:
-        broken = _with_step(fake, Step.TOOL, engine=(Exchange(200, "[1]"),))
+        broken = _with_step(fake, Step.TOOL, oracle=(Exchange(200, "[1]"),))
         with pytest.raises(RecordError, match="a stored body is list"):
             cr.judge(broken, Step.TOOL)
 
@@ -229,6 +229,14 @@ class TestScrub:
             "Bearer\n" + PLANT,
             "Authorization: " + "Basic " + "dXNlcjpw" + "YXNzd29yZA==",
             "Basic " + "dXNlcjpw" + "YXNzd29yZA==",
+            "Basic " + "dXNlcjpw" + "YXNz",
+            "Basic " + "dXNlcjpw" + "YXNzd2Q=",
+            "basic " + "dXNlcjpw" + "YXNzd29yZDEy",
+            "Basic\n" + "dXNlcjpw" + "YXNz",
+            "Basic " + "abcdwxyz" + "==",
+            "basic " + "Abcdefgh" + "=",
+            "basic " + "abcdef" + "=",
+            "Authorization: Basic " + "abcdwxyz" + "==",
             "authorization: " + PLANT,
             "wss://x.example/v1",
             "ftp://x.example/m",
@@ -302,6 +310,16 @@ class TestScrub:
             "prompt_tokens=43 and total_tokens: 4300000",
             "the OPENAI_API_KEY variable",
             "my_api_key: your key here",
+            "basic arithmetic",
+            "Basic Arithmetic is addition",
+            "BASIC ARITHMETIC",
+            "a basic operation on integers",
+            "the basic input/output system",
+            "basic JavaScript",
+            "basic\narithmetic",
+            "basic size=large",
+            "basic mode=fast",
+            "basic a=b",
         ],
     )
     def test_clean_text_passes(self, clean: str) -> None:
@@ -380,6 +398,13 @@ class TestScrub:
 
     def test_a_record_that_is_not_json_is_scrubbed_raw(self) -> None:
         assert cr.scrub_fault("not json, http://x") != ""
+
+    @pytest.mark.parametrize(("text", "found"), [("plain words", False), ("see http://x", True)])
+    def test_a_successful_body_that_is_not_json_is_scrubbed_whole(
+        self, real: CompareRecord, text: str, found: bool
+    ) -> None:
+        record = _with_step(real, Step.TOOL, engine=(Exchange(200, text),))
+        assert (cr.scrub_fault(cr.dump(record)) != "") is found
 
 
 class TestCurrentPin:
@@ -486,9 +511,37 @@ class TestReplay:
 
 class TestBodyShapes:
     def test_a_body_that_is_not_json_is_a_named_fault(self, fake: CompareRecord) -> None:
-        edited = _with_step(fake, Step.TOOL, engine=(Exchange(200, "not json"),))
+        edited = _with_step(fake, Step.TOOL, oracle=(Exchange(200, "not json"),))
         (fault,) = faults(edited)
         assert fault.startswith("tool: a stored body cannot be judged: JSONDecodeError")
+
+    @pytest.mark.parametrize("step", [s for s in Step if s is not Step.OVERFLOW])
+    @pytest.mark.parametrize("exchange", [Exchange(404, ""), Exchange(404, "Not Found")])
+    def test_an_engine_answer_with_no_json_reply_is_a_failed_step(
+        self, fake: CompareRecord, step: Step, exchange: Exchange
+    ) -> None:
+        engine = (exchange,) * len(fake.steps[step].engine)
+        verdict = cr.judge(_with_step(fake, step, engine=engine), step)
+        assert verdict.status is Status.FAIL
+        assert verdict.detail == "the engine answered status 404 with no JSON reply"
+
+    def test_an_engine_that_did_not_answer_is_still_refused(self, fake: CompareRecord) -> None:
+        edited = _with_step(fake, Step.TOOL, engine=(Exchange(0, ""),))
+        (fault,) = faults(edited)
+        assert fault.startswith("tool: a stored body cannot be judged: JSONDecodeError")
+
+    def test_a_rerank_list_of_index_and_score_rows_is_read_as_scores(
+        self, fake: CompareRecord
+    ) -> None:
+        rows = [{"index": i, "score": 0.9 if i == 1 else 0.1} for i in range(3)]
+        edited = _with_step(fake, Step.RERANK, engine=(Exchange(200, json.dumps(rows)),))
+        assert cr.judge(edited, Step.RERANK).status is Status.PASS
+
+    def test_a_rerank_list_that_holds_no_scores_is_a_failed_step(self, fake: CompareRecord) -> None:
+        edited = _with_step(fake, Step.RERANK, engine=(Exchange(200, json.dumps([1, 2, 3])),))
+        verdict = cr.judge(edited, Step.RERANK)
+        assert verdict.status is Status.FAIL
+        assert "not 3 finite scores" in verdict.detail
 
     def test_a_body_that_is_not_an_object_is_a_named_fault(self, fake: CompareRecord) -> None:
         edited = _with_step(fake, Step.TOOL, oracle=(Exchange(200, "[1]"),))
