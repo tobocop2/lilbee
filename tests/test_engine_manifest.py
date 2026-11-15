@@ -209,15 +209,15 @@ def test_no_adapter_keeps_a_single_pack_digest() -> None:
 SHIPPED_LLAMA = {
     ("Darwin", "arm64"): (
         "macos-arm64-metal",
-        "ddec445038beea9c83ff50a540ddf0e88a3b70c06edec301ef458cd1a46580ff",
+        "07d954f73523abfe72c10ed61fa21d3e1877610be0991b7901e400841db7d8ce",
     ),
     ("Linux", "x86_64"): (
         "linux-x86_64-cpu",
-        "b306bfa9ede1eaef1ce762fe1c772905ec2e10cfc315ea02b58138e77688899b",
+        "7955bb3f571422fbe4789e7f50a4b56b6a05f723b65babad8c3e1d4426b8be80",
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cpu",
-        "91e9670756cf84252d8382050c74901ef4fc5f07fa7af803fef8bda5438c938d",
+        "a6d2ba079930ad9ea10bb156f2d0ef2ede89855492d1eacd55db2a0e790959d9",
     ),
 }
 
@@ -240,11 +240,11 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
 SHIPPED_LLAMA_CUDA = {
     ("Linux", "x86_64"): (
         "linux-x86_64-cuda",
-        "6cdd44291d036a352fd496b2a2c146f0a5aaf35cd38f73e8f795ca5a2d87edd4",
+        "12ea17e67f6931d3bb95ee529d729baadcbe0a0726ebd86501a3d1477fcab785",
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cuda",
-        "975be314c81ab5c518c40be68fd72edb080b4e4d3f3ba4adbbb3380985cd117c",
+        "48e07547030d3794119584efe0d889ccdf864cb3665fc80314db74051b0ef453",
     ),
 }
 
@@ -264,7 +264,7 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     assert pin["platforms"][cell]["url"].startswith(
-        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105-cuda/"
+        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115/"
     )
 
 
