@@ -35,9 +35,31 @@ from lilbee.runtime.cancellation import CancelSignal
 log = logging.getLogger(__name__)
 
 RECORD_NAME = "ENGINE-RECORD.json"
-PERMISSIVE_LICENCES = frozenset({"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"})
-REDISTRIBUTABLE_REFS = frozenset({"LicenseRef-NVIDIA-CUDA-EULA"})
-NVIDIA_NOTICE = "NOTICE-NVIDIA-CUDA"
+PERMISSIVE_LICENCES = frozenset(
+    {
+        "MIT",
+        "Apache-2.0",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "PSF-2.0",
+        "ISC",
+        "Zlib",
+        "0BSD",
+        "MIT-0",
+        "Unlicense",
+        "CC0-1.0",
+        "Unicode-3.0",
+        "CNRI-Python",
+        "OpenSSL",
+        "CDLA-Permissive-2.0",
+        "Apache-2.0 WITH LLVM-exception",
+    }
+)
+NOTICE_FILES: Mapping[str, str] = {
+    "LicenseRef-NVIDIA-CUDA-EULA": "NOTICE-NVIDIA-CUDA",
+    "LicenseRef-Microsoft-VC-Runtime": "NOTICE-MICROSOFT-VC-RUNTIME",
+    "MPL-2.0": "SOURCE-MPL-2.0",
+}
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
 _STAGE_PREFIX = ".stage-"
@@ -172,16 +194,14 @@ class RemoveResult:
     canary_warning: bool
 
 
-def licence_permitted(expression: str, has_notice: bool = False) -> bool:
+def licence_permitted(expression: str, notices: frozenset[str] = frozenset()) -> bool:
     """True when every OR/AND term of *expression* is permissive.
 
-    The NVIDIA CUDA licence reference passes only when *has_notice* says the
-    package carries its NVIDIA notice file.
+    A term in ``NOTICE_FILES`` passes only when *notices* holds its notice file name.
     """
     terms = [term for term in _LICENCE_JOINER.split(expression.strip()) if term]
     return bool(terms) and all(
-        term in PERMISSIVE_LICENCES or (has_notice and term in REDISTRIBUTABLE_REFS)
-        for term in terms
+        term in PERMISSIVE_LICENCES or NOTICE_FILES.get(term) in notices for term in terms
     )
 
 
@@ -190,7 +210,7 @@ def _check_licences(lock: PinLock) -> None:
         raise LicenceRefusedError(f"Engine {lock.engine} {lock.version} lists no licence.")
     for expression in lock.licences:
         # A pin has no archive, so it cannot hold the notice; the wheel check requires it.
-        if not licence_permitted(expression, has_notice=True):
+        if not licence_permitted(expression, frozenset(NOTICE_FILES.values())):
             raise LicenceRefusedError(
                 f"Engine {lock.engine} {lock.version} uses the licence {expression!r}, "
                 f"which is not on the permissive list."
@@ -211,27 +231,29 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         _refuse_linked_binary(lock, archive)
         names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         text = archive.read(names[0]).decode("utf-8") if names else None
-        notice = any(_is_nvidia_notice(info) for info in archive.infolist())
-        _check_declared_licence(lock, text, notice)
+        notices = frozenset(
+            info.filename.rsplit("/", 1)[-1] for info in archive.infolist() if _is_notice_file(info)
+        )
+        _check_declared_licence(lock, text, notices)
         _refuse_unusable_server(lock, archive)
 
 
-def _is_nvidia_notice(info: zipfile.ZipInfo) -> bool:
+def _is_notice_file(info: zipfile.ZipInfo) -> bool:
     """True for a non-empty notice file directly in a top-level ``*.dist-info/licenses``."""
     match info.filename.split("/"):
-        case [folder, "licenses", name] if name == NVIDIA_NOTICE:
+        case [folder, "licenses", name] if name in NOTICE_FILES.values():
             return folder.endswith(".dist-info") and info.file_size > 0
         case _:
             return False
 
 
 def _check_declared_licence(
-    lock: PinLock, metadata_text: str | None, has_notice: bool = False
+    lock: PinLock, metadata_text: str | None, notices: frozenset[str] = frozenset()
 ) -> None:
     """Refuse unless the METADATA text declares a permitted ``License-Expression``."""
     metadata = message_from_string(metadata_text) if metadata_text else None
     expression = (metadata.get("License-Expression") if metadata else None) or ""
-    if not licence_permitted(expression, has_notice):
+    if not licence_permitted(expression, notices):
         raise LicenceRefusedError(
             f"The wheel for engine {lock.engine} {lock.version} declares the licence "
             f"{expression!r}, which is not on the permissive list."
@@ -249,12 +271,16 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
                 f"directory."
             )
     metadata = sorted(stage.glob("*.dist-info/METADATA"))
-    notice = any(
-        path.is_file() and path.stat().st_size > 0
-        for path in stage.glob(f"*.dist-info/licenses/{NVIDIA_NOTICE}")
+    notices = frozenset(
+        name
+        for name in NOTICE_FILES.values()
+        if any(
+            path.is_file() and path.stat().st_size > 0
+            for path in stage.glob(f"*.dist-info/licenses/{name}")
+        )
     )
     _check_declared_licence(
-        lock, metadata[0].read_text(encoding="utf-8") if metadata else None, notice
+        lock, metadata[0].read_text(encoding="utf-8") if metadata else None, notices
     )
     tools = sorted(
         path.relative_to(stage).as_posix()
