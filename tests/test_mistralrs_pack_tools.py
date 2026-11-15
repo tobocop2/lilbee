@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
 
@@ -251,3 +252,36 @@ def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
     vendored = tree / "THIRD-PARTY" / "vendored"
     assert (vendored / "aws-lc-sys-1.0.0__NOTICE").read_text(encoding="utf-8") == "crate notice"
     assert (vendored / "mistral.rs__sub__NOTICE").read_text(encoding="utf-8") == "checkout notice"
+
+
+def _mistralrs_job() -> dict:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "llama-pack-cells.yml"
+    )
+    return yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["mistralrs"]
+
+
+def test_the_pack_job_writes_the_notices_before_it_builds_the_wheel() -> None:
+    steps = [step.get("run", "") for step in _mistralrs_job()["steps"]]
+    writer = next(i for i, run in enumerate(steps) if "rust_notices.py" in run)
+    builder = next(i for i, run in enumerate(steps) if "python -m build" in run)
+    assert writer < builder
+
+
+def test_the_pack_job_checks_the_notices_in_the_built_wheel() -> None:
+    check = next(
+        step["run"]
+        for step in _mistralrs_job()["steps"]
+        if step.get("name") == "Check the licences in the installed wheel"
+    )
+    assert "THIRD-PARTY/vendored/" in check
+    assert "NOTICE-${id}" in check
+
+
+def test_the_pack_matrix_holds_no_cuda_cell() -> None:
+    cells = _mistralrs_job()["strategy"]["matrix"]["include"]
+    assert {cell["cell"] for cell in cells} == {
+        "mistralrs-linux-x86_64-cpu",
+        "mistralrs-windows-x86_64-cpu",
+        "mistralrs-macos-arm64-metal",
+    }
