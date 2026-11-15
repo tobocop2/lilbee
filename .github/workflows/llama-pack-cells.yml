@@ -516,7 +516,7 @@ jobs:
           retention-days: 7
 
   # The ik_llama.cpp server has no release assets, so each cell builds the commit that the adapter pins.
-  # The wheel holds one static server; the cuda cell adds the three NVIDIA runtime files beside it.
+  # The cpu wheel holds one static server; the cuda wheel holds the server, its own libraries and the three NVIDIA runtime files.
   ik-cell:
     name: ${{ matrix.cell }}
     needs: plan

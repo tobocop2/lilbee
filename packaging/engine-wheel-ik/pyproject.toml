@@ -1,6 +1,6 @@
 # Separate distribution: a per-platform wheel with one server binary. The llama-pack-cells
 # workflow sets the version and the licence expression, and fills lilbee_engine_ik_llama_cpp/bin/
-# with the server (and, for the cuda cell, the NVIDIA runtime files) before it builds the wheel.
+# with the server (and, for the cuda cell, its libraries and the NVIDIA runtime files) before it builds the wheel.
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
