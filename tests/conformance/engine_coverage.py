@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from lilbee.providers.fleet.engines.base import EngineName
+from tests.conformance.compare_record import Step
+from tests.conformance.compare_verdicts import Oracle
 
 
 class Coverage(StrEnum):
@@ -14,6 +16,19 @@ class Coverage(StrEnum):
     COMPARED = "compared"
     DEFERRED = "deferred"
     EXCLUDED = "excluded"
+
+
+class Route(StrEnum):
+    """How the engine of a cell reaches a user, read from the adapter and the install path."""
+
+    PACK = "pack"
+    """The pack table has a pack; `engine install` fetches it."""
+    USER_INSTALLED = "user-installed"
+    """The user installs the engine; lilbee finds its binary. `engine install` refuses."""
+    UNPUBLISHED = "unpublished"
+    """The adapter records no pack digest; `engine install` refuses."""
+    PRESET = "preset"
+    """A preset serves it; the fleet has no such engine."""
 
 
 class Device(StrEnum):
@@ -36,9 +51,8 @@ _MAC_HOST = "the Mac"
 _WINDOWS_HOST = "a Windows host"
 _WINDOWS_CUDA_HOST = "a Windows host with an NVIDIA GPU"
 _NO_NPU = "owner: no NPU hardware, so NPU cells are excluded"
-_NO_RECORD = "pack ships; no comparison record in git yet"
-_MAC_LAST = "pack ships; Mac runs come last"
-_INSTALLED = "installs with lilbee engine install; the pack table has no pack for it yet"
+_NO_RECORD = "no comparison record in git yet"
+_MAC_LAST = "Mac runs come last"
 
 LINUX_CPU = "linux-x86_64-cpu"
 
@@ -51,61 +65,99 @@ class CoverageRow:
     cell: str
     device: Device
     status: Coverage
+    route: Route
     reason: str
     host: str = ""
     owner_decision: str = ""
     record: str = ""
+    oracle: Oracle = Oracle.LLAMA
+    steps: tuple[Step, ...] = ()
+    """The steps a COMPARED row claims; its record must hold each one at the verdict it needs."""
 
 
-def _deferred(engine: str, cell: str, device: Device, host: str, reason: str) -> CoverageRow:
-    return CoverageRow(engine, cell, device, Coverage.DEFERRED, reason, host=host)
+def _deferred(
+    engine: str, cell: str, device: Device, route: Route, host: str, reason: str
+) -> CoverageRow:
+    return CoverageRow(engine, cell, device, Coverage.DEFERRED, route, reason, host=host)
 
 
-def _excluded(engine: str, cell: str, device: Device, decision: str) -> CoverageRow:
+def _excluded(engine: str, cell: str, device: Device, route: Route, decision: str) -> CoverageRow:
     return CoverageRow(
-        engine, cell, device, Coverage.EXCLUDED, "no hardware to run on", owner_decision=decision
+        engine,
+        cell,
+        device,
+        Coverage.EXCLUDED,
+        route,
+        "no hardware to run on",
+        owner_decision=decision,
     )
 
 
 COVERAGE_ROWS: tuple[CoverageRow, ...] = (
-    _deferred(EngineName.LLAMA, LINUX_CPU, Device.CPU, _CPU_HOST, _NO_RECORD),
-    _deferred(EngineName.LLAMA, "linux-x86_64-cuda", Device.CUDA, _CUDA_HOST, _NO_RECORD),
-    _deferred(EngineName.LLAMA, "macos-arm64-metal", Device.METAL, _MAC_HOST, _MAC_LAST),
-    _deferred(EngineName.LLAMA, "windows-x86_64-cpu", Device.CPU, _WINDOWS_HOST, _NO_RECORD),
-    _deferred(EngineName.LLAMA, "windows-x86_64-cuda", Device.CUDA, _WINDOWS_CUDA_HOST, _NO_RECORD),
-    _deferred(EngineName.IK_LLAMA, LINUX_CPU, Device.CPU, _CPU_HOST, _NO_RECORD),
-    _deferred(EngineName.MISTRAL, LINUX_CPU, Device.CPU, _CPU_HOST, _NO_RECORD),
-    _deferred(EngineName.MISTRAL, "linux-x86_64-cuda128-sm89", Device.CUDA, _CUDA_HOST, _NO_RECORD),
-    _deferred(EngineName.TEI, LINUX_CPU, Device.CPU, _CPU_HOST, _NO_RECORD),
-    _deferred(EngineName.TEI, "linux-x86_64-cuda-sm89", Device.CUDA, _CUDA_HOST, _NO_RECORD),
+    _deferred(EngineName.LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _deferred(
+        EngineName.LLAMA, "linux-x86_64-cuda", Device.CUDA, Route.PACK, _CUDA_HOST, _NO_RECORD
+    ),
+    _deferred(
+        EngineName.LLAMA, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST
+    ),
+    _deferred(
+        EngineName.LLAMA, "windows-x86_64-cpu", Device.CPU, Route.PACK, _WINDOWS_HOST, _NO_RECORD
+    ),
+    _deferred(
+        EngineName.LLAMA,
+        "windows-x86_64-cuda",
+        Device.CUDA,
+        Route.PACK,
+        _WINDOWS_CUDA_HOST,
+        _NO_RECORD,
+    ),
+    _deferred(EngineName.IK_LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _deferred(EngineName.MISTRAL, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _deferred(
+        EngineName.MISTRAL,
+        "linux-x86_64-cuda128-sm89",
+        Device.CUDA,
+        Route.PACK,
+        _CUDA_HOST,
+        _NO_RECORD,
+    ),
+    _deferred(EngineName.TEI, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _deferred(
+        EngineName.TEI, "linux-x86_64-cuda-sm89", Device.CUDA, Route.PACK, _CUDA_HOST, _NO_RECORD
+    ),
     _deferred(
         EngineName.MLX,
         "macos-arm64-metal",
         Device.METAL,
+        Route.UNPUBLISHED,
         _MAC_HOST,
-        f"{_INSTALLED}; Mac runs come last",
+        _MAC_LAST,
     ),
     _deferred(
         EngineName.OPENVINO,
         "linux-x86_64-openvino",
         Device.CPU,
+        Route.UNPUBLISHED,
         _CPU_HOST,
-        f"{_INSTALLED}; no comparison record in git yet",
+        _NO_RECORD,
     ),
     _deferred(
         EngineName.OPENVINO,
         "linux-x86_64-openvino",
         Device.INTEL_GPU,
+        Route.UNPUBLISHED,
         "the ThinkPad",
-        f"{_INSTALLED}; one hardware recording, no comparison record in git yet",
+        "one hardware recording, no comparison record in git yet",
     ),
-    _excluded(EngineName.OPENVINO, "linux-x86_64-openvino", Device.NPU, _NO_NPU),
-    _excluded(EngineName.LEMONADE, "linux-x86_64-npu", Device.NPU, _NO_NPU),
-    _excluded(EngineName.LEMONADE, "windows-x86_64-npu", Device.NPU, _NO_NPU),
+    _excluded(EngineName.OPENVINO, "linux-x86_64-openvino", Device.NPU, Route.UNPUBLISHED, _NO_NPU),
+    _excluded(EngineName.LEMONADE, "linux-x86_64-npu", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
+    _excluded(EngineName.LEMONADE, "windows-x86_64-npu", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
     _deferred(
         INFINITY,
         PRESET_CELL,
         Device.CPU,
+        Route.PRESET,
         _CPU_HOST,
         "recorded in fixtures/presets and docs/preset-results.md; no llama.cpp comparison yet",
     ),
