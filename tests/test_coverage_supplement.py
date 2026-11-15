@@ -2648,8 +2648,8 @@ class TestModelInfoExceptionBranches:
             side_effect=RuntimeError("boom"),
         ):
             result = _read_chat_arch(info)
-        # Failure path swallowed: function returns info; the success branch's
-        # ``info.active_handler = 'llama-server'`` assignment was never reached.
+        # Failure path swallowed: function returns info; the engine's label
+        # was never written to ``active_handler``.
         assert result is info
         assert info.active_handler == ""
 

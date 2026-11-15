@@ -2996,8 +2996,12 @@ def test_status_read_chat_arch_success():
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
             return_value={"architecture": "llama"},
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama._starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_chat_arch(info)
