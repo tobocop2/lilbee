@@ -26,6 +26,7 @@ from lilbee.catalog.refs import (
     DEFAULT_MMPROJ_PATTERN,
     FLOAT_QUANTS,
     WILDCARD,
+    ModelRef,
     quant_label,
     rank_gguf_candidates,
     split_shard_filenames,
@@ -756,7 +757,8 @@ def resolve_filename(
         return named
     unsupported: str | None = None
     refused: UnsupportedQuantError | None = None
-    for candidate in rank_gguf_candidates(_repo_sibling_files(entry.hf_repo)):
+    siblings = _repo_sibling_files(entry.hf_repo)
+    for candidate in rank_gguf_candidates(siblings):
         header = file_header(entry.hf_repo, candidate)
         if not header.is_model:
             continue
@@ -774,7 +776,21 @@ def resolve_filename(
         return unsupported
     if refused is not None:
         raise refused
-    raise RuntimeError(f"No GGUF model weights found in {entry.hf_repo}")
+    raise RuntimeError(_no_gguf_message(entry.hf_repo, siblings))
+
+
+def _no_gguf_message(hf_repo: str, siblings: list[str]) -> str:
+    """The refusal for a repo with no GGUF weights, naming the ref that pulls its safetensors."""
+    message = f"No GGUF model weights found in {hf_repo}"
+    try:
+        has_safetensors = bool(select_files(ModelFormat.SAFETENSORS, siblings))
+    except ValueError:
+        # An incomplete shard set still means safetensors; the folder pull names the missing part.
+        has_safetensors = True
+    if not has_safetensors:
+        return message
+    ref = ModelRef(hf_repo, "", ModelFormat.SAFETENSORS).canonical
+    return f"{message}. It holds safetensors weights: pull them with 'lilbee model pull {ref}'."
 
 
 _SIZE_UNKNOWN = 0

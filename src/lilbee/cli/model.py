@@ -277,7 +277,10 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
 
 @model_app.command("pull")
 def pull_cmd(
-    ref: str = typer.Argument(..., help="Model ref to download (e.g. 'Qwen/Qwen3-0.6B-GGUF')."),
+    ref: str = typer.Argument(
+        ...,
+        help="Model ref to download: 'Qwen/Qwen3-0.6B-GGUF', or 'org/repo#safetensors'.",
+    ),
     source: str = typer.Option(
         "native",
         "--source",

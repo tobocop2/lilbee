@@ -1806,6 +1806,35 @@ class TestResolveFilename:
         with pytest.raises(RuntimeError, match="No GGUF model weights found"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
+    def test_safetensors_only_repo_names_the_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "config.json", "model.safetensors", "tokenizer.json")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}. It holds safetensors "
+            f"weights: pull them with 'lilbee model pull {PICKS_CHAT[0].hf_repo}#safetensors'."
+        )
+
+    def test_incomplete_safetensors_shards_still_name_the_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "model-00001-of-00002.safetensors")
+        with pytest.raises(RuntimeError, match="#safetensors'"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_repo_without_any_weights_names_no_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "config.json", "pytorch_model.bin")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
+
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_listing(monkeypatch, error=httpx.ConnectError("x"))
         with pytest.raises(RuntimeError, match="Cannot query files"):
