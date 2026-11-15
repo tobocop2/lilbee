@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -471,7 +472,7 @@ def _cuda_wheel(
     tool: str = "server",
     notice_path: str = "p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA",
     notice_text: str | bytes = "notice",
-    extras: tuple[tuple[str, str], ...] = (),
+    extras: tuple[tuple[str, str | bytes], ...] = (),
 ) -> str:
     with zipfile.ZipFile(path, "w") as archive:
         server = zipfile.ZipInfo(f"p/bin/{tool}")
@@ -749,19 +750,41 @@ def test_a_pin_with_a_copyleft_term_is_refused() -> None:
 _GPL_TEXT = "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"
 _LGPL_TEXT = "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n"
 _DIST_LICENSES = "p-1.dist-info/licenses/"
+_CUDA_NOTICE = Path(__file__).parent / "fixtures" / "NOTICE-NVIDIA-CUDA"
+_WRAPPED_GPL = "GNU General\nPublic   License\n\n  Version 3, 29 June 2007\n"
+_WRAPPED_LGPL = "gnu lesser\r\ngeneral public license\r\nversion 2.1\r\n"
+_UTF16_GPL = codecs.BOM_UTF16_LE + _GPL_TEXT.encode("utf-16-le")
 
 
 @pytest.mark.parametrize(
     ("member", "text", "named"),
     [
+        ("p/docs/gpl-3.0.txt", _GPL_TEXT, "gpl-3.0.txt"),
+        ("p/docs/lgpl-2.1.txt", _LGPL_TEXT, "lgpl-2.1.txt"),
+        ("p/LICENSES.txt", _GPL_TEXT, "LICENSES.txt"),
+        ("p/THIRD-PARTY-LICENSES.txt", _LGPL_TEXT, "THIRD-PARTY-LICENSES.txt"),
+        ("p/COPYING.GPLv2", "x", "COPYING.GPLv2"),
+        ("p/LICENSE.GPLv3", "x", "LICENSE.GPLv3"),
+        ("p/doc/gpl-notes.txt", "x", "gpl-notes.txt"),
+        ("p/COPYRIGHT.txt", _GPL_TEXT, "COPYRIGHT.txt"),
+        ("p/COPYING", _WRAPPED_GPL, "COPYING"),
+        ("p/COPYING", _WRAPPED_LGPL, "COPYING"),
+        ("p/COPYING", _GPL_TEXT.lower(), "COPYING"),
+        ("p/COPYING", _UTF16_GPL, "COPYING"),
+        ("p/COPYING", _UTF16_GPL + b"x", "COPYING"),
+        ("p/COPYING", codecs.BOM_UTF16_BE + _GPL_TEXT.encode("utf-16-be"), "COPYING"),
+        ("p/lib/libhistory.so.8", "ELF", "libhistory"),
+        ("p/lib/libgmp.a", "ar archive", "libgmp"),
+        ("p/lib/libreadline.a", "ar archive", "libreadline"),
+        ("p/lib/libhistory.a", "ar archive", "libhistory"),
         (_DIST_LICENSES + "COPYING.LESSER", "any text", "COPYING.LESSER"),
         (_DIST_LICENSES + "LICENSE-AGPL-3.0", "any text", "LICENSE-AGPL-3.0"),
         (_DIST_LICENSES + "LICENSE.GPL", "any text", "LICENSE.GPL"),
         (_DIST_LICENSES + "COPYING", _GPL_TEXT, "COPYING"),
         (_DIST_LICENSES + "THIRD-PARTY/gmp/LICENSE", _LGPL_TEXT, "LICENSE"),
         (_DIST_LICENSES + "THIRD-PARTY/gmp/terms.txt", _LGPL_TEXT, "terms.txt"),
-        ("p/COPYING", "GNU AFFERO GENERAL PUBLIC LICENSE\n", "p/COPYING"),
-        ("p/LICENSE", "GNU LIBRARY GENERAL PUBLIC LICENSE\n", "p/LICENSE"),
+        ("p/COPYING", "GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3\n", "p/COPYING"),
+        ("p/LICENSE", "GNU LIBRARY GENERAL PUBLIC LICENSE\nVersion 2\n", "p/LICENSE"),
         ("p/NOTICE.txt", _GPL_TEXT, "p/NOTICE.txt"),
         ("p.libs/libquadmath-96973f99.so.0.0.0", "ELF", "libquadmath"),
         ("p/lib/libgmp.so.10", "ELF", "libgmp"),
@@ -770,7 +793,7 @@ _DIST_LICENSES = "p-1.dist-info/licenses/"
     ],
 )
 def test_a_wheel_that_carries_a_copyleft_file_is_refused_whatever_it_declares(
-    store: EngineStore, tmp_path: Path, member: str, text: str, named: str
+    store: EngineStore, tmp_path: Path, member: str, text: str | bytes, named: str
 ) -> None:
     path = tmp_path / "g.whl"
     sha = _cuda_wheel(path, notice=False, licence="MIT", extras=((member, text),))
@@ -789,10 +812,17 @@ def test_a_wheel_that_carries_a_copyleft_file_is_refused_whatever_it_declares(
         ),
         ("p/lib/libquadmathx.so", "ELF"),
         ("p/lib/libgmpish.so", "ELF"),
-        ("p/data/gpl-notes.txt", "a data file that is not a licence file"),
         ("p/doc/copying.txt.gz", "binary"),
-        ("p/lib/libgmp.a", "ar archive"),
         ("p/doc/readline.txt", "a text file"),
+        ("p/doc/history.txt", "a text file"),
+        ("p/lib/libgmp.abc", "not an archive"),
+        (_DIST_LICENSES + "LICENSE-bgpl.txt", "MIT License\nPermission is hereby granted\n"),
+        (_DIST_LICENSES + "NOTICE-V3", "version 3 of the GNU General Public License applies"),
+        (
+            _DIST_LICENSES + "NOTICE-OTHER",
+            "It names the GNU General Public License (GPL) and the GNU Lesser General "
+            "Public License (LGPL), with source on request.",
+        ),
         ("p/doc/terms.txt", _LGPL_TEXT),
     ],
 )
@@ -811,10 +841,17 @@ def test_a_wheel_with_permissive_licence_files_still_installs(
         ("p-1.dist-info/licenses/COPYING.LESSER", "any text"),
         ("p-1.dist-info/licenses/COPYING", _GPL_TEXT),
         ("p.libs/libquadmath-96973f99.so.0.0.0", "ELF"),
+        ("p/docs/gpl-3.0.txt", _GPL_TEXT),
+        ("p/THIRD-PARTY-LICENSES.txt", _LGPL_TEXT),
+        ("p/COPYING.GPLv2", "x"),
+        ("p/COPYING", _WRAPPED_GPL),
+        ("p/COPYING", _UTF16_GPL),
+        ("p/lib/libhistory.so.8", "ELF"),
+        ("p/lib/libgmp.a", "ar archive"),
     ],
 )
 def test_a_staged_tree_with_a_copyleft_file_is_refused_whatever_it_declares(
-    tmp_path: Path, member: str, text: str
+    tmp_path: Path, member: str, text: str | bytes
 ) -> None:
     _staged_cuda_tree(tmp_path, notice=False)
     (tmp_path / "p-1.dist-info" / "METADATA").write_text(
@@ -822,9 +859,29 @@ def test_a_staged_tree_with_a_copyleft_file_is_refused_whatever_it_declares(
     )
     target = tmp_path / member
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
+    target.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
     with pytest.raises(LicenceRefusedError, match="GPL"):
         engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
+def test_the_real_nvidia_cuda_notice_names_the_gpl_and_still_installs(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    notice = _CUDA_NOTICE.read_bytes()
+    assert b"GNU General Public License" in notice
+    assert b"GNU Lesser General Public License" in notice
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, notice_text=notice)
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
+def test_the_real_nvidia_cuda_notice_in_a_staged_tree_passes(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_bytes(
+        _CUDA_NOTICE.read_bytes()
+    )
+    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
 
 
 def test_a_staged_tree_with_a_permissive_licence_file_passes(tmp_path: Path) -> None:

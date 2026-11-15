@@ -197,7 +197,15 @@ Evidence: row 11, row 56. The Metal archive of mistral.rs panicked on macOS 14.6
 
 The licence list of the whole engine tree has at least one entry, no empty entry, and no GPL or AGPL entry.
 
-A pin has no archive, so it carries no notice file. The pin check screens the licence terms only: a term that needs a notice (MPL-2.0, OpenSSL, the NVIDIA CUDA EULA, the Visual C++ runtime) passes it. The install then checks the archive: the wheel or the unpacked tree must hold the notice file of each such term, and a build without it is refused. An MPL-2.0 notice, `SOURCE-MPL-2.0`, has one line for each crate: the crates.io download URL, then the sha256 of the crate. Every line must match a crate in `engine_crates.py`, which a pack build fills from its `Cargo.lock`. The check never reads the network. A wheel or tree that holds a GPL, AGPL or LGPL licence file, or a bundled libquadmath, libgmp, libmpfr or libreadline, is refused whatever it declares.
+A pin has no archive, so it carries no notice file. The pin check screens the licence terms only: a term that needs a notice (MPL-2.0, OpenSSL, the NVIDIA CUDA EULA, the Visual C++ runtime) passes it. The install then checks the archive: the wheel or the unpacked tree must hold the notice file of each such term, and a build without it is refused. An MPL-2.0 notice, `SOURCE-MPL-2.0`, has one line for each crate: the crates.io download URL, then the sha256 of the crate. Every line must match a crate in `engine_crates.py`, which a pack build fills from its `Cargo.lock`. The check never reads the network. A wheel or tree that holds a GPL, AGPL or LGPL licence file, or a bundled libquadmath, libgmp, libgmpxx, libmpfr, libreadline or libhistory (shared library or static `.a` archive), is refused whatever it declares.
+
+The scan is a net, not an audit. It has these limits:
+
+- The crate table in `engine_crates.py` is a literal. Each pack build fills it from its `Cargo.lock`. A pack with an MPL-2.0 crate that has no row is refused until its row is added.
+- The scan reads a file only when its name holds `licence`, `license`, `copying`, `notice`, `copyright` or `gpl` (any case), or when the file is in a `licenses` folder. A GPL text in a file with any other name, outside a `licenses` folder, installs.
+- A file is refused when its name holds `gpl`, `lgpl`, `agpl`, `lesser` or `affero`, or when its text holds a GNU licence title followed by the word "version". The match ignores case and spacing, and reads UTF-16 when the file starts with a byte order mark. A text that only names the licence passes: the NVIDIA CUDA notice names the GPL and the LGPL and is not a GPL text.
+- A GPL text that has no title line, or a title with no "version" after it, installs when its name has no copyleft word.
+- A static import library such as `gmp.lib` installs.
 
 Evidence: golden file `tests/conformance/golden/M5.json`. The rule comes from the licence decision of the engine items. The check runs offline.
 
