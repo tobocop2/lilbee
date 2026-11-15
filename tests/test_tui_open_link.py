@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import pytest
 from textual.widgets import Markdown
@@ -54,6 +56,7 @@ class TestOpenLocalFile:
         assert opener == "open"
         assert Path(path) == doc.resolve()
         assert "%20" not in path
+        assert run.call_args.kwargs == {"check": False, "timeout": 10}
 
     def test_unknown_platform_falls_back_to_webbrowser(self, monkeypatch):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "win32")
@@ -63,13 +66,18 @@ class TestOpenLocalFile:
         open_local_file(href)
         opened.assert_called_once_with(href)
 
-    def test_opener_failure_is_logged_not_raised(self, monkeypatch):
+    def test_opener_failure_is_logged_not_raised(self, monkeypatch, caplog):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "linux")
         monkeypatch.setattr(
             "lilbee.cli.tui.screens.chat_helpers.subprocess.run",
             mock.Mock(side_effect=OSError("no xdg-open")),
         )
-        open_local_file((cfg.documents_dir / "doc.md").as_uri())  # must not raise
+        href = (cfg.documents_dir / "doc.md").as_uri()
+        with caplog.at_level("WARNING"):
+            open_local_file(href)  # must not raise
+        assert caplog.messages == [
+            f"Could not open source file: {url2pathname(urlparse(href).path)}"
+        ]
 
     def test_path_outside_roots_is_refused_and_logged(self, monkeypatch, caplog):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "linux")
@@ -78,7 +86,10 @@ class TestOpenLocalFile:
         with caplog.at_level("WARNING"):
             open_local_file("file:///etc/passwd")
         run.assert_not_called()
-        assert "outside the document roots" in caplog.text
+        assert caplog.messages == [
+            "Refused to open a file outside the document roots: "
+            + url2pathname(urlparse("file:///etc/passwd").path)
+        ]
 
     def test_nul_byte_path_is_refused(self, monkeypatch):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "linux")
