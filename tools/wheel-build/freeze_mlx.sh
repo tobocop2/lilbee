@@ -6,7 +6,7 @@
 #
 # The PATH holds uv (the version named below), delocate-wheel (the version named below) and python3
 # with the wheel package. The steps, in order:
-#   1. Check that the pins agree: mlx-lm, and the mlx and mlx-metal files of mlx-requirements.txt
+#   1. Check that the pins agree: mlx-lm, and the mlx and mlx-metal files of mlx.requirements
 #      against the macOS floor.
 #   2. `uv python install` puts python-build-standalone in a scratch directory. The tree copies it.
 #   3. `uv pip install --target` installs the hashed requirements into its site-packages.
@@ -41,17 +41,17 @@ test "$#" -eq 1 || {
 }
 outdir="$1"
 here="$(cd "$(dirname "$0")" && pwd)"
-requirements="${here}/mlx-requirements.txt"
+requirements="${here}/mlx.requirements"
 cp_tag="cp${PYTHON/./}"
 platform="macosx_${FLOOR}_0_${ARCH}"
 
 # The pins must agree before anything is installed.
 grep -qxF "mlx-lm==${MLX_LM} \\" "${requirements}" ||
-  die "mlx-lm ${MLX_LM} is not the pin of mlx-requirements.txt. Make that file again with the new version."
+  die "mlx-lm ${MLX_LM} is not the pin of mlx.requirements. Make that file again with the new version."
 grep -Eq "^mlx @ .*/mlx-${MLX}-${cp_tag}-${cp_tag}-${platform}\.whl \\\\\$" "${requirements}" ||
-  die "mlx-requirements.txt pins no mlx ${MLX} file mlx-${MLX}-${cp_tag}-${cp_tag}-${platform}.whl, the file of macOS ${FLOOR}."
+  die "mlx.requirements pins no mlx ${MLX} file mlx-${MLX}-${cp_tag}-${cp_tag}-${platform}.whl, the file of macOS ${FLOOR}."
 grep -Eq "^mlx-metal @ .*/mlx_metal-${MLX}-py3-none-${platform}\.whl \\\\\$" "${requirements}" ||
-  die "mlx-requirements.txt pins no mlx-metal ${MLX} file mlx_metal-${MLX}-py3-none-${platform}.whl, the file of macOS ${FLOOR}."
+  die "mlx.requirements pins no mlx-metal ${MLX} file mlx_metal-${MLX}-py3-none-${platform}.whl, the file of macOS ${FLOOR}."
 case "$(uv --version)" in
   "uv ${UV}" | "uv ${UV} "*) ;;
   *) die "uv ${UV} is pinned in this script. The PATH has $(uv --version)." ;;
