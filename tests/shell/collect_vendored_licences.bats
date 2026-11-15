@@ -224,3 +224,22 @@ write_ik_vendored_tree() {
   [[ "$output" == *"vendor/cpp-httplib/httplib.h: no copyright line in the header, or no MIT terms in LICENSE"* ]] \
     || [[ "$output" == *"vendor/nlohmann/json.hpp: no copyright line in the header, or no MIT terms in LICENSE"* ]]
 }
+
+@test "writes the notice of the stb resize header when the checkout has it" {
+  printf '%s\n' "/* stb_image_resize2 - v2.18 - public domain image resizing */" "int x;" "" \
+    "This software is available under 2 licenses -- choose whichever you prefer." "ALTERNATIVE A - MIT License" \
+    "Copyright (c) 2017 Sean Barrett" > "${SRC}/vendor/stb/stb_image_resize2.h"
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  grep -q "Sean Barrett" "${OUT}/vendor/stb/stb_image_resize2.h.NOTICE"
+  grep -qx "vendor/stb/stb_image_resize2.h.NOTICE" "${OUT}/MANIFEST"
+  run grep -c "int x;" "${OUT}/vendor/stb/stb_image_resize2.h.NOTICE"
+  [ "$output" = 0 ]
+}
+
+@test "fails when the stb resize header holds no licence text" {
+  echo "no licence here" > "${SRC}/vendor/stb/stb_image_resize2.h"
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"stb_image_resize2.h: no 'ALTERNATIVE A - MIT License' in the licence text"* ]]
+}

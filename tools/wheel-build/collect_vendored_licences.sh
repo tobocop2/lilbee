@@ -9,7 +9,8 @@
 #   - every file under vendor/ that names the MIT licence in its first lines but carries no text (an
 #     SPDX tag or "MIT License"): its header lines, which hold the copyright, then the MIT terms of
 #     the checkout's own LICENSE file, written as <path>.NOTICE;
-#   - the licence texts at the end of the two single-header libraries that hold them there.
+#   - the licence texts at the end of the single-header libraries that hold them there (the stb image
+#     header, miniaudio, and the stb resize header when the checkout has it).
 # The trees that the build fetched (the _deps folder of a CMake build directory):
 #   - every licence file by name, copied under _deps/<name>/. A fetched tree with no licence file
 #     fails the build.
@@ -128,6 +129,10 @@ done < <(tree_files "${src}" ${skips[@]+"${skips[@]}"})
 
 tail_text "${src}/vendor/stb/stb_image.h" '^This software is available under 2 licenses' "ALTERNATIVE A - MIT License"
 tail_text "${src}/vendor/miniaudio/miniaudio.h" '^ALTERNATIVE 1 - Public Domain' "ALTERNATIVE 2 - MIT No Attribution"
+# The ik_llama.cpp checkout also vendors the resize header, which the llama.cpp checkout does not.
+if [ -f "${src}/vendor/stb/stb_image_resize2.h" ]; then
+  tail_text "${src}/vendor/stb/stb_image_resize2.h" '^This software is available under 2 licenses' "ALTERNATIVE A - MIT License"
+fi
 
 # Each tree that the build fetched carries its own licence files.
 if [ -n "${deps}" ]; then

@@ -683,8 +683,8 @@ jobs:
           grep -xF "License-Expression: ${LICENSE_EXPRESSION}" wheel-metadata.txt
           grep -q "dist-info/licenses/LICENSE-ik_llama.cpp$" wheel-listing.txt || { echo "wheel lacks the ik_llama.cpp licence"; exit 1; }
           grep -q "dist-info/licenses/THIRD-PARTY/ik_llama.cpp/" wheel-listing.txt || { echo "wheel lacks the third-party licences"; exit 1; }
-          # The server compiles in these three MIT files; each notice is generated from the file itself.
-          for vendored in vendor/nlohmann/json.hpp vendor/cpp-httplib/httplib.h ggml/src/llamafile/sgemm.cpp; do
+          # The server compiles in these four files; each notice is generated from the file itself.
+          for vendored in vendor/nlohmann/json.hpp vendor/cpp-httplib/httplib.h ggml/src/llamafile/sgemm.cpp vendor/stb/stb_image_resize2.h; do
             grep -q "dist-info/licenses/THIRD-PARTY/ik_llama.cpp/${vendored}.NOTICE$" wheel-listing.txt || { echo "wheel lacks the notice of ${vendored}"; exit 1; }
           done
           # The engine store refuses a wheel that its own rule refuses: the server needs its execute bit.

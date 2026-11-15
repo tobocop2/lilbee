@@ -640,12 +640,13 @@ def test_the_cuda_build_copies_the_licence_of_the_toolkit_package_that_holds_cub
 
 def test_the_workflow_refuses_an_ik_wheel_without_the_notices_of_its_vendored_files() -> None:
     workflow = (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
-    loop = re.search(r"for vendored in (\S+ \S+ \S+); do\n\s+grep -q (.+?) \|\| \{", workflow)
+    loop = re.search(r"for vendored in (\S+ \S+ \S+ \S+); do\n\s+grep -q (.+?) \|\| \{", workflow)
     assert loop is not None
     assert loop[1].split() == [
         "vendor/nlohmann/json.hpp",
         "vendor/cpp-httplib/httplib.h",
         "ggml/src/llamafile/sgemm.cpp",
+        "vendor/stb/stb_image_resize2.h",
     ]
     assert "THIRD-PARTY/ik_llama.cpp/${vendored}.NOTICE$" in loop[2]
     assert "wheel-listing.txt" in loop[2]
