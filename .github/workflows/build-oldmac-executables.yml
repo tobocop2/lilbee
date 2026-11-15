@@ -109,6 +109,10 @@ jobs:
       # win) and, on Intel, lancedb (the locked version has no wheel there).
       # --python-platform resolves wheels for the target instead of the runner, so
       # numpy and scipy arrive at their oldest macOS build.
+      # unsafe-best-match lets lancedb on arm64 come from PyPI: the compat index
+      # lists lancedb, with Intel wheels only, and the default strategy stops at
+      # the first index that lists a package. Every fork wheel is an exact pin,
+      # so the wider search cannot pick another version of it.
       - name: Install dependencies
         shell: bash
         env:
@@ -129,7 +133,8 @@ jobs:
           # shellcheck disable=SC2086
           uv pip install --python-platform "${PYTHON_PLATFORM}" \
             --constraint oldmac-constraints.txt \
-            --extra-index-url https://lilbee.sh/compat/ ${binary} \
+            --extra-index-url https://lilbee.sh/compat/ \
+            --index-strategy unsafe-best-match ${binary} \
             -r "${pins}" ${LANCEDB_SPEC} '.[release]' 'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
