@@ -10,6 +10,10 @@ accepted = [
     "CDLA-Permissive-2.0",
     "0BSD",
     "OpenSSL",
+    "MIT-0",
+    "Unlicense",
+    "CC0-1.0",
+    "BSL-1.0",
 ]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
