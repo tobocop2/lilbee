@@ -105,3 +105,6 @@ packaging/engine-wheel/lilbee_engine_llama_cpp/bin/
 # Benchmark/soak run output is not version-controlled: it is machine- and
 # run-specific data, not documentation.
 docs/benchmarks/*-results/
+
+# The server that CI builds into the ik_llama.cpp pack.
+packaging/engine-wheel-ik/lilbee_engine_ik_llama_cpp/bin/

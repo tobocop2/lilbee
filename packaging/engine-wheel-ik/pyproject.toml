@@ -1,0 +1,19 @@
+# Separate distribution: a per-platform wheel with one server binary. The llama-pack-cells
+# workflow sets the version and the licence expression, and fills lilbee_engine_ik_llama_cpp/bin/
+# with the server (and, for the cuda cell, the NVIDIA runtime files) before it builds the wheel.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilbee-engine-ik-llama-cpp"
+version = "0.0.0"
+description = "Local inference server pack for lilbee"
+license-files = ["LICENSE-*", "NOTICE-*", "THIRD-PARTY/**"]
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["lilbee_engine_ik_llama_cpp"]
+
+[tool.setuptools.package-data]
+lilbee_engine_ik_llama_cpp = ["bin/*"]

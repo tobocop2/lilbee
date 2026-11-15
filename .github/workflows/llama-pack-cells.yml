@@ -256,44 +256,7 @@ jobs:
         if: matrix.backend == 'cuda'
         run: |
           set -euo pipefail
-          python - packaging/engine-wheel/NOTICE-NVIDIA-CUDA <<'PY'
-          import html.parser, sys, urllib.request
-
-          class Text(html.parser.HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.parts, self.skip = [], 0
-
-              def handle_starttag(self, tag, attrs):
-                  if tag in ("script", "style"):
-                      self.skip += 1
-                  elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "br", "tr"):
-                      self.parts.append("\n")
-
-              def handle_endtag(self, tag):
-                  if tag in ("script", "style"):
-                      self.skip -= 1
-
-              def handle_data(self, data):
-                  if not self.skip:
-                      self.parts.append(data)
-
-          url = "https://docs.nvidia.com/cuda/archive/12.4.1/eula/index.html"
-          page = urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
-          parser = Text()
-          parser.feed(page)
-          body = "\n".join(line.strip() for line in "".join(parser.parts).splitlines() if line.strip())
-          if "Attachment A" not in body or len(body) < 20000:
-              raise SystemExit("the EULA text from " + url + " looks incomplete")
-          head = (
-              "This wheel carries NVIDIA CUDA 12.4 runtime files: the CUDA Runtime (cudart) and the\n"
-              "CUDA BLAS libraries (cublas, cublasLt). They are named in Attachment A of the NVIDIA\n"
-              "CUDA Toolkit End User License Agreement (https://docs.nvidia.com/cuda/eula/index.html#attachment-a).\n"
-              "The files are not modified. The EULA terms apply to these files. The GPU driver\n"
-              "(libcuda, nvcuda) is not part of this wheel.\n\n"
-              "NVIDIA CUDA Toolkit EULA, version 12.4.1, from " + url + "\n\n")
-          open(sys.argv[1], "w", encoding="utf-8").write(head + body + "\n")
-          PY
+          python tools/wheel-build/write_cuda_notice.py packaging/engine-wheel/NOTICE-NVIDIA-CUDA
           wc -c packaging/engine-wheel/NOTICE-NVIDIA-CUDA
 
       - name: Build llama.cpp with Vulkan or ROCm in the manylinux_2_34 image
@@ -548,6 +511,196 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: llama-pack-${{ matrix.cell }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The ik_llama.cpp server has no release assets, so each cell builds the commit that the adapter pins.
+  # The wheel holds one static server; the cuda cell adds the three NVIDIA runtime files beside it.
+  ik-cell:
+    name: ${{ matrix.cell }}
+    needs: plan
+    if: needs.plan.outputs.engine == 'all' || needs.plan.outputs.engine == 'ik'
+    runs-on: ubuntu-22.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: ik-llama-linux-x86_64-cpu
+            backend: cpu
+            license: MIT
+            timeout: 120
+          - cell: ik-llama-linux-x86_64-cuda
+            backend: cuda
+            license: MIT AND LicenseRef-NVIDIA-CUDA-EULA
+            timeout: 350
+    defaults:
+      run:
+        shell: bash
+    env:
+      BACKEND: ${{ matrix.backend }}
+      LICENSE_TERMS: ${{ matrix.license }}
+      PLATFORM: manylinux_2_34_x86_64
+      CHECK_MODEL_URL: https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+      CHECK_MODEL_SHA256: 270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free disk space for the CUDA build
+        if: matrix.backend == 'cuda'
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          df -h / | tail -1
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the pinned source
+        run: |
+          set -euo pipefail
+          # The adapter owns the pin; the workflow reads it from there.
+          commit="$(grep -oE '^IK_LLAMA_COMMIT = "[0-9a-f]{40}"' src/lilbee/providers/fleet/engines/ik_llama.py | grep -oE '[0-9a-f]{40}')"
+          test -n "${commit}"
+          git clone -q https://github.com/ikawrakow/ik_llama.cpp.git ik-src
+          git -C ik-src checkout -q "${commit}"
+          test "$(git -C ik-src rev-parse HEAD)" = "${commit}"
+          echo "WHEEL_VERSION=0+git${commit:0:12}" >> "$GITHUB_ENV"
+
+      - name: Build the server in the manylinux_2_34 image
+        run: |
+          set -euo pipefail
+          bin=packaging/engine-wheel-ik/lilbee_engine_ik_llama_cpp/bin
+          mkdir -p "${bin}" deps-build/_deps cuda-stub
+          docker run --rm -v "${PWD}:/work" -w /work \
+            -e BACKEND -e SRC=/work/ik-src -e "BIN_DIR=/work/${bin}" \
+            -e SHA_FILE=/work/cuda-libs.sha256 -e DEPS_DIR=/work/deps-build/_deps -e STUB_DIR=/work/cuda-stub \
+            -e "OWNER=$(id -u):$(id -g)" \
+            quay.io/pypa/manylinux_2_34_x86_64@sha256:e0b7a1bdb4a0b7d519b29b301e2d3c626a33ea78e9bb5bb1590ce2d99d0ae62f \
+            bash /work/tools/wheel-build/ik_llama_manylinux.sh
+          ls -l "${bin}"
+          if [ "${BACKEND}" = cuda ]; then cat cuda-libs.sha256; fi
+
+      - name: Collect the licences of the server and the code it carries
+        run: |
+          set -euo pipefail
+          lic="$PWD/packaging/engine-wheel-ik"
+          work="$(mktemp -d)"
+          cp ik-src/LICENSE "${lic}/LICENSE-ik_llama.cpp"
+          deps=""
+          if [ "${BACKEND}" = cuda ]; then deps="${PWD}/deps-build/_deps"; fi
+          bash tools/wheel-build/collect_vendored_licences.sh \
+            ik-src "${lic}/THIRD-PARTY/ik_llama.cpp" "${work}/vendored-terms.txt" "${deps}"
+          # The wheel states every licence it carries: the cell's own terms and the vendored terms.
+          terms="${LICENSE_TERMS}"
+          while IFS= read -r id; do
+            [ -n "${id}" ] || continue
+            if [[ " AND ${terms} AND " != *" AND ${id} AND "* ]]; then terms="${terms} AND ${id}"; fi
+          done < <(sort -u "${work}/vendored-terms.txt")
+          echo "License-Expression: ${terms}"
+          echo "LICENSE_EXPRESSION=${terms}" >> "$GITHUB_ENV"
+          test -s "${lic}/LICENSE-ik_llama.cpp"
+          find "${lic}/THIRD-PARTY" -type f | wc -l
+
+      - name: Write the NVIDIA CUDA notice with the EULA text
+        if: matrix.backend == 'cuda'
+        run: python tools/wheel-build/write_cuda_notice.py packaging/engine-wheel-ik/NOTICE-NVIDIA-CUDA
+
+      - name: Build the wheel
+        run: |
+          set -euo pipefail
+          cd packaging/engine-wheel-ik
+          python - "${WHEEL_VERSION}" <<'PY'
+          import os, pathlib, re, sys
+          p = pathlib.Path("pyproject.toml")
+          text = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', p.read_text(), count=1)
+          text = text.replace('requires-python', 'license = "%s"\nrequires-python' % os.environ["LICENSE_EXPRESSION"], 1)
+          p.write_text(text)
+          PY
+          python -m pip install build wheel
+          grep -E '^(version|license|requires)' pyproject.toml
+          python -m build --wheel -C--build-option="--build-number=1.${BACKEND}"
+          python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
+          ls dist
+
+      - name: Collect the wheel
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp packaging/engine-wheel-ik/dist/*.whl out/
+          wheels=(out/*.whl)
+          test "${#wheels[@]}" -eq 1
+          (cd out && sha256sum "$(basename "${wheels[0]}")" > "$(basename "${wheels[0]}").sha256")
+          cat out/*.sha256
+          ls -l out
+
+      - name: Install the wheel and start the server
+        run: |
+          set -euo pipefail
+          python -m venv check-venv
+          check-venv/bin/python -m pip install -q out/*.whl
+          exe="$(check-venv/bin/python -c "import lilbee_engine_ik_llama_cpp as m, pathlib; print(pathlib.Path(m.__file__).parent / 'bin' / 'llama-server')")"
+          bindir="$(dirname "${exe}")"
+          ls -l "${bindir}"
+          # The listing goes to a file: grep -q stops at its first match, and a pipe from unzip then fails with SIGPIPE under pipefail on a long listing.
+          unzip -l out/*.whl > wheel-listing.txt
+          unzip -p out/*.whl '*.dist-info/METADATA' > wheel-metadata.txt
+          cat wheel-metadata.txt
+          grep -xF "License-Expression: ${LICENSE_EXPRESSION}" wheel-metadata.txt
+          grep -q "dist-info/licenses/LICENSE-ik_llama.cpp$" wheel-listing.txt || { echo "wheel lacks the ik_llama.cpp licence"; exit 1; }
+          grep -q "dist-info/licenses/THIRD-PARTY/ik_llama.cpp/" wheel-listing.txt || { echo "wheel lacks the third-party licences"; exit 1; }
+          # The engine store refuses a wheel that its own rule refuses: the server needs its execute bit.
+          python - out/*.whl <<'PY'
+          import importlib.util, os, sys, zipfile
+          spec = importlib.util.spec_from_file_location("wheel_server", "src/lilbee/providers/fleet/wheel_server.py")
+          rule = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(rule)
+          libraries = ["cudart", "cublas", "cublasLt"] if os.environ["BACKEND"] == "cuda" else []
+          problems = rule.server_problems(zipfile.ZipFile(sys.argv[1]), "llama-server", libraries)
+          if problems:
+              raise SystemExit("; ".join(problems))
+          PY
+          bash "${GITHUB_WORKSPACE}/tools/wheel-build/check_glibc_floor.sh" "${bindir}"
+          curl -fsSL --retry 5 -o check-model.gguf "${CHECK_MODEL_URL}"
+          echo "${CHECK_MODEL_SHA256}  check-model.gguf" | sha256sum -c -
+          extra=()
+          if [ "${BACKEND}" = cuda ]; then
+            grep -q "dist-info/licenses/NOTICE-NVIDIA-CUDA$" wheel-listing.txt || { echo "wheel lacks the NVIDIA notice"; exit 1; }
+            # The NVIDIA files must match the toolkit's files byte for byte (EULA 2.3).
+            (cd "${bindir}" && sha256sum -c "${OLDPWD}/cuda-libs.sha256")
+            # The runner has no driver: the toolkit stub stands in for libcuda.so.1. That is the one library that may stay unresolved.
+            export LD_LIBRARY_PATH="${PWD}/cuda-stub"
+            extra=(-ngl 99)
+          fi
+          if ldd "${exe}" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
+          cd /
+          "${exe}" --version
+          "${exe}" --model "${GITHUB_WORKSPACE}/check-model.gguf" --host 127.0.0.1 --port 18088 ${extra[@]+"${extra[@]}"} > "${GITHUB_WORKSPACE}/serve.log" 2>&1 &
+          server=$!
+          up=0
+          for _ in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18088/health > /dev/null; then up=1; break; fi
+            kill -0 "${server}" 2> /dev/null || break
+            sleep 1
+          done
+          cat "${GITHUB_WORKSPACE}/serve.log"
+          if [ "${BACKEND}" = cuda ]; then
+            # No GPU here: the start reaches the CUDA backend, which refuses the missing device. The chat needs hardware (UNMEASURED-HW).
+            grep -q "ggml_cuda_init" "${GITHUB_WORKSPACE}/serve.log" || { echo "the server never reached the CUDA backend"; exit 1; }
+          else
+            test "${up}" -eq 1 || { echo "the server did not come up"; exit 1; }
+            curl -fs -m 60 http://127.0.0.1:18088/v1/chat/completions -H 'Content-Type: application/json' \
+              -d '{"messages":[{"role":"user","content":"Once upon a time"}],"max_tokens":16}' > "${GITHUB_WORKSPACE}/chat.json"
+            cat "${GITHUB_WORKSPACE}/chat.json"
+            grep -q '"choices"' "${GITHUB_WORKSPACE}/chat.json"
+          fi
+          kill "${server}" 2> /dev/null || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ik-pack-${{ matrix.cell }}
           path: out/*
           if-no-files-found: error
           retention-days: 7
