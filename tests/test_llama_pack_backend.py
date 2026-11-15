@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -252,24 +253,45 @@ def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PACK_CUDA_VERSION = re.compile(r"cuda-(\d+)\.(\d+)")
+_PACK_CELLS = _ROOT / ".github/workflows/llama-pack-cells.yml"
+_PACK_LINUX_CUDA_BUILD = _ROOT / "tools/wheel-build/llama_cuda_manylinux.sh"
+_PACK_CUDA_VERSION = re.compile(r"cuda(?:-|_dash=)(\d+)[.-](\d+)")
+# At this tag, ggml-cuda's CMakeLists.txt defaults CUDA 12 without GGML_NATIVE to 50-virtual up.
+_UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR = "b12032"
+_CUDA_ARCHITECTURE_OVERRIDES = ("CUDA_ARCHITECTURES", "CUDAARCHS", "GGML_NATIVE=ON")
+
+
+def _pack_cells() -> dict[str, Any]:
+    return cast(dict[str, Any], yaml.safe_load(_PACK_CELLS.read_text(encoding="utf-8")))
+
+
+def _pack_matrix(cells: dict[str, Any]) -> list[dict[str, Any]]:
+    return cast(list[dict[str, Any]], cells["jobs"]["cell"]["strategy"]["matrix"]["include"])
 
 
 def _pack_build_cuda_versions() -> set[tuple[int, int]]:
-    cells = yaml.safe_load(
-        (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
-    )
-    matrix = cells["jobs"]["cell"]["strategy"]["matrix"]["include"]
+    matrix = _pack_matrix(_pack_cells())
     texts = [str(value) for cell in matrix if cell["backend"] == "cuda" for value in cell.values()]
-    texts.append((_ROOT / "tools/wheel-build/llama_cuda_manylinux.sh").read_text(encoding="utf-8"))
+    texts.append(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
     return {(int(m[1]), int(m[2])) for text in texts for m in _PACK_CUDA_VERSION.finditer(text)}
+
+
+def _uncommented(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
 def test_the_driver_floor_is_the_cuda_version_the_pack_is_built_with() -> None:
     assert _pack_build_cuda_versions() == {_CUDA_DRIVER_FLOOR}
 
 
-def test_the_compute_floor_follows_the_architectures_the_pack_build_targets() -> None:
-    args = (_ROOT / "tools/wheel-build/cmake_args.sh").read_text(encoding="utf-8")
-    assert "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major" in args
+def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032() -> None:
+    cells = _pack_cells()
+    assets = [cell["asset"] for cell in _pack_matrix(cells) if "asset" in cell]
+    linux_build = _uncommented(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
+    workflow = _uncommented(_PACK_CELLS.read_text(encoding="utf-8"))
+    assert cells["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR
+    assert assets
+    assert all(f"llama-{_UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR}-" in asset for asset in assets)
+    assert "-DGGML_NATIVE=OFF" in linux_build
+    assert [o for o in _CUDA_ARCHITECTURE_OVERRIDES if o in linux_build + workflow] == []
     assert _CUDA_MIN_COMPUTE == (5, 0)
