@@ -38,7 +38,30 @@ Pick one path and stay on it.
 | List sources | `lilbee_list_documents` | `lilbee --json status --list-sources` |
 
 The MCP server sends the description of every tool. Run `lilbee --json <command> --help`
-for CLI options.
+for CLI options. These tools also exist, and each description says what it does:
+
+- **Crawl and create.** `lilbee_crawl` starts a non-blocking crawl and returns a
+  `task_id`. Poll `lilbee_crawl_status`, or stop it with `lilbee_crawl_cancel`.
+  `lilbee_init` creates a `.lilbee/` in a directory and switches the session to it.
+- **Models.** `lilbee_model_list`, `lilbee_model_show`, `lilbee_catalog_browse`,
+  `lilbee_model_pull` (long) and `lilbee_model_rm`. Check the `compat` field from
+  `lilbee_catalog_browse` before a pull.
+- **Datasets.** `lilbee_export_dataset` writes a per-page dataset with no embedding.
+  `lilbee_import_dataset` re-embeds every page (long).
+- **Sessions.** `lilbee_sessions_list`, `lilbee_session_get`, `lilbee_session_create`,
+  `lilbee_session_fork`, `lilbee_session_add_message`, `lilbee_session_set_summary`,
+  `lilbee_session_rename` and `lilbee_session_delete`. They cover your own sessions only.
+  Ask before you take over a session id the user gives you (`claim=true` on
+  `lilbee_session_add_message`). They appear only when `mcp_sessions_enabled` is on.
+- **Memory.** `lilbee_memory_remember`, `lilbee_memory_recall`, `lilbee_memory_list` and
+  `lilbee_memory_forget` keep durable notes. They appear only when `memory_enabled` is on.
+- **Profiles.** `lilbee_profile_list`, `lilbee_profile_show`, `lilbee_profile_apply`,
+  `lilbee_profile_manage`, `lilbee_analyze` and `lilbee_analyze_dismiss` read and change
+  the project's profile. They appear only when `mcp_profiles_enabled` is on. Open the
+  settings reference before you use them.
+
+`lilbee_analyze` reads the indexed documents, or an absolute `directory` on the server. It
+can take a while on a large corpus. Treat it as a long operation.
 
 ## The core loop
 
