@@ -1,0 +1,121 @@
+"""Run one engine through the lilbee CLI, or judge a transcript a run wrote.
+
+    python -m tools.qa.engine_demo run --engine mistralrs --backend cpu --out mistralrs-cpu.json
+    python -m tools.qa.engine_demo report mistralrs-cpu.json
+
+``run`` records and exits 0 when it wrote a transcript, whatever the engine did;
+``report`` judges it and exits 1 on any failure.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import sys
+import tempfile
+from pathlib import Path
+
+from tools.qa.engine_demo.observe import DEFAULT_QUESTION, RunPlan, observe
+from tools.qa.engine_demo.oracles import Transcript, judge
+
+from lilbee.providers.roles import WorkerRole
+
+# The model each role runs when --model does not name one.
+DEFAULT_MODELS = {
+    WorkerRole.CHAT: "Qwen/Qwen3-4B-GGUF",
+    WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+    WorkerRole.RERANK: "gpustack/bge-reranker-v2-m3-GGUF",
+    WorkerRole.VISION: "ggml-org/SmolVLM-256M-Instruct-GGUF",
+}
+_DEFAULT_ROLES = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
+
+
+def _role_model(value: str) -> tuple[WorkerRole, str]:
+    role, _, ref = value.partition("=")
+    if role not in list(WorkerRole) or not ref:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} must be ROLE=REF, with ROLE one of {', '.join(WorkerRole)}"
+        )
+    return WorkerRole(role), ref
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="engine_demo", description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run", help="run one engine and write a transcript")
+    run.add_argument("--engine", required=True, help="engine name, as lilbee engine list shows it")
+    run.add_argument("--backend", required=True, help="backend of the install, such as cpu")
+    run.add_argument("--out", required=True, type=Path, help="transcript file to write")
+    run.add_argument("--cli", default="lilbee", help="command that starts lilbee")
+    run.add_argument(
+        "--roles",
+        nargs="+",
+        type=WorkerRole,
+        choices=list(WorkerRole),
+        default=list(_DEFAULT_ROLES),
+        help="roles the engine claims",
+    )
+    run.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        type=_role_model,
+        metavar="ROLE=REF",
+        help="model for a claimed role, in place of the default",
+    )
+    run.add_argument("--image-pdf", type=Path, help="image-only PDF; the vision role needs it")
+    run.add_argument("--question", default=DEFAULT_QUESTION, help="question for ask and chat")
+    run.add_argument("--work-dir", type=Path, help="folder for the fresh data folder of this run")
+    report = commands.add_parser("report", help="judge a transcript")
+    report.add_argument("transcript", type=Path)
+    return parser
+
+
+def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    models = {role: DEFAULT_MODELS[role] for role in args.roles}
+    for role, ref in args.model:
+        if role not in models:
+            parser.error(f"--model names {role}, which --roles does not claim")
+        models[role] = ref
+    try:
+        plan = RunPlan(
+            cli=tuple(shlex.split(args.cli)),
+            engine=args.engine,
+            backend=args.backend,
+            models=models,
+            image_pdf=args.image_pdf,
+            question=args.question,
+        )
+    except ValueError as exc:
+        parser.error(f"{exc}: pass --image-pdf")
+    run_dir = Path(tempfile.mkdtemp(prefix="engine-demo-", dir=args.work_dir))
+    transcript = observe(plan, run_dir)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(transcript.to_json(), indent=2) + "\n", encoding="utf-8")
+    print(f"run folder: {run_dir}")
+    print(f"transcript: {args.out}")
+    return 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    try:
+        transcript = Transcript.from_json(json.loads(args.transcript.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read {args.transcript}: {exc}") from exc
+    failures = judge(transcript)
+    label = f"{transcript.engine} {transcript.backend} {transcript.pin}"
+    print(f"{'FAIL' if failures else 'PASS'} {label}")
+    for failure in failures:
+        print(f"  {failure.rule}: {failure.detail}")
+    return 1 if failures else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    return _run(parser, args) if args.command == "run" else _report(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
