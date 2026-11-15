@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import os
+import shutil
+import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -13,6 +17,7 @@ import pytest
 import yaml
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
+PACKAGING = Path(__file__).resolve().parents[1] / "packaging" / "engine-wheel-mistral-rs"
 
 
 def _load(name: str) -> ModuleType:
@@ -26,7 +31,6 @@ def _load(name: str) -> ModuleType:
 repack = _load("repack_mistralrs")
 rust_licences = _load("rust_licences")
 rust_notices = _load("rust_notices")
-cuda_notice = _load("write_cuda_notice")
 
 
 def _tar(path: Path, entries: dict[str, bytes]) -> Path:
@@ -128,23 +132,6 @@ def test_rust_licences_refuse_an_empty_text(tmp_path: Path) -> None:
         rust_licences.write_licences({"licenses": [_entry("MIT", "  ")]}, tmp_path)
 
 
-def test_cuda_eula_text_stops_on_a_short_page() -> None:
-    with pytest.raises(SystemExit, match="looks incomplete"):
-        cuda_notice.eula_text("<p>Attachment A</p>", "https://x.test")
-
-
-def test_cuda_eula_text_keeps_the_body_and_skips_scripts() -> None:
-    page = "<script>var x</script><p>Attachment A</p><p>" + "word " * 5000 + "</p>"
-    body = cuda_notice.eula_text(page, "https://x.test")
-    assert body.startswith("Attachment A") and "var x" not in body
-
-
-def test_cuda_notice_names_the_files_and_the_version() -> None:
-    text = cuda_notice.notice("12.8.1", "cudart.", "BODY", "https://x.test/eula")
-    assert "NVIDIA CUDA 12.8 runtime files: cudart." in text
-    assert "version 12.8.1, from https://x.test/eula" in text and text.endswith("BODY\n")
-
-
 _LOCK = """
 [[package]]
 name = "selectors"
@@ -174,8 +161,9 @@ def test_mpl_notice_names_the_exact_source_and_checksum() -> None:
         _mpl_report("selectors", "0.26.0"), rust_notices.lock_checksums(_LOCK)
     )
     assert text is not None
-    lines = [line for line in text.splitlines() if line.startswith("https://")]
-    assert lines == ["https://static.crates.io/crates/selectors/selectors-0.26.0.crate  abc123"]
+    assert text.splitlines() == [
+        "https://static.crates.io/crates/selectors/selectors-0.26.0.crate  abc123"
+    ]
     assert "serde" not in text
 
 
@@ -253,6 +241,80 @@ def test_the_pack_job_checks_the_notices_in_the_built_wheel() -> None:
     )
     assert "THIRD-PARTY/vendored/" in check
     assert "NOTICE-OpenSSL" in check and "SOURCE-MPL-2.0" in check
+
+
+@pytest.mark.parametrize("name", ["LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"])
+def test_the_pack_job_refuses_an_empty_licence_file(tmp_path: Path, name: str) -> None:
+    step = next(
+        step["run"]
+        for step in _mistralrs_job()["steps"]
+        if step.get("name") == "Name every licence in the wheel expression"
+    )
+    loop = "for f in" + step.split("for f in", 1)[1].split("\ndone", 1)[0] + "\ndone"
+    script = tmp_path / "check_empty.sh"
+    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for held in ("LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"):
+        (tree / held).write_text("text", encoding="utf-8")
+    env = {**os.environ, "WHEEL_TREE": str(tree)}
+    run = subprocess.run
+    ok = run(["bash", str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
+    assert ok.returncode == 0
+    (tree / name).write_text("", encoding="utf-8")
+    bad = run(["bash", str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
+    assert bad.returncode == 1
+    assert f"empty licence file {tree / name}" in bad.stdout
+
+
+def _wheel_listing(tmp_path: Path) -> set[str]:
+    """Build the wheel as the pack job does and list the files under dist-info/licenses."""
+    tree = tmp_path / "wheel-tree"
+    shutil.copytree(PACKAGING, tree)
+    report = _mpl_report("selectors", "0.26.0")
+    report["licenses"].append(_entry("OpenSSL", "ssl text", "aws-lc-sys"))
+    checkout = tmp_path / "checkout"
+    (checkout / "sub").mkdir(parents=True)
+    (checkout / "sub" / "NOTICE").write_text("checkout notice", encoding="utf-8")
+    names = rust_notices.write_notices(report, _LOCK, checkout, tmp_path / "registry", tree)
+    assert {"SOURCE-MPL-2.0", "NOTICE-OpenSSL"} <= set(names)
+    (tree / "LICENSE-mistral.rs").write_text("mistral.rs licence", encoding="utf-8")
+    crates = tree / "THIRD-PARTY" / "mistral.rs"
+    crates.mkdir(parents=True)
+    (crates / "MIT.txt").write_text("mit", encoding="utf-8")
+    step = next(
+        step["run"] for step in _mistralrs_job()["steps"] if step.get("name") == "Build the wheel"
+    )
+    script = tmp_path / "set_metadata.py"
+    script.write_text(step.split("<<'PY'\n")[1].split("\nPY")[0], encoding="utf-8")
+    env = {**os.environ, "LICENSE_EXPRESSION": "MIT AND MPL-2.0 AND OpenSSL"}
+    subprocess.run([sys.executable, "-I", str(script), "0.9.5"], cwd=tree, env=env, check=True)
+    uv = shutil.which("uv")
+    assert uv is not None
+    subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(tmp_path / "dist")],
+        cwd=tree,
+        check=True,
+        capture_output=True,
+    )
+    (wheel,) = (tmp_path / "dist").glob("*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        return {
+            name.split(".dist-info/licenses/")[1]
+            for name in archive.namelist()
+            if ".dist-info/licenses/" in name
+        }
+
+
+def test_the_built_wheel_holds_every_licence_file_the_job_writes(tmp_path: Path) -> None:
+    held = _wheel_listing(tmp_path)
+    assert {
+        "SOURCE-MPL-2.0",
+        "NOTICE-OpenSSL",
+        "LICENSE-mistral.rs",
+        "THIRD-PARTY/mistral.rs/MIT.txt",
+        "THIRD-PARTY/vendored/mistral.rs__sub__NOTICE",
+    } <= held
 
 
 def test_the_pack_job_has_no_cuda_step() -> None:
