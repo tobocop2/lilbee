@@ -387,7 +387,7 @@ def _scrubbed(value: Any) -> Any:
 
 
 HOME_TOKEN = "<home>"
-_HOME_DIR = re.compile(r"/(?:home|Users)/[^/\s\"'\\]+")
+_HOME_DIR = re.compile(r"(?<![^\s\"'=])/(?:home|Users)/[^/\s\"'\\]+")
 
 
 def scrub_home(text: str) -> str:

@@ -22,19 +22,45 @@ from tests.conformance.preset_check import (
     scrub_host,
 )
 
-FIXTURES = Path(__file__).with_name("fixtures")
+TESTS = Path(__file__).resolve().parents[1]
+RECORDINGS = TESTS / "conformance" / "fixtures"
 _HOME_PATH = re.compile(r"/home/[a-z]|/Users/[A-Za-z]")
 _RECORDED_HOSTNAME = "nuclearwork"
 
 
-def _fixture_lines() -> list[tuple[str, int, str]]:
-    files = [p for p in FIXTURES.rglob("*") if p.is_file()]
+def _fixture_files() -> list[Path]:
+    return sorted(
+        p
+        for p in TESTS.rglob("*")
+        if p.is_file()
+        and "__pycache__" not in p.parts
+        and any("fixture" in part.lower() for part in p.relative_to(TESTS).parts[:-1])
+    )
+
+
+def _lines(files: list[Path]) -> list[tuple[str, int, str]]:
     assert files
     return [
-        (str(p.relative_to(FIXTURES)), n, line)
+        (str(p.relative_to(TESTS)), n, line)
         for p in files
-        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        for n, line in enumerate(p.read_bytes().decode("utf-8", errors="replace").splitlines(), 1)
     ]
+
+
+def _fixture_lines() -> list[tuple[str, int, str]]:
+    return _lines(_fixture_files())
+
+
+def _recording_lines() -> list[tuple[str, int, str]]:
+    return _lines([p for p in _fixture_files() if RECORDINGS in p.parents])
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["conformance/fixtures/engines", "conformance/fixtures/presets", "fixtures", "integration"],
+)
+def test_the_census_reads_every_fixture_folder(folder: str) -> None:
+    assert any((TESTS / folder) in p.parents for p in _fixture_files())
 
 
 def test_no_committed_recording_holds_the_recorded_hostname() -> None:
@@ -47,7 +73,7 @@ def test_no_committed_recording_holds_the_recorded_hostname() -> None:
 def test_no_committed_recording_holds_the_hostname_of_this_machine() -> None:
     hostname = socket.gethostname()
     leaks = [
-        f"{name}:{n}" for name, n, line in _fixture_lines() if scrub_host(line, hostname) != line
+        f"{name}:{n}" for name, n, line in _recording_lines() if scrub_host(line, hostname) != line
     ]
     assert leaks == []
 
@@ -70,7 +96,7 @@ def test_scrub_host_replaces_the_hostname_and_its_short_form(raw: str, scrubbed:
 
 
 def test_scrub_host_with_an_empty_hostname_changes_nothing() -> None:
-    assert scrub_host("a b", "") == "a b"
+    assert scrub_host("a  b", "") == "a  b"
 
 
 def test_no_committed_recording_holds_a_home_path() -> None:
@@ -86,6 +112,15 @@ def test_no_committed_recording_holds_a_home_path() -> None:
         ('{"model":"/home/alice/m.gguf","p":"/home/alice/m.gguf"}', None),
         ("from /home/runner/work/x.cpp:84:", f"from {HOME_TOKEN}/work/x.cpp:84:"),
         ("/srv/x and /homework/alice", "/srv/x and /homework/alice"),
+        ("https://example.com/home/page", "https://example.com/home/page"),
+        (
+            "https://huggingface.co/Users/x/repo/resolve/main/m.gguf",
+            "https://huggingface.co/Users/x/repo/resolve/main/m.gguf",
+        ),
+        ("/srv/home/alice/m.gguf and /opt/Users/bob/m.gguf",) * 2,
+        ("/home/alice/m.gguf", f"{HOME_TOKEN}/m.gguf"),
+        ("chat=/home/alice/m.gguf", f"chat={HOME_TOKEN}/m.gguf"),
+        ("loading '/Users/bob/m.gguf'", f"loading '{HOME_TOKEN}/m.gguf'"),
         ("no path here", "no path here"),
     ],
 )
