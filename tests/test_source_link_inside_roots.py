@@ -286,7 +286,9 @@ class TestOpenTime:
         (argv,), _kw = run.call_args
         assert argv == ["xdg-open", str((world["docs"] / "a.md").resolve())]
 
-    def test_a_symlink_loop_is_refused_without_an_error(self, world, opener, monkeypatch):
+    def test_a_symlink_loop_raises_no_error_whatever_the_platform_does(
+        self, world, opener, monkeypatch
+    ):
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
         run, browser = opener
         loop_a, loop_b = world["docs"] / "loop-a", world["docs"] / "loop-b"
