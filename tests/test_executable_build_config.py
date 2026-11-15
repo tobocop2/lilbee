@@ -258,6 +258,20 @@ def test_nothing_in_the_release_waits_on_the_old_mac_build() -> None:
         assert "build-oldmac" not in needs, name
 
 
+def test_pages_serves_every_fork_the_old_mac_pins_name() -> None:
+    pages = (_WORKFLOWS / "pages.yml").read_text(encoding="utf-8")
+    pins = [
+        line.split("==")[0]
+        for line in _OLDMAC_PINS.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+
+    assert pins
+    assert "--repo tobocop2/lancedb" in pages
+    for project in pins:
+        assert f"--optional-repo tobocop2/{project}" in pages
+
+
 def test_the_old_mac_cells_are_not_in_the_release_matrix() -> None:
     release = yaml.safe_load((_ROOT / ".github" / "release-cells.yml").read_text(encoding="utf-8"))
     names = {cell["asset_name"] for cell in release}
