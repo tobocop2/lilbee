@@ -8,6 +8,7 @@ import os
 import platform
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from tests.conformance.preset_check import (
     Outcome,
@@ -16,6 +17,7 @@ from tests.conformance.preset_check import (
     fixture_json,
     recording,
     run_steps,
+    scrub_home,
 )
 
 
@@ -88,6 +90,15 @@ def run_log(args: argparse.Namespace, results: dict[str, Outcome]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def write_recording(out: Path, doc: dict[str, Any], log: str) -> str:
+    """Write the recording and its log with each home directory scrubbed; return the log text."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(scrub_home(json.dumps(doc, indent=1)) + "\n", encoding="utf-8")
+    log = scrub_home(log)
+    out.with_suffix(".log").write_text(log, encoding="utf-8")
+    return log
+
+
 def token_from(args: argparse.Namespace) -> str | None:
     """The bearer token held in the variable that --token-env names; SystemExit when it is empty."""
     if not args.token_env:
@@ -115,11 +126,8 @@ def main() -> int:
         configured(proxy_url, setup, Path(root)),
     ):
         results = run_steps(setup)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
     doc = fixture_json(args.server, args.version, setup, results, tape)
-    args.out.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
-    log = run_log(args, results)
-    args.out.with_suffix(".log").write_text(log, encoding="utf-8")
+    log = write_recording(args.out, doc, run_log(args, results))
     print(log, end="")
     return 0 if all(o.ok for o in results.values()) else 1
 

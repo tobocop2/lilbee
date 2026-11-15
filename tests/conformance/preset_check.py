@@ -386,6 +386,15 @@ def _scrubbed(value: Any) -> Any:
     return value
 
 
+HOME_TOKEN = "<home>"
+_HOME_DIR = re.compile(r"/(?:home|Users)/[^/\s\"'\\]+")
+
+
+def scrub_home(text: str) -> str:
+    """The text with each home directory, such as /home/alice, replaced by the home token."""
+    return _HOME_DIR.sub(HOME_TOKEN, text)
+
+
 def _origin(url: str) -> tuple[str, str]:
     parts = urllib.parse.urlsplit(url)
     return parts.scheme, parts.netloc
