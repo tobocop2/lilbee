@@ -141,7 +141,8 @@ def test_install_table_commands_use_the_manifest_names():
     assert f"npx skills add {slug} -g" in commands
     assert "lilbee mcp" in commands
 
-SKILL_LINK = re.compile(r"\]\(([^)#\s]+)\)")
+
+SKILL_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
 
 
 def _local_links(skill_md: Path) -> list[str]:
@@ -155,6 +156,14 @@ def test_skill_stays_short_and_every_linked_file_exists(skill_dir):
     assert len(skill_md.read_text(encoding="utf-8").splitlines()) < 200
     for link in _local_links(skill_md):
         assert (skill_dir / link).is_file(), f"{skill_dir.name} links to missing {link}"
+
+
+def test_a_link_with_a_fragment_yields_its_file(tmp_path):
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text(
+        "[a](a.md) [b](b.md#part) [c](#local) [d](https://x.dev/e.md#f)\n", encoding="utf-8"
+    )
+    assert _local_links(skill_md) == ["a.md", "b.md"]
 
 
 def test_the_main_skill_links_its_reference_files():
