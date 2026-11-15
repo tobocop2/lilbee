@@ -13,28 +13,25 @@ from lilbee.cli.tui.screens.status import _build_arch_content
 from lilbee.core.config import cfg
 from lilbee.modelhub import model_info
 from lilbee.providers import engine_params
+from lilbee.providers.fleet.engines import llama as llama_engine
 from lilbee.providers.fleet.engines.base import EngineAdapter, RequestProfile
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.mlx import MLX
+from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.roles import WorkerRole
 
 
 class _ChatOnly:
-    """An engine that answers the chat role and the model path it serves, and nothing else."""
+    """An engine that answers the chat role and nothing else."""
 
-    def __init__(self, adapter: EngineAdapter, path: Path) -> None:
+    def __init__(self, adapter: EngineAdapter) -> None:
         self._adapter = adapter
-        self._path = path
 
     def request_profile(self, role: WorkerRole) -> RequestProfile:
         if role is not WorkerRole.CHAT:
             pytest.fail(f"unexpected role {role}")
         return self._adapter.request_profile(role)
-
-    def model_meta(self, path: Path) -> dict[str, str] | None:
-        if path != self._path:
-            pytest.fail(f"unexpected path {path}")
-        return self._adapter.model_meta(path)
 
 
 def _serve_chat_with(monkeypatch: pytest.MonkeyPatch, adapter: EngineAdapter, path: Path) -> None:
@@ -48,7 +45,7 @@ def _serve_chat_with(monkeypatch: pytest.MonkeyPatch, adapter: EngineAdapter, pa
             pytest.fail("the engines resolve against the global config")
         return SimpleNamespace(
             for_role=lambda role: (
-                SimpleNamespace(adapter=_ChatOnly(adapter, path))
+                SimpleNamespace(adapter=_ChatOnly(adapter))
                 if role is WorkerRole.CHAT
                 else pytest.fail(f"unexpected role {role}")
             )
@@ -59,12 +56,6 @@ def _serve_chat_with(monkeypatch: pytest.MonkeyPatch, adapter: EngineAdapter, pa
     monkeypatch.setattr(cfg, "chat_model", "local/chat")
     monkeypatch.setattr(cfg, "embedding_model", "")
     monkeypatch.setattr(cfg, "vision_model", "")
-    model_info.invalidate_cache()
-
-
-@pytest.fixture(autouse=True)
-def _fresh_cache() -> None:
-    model_info.invalidate_cache()
 
 
 def test_an_mlx_folder_reports_the_mlx_engine_as_its_handler(
@@ -97,14 +88,80 @@ def test_the_status_screen_shows_the_mlx_engine_for_an_mlx_folder(
     assert "llama-server" not in shown
 
 
+def _serve_gguf_with(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter: EngineAdapter,
+    model: Path,
+    header: dict[str, str] | None,
+) -> None:
+    """Serve *model* with *adapter*; the GGUF header parser answers *header* for that file."""
+
+    def parse(path: Path) -> dict[str, str] | None:
+        if path != model:
+            pytest.fail(f"unexpected path {path}")
+        return header
+
+    monkeypatch.setattr(llama_engine, "read_gguf_metadata", parse)
+    _serve_chat_with(monkeypatch, adapter, model)
+
+
+def _gguf_file(tmp_path: Path) -> Path:
+    model = tmp_path / "chat.gguf"
+    model.write_bytes(b"GGUF")
+    return model
+
+
 def test_a_gguf_model_reports_its_header_architecture_and_the_llama_engine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    model = tmp_path / "chat.gguf"
-    _serve_chat_with(monkeypatch, LLAMA, model)
-    monkeypatch.setattr(LLAMA, "model_meta", lambda _path: {"architecture": "qwen3"})
+    _serve_gguf_with(monkeypatch, LLAMA, _gguf_file(tmp_path), {"architecture": "qwen3"})
     info = model_info.get_model_architecture()
     assert (info.chat_arch, info.active_handler) == ("qwen3", "llama-server")
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, TEI], ids=["mistral.rs", "tei"])
+def test_a_gguf_served_by_an_engine_without_a_reader_keeps_its_architecture(
+    engine: EngineAdapter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert engine.model_meta(_gguf_file(tmp_path)) is None
+    _serve_gguf_with(monkeypatch, engine, _gguf_file(tmp_path), {"architecture": "qwen3"})
+    info = model_info.get_model_architecture()
+    handler = engine.request_profile(WorkerRole.CHAT).label
+    assert (info.chat_arch, info.active_handler) == ("qwen3", handler)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [None, {}, {"context_length": "4096"}],
+    ids=["no header", "empty header", "header without an architecture"],
+)
+def test_a_gguf_without_a_readable_header_reports_no_architecture_and_the_engine(
+    header: dict[str, str] | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _serve_gguf_with(monkeypatch, LLAMA, _gguf_file(tmp_path), header)
+    info = model_info.get_model_architecture()
+    assert (info.chat_arch, info.active_handler) == ("unknown", "llama-server")
+
+
+def test_a_file_without_the_gguf_magic_is_not_parsed_and_reports_the_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "chat.bin"
+    model.write_bytes(b"not a model file")
+    _serve_gguf_with(monkeypatch, LLAMA, model, {"architecture": "qwen3"})
+    monkeypatch.setattr(llama_engine, "read_gguf_metadata", lambda _path: pytest.fail("parsed"))
+    info = model_info.get_model_architecture()
+    assert (info.chat_arch, info.active_handler) == ("unknown", "llama-server")
+
+
+def test_the_handler_follows_an_engine_change_with_no_model_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _gguf_file(tmp_path)
+    _serve_gguf_with(monkeypatch, LLAMA, model, {"architecture": "qwen3"})
+    assert model_info.get_model_architecture().active_handler == "llama-server"
+    _serve_gguf_with(monkeypatch, MISTRAL, model, {"architecture": "qwen3"})
+    assert model_info.get_model_architecture().active_handler == "mistral.rs"
 
 
 def test_an_unresolvable_chat_model_reports_no_handler(

@@ -3073,33 +3073,6 @@ def test_status_read_vision_arch_swallows_errors():
     assert result.vision_projector == "unknown"
 
 
-def test_get_model_architecture_caches_within_session():
-    """Repeated calls under the same model refs return the cached instance."""
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    first = get_model_architecture()
-    second = get_model_architecture()
-    # Cached identity, not just equal value: a cache hit returns the
-    # exact same object so callers can rely on cheap reads.
-    assert first is second
-
-
-def test_invalidate_cache_forces_reread():
-    """invalidate_cache drops the memoized arch info so the next call
-    re-reads instead of returning the stale instance."""
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    first = get_model_architecture()
-    invalidate_cache()
-    second = get_model_architecture()
-    # Different instances after invalidate (re-read happens), even
-    # though the values are equal because nothing changed on disk.
-    assert first is not second
-    assert first == second
-
-
 async def test_app_mounts_chat_screen():
     from lilbee.cli.tui.app import LilbeeApp
 
