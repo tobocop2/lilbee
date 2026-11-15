@@ -34,10 +34,9 @@ from tests.conformance.compare_verdicts import (
     Status,
     StepVerdict,
 )
+from tests.conformance.request_set import REQUEST_SET_VERSION
 
 SCHEMA_VERSION = 1
-REQUEST_SET_VERSION = 1
-"""The version of the requests every record answers; a change to a request bumps it."""
 RECORD_DIR = Path(__file__).with_name("fixtures") / "compare"
 
 Manifests = Mapping[str, Mapping[str, Mapping[str, Mapping[str, Any]]]]
@@ -53,8 +52,9 @@ _SECRET = re.compile(
     r"|\bbearer(?:\s|\\[nrt])+[A-Za-z0-9._~+/=-]{8,}"
     r"|\bbasic(?:\s|\\[nrt])+[A-Za-z0-9+/=]{8,}"
     r"|\bauthorization\b[\s\"'\\]*[:=][\s\"'\\]*[^\s\"'\\]{8,}"
-    r"|\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|password"
-    r"|token)\b[\s\"'\\]*[:=][\s\"'\\]*(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{8,}"
+    r"|(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret(?:[_-]?access)?"
+    r"(?:[_-]?key)?|password|token)[\s\"'\\]*[:=][\s\"'\\]*"
+    r"(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{8,}"
     r"|\bsk-[A-Za-z0-9_-]{16,}"
     r"|\bsk_live_[A-Za-z0-9]{16,}"
     r"|\b(?:hf_|gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}"
@@ -63,7 +63,6 @@ _SECRET = re.compile(
     r"|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"
     r"|(?<![A-Za-z0-9/+=])(?-i:(?=[A-Za-z0-9/+]{0,39}[a-z])(?=[A-Za-z0-9/+]{0,39}[A-Z])"
     r"(?=[A-Za-z0-9/+]{0,39}[0-9]))[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])"
-    r"|\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ai|dev|app|cloud|internal|local|lan)\b"
     r"|\bAIza[A-Za-z0-9_-]{30,}"
     r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -74,6 +73,11 @@ _SECRET = re.compile(
     r"|\b[A-Za-z]:\\{1,2}Users\\",
     re.IGNORECASE,
 )
+_HOST_NAME = re.compile(
+    r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ai|dev|app|cloud|internal|local|lan|co|xyz)\b",
+    re.IGNORECASE,
+)
+"""A bare host name, read in the fields that hold a host and not in an engine's answer text."""
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -228,29 +232,58 @@ def current_pin(
     return None if row is None else Pin(wanted, row["sha256"])
 
 
-def _strings(value: Any) -> Iterator[str]:
+_ANSWER_KEYS = frozenset({"content", "reasoning_content"})
+_OK_STATUS = range(200, 300)
+
+
+def _strings(value: Any, answers: bool = True) -> Iterator[str]:
+    """Each string of a JSON value; with *answers* false, not the model answer text.
+
+    The answer text is the `content` of a successful exchange body. An error body and every other
+    field of a successful body are still read.
+    """
     if isinstance(value, str):
         yield value
     elif isinstance(value, Mapping):
-        for item in value.values():
-            yield from _strings(item)
+        is_exchange = set(value) == {"status", "body"}
+        for key, item in value.items():
+            if is_exchange and key == "body" and not answers and value["status"] in _OK_STATUS:
+                yield from _body_strings(item)
+            elif not (key in _ANSWER_KEYS and not answers and isinstance(item, str)):
+                yield from _strings(item, answers)
     elif isinstance(value, list):
         for item in value:
-            yield from _strings(item)
+            yield from _strings(item, answers)
+
+
+def _body_strings(body: str) -> Iterator[str]:
+    """The strings of a successful body but its answer text; text that is not JSON is read whole."""
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        yield body
+    else:
+        yield from _strings(doc, answers=False)
 
 
 def scrub_fault(text: str) -> str:
     """Why *text* may hold a URL, a token, a host or a home path; empty when it holds none.
 
     The text is read raw and again with each string of its JSON decoded, so an escaped form
-    inside a stored body is seen too.
+    inside a stored body is seen too. A bare host name is not read in the answer text of a
+    successful exchange, because a model answer may name a domain. An error body is read.
     """
     try:
-        decoded = list(_strings(json.loads(text)))
+        doc = json.loads(text)
     except ValueError:
-        decoded = []
+        decoded, hosts = [], [text]
+    else:
+        decoded, hosts = list(_strings(doc)), list(_strings(doc, answers=False))
     for part in (text, *decoded):
         if found := _SECRET.search(part):
+            return f"the record holds {found.group(0).strip()!r}, a URL or token"
+    for part in hosts:
+        if found := _HOST_NAME.search(part):
             return f"the record holds {found.group(0).strip()!r}, a URL or token"
     return ""
 

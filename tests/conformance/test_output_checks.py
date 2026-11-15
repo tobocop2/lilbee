@@ -14,12 +14,13 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.providers.routing_provider import RoutingProvider
 from tests import _fake_sdk as fakes
-from tests.conformance import preset_check, record_presets
+from tests.conformance import preset_check, record_presets, request_set
 from tests.conformance.fake_engine import Behaviour, FakeEngine
 from tests.conformance.harness import (
     NEAR_COPY_COSINE,
     Verdict,
     answer_fault,
+    colour_fault,
     cosine,
     embed_fault,
     json_fault,
@@ -147,7 +148,13 @@ def test_run_fails_empty_tool_arguments_and_names_the_cause() -> None:
 def test_run_fails_a_vision_server_that_answers_red_for_every_image() -> None:
     got, reasons = _verdicts(Behaviour(vision="const"), {"chat", "vision"})
     assert got["E10"] == Verdict.FAIL
-    assert "blue image was called red" in reasons["E10"]
+    assert "the blue image is answered ['red'], not the one word blue" in reasons["E10"]
+
+
+def test_run_names_the_one_word_rule_for_a_sentence_answer() -> None:
+    got, reasons = _verdicts(Behaviour(vision="sentence"), {"chat", "vision"})
+    assert got["E10"] == Verdict.FAIL
+    assert "the red image is answered ['the', 'colour', 'is', 'red']" in reasons["E10"]
 
 
 def test_run_fails_prose_for_response_format_and_names_the_cause() -> None:
@@ -277,7 +284,7 @@ def _reasoning_outcome(
 ) -> preset_check.Outcome:
     """Run the reasoning step against a server that sends *message* as its one reply."""
     setup = Setup(("chat",), dict(_MODELS), strict=True)
-    request = {"messages": [preset_check._REASONING_ASK], "model": "m", "stream": False}
+    request = {"messages": [request_set.REASONING_ASK], "model": "m", "stream": False}
     reply = {"choices": [{"message": message, "finish_reason": finish}]}
     exchange = preset_check.Exchange(
         "POST", "/v1/chat/completions", request, 200, "application/json", json.dumps(reply)
@@ -336,6 +343,59 @@ def test_preset_vision_step_needs_the_blue_image_not_called_red(
 ) -> None:
     assert _outcome(monkeypatch, "vision", vision=["red", "blue"]) is True
     assert _outcome(monkeypatch, "vision", vision=["red", "red"]) is False
+
+
+@pytest.mark.parametrize(
+    ("answers", "ok"),
+    [
+        (["red", "blue"], True),
+        (["Red.", "Blue"], True),
+        (["the colour is red", "blue"], False),
+        (["red", "the colour is blue"], False),
+        (["red", "bored"], False),
+        (["red red", "blue"], False),
+    ],
+)
+def test_preset_vision_step_uses_the_one_word_rule(
+    monkeypatch: pytest.MonkeyPatch, answers: list[str], ok: bool
+) -> None:
+    assert _outcome(monkeypatch, "vision", vision=answers) is ok
+
+
+def test_the_non_strict_preset_vision_step_uses_the_one_word_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(vision=["red"]))
+    plain = Setup(("vision",), {"vision": "m"})
+    assert preset_check._STEP_FUNCTIONS["vision"](plain).ok is True
+    monkeypatch.setattr(
+        preset_check, "create_sdk_provider", lambda: _Provider(vision=["it is red"])
+    )
+    assert preset_check._STEP_FUNCTIONS["vision"](plain).ok is False
+
+
+def _recorded_colour_answers(exchanges: list[Any]) -> list[tuple[str, str]]:
+    """The (colour, answer text) of each answered image request; the run asks red, then blue."""
+    texts = []
+    for exchange in exchanges:
+        if "image_url" in json.dumps(exchange.request) and exchange.status == 200:
+            texts.append(json.loads(exchange.body)["choices"][0]["message"]["content"])
+    return list(zip(("red", "blue"), texts, strict=False))
+
+
+def test_every_recorded_vision_answer_passes_the_one_word_rule() -> None:
+    """The one-word rule gives each recorded vision step the verdict its fixture stores."""
+    checked = 0
+    for path in [*sorted(FIXTURES.glob("*.json")), *harness_recordings()]:
+        setup, recorded, exchanges, _doc = load_fixture(path)
+        pairs = _recorded_colour_answers(exchanges)
+        if "vision" not in recorded or not pairs:
+            continue
+        checked += 1
+        faults = [colour_fault(answer, colour) for colour, answer in pairs]
+        assert len(pairs) == (2 if setup.strict else 1), path.name
+        assert recorded["vision"].ok == (not any(faults)), path.name
+    assert checked > 0
 
 
 def test_every_recorded_answer_passes_the_stricter_checks() -> None:

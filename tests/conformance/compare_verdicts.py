@@ -12,7 +12,6 @@ properties.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -23,6 +22,7 @@ from lilbee.retrieval.reasoning import split_reasoning
 from tests.conformance.harness import (
     _message,
     _vectors,
+    colour_fault,
     cosine,
     embed_fault,
     json_fault,
@@ -328,27 +328,20 @@ def overflow(
     return _decide(engine, oracle, oracle_kind, absolute, _no_relation)
 
 
-def _answer_words(body: Body) -> list[str]:
-    """The lower-case words of the answer, after any reasoning block."""
-    answer = split_reasoning(str(_chat(body)[0].get("content") or "")).answer
-    return re.findall(r"[a-z]+", answer.lower())
-
-
 def vision(
     engine: Colours | None, oracle: Colours | None, *, oracle_kind: Oracle = Oracle.LLAMA
 ) -> StepVerdict:
     """Each image's answer is exactly its own colour word, after the reasoning block.
 
-    The request asks for a one-word colour answer, and the comparison run (I4) must send
-    that prompt. With one word, the answer is the word. Any other text, such as "not red"
-    or "blue rather than red", fails, so no negation is parsed.
+    The request asks for a one-word colour answer (request_set.VISION_PROMPT). With one
+    word, the answer is the word. Any other text, such as "not red" or "blue rather than
+    red", fails, so no negation is parsed. The harness image check applies the same rule.
     """
 
     def absolute(answers: Colours) -> str:
         for body, want in ((answers.red, _RED), (answers.blue, _BLUE)):
-            words = _answer_words(body)
-            if words != [want]:
-                return f"the {want} image is answered {words}, not the one word {want}"
+            if fault := colour_fault(_chat(body)[0].get("content"), want):
+                return fault
         return ""
 
     return _decide(engine, oracle, oracle_kind, absolute, _no_relation)
