@@ -538,6 +538,8 @@ An `xdna` reference names an NPU model by its tag, as in `qwen3:0.6b#xdna`. The 
 writes a small record and no weights. The record lists the model as installed, so you can
 assign it to a role. Lemonade downloads the model the first time it loads it.
 
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+
 ### Install an engine
 
 An engine that is not bundled needs a pack. Packs of ik_llama.cpp, mistral.rs and
@@ -559,6 +561,8 @@ as not installed.
 Lemonade serves chat and embed models on an AMD XDNA2 NPU, through its `flm` recipe. It does
 not serve rerank, and it does not run GGUF models. On Windows lilbee cannot read the NPU, so
 Lemonade runs only when you choose it. lilbee has no recorded run of Lemonade on an NPU.
+
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
