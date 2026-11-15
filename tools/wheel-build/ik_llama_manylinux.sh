@@ -46,10 +46,15 @@ if [ "${BACKEND}" = cuda ]; then
   # and five images pass the 2 GB limit of the linker. Code for 8.0 runs on 8.6 and 8.9 cards, and
   # Hopper compiles from the 7.5 PTX at its first start.
   args+=(-DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++"
-    "-DCMAKE_CUDA_ARCHITECTURES=75-real;80-real;89-real;75-virtual")
+    "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-75-real;80-real;89-real;75-virtual}")
+  if [ -n "${EXTRA_CMAKE:-}" ]; then args+=("${EXTRA_CMAKE}"); fi
+  if [ -n "${CUDA_FLAGS:-}" ]; then args+=("-DCMAKE_CUDA_FLAGS=${CUDA_FLAGS}"); fi
+  if [ -n "${HOST_FLAGS:-}" ]; then args+=("-DCMAKE_CXX_FLAGS=${HOST_FLAGS}" "-DCMAKE_C_FLAGS=${HOST_FLAGS}"); fi
 fi
 
 build="${BUILD_DIR:-/tmp/build-${BACKEND}}"
+# The container runs as root; whatever the build leaves in a bind mounted folder returns to its owner.
+trap 'chown -R "${OWNER}" "${build}" 2>/dev/null || true' EXIT
 cmake -S "${SRC}" -B "${build}" "${args[@]}"
 # A runner has four cores and a job has a time limit. With a budget, the build stops in time and
 # leaves its objects in BUILD_DIR; the next run continues from them.
