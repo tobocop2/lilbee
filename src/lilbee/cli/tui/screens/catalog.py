@@ -1446,8 +1446,8 @@ class CatalogScreen(Screen[None]):
     def _remount_grid_sections(self, sections: list[GridSection], hf_count: int) -> None:
         """Replace every section in one step, keeping the scroll offset and the focused section.
 
-        Focus moves to a new grid here: the teardown has already reset focus, and a
-        container query still returns the grids that are being removed.
+        Focus moves to a new grid only when the tab strip shows this pane: the teardown
+        has already reset focus, and a focus inside a hidden pane would switch the tab.
         """
         focus_anchor = self._capture_focused_section()
         container = self._grid_container
@@ -1458,8 +1458,13 @@ class CatalogScreen(Screen[None]):
         if prior_scroll_y:
             # scroll_to applies after the next refresh, once the new sections have a layout.
             container.scroll_to(y=prior_scroll_y, animate=False)
-        if self._grid_view and not self._search_focused:
+        if self._grid_view and not self._search_focused and self._pane_is_shown(container):
             self._restore_focused_section(grids, focus_anchor)
+
+    def _pane_is_shown(self, container: VerticalScroll) -> bool:
+        """Whether *container* sits in the tab pane the tab strip shows right now."""
+        pane = container.parent
+        return pane is not None and pane.id == self.query_one("#catalog-tabs", TabbedContent).active
 
     def _capture_focused_section(self) -> tuple[str, int | None] | None:
         """Return ``(heading, highlighted_index)`` for the focused grid.

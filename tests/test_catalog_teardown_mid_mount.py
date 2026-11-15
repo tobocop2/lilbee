@@ -13,15 +13,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
 from textual.pilot import Pilot
-from textual.widgets import Footer, TabbedContent
+from textual.widget import Widget
+from textual.widgets import Footer, TabbedContent, TabPane
 
 from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
-from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT, LocalCatalogRow
+from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT, TAB_DISCOVER, LocalCatalogRow
+from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, pump_until
@@ -159,3 +162,106 @@ async def test_a_remount_returns_the_cursor_to_the_focused_section() -> None:
         assert isinstance(focused, ModelGrid)
         assert focused is not chat
         assert (focused.name, focused.highlighted) == ("Chat", 1)
+
+
+_ORIG_ACTIVATE_INITIAL_TAB = CatalogScreen._activate_initial_tab
+_ORIG_PANE_FOCUSED = TabbedContent._on_tab_pane_focused
+
+
+def _pane_id_of(widget: Widget | None) -> str | None:
+    node = widget
+    while node is not None:
+        if isinstance(node, TabPane):
+            return node.id
+        node = node.parent  # type: ignore[assignment]
+    return None
+
+
+@contextlib.asynccontextmanager
+async def _one_pressed_in_the_first_paint() -> AsyncIterator[
+    tuple[CatalogScreen, Pilot[None], list[tuple[str | None, str]]]
+]:
+    """Chat is painted and 1 is pressed before the initial tab settles.
+
+    The initial-tab step is held until after the key. Textual's pane-focus handler
+    (``TabbedContent._on_tab_pane_focused``) is held too and delivered after the
+    step, the order a loaded host showed. Yields the screen, the pilot and every
+    ``(pane of the widget, pane shown)`` pair of a focus the screen set.
+    """
+    held: list[CatalogScreen] = []
+    held_focus: list[tuple[TabbedContent, TabPane.Focused]] = []
+    app = _CatalogApp()
+    with contextlib.ExitStack() as stack:
+        for name in _CATALOG_FETCHES:
+            stack.enter_context(patch.object(CatalogScreen, name))
+        stack.enter_context(
+            patch.object(
+                CatalogScreen,
+                "_build_family_rows",
+                lambda self, search: [_row("Pick"), _row("Plain")],
+            )
+        )
+        stack.enter_context(
+            patch.object(CatalogScreen, "_activate_initial_tab", lambda self: held.append(self))
+        )
+        stack.enter_context(
+            patch.object(
+                TabbedContent,
+                "_on_tab_pane_focused",
+                lambda self, event: held_focus.append((self, event)),
+            )
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = CatalogScreen()
+            await app.push_screen(screen)
+            assert await wait_until(pilot, lambda: bool(held)), "the initial-tab step never ran"
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            assert tabs.active == TAB_DISCOVER
+            focused_panes: list[tuple[str | None, str]] = []
+            orig_set_focus = screen.set_focus
+
+            def record_focus(widget: Widget | None, *args: Any, **kwargs: Any) -> None:
+                if widget is not None:
+                    focused_panes.append((_pane_id_of(widget), tabs.active))
+                orig_set_focus(widget, *args, **kwargs)
+
+            screen.set_focus = record_focus  # type: ignore[method-assign]
+            screen._refresh_view()  # a worker landing paints the Chat pane
+            chat = screen.query_one(f"#{TAB_CHAT}", TabPane)
+            assert list(chat.query(ModelGrid)), "the paint mounted no Chat grid"
+            await pilot.press("1")
+            await pilot.pause()
+            _ORIG_ACTIVATE_INITIAL_TAB(screen)
+            await pilot.pause()
+            for owner, event in held_focus:
+                _ORIG_PANE_FOCUSED(owner, event)
+            held_focus.clear()
+            await wait_until(pilot, lambda: tabs.active != TAB_DISCOVER, max_pauses=30)
+            yield screen, pilot, focused_panes
+
+
+async def test_a_paint_of_a_hidden_pane_moves_no_focus_into_it() -> None:
+    """A remount of the Chat pane while Discover is shown sets no focus and keeps Discover."""
+    async with _one_pressed_in_the_first_paint() as (screen, _pilot, focused_panes):
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        assert tabs.active == TAB_DISCOVER, f"the catalog switched to {tabs.active} after 1"
+        hidden = [pair for pair in focused_panes if pair[0] != pair[1]]
+        assert hidden == [], "focus was set inside a pane that was not shown"
+
+
+async def test_discover_arrows_stay_on_the_rails_after_a_hidden_paint() -> None:
+    """Arrow keys on Discover move only among the rail grids after a hidden Chat paint."""
+    async with _one_pressed_in_the_first_paint() as (screen, pilot, _focused_panes):
+        rails = screen.query_one("#discover-rails", DiscoverRails)
+        rails.set_rails(
+            for_you=[_row("Alpha"), _row("Beta")],
+            collection=[_row("Gamma")],
+            fresh=[_row("Delta"), _row("Epsilon")],
+        )
+        await pilot.pause()
+        rail_grids = list(rails.query(ModelGrid))
+        assert rail_grids, "the rails mounted no grid"
+        for _ in range(8):
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen.focused in rail_grids, f"arrows left the rails: {screen.focused!r}"
