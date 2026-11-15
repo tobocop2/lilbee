@@ -276,8 +276,18 @@ class TestOpenTime:
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "win32")
         _, browser = opener
         local = (world["docs"] / "a.md").resolve()
-        open_local_file(f"file://attacker.example{local.as_posix()}")
+        # A Windows path has no leading slash ("C:/..."), so the slash is added to end the host.
+        open_local_file(f"file://attacker.example/{local.as_posix().lstrip('/')}")
         browser.assert_called_once_with(local.as_uri())
+
+    def test_a_nul_byte_path_is_refused_when_resolve_accepts_it(self, world, opener, monkeypatch):
+        """Python 3.13 on Windows resolves a path with a NUL byte without an error."""
+        monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
+        run, browser = opener
+        monkeypatch.setattr(f"{_HELPERS}.Path.resolve", lambda self, strict=False: self)
+        assert open_local_file(f"{world['docs'].as_uri()}/a.md%00.txt") is False
+        assert run.call_count == 0
+        assert browser.call_count == 0
 
     def test_the_opener_gets_the_resolved_path(self, world, opener, monkeypatch):
         monkeypatch.setattr(f"{_HELPERS}.sys.platform", "linux")
