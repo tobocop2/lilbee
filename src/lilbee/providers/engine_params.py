@@ -294,7 +294,7 @@ def _header_math_chat_ctx(
         )
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
-        return min(training_ctx, cfg.chat_n_ctx_target)
+        return chat_ctx_bound(meta, model_path)
 
 
 # Tokens the minimum grounded prompt allows for the question plus the context
