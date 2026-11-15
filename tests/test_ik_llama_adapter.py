@@ -620,8 +620,9 @@ def test_the_floors_of_the_cuda_pick_are_the_floors_of_the_build_script() -> Non
     assert (int(toolkit[1]), int(toolkit[2])) == ik_llama._CUDA_DRIVER_FLOOR
     architectures = re.search(r"CMAKE_CUDA_ARCHITECTURES=([^\"]+)\"", code)
     assert architectures is not None
+    # sm80 code runs on sm86 and sm89 cards; the sm75 PTX serves the other cards.
+    assert architectures[1] == "80-real;75-virtual"
     named = [int(re.match(r"\d+", arch)[0]) for arch in architectures[1].split(";")]  # type: ignore[index]
-    assert named == [80, 75]
     assert (min(named) // 10, min(named) % 10) == ik_llama._CUDA_MIN_COMPUTE
 
 
