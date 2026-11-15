@@ -12,7 +12,7 @@ import subprocess
 import sys
 import uuid
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email import message_from_string
@@ -50,15 +50,49 @@ PERMISSIVE_LICENCES = frozenset(
         "CC0-1.0",
         "Unicode-3.0",
         "CNRI-Python",
-        "OpenSSL",
         "CDLA-Permissive-2.0",
         "Apache-2.0 WITH LLVM-exception",
+        "NCSA",
+        "BSL-1.0",
+        "TCL",
+        "bzip2-1.0.6",
+        "X11",
+        "blessing",
+        "Python-2.0",
     }
 )
-NOTICE_FILES: Mapping[str, str] = {
-    "LicenseRef-NVIDIA-CUDA-EULA": "NOTICE-NVIDIA-CUDA",
-    "LicenseRef-Microsoft-VC-Runtime": "NOTICE-MICROSOFT-VC-RUNTIME",
-    "MPL-2.0": "SOURCE-MPL-2.0",
+
+
+@dataclass(frozen=True)
+class NoticeRule:
+    """The notice file that a term needs, and the text that file must hold."""
+
+    file: str
+    pattern: re.Pattern[str]
+
+
+NOTICE_RULES: Mapping[str, NoticeRule] = {
+    "LicenseRef-NVIDIA-CUDA-EULA": NoticeRule("NOTICE-NVIDIA-CUDA", re.compile(r"\S")),
+    "LicenseRef-Microsoft-VC-Runtime": NoticeRule(
+        "NOTICE-MICROSOFT-VC-RUNTIME",
+        re.compile(
+            re.escape(
+                "These files are licensed under the Microsoft terms below, "
+                "not under the other terms of this wheel."
+            )
+        ),
+    ),
+    "OpenSSL": NoticeRule(
+        "NOTICE-OpenSSL", re.compile(r"(?s)(?=.*OpenSSL Project)(?=.*Eric Young)")
+    ),
+    # One line per crate: the crates.io download URL of the unmodified crate, then its sha256.
+    "MPL-2.0": NoticeRule(
+        "SOURCE-MPL-2.0",
+        re.compile(
+            r"(?<=https://)static\.crates\.io/crates/(?P<crate>[\w-]+)/(?P=crate)-\d[\w.+-]*\.crate"
+            r"[ \t]+[0-9a-f]{64}\b"
+        ),
+    ),
 }
 _LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
@@ -197,11 +231,25 @@ class RemoveResult:
 def licence_permitted(expression: str, notices: frozenset[str] = frozenset()) -> bool:
     """True when every OR/AND term of *expression* is permissive.
 
-    A term in ``NOTICE_FILES`` passes only when *notices* holds its notice file name.
+    A term in ``NOTICE_RULES`` passes only when *notices* holds the name of its verified
+    notice file.
     """
     terms = [term for term in _LICENCE_JOINER.split(expression.strip()) if term]
     return bool(terms) and all(
-        term in PERMISSIVE_LICENCES or NOTICE_FILES.get(term) in notices for term in terms
+        term in PERMISSIVE_LICENCES
+        or ((rule := NOTICE_RULES.get(term)) is not None and rule.file in notices)
+        for term in terms
+    )
+
+
+def _verified_notices(found: Iterable[tuple[str, str]]) -> frozenset[str]:
+    """The names of the notice files, from (name, text) pairs, whose text meets its rule."""
+    pairs = list(found)
+    return frozenset(
+        rule.file
+        for rule in NOTICE_RULES.values()
+        for name, text in pairs
+        if name == rule.file and rule.pattern.search(text)
     )
 
 
@@ -210,7 +258,7 @@ def _check_licences(lock: PinLock) -> None:
         raise LicenceRefusedError(f"Engine {lock.engine} {lock.version} lists no licence.")
     for expression in lock.licences:
         # A pin has no archive, so it cannot hold the notice; the wheel check requires it.
-        if not licence_permitted(expression, frozenset(NOTICE_FILES.values())):
+        if not licence_permitted(expression, frozenset(r.file for r in NOTICE_RULES.values())):
             raise LicenceRefusedError(
                 f"Engine {lock.engine} {lock.version} uses the licence {expression!r}, "
                 f"which is not on the permissive list."
@@ -231,20 +279,22 @@ def _check_wheel(lock: PinLock, wheel: Path) -> None:
         _refuse_linked_binary(lock, archive)
         names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         text = archive.read(names[0]).decode("utf-8") if names else None
-        notices = frozenset(
-            info.filename.rsplit("/", 1)[-1] for info in archive.infolist() if _is_notice_file(info)
+        notices = _verified_notices(
+            (name, archive.read(info).decode("utf-8", errors="replace"))
+            for info in archive.infolist()
+            if (name := _notice_name(info))
         )
         _check_declared_licence(lock, text, notices)
         _refuse_unusable_server(lock, archive)
 
 
-def _is_notice_file(info: zipfile.ZipInfo) -> bool:
-    """True for a non-empty notice file directly in a top-level ``*.dist-info/licenses``."""
+def _notice_name(info: zipfile.ZipInfo) -> str | None:
+    """The name of a notice file directly in a top-level ``*.dist-info/licenses``."""
     match info.filename.split("/"):
-        case [folder, "licenses", name] if name in NOTICE_FILES.values():
-            return folder.endswith(".dist-info") and info.file_size > 0
+        case [folder, "licenses", name] if folder.endswith(".dist-info"):
+            return name if any(name == rule.file for rule in NOTICE_RULES.values()) else None
         case _:
-            return False
+            return None
 
 
 def _check_declared_licence(
@@ -271,13 +321,11 @@ def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
                 f"directory."
             )
     metadata = sorted(stage.glob("*.dist-info/METADATA"))
-    notices = frozenset(
-        name
-        for name in NOTICE_FILES.values()
-        if any(
-            path.is_file() and path.stat().st_size > 0
-            for path in stage.glob(f"*.dist-info/licenses/{name}")
-        )
+    notices = _verified_notices(
+        (rule.file, path.read_text(encoding="utf-8", errors="replace"))
+        for rule in NOTICE_RULES.values()
+        for path in stage.glob(f"*.dist-info/licenses/{rule.file}")
+        if path.is_file()
     )
     _check_declared_licence(
         lock, metadata[0].read_text(encoding="utf-8") if metadata else None, notices

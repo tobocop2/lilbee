@@ -296,6 +296,17 @@ _CUDA_EXPRESSION = "MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"
 
 _NVIDIA = frozenset({"NOTICE-NVIDIA-CUDA"})
 _NONE: frozenset[str] = frozenset()
+_EVERY_NOTICE = frozenset(rule.file for rule in engine_store.NOTICE_RULES.values())
+_VC_TEXT = (
+    "Redist.txt and the Distributable Code terms.\n"
+    "These files are licensed under the Microsoft terms below, "
+    "not under the other terms of this wheel.\n"
+)
+_OPENSSL_TEXT = (
+    "This product includes software developed by the OpenSSL Project for use in the "
+    "OpenSSL Toolkit (http://www.openssl.org/) and cryptographic software written by "
+    "Eric Young (eay@cryptsoft.com).\n"
+)
 
 
 @pytest.mark.parametrize(
@@ -329,9 +340,16 @@ def test_the_nvidia_cuda_term_passes_only_with_its_notice(
         "CC0-1.0",
         "Unicode-3.0",
         "CNRI-Python",
-        "OpenSSL",
         "CDLA-Permissive-2.0",
         "Apache-2.0 WITH LLVM-exception",
+        "NCSA",
+        "BSL-1.0",
+        "TCL",
+        "bzip2-1.0.6",
+        "X11",
+        "blessing",
+        "Python-2.0",
+        "BSD-2-Clause",
     ],
 )
 def test_each_term_of_the_licence_plan_passes(term: str) -> None:
@@ -350,13 +368,13 @@ def test_each_term_of_the_licence_plan_passes(term: str) -> None:
         "GPL-2.0-only WITH Classpath-exception-2.0",
         "GPL-3.0-only WITH LLVM-exception",
         "LicenseRef-Unknown",
+        "(MIT AND ISC)",
     ],
 )
 def test_copyleft_and_unknown_terms_fail_even_with_every_notice(term: str) -> None:
-    every_notice = frozenset(engine_store.NOTICE_FILES.values())
-    assert every_notice
-    assert licence_permitted(term, every_notice) is False
-    assert licence_permitted(f"MIT AND {term}", every_notice) is False
+    assert _EVERY_NOTICE
+    assert licence_permitted(term, _EVERY_NOTICE) is False
+    assert licence_permitted(f"MIT AND {term}", _EVERY_NOTICE) is False
 
 
 def test_mpl_passes_only_with_its_source_pointer() -> None:
@@ -372,9 +390,60 @@ def test_the_vc_runtime_passes_only_with_its_notice() -> None:
     assert licence_permitted(term, frozenset({"NOTICE-MICROSOFT-VC-RUNTIME"})) is True
 
 
-def test_the_openvino_runtime_is_not_on_the_list() -> None:
-    every_notice = frozenset(engine_store.NOTICE_FILES.values())
-    assert licence_permitted("LicenseRef-Intel-OpenVINO", every_notice) is False
+def test_openssl_passes_only_with_its_notice() -> None:
+    assert licence_permitted("OpenSSL") is False
+    assert licence_permitted("OpenSSL", _NVIDIA) is False
+    assert licence_permitted("MIT AND OpenSSL", frozenset({"NOTICE-OpenSSL"})) is True
+
+
+@pytest.mark.parametrize(
+    "term", ["LicenseRef-Intel-OpenVINO", "LicenseRef-Intel-OpenVINO-Distribution"]
+)
+def test_the_openvino_runtime_is_not_on_the_list(term: str) -> None:
+    assert licence_permitted(term, _EVERY_NOTICE) is False
+
+
+_CRATE_URL = "https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate"
+_CHECKSUM = "0" * 64
+
+
+@pytest.mark.parametrize(
+    ("text", "ok"),
+    [
+        (f"{_CRATE_URL} {_CHECKSUM}\n", True),
+        (f"Mozilla Public License text\n{_CRATE_URL}\t{_CHECKSUM}\n", True),
+        ("https://github.com/mozilla/option-ext\n", False),
+        (f"{_CRATE_URL}\n", False),
+        (f"{_CRATE_URL} {'0' * 63}\n", False),
+        (f"{_CRATE_URL} {'G' * 64}\n", False),
+        (f"https://crates.io/crates/option-ext/option-ext-0.2.0.crate {_CHECKSUM}\n", False),
+        (f"https://static.crates.io/crates/option-ext/other-0.2.0.crate {_CHECKSUM}\n", False),
+        (f"https://static.crates.io/crates/option-ext/option-ext-0.2.0.zip {_CHECKSUM}\n", False),
+        (f"{_CRATE_URL.replace('https', 'http')} {_CHECKSUM}\n", False),
+        ("", False),
+    ],
+)
+def test_the_mpl_source_pointer_names_the_crate_download_and_its_checksum(
+    text: str, ok: bool
+) -> None:
+    assert bool(engine_store._verified_notices([("SOURCE-MPL-2.0", text)])) is ok
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "ok"),
+    [
+        ("NOTICE-NVIDIA-CUDA", "notice", True),
+        ("NOTICE-NVIDIA-CUDA", "  \n", False),
+        ("NOTICE-MICROSOFT-VC-RUNTIME", _VC_TEXT, True),
+        ("NOTICE-MICROSOFT-VC-RUNTIME", "Redist.txt only", False),
+        ("NOTICE-OpenSSL", _OPENSSL_TEXT, True),
+        ("NOTICE-OpenSSL", "software developed by the OpenSSL Project", False),
+        ("NOTICE-OpenSSL", "cryptographic software written by Eric Young", False),
+        ("NOTICE-Other", "notice", False),
+    ],
+)
+def test_a_notice_file_must_hold_the_text_its_term_needs(name: str, text: str, ok: bool) -> None:
+    assert bool(engine_store._verified_notices([(name, text)])) is ok
 
 
 def _cuda_wheel(
@@ -384,7 +453,7 @@ def _cuda_wheel(
     licence: str = _CUDA_EXPRESSION,
     tool: str = "server",
     notice_path: str = "p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA",
-    notice_text: str = "notice",
+    notice_text: str | bytes = "notice",
 ) -> str:
     with zipfile.ZipFile(path, "w") as archive:
         server = zipfile.ZipInfo(f"p/bin/{tool}")
@@ -410,6 +479,24 @@ def test_a_cuda_wheel_without_its_notice_is_refused(store: EngineStore, tmp_path
         store.install_from_wheel(pin(sha), path)
 
 
+def test_a_cuda_notice_outside_the_dist_info_folder_is_refused(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, notice_path="p/licenses/NOTICE-NVIDIA-CUDA")
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_cuda_wheel_notice_with_a_stray_byte_still_installs(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, notice_text=b"notice \xff")
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
 _VC_EXPRESSION = "MIT AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime"
 _VC_NOTICE = "p-1.dist-info/licenses/NOTICE-MICROSOFT-VC-RUNTIME"
 _MPL_NOTICE = "p-1.dist-info/licenses/SOURCE-MPL-2.0"
@@ -417,7 +504,9 @@ _MPL_NOTICE = "p-1.dist-info/licenses/SOURCE-MPL-2.0"
 
 def test_a_vc_runtime_wheel_with_its_notice_installs(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "v.whl"
-    sha = _cuda_wheel(path, notice=True, licence=_VC_EXPRESSION, notice_path=_VC_NOTICE)
+    sha = _cuda_wheel(
+        path, notice=True, licence=_VC_EXPRESSION, notice_path=_VC_NOTICE, notice_text=_VC_TEXT
+    )
     store.install_from_wheel(pin(sha), path)
     assert len(store.installed()) == 1
 
@@ -431,13 +520,62 @@ def test_a_vc_runtime_wheel_with_the_nvidia_notice_is_refused(
         store.install_from_wheel(pin(sha), path)
 
 
+def test_a_vc_runtime_notice_without_the_scope_sentence_is_refused(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "v.whl"
+    sha = _cuda_wheel(
+        path,
+        notice=True,
+        licence=_VC_EXPRESSION,
+        notice_path=_VC_NOTICE,
+        notice_text="Redist.txt only",
+    )
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-Microsoft-VC-Runtime"):
+        store.install_from_wheel(pin(sha), path)
+
+
 def test_an_mpl_wheel_needs_its_source_pointer(store: EngineStore, tmp_path: Path) -> None:
+    pointer = f"{_CRATE_URL} {_CHECKSUM}\n"
+    for name, notice, text in (
+        ("none", False, ""),
+        ("repository", True, "https://github.com/mozilla/option-ext\n"),
+    ):
+        refused = tmp_path / f"{name}.whl"
+        sha = _cuda_wheel(
+            refused,
+            notice=notice,
+            licence="MIT AND MPL-2.0",
+            notice_path=_MPL_NOTICE,
+            notice_text=text,
+        )
+        with pytest.raises(LicenceRefusedError, match=r"MPL-2\.0"):
+            store.install_from_wheel(pin(sha), refused)
+    accepted = tmp_path / "a.whl"
+    sha = _cuda_wheel(
+        accepted,
+        notice=True,
+        licence="MIT AND MPL-2.0",
+        notice_path=_MPL_NOTICE,
+        notice_text=pointer,
+    )
+    store.install_from_wheel(pin(sha), accepted)
+    assert len(store.installed()) == 1
+
+
+def test_an_openssl_wheel_needs_its_notice(store: EngineStore, tmp_path: Path) -> None:
     refused = tmp_path / "r.whl"
-    sha = _cuda_wheel(refused, notice=False, licence="MIT AND MPL-2.0")
-    with pytest.raises(LicenceRefusedError, match=r"MPL-2\.0"):
+    sha = _cuda_wheel(refused, notice=False, licence="MIT AND OpenSSL")
+    with pytest.raises(LicenceRefusedError, match="OpenSSL"):
         store.install_from_wheel(pin(sha), refused)
     accepted = tmp_path / "a.whl"
-    sha = _cuda_wheel(accepted, notice=True, licence="MIT AND MPL-2.0", notice_path=_MPL_NOTICE)
+    sha = _cuda_wheel(
+        accepted,
+        notice=True,
+        licence="MIT AND OpenSSL",
+        notice_path="p-1.dist-info/licenses/NOTICE-OpenSSL",
+        notice_text=_OPENSSL_TEXT,
+    )
     store.install_from_wheel(pin(sha), accepted)
     assert len(store.installed()) == 1
 
@@ -447,7 +585,7 @@ def test_a_wheel_with_two_notices_passes_both_terms(store: EngineStore, tmp_path
     licence = f"{_CUDA_EXPRESSION} AND LicenseRef-Microsoft-VC-Runtime"
     _cuda_wheel(path, notice=True, licence=licence)
     with zipfile.ZipFile(path, "a") as archive:
-        archive.writestr(_VC_NOTICE, "notice")
+        archive.writestr(_VC_NOTICE, _VC_TEXT)
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
     store.install_from_wheel(pin(sha), path)
     assert len(store.installed()) == 1
@@ -543,6 +681,19 @@ def test_a_staged_cuda_tree_with_its_notice_passes_the_check(tmp_path: Path) -> 
     assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
 
 
+def test_a_staged_cuda_notice_with_a_stray_byte_still_passes(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_bytes(b"notice \xff")
+    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
+
+
+def test_a_staged_tree_without_metadata_is_refused(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    (tmp_path / "p-1.dist-info" / "METADATA").unlink()
+    with pytest.raises(LicenceRefusedError, match="declares the licence ''"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
 def test_a_staged_cuda_tree_with_an_empty_notice_is_refused(tmp_path: Path) -> None:
     _staged_cuda_tree(tmp_path, notice=True)
     (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
@@ -558,9 +709,11 @@ def test_a_staged_mpl_tree_needs_its_source_pointer(tmp_path: Path) -> None:
     metadata.write_text("Name: p\nLicense-Expression: MIT AND MPL-2.0\n", encoding="utf-8")
     with pytest.raises(LicenceRefusedError, match=r"MPL-2\.0"):
         engine_store._check_staged_tree(pin("0" * 64), tmp_path)
-    (tmp_path / "p-1.dist-info" / "licenses" / "SOURCE-MPL-2.0").write_text(
-        "https://example.invalid/src", encoding="utf-8"
-    )
+    pointer = tmp_path / "p-1.dist-info" / "licenses" / "SOURCE-MPL-2.0"
+    pointer.write_text("https://github.com/mozilla/option-ext", encoding="utf-8")
+    with pytest.raises(LicenceRefusedError, match=r"MPL-2\.0"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+    pointer.write_text(f"{_CRATE_URL} {_CHECKSUM}\n", encoding="utf-8")
     assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
 
 
