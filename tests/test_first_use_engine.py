@@ -481,6 +481,46 @@ def test_your_own_server_never_installs_a_pack_for_a_missing_helper(
     assert "engine install" not in str(excinfo.value)
 
 
+@pytest.mark.parametrize("on_path", [False, True], ids=["configured-path", "on-path"])
+@pytest.mark.parametrize("tool", [EngineTool.GGUF_PARSER, EngineTool.LLAMA_SWAP])
+def test_an_installed_pack_gives_the_helper_even_with_your_own_server(
+    tool: EngineTool, on_path: bool, fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack_server = resolve_llama_server()
+    assert fetched == [CELL]
+    _own_server(monkeypatch, tmp_path, on_path=on_path)
+    assert resolve_engine_tool(tool) == pack_server.parent / tool.value
+    assert fetched == [CELL]
+
+
+@pytest.mark.parametrize(
+    ("tool", "kind"),
+    [
+        (EngineTool.LLAMA_SERVER, ProviderErrorKind.NOT_FOUND),
+        (EngineTool.GGUF_PARSER, ProviderErrorKind.UNKNOWN),
+    ],
+    ids=["llama-server", "gguf-parser"],
+)
+def test_a_lookup_that_may_not_install_names_the_missing_tool(
+    tool: EngineTool, kind: ProviderErrorKind, fetched
+) -> None:
+    with pytest.raises(ProviderError, match=f"^{tool.value} binary not found") as excinfo:
+        resolve_engine_tool(tool, install=False)
+    assert excinfo.value.kind is kind
+    assert fetched == []
+
+
+def test_a_helper_on_path_loses_to_the_installed_pack(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack_server = resolve_llama_server()
+    on_path = tmp_path / "bin" / "gguf-parser"
+    on_path.parent.mkdir()
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(binary_mod.shutil, "which", lambda name: str(on_path))
+    assert resolve_gguf_parser() == pack_server.parent / "gguf-parser"
+
+
 def test_a_pack_install_makes_the_next_read_in_the_process_ask_the_new_parser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
