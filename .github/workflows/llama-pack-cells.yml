@@ -9,7 +9,7 @@ name: Llama pack cells (trial)
 # to one branch instead.
 on:
   push:
-    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences]
+    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences, "feat/packs-*"]
 
 permissions:
   contents: read
@@ -22,8 +22,36 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "14.0"
 
 jobs:
+  # A push to feat/packs-<suffix> builds one engine. Every other branch builds everything.
+  # An engine job in this file runs when needs.plan.outputs.engine is "all" or its own name.
+  # Suffixes: a = mistralrs, b = tei, c = ik, d = mlx, e = openvino, llama = llama.
+  plan:
+    name: Pick the engine for this branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      engine: ${{ steps.pick.outputs.engine }}
+    steps:
+      - id: pick
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          case "$BRANCH" in
+            feat/packs-a) engine=mistralrs ;;
+            feat/packs-b) engine=tei ;;
+            feat/packs-c) engine=ik ;;
+            feat/packs-d) engine=mlx ;;
+            feat/packs-e) engine=openvino ;;
+            feat/packs-llama) engine=llama ;;
+            feat/packs-*) echo "::error::No engine is named for $BRANCH"; exit 1 ;;
+            *) engine=all ;;
+          esac
+          echo "engine=$engine" >> "$GITHUB_OUTPUT"
+
   cell:
     name: ${{ matrix.cell }}
+    needs: plan
+    if: needs.plan.outputs.engine == 'all' || needs.plan.outputs.engine == 'llama'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
