@@ -547,6 +547,10 @@ TEI are published for Linux x86_64. No pack of mlx, openvino or lemonade is publ
 yet, so those engines refuse to install and print the no-pack text. A host with no pack
 for its platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 
+ik_llama.cpp has a CPU pack and a CUDA pack. lilbee picks the CUDA pack when each NVIDIA
+card has compute capability 7.5 or newer and the driver offers CUDA 12.4 or newer.
+Every other Linux x86_64 host gets the CPU pack.
+
 If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that
 wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel
 with `pip uninstall lilbee-engine-llama-cpp`, then run

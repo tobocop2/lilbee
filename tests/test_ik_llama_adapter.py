@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import stat
 import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from lilbee.app import engine_choice, engine_service
@@ -31,6 +33,7 @@ from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
 COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
+_ROOT = Path(__file__).resolve().parents[1]
 runner = CliRunner()
 
 
@@ -64,6 +67,8 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     linux = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(engine_choice, "session_host", lambda: linux)
     monkeypatch.setattr(engine_service, "session_host", lambda: linux)
+    monkeypatch.setattr(runnable, "detect", lambda: linux)
+    runnable.session_host.cache_clear()
 
 
 @pytest.fixture
@@ -75,7 +80,7 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     lock = PinLock(
         EngineName.IK_LLAMA.value,
         ik_llama.VERSION,
-        ik_llama.BACKEND,
+        "cpu",
         {},
         ("MIT",),
         sha,
@@ -164,7 +169,7 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
 
 @pytest.mark.parametrize(
     ("version", "backend"),
-    [("0+gitaaaaaaaaaaaa", ik_llama.BACKEND), (ik_llama.VERSION, "cuda")],
+    [("0+gitaaaaaaaaaaaa", "cpu"), (ik_llama.VERSION, "cuda")],
 )
 def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
     version: str, backend: str, tmp_path: Path
@@ -456,3 +461,149 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         "supports_shared_kv",
         "swap_extras",
     ]
+
+
+def _nvidia_host(
+    cards: tuple[tuple[int, int], ...],
+    *,
+    cuda: int | None = 12040,
+    system: str = "Linux",
+    machine: str = "x86_64",
+) -> Any:
+    facts = {
+        "driver": "550.135",
+        "cuda_driver": cuda,
+        "gpus": [{"name": f"card{i}", "cc": list(cc)} for i, cc in enumerate(cards)],
+    }
+    return collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=facts)
+
+
+def _use_host(monkeypatch: pytest.MonkeyPatch, host: Any) -> None:
+    """Make *host* the session host that the adapter reads."""
+    monkeypatch.setattr(runnable, "detect", lambda: host)
+    runnable.session_host.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("host", "backend"),
+    [
+        pytest.param(_nvidia_host(((7, 5),)), "cuda", id="turing-is-the-floor"),
+        pytest.param(_nvidia_host(((12, 0),)), "cuda", id="a-newer-card"),
+        pytest.param(_nvidia_host(((8, 6),), cuda=12090), "cuda", id="a-newer-driver"),
+        pytest.param(_nvidia_host(((6, 1),)), "cpu", id="pascal-is-below-the-floor"),
+        pytest.param(_nvidia_host(((8, 6),), cuda=12030), "cpu", id="the-driver-is-too-old"),
+        pytest.param(_nvidia_host(((8, 6), (6, 1))), "cpu", id="one-card-is-below-the-floor"),
+        pytest.param(_nvidia_host(((8, 6),), cuda=None), "cpu", id="the-driver-is-unreadable"),
+        pytest.param(
+            _nvidia_host(((8, 6),), system="Windows", machine="AMD64"), "cpu", id="windows"
+        ),
+        pytest.param(_nvidia_host(((8, 6),), machine="aarch64"), "cpu", id="linux-on-arm"),
+        pytest.param(_host("Linux", "x86_64", ["avx2"]), "cpu", id="no-nvidia-driver"),
+    ],
+)
+def test_the_pack_follows_the_cards_and_the_driver(host: Any, backend: str) -> None:
+    assert ik_llama.pick_backend(host) == backend
+
+
+def test_the_cuda_pin_names_its_cell_its_libraries_and_its_licences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_host(monkeypatch, _nvidia_host(((8, 6),)))
+    publish(monkeypatch, EngineName.IK_LLAMA, "ab" * 32)
+    pin = IK_LLAMA.pin_record()
+    assert pin["backend"] == "cuda"
+    assert pin["sha256"] == "ab" * 32
+    assert list(pin["platforms"]) == ["linux-x86_64-cuda"]
+    assert pin["libraries"] == ["cudart", "cublas", "cublasLt"]
+    assert pin["licenses"] == ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+    assert choice.pin_lock(pin).libraries == ("cudart", "cublas", "cublasLt")
+
+
+def _make_cuda_wheel(path: Path, *, libraries: bool = True, notice: bool = True) -> str:
+    with zipfile.ZipFile(path, "w") as archive:
+        tool = zipfile.ZipInfo("lilbee_engine_ik/bin/llama-server")
+        tool.external_attr = (stat.S_IFREG | 0o755) << 16
+        archive.writestr(tool, "#!/bin/sh\n")
+        if libraries:
+            for name in ("libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12"):
+                archive.writestr(f"lilbee_engine_ik/bin/{name}", "x")
+        if notice:
+            archive.writestr("lilbee_engine_ik-1.dist-info/licenses/NOTICE-NVIDIA-CUDA", "EULA")
+        archive.writestr(
+            "lilbee_engine_ik-1.dist-info/METADATA",
+            "License-Expression: MIT AND LicenseRef-NVIDIA-CUDA-EULA AND Unlicense AND MIT-0\n",
+        )
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def cuda_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    host = _nvidia_host(((8, 6),))
+    monkeypatch.setattr(engine_service, "session_host", lambda: host)
+    monkeypatch.setattr(engine_choice, "session_host", lambda: host)
+    _use_host(monkeypatch, host)
+
+
+@pytest.mark.usefixtures("cuda_host")
+def test_install_of_the_cuda_pack_lists_the_cuda_build_and_finds_its_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "ik.whl"
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_cuda_wheel(wheel))
+    built = engine_service.install("ik_llama.cpp", wheel)
+    assert (built.version, built.backend) == (ik_llama.VERSION, "cuda")
+    assert IK_LLAMA.binary().name == "llama-server"
+
+
+@pytest.mark.usefixtures("cuda_host")
+def test_the_cuda_pack_without_the_nvidia_libraries_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "ik.whl"
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_cuda_wheel(wheel, libraries=False))
+    with pytest.raises(engine_service.EngineRefusedError, match="no library file for 'cudart'"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
+@pytest.mark.usefixtures("cuda_host")
+def test_the_cuda_pack_without_the_nvidia_notice_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "ik.whl"
+    publish(monkeypatch, EngineName.IK_LLAMA, _make_cuda_wheel(wheel, notice=False))
+    with pytest.raises(engine_service.EngineRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        engine_service.install("ik_llama.cpp", wheel)
+    assert EngineStore(engines_root(cfg.models_dir)).installed() == []
+
+
+def test_the_cpu_build_does_not_serve_a_host_that_picks_cuda(
+    build: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_host(monkeypatch, _nvidia_host(((8, 6),)))
+    with pytest.raises(ProviderError, match="is not installed"):
+        IK_LLAMA.binary()
+
+
+def test_the_floors_of_the_cuda_pick_are_the_floors_of_the_build_script() -> None:
+    script = (_ROOT / "tools/wheel-build/ik_llama_manylinux.sh").read_text(encoding="utf-8")
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    toolkit = re.search(r"cuda_dash=(\d+)-(\d+)", code)
+    assert toolkit is not None
+    assert (int(toolkit[1]), int(toolkit[2])) == ik_llama._CUDA_DRIVER_FLOOR
+    architectures = re.search(r"CMAKE_CUDA_ARCHITECTURES=([^\"]+)\"", code)
+    assert architectures is not None
+    named = [int(re.match(r"\d+", arch)[0]) for arch in architectures[1].split(";")]  # type: ignore[index]
+    assert len(named) == 5
+    assert (min(named) // 10, min(named) % 10) == ik_llama._CUDA_MIN_COMPUTE
+
+
+def test_the_workflow_reads_the_commit_of_the_pin_and_names_no_other() -> None:
+    workflow = (_ROOT / ".github/workflows/llama-pack-cells.yml").read_text(encoding="utf-8")
+    cells = yaml.safe_load(workflow)["jobs"]["ik-cell"]["strategy"]["matrix"]["include"]
+    assert [cell["cell"] for cell in cells] == [
+        "ik-llama-linux-x86_64-cpu",
+        "ik-llama-linux-x86_64-cuda",
+    ]
+    assert ik_llama.IK_LLAMA_COMMIT not in workflow
+    assert "IK_LLAMA_COMMIT" in workflow

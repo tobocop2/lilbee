@@ -178,7 +178,7 @@ def test_ik_llama_pin_record_holds_its_own_fields(monkeypatch: pytest.MonkeyPatc
     assert pin["licenses"] == ["MIT"]
     assert pin["memory"]["rule"] is None
     shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
-    assert pin["platforms"] == shipped
+    assert pin["platforms"] == {"linux-x86_64-cpu": shipped["linux-x86_64-cpu"]}
     assert pin["sha256"] == shipped["linux-x86_64-cpu"]["sha256"]
 
 
