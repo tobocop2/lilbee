@@ -19,7 +19,7 @@ from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import adapters as fleet_adapters
 from lilbee.providers.fleet import engine_manifest, host_caps
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, UnsafeWheelError, engines_root
@@ -98,6 +98,12 @@ def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
 
 
+def test_the_pin_sizes_memory_with_the_gguf_parser_like_the_llama_pin() -> None:
+    memory = IK_LLAMA.pin_record()["memory"]
+    assert memory == {"sizing": ["gguf-parser", "--model", "{model}"], "rule": None}
+    assert memory == LLAMA.pin_record()["memory"]
+
+
 def test_the_pin_expects_no_shared_library() -> None:
     assert "libraries" not in IK_LLAMA.pin_record()
 
@@ -149,8 +155,9 @@ def test_binary_is_the_server_of_the_installed_build(build: Path) -> None:
 
 
 def test_binary_without_a_build_names_the_install_command() -> None:
-    with pytest.raises(ProviderError, match=r"lilbee engine install ik_llama\.cpp"):
+    with pytest.raises(ProviderError, match=r"lilbee engine install ik_llama\.cpp") as raised:
         IK_LLAMA.binary()
+    assert raised.value.kind is ProviderErrorKind.NOT_FOUND
 
 
 def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
