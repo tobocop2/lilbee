@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 from pathlib import Path
 from types import ModuleType
 
@@ -63,13 +65,13 @@ def test_every_fork_gets_its_own_project_page(monkeypatch, tmp_path):
         "o/liter-llm",
     )
     assert rc == 0
-    root = (tmp_path / "compat" / "index.html").read_text()
+    root = (tmp_path / "compat" / "index.html").read_text(encoding="utf-8")
     for project in ("crawlberg", "lancedb", "liter-llm"):
         assert f'<a href="{project}/">' in root
-    crawlberg = (tmp_path / "compat" / "crawlberg" / "index.html").read_text()
+    crawlberg = (tmp_path / "compat" / "crawlberg" / "index.html").read_text(encoding="utf-8")
     assert f"{_CRAWLBERG}#sha256={_SHA}" in crawlberg
     assert _LITER not in crawlberg
-    assert _LITER in (tmp_path / "compat" / "liter-llm" / "index.html").read_text()
+    assert _LITER in (tmp_path / "compat" / "liter-llm" / "index.html").read_text(encoding="utf-8")
 
 
 def test_an_optional_fork_with_no_wheels_is_skipped(monkeypatch, tmp_path, capsys):
@@ -78,7 +80,7 @@ def test_an_optional_fork_with_no_wheels_is_skipped(monkeypatch, tmp_path, capsy
     assert rc == 0
     assert "o/xberg yet; skipped" in capsys.readouterr().out
     assert not (tmp_path / "compat" / "xberg").exists()
-    assert 'href="xberg/"' not in (tmp_path / "compat" / "index.html").read_text()
+    assert 'href="xberg/"' not in (tmp_path / "compat" / "index.html").read_text(encoding="utf-8")
 
 
 def test_a_required_fork_with_no_wheels_fails(monkeypatch, tmp_path, capsys):
@@ -106,6 +108,30 @@ def test_fetch_wheels_reads_the_api_digest(monkeypatch):
     line = '{"name": "w.whl", "url": "https://x/w.whl", "digest": "sha256:' + _SHA + '"}'
     monkeypatch.setattr(bci.subprocess, "check_output", _Run(line + "\n\n"))
     assert bci.fetch_wheels("o/r") == [("w.whl", "https://x/w.whl", _SHA)]
+
+
+def test_the_release_filter_takes_compat_and_lilbee_tags_and_nothing_else():
+    tags = (
+        "v1.13.0+compat",
+        "lancedb-v0.40.0+compat",
+        "v1.4.0+lilbee",
+        "v1.13.0+compat-test",
+        "v1.10.3+lilbee.06089bd",
+        "xberg-v1.1.0.dev1+lilbee1",
+        "v1.4.0",
+    )
+    asset = {"browser_download_url": "u", "digest": "d"}
+    releases = [{"tag_name": t, "assets": [{"name": f"{t}.whl", **asset}]} for t in tags]
+    out = subprocess.run(
+        ["jq", "-c", bci._JQ],
+        input=json.dumps(releases),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    picked = [json.loads(line)["name"] for line in out.splitlines()]
+    assert picked == ["v1.13.0+compat.whl", "lancedb-v0.40.0+compat.whl", "v1.4.0+lilbee.whl"]
 
 
 def test_fetch_wheels_refuses_an_asset_with_no_digest(monkeypatch):

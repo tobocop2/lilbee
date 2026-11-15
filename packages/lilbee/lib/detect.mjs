@@ -33,7 +33,7 @@ const COMPAT_BUILD_LOG = "lilbee: this CPU has no AVX2 — using the -compat bui
 const OLD_MACOS_LOG = "lilbee: this macOS is older than the main build supports — using the -compat build (override with LILBEE_VARIANT).";
 /** The first macOS major each Mac build runs on: the main build, and the compat build below it. */
 const MACOS_FLOORS = { arm64: { main: 14, compat: 12 }, x64: { main: 12, compat: 12 } };
-const COMPAT_FAMILY_LOG ="lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).";
+const COMPAT_FAMILY_LOG = "lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).";
 
 const execFileAsync = promisify(execFile);
 

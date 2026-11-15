@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate the lilbee.sh/compat/ PEP 503 index from fork release wheels.
 
-Each fork hosts its ``+compat`` wheels as release assets (releases whose tag
-contains ``compat``). This emits a simple-repository index under
+Each fork hosts its wheels as release assets (releases whose tag ends in
+``+compat`` or ``+lilbee``). This emits a simple-repository index under
 ``<out>/compat/`` with one project page per wheel project, linking to those
 assets, so ``pip install ... --extra-index-url https://lilbee.sh/compat/``
 resolves them. Run by pages.yml at deploy time alongside build_pep503_indexes.py.
@@ -18,8 +18,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# A fork release tag ends in the local version its wheels carry: +compat, or +lilbee for xberg.
+_COMPAT_TAG = r"\\+(compat|lilbee)$"
 _JQ = (
-    '.[] | select(.tag_name | test("compat")) | .assets[] '
+    f'.[] | select(.tag_name | test("{_COMPAT_TAG}")) | .assets[] '
     '| select(.name | endswith(".whl")) '
     "| {name, url: .browser_download_url, digest}"
 )

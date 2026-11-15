@@ -1,7 +1,9 @@
 """Executable build config: Playwright plugin, exact Nuitka pin, no publishing from a check."""
 
 import importlib.util
+import os
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -246,6 +248,43 @@ def test_the_fork_wheels_are_exact_compat_pins_installed_binary_only() -> None:
     assert "--extra-index-url https://lilbee.sh/compat/" in run
     assert '--python-platform "${PYTHON_PLATFORM}"' in run
     assert "--no-emit-package" in run
+
+
+def _homebrew_render_args(tmp_path: Path, compat_sha: str) -> str:
+    """Run the Homebrew render-args step's script and return the args it writes."""
+    steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["homebrew"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Build render-args")
+    out = tmp_path / "output"
+    env = {
+        "PATH": os.environ["PATH"],
+        "VERSION": "1.2.3",
+        "SHA_MACOS_ARM64": "a" * 64,
+        "SHA_MACOS_X86_64": "b" * 64,
+        "SHA_LINUX": "c" * 64,
+        "SHA_MACOS_ARM64_COMPAT": compat_sha,
+        "GITHUB_OUTPUT": str(out),
+    }
+    subprocess.run(["bash", "-c", step["run"]], env=env, check=True, capture_output=True)
+    return out.read_text(encoding="utf-8")
+
+
+def test_the_homebrew_args_carry_the_old_mac_digest_only_when_the_asset_exists(
+    tmp_path: Path,
+) -> None:
+    with_compat = _homebrew_render_args(tmp_path, "d" * 64)
+    without = _homebrew_render_args(tmp_path, "")
+
+    assert f"--sha-macos-arm64-compat {'d' * 64}" in with_compat
+    assert "--sha-macos-arm64-compat" not in without
+    assert f"--sha-linux-x86_64 {'c' * 64}" in without
+
+
+def test_the_release_resolves_the_old_mac_digest_without_requiring_it() -> None:
+    steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["resolve"]["steps"]
+    run = next(s for s in steps if s.get("id") == "info")["run"]
+
+    assert "sha_macos_arm64_compat=$(get_sha lilbee-compat-macos-arm64)" in run
+    assert "set -euo pipefail" in run
 
 
 def test_nothing_in_the_release_waits_on_the_old_mac_build() -> None:
