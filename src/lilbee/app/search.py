@@ -29,7 +29,7 @@ def resolve_vault_path(source_filename: str) -> str | None:
         source_path = resolve_source_path(source_filename).resolve()
         source_path.relative_to(documents_dir)
         relative_docs_dir = documents_dir.relative_to(vault_base)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):  # RuntimeError: a symlink loop before 3.13
         return None
     if not source_path.is_file():
         return None

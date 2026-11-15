@@ -286,7 +286,10 @@ def resolve_source_path_checked(filename: str) -> Path | None:
     request, not stored data.
     """
     with settings.fresh_registry_pinned(active_config()):
-        resolved = resolve_source_path(filename).resolve(strict=False)
+        try:
+            resolved = resolve_source_path(filename).resolve(strict=False)
+        except RuntimeError:  # a symlink loop, which Python before 3.13 raises
+            return None
         inside = _within_roots(resolved)
     return resolved if inside else None
 
