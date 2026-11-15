@@ -521,6 +521,16 @@ def test_a_helper_on_path_loses_to_the_installed_pack(
     assert resolve_gguf_parser() == pack_server.parent / "gguf-parser"
 
 
+def test_a_llama_server_on_path_still_beats_the_installed_pack(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack_server = resolve_llama_server()
+    _own_server(monkeypatch, tmp_path, on_path=True)
+    own_server = tmp_path / "my" / "llama-server"
+    assert resolve_llama_server() == own_server != pack_server
+    assert fetched == [CELL]
+
+
 def test_a_pack_install_makes_the_next_read_in_the_process_ask_the_new_parser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
