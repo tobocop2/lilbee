@@ -29,11 +29,29 @@ from lilbee.retrieval.reasoning import split_reasoning
 from tests.conformance.harness import (
     BLUE,
     NEAR_COPY_COSINE,
+    answer_words,
+    colour_fault,
     cosine,
     json_fault,
     png,
     reasoning_split_fault,
     tool_arguments_fault,
+)
+from tests.conformance.request_set import (
+    CONVERSATION,
+    EMBED_TEXTS,
+    JSON_ASK,
+    JSON_SCHEMA,
+    OVERSIZE,
+    REASONING_ASK,
+    RERANK_BEST,
+    RERANK_DOCS,
+    RERANK_QUERY,
+    TEMPLATE_FACT,
+    TOOL_ASK,
+    TOOL_NAME,
+    VISION_PROMPT,
+    WEATHER,
 )
 
 PRESET = "check"
@@ -51,33 +69,8 @@ _TIMEOUT_S = 600.0
 _EMBED_PATH = "/v1/embeddings"
 _IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
-_OVERSIZE = "w " * 60000
 _OVERFLOW_CAP_S = 30.0
 """The most seconds the overflow step waits; an engine that hangs fails here, not at 600 s."""
-_CONVERSATION = [
-    {"role": "system", "content": "You answer in one short sentence."},
-    {"role": "user", "content": "What is the capital of France?"},
-    {"role": "assistant", "content": "Paris."},
-    {"role": "user", "content": "And of Italy?"},
-]
-_WEATHER = {
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "Get the weather for a city.",
-        "parameters": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
-        },
-    },
-}
-_REASONING_ASK = {
-    "role": "user",
-    "content": "Think it through, then answer: what is 17 plus 25?",
-}
-_RERANK_QUERY = "What is the capital of France?"
-_RERANK_DOCS = ["Bananas are yellow.", "Paris is the capital of France.", "Dogs bark."]
 _ROLE_STEPS = {
     "chat": ("template", "tool", "overflow"),
     "embed": ("embed",),
@@ -85,13 +78,6 @@ _ROLE_STEPS = {
     "vision": ("vision",),
 }
 _STRICT_STEPS = {"chat": ("json_object", "json_schema", "reasoning")}
-_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {"city": {"type": "string"}, "pop": {"type": "integer"}},
-    "required": ["city", "pop"],
-    "additionalProperties": False,
-}
-_JSON_ASK = "Reply with a JSON object for Paris: city is the name and pop is the population."
 _SKIPPED_HEADERS = frozenset({"transfer-encoding", "connection", "content-length"})
 
 
@@ -151,37 +137,35 @@ def _ref(setup: Setup, role: str) -> str:
 
 def _template(setup: Setup) -> Outcome:
     result = create_sdk_provider().chat(
-        _CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
+        CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
     )
     assert isinstance(result, ChatResult)
     answer = split_reasoning(result.text).answer
-    return Outcome("rome" in answer.lower(), f"finish={result.finish_reason}")
+    return Outcome(TEMPLATE_FACT in answer.lower(), f"finish={result.finish_reason}")
 
 
 def _tool(setup: Setup) -> Outcome:
     result = create_sdk_provider().chat(
-        [{"role": "user", "content": "What is the weather in Paris? Use the tool."}],
+        [{"role": "user", "content": TOOL_ASK}],
         model=_ref(setup, "chat"),
-        tools=[_WEATHER],
+        tools=[WEATHER],
         tool_choice="auto",
         options={"max_tokens": 1024},
     )
     assert isinstance(result, ChatResult)
     names = [call.name for call in result.tool_calls]
     first = result.tool_calls[0] if result.tool_calls else None
-    ok = (
-        first is not None
-        and first.name == "get_weather"
-        and not tool_arguments_fault(first.arguments)
-    )
+    ok = first is not None and first.name == TOOL_NAME and not tool_arguments_fault(first.arguments)
     return Outcome(ok, f"tool_calls={names}")
 
 
 def _embed(setup: Setup) -> Outcome:
     cfg.embedding_model = _ref(setup, "embed")
-    vectors = create_sdk_provider().embed(["alpha", "beta gamma"])
+    vectors = create_sdk_provider().embed(EMBED_TEXTS)
     dims = {len(vector) for vector in vectors}
-    distinct = len(vectors) == 2 and cosine(vectors[0], vectors[1]) < NEAR_COPY_COSINE
+    distinct = (
+        len(vectors) == len(EMBED_TEXTS) and cosine(vectors[0], vectors[1]) < NEAR_COPY_COSINE
+    )
     return Outcome(
         distinct
         and dims == {setup.embed_dim}
@@ -193,13 +177,13 @@ def _embed(setup: Setup) -> Outcome:
 
 def _rerank(setup: Setup) -> Outcome:
     cfg.reranker_model = _ref(setup, "rerank")
-    scores = create_sdk_provider().rerank(_RERANK_QUERY, _RERANK_DOCS)
+    scores = create_sdk_provider().rerank(RERANK_QUERY, RERANK_DOCS)
     best = scores.index(max(scores)) if scores else -1
-    return Outcome(len(scores) == len(_RERANK_DOCS) and best == 1, f"best={best}")
+    return Outcome(len(scores) == len(RERANK_DOCS) and best == RERANK_BEST, f"best={best}")
 
 
 def _send_oversize(setup: Setup) -> Outcome:
-    messages = [{"role": "user", "content": _OVERSIZE}]
+    messages = [{"role": "user", "content": OVERSIZE}]
     options = {"max_tokens": 16}
     try:
         if setup.window:
@@ -224,24 +208,24 @@ def _overflow(setup: Setup) -> Outcome:
 
 
 def _colour(setup: Setup, rgb: tuple[int, int, int]) -> str:
-    return create_sdk_provider().vision_ocr(
-        png(rgb), _ref(setup, "vision"), "What colour is this image? Answer in one word."
-    )
+    return create_sdk_provider().vision_ocr(png(rgb), _ref(setup, "vision"), VISION_PROMPT)
 
 
 def _vision(setup: Setup) -> Outcome:
-    named = "red" in _colour(setup, (255, 0, 0)).lower()
+    named = not colour_fault(_colour(setup, (255, 0, 0)), "red")
     if not setup.strict:
         return Outcome(named, f"colour_named={named}")
-    blue_is_red = "red" in _colour(setup, BLUE).lower()
-    return Outcome(named and not blue_is_red, f"red_named={named} blue_called_red={blue_is_red}")
+    blue = _colour(setup, BLUE)
+    blue_is_red = "red" in answer_words(blue)
+    blue_named = not colour_fault(blue, "blue")
+    return Outcome(named and blue_named, f"red_named={named} blue_called_red={blue_is_red}")
 
 
 def _json_step(
     setup: Setup, response_format: dict[str, Any], schema: dict[str, Any] | None
 ) -> Outcome:
     result = create_sdk_provider().chat(
-        [{"role": "user", "content": _JSON_ASK}],
+        [{"role": "user", "content": JSON_ASK}],
         model=_ref(setup, "chat"),
         options={"max_tokens": 256, "response_format": response_format},
     )
@@ -256,9 +240,9 @@ def _json_object(setup: Setup) -> Outcome:
 def _json_schema(setup: Setup) -> Outcome:
     wrapped = {
         "type": "json_schema",
-        "json_schema": {"name": "city", "strict": True, "schema": _JSON_SCHEMA},
+        "json_schema": {"name": "city", "strict": True, "schema": JSON_SCHEMA},
     }
-    return _json_step(setup, wrapped, _JSON_SCHEMA)
+    return _json_step(setup, wrapped, JSON_SCHEMA)
 
 
 def _reasoning_text(setup: Setup) -> Outcome:
@@ -266,7 +250,7 @@ def _reasoning_text(setup: Setup) -> Outcome:
 
     The provider drops the reasoning field, so the step reads the wire message itself.
     """
-    body = {"messages": [_REASONING_ASK], "model": setup.models["chat"], "stream": False}
+    body = {"messages": [REASONING_ASK], "model": setup.models["chat"], "stream": False}
     request = urllib.request.Request(  # noqa: S310  a local server under test
         presets.get_preset(setup.preset).base_url + "/v1/chat/completions",
         data=json.dumps(body).encode(),
@@ -301,13 +285,13 @@ def _named(setup: Setup) -> Outcome:
     try:
         if role == "chat":
             cfg.chat_model = model
-            routing.chat(_CONVERSATION, options={"max_tokens": 1024})
+            routing.chat(CONVERSATION, options={"max_tokens": 1024})
         elif role == "embed":
             cfg.embedding_model = model
             routing.embed(["alpha"])
         elif role == "rerank":
             cfg.reranker_model = model
-            routing.rerank(_RERANK_QUERY, _RERANK_DOCS)
+            routing.rerank(RERANK_QUERY, RERANK_DOCS)
         else:
             cfg.vision_model = model
             routing.vision_ocr(png((255, 0, 0)), model, "What colour is this image?")

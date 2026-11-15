@@ -23,6 +23,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from lilbee.retrieval.reasoning import split_reasoning
+
 GOLDEN_DIR = Path(__file__).parent / "golden"
 CLAIMS = frozenset({"chat", "embed", "rerank", "vision", "reasoning", "json"})
 _HTTP_OK = 200
@@ -495,8 +497,21 @@ def _ask_colour(probe: _Probe, rgb: tuple[int, int, int]) -> tuple[int, str | No
     return status, answer if isinstance(answer, str) else None
 
 
+def answer_words(content: Any) -> list[str]:
+    """The lower-case words of a reply text, after any reasoning block."""
+    return re.findall(r"[a-z]+", split_reasoning(str(content or "")).answer.lower())
+
+
+def colour_fault(content: Any, want: str) -> str:
+    """The reason a reply to an image is not exactly the one word *want*, or an empty string."""
+    words = answer_words(content)
+    return (
+        "" if words == [want] else f"the {want} image is answered {words}, not the one word {want}"
+    )
+
+
 def _check_vision(probe: _Probe, quality: bool) -> Verdict:
-    """E10: the red image gets 200; with quality it answers red and the blue image does not."""
+    """E10: the red image gets 200; with quality each image is answered by its one colour word."""
     status, red = _ask_colour(probe, (255, 0, 0))
     if status != _HTTP_OK or red is None:
         return probe.judge("E10", f"red image: status {status} or no text answer")
@@ -505,9 +520,7 @@ def _check_vision(probe: _Probe, quality: bool) -> Verdict:
     status, blue = _ask_colour(probe, BLUE)
     if status != _HTTP_OK or blue is None:
         return probe.judge("E10", f"blue image: status {status} or no text answer")
-    if "red" not in red.lower():
-        return probe.judge("E10", "the red image was not called red")
-    return probe.judge("E10", "the blue image was called red" if "red" in blue.lower() else "")
+    return probe.judge("E10", colour_fault(red, "red") or colour_fault(blue, "blue"))
 
 
 def _check_embed(probe: _Probe) -> Verdict:

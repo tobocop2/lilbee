@@ -263,7 +263,13 @@ class TestScrub:
             "np" + "m_" + "a" * 26 + "0" * 10,
             "sk" + "_live_" + "a" * 24,
             r"https:\u002f\u002fhost",
-            "api.example.com/v1",
+            "DB_" + "PASS" + "WORD=" + PLANT,
+            "OPENAI_API_" + "KEY=" + PLANT,
+            "GITHUB_" + "TOKEN=" + PLANT,
+            "my_api_" + "key=" + PLANT,
+            "AWS_SECRET_" + "ACCESS_KEY=" + PLANT,
+            '"HF_' + 'TOKEN": "' + PLANT + '"',
+            "xapi_" + "key: " + PLANT,
         ],
     )
     def test_each_form_is_found_raw_and_inside_a_stored_body(self, secret: str) -> None:
@@ -291,10 +297,79 @@ class TestScrub:
             "token: counts are given below",
             "Qwen3-0.6B-Q8_0.gguf",
             "e.g. the config.json file",
+            "set DB_PASSWORD in the environment",
+            "max_tokens: 1024",
+            "prompt_tokens=43 and total_tokens: 4300000",
+            "the OPENAI_API_KEY variable",
+            "my_api_key: your key here",
         ],
     )
     def test_clean_text_passes(self, clean: str) -> None:
         assert cr.scrub_fault(json.dumps({"body": clean})) == ""
+
+    @pytest.mark.parametrize(
+        "host", ["build.example.com", "box.example.co", "box.example.xyz", "a-b.c.internal"]
+    )
+    def test_a_host_name_is_found_in_a_field_that_holds_a_host(
+        self, real: CompareRecord, host: str
+    ) -> None:
+        for dirty in (
+            replace(real, host=replace(real.host, machine=host)),
+            _with_step(real, Step.TEMPLATE, detail=f"served by {host}"),
+            replace(real, models={**real.models, "chat": replace(real.models["chat"], id=host)}),
+        ):
+            assert cr.scrub_fault(cr.dump(dirty)) != ""
+
+    @pytest.mark.parametrize(
+        "prose",
+        ["paris.com", "ietf.org", "see example.co or x.xyz", "settings.app and model.local"],
+    )
+    def test_a_domain_in_a_model_answer_is_not_a_host(
+        self, real: CompareRecord, prose: str
+    ) -> None:
+        body = json.dumps({"choices": [{"message": {"content": prose}}], "usage": {}})
+        step = real.steps[Step.TEMPLATE]
+        record = _with_step(
+            real,
+            Step.TEMPLATE,
+            engine=(replace(step.engine[0], body=body),),
+            oracle=(replace(step.oracle[0], body=body),),
+        )
+        assert cr.scrub_fault(cr.dump(record)) == ""
+        assert cr.parse(cr.dump(record)).steps[Step.TEMPLATE].engine[0].body == body
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (500, json.dumps({"error": "cannot reach box.example.xyz"})),
+            (400, json.dumps({"error": {"message": "no route to build.example.com"}})),
+            (500, "upstream box.example.co failed"),
+            (200, json.dumps({"model": "box.example.xyz", "choices": []})),
+            (
+                200,
+                json.dumps({"choices": [{"message": {"content": "ok", "role": "a.b.internal"}}]}),
+            ),
+        ],
+    )
+    def test_a_host_name_outside_the_answer_text_is_found(
+        self, real: CompareRecord, status: int, body: str
+    ) -> None:
+        step = real.steps[Step.TEMPLATE]
+        record = _with_step(
+            real,
+            Step.TEMPLATE,
+            engine=(replace(step.engine[0], status=status, body=body),),
+        )
+        assert cr.scrub_fault(cr.dump(record)) != ""
+
+    def test_a_url_in_a_model_answer_is_still_found(self, real: CompareRecord) -> None:
+        body = json.dumps({"choices": [{"message": {"content": "see http://host/x"}}]})
+        step = real.steps[Step.TEMPLATE]
+        record = _with_step(real, Step.TEMPLATE, engine=(replace(step.engine[0], body=body),))
+        assert cr.scrub_fault(cr.dump(record)) != ""
+
+    def test_a_host_name_in_text_that_is_not_json_is_found(self) -> None:
+        assert cr.scrub_fault("not json, box.example.xyz") != ""
 
     def test_the_stored_fake_holds_none(self) -> None:
         assert cr.scrub_fault(FAKE_PATH.read_text(encoding="utf-8")) == ""

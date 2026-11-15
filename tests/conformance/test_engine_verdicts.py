@@ -168,6 +168,12 @@ MUTANT_CASES = [
     ),
     Case("vision_400", Behaviour(vision="400"), expect={"E10": F}, quality_modes=(True,)),
     Case(
+        "vision_answers_in_a_sentence_not_one_word",
+        Behaviour(vision="sentence"),
+        expect_quality={"E10": F},
+        quality_modes=(True,),
+    ),
+    Case(
         "chat_random",
         Behaviour(deterministic=False),
         expect_quality={"E11": F},

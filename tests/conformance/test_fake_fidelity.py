@@ -145,7 +145,11 @@ def test_the_generated_image_reads_back_red() -> None:
     url = "data:image/png;base64," + base64.b64encode(png((255, 0, 0))).decode()
     blue = "data:image/png;base64," + base64.b64encode(png((0, 0, 255))).decode()
     assert image_colour(url) == "red"
-    assert image_colour(blue) == "other"
+    assert image_colour(blue) == "blue"
+    assert (
+        image_colour("data:image/png;base64," + base64.b64encode(png((0, 255, 0))).decode())
+        == "other"
+    )
 
 
 def test_every_profile_cites_the_rows_it_copies() -> None:

@@ -525,6 +525,23 @@ class TestRerank:
         assert verdict.status is Status.FAIL
         assert "documents 2 and 3" in verdict.detail
 
+    def test_an_oracle_gap_equal_to_the_floor_is_judged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cv, "RERANK_GAP_FLOOR", 0.25)
+        oracle = scores_body(0.0, 1.0, 0.5, 0.75)
+        assert cv.rerank_gap(self.SILENT) == 0.25
+        verdict = self.run(scores_body(0.0, 1.0, 0.75, 0.5), oracle, self.SILENT)
+        assert verdict.status is Status.FAIL
+        assert "documents 2 and 3" in verdict.detail
+
+    def test_an_oracle_gap_just_under_the_floor_is_not_judged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cv, "RERANK_GAP_FLOOR", 0.25)
+        oracle = scores_body(0.0, 1.0, 0.5, 0.5 + 0.25 - 2**-10)
+        assert self.run(scores_body(0.0, 1.0, 0.75, 0.5), oracle, self.SILENT).status is Status.PASS
+
     def test_a_near_tie_swap_passes_when_the_null_is_silent(self) -> None:
         silent = NullBlock(rerank_scores=(((0.1, 0.9, 0.5, 0.52), (0.1, 0.9, 0.5, 0.52)),))
         oracle = scores_body(0.1, 0.9, 0.5, 0.5 + 1e-9)

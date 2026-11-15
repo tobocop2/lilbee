@@ -96,12 +96,14 @@ def _vector(text: str, dim: int, normalized: bool) -> list[float]:
 
 
 def image_colour(data_url: str) -> str:
-    """ "red" when the first pixel of a PNG data URL is red, else "other"."""
+    """ "red" or "blue" when the first pixel of a PNG data URL is that colour, else "other"."""
     blob = base64.b64decode(data_url.split(",", 1)[1])
     pos = blob.index(b"IDAT")
     length = struct.unpack(">I", blob[pos - 4 : pos])[0]
     red, green, blue = zlib.decompress(blob[pos + 4 : pos + 4 + length])[1:4]
-    return "red" if red > 200 and green < 60 and blue < 60 else "other"
+    if red > 200 and green < 60 and blue < 60:
+        return "red"
+    return "blue" if blue > 200 and red < 60 and green < 60 else "other"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -208,7 +210,7 @@ class _Handler(BaseHTTPRequestHandler):
             return "ans-" + os.urandom(3).hex()
         if req.get("temperature") == 0 and req.get("seed") is not None:
             return "ans-" + hashlib.sha256((prompt + str(req["seed"])).encode()).hexdigest()[:6]
-        return "ok"
+        return "Rome." if "Italy" in prompt else "ok"
 
     def _tool_message(
         self, req: dict[str, Any], message: dict[str, Any]
@@ -284,11 +286,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": {"message": "images are not supported"}})
             return
         if images:
-            seen = {
-                "ok": lambda: image_colour(images[0]["image_url"]["url"]),
+            colour = image_colour(images[0]["image_url"]["url"])
+            message["content"] = {
+                "ok": lambda: colour,
+                "sentence": lambda: f"the colour is {colour}",
                 "const": lambda: "red",
             }.get(self.cfg.vision, lambda: "nothing")()
-            message["content"] = f"I see {seen}"
         finish = "stop"
         self._with_response_format(req, message)
         if req.get("tools"):
