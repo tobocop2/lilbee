@@ -13,13 +13,13 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import LLAMA, EngineName, LaunchRequest
+from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._gguf_fixture import make_minimal_gguf
 
-_ROOT = Path(__file__).resolve().parents[1]
 _LLAMA_MODULE = "lilbee.providers.fleet.engines.llama"
 _MEMORY_MODULE = "lilbee.providers.fleet.model_memory"
 _SWEEP_INPUTS = 400
@@ -53,12 +53,9 @@ def test_llama_identity_digests_the_binary(tmp_path: Path) -> None:
     assert LLAMA.identity(tmp_path / "missing").endswith("@unreadable")
 
 
-def test_llama_pin_record_version_is_the_pinned_ref() -> None:
-    env = (_ROOT / "engine-versions.env").read_text(encoding="utf-8")
-    ref = re.search(r"^ENGINE_LLAMA_CPP_REF=(.+)$", env, re.M)
-    assert ref is not None
+def test_llama_pin_record_version_is_the_version_of_the_pack() -> None:
     record = LLAMA.pin_record()
-    assert record["version"] == ref.group(1)
+    assert record["version"] == LLAMA.pack_pin()["version"] == _WHEEL_VERSION
     assert {
         "engine",
         "version",

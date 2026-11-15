@@ -37,7 +37,9 @@ from lilbee.app.engine_service import BuildView, RoleView
 from lilbee.cli import app
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.serving import served_by
 from lilbee.retrieval.query import AskResult
 
 _ENGINE = "llama.cpp"
@@ -173,6 +175,21 @@ def test_served_by_another_engine_fails() -> None:
         _served(_ENGINE, _PIN, "chat"),
     )
     assert _rules(_ask_lines(_good(), lines)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_run_of_the_real_llama_engine_is_served_by_the_version_engine_list_shows() -> None:
+    """The line the product logs and the build the install records carry one version."""
+    version = str(LLAMA.pack_pin()["version"])
+    served = served_by("org/chat-GGUF/chat.gguf", LLAMA, native=True)
+
+    def line(role: str) -> str:
+        return _served(served.engine, served.version, role)
+
+    t = replace(_good(), pin=version)
+    t = _with_step(t, StepName.SYNC, log_lines=(line("embed"),))
+    t = _ask_lines(t, tuple(line(str(r)) for r in _ROLES))
+    listing = json.dumps(_listing([_build(_ENGINE, version)]))
+    assert judge(_with_step(t, StepName.ENGINE_LIST_AFTER, stdout=listing)) == []
 
 
 def test_served_by_another_pin_fails() -> None:

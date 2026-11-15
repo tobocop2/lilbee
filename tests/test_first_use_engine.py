@@ -25,9 +25,11 @@ from lilbee.providers.fleet.binary import (
     resolve_llama_server,
 )
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.roles import WorkerRole
 from tests._published import render_table, wheel_name
 
 PACKAGE = "lilbee_engine_llama_cpp"
@@ -223,6 +225,22 @@ def test_the_install_command_fetches_the_pack_when_no_engine_is_present(fetched)
     assert fetched == [CELL]
     assert resolve_llama_server().is_file()
     assert fetched == [CELL]
+
+
+def test_the_served_by_version_is_the_version_the_engine_list_shows(
+    fetched, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.routing_provider import RoutingProvider
+    from lilbee.providers.serving import served_by
+
+    resolve_llama_server()
+    listed = [b.version for b in engine_service.engine_list().builds if b.engine == "llama.cpp"]
+    assert listed == [_WHEEL_VERSION]
+    provider = RoutingProvider.__new__(RoutingProvider)
+    served = served_by("org/chat-GGUF/chat.gguf", LLAMA, native=True)
+    with caplog.at_level("INFO", logger="lilbee.providers.routing_provider"):
+        provider._log_served(WorkerRole.CHAT, "org/chat-GGUF/chat.gguf", served)
+    assert f"served by engine=llama.cpp version={listed[0]} role=chat" in caplog.text
 
 
 def test_installing_the_pack_reports_bytes_and_retries_and_honours_cancel(
