@@ -27,7 +27,6 @@ repack = _load("repack_mistralrs")
 rust_licences = _load("rust_licences")
 rust_notices = _load("rust_notices")
 cuda_notice = _load("write_cuda_notice")
-nccl_notice = _load("write_nccl_notice")
 
 
 def _tar(path: Path, entries: dict[str, bytes]) -> Path:
@@ -39,45 +38,43 @@ def _tar(path: Path, entries: dict[str, bytes]) -> Path:
     return path
 
 
-def test_repack_places_the_tool_and_the_libraries(tmp_path: Path) -> None:
-    archive = _tar(
-        tmp_path / "a.tar.gz",
-        {"./mistralrs": b"bin", "./lib/libcudart.so.12": b"rt", "./lib/libnccl.so.2": b"nc"},
-    )
-    names = repack.repack(archive, tmp_path / "bin")
-    assert names == ["libcudart.so.12", "libnccl.so.2"]
+def test_repack_places_the_tool(tmp_path: Path) -> None:
+    archive = _tar(tmp_path / "a.tar.gz", {"./mistralrs": b"bin"})
+    repack.repack(archive, tmp_path / "bin")
     assert (tmp_path / "bin" / "mistralrs").read_bytes() == b"bin"
     assert (tmp_path / "bin" / "mistralrs").stat().st_mode & 0o111
-    assert (tmp_path / "bin" / "lib" / "libnccl.so.2").read_bytes() == b"nc"
 
 
-def test_repack_leaves_the_driver_library_out(tmp_path: Path) -> None:
-    archive = _tar(
-        tmp_path / "a.tar.gz",
-        {"mistralrs": b"bin", "lib/libcuda.so.1": b"drv", "lib/libcudart.so.12": b"rt"},
-    )
-    assert repack.repack(archive, tmp_path / "bin") == ["libcudart.so.12"]
-    assert not (tmp_path / "bin" / "lib" / "libcuda.so.1").exists()
+def test_repack_refuses_a_shared_library(tmp_path: Path) -> None:
+    archive = _tar(tmp_path / "a.tar.gz", {"mistralrs": b"bin", "lib/libcudart.so.12": b"rt"})
+    with pytest.raises(SystemExit, match=r"libcudart\.so\.12 is not the tool"):
+        repack.repack(archive, tmp_path / "bin")
+    assert not (tmp_path / "bin").exists()
 
 
 def test_repack_reads_a_zip_with_the_exe(tmp_path: Path) -> None:
     archive = tmp_path / "a.zip"
     with zipfile.ZipFile(archive, "w") as z:
         z.writestr("mistralrs.exe", b"exe")
-    assert repack.repack(archive, tmp_path / "bin") == []
+    repack.repack(archive, tmp_path / "bin")
     assert (tmp_path / "bin" / "mistralrs.exe").read_bytes() == b"exe"
-    assert not (tmp_path / "bin" / "lib").exists()
 
 
 def test_repack_refuses_an_unknown_entry(tmp_path: Path) -> None:
     archive = _tar(tmp_path / "a.tar.gz", {"mistralrs": b"bin", "extra.sh": b"x"})
-    with pytest.raises(SystemExit, match=r"extra\.sh is not the tool or a library"):
+    with pytest.raises(SystemExit, match=r"extra\.sh is not the tool"):
         repack.repack(archive, tmp_path / "bin")
 
 
 def test_repack_refuses_an_archive_without_the_tool(tmp_path: Path) -> None:
-    archive = _tar(tmp_path / "a.tar.gz", {"lib/libcudart.so.12": b"rt"})
+    archive = _tar(tmp_path / "a.tar.gz", {})
     with pytest.raises(SystemExit, match="expected one tool, found 0"):
+        repack.repack(archive, tmp_path / "bin")
+
+
+def test_repack_refuses_an_archive_with_two_tools(tmp_path: Path) -> None:
+    archive = _tar(tmp_path / "a.tar.gz", {"mistralrs": b"a", "mistralrs.exe": b"b"})
+    with pytest.raises(SystemExit, match="expected one tool, found 2"):
         repack.repack(archive, tmp_path / "bin")
 
 
@@ -148,25 +145,6 @@ def test_cuda_notice_names_the_files_and_the_version() -> None:
     assert "version 12.8.1, from https://x.test/eula" in text and text.endswith("BODY\n")
 
 
-def test_nccl_version_is_read_from_the_library(tmp_path: Path) -> None:
-    library = tmp_path / "libnccl.so.2"
-    library.write_bytes(b"\x00junk NCCL version 2.25.1+cuda12.8\x00")
-    assert nccl_notice.nccl_version(library) == "2.25.1"
-
-
-def test_nccl_version_refuses_a_library_without_one(tmp_path: Path) -> None:
-    library = tmp_path / "libnccl.so.2"
-    library.write_bytes(b"nothing")
-    with pytest.raises(SystemExit, match="does not name its NCCL version"):
-        nccl_notice.nccl_version(library)
-
-
-def test_nccl_notice_names_the_tag() -> None:
-    text = nccl_notice.notice("libnccl.so.2", "2.25.1", " LICENCE TEXT ")
-    assert "bin/lib/libnccl.so.2 is NCCL 2.25.1" in text and "(tag v2.25.1-1)" in text
-    assert text.endswith("LICENCE TEXT\n")
-
-
 _LOCK = """
 [[package]]
 name = "selectors"
@@ -196,9 +174,8 @@ def test_mpl_notice_names_the_exact_source_and_checksum() -> None:
         _mpl_report("selectors", "0.26.0"), rust_notices.lock_checksums(_LOCK)
     )
     assert text is not None
-    assert "https://static.crates.io/crates/selectors/selectors-0.26.0.crate" in text
-    assert "sha256: abc123" in text
-    assert text.rstrip().endswith("mpl text")
+    lines = [line for line in text.splitlines() if line.startswith("https://")]
+    assert lines == ["https://static.crates.io/crates/selectors/selectors-0.26.0.crate  abc123"]
     assert "serde" not in text
 
 
@@ -207,7 +184,7 @@ def test_mpl_notice_is_absent_without_an_mpl_crate() -> None:
 
 
 def test_mpl_notice_refuses_a_crate_outside_the_registry() -> None:
-    with pytest.raises(SystemExit, match="from-git 1.0.0 is not a crates.io package"):
+    with pytest.raises(SystemExit, match=r"from-git 1\.0\.0 is not a crates\.io package"):
         rust_notices.mpl_notice(
             _mpl_report("from-git", "1.0.0"), rust_notices.lock_checksums(_LOCK)
         )
@@ -243,7 +220,7 @@ def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
     report["licenses"].append(_entry("OpenSSL", "ssl text", "aws-lc-sys"))
     names = rust_notices.write_notices(report, _LOCK, checkout, tmp_path / "registry", tree)
     assert names == [
-        "NOTICE-MPL-2.0",
+        "SOURCE-MPL-2.0",
         "NOTICE-OpenSSL",
         "mistral.rs__sub__NOTICE",
         "aws-lc-sys-1.0.0__NOTICE",
@@ -275,7 +252,15 @@ def test_the_pack_job_checks_the_notices_in_the_built_wheel() -> None:
         if step.get("name") == "Check the licences in the installed wheel"
     )
     assert "THIRD-PARTY/vendored/" in check
-    assert "NOTICE-${id}" in check
+    assert "NOTICE-OpenSSL" in check and "SOURCE-MPL-2.0" in check
+
+
+def test_the_pack_job_has_no_cuda_step() -> None:
+    job = _mistralrs_job()
+    text = yaml.safe_dump(job)
+    assert job["steps"]
+    for word in ("CUDA", "cuda", "NCCL", "nccl", "ldd"):
+        assert word not in text
 
 
 def test_the_pack_matrix_holds_no_cuda_cell() -> None:

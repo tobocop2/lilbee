@@ -2,7 +2,7 @@
 
 Usage: rust_notices.py <cargo-about JSON> <Cargo.lock> <source checkout> <wheel tree>
 
-It writes NOTICE-MPL-2.0 (the crates.io source URL and checksum of each MPL-2.0 crate) and
+It writes SOURCE-MPL-2.0 (the crates.io source URL and checksum of each MPL-2.0 crate) and
 NOTICE-OpenSSL (the acknowledgements that the OpenSSL licence asks for) into the wheel tree.
 It copies each NOTICE file, and each licence file under a third_party folder, of the source
 checkout and of the crates in the graph into THIRD-PARTY/vendored. The crate sources come from
@@ -46,18 +46,20 @@ def graph_crates(report: dict) -> list[tuple[str, str]]:
 
 
 def mpl_notice(report: dict, checksums: dict[tuple[str, str], str]) -> str | None:
-    """Return the text of NOTICE-MPL-2.0, or None when no crate uses MPL-2.0."""
+    """Return the text of SOURCE-MPL-2.0, or None when no crate uses MPL-2.0."""
     entries = [entry for entry in report["licenses"] if entry["id"] == "MPL-2.0"]
     if not entries:
         return None
-    lines = ["These crates are under the Mozilla Public License 2.0. The pack holds them unmodified.", ""]
+    lines = [
+        "These crates are under the Mozilla Public License 2.0. The pack holds them unmodified.",
+        "The source of each crate is the download at the URL, with the sha256 that follows it.",
+        "",
+    ]
     for name, version in graph_crates({"licenses": entries}):
         if (name, version) not in checksums:
             raise SystemExit(f"{name} {version} is not a crates.io package in Cargo.lock: no source URL")
-        lines.append(f"{name} {version}")
-        lines.append(f"  source: https://static.crates.io/crates/{name}/{name}-{version}.crate")
-        lines.append(f"  sha256: {checksums[(name, version)]}")
-    return "\n".join(lines) + f"\n\n{'-' * 72}\n\n{entries[0]['text'].strip()}\n"
+        lines.append(f"https://static.crates.io/crates/{name}/{name}-{version}.crate  {checksums[(name, version)]}")
+    return "\n".join(lines) + "\n"
 
 
 def vendored_files(root: Path) -> list[Path]:
@@ -90,8 +92,8 @@ def write_notices(report: dict, lock_text: str, checkout: Path, registry: Path, 
     names = []
     mpl = mpl_notice(report, lock_checksums(lock_text))
     if mpl is not None:
-        (tree / "NOTICE-MPL-2.0").write_text(mpl, encoding="utf-8")
-        names.append("NOTICE-MPL-2.0")
+        (tree / "SOURCE-MPL-2.0").write_text(mpl, encoding="utf-8")
+        names.append("SOURCE-MPL-2.0")
     if any(entry["id"] == "OpenSSL" for entry in report["licenses"]):
         (tree / "NOTICE-OpenSSL").write_text(OPENSSL_NOTICE, encoding="utf-8")
         names.append("NOTICE-OpenSSL")
