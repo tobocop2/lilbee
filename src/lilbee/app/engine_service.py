@@ -113,6 +113,14 @@ class RoleView:
 
 
 @dataclass(frozen=True)
+class ModelChoice:
+    """A model engine write: the model key it saved or removed, and the engine named."""
+
+    model: str
+    engine: str
+
+
+@dataclass(frozen=True)
 class InstalledBuild:
     """The engine build an install wrote."""
 
@@ -534,7 +542,7 @@ def use_for_role(
         raise EngineRefusedError(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
-    return use(model, name, confirmed)
+    return use(model, name, confirmed).engine
 
 
 def _require_serves(name: EngineName, model: str) -> None:
@@ -565,7 +573,7 @@ def _known_model(model: str) -> str:
     return known
 
 
-def use(model: str, name: str, confirmed: bool = False) -> str:
+def use(model: str, name: str, confirmed: bool = False) -> ModelChoice:
     """Store the engine for *model*; ``auto`` removes it. Refuses an engine that cannot run it."""
     model = model.strip()
     if not model:
@@ -603,4 +611,4 @@ def use(model: str, name: str, confirmed: bool = False) -> str:
 
     _store(CHOICES_KEY, apply, commit)
     _apply_to_running()
-    return name
+    return ModelChoice(model, name)

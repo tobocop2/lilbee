@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 import typer
 from rich.progress import BarColumn, Progress, TextColumn
@@ -29,6 +29,8 @@ engine_app = typer.Typer(
     help="Manage the local inference engine.",
     no_args_is_help=True,
 )
+
+_T = TypeVar("_T")
 
 _STOPPED = "Stopped the engine and freed its memory."
 _NOTHING_RUNNING = "No engine is running."
@@ -169,7 +171,7 @@ def _interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def _confirming(action: Callable[[bool], str], yes: bool) -> str:
+def _confirming(action: Callable[[bool], _T], yes: bool) -> _T:
     """Run *action*; ask once to confirm, or refuse and name ``--yes`` when none can answer."""
     try:
         return action(yes)
@@ -243,9 +245,9 @@ def use_model(
     except engine_service.WRITE_FAILURES as exc:
         raise _refuse("engine use-model", exc) from exc
     if cfg.json_mode:
-        json_out({"command": "engine use-model", "model": model, "engine": chosen})
+        json_out({"command": "engine use-model", "model": chosen.model, "engine": chosen.engine})
         return
-    console.print(f"Model {model} uses engine {chosen}.")
+    console.print(f"Model {chosen.model} uses engine {chosen.engine}.")
 
 
 @engine_app.command("prefer")

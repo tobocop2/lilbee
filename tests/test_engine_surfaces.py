@@ -768,19 +768,31 @@ def _model_refusal(surface: str, model: str, engine: str) -> str:
     return out.text
 
 
-def _write_model(surface: str, model: str, engine: str) -> None:
+def _echo_of_model_write(surface: str, model: str, engine: str) -> object:
+    """What a surface answers to a model write it accepted."""
     if surface == "cli":
-        assert _run_cli("use-model", model, engine) == (
-            0,
-            {"command": "engine use-model", "model": model, "engine": engine},
-        )
-    elif surface == "rest":
-        res = _rest("PUT", "/api/engines/models", {"model": model, "engine": engine})
-        assert res == (200, {"engine": engine})
-    elif surface == "mcp":
-        assert mcp_server.engine_use_model_tool(model, engine) == {"engine": engine}
-    else:
-        assert run_engine_command(f"use-model {model} {engine}").ok
+        code, body = _run_cli("use-model", model, engine)
+        assert code == 0
+        return body
+    if surface == "rest":
+        code, body = _rest("PUT", "/api/engines/models", {"model": model, "engine": engine})
+        assert code == 200
+        return body
+    if surface == "mcp":
+        return mcp_server.engine_use_model_tool(model, engine)
+    out = run_engine_command(f"use-model {shlex.quote(model)} {engine}")
+    assert out.ok
+    return out.text
+
+
+def _write_model(surface: str, model: str, engine: str) -> None:
+    echo: dict[str, object] = {
+        "cli": {"command": "engine use-model", "model": model, "engine": engine},
+        "rest": {"engine": engine},
+        "mcp": {"engine": engine},
+        "slash": f"Model {model} uses engine {engine}.",
+    }
+    assert _echo_of_model_write(surface, model, engine) == echo[surface]
 
 
 @pytest.mark.parametrize("surface", SURFACES)
@@ -837,7 +849,7 @@ def test_the_role_path_stores_through_the_same_write(monkeypatch: pytest.MonkeyP
     seen: list[tuple[str, str]] = []
     real = engine_service.use
 
-    def spy(model: str, name: str, confirmed: bool = False) -> str:
+    def spy(model: str, name: str, confirmed: bool = False) -> engine_service.ModelChoice:
         seen.append((model, name))
         return real(model, name, confirmed)
 
@@ -922,8 +934,33 @@ def test_a_malformed_format_is_refused_on_every_surface(surface: str) -> None:
 
 def test_a_pick_that_is_not_pulled_yet_takes_its_engine(checked_names: None) -> None:
     seed_picks((make_test_catalog_model(hf_repo="org/picked"),))
-    assert engine_service.use("org/picked", "llama.cpp") == "llama.cpp"
+    assert engine_service.use("org/picked", "llama.cpp") == engine_service.ModelChoice(
+        "org/picked", "llama.cpp"
+    )
     assert json.loads(str(_stored("engine_choices"))) == {"org/picked": "llama.cpp"}
+
+
+@pytest.mark.parametrize(
+    ("surface", "echo"),
+    [
+        ("cli", {"command": "engine use-model", "model": "org/picked", "engine": "llama.cpp"}),
+        ("rest", {"engine": "llama.cpp"}),
+        ("mcp", {"engine": "llama.cpp"}),
+        ("slash", "Model org/picked uses engine llama.cpp."),
+    ],
+)
+def test_a_pick_named_in_another_case_is_saved_and_echoed_under_the_pick_ref(
+    surface: str, echo: object, checked_names: None
+) -> None:
+    seed_picks((make_test_catalog_model(hf_repo="org/picked"),))
+    assert _echo_of_model_write(surface, "ORG/Picked", "llama.cpp") == echo
+    assert json.loads(str(_stored("engine_choices"))) == {"org/picked": "llama.cpp"}
+
+
+def test_the_plain_cli_names_the_key_it_saved_for_a_padded_name() -> None:
+    result = CliRunner().invoke(cli_app, ["engine", "use-model", f"  {MLX_REF}  ", "mlx"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == f"Model {MLX_REF} uses engine mlx."
 
 
 def test_a_loose_gguf_file_takes_its_engine(tmp_path: Path, checked_names: None) -> None:
@@ -937,7 +974,9 @@ def test_auto_removes_the_choice_of_a_model_that_nobody_knows_any_more(
     checked_names: None,
 ) -> None:
     cfg.engine_choices = json.dumps({"gone/model/file.gguf": "llama.cpp"})
-    assert engine_service.use("gone/model/file.gguf", "auto") == "auto"
+    assert engine_service.use("gone/model/file.gguf", "auto") == engine_service.ModelChoice(
+        "gone/model/file.gguf", "auto"
+    )
     assert _stored("engine_choices") is None
 
 
@@ -945,7 +984,10 @@ def test_auto_removes_the_choice_of_a_model_that_nobody_knows_any_more(
 def test_a_padded_model_name_is_stored_stripped_on_every_surface(surface: str) -> None:
     padded = f"  {MLX_REF}  "
     if surface == "cli":
-        assert _run_cli("use-model", padded, "mlx")[0] == 0
+        assert _run_cli("use-model", padded, "mlx") == (
+            0,
+            {"command": "engine use-model", "model": MLX_REF, "engine": "mlx"},
+        )
     elif surface == "rest":
         assert _rest("PUT", "/api/engines/models", {"model": padded, "engine": "mlx"})[0] == 200
     elif surface == "mcp":

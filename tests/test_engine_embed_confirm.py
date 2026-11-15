@@ -129,7 +129,7 @@ def test_a_chat_engine_change_asks_nothing_on_a_library_with_documents(
     library: SimpleNamespace, with_openvino: None
 ) -> None:
     assert library.store.documents == 3
-    assert engine_service.use(GGUF_REF, "openvino") == "openvino"
+    assert engine_service.use(GGUF_REF, "openvino").engine == "openvino"
     assert _stored("preferred_engine") is None
 
 

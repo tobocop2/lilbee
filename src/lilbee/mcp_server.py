@@ -2375,7 +2375,7 @@ def engine_use_model_tool(
         return refused
     return _engine_result(
         lambda: EngineChosenResponse(
-            engine=engine_service.use(model, engine, confirmed=confirm_embed_change)
+            engine=engine_service.use(model, engine, confirmed=confirm_embed_change).engine
         )
     )
 

@@ -69,7 +69,7 @@ def _use(role: WorkerRole, model: str, engine: str, confirmed: bool = False) -> 
 
 def _use_model(model: str, engine: str, confirmed: bool = False) -> EngineCommandResult:
     chosen = engine_service.use(model, engine, confirmed=confirmed)
-    text = msg.ENGINE_USE_MODEL_DONE.format(model=model, engine=chosen)
+    text = msg.ENGINE_USE_MODEL_DONE.format(model=chosen.model, engine=chosen.engine)
     return EngineCommandResult(True, text, CHOICES_KEY)
 
 

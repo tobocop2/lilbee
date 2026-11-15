@@ -118,7 +118,7 @@ async def engine_use_route(role: FromPath[str], data: EngineUseBody) -> EngineCh
 async def engine_use_model_route(data: EngineUseBody) -> EngineChosenResponse:
     """Choose the engine for one model, in any role or none. Refused unless allow_http_engines."""
     chosen = await _call(
-        lambda: service.use(data.model, data.engine, confirmed=data.confirm_embed_change)
+        lambda: service.use(data.model, data.engine, confirmed=data.confirm_embed_change).engine
     )
     return EngineChosenResponse(engine=chosen)
 
