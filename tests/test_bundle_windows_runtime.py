@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 import stat
 import subprocess
 import sys
+import zipfile
 
 import pytest
 
@@ -181,9 +183,42 @@ def test_a_missing_redist_file_fails(tree) -> None:
     assert "vcomp140.dll" in result.stderr
 
 
-def _run_with_notice(tree: pathlib.Path, vswhere: pathlib.Path) -> subprocess.CompletedProcess[str]:
+_TERMS = (
+    "DISTRIBUTABLE CODE. The software contains code that you may distribute.",
+    "Distribution Requirements. You must add significant primary functionality.",
+    "Distribution Restrictions. You may not use Microsoft trademarks.",
+)
+
+
+def _licence_docx(path: pathlib.Path, paragraphs: tuple[str, ...]) -> str:
+    """Write a minimal Word file holding *paragraphs*; return its sha256."""
+    body = "".join(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" for text in paragraphs)
+    xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("word/document.xml", xml)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _run_with_notice(
+    tree: pathlib.Path,
+    vswhere: pathlib.Path,
+    paragraphs: tuple[str, ...] = (
+        "UNRELATED. Other terms.",
+        *_TERMS,
+        "DEVELOPING EXTENSIONS. Not part of the notice.",
+    ),
+    sha256: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    docx = tree / "licence.docx"
+    digest = _licence_docx(docx, paragraphs)
     env = {k: v for k, v in os.environ.items() if k != "VCToolsRedistDir"}
     env["VSWHERE"] = str(vswhere)
+    env["VS_LICENSE_URL"] = docx.as_uri()
+    env["VS_LICENSE_SHA256"] = sha256 or digest
+    env["PYTHON"] = sys.executable
     env["PATH"] = f"{tree / 'fake'}:{env['PATH']}"
     return subprocess.run(
         ["bash", str(_SCRIPT), str(tree / "bin"), str(tree / "NOTICE-VC")],
@@ -202,9 +237,46 @@ def test_writes_the_redistribution_notice_from_the_install_terms(tree) -> None:
     result = _run_with_notice(tree, tree / "fake/vswhere.exe")
     assert result.returncode == 0, result.stderr
     notice = (tree / "NOTICE-VC").read_bytes()
-    assert notice.startswith(b"This wheel carries Microsoft Visual C++ runtime files")
+    assert notice.startswith(
+        b"These files are licensed under the Microsoft terms below, "
+        b"not under the other terms of this wheel."
+    )
     assert b"Distributable Code terms for the runtime files." in notice
     assert b"\r" not in notice
+
+
+def test_the_notice_names_every_runtime_file_and_holds_the_distributable_code_terms(tree) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe")
+    assert result.returncode == 0, result.stderr
+    notice = (tree / "NOTICE-VC").read_text(encoding="utf-8")
+    for name in (*_CRT, "vcomp140.dll"):
+        assert name in notice
+    for paragraph in _TERMS:
+        assert paragraph in notice
+    assert "UNRELATED" not in notice
+    assert "DEVELOPING EXTENSIONS" not in notice
+
+
+def test_a_licence_with_the_wrong_digest_writes_no_notice(tree) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe", sha256="0" * 64)
+    assert result.returncode != 0
+    assert "the Visual Studio licence has digest" in result.stderr
+    assert not (tree / "NOTICE-VC").exists()
+
+
+def test_a_licence_without_the_distributable_code_section_writes_no_notice(tree) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    result = _run_with_notice(
+        tree, tree / "fake/vswhere.exe", paragraphs=("UNRELATED. Other terms.",)
+    )
+    assert result.returncode != 0
+    assert "no DISTRIBUTABLE CODE section" in result.stderr
+    assert not (tree / "NOTICE-VC").exists()
 
 
 def test_fails_when_the_install_has_no_redistribution_terms(tree) -> None:

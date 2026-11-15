@@ -8,6 +8,9 @@
 #   VCToolsRedistDir  the MSVC redistributable root (default: the newest under the
 #                     Visual Studio install that vswhere reports)
 #   VSWHERE           the vswhere.exe path (default: the Visual Studio Installer copy)
+#   VS_LICENSE_URL    the Visual Studio Community licence .docx for the notice (default: the 2022 file)
+#   VS_LICENSE_SHA256 the digest that file must have (default: the digest of the 2022 file)
+#   PYTHON            the interpreter that reads the licence (default: python)
 # Argument:
 #   the wheel's bin/ directory, holding the freshly built engine
 #   optional second: the path that receives the Microsoft redistribution notice
@@ -64,14 +67,34 @@ if [ -n "${notice_file}" ]; then
     find "${vs_root}" -maxdepth 5 -iname '*licen*' 2>/dev/null | head -n 20 >&2
     exit 1
   }
+  [ -s "${redist_txt}" ] || { echo "${redist_txt} is empty" >&2; exit 1; }
+  # The Distributable Code terms come from the Visual Studio Community licence, pinned by digest.
+  work="$(mktemp -d)"
+  license_url="${VS_LICENSE_URL:-https://visualstudio.microsoft.com/wp-content/uploads/2021/11/Visual-Studio-2022-Community-License-EN.docx}"
+  license_sha256="${VS_LICENSE_SHA256:-41a207b10c8ab91d0d2f10a854715f73dca54509581692d2fe179aa3ffcb8540}"
+  curl -fsSL --retry 3 --retry-delay 5 "${license_url}" -o "${work}/license.docx"
+  if command -v sha256sum >/dev/null; then
+    got="$(sha256sum "${work}/license.docx" | cut -d' ' -f1)"
+  else
+    got="$(shasum -a 256 "${work}/license.docx" | cut -d' ' -f1)"
+  fi
+  [ "${got}" = "${license_sha256}" ] || { echo "the Visual Studio licence has digest ${got}, not ${license_sha256}" >&2; exit 1; }
+  "${PYTHON:-python}" -I "$(dirname "${BASH_SOURCE[0]}")/vs_distributable_terms.py" "${work}/license.docx" | tr -d '\r' > "${work}/terms.txt"
   {
+    echo "These files are licensed under the Microsoft terms below, not under the other terms of this wheel."
+    echo
     echo "This wheel carries Microsoft Visual C++ runtime files: msvcp140.dll, vcruntime140.dll and"
-    echo "vcruntime140_1.dll. They are distributable code under the Microsoft Visual Studio licence"
-    echo "terms (https://visualstudio.microsoft.com/license-terms/). The files are not modified."
-    echo "The text that follows is ${redist_txt##*/} from the Visual Studio install that supplied them."
+    echo "vcruntime140_1.dll, and vcomp140.dll when the wheel holds it. They are distributable code"
+    echo "under the Microsoft Visual Studio Community 2022 licence terms ${license_url}"
+    echo "The files are not modified."
+    echo
+    echo "Distributable Code section of those terms:"
+    echo
+    cat "${work}/terms.txt"
+    echo
+    echo "The list that follows is ${redist_txt##*/} from the Visual Studio install that supplied the files."
     echo
     tr -d '\r' < "${redist_txt}"
   } > "${notice_file}"
-  [ -s "${redist_txt}" ] || { echo "${redist_txt} is empty" >&2; exit 1; }
   echo "Visual C++ runtime notice: ${redist_txt}, $(wc -c < "${redist_txt}") bytes"
 fi
