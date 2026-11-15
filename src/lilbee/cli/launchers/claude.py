@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from functools import partial
 from pathlib import Path
 
 import typer
@@ -54,9 +55,13 @@ def _find_claude_binary() -> str | None:
     return None
 
 
-def _print_setup_plan() -> None:
+def _print_setup_plan(*, include_mcp: bool) -> None:
     """Tell the user exactly which files the first-run setup writes."""
     typer.secho("First-time Claude Code setup will write:", fg=typer.colors.CYAN)
+    if not include_mcp:
+        typer.echo(f"  - lilbee MCP skill -> {_claude_skill_dest()}")
+        typer.echo("Claude Code's own settings are not touched. To undo, remove the path above.")
+        return
     typer.echo(f"  - lilbee MCP config -> {_mcp_config_path()}")
     typer.echo(f"  - lilbee MCP skill -> {_claude_skill_dest()}")
     typer.echo(
@@ -116,14 +121,14 @@ class ClaudeLauncher:
         # with a populated ~/.claude), which no local model's window absorbs.
         # Project-level CLAUDE.md and .claude/ still load.
         extra_args = ["--model", model_id, "--setting-sources", "project,local"]
+        if not confirm_first_run_setup(
+            marker_name=_SETUP_MARKER_NAME,
+            client_name="Claude Code",
+            print_plan=partial(_print_setup_plan, include_mcp=self._include_mcp),
+            assume_yes=self._assume_yes,
+        ):
+            raise typer.Exit(0)
         if self._include_mcp:
-            if not confirm_first_run_setup(
-                marker_name=_SETUP_MARKER_NAME,
-                client_name="Claude Code",
-                print_plan=_print_setup_plan,
-                assume_yes=self._assume_yes,
-            ):
-                raise typer.Exit(0)
             block = claude_http_config(base_url=base_url, api_key=_TOKEN_REF)
             config_file.atomic_write_text(_mcp_config_path(), json.dumps(block, indent=2))
             # --strict-mcp-config keeps the session to lilbee's one MCP server.

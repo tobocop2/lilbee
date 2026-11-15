@@ -161,7 +161,7 @@ def test_launch_claude_installs_skill_and_records_marker(tmp_path):
     assert "First-time Claude Code setup will write" in result.stdout
 
 
-def test_launch_claude_no_mcp_skips_config_and_gate_but_installs_skill(tmp_path):
+def test_launch_claude_no_mcp_skips_config_and_installs_skill_after_consent(tmp_path):
     _write_server_session()
     result, run = _launch("--no-mcp")
     assert result.exit_code == 0
@@ -170,7 +170,26 @@ def test_launch_claude_no_mcp_skips_config_and_gate_but_installs_skill(tmp_path)
     assert "--strict-mcp-config" not in argv  # the user's own MCP config applies
     assert not (cfg.data_dir / "launchers" / "claude-mcp.json").exists()
     assert (tmp_path / ".claude" / "skills" / "lilbee-mcp" / "SKILL.md").is_file()
-    assert "First-time Claude Code setup" not in result.stdout
+    assert (cfg.data_dir / "launchers" / "claude-setup.json").exists()
+    assert "First-time Claude Code setup will write" in result.stdout
+    assert "lilbee MCP skill ->" in result.stdout
+    assert "lilbee MCP config ->" not in result.stdout
+
+
+def test_launch_claude_no_mcp_decline_writes_no_skill(tmp_path):
+    _write_server_session()
+    with (
+        patch("lilbee.cli.launchers.claude.shutil.which", return_value="/usr/local/bin/claude"),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=False) as confirm,
+        patch("lilbee.cli.launchers.launcher.subprocess.run") as run,
+    ):
+        result = runner.invoke(app, ["launch", "claude", "--no-mcp"])
+    assert result.exit_code == 0
+    confirm.assert_called_once()
+    run.assert_not_called()
+    assert not (tmp_path / ".claude" / "skills" / "lilbee-mcp").exists()
+    assert not (cfg.data_dir / "launchers" / "claude-setup.json").exists()
 
 
 def test_launch_claude_interactive_decline_skips_launch(tmp_path):
