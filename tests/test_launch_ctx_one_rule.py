@@ -198,6 +198,36 @@ def test_the_split_objective_aims_at_the_context_the_launch_serves(folder: Path,
     assert target == _chat_launch(engine, 1).ctx == _TARGET
 
 
+@pytest.fixture
+def clean_downshift():
+    planning.clear_ctx_downshift()
+    yield
+    planning.clear_ctx_downshift()
+
+
+@pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
+def test_the_verdict_prices_the_context_a_recorded_downshift_leaves(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, clean_downshift: None, engine
+) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
+    full = _chat_launch(engine, 1).ctx
+    assert planning.record_ctx_downshift(WorkerRole.CHAT)
+    launched = _chat_launch(engine, 1).ctx
+    assert launched < full
+    assert _verdict_ctx(monkeypatch, engine) == launched
+
+
+def test_pricing_a_verdict_leaves_the_downshift_base_of_the_loaded_model(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, clean_downshift: None
+) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
+    base = _chat_launch(MISTRAL, 1).ctx
+    assert planning._ctx_downshift_store.base(WorkerRole.CHAT) == base
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 4096)
+    assert _verdict_ctx(monkeypatch, MISTRAL) < base
+    assert planning._ctx_downshift_store.base(WorkerRole.CHAT) == base
+
+
 @pytest.mark.parametrize("engine", [MISTRAL, MLX], ids=["mistral", "mlx"])
 def test_the_fallback_floor_charges_the_cache_of_the_context_the_launch_serves(
     folder: Path, engine
