@@ -267,7 +267,7 @@ def _within_roots(resolved: Path) -> bool:
         config.documents_dir.resolve(),
         *(Path(root).resolve() for root in config.linked_roots.values()),
     ]
-    return any(resolved == root or root in resolved.parents for root in roots)
+    return any(resolved.is_relative_to(root) for root in roots)
 
 
 def path_within_roots(resolved: Path) -> bool:
