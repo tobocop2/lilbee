@@ -8,7 +8,7 @@
 0.00.107.846 I srv          init: using 8 threads for HTTP server
 0.00.108.415 I srv         start: binding port with default address family
 0.00.109.638 I srv  llama_server: loading model
-0.00.109.646 I srv    load_model: loading model '/home/tobias/.cache/huggingface/hub/models--ggml-org--SmolVLM-256M-Instruct-GGUF/snapshots/b9e4379657e1450d04d02eec8e345667265b0a00/SmolVLM-256M-Instruct-Q8_0.gguf'
+0.00.109.646 I srv    load_model: loading model '<home>/.cache/huggingface/hub/models--ggml-org--SmolVLM-256M-Instruct-GGUF/snapshots/b9e4379657e1450d04d02eec8e345667265b0a00/SmolVLM-256M-Instruct-Q8_0.gguf'
 0.00.229.971 I srv    load_model: [mtmd] estimated worst-case memory usage of mmproj is 122.95 MiB
 0.00.229.996 I common_init_result: fitting params to device memory ...
 0.00.229.997 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
@@ -20,7 +20,7 @@
 0.00.401.596 I common_params_fit_impl: will leave 8072 >= 1143 MiB of free device memory, no changes needed
 0.00.401.597 I common_fit_params: successfully fit params to free device memory
 0.00.401.604 I common_fit_params: fitting params to free memory took 0.17 seconds
-0.00.421.048 I llama_model_loader: loaded meta data with 49 key-value pairs and 273 tensors from /home/tobias/.cache/huggingface/hub/models--ggml-org--SmolVLM-256M-Instruct-GGUF/snapshots/b9e4379657e1450d04d02eec8e345667265b0a00/SmolVLM-256M-Instruct-Q8_0.gguf (version GGUF V3 (latest))
+0.00.421.048 I llama_model_loader: loaded meta data with 49 key-value pairs and 273 tensors from <home>/.cache/huggingface/hub/models--ggml-org--SmolVLM-256M-Instruct-GGUF/snapshots/b9e4379657e1450d04d02eec8e345667265b0a00/SmolVLM-256M-Instruct-Q8_0.gguf (version GGUF V3 (latest))
 0.00.421.070 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 0.00.421.076 I llama_model_loader: - kv   0:                       general.architecture str              = llama
 0.00.421.077 I llama_model_loader: - kv   1:                               general.type str              = model
@@ -218,7 +218,7 @@
 0.00.734.717 I reserve_compute_meta:        CPU compute buffer size =     3.00 MiB
 0.00.734.718 I reserve_compute_meta: graph splits = 1, nodes = 396
 0.00.734.769 I warmup: flash attention is enabled
-0.00.741.503 I srv    load_model: loaded multimodal model, '/home/tobias/.cache/huggingface/hub/models--ggml-org--SmolVLM-256M-Instruct-GGUF/snapshots/b9e4379657e1450d04d02eec8e345667265b0a00/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf'
+0.00.741.503 I srv    load_model: loaded multimodal model, '<home>/.cache/huggingface/hub/models--ggml-org--SmolVLM-256M-Instruct-GGUF/snapshots/b9e4379657e1450d04d02eec8e345667265b0a00/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf'
 0.00.741.517 I srv    load_model: initializing slots, n_slots = 4
 0.00.748.529 W common_speculative_init: no implementations specified for speculative decoding
 0.00.748.543 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 2048
