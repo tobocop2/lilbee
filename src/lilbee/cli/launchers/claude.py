@@ -131,7 +131,7 @@ class ClaudeLauncher:
             # loads too, and their tool schemas alone can overflow a local
             # model's context before the first turn.
             extra_args.extend(["--mcp-config", str(_mcp_config_path()), "--strict-mcp-config"])
-            install_bundled_skill(_claude_skill_dest())
+        install_bundled_skill(_claude_skill_dest())
         return (extra_args, env)
 
 

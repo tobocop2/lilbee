@@ -427,13 +427,13 @@ def _config_block_from_launch(args: list[str], tmp_path: Path) -> dict:
     return _written_opencode_config(tmp_path)
 
 
-def test_launch_opencode_no_mcp_removes_block_and_skips_skill(tmp_path):
-    """--no-mcp drops the mcp block and does not install the lilbee-mcp skill."""
+def test_launch_opencode_no_mcp_removes_block_and_installs_skill(tmp_path):
+    """--no-mcp drops the mcp block; the skill still installs for its command line steps."""
     block = _config_block_from_launch(["opencode", "--no-mcp"], tmp_path)
     assert "mcp" not in block
     assert "lilbee" in block["provider"]  # still the model provider
     skill_path = tmp_path / ".config" / "opencode" / "skills" / "lilbee-mcp"
-    assert not skill_path.exists()
+    assert (skill_path / "SKILL.md").is_file()
 
 
 def test_launch_opencode_no_mcp_prunes_stale_lilbee_entry(tmp_path):

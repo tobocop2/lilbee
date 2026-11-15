@@ -161,7 +161,7 @@ def test_launch_claude_installs_skill_and_records_marker(tmp_path):
     assert "First-time Claude Code setup will write" in result.stdout
 
 
-def test_launch_claude_no_mcp_skips_config_skill_and_gate(tmp_path):
+def test_launch_claude_no_mcp_skips_config_and_gate_but_installs_skill(tmp_path):
     _write_server_session()
     result, run = _launch("--no-mcp")
     assert result.exit_code == 0
@@ -169,7 +169,7 @@ def test_launch_claude_no_mcp_skips_config_skill_and_gate(tmp_path):
     assert "--mcp-config" not in argv
     assert "--strict-mcp-config" not in argv  # the user's own MCP config applies
     assert not (cfg.data_dir / "launchers" / "claude-mcp.json").exists()
-    assert not (tmp_path / ".claude" / "skills" / "lilbee-mcp").exists()
+    assert (tmp_path / ".claude" / "skills" / "lilbee-mcp" / "SKILL.md").is_file()
     assert "First-time Claude Code setup" not in result.stdout
 
 

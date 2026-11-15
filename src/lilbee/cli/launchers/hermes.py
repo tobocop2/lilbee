@@ -128,22 +128,19 @@ class HermesLauncher:
             _hermes_config_path(), yaml.safe_dump(config, sort_keys=False)
         )
         _upsert_env_token(_hermes_env_path(), token)
-        if self._include_mcp:
-            install_bundled_skill(_hermes_skill_dest())
-            # hermes ships HTTP MCP behind the optional `mcp` extra; without it
-            # lilbee's MCP search shows "0 connected". Set it up before launch,
-            # honoring hermes's own auto-install security gate.
-            # _binary is non-None: run_launcher called find_binary() and gated on it.
-            if self._binary is not None:
-                allow_lazy = bool(
-                    (config.get(_SECURITY_KEY) or {}).get(_ALLOW_LAZY_INSTALLS_KEY, True)
-                )
-                mcp_ready = ensure_hermes_http_mcp(
-                    self._binary, allow_lazy_installs=allow_lazy, echo=typer.echo
-                )
-                # Requested but not connected: don't hand off a silently ungrounded hermes.
-                if not mcp_ready:
-                    warn_hermes_ungrounded()
+        install_bundled_skill(_hermes_skill_dest())
+        # hermes ships HTTP MCP behind the optional `mcp` extra; without it
+        # lilbee's MCP search shows "0 connected". Set it up before launch,
+        # honoring hermes's own auto-install security gate.
+        # _binary is non-None: run_launcher called find_binary() and gated on it.
+        if self._include_mcp and self._binary is not None:
+            allow_lazy = bool((config.get(_SECURITY_KEY) or {}).get(_ALLOW_LAZY_INSTALLS_KEY, True))
+            mcp_ready = ensure_hermes_http_mcp(
+                self._binary, allow_lazy_installs=allow_lazy, echo=typer.echo
+            )
+            # Requested but not connected: don't hand off a silently ungrounded hermes.
+            if not mcp_ready:
+                warn_hermes_ungrounded()
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 

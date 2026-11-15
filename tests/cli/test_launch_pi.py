@@ -162,12 +162,11 @@ def test_launch_pi_uses_the_target_window_when_the_served_one_is_unknown(monkeyp
     assert [m["contextWindow"] for m in models] == [cfg.chat_n_ctx_target]
 
 
-def test_launch_pi_no_mcp_drops_the_server_and_skill():
+def test_launch_pi_no_mcp_drops_the_server_but_keeps_the_skill():
     result, agent = _launch("--no-mcp")
     assert result.exit_code == 0
     cmd, kwargs = agent
-    assert cmd[:3] == [_PI, "-e", str(bundled_pi_extension())]
-    assert "--skill" not in cmd
+    assert cmd[:5] == [_PI, "-e", str(bundled_pi_extension()), "--skill", str(bundled_skill_dir())]
     assert "LILBEE_MCP_URL" not in kwargs["env"]
     assert "LILBEE_OPENAI_URL" in kwargs["env"]
 

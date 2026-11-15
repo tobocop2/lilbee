@@ -149,6 +149,7 @@ def test_launch_hermes_no_mcp_prunes_stale_entry(tmp_path):
         patch("lilbee.cli.launchers.server.spawn_server"),
     ):
         result = runner.invoke(app, ["launch", "hermes", "--no-mcp"])
+    assert (tmp_path / ".hermes" / "skills" / "lilbee-mcp" / "SKILL.md").is_file()
     config = _hermes_config(tmp_path)
     assert "lilbee" not in config.get("mcp_servers", {})
     assert "lilbee" in config["providers"]  # provider stays; only MCP removed
