@@ -13,17 +13,20 @@ import pytest
 
 from lilbee.providers.fleet.engine_digests import MANIFESTS
 from lilbee.providers.fleet.engine_manifest import cell_key
-from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName
-from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
+from lilbee.providers.fleet.engines.choice import ADAPTERS, PinError, pin_lock
 from lilbee.providers.fleet.engines.proof import HARDWARE_PROOF
 from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, Npu, NpuVendor
+from tests.conformance.compare_record import FAKE_DIR, Step, install_pin
 from tests.conformance.engine_coverage import (
     COVERAGE_ROWS,
     INFINITY,
+    LINUX_CPU,
     PRESET_CELL,
     Coverage,
     CoverageRow,
     Device,
+    Route,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,6 +107,8 @@ def path_fault(record: str) -> str:
         return "record path is absolute"
     if ".." in path.parts:
         return "record path leaves its folder"
+    if FAKE_DIR in path.parts:
+        return "record is a fake"
     return "" if path.is_relative_to(RECORD_DIR) else f"record is outside {RECORD_DIR}"
 
 
@@ -143,13 +148,16 @@ def row_faults(row: CoverageRow, root: Path = ROOT) -> list[str]:
         faults.append("deferred with no host")
     if row.status is Coverage.EXCLUDED and not row.owner_decision:
         faults.append("excluded with no owner decision")
-    if row.status is Coverage.COMPARED and (fault := record_fault(row.record, root)):
-        faults.append(fault)
+    if row.status is Coverage.COMPARED:
+        if not row.steps:
+            faults.append("compared with no steps")
+        if fault := record_fault(row.record, root):
+            faults.append(fault)
     return faults
 
 
 def _row(**changes: Any) -> CoverageRow:
-    base = CoverageRow("e", "c", Device.CPU, Coverage.DEFERRED, "why", host="h")
+    base = CoverageRow("e", "c", Device.CPU, Coverage.DEFERRED, Route.PRESET, "why", host="h")
     return CoverageRow(**{**base.__dict__, **changes})
 
 
@@ -302,10 +310,114 @@ def test_an_unknown_proof_device_word_is_refused() -> None:
         proof_device("Quantum unit")
 
 
-def test_a_pack_ships_reason_names_a_cell_in_the_pack_table() -> None:
-    claims = [(r.engine, r.cell) for r in COVERAGE_ROWS if "pack ships" in r.reason]
-    assert claims
-    assert [c for c in claims if c not in pack_cells(MANIFESTS)] == []
+def route_of(
+    row: CoverageRow, manifests: Manifests, adapters: Mapping[EngineName, EngineAdapter]
+) -> Route:
+    """The route the code gives a row's engine: a preset, a pack, a user install or neither."""
+    if row.cell == PRESET_CELL:
+        return Route.PRESET
+    if (row.engine, row.cell) in pack_cells(manifests):
+        return Route.PACK
+    adapter = adapters[EngineName(row.engine)]
+    return Route.USER_INSTALLED if isinstance(adapter, UserInstalled) else Route.UNPUBLISHED
+
+
+def route_faults(
+    rows: Iterable[CoverageRow],
+    manifests: Manifests = MANIFESTS,
+    adapters: Mapping[EngineName, EngineAdapter] = ADAPTERS,
+) -> list[tuple[str, str, Route]]:
+    """The rows whose route differs from the route that the code gives them."""
+    return [
+        (r.engine, r.cell, r.route) for r in rows if r.route is not route_of(r, manifests, adapters)
+    ]
+
+
+def install_refusal(row: CoverageRow, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The error name of the install path's pin check for a row's engine; empty if it accepts."""
+    os_word, arch_word, _ = row.cell.split("-", 2)
+    host = _best_host(HostOS(os_word), HostArch(arch_word))
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: host)
+    try:
+        pin_lock(install_pin(row.engine))
+    except PinError as exc:
+        return type(exc).__name__
+    return ""
+
+
+def test_each_route_agrees_with_the_code() -> None:
+    assert COVERAGE_ROWS
+    assert route_faults(COVERAGE_ROWS) == []
+
+
+def test_every_route_value_is_used() -> None:
+    assert {r.route for r in COVERAGE_ROWS} == set(Route)
+
+
+def test_every_pack_cell_has_a_pack_row() -> None:
+    packed = {(r.engine, r.cell) for r in COVERAGE_ROWS if r.route is Route.PACK}
+    assert packed == pack_cells(MANIFESTS)
+
+
+def test_a_pack_route_on_a_cell_outside_the_pack_table_is_named() -> None:
+    rows = [_row(engine="mlx", cell="macos-arm64-metal", route=Route.PACK)]
+    assert route_faults(rows) == [("mlx", "macos-arm64-metal", Route.PACK)]
+
+
+def test_a_pack_cell_with_another_route_is_named() -> None:
+    rows = [_row(engine="tei", cell="linux-x86_64-cpu", route=Route.UNPUBLISHED)]
+    assert route_faults(rows) == [("tei", "linux-x86_64-cpu", Route.UNPUBLISHED)]
+
+
+def test_an_engine_that_lilbee_finds_is_not_an_unpublished_one() -> None:
+    row = _row(engine="openvino", cell="linux-x86_64-openvino", route=Route.USER_INSTALLED)
+    assert route_faults([row]) == [("openvino", "linux-x86_64-openvino", Route.USER_INSTALLED)]
+
+
+def test_an_engine_that_has_no_pack_yet_is_not_a_user_installed_one() -> None:
+    row = _row(engine="lemonade", cell="linux-x86_64-npu", route=Route.UNPUBLISHED)
+    assert route_faults([row]) == [("lemonade", "linux-x86_64-npu", Route.UNPUBLISHED)]
+
+
+def test_the_preset_route_is_only_for_preset_rows() -> None:
+    assert {r.cell for r in COVERAGE_ROWS if r.route is Route.PRESET} == {PRESET_CELL}
+    assert {r.route for r in COVERAGE_ROWS if r.cell == PRESET_CELL} == {Route.PRESET}
+
+
+def test_the_install_path_refuses_each_row_that_has_no_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refused = [r for r in COVERAGE_ROWS if r.route in (Route.UNPUBLISHED, Route.USER_INSTALLED)]
+    assert {r.engine for r in refused} == {"mlx", "openvino", "lemonade"}
+    assert {install_refusal(r, monkeypatch) for r in refused} == {"NoPublishedPackError"}
+
+
+def test_the_install_path_accepts_each_pack_row_it_can_run_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = [r for r in COVERAGE_ROWS if r.route is Route.PACK and r.cell == LINUX_CPU]
+    assert {r.engine for r in accepted} == {"ik_llama.cpp", "llama.cpp", "mistral.rs", "tei"}
+    assert {install_refusal(r, monkeypatch) for r in accepted} == {""}
+
+
+def test_a_row_that_claims_a_pack_for_an_engine_with_none_is_refused_by_the_install_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = _row(engine="mlx", cell="macos-arm64-metal", route=Route.PACK)
+    assert install_refusal(row, monkeypatch) == "NoPublishedPackError"
+
+
+def test_a_compared_row_must_claim_steps() -> None:
+    assert row_faults(_row(status=Coverage.COMPARED, host="", record="x")) == [
+        "compared with no steps",
+        f"record is outside {RECORD_DIR}",
+    ]
+
+
+def test_a_compared_row_may_not_name_a_fake_record() -> None:
+    fake = f"{RECORD_DIR}/_fake/llama.cpp-linux-x86_64-cpu/1.0.0.json"
+    row = _row(status=Coverage.COMPARED, host="", record=fake, steps=(Step.TOOL,))
+    assert row_faults(row) == ["record is a fake"]
 
 
 def test_a_deferred_row_without_a_host_is_a_fault() -> None:
@@ -362,5 +474,5 @@ _FOLDER = str(RECORD_DIR)
     ],
 )
 def test_a_compared_row_needs_a_tracked_json_record(repo: Path, record: str, fault: str) -> None:
-    row = _row(status=Coverage.COMPARED, host="", record=record)
+    row = _row(status=Coverage.COMPARED, host="", record=record, steps=(Step.TOOL,))
     assert row_faults(row, repo) == ([fault] if fault else [])
