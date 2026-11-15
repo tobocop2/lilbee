@@ -391,7 +391,8 @@ jobs:
           ls repaired
           for w in repaired/*.whl; do
             case "${w}" in *-macosx_14_0_arm64.whl) ;; *) echo "wrong tag on ${w}"; exit 1 ;; esac
-            if python -m zipfile -l "${w}" | grep -q '\.dylibs/'; then echo "delocate grafted a library into ${w}"; exit 1; fi
+            python -m zipfile -l "${w}" > wheel-listing.txt
+            if grep -q '\.dylibs/' wheel-listing.txt; then echo "delocate grafted a library into ${w}"; exit 1; fi
           done
 
       - name: Collect the wheel
@@ -445,18 +446,20 @@ jobs:
           fi
           python -m zipfile -l out/*.whl | grep -E 'dist-info/(licenses/|METADATA)'
           unzip -p out/*.whl '*.dist-info/METADATA' | grep -x "License-Expression: ${LICENSE_EXPRESSION}"
+          # The listing goes to a file: grep -q stops at its first match, and a pipe from unzip then fails with SIGPIPE under pipefail on a long listing.
+          unzip -l out/*.whl > wheel-listing.txt
           for lic in llama.cpp llama-swap gguf-parser; do
-            unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-${lic}$" || { echo "wheel lacks the ${lic} licence"; exit 1; }
+            grep -q "dist-info/licenses/LICENSE-${lic}$" wheel-listing.txt || { echo "wheel lacks the ${lic} licence"; exit 1; }
           done
           for third in llama-swap gguf-parser llama.cpp; do
-            unzip -l out/*.whl | grep -q "dist-info/licenses/THIRD-PARTY/${third}/" || { echo "wheel lacks the ${third} third-party licences"; exit 1; }
+            grep -q "dist-info/licenses/THIRD-PARTY/${third}/" wheel-listing.txt || { echo "wheel lacks the ${third} third-party licences"; exit 1; }
           done
-          unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-Go$" || { echo "wheel lacks the Go library licence"; exit 1; }
+          grep -q "dist-info/licenses/LICENSE-Go$" wheel-listing.txt || { echo "wheel lacks the Go library licence"; exit 1; }
           if [ "${RUNNER_OS}" = Windows ]; then
-            unzip -l out/*.whl | grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime$" || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
+            grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime$" wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
           fi
           if [ -f "${bindir}/libomp.dll" ]; then
-            unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }
+            grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" wheel-listing.txt || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }
           fi
           if [ "${BACKEND}" = vulkan ]; then
             if [ "${RUNNER_OS}" = Windows ]; then
@@ -474,7 +477,7 @@ jobs:
             test -d "${bindir}/rocblas/library"
             test "$(find "${bindir}" -name 'libggml-cpu-*.so' | wc -l)" -ge 2
             for lic in hsa-rocr comgr hip-runtime-amd rocblas hipblas hipblaslt rocm-llvm roctracer rocprofiler-register; do
-              unzip -l out/*.whl | grep -q "dist-info/licenses/LICENSE-ROCm-${lic}$" || { echo "wheel lacks the ${lic} licence"; exit 1; }
+              grep -q "dist-info/licenses/LICENSE-ROCm-${lic}$" wheel-listing.txt || { echo "wheel lacks the ${lic} licence"; exit 1; }
             done
             if ldd "${bindir}/llama-server" | grep 'not found'; then echo "llama-server has an unresolved library"; exit 1; fi
             bash "${GITHUB_WORKSPACE}/tools/wheel-build/check_glibc_floor.sh" "${bindir}"
@@ -483,8 +486,8 @@ jobs:
             bash "${GITHUB_WORKSPACE}/tools/qa/assert_rocm_bundle_loads.sh" "${bindir}"
           fi
           if [ "${BACKEND}" = cuda ]; then
-            unzip -l out/*.whl | grep -q "dist-info/licenses/NOTICE-NVIDIA-CUDA$" || { echo "wheel lacks the NVIDIA notice"; exit 1; }
-            unzip -l out/*.whl | grep -q "dist-info/licenses/THIRD-PARTY/llama.cpp/_deps/cccl/LICENSE$" || { echo "wheel lacks the CCCL licence"; exit 1; }
+            grep -q "dist-info/licenses/NOTICE-NVIDIA-CUDA$" wheel-listing.txt || { echo "wheel lacks the NVIDIA notice"; exit 1; }
+            grep -q "dist-info/licenses/THIRD-PARTY/llama.cpp/_deps/cccl/LICENSE$" wheel-listing.txt || { echo "wheel lacks the CCCL licence"; exit 1; }
             if [ "${RUNNER_OS}" = Windows ]; then
               for dll in ggml-cuda.dll cudart64_12.dll cublas64_12.dll cublasLt64_12.dll; do
                 test -f "${bindir}/${dll}" || { echo "wheel lacks ${dll}"; exit 1; }
