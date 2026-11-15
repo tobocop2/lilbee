@@ -2418,6 +2418,19 @@ def test_count_text_tokens_is_the_tokenize_length_of_the_text_sent() -> None:
     assert [body["content"] for body in sent] == ["hello world"]
 
 
+def test_count_tokens_is_the_server_count_of_the_text_sent_not_the_estimate() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"tokens": list(range(40))})
+        return httpx.Response(404)
+
+    assert _client(handler).count_tokens("hello world") == 40
+    assert [body["content"] for body in sent] == ["hello world"]
+
+
 def test_count_tokens_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
     """A restarting replica's 502s are retried for a count as they are for an embed."""
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
