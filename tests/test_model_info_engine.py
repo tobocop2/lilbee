@@ -13,24 +13,49 @@ from lilbee.cli.tui.screens.status import _build_arch_content
 from lilbee.core.config import cfg
 from lilbee.modelhub import model_info
 from lilbee.providers import engine_params
+from lilbee.providers.fleet.engines.base import EngineAdapter, RequestProfile
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.roles import WorkerRole
 
 
-def _serve_chat_with(monkeypatch: pytest.MonkeyPatch, adapter: object, path: Path) -> None:
-    monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: path)
-    monkeypatch.setattr(
-        engine_choice,
-        "resolve_engines",
-        lambda _cfg: SimpleNamespace(
+class _ChatOnly:
+    """An engine that answers the chat role and the model path it serves, and nothing else."""
+
+    def __init__(self, adapter: EngineAdapter, path: Path) -> None:
+        self._adapter = adapter
+        self._path = path
+
+    def request_profile(self, role: WorkerRole) -> RequestProfile:
+        if role is not WorkerRole.CHAT:
+            pytest.fail(f"unexpected role {role}")
+        return self._adapter.request_profile(role)
+
+    def model_meta(self, path: Path) -> dict[str, str] | None:
+        if path != self._path:
+            pytest.fail(f"unexpected path {path}")
+        return self._adapter.model_meta(path)
+
+
+def _serve_chat_with(monkeypatch: pytest.MonkeyPatch, adapter: EngineAdapter, path: Path) -> None:
+    def resolve_path(ref: str) -> Path:
+        if ref != "local/chat":
+            raise FileNotFoundError(ref)
+        return path
+
+    def resolve_engines(config: object) -> object:
+        if config is not cfg:
+            pytest.fail("the engines resolve against the global config")
+        return SimpleNamespace(
             for_role=lambda role: (
-                SimpleNamespace(adapter=adapter)
+                SimpleNamespace(adapter=_ChatOnly(adapter, path))
                 if role is WorkerRole.CHAT
                 else pytest.fail(f"unexpected role {role}")
             )
-        ),
-    )
+        )
+
+    monkeypatch.setattr(engine_params, "resolve_model_path", resolve_path)
+    monkeypatch.setattr(engine_choice, "resolve_engines", resolve_engines)
     monkeypatch.setattr(cfg, "chat_model", "local/chat")
     monkeypatch.setattr(cfg, "embedding_model", "")
     monkeypatch.setattr(cfg, "vision_model", "")
