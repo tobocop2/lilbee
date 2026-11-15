@@ -364,6 +364,14 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the chat model's tokenizer, or None with no tokenize route.
+
+        Retrieval budgets the prompt with this count. None sends it back to
+        the character rule.
+        """
+        return None
+
     def count_chat_prompt_tokens(
         self,
         messages: list[ChatMessage],

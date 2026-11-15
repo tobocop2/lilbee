@@ -1480,8 +1480,13 @@ class LlamaServerClient:
 
     def count_tokens(self, text: str) -> int:
         """Tokens in *text* under the server's tokenizer, or a character estimate with no route."""
+        tokens = self.count_text_tokens(text)
+        return _estimate_tokens(text) if tokens is None else tokens
+
+    def count_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the server's tokenizer, or None when the engine has no route."""
         if self._profile.tokenize_path is None:
-            return _estimate_tokens(text)
+            return None
         return len(self._tokenize(text))
 
     @staticmethod

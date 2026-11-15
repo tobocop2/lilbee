@@ -900,6 +900,8 @@ def _default_provider_mock():
     provider.embed_token_cap.return_value = None
     # xberg probes a tokenizer binding with a one-character count at registration.
     provider.count_tokens.return_value = 1
+    # Retrieval budgets with the chat tokenizer when it answers; None keeps the character rule.
+    provider.count_chat_text_tokens.return_value = None
     provider.health_warnings.return_value = []
     # warm_progress feeds the /api/warm/stream handler (WarmProgress | None);
     # default to None (idle). Warm-stream tests override this.

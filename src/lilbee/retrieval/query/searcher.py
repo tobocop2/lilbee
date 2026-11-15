@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Callable, Generator
 from datetime import datetime
@@ -27,6 +28,7 @@ from lilbee.data.store import (
 )
 from lilbee.data.store.fusion import fuse_ranked_lists
 from lilbee.providers.base import (
+    BUDGET_CHARS_PER_TOKEN,
     CHAT_MESSAGE_OVERHEAD_TOKENS,
     LLMProvider,
     ProviderError,
@@ -1069,9 +1071,12 @@ class Searcher:
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         base_results = list(results)
-        budget = self._context_budget(system, question, history, scale)
-        results, used, dropped = self._fit_to_budget(results, budget)
-        results = self._widen_with_neighbors(results, max(0, budget - used))
+        cost = self._token_cost(
+            [system, question, *(m["content"] for m in history or []), *(r.chunk for r in results)]
+        )
+        budget = self._context_budget(system, question, history, scale, cost)
+        results, used, dropped = self._fit_to_budget(results, budget, cost)
+        results = self._widen_with_neighbors(results, max(0, budget - used), cost)
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
         messages: list[ChatMessage] = [{"role": "system", "content": system}]
@@ -1086,12 +1091,28 @@ class Searcher:
             dropped,
         )
 
+    def _token_cost(self, texts: list[str]) -> Callable[[str], int]:
+        """Token cost from the chat engine's count of *texts*, else the character rule."""
+        joined = "\n".join(texts)
+        try:
+            tokens = self._provider.count_chat_text_tokens(joined)
+        except ProviderError:
+            log.debug("Chat engine tokenize failed; budgeting with the character rule.")
+            return estimate_budget_tokens
+        if not tokens:
+            return estimate_budget_tokens
+        # The provider's window check costs text at BUDGET_CHARS_PER_TOKEN, so a
+        # prompt costed lower here would be refused there.
+        chars_per_token = min(len(joined) / tokens, BUDGET_CHARS_PER_TOKEN)
+        return lambda text: max(1, math.ceil(len(text) / chars_per_token))
+
     def _context_budget(
         self,
         system: str,
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
+        cost: Callable[[str], int] = estimate_budget_tokens,
     ) -> int:
         """Token budget left for source passages after the fixed prompt parts.
 
@@ -1109,16 +1130,19 @@ class Searcher:
         # sources get what is left after the rest of the prompt. The per-message
         # overhead is what the provider's windowing charges per message.
         non_source = (
-            estimate_budget_tokens(system)
-            + estimate_budget_tokens(question)
-            + sum(estimate_budget_tokens(m["content"]) for m in history or [])
+            cost(system)
+            + cost(question)
+            + sum(cost(m["content"]) for m in history or [])
             + _CONTEXT_TEMPLATE_TOKENS
             + CHAT_MESSAGE_OVERHEAD_TOKENS * (len(history or []) + 2)
         )
         return int((prompt_token_budget(ctx) - non_source) * scale)
 
     def _fit_to_budget(
-        self, results: list[SearchChunk], budget: int
+        self,
+        results: list[SearchChunk],
+        budget: int,
+        cost: Callable[[str], int] = estimate_budget_tokens,
     ) -> tuple[list[SearchChunk], int, list[SearchChunk]]:
         """Fit *results* into *budget*: kept sources, tokens spent, dropped sources.
 
@@ -1136,12 +1160,12 @@ class Searcher:
         dropped: list[SearchChunk] = []
         used = 0
         for r in results:
-            cost = estimate_budget_tokens(r.chunk) + _PER_SOURCE_TOKENS
-            if kept and used + cost > budget:
+            spend = cost(r.chunk) + _PER_SOURCE_TOKENS
+            if kept and used + spend > budget:
                 dropped.append(r)
                 continue
             kept.append(r)
-            used += cost
+            used += spend
         if dropped:
             log.info(
                 "Kept %d of %d sources to fit the model context window.",
@@ -1150,7 +1174,12 @@ class Searcher:
             )
         return kept, used, dropped
 
-    def _widen_with_neighbors(self, results: list[SearchChunk], leftover: int) -> list[SearchChunk]:
+    def _widen_with_neighbors(
+        self,
+        results: list[SearchChunk],
+        leftover: int,
+        cost: Callable[[str], int] = estimate_budget_tokens,
+    ) -> list[SearchChunk]:
         """Widen each fitted passage with adjacent same-source chunks.
 
         Spends only *leftover*, the budget the fit did not use, so a tight
@@ -1165,9 +1194,7 @@ class Searcher:
         # With the structural filter on, expansion must not re-import the TOC
         # and cover text the filter dropped from the results.
         exclude = is_structural_chunk if self._config.filter_structural_chunks else None
-        return expand_neighbors(
-            results, self._store, radius, leftover, estimate_budget_tokens, exclude=exclude
-        )
+        return expand_neighbors(results, self._store, radius, leftover, cost, exclude=exclude)
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
