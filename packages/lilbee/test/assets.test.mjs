@@ -23,13 +23,15 @@ test("maps GPU variants on linux and windows", () => {
 });
 
 test("maps compat builds", () => {
+  assert.equal(assetNameFor("darwin", "arm64", "compat"), "lilbee-compat-macos-arm64");
   assert.equal(assetNameFor("darwin", "x64", "compat"), "lilbee-compat-macos-x86_64");
   assert.equal(assetNameFor("linux", "x64", "compat"), "lilbee-compat-linux-x86_64");
   assert.equal(assetNameFor("win32", "x64", "compat"), "lilbee-compat-windows-x86_64.exe");
 });
 
 test("rejects impossible combinations with clear messages", () => {
-  assert.throws(() => assetNameFor("darwin", "arm64", "cu124"), /single build/);
+  assert.throws(() => assetNameFor("darwin", "arm64", "cu124"), /no GPU-variant/);
+  assert.throws(() => assetNameFor("darwin", "arm64", "compat-cu124"), /no GPU-variant/);
   assert.throws(() => assetNameFor("darwin", "x64", "rocm"), /no GPU-variant/);
   assert.throws(() => assetNameFor("linux", "arm64"), /No standalone lilbee build/);
   assert.throws(() => assetNameFor("linux", "x64", "cu999"), /Unknown LILBEE_VARIANT/);
@@ -45,6 +47,7 @@ const RELEASE_ASSETS = [
   "lilbee-compat-linux-x86_64-rocm",
   "lilbee-compat-linux-x86_64-rocm.gfx.txt",
   "lilbee-compat-linux-x86_64.snap",
+  "lilbee-compat-macos-arm64",
   "lilbee-compat-macos-x86_64",
   "lilbee-compat-windows-x86_64.exe",
   "lilbee-compat.flatpakref",
@@ -75,6 +78,7 @@ const BINARIES = {
   "lilbee-compat-linux-x86_64": ["linux", "x64", "compat"],
   "lilbee-compat-linux-x86_64-cu124": ["linux", "x64", "compat-cu124"],
   "lilbee-compat-linux-x86_64-rocm": ["linux", "x64", "compat-rocm"],
+  "lilbee-compat-macos-arm64": ["darwin", "arm64", "compat"],
   "lilbee-compat-macos-x86_64": ["darwin", "x64", "compat"],
   "lilbee-compat-windows-x86_64.exe": ["win32", "x64", "compat"],
   "lilbee-linux-x86_64": ["linux", "x64", "default"],

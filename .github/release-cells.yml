@@ -43,17 +43,8 @@
   asset_name: lilbee-macos-x86_64
   backend: cpu
   macos_floor: "12.0"
-# Pre-Haswell-safe Intel Mac build: same self-contained model as the
-# linux/windows compat cells (stock lancedb swapped for +compat, launcher
-# held to x86-64-v2). Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
-# and guards against an AVX2-baselined stock lancedb SIGILL.
-- os: macos-15-intel
-  asset_name: lilbee-compat-macos-x86_64
-  backend: cpu
-  compat: true
-  soft: true
-  march: x86-64-v2
-  macos_floor: "12.0"
+# The compat Mac builds (lilbee-compat-macos-x86_64 and -arm64) are in
+# oldmac-cells.yml, built by build-oldmac-executables.yml.
 - os: windows-latest
   asset_name: lilbee-windows-x86_64.exe
   backend: vulkan

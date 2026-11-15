@@ -171,6 +171,18 @@ jobs:
       release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
     secrets: inherit
 
+  # The old-Mac executables. Nothing waits on this job: attach-prerelease does
+  # not list it in `needs`, so a fork wheel that lags upstream delays these
+  # assets and never the release.
+  build-oldmac:
+    needs: [resolve, create-prerelease]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
+    uses: ./.github/workflows/build-oldmac-executables.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+      release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
+    secrets: inherit
+
   # Attach this run's executables AND the lilbee wheel + sdist to a GH
   # pre-release. (The per-backend engine wheels are attached separately by
   # attach-multigpu.) The PEP 503 index at lilbee.sh/<backend>/ links to those

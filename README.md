@@ -197,6 +197,16 @@ Same `lilbee` command after install. The crash is from [lancedb](https://lancedb
 
 </details>
 
+### On older macOS
+
+The main Mac build needs macOS 14 on Apple silicon. On macOS 12 or 13, use `lilbee-compat-macos-arm64`. Homebrew and the npm launcher pick it for you. It bundles old-macOS builds of the crawler and the model client, which the compat index at `https://lilbee.sh/compat/` serves. Pip users on an old Mac add that index and pin the builds:
+
+```bash
+pip install --only-binary crawlberg,liter-llm 'crawlberg==1.13.0+compat' 'liter-llm==2.7.0+compat' --extra-index-url https://lilbee.sh/compat/
+```
+
+A Mac on a newer macOS never needs the index.
+
 ### Linux runtime requirements
 
 The Linux x86_64 wheel and binary bundle the Vulkan loader, so they start on any distro. GPU detection still reads adapters through the system loader, though: without `libvulkan1` lilbee treats the machine as CPU-only. Most desktop distros (Ubuntu 22.04+, Pop!\_OS, Mint) ship it; on bare Arch / Fedora / Alpine images install it once: `sudo pacman -S vulkan-icd-loader` (Arch / Manjaro), `sudo dnf install vulkan-loader` (Fedora, RHEL), or `sudo apt-get install libvulkan1` (Debian, Ubuntu).

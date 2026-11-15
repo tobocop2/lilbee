@@ -135,15 +135,19 @@ jobs:
             touch wheel-indexes/.empty
           fi
 
-      - name: Build compat (pre-Haswell lancedb) index
-        # Serves lilbee.sh/compat/: the +compat lancedb wheels built by the
-        # tobocop2/lancedb fork and hosted as release assets there. Independent
-        # of the lilbee wheel set above.
+      - name: Build compat (fork wheels) index
+        # Serves lilbee.sh/compat/: the +compat wheels built by the owner's forks
+        # and hosted as release assets there. lancedb must exist; the other forks
+        # may have no release yet. Independent of the lilbee wheel set above.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           rm -f wheel-indexes/.empty
-          python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
+          python3 tools/build_compat_index.py wheel-indexes \
+            --repo tobocop2/lancedb \
+            --optional-repo tobocop2/crawlberg \
+            --optional-repo tobocop2/liter-llm \
+            --optional-repo tobocop2/xberg
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7

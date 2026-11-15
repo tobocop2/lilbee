@@ -92,6 +92,40 @@ def test_the_default_formula_takes_a_digest_for_every_platform_it_ships(tmp_path
         assert rendered.count(sha) == 1, rendered
 
 
+_OLD_MAC = "3" * 63 + "4"
+
+
+def test_the_old_mac_digest_lands_under_the_compat_arm64_url_only(tmp_path):
+    """The old-Mac url sits inside the arm64 block, so each digest must reach its own url."""
+    formula = _seed(tmp_path)
+    result = _render(formula, *_EVERY_DIGEST, "--sha-macos-arm64-compat", _OLD_MAC)
+    assert result.returncode == 0, result.stderr
+    rendered = formula.read_text(encoding="utf-8")
+    assert f'lilbee-compat-macos-arm64"\n        sha256 "{_OLD_MAC}"' in rendered
+    assert f'lilbee-macos-arm64"\n      sha256 "{_ARM64}"' in rendered
+    assert "on_ventura :or_older do" in rendered
+
+
+def test_without_an_old_mac_digest_the_formula_drops_that_block(tmp_path):
+    """The old-Mac build ships apart from the release; a placeholder digest must never publish."""
+    formula = _seed(tmp_path)
+    result = _render(formula, *_EVERY_DIGEST)
+    assert result.returncode == 0, result.stderr
+    rendered = formula.read_text(encoding="utf-8")
+    assert "compat-macos-arm64" not in rendered
+    assert "on_ventura" not in rendered
+    assert "0" * 64 not in rendered
+    assert f'lilbee-macos-arm64"\n      sha256 "{_ARM64}"\n    end\n' in rendered
+
+
+def test_a_formula_without_the_old_mac_block_fails_when_no_digest_is_given(tmp_path):
+    seed = _SEEDS.joinpath("lilbee.rb").read_text(encoding="utf-8")
+    block = seed[seed.index("\n\n      on_ventura") : seed.index("    end\n\n    on_intel")]
+    result = _render(_seed(tmp_path, drop=block), *_EVERY_DIGEST)
+    assert result.returncode != 0
+    assert "old-Mac block" in result.stderr
+
+
 def test_a_formula_missing_a_platform_block_fails_loudly(tmp_path):
     """Skipping the absent block instead is how Intel Macs lost `brew install` outright."""
     result = _render(_seed(tmp_path, drop=_MACOS_INTEL_BLOCK), *_EVERY_DIGEST)
