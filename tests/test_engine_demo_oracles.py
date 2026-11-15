@@ -297,6 +297,7 @@ def test_a_second_ask_without_citation_fails() -> None:
         {"cited_sources": [None]},
         {"cited_sources": [{}]},
         {"cited_sources": [{"source": "a.md"}]},
+        {"cited_sources": [{"label": "a.md"}]},
         {"cited_sources": "x"},
     ],
 )
@@ -522,3 +523,16 @@ def test_stale_schema_and_unknown_field_are_refused() -> None:
     with pytest.raises(ValueError, match="unknown fields"):
         Transcript.from_json({**payload, "extra": 1})
     assert payload["schema"] == SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("left_over", ["", "812 llama-server --port 9\n"])
+def test_processes_left_after_the_server_stopped_change_no_verdict(left_over: str) -> None:
+    left = Step(StepName.ENGINES_LEFT_RUNNING, ("engines-left-running", "1"), 0, left_over)
+    assert judge(_plus(_good(), left)) == []
+
+
+def test_a_set_model_step_round_trips_and_a_failed_one_fails() -> None:
+    step = Step(StepName.SET_MODEL, ("PUT", "http://127.0.0.1:1/api/models/chat", "{}"), 1)
+    t = _plus(_good(), step)
+    assert Transcript.from_json(json.loads(json.dumps(t.to_json()))) == t
+    assert _rules(t) == {Rule.STEP_FAILED}
