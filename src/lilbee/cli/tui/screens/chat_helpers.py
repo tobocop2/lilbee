@@ -72,7 +72,7 @@ def open_local_file(href: str) -> bool:
     path = url2pathname(urlparse(href).path)
     try:
         resolved = Path(path).resolve(strict=False)
-        inside = path_within_roots(resolved)
+        inside = "\0" not in path and path_within_roots(resolved)
     except (OSError, ValueError, RuntimeError):
         inside = False
     if not inside:
