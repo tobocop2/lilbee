@@ -96,19 +96,19 @@ def engine_build_id() -> str:
     found = shutil.which(EngineTool.LLAMA_SERVER.value)
     if found is not None:
         return f"path:{found}@{_binary_signature(Path(found))}"
-    packed = _installed_pack_server()
+    packed = _installed_pack_tool(EngineTool.LLAMA_SERVER)
     if packed is not None:
         return f"pack:{packed}@{_binary_signature(packed)}"
     return "unpinned"
 
 
-def _installed_pack_server() -> Path | None:
-    """The llama-server of the installed pack; total, because the pin runs on every state write."""
+def _installed_pack_tool(tool: EngineTool) -> Path | None:
+    """*tool* from the installed pack, or ``None``; total, as the pin runs on each state write."""
     # circular: first_use -> engines.llama -> binary
     from lilbee.providers.fleet import first_use
 
     try:
-        return first_use.installed_tool(EngineTool.LLAMA_SERVER.value)
+        return first_use.installed_tool(tool.value)
     except (OSError, ValueError):
         return None
 
@@ -167,12 +167,13 @@ def engine_binary_identity(binary: Path) -> str:
 def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH, then the pack.
 
-    When none of those has the tool, the llama.cpp pack installs on first use (unless
-    *install* is false). A user who has a llama-server (a configured path, the bundled wheel or one
-    on PATH) never gets a pack: a missing helper raises an error that names the helper and
-    the command that installs it. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH``
-    (an explicit setting beats the bundled wheel); the other tools resolve from the wheel,
-    then ``PATH``.
+    A helper (llama-swap, gguf-parser) reads the installed pack before PATH, so the lookup
+    does not depend on which llama-server the host has. When none of those has the tool,
+    the llama.cpp pack installs on first use (unless *install* is false). A user who has a
+    llama-server (a configured path, the bundled wheel or one on PATH) never gets a pack
+    installed: a missing helper raises an error that names the helper and the command that
+    installs it. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH`` (an explicit setting
+    beats the bundled wheel).
     """
     if tool is EngineTool.LLAMA_SERVER:
         from lilbee.core.config import cfg
@@ -186,6 +187,11 @@ def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     bundled = _bundled_tool(tool)
     if bundled is not None:
         return bundled
+
+    if tool is not EngineTool.LLAMA_SERVER:
+        packed = _installed_pack_tool(tool)
+        if packed is not None:
+            return packed
 
     found = shutil.which(tool.value)
     if found is not None:
