@@ -1017,7 +1017,8 @@ class SessionSourceRef(SessionSourceRefInput):
 class SessionMessageItem(BaseModel):
     """One message in a session transcript.
 
-    ``content`` never holds lilbee's Sources list: ``source_refs`` carries it.
+    ``source_refs`` carries lilbee's Sources list; ``content`` holds it only in a turn
+    saved before ``source_refs`` existed, which has an empty ``source_refs``.
     """
 
     role: MessageRole

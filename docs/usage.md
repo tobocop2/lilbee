@@ -346,6 +346,18 @@ rename, delete), so a script can own a conversation the way the TUI does. The TU
 HTTP server, and CLI are one conversation space: start a chat in Obsidian,
 continue it in the terminal.
 
+A turn carries its Sources list in `source_refs`. Each entry has a `source`,
+a `label` (the name a client shows), a `citation_number` (the `[n]` the answer
+cites it by, or null) and a `locator` (`page N`, `pages A-B`, `line N`,
+`lines A-B`, or empty). A client that appends a turn sends `source`,
+`citation_number` and `locator`, and lilbee adds the `label` on the way
+back. The `content` of a turn never holds the list. The older `sources`
+field, a plain list of names, stays for older clients. If a client sends both
+fields, `sources` is dropped and lilbee derives it from `source_refs`. If a client
+sends only `sources`, lilbee stores them as `source_refs` with no citation numbers.
+A turn saved before `source_refs` existed returns its content as saved, its
+`sources`, and an empty `source_refs`.
+
 Agents get the same tools over MCP, but they are off by default: most agent
 hosts already track their own history, and the tools cost context on every
 request. Turn on `mcp_sessions_enabled` if you want an agent keeping its own

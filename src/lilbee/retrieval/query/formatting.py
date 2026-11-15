@@ -235,8 +235,8 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(f"[{order[r.source]}] ({_context_header(r)})\n{r.chunk}" for r in results)
 
 
-# Grepped by consumers to know an answer carries its own Sources list (the
-# no-results toast; the pill row, which must not stack a second list).
+# Where the Sources list of an answer starts: ``search_chat.py`` holds the live answer
+# back at it, and the ``lilbee.retrieval.query`` package re-exports it.
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
 # A Sources line's ``[label](file-url)`` link. One source per line, so the label
 # runs to the line's last ``](file://``: a label holding that text cannot end it.
