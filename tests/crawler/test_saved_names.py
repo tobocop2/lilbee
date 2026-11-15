@@ -1525,17 +1525,28 @@ class TestEverySurfaceShowsTheStoredTitle:
     async def test_a_restored_chat_turn(self, library: Store, monkeypatch: pytest.MonkeyPatch):
         from lilbee.app.session_sources import message_sources
         from lilbee.cli.tui.widgets.message import AssistantMessage
-        from lilbee.sessions import MessageRole, SessionMessage
+        from lilbee.sessions import MessageRole, SessionMessage, StoredSourceRef
 
         source = await _crawled_forum(monkeypatch)
-        saved = SessionMessage(MessageRole.ASSISTANT, "Feed them weekly [1].", sources=(source,))
+        saved = SessionMessage(
+            MessageRole.ASSISTANT,
+            "Feed them weekly [1].",
+            sources=(source,),
+            source_refs=(StoredSourceRef(source, 1),),
+        )
         restored = AssistantMessage(content=saved.content, sources=message_sources(saved)[1])
         assert f"1. [{_FORUM_LABEL}](file://" in restored._shown(markdown=False)
 
     @pytest.mark.timeout(120)
     async def test_a_chat_export(self, library: Store, monkeypatch: pytest.MonkeyPatch):
         from lilbee.app.session_export import session_markdown
-        from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
+        from lilbee.sessions import (
+            MessageRole,
+            Session,
+            SessionMessage,
+            SessionMeta,
+            StoredSourceRef,
+        )
 
         source = await _crawled_forum(monkeypatch)
         meta = SessionMeta(
@@ -1547,7 +1558,12 @@ class TestEverySurfaceShowsTheStoredTitle:
             scope="both",
             message_count=1,
         )
-        answer = SessionMessage(role=MessageRole.ASSISTANT, content="x [1]", sources=(source,))
+        answer = SessionMessage(
+            role=MessageRole.ASSISTANT,
+            content="x [1]",
+            sources=(source,),
+            source_refs=(StoredSourceRef(source, 1),),
+        )
         markdown = session_markdown(Session(meta=meta, messages=(answer,), summary=""))
         assert markdown.endswith(f"Sources:\n\n1. {_FORUM_LABEL}\n")
 

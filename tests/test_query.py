@@ -11,6 +11,7 @@ from lilbee.core.config import cfg
 from lilbee.data.store import ChunkType, MemoryRow, SearchChunk
 from lilbee.providers.base import ChatResult, FinishReason, estimate_budget_tokens
 from lilbee.retrieval.query import (
+    SOURCES_BLOCK_MARKER,
     Searcher,
     build_context,
     filter_results,
@@ -42,7 +43,6 @@ from tests._crafted_titles import (
     CRAFTED_SOURCE,
     CRAFTED_TITLES,
     PLAIN_NAMES,
-    TERMINAL_CONTROL_RE,
     crafted_label,
     linked_label,
     shown_inline,
@@ -462,6 +462,23 @@ class TestAnswerSourcesBlock:
 
     def test_empty_when_no_sources(self):
         assert AnswerSources([], {}).block("") == ""
+
+    @pytest.mark.parametrize(
+        "answer", ["Oil [1].", "Oil [1].\n", "Oil [1].\n\n", "Oil [1].  "], ids=repr
+    )
+    def test_the_block_follows_the_answer_as_printed_with_the_marker_once(self, answer):
+        sources = AnswerSources([_make_result(source="a.md", content_type="text")], {})
+        printed = answer + sources.block(answer)
+        assert printed.startswith(answer)
+        assert printed.count("Oil [1].") == 1
+        assert printed.count(SOURCES_BLOCK_MARKER) == 1
+
+    def test_a_code_block_the_answer_left_open_is_closed_before_the_list(self):
+        sources = AnswerSources([_make_result(source="a.md", content_type="text")], {})
+        answer = "Code:\n```py\nx = 1\n"
+        printed = answer + sources.block(answer)
+        assert printed.index("```\n\nSources:") > printed.index("x = 1")
+        assert printed.count("```") == 2
 
 
 class TestSortByRelevance:
@@ -1668,6 +1685,30 @@ class TestAskStreamError:
         combined = _shown(stream_tokens)
         assert "partial" in combined
         assert "Connection lost" in combined
+
+    def test_every_answer_token_is_marked_as_no_reasoning(self, mock_svc):
+        from lilbee.retrieval.query.searcher import StreamToken
+
+        mock_svc.store.search.return_value = [_make_result()]
+
+        def failing_stream():
+            yield "line one\nline two"
+            raise ConnectionError("lost connection")
+
+        mock_svc.provider.chat.return_value = failing_stream()
+        tokens = [
+            event
+            for event in get_services().searcher.ask_stream("test")
+            if isinstance(event, StreamToken)
+        ]
+        # The shown line, the lost-connection notice and the released tail.
+        assert [("line one" in t.content, "Connection lost" in t.content) for t in tokens][:2] == [
+            (True, False),
+            (False, True),
+        ]
+        assert "line two" in tokens[-1].content
+        assert len(tokens) == 3
+        assert all(t.is_reasoning is False for t in tokens)
 
 
 @pytest.fixture
@@ -4533,43 +4574,3 @@ class TestNearDuplicateSuppression:
         a = _make_result(source="a.md", chunk="first passage", score=0.9)
         b = _make_result(source="b.md", chunk="second passage", score=0.8)
         assert len(prepare_results([a, b])) == 2
-
-
-class TestTerminalSourcesBlock:
-    """The one function that makes a Sources list safe to write to a terminal."""
-
-    @pytest.mark.parametrize("title", CONTROL_TITLES)
-    def test_a_label_loses_every_control_character_and_keeps_its_link(self, title):
-        from lilbee.retrieval.query.formatting import terminal_sources_block
-
-        line = linked_label(CRAFTED_SOURCE, title)
-        block = terminal_sources_block(f"\n\nSources:\n\n1. {line}\n2. [b.md](file:///kb/b.md)")
-        assert TERMINAL_CONTROL_RE.search(block.replace("\n", "")) is None
-        assert FILE_LINK_RE.search(line)["url"] in block
-        assert "2. [b.md](file:///kb/b.md)" in block
-
-    @pytest.mark.parametrize("title", CONTROL_TITLES)
-    def test_a_label_with_no_link_loses_its_control_characters_too(self, title):
-        from lilbee.retrieval.query.formatting import terminal_sources_block
-
-        block = terminal_sources_block(f"\n\nSources:\n\n1. forum.example · {title}")
-        assert TERMINAL_CONTROL_RE.search(block.replace("\n", "")) is None
-
-    def test_the_answer_above_the_list_is_left_alone(self):
-        from lilbee.retrieval.query.formatting import terminal_sources_block
-
-        text = "colour \x1b[31mred\x1b[0m [1]"
-        assert terminal_sources_block(f"{text}\n\nSources:\n\n1. a.md").startswith(text)
-
-    def test_a_list_quoted_in_a_code_block_is_left_alone(self):
-        from lilbee.retrieval.query.formatting import terminal_sources_block
-
-        quoted = "```\nSources:\n\n1. \x1b[31mx\n```\n"
-        assert terminal_sources_block(quoted) == quoted
-
-    def test_a_plain_name_is_unchanged(self):
-        from lilbee.retrieval.query.formatting import terminal_sources_block
-
-        for name in PLAIN_NAMES:
-            block = f"\n\nSources:\n\n1. {name}"
-            assert terminal_sources_block(block) == block

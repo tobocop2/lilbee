@@ -23,12 +23,18 @@ from lilbee.app.session_export import (
     session_markdown,
     write_session_markdown,
 )
-from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
+from lilbee.sessions import (
+    MessageRole,
+    Session,
+    SessionMessage,
+    SessionMeta,
+    StoredSourceRef,
+    message_with_refs,
+)
 from tests._crafted_titles import (
     CRAFTED_SOURCE,
     CRAFTED_TITLES,
     crafted_label,
-    linked_label,
     shown_inline,
 )
 from tests.conftest import make_mock_services
@@ -68,7 +74,9 @@ def _user(content: str) -> SessionMessage:
 
 
 def _assistant(content: str, sources: tuple[str, ...] = ()) -> SessionMessage:
-    return SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=sources)
+    return message_with_refs(
+        MessageRole.ASSISTANT, content, tuple(StoredSourceRef(s) for s in sources)
+    )
 
 
 def test_front_matter_carries_the_session_metadata():
@@ -138,32 +146,12 @@ def test_every_kind_of_source_is_named_as_markdown_that_shows_its_label(source, 
     assert markdown.endswith(f"Sources:\n\n1. {name}\n")
 
 
-def test_a_stored_sources_list_keeps_its_names_and_locations_but_no_links():
-    content = (
-        "85 Nm. [1][2]\n\nSources:\n\n"
-        f"1. {linked_label('manual.pdf')}, page 3\n"
-        f"2. {linked_label('src/brake.py')}, lines 4-9\n"
-        f"3. {linked_label('notes [draft] (v2).md')}"
-    )
-    assert content.count("file://") == 3
-    markdown = session_markdown(_session(_assistant(content, sources=("manual.pdf",))))
-    assert "file:" not in markdown
-    assert markdown.endswith(
-        "Sources:\n\n1. manual.pdf, page 3\n2. src/brake.py, lines 4-9\n"
-        "3. notes \\[draft\\] (v2).md\n"
-    )
-
-
-@pytest.mark.parametrize("stored", [False, True])
 @pytest.mark.parametrize("title", CRAFTED_TITLES)
-def test_a_page_title_shows_as_text_in_the_export(title, stored):
+def test_a_page_title_shows_as_text_in_the_export(title):
     services = make_mock_services()
     services.store.web_titles.return_value = {CRAFTED_SOURCE: title}
     set_services(services)
-    if stored:
-        answer = _assistant(f"x [1]\n\nSources:\n\n1. {linked_label(CRAFTED_SOURCE, title)}")
-    else:
-        answer = _assistant("x [1]", sources=(CRAFTED_SOURCE,))
+    answer = _assistant("x [1]", sources=(CRAFTED_SOURCE,))
     markdown = session_markdown(_session(answer))
     _, marker, line = markdown.rpartition("Sources:\n\n1. ")
     assert marker and line.count("\n") == 1
@@ -192,35 +180,6 @@ def test_a_source_name_cannot_add_structure_to_the_sources_list(source, name):
     assert markdown.endswith(f"#### Summary\n\nx [1]\n\nSources:\n\n1. {name}\n")
 
 
-def test_a_stored_source_name_cannot_add_structure_to_the_sources_list():
-    content = (
-        "x [1][2]\n\nSources:\n\n"
-        "1. [# hash.md](file:///kb/%23%20hash.md), page 2\n"
-        "2. [- dash.md](file:///kb/-%20dash.md)"
-    )
-    markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith("Sources:\n\n1. \\# hash.md, page 2\n2. \\- dash.md\n")
-
-
-def test_a_citation_line_with_a_bracket_keeps_the_next_source_on_its_own_line():
-    content = (
-        "x [1][2]\n\nSources:\n\n"
-        "1. [wiki.md](file:///kb/wiki.md)\n"
-        "    → ~/docs/notes [draft].pdf, page 2\n"
-        "2. [b.md](file:///kb/b.md), page 4"
-    )
-    markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith(
-        "Sources:\n\n1. wiki.md\n    → ~/docs/notes [draft].pdf, page 2\n2. b.md, page 4\n"
-    )
-
-
-def test_a_bracketed_name_that_is_not_a_link_does_not_join_the_next_line():
-    content = "x\n\nSources:\n\n1. [draft] plain.md\n2. [b.md](file:///kb/b.md)"
-    markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith("Sources:\n\n1. [draft] plain.md\n2. b.md\n")
-
-
 def test_a_pasted_answer_inside_a_code_fence_stays_as_written():
     content = (
         "look:\n\n```\n85 Nm [1].\n\nSources:\n\n"
@@ -230,28 +189,10 @@ def test_a_pasted_answer_inside_a_code_fence_stays_as_written():
     assert f"## User\n\n{content}\n\n## Assistant\n" in markdown
 
 
-def test_a_stored_answer_cut_off_in_a_code_block_keeps_its_sources_list_plain():
-    content = (
-        "Try:\n\n```python\nx = 1\n\nSources:\n\n1. [manual.pdf](file:///kb/manual.pdf), page 3"
-    )
-    markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith("```python\nx = 1\n```\n\nSources:\n\n1. manual.pdf, page 3\n")
-
-
 def test_a_pasted_answer_stays_as_written_when_a_later_code_block_is_left_open():
     pasted = "look:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```"
     markdown = session_markdown(_session(_user(f"{pasted}\n\n```\nnew")))
     assert f"## User\n\n{pasted}\n\n```\nnew\n```\n" in markdown
-
-
-def test_the_last_sources_list_is_the_one_made_plain():
-    content = (
-        "quoting:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```\n\nnew [1]"
-        "\n\nSources:\n\n1. [b.md](file:///kb/b.md), page 2"
-    )
-    markdown = session_markdown(_session(_assistant(content)))
-    assert "1. [a.md](file:///kb/a.md)\n```\n\nnew [1]" in markdown
-    assert markdown.endswith("new [1]\n\nSources:\n\n1. b.md, page 2\n")
 
 
 @pytest.mark.parametrize("sources", [("a\rb.md", "# h.md"), ("a\rb.md", "# h.md", "c\r\r\rd.md")])
@@ -287,7 +228,8 @@ def test_a_link_outside_the_sources_list_is_left_as_written():
 
 def test_a_reply_that_already_carries_its_sources_list_is_not_given_a_second():
     content = "85 Nm. [1]\n\nSources:\n\n1. manual.pdf"
-    markdown = session_markdown(_session(_assistant(content, sources=("manual.pdf",))))
+    legacy = SessionMessage(MessageRole.ASSISTANT, content, sources=("manual.pdf",))
+    markdown = session_markdown(_session(legacy))
     assert markdown.count("Sources:") == 1
 
 

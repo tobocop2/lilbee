@@ -7775,6 +7775,18 @@ class TestTerminalSafeSourcesList:
             assert TERMINAL_CONTROL_RE.search(am._content_widget.source.replace("\n", "")) is None
             assert "Sources:" in am._content_widget.source
 
+    @pytest.mark.parametrize("markdown", [True, False])
+    async def test_a_restored_turn_with_no_source_refs_shows_its_saved_text_unchanged(
+        self, markdown: bool
+    ) -> None:
+        saved = "colour \x1b[31mred\x1b[0m [1]\n\nSources:\n\n1. \x1b[31ma.md"
+        app = _RestoredApp(saved)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            await am.rebuild_content_widget(use_markdown=markdown)
+            assert am._shown(markdown) == saved
+
     @pytest.mark.parametrize("title", CONTROL_TITLES)
     async def test_a_live_turn_renders_a_title_without_control_characters(self, title: str) -> None:
         from textual.widgets import Markdown

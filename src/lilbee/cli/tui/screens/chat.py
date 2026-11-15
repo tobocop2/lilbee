@@ -1916,7 +1916,6 @@ class ChatScreen(Screen[None]):
         # Constructed complete, not appended-to after mounting: mount() is async,
         # so append_content/finish would both no-op against a content widget that
         # compose has not built yet, and the answer would render empty.
-        # An older TUI turn's Sources list is read from its content into refs.
         text, sources = message_sources(message)
         log.mount(
             AssistantMessage(

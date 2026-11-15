@@ -124,7 +124,7 @@ class SessionMessage:
     """One turn in a session. ``ts`` is stamped by the store on write.
 
     ``source_refs`` is None for a turn saved before the store kept it; such a turn
-    has only ``sources``, or a Sources list at the end of ``content``.
+    shows its ``content`` as saved and no Sources list is added to it.
     """
 
     role: MessageRole

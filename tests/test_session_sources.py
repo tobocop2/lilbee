@@ -1,4 +1,4 @@
-"""The Sources list of a saved chat turn on every session surface: HTTP, MCP, CLI, export."""
+"""The Sources list of a saved turn on every surface: HTTP, MCP, CLI, export, TUI restore."""
 
 from __future__ import annotations
 
@@ -10,17 +10,11 @@ from typer.testing import CliRunner
 
 from lilbee.app import services as svc_mod
 from lilbee.app.session_export import session_markdown
-from lilbee.app.session_sources import message_payload, message_sources
+from lilbee.app.session_sources import message_payload, message_sources, posted_message
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
-from lilbee.retrieval.query.formatting import (
-    FILE_LINK_RE,
-    AnswerSources,
-    SourceRef,
-    source_label,
-)
+from lilbee.retrieval.query.formatting import SourceRef, source_label
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, StoredSourceRef
-from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES, crafted_label
+from tests._crafted_titles import CRAFTED_SOURCE, CRAFTED_TITLES
 from tests.conftest import make_mock_services
 
 _PAGE = "_web/example.com/guide.md"
@@ -99,33 +93,6 @@ def client(services):
     auth_mod.session_manager.cleanup()
 
 
-def _chunk(
-    source: str, content_type: str = "text", page: int = 0, lines: tuple[int, int] = (0, 0)
-) -> SearchChunk:
-    return SearchChunk(
-        source=source,
-        content_type=content_type,
-        chunk="text",
-        page_start=page,
-        page_end=page,
-        line_start=lines[0],
-        line_end=lines[1],
-        chunk_index=0,
-        vector=[0.1],
-    )
-
-
-def _legacy_tui_content(answer: str, sources: list[str], titles: dict[str, str]) -> str:
-    """An answer as the TUI saved it before ``source_refs``: its Sources list in the text."""
-    return answer + AnswerSources([_chunk(s) for s in sources], titles).block(answer)
-
-
-def _legacy_located_content() -> str:
-    """An answer as the TUI saved it before ``source_refs``, its list holding two locators."""
-    chunks = [_chunk("manual.pdf", "pdf", page=3), _chunk("tool.py", "code", lines=(10, 20))]
-    return "See [1], [2]." + AnswerSources(chunks, {}).block("See [1], [2].")
-
-
 def _located_refs() -> tuple[StoredSourceRef, ...]:
     return (
         StoredSourceRef("manual.pdf", 1, "page 3"),
@@ -172,27 +139,17 @@ class TestMessageSources:
         )
         assert message_sources(message) == ("See [3].", [SourceRef(_PAGE, _PAGE_LABEL, 3)])
 
-    def test_a_legacy_turn_with_only_sources_has_no_numbers(self, services):
+    def test_a_legacy_turn_with_only_sources_has_no_refs(self, services):
         message = SessionMessage(MessageRole.ASSISTANT, "See [3].", sources=("first.md", _PAGE))
+        assert message_sources(message) == ("See [3].", [])
+
+    def test_posted_sources_are_stored_as_refs_with_no_numbers(self, services):
+        message = posted_message(MessageRole.ASSISTANT, "See [3].", ("first.md", _PAGE), None)
+        assert message.source_refs == (StoredSourceRef("first.md"), StoredSourceRef(_PAGE))
+        assert message.sources == ("first.md", _PAGE)
         assert message_sources(message)[1] == [
             SourceRef("first.md", "first.md", None),
             SourceRef(_PAGE, _PAGE_LABEL, None),
-        ]
-
-    def test_a_legacy_tui_turn_gives_its_text_and_the_list_it_ends_in(self, services):
-        content = _legacy_tui_content("Oil [2].", ["notes/a.md", "b.md"], {})
-        text, refs = message_sources(SessionMessage(MessageRole.ASSISTANT, content))
-        assert text == "Oil [2]."
-        assert refs == [SourceRef("notes/a.md", "notes/a.md", 1), SourceRef("b.md", "b.md", 2)]
-
-    def test_a_legacy_tui_turn_keeps_the_locator_of_each_list_line(self, services):
-        content = _legacy_located_content()
-        assert ", page 3\n" in content and content.endswith(", lines 10-20")
-        text, refs = message_sources(SessionMessage(MessageRole.ASSISTANT, content))
-        assert text == "See [1], [2]."
-        assert refs == [
-            SourceRef("manual.pdf", "manual.pdf", 1, "page 3"),
-            SourceRef("tool.py", "tool.py", 2, "lines 10-20"),
         ]
 
     def test_stored_refs_keep_their_locators(self, services):
@@ -202,8 +159,6 @@ class TestMessageSources:
         assert [r.locator for r in message_sources(message)[1]] == ["page 3", "lines 10-20"]
 
     def test_a_turn_with_refs_keeps_the_prose_after_its_own_sources_heading(self, services):
-        """Only a turn with no refs is split at a "Sources:" marker; the TUI restores
-        this one through the same call."""
         message = SessionMessage(
             MessageRole.ASSISTANT, _HEADED_PROSE, source_refs=(StoredSourceRef("first.md", 1),)
         )
@@ -212,43 +167,26 @@ class TestMessageSources:
             [SourceRef("first.md", "first.md", 1)],
         )
 
-    def test_a_legacy_turn_keeps_the_prose_after_its_own_sources_heading(self, services):
-        """With no lilbee list after the marker nothing is split off."""
-        bare = SessionMessage(MessageRole.ASSISTANT, _HEADED_PROSE)
-        assert message_sources(bare) == (_HEADED_PROSE, [])
-        posted = SessionMessage(MessageRole.ASSISTANT, _HEADED_PROSE, sources=("first.md",))
-        assert message_sources(posted) == (_HEADED_PROSE, [SourceRef("first.md", "first.md", None)])
+    @pytest.mark.parametrize(
+        ("message", "refs"),
+        [
+            pytest.param(SessionMessage(MessageRole.ASSISTANT, _HEADED_PROSE), [], id="bare"),
+            pytest.param(
+                SessionMessage(MessageRole.ASSISTANT, _HEADED_PROSE, sources=("first.md",)),
+                [],
+                id="with-sources",
+            ),
+        ],
+    )
+    def test_a_legacy_turn_keeps_the_prose_after_its_own_sources_heading(
+        self, services, message, refs
+    ):
+        assert message_sources(message) == (_HEADED_PROSE, refs)
 
-    @pytest.mark.parametrize("title", _ATTACK_TITLES)
-    def test_a_legacy_tui_turn_returns_a_stored_attack_title_raw(self, services, title):
-        content = _legacy_tui_content("x [1].", [CRAFTED_SOURCE], {CRAFTED_SOURCE: title})
-        assert FILE_LINK_RE.search(content) is not None, "the stored list links the page"
-        text, refs = message_sources(SessionMessage(MessageRole.ASSISTANT, content))
-        assert text == "x [1]."
-        assert refs == [SourceRef(CRAFTED_SOURCE, crafted_label(title), 1)]
-
-    def test_a_legacy_list_line_with_no_link_keeps_a_memory_row(self, services):
-        content = "x [1] [2].\n\nSources:\n\n1. memory:m1\n2. gone.md\nnot a line"
-        assert message_sources(SessionMessage(MessageRole.ASSISTANT, content))[1] == [
-            SourceRef("memory:m1", "memory:m1", 1),
-            SourceRef("", "gone.md", 2),
-        ]
-
-    def test_a_link_outside_every_known_root_has_no_source(self, services):
-        content = "x [1].\n\nSources:\n\n1. [elsewhere.md](file:///nowhere/elsewhere.md)"
-        assert message_sources(SessionMessage(MessageRole.ASSISTANT, content))[1] == [
-            SourceRef("", "elsewhere.md", 1)
-        ]
-
-    def test_a_link_under_a_linked_root_is_keyed_by_that_root(self, services, tmp_path):
-        root = tmp_path / "vault"
-        (root / "sub").mkdir(parents=True)
-        cfg.linked_roots = {"vault": str(root)}
-        url = (root / "sub" / "n.md").as_uri()
-        content = f"x [1].\n\nSources:\n\n1. [n.md]({url})"
-        assert message_sources(SessionMessage(MessageRole.ASSISTANT, content))[1] == [
-            SourceRef("vault/sub/n.md", "n.md", 1)
-        ]
+    def test_a_legacy_turn_returns_a_saved_sources_list_as_text_and_adds_none(self, services):
+        content = "Oil [2].\n\nSources:\n\n1. notes/a.md\n2. [b.md](file:///kb/b.md), page 2"
+        message = SessionMessage(MessageRole.ASSISTANT, content, sources=("notes/a.md", "b.md"))
+        assert message_sources(message) == (content, [])
 
 
 class TestHttp:
@@ -302,21 +240,25 @@ class TestHttp:
         assert message["content"] == _HEADED_PROSE
         assert _refs_of(message) == []
 
-    def test_a_legacy_tui_turn_sends_its_locators(self, client, store):
-        content = _legacy_located_content()
+    def test_a_legacy_turn_with_a_saved_list_comes_back_as_saved_with_no_refs(self, client, store):
+        content = "Oil [1].\n\nSources:\n\n1. a.md, page 2"
         session_id = _session(
-            store, SessionMessage(MessageRole.ASSISTANT, content), origin=SessionOrigin.TUI
+            store,
+            SessionMessage(MessageRole.ASSISTANT, content, sources=("a.md",)),
+            origin=SessionOrigin.TUI,
         )
         message = client.get(f"/api/sessions/{session_id}").json()["messages"][-1]
-        assert message["content"] == "See [1], [2]."
-        assert _refs_of(message) == _SHOWN_LOCATED_REFS
+        assert message["content"] == content
+        assert message["sources"] == ["a.md"]
+        assert _refs_of(message) == []
 
-    def test_a_post_without_refs_keeps_its_sources(self, client, store):
+    def test_a_post_without_refs_stores_its_sources_as_refs(self, client, store):
         session_id = _session(store)
         client.post(
             f"/api/sessions/{session_id}/messages",
             json={"role": "assistant", "content": "a", "sources": ["first.md"]},
         )
+        assert store.get(session_id).messages[-1].source_refs == (StoredSourceRef("first.md"),)
         message = client.get(f"/api/sessions/{session_id}").json()["messages"][-1]
         assert message["sources"] == ["first.md"]
         assert _refs_of(message) == [
@@ -331,31 +273,13 @@ class TestHttp:
         )
         assert store.get(session_id).messages[-1].source_refs == (StoredSourceRef("first.md"),)
 
-    def test_a_legacy_event_with_only_sources_gives_null_numbers(self, client, store):
+    def test_a_legacy_event_with_only_sources_gives_no_refs(self, client, store):
         session_id = _session(
             store, SessionMessage(MessageRole.ASSISTANT, "See [3].", sources=(_PAGE,))
         )
         message = client.get(f"/api/sessions/{session_id}").json()["messages"][-1]
-        assert _refs_of(message) == [
-            {"source": _PAGE, "label": _PAGE_LABEL, "citation_number": None, "locator": ""}
-        ]
-
-    @pytest.mark.parametrize("title", _ATTACK_TITLES)
-    def test_a_legacy_tui_turn_sends_its_text_without_the_list(self, client, store, title):
-        content = _legacy_tui_content("x [1].", [CRAFTED_SOURCE], {CRAFTED_SOURCE: title})
-        session_id = _session(
-            store, SessionMessage(MessageRole.ASSISTANT, content), origin=SessionOrigin.TUI
-        )
-        message = client.get(f"/api/sessions/{session_id}").json()["messages"][-1]
-        assert message["content"] == "x [1]."
-        assert _refs_of(message) == [
-            {
-                "source": CRAFTED_SOURCE,
-                "label": crafted_label(title),
-                "citation_number": 1,
-                "locator": "",
-            }
-        ]
+        assert message["sources"] == [_PAGE]
+        assert _refs_of(message) == []
 
     def test_a_fork_keeps_the_refs(self, client, store):
         session_id = _session(
@@ -416,11 +340,14 @@ class TestMcp:
         assert mcp_message["content"] == _HEADED_PROSE
         assert mcp_message == client.get(f"/api/sessions/{session_id}").json()["messages"][-1]
 
-    def test_append_without_refs_keeps_its_sources(self, services):
+    def test_append_without_refs_stores_its_sources_as_refs(self, services):
         from lilbee.mcp_server import session_add_message, session_create, session_get
 
         session_id = session_create("m")["id"]
         session_add_message(session_id, "assistant", "a", sources=["first.md"])
+        assert services.session_store.get(session_id).messages[-1].source_refs == (
+            StoredSourceRef("first.md"),
+        )
         message = session_get(session_id)["messages"][-1]
         assert message["sources"] == ["first.md"]
         assert message["source_refs"][0]["citation_number"] is None
@@ -498,6 +425,20 @@ class TestExport:
         markdown = _export(message)
         assert markdown.endswith(f"## Assistant\n\n{_HEADED_PROSE}\n\nSources:\n\n1. first.md\n")
         assert markdown.count("\n1. ") == 1
+
+    def test_a_legacy_turn_exports_a_saved_list_in_its_text_and_adds_none(self, services):
+        content = "Oil [1].\n\nSources:\n\n1. [a.md](file:///kb/a.md)"
+        message = SessionMessage(MessageRole.ASSISTANT, content, sources=("a.md",))
+        markdown = _export(message)
+        assert markdown.endswith(f"## Assistant\n\n{content}\n")
+        assert markdown.count("Sources:\n") == 1
+
+    def test_a_legacy_turn_exports_its_text_as_saved(self, services):
+        content = "Look:\n\n```\nAnswer.\n\nSources:\n\n1. a.md\n```\n\nThanks."
+        message = SessionMessage(MessageRole.ASSISTANT, content, sources=("b.md",))
+        markdown = _export(message)
+        assert markdown.endswith("```\n\nThanks.\n")
+        assert "b.md" not in markdown
 
     @pytest.mark.parametrize("title", _ATTACK_TITLES)
     def test_an_attack_label_is_escaped(self, services, title):
