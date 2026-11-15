@@ -587,7 +587,6 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       RUST_TARGET: ${{ matrix.rust_target }}
       RUST_FEATURES: ${{ matrix.rust_features }}
-      CUDA_VERSION: ${{ matrix.cuda }}
       WHEEL_TREE: packaging/engine-wheel-mistral-rs
     steps:
       - uses: actions/checkout@v7
@@ -650,17 +649,8 @@ jobs:
       - name: Repack the upstream archive into the wheel tree
         run: |
           set -euo pipefail
-          python tools/wheel-build/repack_mistralrs.py "upstream/${ASSET}" "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin" | tee libs.txt
+          python tools/wheel-build/repack_mistralrs.py "upstream/${ASSET}" "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
           ls -lR "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
-
-      - name: Write the NVIDIA CUDA and NCCL notices
-        if: matrix.cuda != ''
-        run: |
-          set -euo pipefail
-          python tools/wheel-build/write_cuda_notice.py "${CUDA_VERSION}" "${WHEEL_TREE}/NOTICE-NVIDIA-CUDA" \
-            "the CUDA Runtime (cudart), the CUDA BLAS libraries (cublas, cublasLt) and the cuRAND library (curand)."
-          python tools/wheel-build/write_nccl_notice.py "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin/lib/libnccl.so.2" "${WHEEL_TREE}/NOTICE-NCCL"
-          wc -c "${WHEEL_TREE}"/NOTICE-*
 
       - name: Add the Visual C++ runtime beside the exe
         if: runner.os == 'Windows'
@@ -676,7 +666,6 @@ jobs:
         run: |
           set -euo pipefail
           extra="Apache-2.0"$'\n'"BSD-3-Clause"
-          if [ -n "${CUDA_VERSION}" ]; then extra="${extra}"$'\n'"LicenseRef-NVIDIA-CUDA-EULA"; fi
           if [ "${RUNNER_OS}" = Windows ]; then extra="${extra}"$'\n'"LicenseRef-Microsoft-VC-Runtime"; fi
           terms="$({ echo MIT; cat crate-licences.txt; printf '%s\n' "${extra}"; } | tr -d '\r' | grep -v '^$' \
             | awk '!seen[$0]++ { printf "%s%s", (n++ ? " AND " : ""), $0 } END { print "" }')"
@@ -729,16 +718,11 @@ jobs:
           grep -q "dist-info/licenses/LICENSE-mistral.rs " wheel-listing.txt || { echo "wheel lacks the mistral.rs licence"; exit 1; }
           grep -q "dist-info/licenses/THIRD-PARTY/mistral.rs/" wheel-listing.txt || { echo "wheel lacks the crate licences"; exit 1; }
           grep -q "dist-info/licenses/THIRD-PARTY/vendored/" wheel-listing.txt || { echo "wheel lacks the vendored notices"; exit 1; }
-          for id in MPL-2.0 OpenSSL; do
-            if grep -qx "${id}" crate-licences.txt; then
-              grep -q "dist-info/licenses/NOTICE-${id} " wheel-listing.txt || { echo "wheel lacks NOTICE-${id}"; exit 1; }
+          for pair in MPL-2.0:SOURCE-MPL-2.0 OpenSSL:NOTICE-OpenSSL; do
+            if grep -qx "${pair%%:*}" crate-licences.txt; then
+              grep -q "dist-info/licenses/${pair#*:} " wheel-listing.txt || { echo "wheel lacks ${pair#*:}"; exit 1; }
             fi
           done
-          if [ -n "${CUDA_VERSION}" ]; then
-            for notice in NOTICE-NVIDIA-CUDA NOTICE-NCCL; do
-              grep -q "dist-info/licenses/${notice} " wheel-listing.txt || { echo "wheel lacks ${notice}"; exit 1; }
-            done
-          fi
           if [ "${RUNNER_OS}" = Windows ]; then
             grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime " wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
           fi
@@ -760,23 +744,13 @@ jobs:
               test -f "${bindir}/${dll}" || { echo "wheel lacks ${dll}"; exit 1; }
             done
           fi
-          if [ -n "${CUDA_VERSION}" ]; then
-            # The runner has no GPU and no driver: only the driver library may be unresolved.
-            ldd "${exe}" > ldd.txt
-            cat ldd.txt
-            if grep 'not found' ldd.txt | grep -v 'libcuda\.so'; then echo "the binary has an unresolved library"; exit 1; fi
-            for lib in libcublas.so.12 libcublasLt.so.12 libcudart.so.12 libcurand.so.10 libnccl.so.2; do
-              grep -q "${lib} => ${bindir}/lib/${lib}" ldd.txt || { echo "${lib} does not resolve to the wheel"; exit 1; }
-            done
-          fi
           if [ "${RUNNER_OS}" = macOS ]; then
             otool -L "${exe}"
             if otool -L "${exe}" | awk 'NR > 1 {print $1}' | grep -v -E '^(/usr/lib/|/System/Library/)'; then echo "the binary loads a library outside the system"; exit 1; fi
           fi
           cd /
-          # A CUDA binary links the driver library, which a runner without a GPU lacks: its check is the library list above.
-          if [ -z "${CUDA_VERSION}" ]; then "${exe}" --version; fi
-          # A CUDA or Metal cell needs a device to serve a model: it stops at the version and the library check.
+          "${exe}" --version
+          # A Metal cell needs a device to serve a model: it stops at the version and the library check.
           if [ "${BACKEND}" = cpu ]; then
             HF_HOME="${RUNNER_TEMP}/hf" python "${GITHUB_WORKSPACE}/tools/qa/check_mistralrs_chat.py" "${exe}" "${MISTRALRS_CHAT_MODEL}"
           fi

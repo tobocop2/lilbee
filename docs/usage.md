@@ -547,6 +547,10 @@ TEI are published for Linux x86_64. No pack of mlx, openvino or lemonade is publ
 yet, so those engines refuse to install and print the no-pack text. A host with no pack
 for its platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 
+The mistral.rs packs include software developed by the OpenSSL Project for use in the
+OpenSSL Toolkit (http://www.openssl.org/) and cryptographic software written by Eric Young
+(eay@cryptsoft.com).
+
 If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that
 wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel
 with `pip uninstall lilbee-engine-llama-cpp`, then run
