@@ -11,6 +11,7 @@ properties.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ from typing import Any, TypeVar
 from lilbee.providers.base import ProviderErrorKind
 from lilbee.retrieval.reasoning import split_reasoning
 from tests.conformance.harness import (
+    _FINISH_LENGTH,
+    _REASONING_FIELDS,
+    _THINK_OPEN,
     _message,
     _vectors,
     colour_fault,
@@ -27,6 +31,7 @@ from tests.conformance.harness import (
     embed_fault,
     json_fault,
     reasoning_split_fault,
+    strip_think,
     tool_arguments_fault,
 )
 
@@ -295,10 +300,36 @@ def json_answer(
     """The answer is one JSON object, and it fits *schema* when a schema is given."""
 
     def absolute(body: Body) -> str:
-        message, _ = _chat(body)
-        return json_fault(message.get("content"), schema)
+        message, finish = _chat(body)
+        return _json_detail(message, finish, schema)
 
     return _decide(engine, oracle, oracle_kind, absolute, _no_relation)
+
+
+def _json_detail(message: Mapping[str, Any], finish: Any, schema: Mapping[str, Any] | None) -> str:
+    """The JSON fault of a reply; thinking text in place of the object is named as such."""
+    content = message.get("content")
+    fault = json_fault(content, schema)
+    if not fault or _is_json(content):
+        return fault
+    thinking = any(str(message.get(name) or "").strip() for name in _REASONING_FIELDS)
+    if thinking or _THINK_OPEN in str(content or ""):
+        return (
+            "answer is thinking text past the token cap"
+            if finish == _FINISH_LENGTH
+            else ("answer is thinking text, not a JSON object")
+        )
+    return fault
+
+
+def _is_json(content: Any) -> bool:
+    """True when *content*, after a leading think block, parses as JSON."""
+    rest = strip_think(content) if isinstance(content, str) else None
+    try:
+        json.loads(rest if rest is not None else "")
+    except ValueError:
+        return False
+    return True
 
 
 def reasoning(

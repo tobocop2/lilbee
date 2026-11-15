@@ -50,7 +50,10 @@ ORACLE_ENGINE = EngineName.LLAMA.value
 _SECRET = re.compile(
     r"\b(?:https?|wss?|ftp|file):(?:\\*(?:/|u002f)){2}"
     r"|\bbearer(?:\s|\\[nrt])+[A-Za-z0-9._~+/=-]{8,}"
-    r"|\bbasic(?:\s|\\[nrt])+[A-Za-z0-9+/=]{8,}"
+    r"|\bbasic(?:\s|\\[nrt])+(?-i:(?=[A-Za-z0-9+/=]*[0-9+])[A-Za-z0-9+/=]{8,}"
+    r"|[A-Za-z0-9+/]{4,}={1,2}(?![A-Za-z0-9+/=])"
+    r"|(?=[A-Za-z0-9+/=]*[a-z])(?=[A-Za-z0-9+/=][a-z0-9+/=]*[A-Z][A-Za-z0-9+/=]*[A-Z])"
+    r"[A-Za-z0-9+/=]{8,})"
     r"|\bauthorization\b[\s\"'\\]*[:=][\s\"'\\]*[^\s\"'\\]{8,}"
     r"|(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret(?:[_-]?access)?"
     r"(?:[_-]?key)?|password|token)[\s\"'\\]*[:=][\s\"'\\]*"
@@ -447,9 +450,23 @@ def _judge_embed(record: CompareRecord, data: StepRecord) -> StepVerdict:
     )
 
 
+def _rerank_body(exchange: Exchange) -> Mapping[str, Any]:
+    """The reply of a rerank route; a bare list of index and score rows reads as results."""
+    parsed = json.loads(exchange.body)
+    if not isinstance(parsed, list):
+        return _body(exchange)
+    rows = [
+        {"index": row.get("index"), "relevance_score": row.get("score")}
+        if isinstance(row, Mapping)
+        else row
+        for row in parsed
+    ]
+    return {"results": rows}
+
+
 def _judge_rerank(record: CompareRecord, data: StepRecord) -> StepVerdict:
     return cv.rerank(
-        _first(data.engine),
+        _rerank_body(data.engine[0]) if data.engine else None,
         _first(data.oracle),
         record.oracle.null,
         count=data.inputs["count"],
@@ -473,7 +490,27 @@ _JUDGES: Mapping[Step, Callable[[CompareRecord, StepRecord], StepVerdict]] = {
 
 def judge(record: CompareRecord, step: Step) -> StepVerdict:
     """The verdict of the compare_verdicts function for *step*, over the stored bodies."""
-    return _JUDGES[step](record, record.steps[step])
+    data = record.steps[step]
+    if fault := _engine_unreadable(step, data):
+        return StepVerdict(Status.FAIL, fault)
+    return _JUDGES[step](record, data)
+
+
+def _engine_unreadable(step: Step, data: StepRecord) -> str:
+    """Why an engine answer that the engine gave is not a JSON reply, or empty when it is one."""
+    if step is Step.OVERFLOW:
+        return ""
+    kinds = (Mapping, list) if step is Step.RERANK else (Mapping,)
+    for exchange in data.engine:
+        if exchange.status == 0:
+            continue
+        try:
+            parsed = json.loads(exchange.body)
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, kinds):
+            return f"the engine answered status {exchange.status} with no JSON reply"
+    return ""
 
 
 def rejudge(record: CompareRecord) -> dict[Step, StepVerdict]:

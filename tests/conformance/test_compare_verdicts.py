@@ -297,6 +297,32 @@ class TestJson:
         good = reply('{"city": "Paris", "pop": 1}')
         assert cv.json_answer(reply("Paris has 2M."), good, schema=None).status is Status.FAIL
 
+    @pytest.mark.parametrize(
+        ("body", "detail"),
+        [
+            (
+                reply("", finish="length", reasoning_content="Let me think."),
+                "answer is thinking text past the token cap",
+            ),
+            (
+                reply("<think>Let me", finish="length"),
+                "answer is thinking text past the token cap",
+            ),
+            (
+                reply("", reasoning_content="Let me think."),
+                "answer is thinking text, not a JSON object",
+            ),
+            (reply("", finish="length"), "the answer is not one JSON value"),
+            (reply("Paris has 2M.", reasoning_content="x"), "answer is thinking text, not"),
+            (reply('{"city": "Paris"}', reasoning_content="x"), "lacks key"),
+        ],
+    )
+    def test_thinking_text_in_place_of_the_object_is_named(self, body: Any, detail: str) -> None:
+        good = reply('{"city": "Paris", "pop": 1}')
+        verdict = cv.json_answer(body, good, schema=SCHEMA)
+        assert verdict.status is Status.FAIL
+        assert detail in verdict.detail
+
     def test_an_oracle_that_breaks_the_schema_is_invalid(self) -> None:
         good, bad = reply('{"city": "Paris", "pop": 1}'), reply('{"city": "Paris"}')
         assert cv.json_answer(good, bad, schema=SCHEMA).status is Status.INVALID_ORACLE

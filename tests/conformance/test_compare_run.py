@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import runpy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -103,6 +104,28 @@ class TestRequestSet:
         assert red["messages"][0]["content"] != blue["messages"][0]["content"]
         assert run_mod.png_url((0, 0, 255)) in str(blue)
         assert BLUE == (0, 0, 255)
+
+    @pytest.mark.parametrize("step", [Step.JSON_OBJECT, Step.JSON_SCHEMA])
+    def test_the_json_steps_switch_thinking_off(self, step: Step) -> None:
+        (body,) = run_mod.step_requests(step, "m")
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+    @pytest.mark.parametrize(
+        "step", [Step.TEMPLATE, Step.TOOL, Step.REASONING, Step.OVERFLOW, Step.VISION]
+    )
+    def test_the_other_chat_steps_keep_the_template_default(self, step: Step) -> None:
+        assert all("chat_template_kwargs" not in b for b in run_mod.step_requests(step, "m"))
+
+    def test_a_route_engine_is_asked_for_scores_in_the_body_its_adapter_sends(self) -> None:
+        (body,) = run_mod.step_requests(Step.RERANK, "m", "tei")
+        assert body == {
+            "query": request_set.RERANK_QUERY,
+            "texts": request_set.RERANK_DOCS,
+            "truncate": False,
+        }
+        (plain,) = run_mod.step_requests(Step.RERANK, "m")
+        assert plain["documents"] == request_set.RERANK_DOCS
+        assert "texts" not in plain
 
     def test_every_step_has_its_requests_and_its_inputs(self) -> None:
         assert set(Step)
@@ -270,13 +293,60 @@ class TestBrokenRun:
         assert record.oracle.kind is Oracle.ABSOLUTE_ONLY
 
 
+class TestRerankRoute:
+    TEI = "tei"
+
+    def _tei_spec(self, engine_url: str, oracle_url: str, directory: Path) -> Spec:
+        roles = _roles(engine_url, directory, (WorkerRole.EMBED, WorkerRole.RERANK))
+        return _spec(engine_url, oracle_url, directory, engine=self.TEI, engine_roles=roles)
+
+    def _run_tei(self, spec: Spec) -> CompareRecord:
+        manifests = {**MANIFESTS, self.TEI: {"0.0.0": {CELL: {"sha256": "3" * 64}}}}
+        return run_mod.compare(spec, manifests, {**VERSIONS, self.TEI: "0.0.0"}.__getitem__)
+
+    def test_the_engine_is_asked_on_the_route_its_adapter_declares(self, tmp_path: Path) -> None:
+        with _servers(engine=Behaviour(rerank="tei")) as (engine, oracle):
+            record = self._run_tei(self._tei_spec(engine.url, oracle.url, tmp_path))
+        assert engine.seen.count("POST /rerank") == 1
+        assert "POST /v1/rerank" not in engine.seen
+        assert oracle.seen.count("POST /v1/rerank") == 2
+        rerank = record.steps[Step.RERANK]
+        assert rerank.status is Status.FAIL
+        assert "the top document is not 1" in rerank.detail
+
+    def test_an_engine_without_the_route_gives_a_record_with_a_failed_step(
+        self, tmp_path: Path
+    ) -> None:
+        with _servers(engine=Behaviour(rerank="none")) as (engine, oracle):
+            record = self._run_tei(self._tei_spec(engine.url, oracle.url, tmp_path))
+        assert record.steps[Step.RERANK].status is Status.FAIL
+        assert record.steps[Step.RERANK].detail == (
+            "the engine answered status 404 with no JSON reply"
+        )
+        assert record.steps[Step.EMBED].status is Status.PASS
+        assert record.steps[Step.TEMPLATE].status is Status.NOT_COMPARABLE
+
+
 class TestRefusals:
-    def test_an_answer_that_is_not_a_json_object_names_the_step(self, tmp_path: Path) -> None:
+    def test_an_oracle_answer_that_is_not_a_json_object_names_the_step(
+        self, tmp_path: Path
+    ) -> None:
         with (
-            _servers(engine=Behaviour(embed="404")) as (engine, oracle),
-            pytest.raises(RunError, match=r"embed: a stored body cannot be judged"),
+            _servers(oracle=Behaviour(rerank="none")) as (engine, oracle),
+            pytest.raises(RunError, match=r"oracle rerank answer is not JSON"),
         ):
             _run(_spec(engine.url, oracle.url, tmp_path))
+
+    def test_an_engine_route_that_answers_404_is_a_failed_step_not_a_refusal(
+        self, tmp_path: Path
+    ) -> None:
+        with _servers(engine=Behaviour(embed="404")) as (engine, oracle):
+            record = _run(_spec(engine.url, oracle.url, tmp_path))
+        embed = record.steps[Step.EMBED]
+        assert embed.status is Status.FAIL
+        assert embed.detail == "the engine answered status 404 with no JSON reply"
+        assert record.steps[Step.TEMPLATE].status is Status.PASS
+        assert cr.scrub_fault(cr.dump(record)) == ""
 
     def test_a_server_that_does_not_answer_is_refused_without_its_address(
         self, tmp_path: Path
@@ -517,16 +587,26 @@ class TestCommandLine:
         assert all(f"{step}: pass" in out for step in Step)
         assert "http://" not in out
 
+    @pytest.mark.filterwarnings("ignore:'tests.conformance.compare_run' found in sys.modules")
+    def test_the_module_runs_as_a_script_and_exits_through_the_parser(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["compare_run", "--help"])
+        with pytest.raises(SystemExit) as info:
+            runpy.run_module("tests.conformance.compare_run", run_name="__main__")
+        assert info.value.code == 0
+        assert "--engine" in capsys.readouterr().out
+
     def test_a_refused_run_exits_one_and_writes_nothing(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with _servers(engine=Behaviour(embed="404")) as (engine, oracle):
+        with _servers(oracle=Behaviour(embed="404")) as (engine, oracle):
             models = self._write_models(tmp_path, engine.url, oracle.url)
             code = run_mod.main(
                 self._argv(tmp_path, models, "--fake"), MANIFESTS, VERSIONS.__getitem__
             )
         assert code == 1
-        assert "embed: a stored body cannot be judged" in capsys.readouterr().err
+        assert "the oracle embed answer is not JSON" in capsys.readouterr().err
         assert not (tmp_path / "out").exists()
 
     def test_the_cross_format_run_reads_the_quant_block(self, tmp_path: Path) -> None:

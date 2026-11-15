@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-REQUEST_SET_VERSION = 1
+REQUEST_SET_VERSION = 2
 """The version of the requests every record answers; a change to a request bumps it."""
+
+NO_THINKING: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": False}}
+"""The Qwen3 chat template switch that skips the thinking block; the JSON steps send it."""
 
 CONVERSATION: list[dict[str, str]] = [
     {"role": "system", "content": "You answer in one short sentence."},
