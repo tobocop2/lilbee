@@ -1053,6 +1053,45 @@ def test_refused_splits_do_not_spend_the_estimate_budget(
     assert len(instance.devices) == 32
 
 
+def _sweep_calls(refuse_every: int, message: str = "refused") -> tuple[int, int]:
+    """Run the split sweep over 30 cards; return (estimates run, splits refused)."""
+    from lilbee.providers.fleet.engines.base import SplitRefusedError
+    from lilbee.providers.fleet.placement import ModelPlacementInput, _place_split
+
+    seen = {"asked": 0, "estimated": 0, "refused": 0}
+
+    def estimate(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
+        seen["asked"] += 1
+        if refuse_every and seen["asked"] % refuse_every == 0:
+            seen["refused"] += 1
+            raise SplitRefusedError(message)
+        seen["estimated"] += 1
+        return ()  # the wrong length: the candidate never fits
+
+    remaining = {idx: float((40 + idx) * GIB) for idx in range(30)}
+    chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
+    assert _place_split(chat, remaining, estimate) is None
+    return seen["estimated"], seen["refused"]
+
+
+def test_the_sweep_stops_after_the_estimate_budget_however_many_splits_are_refused() -> None:
+    from lilbee.providers.fleet.placement import _MAX_SPLIT_ESTIMATES
+
+    estimated_alone, _ = _sweep_calls(refuse_every=0)
+    assert estimated_alone == _MAX_SPLIT_ESTIMATES
+    estimated, refused = _sweep_calls(refuse_every=3)
+    assert refused > 0
+    assert estimated == _MAX_SPLIT_ESTIMATES
+
+
+def test_a_refusal_is_logged_once_for_each_message(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    _sweep_calls(refuse_every=3, message="only evenly")
+    refusals = [r.getMessage() for r in caplog.records if "-card split for" in r.getMessage()]
+    assert len(refusals) == 1
+    assert refusals[0].endswith("chat: only evenly")
+
+
 def _unequal_cards() -> list[FleetDevice]:
     return [
         FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate((24, 16))
