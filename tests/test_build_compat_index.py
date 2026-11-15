@@ -74,6 +74,15 @@ def test_every_fork_gets_its_own_project_page(monkeypatch, tmp_path):
     assert _LITER in (tmp_path / "compat" / "liter-llm" / "index.html").read_text(encoding="utf-8")
 
 
+def test_an_asset_url_is_html_escaped_in_its_page(monkeypatch, tmp_path):
+    url = "https://example.test/dl?name=a&sig=b"
+    monkeypatch.setattr(bci, "fetch_wheels", lambda _repo: [(_LANCEDB, url, _SHA)])
+    monkeypatch.setattr("sys.argv", ["build_compat_index.py", str(tmp_path), "--repo", "o/lancedb"])
+    assert bci.main() == 0
+    page = (tmp_path / "compat" / "lancedb" / "index.html").read_text(encoding="utf-8")
+    assert f'href="https://example.test/dl?name=a&amp;sig=b#sha256={_SHA}"' in page
+
+
 def test_an_optional_fork_with_no_wheels_is_skipped(monkeypatch, tmp_path, capsys):
     by_repo = {"o/lancedb": [_LANCEDB], "o/xberg": []}
     rc = _run(monkeypatch, tmp_path, by_repo, "--repo", "o/lancedb", "--optional-repo", "o/xberg")

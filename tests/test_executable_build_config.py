@@ -246,6 +246,7 @@ def test_the_fork_wheels_are_exact_compat_pins_installed_binary_only() -> None:
         assert re.fullmatch(r"[a-z-]+==\d+\.\d+\.\d+\+compat", pin), pin
     assert "--only-binary" in run
     assert "--extra-index-url https://lilbee.sh/compat/" in run
+    assert "--index-strategy unsafe-best-match" in run
     assert '--python-platform "${PYTHON_PLATFORM}"' in run
     assert "--no-emit-package" in run
 
