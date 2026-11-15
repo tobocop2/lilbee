@@ -20,6 +20,10 @@ A preset works with a server that offers the OpenAI-compatible routes for the ro
 
 lilbee ran its output check against TEI, Infinity, Lemonade, mistral.rs, mlx-lm, oMLX, vMLX and vllm-mlx. On the MLX servers, context overflow fails on mlx-lm, vMLX and vllm-mlx, and vMLX rerank fails with the original checkpoint and with the MLX conversion `flaglow/BAAI-bge-reranker-v2-m3-mlx-fp16`. mlx-lm vision fails for `mlx-community/Qwen3-VL-2B-Instruct-4bit`: the server reads images only for Muse Spark. Infinity needs `--url-prefix /v1`: with its default routes, both roles answer HTTP 404. GenieX is not verified. See [Preset results](preset-results.md) for each server, role and result. Check which routes your server offers before you give it a role. Use `tei` as the rerank wire for TEI. For every other server, use the default `v1` only if the server documents `POST /v1/rerank`.
 
+GenieX and FastFlowLM are NPU servers. lilbee ships neither.
+
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+
 ## The rerank wire
 
 The `rerank_wire` field sets the shape of the rerank request.
