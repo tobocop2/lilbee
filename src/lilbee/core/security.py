@@ -116,7 +116,7 @@ def _write_atomically(path: Path, text: str, opener: _Opener | None) -> None:
             tmp.unlink(missing_ok=True)
         if isinstance(exc, OSError):
             # The error names the file the user asked to write, not the hidden temp file.
-            raise OSError(exc.errno, exc.strerror, str(path)) from None
+            raise OSError(exc.errno, exc.strerror, str(path)) from exc
         raise
 
 

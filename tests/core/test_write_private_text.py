@@ -452,6 +452,20 @@ def test_a_failed_write_names_the_target_not_the_hidden_temp_file(tmp_path, monk
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_failed_write_keeps_the_os_error_as_its_cause(tmp_path, monkeypatch):
+    refused = PermissionError(13, "Access is denied")
+    refused.winerror = 32
+
+    def refuse(_src, _dst):
+        raise refused
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(PermissionError, match="Access is denied") as caught:
+        write_private_text(tmp_path / "mine.toml", "x = 1\n")
+    assert caught.value.__cause__ is refused
+    assert caught.value.__cause__.winerror == 32
+
+
 def test_a_write_that_fails_for_another_reason_keeps_its_error(tmp_path):
     with pytest.raises(UnicodeEncodeError):
         write_private_text(tmp_path / "mine.toml", "\ud800")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import logging
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -63,6 +64,7 @@ _KNOWN_SKILL_FILES: Mapping[str, frozenset[str]] = MappingProxyType(
     }
 )
 _PERMISSION_DENIED = "is not writable (permission denied)"
+_IN_USE = "is in use"
 _SKIP_REASONS: Mapping[int | None, str] = MappingProxyType(
     {
         errno.EEXIST: "is not a folder",
@@ -70,10 +72,12 @@ _SKIP_REASONS: Mapping[int | None, str] = MappingProxyType(
         errno.EACCES: _PERMISSION_DENIED,
         errno.EPERM: _PERMISSION_DENIED,
         errno.EROFS: _PERMISSION_DENIED,
-        errno.EBUSY: "is in use",
+        errno.EBUSY: _IN_USE,
     }
 )
 _DEFAULT_SKIP_REASON = "could not be written"
+# Windows ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION: another process holds the file.
+_WINDOWS_IN_USE_ERRORS = frozenset({32, 33})
 
 
 def _installed_or_checkout(packaged: Path, checkout: Path, marker: Path) -> Path:
@@ -130,6 +134,15 @@ def _refresh(bundled: dict[str, bytes], dest: Path) -> Path | None:
     return dest if stale else None
 
 
+def _skip_reason(exc: OSError) -> str:
+    """Return the words the skip warning uses for *exc*."""
+    # A failed atomic write raises from the OS error, which holds the Windows code.
+    origin = exc.__cause__ if isinstance(exc.__cause__, OSError) else exc
+    if sys.platform == "win32" and origin.winerror in _WINDOWS_IN_USE_ERRORS:
+        return _IN_USE
+    return _SKIP_REASONS.get(exc.errno, _DEFAULT_SKIP_REASON)
+
+
 def install_bundled_skill(dest: Path) -> Path | None:
     """Install the bundled skill at *dest*, or refresh its files if lilbee's copies are unedited.
 
@@ -140,6 +153,7 @@ def install_bundled_skill(dest: Path) -> Path | None:
     try:
         return _refresh(bundled, dest)
     except OSError as exc:
-        reason = _SKIP_REASONS.get(exc.errno, _DEFAULT_SKIP_REASON)
-        log.warning("The lilbee skill at %s %s, so it is not updated: %s", dest, reason, exc)
+        log.warning(
+            "The lilbee skill at %s %s, so it is not updated: %s", dest, _skip_reason(exc), exc
+        )
         return None

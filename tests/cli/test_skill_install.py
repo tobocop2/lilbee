@@ -269,6 +269,69 @@ def test_an_error_without_an_errno_gets_the_general_reason(bundle, dest, monkeyp
     ]
 
 
+@pytest.mark.parametrize(
+    ("platform", "winerror", "reason"),
+    [
+        ("win32", 32, "is in use"),
+        ("win32", 33, "is in use"),
+        ("win32", 5, "is not writable (permission denied)"),
+        ("win32", None, "is not writable (permission denied)"),
+        ("linux", 32, "is not writable (permission denied)"),
+    ],
+)
+def test_only_a_windows_sharing_or_lock_violation_on_the_replace_says_in_use(
+    bundle, dest, monkeypatch, caplog, platform, winerror, reason
+):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    bundle(_NEW)
+    before = _files(dest)
+    refused = PermissionError(errno.EACCES, "Access is denied")
+    refused.winerror = winerror
+
+    def _refuse(_src, _dst):
+        raise refused
+
+    monkeypatch.setattr(os, "replace", _refuse)
+    monkeypatch.setattr(skill_install.sys, "platform", platform)
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    raised = PermissionError(errno.EACCES, "Access is denied", str(dest / "SKILL.md"))
+    assert _warnings(caplog) == [
+        f"The lilbee skill at {dest} {reason}, so it is not updated: {raised}"
+    ]
+    assert _files(dest) == before
+
+
+@pytest.mark.parametrize(
+    ("winerror", "reason"),
+    [(32, "is in use"), (5, "is not writable (permission denied)")],
+)
+def test_only_a_windows_sharing_violation_on_the_read_says_in_use(
+    bundle, dest, monkeypatch, caplog, winerror, reason
+):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    bundle(_NEW)
+    held = dest / "SKILL.md"
+    refused = PermissionError(errno.EACCES, "Access is denied", str(held))
+    refused.winerror = winerror
+    real_read = Path.read_bytes
+
+    def _read(path: Path) -> bytes:
+        if path == held:
+            raise refused
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", _read)
+    monkeypatch.setattr(skill_install.sys, "platform", "win32")
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    assert _warnings(caplog) == [
+        f"The lilbee skill at {dest} {reason}, so it is not updated: {refused}"
+    ]
+
+
 def test_a_missing_bundled_skill_still_raises(dest, tmp_path, monkeypatch):
     monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", tmp_path / "no-installed")
     monkeypatch.setattr(skill_install, "_CHECKOUT_SKILL", tmp_path / "no-checkout")
