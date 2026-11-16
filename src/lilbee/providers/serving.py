@@ -58,7 +58,7 @@ def _pinned(engine: EngineAdapter) -> ServingEngine:
     except OSError:
         return ServingEngine(name, UNKNOWN_VERSION, UNKNOWN_VERSION)
     return ServingEngine(
-        name, str(pin.get("version", UNKNOWN_VERSION)), str(pin.get("upstream_ref", NO_BUILD))
+        name, str(pin.get("version", UNKNOWN_VERSION)), str(pin.get("upstream_ref") or NO_BUILD)
     )
 
 
