@@ -186,6 +186,8 @@ log = logging.getLogger(__name__)
 
 # What a bad answer from the limit or count route raises; the embed itself already succeeded.
 _TRUNCATION_CHECK_FAILURES = (httpx.HTTPError, ProviderError, KeyError, TypeError, ValueError)
+# The longest the advisory limit or count request may hold an embed, in seconds.
+_TRUNCATION_CHECK_TIMEOUT_S = 5.0
 
 
 def _estimate_tokens(text: str) -> int:
@@ -605,9 +607,10 @@ class LlamaServerClient:
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
         self.in_flight = 0
-        # The server's input limit; None until read, and after a failed read.
+        # The server's input limit; None until read.
         self._max_input: int | None = None
-        self._limit_read = False
+        # Set by the first failed truncation check; the check is off for the client's life.
+        self._check_off = False
         self._in_flight_lock = threading.Lock()
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
@@ -1209,7 +1212,9 @@ class LlamaServerClient:
         return vectors
 
     def _note_cut_inputs(self, sub_batches: list[list[str]], total: int) -> None:
-        """Record how many inputs the server cut; a failed check is skipped, never raised."""
+        """Record how many inputs the server cut; a failure turns the check off, never raises."""
+        if self._check_off:
+            return
         try:
             limit = self._input_limit()
             path = self._profile.input_count_path
@@ -1217,17 +1222,17 @@ class LlamaServerClient:
                 return
             cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
         except _TRUNCATION_CHECK_FAILURES as exc:
+            self._check_off = True
             log.debug("Embed truncation check skipped: %s", exc)
             return
         note_truncated(cut, total, limit)
 
     def _input_limit(self) -> int | None:
-        """The server's ``max_input_length``, read once per client even when the read fails."""
+        """The server's ``max_input_length``, read once per client."""
         path = self._profile.input_limit_path
-        if path is None or self._limit_read:
+        if path is None or self._max_input is not None:
             return self._max_input
-        self._limit_read = True
-        resp = self._http.get(self._native_route(path))
+        resp = self._http.get(self._native_route(path), timeout=_TRUNCATION_CHECK_TIMEOUT_S)
         self._raise_for_status(resp)
         self._max_input = int(resp.json()["max_input_length"])
         return self._max_input
@@ -1241,7 +1246,9 @@ class LlamaServerClient:
         long = [text for text in texts if len(text) > limit]
         if not long:
             return 0
-        resp = self._http.post(self._native_route(path), json={"inputs": long})
+        resp = self._http.post(
+            self._native_route(path), json={"inputs": long}, timeout=_TRUNCATION_CHECK_TIMEOUT_S
+        )
         self._raise_for_status(resp)
         counts = resp.json()
         if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
