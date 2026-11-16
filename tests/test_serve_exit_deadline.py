@@ -40,6 +40,7 @@ import lilbee.cli.commands.servers as servers
 import lilbee.core.security as security
 import lilbee.server.app as app_mod
 import lilbee.server.handlers.rag as rag
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.cli.app import app
 
 def say(line):
@@ -51,10 +52,10 @@ if os.environ.get("X_GRACE"):
     servers._GRACEFUL_SHUTDOWN_S = float(os.environ["X_GRACE"])
 
 class Searcher:
-    def search(self, q, top_k=5, chunk_type=None):
+    def search_report(self, q, top_k=5, chunk_type=None):
         say("HELD")
         held_on_the_engine(never)
-        return []
+        return SearchReport([])
 
 def held_on_the_engine(event):
     event.wait()
