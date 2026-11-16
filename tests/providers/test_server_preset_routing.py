@@ -15,6 +15,7 @@ import pytest
 from lilbee.app import presets
 from lilbee.core import blocked_networks, settings
 from lilbee.core.config import Config, cfg
+from lilbee.modelhub.model_manager.core import _prefixed_source
 from lilbee.modelhub.role_validator import _is_registry_ref
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.config import _route_model, rerank_route
@@ -33,6 +34,7 @@ from lilbee.providers.sdk_backend import (
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.providers.server_registry import (
     BUILTIN_PREFIXES,
+    ConfigReadError,
     RerankWire,
     check_role,
     checked_key,
@@ -40,8 +42,14 @@ from lilbee.providers.server_registry import (
     route_for,
 )
 from lilbee.providers.serving import is_native_rerank_ref
+from lilbee.server.handlers.models import (
+    _require_model_available,
+    _resolve_via_parse,
+    _resolve_via_provider_key,
+)
 from tests import _fake_sdk as fakes
 
+_DENIED = PermissionError(errno.EACCES, "Permission denied")
 PRESET_KEY = "SENTINEL-preset-key-77aa"
 LLM_KEY = "SENTINEL-llm-api-key-31bc"
 PUBLIC_HOST = "pub.example.test"
@@ -260,7 +268,7 @@ class TestParse:
         denied = PermissionError(errno.EACCES, "Permission denied")
         with (
             mock.patch("lilbee.core.settings.harden_private_file", side_effect=denied),
-            pytest.raises(ValueError, match=r"Could not read config\.toml: .*Permission"),
+            pytest.raises(ConfigReadError, match=r"Could not read config\.toml: .*Permission"),
         ):
             parse_model_ref("wired/m")
 
@@ -269,9 +277,44 @@ class TestParse:
         denied = PermissionError(errno.EACCES, "Permission denied")
         with (
             mock.patch("lilbee.core.settings.harden_private_file", side_effect=denied),
-            pytest.raises(ValueError, match=r"Could not read config\.toml"),
+            pytest.raises(ConfigReadError, match=r"Could not read config\.toml"),
         ):
             route_for("wired")
+
+    def test_set_model_shows_the_config_read_text(self) -> None:
+        _store(_preset())
+        services = mock.Mock()
+        services.provider.list_models.return_value = []
+        with (
+            mock.patch("lilbee.server.handlers.models.get_services", return_value=services),
+            mock.patch("lilbee.core.settings.harden_private_file", side_effect=_DENIED),
+            pytest.raises(ConfigReadError, match=r"Could not read config\.toml"),
+        ):
+            _require_model_available("wired/m")
+
+    def test_provider_key_check_shows_the_config_read_text(self) -> None:
+        _store(_preset())
+        with (
+            mock.patch("lilbee.core.settings.harden_private_file", side_effect=_DENIED),
+            pytest.raises(ConfigReadError, match=r"Could not read config\.toml"),
+        ):
+            _resolve_via_provider_key("wired/m")
+
+    def test_parse_resolution_shows_the_config_read_text(self) -> None:
+        _store(_preset())
+        with (
+            mock.patch("lilbee.core.settings.harden_private_file", side_effect=_DENIED),
+            pytest.raises(ConfigReadError, match=r"Could not read config\.toml"),
+        ):
+            _resolve_via_parse("wired/m", set())
+
+    def test_model_source_shows_the_config_read_text(self) -> None:
+        _store(_preset())
+        with (
+            mock.patch("lilbee.core.settings.harden_private_file", side_effect=_DENIED),
+            pytest.raises(ConfigReadError, match=r"Could not read config\.toml"),
+        ):
+            _prefixed_source("wired/m")
 
     def test_a_preset_ref_keeps_its_raw_options(self) -> None:
         _store(_preset())
