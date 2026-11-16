@@ -299,7 +299,7 @@ jobs:
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
             --extra-index-url https://lilbee.sh/compat/ \
-            --find-links https://github.com/tobocop2/xberg/releases/expanded_assets/v1.4.0%2Blilbee \
+            --find-links https://lilbee.sh/forks/xberg/ \
             lancedb==0.40.0+compat '.[release]' 'nuitka[onefile]==4.3.1' pip
 
       - name: Verify extras installed in build venv
