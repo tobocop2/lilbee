@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import socket
 import struct
 import threading
 import time
@@ -31,6 +32,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
 from lilbee.providers.fleet.swap_manager import EngineLifetime, EngineReadiness
 from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.routing_provider import RoutingProvider
 from tests._exit_probe import assert_probe_exits
 from tests._fleet_engines import engines_for_all_roles
 from tests._prior_run import request_keep_warm_in_prior_run
@@ -7690,3 +7692,81 @@ class TestDeadServersThroughTheRoutingProvider:
         with pytest.raises(ProviderError, match="not responding") as caught:
             routing.chat([{"role": "user", "content": "hi"}], stream=stream)
         assert caught.value.kind is ProviderErrorKind.CONNECTION
+
+
+_ROLE_ONLY_FRAME = b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+
+
+class _RoleOnlyCuttingServer:
+    """A local chat server that sends role-only stream frames, then cuts the connection."""
+
+    def __init__(self, frames: int, how: str) -> None:
+        self._frames = frames
+        self._how = how
+        self.streams = 0
+        self._listener = socket.socket()
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(4)
+        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def close(self) -> None:
+        self._listener.close()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self._listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        # The socket stays open until its reader closes too; a client that hangs up ends both reads.
+        reader = conn.makefile("rb")
+        length = 0
+        while (line := reader.readline()) not in (b"\r\n", b""):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":")[1])
+        body = reader.read(length)
+        reader.close()
+        if b'"stream":true' in body.replace(b" ", b""):
+            self.streams += 1
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+        )
+        for _ in range(self._frames):
+            conn.sendall(b"%x\r\n" % len(_ROLE_ONLY_FRAME) + _ROLE_ONLY_FRAME + b"\r\n")
+        if self._how == "reset":
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        conn.close()
+
+
+class TestAStreamCutBeforeAnyText:
+    """A chat stream that sends only role frames, then loses its connection."""
+
+    @pytest.mark.parametrize("frames", [1, 3])
+    @pytest.mark.parametrize("how", ["reset", "closed"])
+    def test_the_cut_is_the_not_responding_error(self, monkeypatch, frames, how) -> None:
+        server = _RoleOnlyCuttingServer(frames, how)
+        try:
+            monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+            monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+            routing = RoutingProvider()
+            fleet = routing._get_local()
+            assert isinstance(fleet, FleetProvider)
+            client = LlamaServerClient(
+                server.url, "chat-0", profile=LLAMA.request_profile(WorkerRole.CHAT)
+            )
+            # The fleet start-up layer is out; the client and its socket are real.
+            monkeypatch.setattr(fleet, "_require_clients", lambda role: [client])
+            monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
+            monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
+            with pytest.raises(ProviderError, match="not responding") as caught:
+                list(routing.chat([{"role": "user", "content": "hi"}], stream=True))
+            assert caught.value.kind is ProviderErrorKind.CONNECTION
+            assert isinstance(caught.value.__cause__, httpx.TransportError)
+            assert server.streams == 2  # the first cut is retried once, the second is final
+        finally:
+            server.close()
