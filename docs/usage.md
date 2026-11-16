@@ -1484,16 +1484,22 @@ lilbee engine install
 
 The command downloads the pack for your hardware into lilbee's engine cache and
 checks its digest. Packs exist for Apple silicon (Metal), NVIDIA on Linux and
-Windows (CUDA), and x86_64 Linux and Windows (CPU). lilbee picks the CUDA pack
-when it finds a usable NVIDIA driver. If you skip the command, lilbee runs the
+Windows (CUDA), AMD and Intel GPUs on Linux and Windows (Vulkan), AMD GPUs on
+Linux (ROCm), and x86_64 Linux and Windows (CPU). lilbee picks the CUDA pack
+when it finds a usable NVIDIA driver. Next it picks the ROCm pack for a Linux
+computer with a supported AMD GPU, then the Vulkan pack for an AMD or Intel GPU.
+The ROCm pack needs the NUMA library on the host: install `numactl-libs` on
+Fedora and RHEL, or `libnuma1` on Debian and Ubuntu. Without it, the computer
+gets the Vulkan pack. The Vulkan pack needs the Vulkan loader on Linux:
+install `vulkan-loader` or `libvulkan1`. Without it, the computer gets the CPU
+pack. If you skip the command, lilbee runs the
 same install the first time a model needs an engine. A computer with no network
 needs the pack copied into the `packs` folder of the engine cache by hand. The
 error from a failed download names the file to copy.
 
-**Your own engine.** No pack exists for AMD (ROCm), Vulkan, Linux on ARM,
-Windows on ARM, or Intel Macs. On a computer with an AMD or Intel GPU, lilbee
-installs the CPU pack and logs a warning that names the GPU vendor. The engine
-wheels for those backends are not on the `lilbee.sh` index yet. On those
+**Your own engine.** No pack exists for Linux on ARM, Windows on ARM, or Intel
+Macs. On a computer with an AMD or Intel GPU that no pack can use, lilbee
+installs the CPU pack and logs a warning that names the GPU vendor. On those
 computers, use a bundled build, or run your own `llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
 build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install
 lilbee with any of these commands. Then set `LILBEE_LLAMA_SERVER_PATH` to the

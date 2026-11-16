@@ -36,6 +36,7 @@ from lilbee.providers.fleet.engines.base import (
     ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.loadability import assert_engine_can_load
@@ -73,8 +74,32 @@ _CUDA_HOSTS = {
     (HostOS.LINUX, HostArch.X86_64),
     (HostOS.WINDOWS, HostArch.X86_64),
 }
+_VULKAN_VENDORS = frozenset({PCIVendorID.AMD, PCIVendorID.INTEL})
+_VULKAN_BACKEND = "vulkan"
+_ROCM_BACKEND = "rocm"
+# The gfx targets that the ROCm pack carries device code and GEMM kernels for.
+# A test reads the pack build files and fails when they stop agreeing with this set.
+_ROCM_GFX = frozenset(
+    {
+        "gfx908",
+        "gfx90a",
+        "gfx942",
+        "gfx950",
+        "gfx1030",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1150",
+        "gfx1151",
+        "gfx1200",
+        "gfx1201",
+    }
+)
 _PACK_LICENCES = ["MIT"]
-_CUDA_PACK_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+_BACKEND_LICENCES = {
+    _CUDA_BACKEND: ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"],
+    _ROCM_BACKEND: ["MIT AND BSD-3-Clause AND NCSA AND Apache-2.0 WITH LLVM-exception"],
+}
 # The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
 # engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
 _WHEEL_VERSION = "1.12032.1"
@@ -87,6 +112,11 @@ def _has_usable_cuda(host: HostCaps) -> bool:
     if (host.nvidia_driver_cuda or (0, 0)) < _CUDA_DRIVER_FLOOR:
         return False
     return max(gpu.compute for gpu in host.gpus) >= _CUDA_MIN_COMPUTE
+
+
+def _has_usable_rocm(host: HostCaps) -> bool:
+    """Whether *host* is Linux with the NUMA library and an AMD GPU that the ROCm pack serves."""
+    return host.os is HostOS.LINUX and host.libnuma and any(g in _ROCM_GFX for g in host.amd_gfx)
 
 
 def cuda_pack_gap(host: HostCaps) -> str:
@@ -117,8 +147,14 @@ def pack_backend(host: HostCaps) -> str:
     """The backend of the llama.cpp pack that *host* installs."""
     if (host.os, host.arch) == (HostOS.MACOS, HostArch.ARM64):
         return "metal"
-    if (host.os, host.arch) in _CUDA_HOSTS and _has_usable_cuda(host):
+    if (host.os, host.arch) not in _CUDA_HOSTS:
+        return _CPU_PACK
+    if _has_usable_cuda(host):
         return _CUDA_BACKEND
+    if _has_usable_rocm(host):
+        return _ROCM_BACKEND
+    if host.vulkan_loader and host.display_vendors & _VULKAN_VENDORS:
+        return _VULKAN_BACKEND
     return _CPU_PACK
 
 
@@ -173,7 +209,7 @@ class LlamaCppAdapter:
             "launch": _PIN_LAUNCH,
             "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
-            "licenses": _CUDA_PACK_LICENCES if backend == _CUDA_BACKEND else _PACK_LICENCES,
+            "licenses": _BACKEND_LICENCES.get(backend, _PACK_LICENCES),
         }
 
     def pack_pin(self) -> Mapping[str, Any]:

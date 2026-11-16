@@ -204,8 +204,8 @@ def test_a_fabricated_engine_is_named(shipped: set[Cell]) -> None:
 
 
 def test_a_row_for_an_unshipped_cell_is_named(shipped: set[Cell]) -> None:
-    rows = [*COVERAGE_ROWS, _row(engine="llama.cpp", cell="linux-x86_64-vulkan")]
-    assert stale(shipped, rows) == [("llama.cpp", "linux-x86_64-vulkan")]
+    rows = [*COVERAGE_ROWS, _row(engine="llama.cpp", cell="linux-aarch64-vulkan")]
+    assert stale(shipped, rows) == [("llama.cpp", "linux-aarch64-vulkan")]
 
 
 def test_engine_rows_name_a_registry_engine_and_preset_rows_a_recorded_preset() -> None:
