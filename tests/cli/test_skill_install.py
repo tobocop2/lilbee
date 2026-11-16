@@ -265,6 +265,15 @@ def test_a_failed_install_reports_its_own_error_and_leaves_no_staging_folder(
     assert list(dest.parent.iterdir()) == []
 
 
+def test_an_install_records_the_bundled_digest_in_a_named_file(tmp_path, monkeypatch):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    _bundle(tmp_path, monkeypatch, "text")
+    install_bundled_skill(dest)
+    recorded = (dest / ".lilbee-skill-sha256").read_text(encoding="utf-8")
+    assert recorded == skill_install._digest(tmp_path / "packaged")
+    assert len(recorded) == 64
+
+
 def test_the_skill_is_staged_beside_its_destination_under_a_lilbee_prefix(tmp_path, monkeypatch):
     dest = tmp_path / "skills" / "lilbee-mcp"
     staged: list[Path] = []
