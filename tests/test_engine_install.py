@@ -478,6 +478,37 @@ def _rest(body: dict[str, Any]) -> tuple[int, Any]:
         return res.status_code, res.json()
 
 
+def _spy_connects(monkeypatch: pytest.MonkeyPatch, allow: tuple[str, ...] = ()) -> list[Any]:
+    """Record every socket connect to a host the test does not allow by name.
+
+    An allowed host connects for real. Any other connect, loopback included, is
+    recorded and not made. The connect inside a socket pair is left out: on Windows
+    the event loop joins its own pair over loopback.
+    """
+    seen: list[Any] = []
+    real_connect = socket.socket.connect
+    real_pair = socket.socketpair
+    pairing = False
+
+    def connect_spy(sock: socket.socket, address: Any, *args: object) -> None:
+        if pairing or (isinstance(address, tuple) and address[0] in allow):
+            real_connect(sock, address, *args)
+        else:
+            seen.append(address)
+
+    def pair_spy() -> tuple[socket.socket, socket.socket]:
+        nonlocal pairing
+        pairing = True
+        try:
+            return real_pair()
+        finally:
+            pairing = False
+
+    monkeypatch.setattr(socket.socket, "connect", connect_spy)
+    monkeypatch.setattr(socket, "socketpair", pair_spy)
+    return seen
+
+
 def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
     code, body = _cli("install", ENGINE.value, "--wheel", str(good))
     assert (code, body) == (
@@ -661,16 +692,7 @@ def test_an_engine_with_no_published_pack_is_refused_on_every_surface_and_touche
 
     monkeypatch.setattr(EngineStore, "ensure", spy)
     monkeypatch.setattr(EngineStore, "install_from_wheel", spy)
-    real_connect = socket.socket.connect
-
-    def connect_spy(sock: socket.socket, address: Any, *args: object) -> None:
-        # The event loop of the REST client joins its own socket pair over loopback on Windows.
-        if not isinstance(address, tuple) or address[0] in ("127.0.0.1", "::1"):
-            real_connect(sock, address, *args)
-        else:
-            reads.append("network")
-
-    monkeypatch.setattr(socket.socket, "connect", connect_spy)
+    connects = _spy_connects(monkeypatch)
     pack = tmp_path / "pack.whl"
     pack.write_bytes(b"not read")
     with pytest.raises(engine_service.EngineRefusedError) as exc:
@@ -689,7 +711,48 @@ def test_an_engine_with_no_published_pack_is_refused_on_every_surface_and_touche
         "code": INSTALL_REFUSED,
     }
     assert run_engine_command(f"install {ENGINE.value}").text == NO_PACK
-    assert (reads, root.exists()) == ([], False)
+    assert (reads, connects, root.exists()) == ([], [], False)
+
+
+def test_the_connect_spy_records_a_loopback_connect_unless_the_test_allows_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        address = server.getsockname()
+        with monkeypatch.context() as refusing:
+            refused = _spy_connects(refusing)
+            with socket.socket() as client:
+                client.connect(address)
+        assert refused == [address]
+        with monkeypatch.context() as allowing:
+            allowed = _spy_connects(allowing, allow=("127.0.0.1",))
+            with socket.socket() as client:
+                client.connect(address)
+                assert client.getpeername() == address
+        assert allowed == []
+
+
+def test_the_connect_spy_ignores_the_connect_a_socket_pair_makes_inside_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def windows_style_pair() -> tuple[socket.socket, socket.socket]:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(5)
+            client = socket.socket()
+            client.connect(listener.getsockname())
+            server, _ = listener.accept()
+            return client, server
+
+    monkeypatch.setattr(socket, "socketpair", windows_style_pair)
+    connects = _spy_connects(monkeypatch)
+    left, right = socket.socketpair()
+    left.close()
+    right.close()
+    assert connects == []
 
 
 def test_an_engine_with_no_published_pack_is_not_installed_and_logs_no_warning(
