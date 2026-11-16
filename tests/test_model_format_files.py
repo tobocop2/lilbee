@@ -364,7 +364,7 @@ class TestDownloadRouting:
             ),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _repo, name, _dir: tmp_path / name if name in old else None,
             ),
             mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
@@ -410,7 +410,7 @@ class TestDownloadRouting:
         seen: list[tuple[int, int]] = []
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
-            mock.patch.object(download, "_cached_path", side_effect=lambda _r, n, d: d / n),
+            mock.patch.object(download, "cached_file_path", side_effect=lambda _r, n, d: d / n),
             mock.patch.object(download, "fetch_remote_file") as probe,
         ):
             path = download.fetch_format_files(
@@ -431,7 +431,7 @@ class TestDownloadRouting:
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _r, n, d: d / n if n in cached else None,
             ),
             mock.patch.object(
@@ -479,7 +479,7 @@ class TestDownloadRouting:
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _r, n, d: d / n if n == "config.json" else None,
             ),
             mock.patch.object(
@@ -640,7 +640,7 @@ class _PullingManager:
             mock.patch.object(download, "_repo_sibling_files", return_value=_DENSE_LISTING),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _r, name, _d: (
                     self.tmp_path / name if name in self.cached else None
                 ),

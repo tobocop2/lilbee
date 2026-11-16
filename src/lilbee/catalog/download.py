@@ -518,8 +518,8 @@ def _fetch_files(
     return file_paths
 
 
-def _cached_path(hf_repo: str, name: str, models_dir: Path) -> Path | None:
-    """The cache path of *name* when the cache holds the whole file, else None."""
+def cached_file_path(hf_repo: str, name: str, models_dir: Path) -> Path | None:
+    """The snapshot path of *name* when the cache holds the whole file under it, else None."""
     from huggingface_hub import try_to_load_from_cache
 
     found = try_to_load_from_cache(hf_repo, name, cache_dir=str(models_dir))
@@ -547,7 +547,7 @@ def fetch_format_files(
     cached = {
         name: path
         for name in selected
-        if (path := _cached_path(entry.hf_repo, name, models_dir)) is not None
+        if (path := cached_file_path(entry.hf_repo, name, models_dir)) is not None
     }
     if len(cached) == len(selected):
         log.info("Model already downloaded: %s", cached[selected[0]])
@@ -584,11 +584,9 @@ def _cached_shard(
     Looks in the Hub cache layout first, then at the flat path an older
     install used.
     """
-    from huggingface_hub import try_to_load_from_cache
-
     file = _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
-    hit = try_to_load_from_cache(entry.hf_repo, shard, cache_dir=str(models_dir))
-    for path in (Path(hit) if isinstance(hit, str) else None, models_dir / shard):
+    hit = cached_file_path(entry.hf_repo, shard, models_dir)
+    for path in (hit, models_dir / shard):
         if path is not None and path.exists() and _size_matches(path, file.size):
             return path
     return None

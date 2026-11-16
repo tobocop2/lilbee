@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.download import cached_file_path
 from lilbee.catalog.formats import select_files
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
@@ -461,15 +462,8 @@ class ModelRegistry:
         Returns the symlink, not the blob, so a split GGUF loads from a dir where
         its sibling shards are co-located under their real names.
         """
-        from huggingface_hub import try_to_load_from_cache
-
-        hit = try_to_load_from_cache(
-            repo_id=hf_repo, filename=gguf_filename, cache_dir=str(self._root)
-        )
-        candidate: Path | None = None
-        if isinstance(hit, str):  # exact repo-relative match
-            candidate = Path(hit)
-        else:  # None or the _CACHED_NO_EXIST sentinel: locate the basename instead
+        candidate = cached_file_path(hf_repo, gguf_filename, self._root)
+        if candidate is None:  # no exact repo-relative match: locate the basename instead
             snapshots = self._repo_cache_dir(hf_repo) / "snapshots"
             if snapshots.is_dir():
                 basename = Path(gguf_filename).name
