@@ -1852,7 +1852,90 @@ class TestResolveFilename:
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
         assert str(raised.value) == (
             f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}. It holds a LoRA adapter, "
-            "not a model. Pull the base model it was trained from."
+            "not a model. Pull the base model it was trained from instead."
+        )
+
+    def test_lora_adapter_repo_names_its_base_model_from_the_tags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            tags=("peft", "base_model:adapter:acme/base-7B"),
+        )
+        with pytest.raises(RuntimeError, match=r"Pull acme/base-7B instead\.$"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            # Only a root adapter_model*.safetensors beside adapter_config.json is an adapter.
+            (("adapter_config.json", "model.safetensors"), "#safetensors'"),
+            (("adapter_model.safetensors",), "#safetensors'"),
+            (("adapter_config.json", "adapter_model.safetensors", "sub/model.safetensors"), "LoRA"),
+        ],
+    )
+    def test_adapter_shape_is_told_apart_from_a_model(
+        self, monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...], expected: str
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, *names)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert expected in str(raised.value)
+
+    def test_gated_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 401 on the tag read is not an error of its own: the refusal still names no ref."""
+        from huggingface_hub import HfApi
+
+        answers: list[object] = [
+            SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[]),
+            _hub_http_error(401),
+        ]
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer  # type: ignore[return-value]
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
+
+    def test_hub_reads_carry_the_timeout_and_the_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from huggingface_hub import HfApi
+
+        from lilbee.catalog import download
+
+        calls: list[dict[str, object]] = []
+
+        def model_info(self: HfApi, repo_id: str, **kw: object) -> SimpleNamespace:
+            calls.append(kw)
+            return SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[])
+
+        monkeypatch.setattr(download, "hf_token", lambda: "tok")
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert len(calls) == 2
+        assert all(c == {"timeout": download.DEFAULT_TIMEOUT, "token": "tok"} for c in calls)
+
+    def test_gated_listing_says_how_to_authenticate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        with pytest.raises(PermissionError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"{PICKS_CHAT[0].hf_repo} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
         )
 
     def test_unreadable_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:

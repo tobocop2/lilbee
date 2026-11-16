@@ -709,14 +709,14 @@ def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> li
     return [s.rfilename for s in _model_info(hf_repo, timeout).siblings or []]
 
 
-def _repo_formats(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> frozenset[ModelFormat]:
-    """The weight formats the Hub tags of *hf_repo* name; an MLX repo drops safetensors.
+def _repo_tags(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """The Hub tags of *hf_repo*.
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
         RuntimeError: the record could not be fetched, or offline mode is on.
     """
-    return formats_from_tags(_model_info(hf_repo, timeout).tags or [])
+    return list(_model_info(hf_repo, timeout).tags or [])
 
 
 def _mmproj_rank(filename: str) -> tuple[bool, str]:
@@ -795,6 +795,7 @@ def resolve_filename(
     raise RuntimeError(_no_gguf_message(entry.hf_repo, siblings))
 
 
+_ADAPTER_BASE_TAG = "base_model:adapter:"
 _ADAPTER_CONFIG = "adapter_config.json"
 _ADAPTER_WEIGHTS_PREFIX = "adapter_model"
 
@@ -816,22 +817,29 @@ def _is_adapter_only(siblings: list[str]) -> bool:
     )
 
 
+def _adapter_message(message: str, tags: list[str]) -> str:
+    """The refusal for a LoRA adapter repo, naming its base model when the Hub tags give it."""
+    named = (t.removeprefix(_ADAPTER_BASE_TAG) for t in tags if t.startswith(_ADAPTER_BASE_TAG))
+    base = next(named, "")
+    target = base or "the base model it was trained from"
+    return f"{message}. It holds a LoRA adapter, not a model. Pull {target} instead."
+
+
 def _no_gguf_message(hf_repo: str, siblings: list[str]) -> str:
     """The refusal for a repo with no GGUF weights, naming the ref that pulls its folder."""
     message = f"No GGUF model weights found in {hf_repo}"
     if not _holds_weights(siblings):
         return message
-    if _is_adapter_only(siblings):
-        return (
-            f"{message}. It holds a LoRA adapter, not a model. "
-            "Pull the base model it was trained from."
-        )
     try:
-        tagged = _repo_formats(hf_repo)
-    except RuntimeError:
+        tags = _repo_tags(hf_repo)
+    except (RuntimeError, PermissionError):
         # Without the tags an MLX repo reads as plain safetensors, so name nothing.
+        tags = None
+    if _is_adapter_only(siblings):
+        return _adapter_message(message, tags or [])
+    if tags is None:
         return message
-    fmt = ModelFormat.MLX if ModelFormat.MLX in tagged else ModelFormat.SAFETENSORS
+    fmt = ModelFormat.MLX if ModelFormat.MLX in formats_from_tags(tags) else ModelFormat.SAFETENSORS
     ref = ModelRef(hf_repo, "", fmt).canonical
     return (
         f"{message}. It holds {fmt} weights: pull them with 'lilbee model pull {ref}' "
