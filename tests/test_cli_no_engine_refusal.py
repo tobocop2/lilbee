@@ -14,6 +14,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.provider import FleetProvider
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
 runner = CliRunner()
@@ -36,7 +37,8 @@ def _installed_safetensors_engine(
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.AUTO)
     monkeypatch.setattr(cfg, "engine_choices", None)
-    monkeypatch.setattr(cfg, "worker_pool_eager_start", False)
+    # The CLI callback resets cfg, so the eager start is cut at the provider instead.
+    monkeypatch.setattr(FleetProvider, "warm_up_pool", lambda self: None)
     yield
 
 
