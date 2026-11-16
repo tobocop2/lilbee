@@ -41,6 +41,20 @@ def test_another_provider_failure_on_the_chat_route_stays_503() -> None:
     assert search_routes._api_chat_error_status(ProviderError("boom")) == 503
 
 
+@pytest.mark.parametrize(
+    ("kind", "status"),
+    [
+        (ProviderErrorKind.CONTEXT_OVERFLOW, 400),
+        (ProviderErrorKind.NOT_FOUND, 404),
+        (ProviderErrorKind.AUTH, 503),
+    ],
+)
+def test_the_chat_route_keeps_the_status_of_each_other_kind(
+    kind: ProviderErrorKind, status: int
+) -> None:
+    assert search_routes._api_chat_error_status(ProviderError("boom", kind=kind)) == status
+
+
 @pytest.mark.parametrize("kind", [ProviderErrorKind.BAD_REQUEST, ProviderErrorKind.UNKNOWN])
 def test_the_chat_route_maps_by_error_class_not_kind(kind: ProviderErrorKind) -> None:
     assert search_routes._api_chat_error_status(NoEngineError(_TEXT, kind=kind)) == 400
