@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.providers.base import ProviderErrorKind
-from lilbee.providers.fleet.engine_digests import MANIFESTS
+from lilbee.providers.fleet.engine_manifest import MANIFESTS
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.fleet.engines.llama import LLAMA

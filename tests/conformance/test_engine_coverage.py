@@ -11,8 +11,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.fleet.engine_digests import MANIFESTS
-from lilbee.providers.fleet.engine_manifest import cell_key
+from lilbee.providers.fleet.engine_manifest import MANIFESTS, cell_key
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
 from lilbee.providers.fleet.engines.choice import ADAPTERS, PinError, pin_lock
 from lilbee.providers.fleet.engines.proof import HARDWARE_PROOF

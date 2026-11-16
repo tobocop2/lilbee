@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from lilbee.providers.fleet.engine_digests import MANIFESTS
+from lilbee.providers.fleet.engine_manifest import MANIFESTS
 
 _TIMEOUT_S = 60
 _ROWS = [
@@ -29,3 +29,5 @@ def test_the_download_url_of_each_row_answers_200(
     request = urllib.request.Request(row["url"], headers={"Range": "bytes=0-0"})  # noqa: S310
     with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:  # noqa: S310
         assert response.status in (200, 206)
+        total = response.headers["Content-Range"].rpartition("/")[2]
+    assert int(total) == row["size"]

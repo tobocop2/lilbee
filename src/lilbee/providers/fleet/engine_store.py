@@ -30,7 +30,7 @@ from lilbee.catalog.download import (
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS
-from lilbee.providers.fleet.engine_digests import PACKAGES_URL
+from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
 from lilbee.runtime.cancellation import CancelSignal
 
