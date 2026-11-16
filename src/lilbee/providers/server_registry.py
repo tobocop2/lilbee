@@ -191,6 +191,7 @@ def route_for(prefix: str) -> ServerRoute | None:
 
     The store is read on each call, so a preset another process changes is seen at once.
     A store that does not parse routes nothing; the read has logged the fault.
+    A config.toml that cannot be read raises ValueError with the text for the user.
     """
     if prefix in RESERVED_NAMES:
         return None
@@ -198,6 +199,11 @@ def route_for(prefix: str) -> ServerRoute | None:
         entries = stored_entries()
     except ValueError:
         return None
+    except OSError as exc:
+        # Deferred: lilbee.app.settings imports the config, which imports this module.
+        from lilbee.app.settings import config_read_failure_message
+
+        raise ValueError(config_read_failure_message(exc)) from exc
     for entry in entries:
         if isinstance(entry, StoredPreset) and entry.name == prefix:
             key = entry.api_key.get_secret_value() if entry.api_key else None
