@@ -736,6 +736,18 @@ def test_the_task_bar_download_of_a_format_nothing_loads_downloads_it(
     assert not any(_NO_MLX_TEXT in w for w in warnings)
 
 
+def test_the_task_bar_download_of_a_gguf_nothing_loads_fails_with_the_text(
+    pulls: list[str], no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.app import engine_choice
+    from lilbee.cli.tui.widgets.task_bar_controller import _download_target
+
+    monkeypatch.setattr(engine_choice, "installed_engines", lambda: {})
+    with pytest.raises(RuntimeError, match="No installed engine loads the gguf format"):
+        _download_target(SimpleNamespace(), SimpleNamespace(pull_ref=GGUF_REF, display_name="m"))  # type: ignore[arg-type]
+    assert pulls == []
+
+
 async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_it(
     no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
