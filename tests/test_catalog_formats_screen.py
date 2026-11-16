@@ -170,10 +170,10 @@ async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chos
         ]
 
 
-async def test_install_of_a_format_no_engine_loads_refuses_and_starts_nothing(
+async def test_install_of_a_format_no_engine_loads_downloads_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only a gguf engine is installed, so the safetensors pick is refused before any download."""
+    """Only a gguf engine is installed; the safetensors pick still downloads."""
     model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS}))
     async with _App().run_test(size=(120, 40)) as pilot:
         screen = CatalogScreen()
@@ -187,9 +187,11 @@ async def test_install_of_a_format_no_engine_loads_refuses_and_starts_nothing(
         screen._install_model(model)
         assert await wait_until(pilot, lambda: isinstance(pilot.app.screen, FormatPicker))
         await pilot.press("down", "enter")
-        assert await wait_until(pilot, lambda: bool(notices))
-        assert "No installed engine loads the safetensors format" in notices[0]
-        assert started == []
+        assert await wait_until(pilot, lambda: bool(started))
+        assert [(m.format, m.pull_ref) for m in started] == [
+            (ModelFormat.SAFETENSORS, "acme/two#safetensors")
+        ]
+        assert not any("No installed engine" in n for n in notices)
 
 
 async def test_escape_in_the_format_picker_installs_nothing(
