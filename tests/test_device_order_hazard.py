@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.data.ingest.adaptive import (
     CONSERVATIVE,
     ControllerState,
@@ -37,6 +38,8 @@ _NVIDIA = "NVIDIA GeForce RTX 3090"
 _AMD = "AMD Radeon RX 7900"
 _INTEL = "Intel Arc A770"
 _INSTALL_HINT = object()
+# Chat and embed each run a local model, so a plan on two engines is a mixed fleet.
+_MODELS = {"chat_model": "chat-model", "embedding_model": "embed-model", "reranker_model": ""}
 
 
 def _card_free(index: int) -> int:
@@ -60,6 +63,9 @@ def host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setattr(gpu_stats, "card_count", lambda: 0)
     monkeypatch.setattr(planning, "nvidia_cards", lambda: [])
     monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", Counter)
+    for field, ref in _MODELS.items():
+        monkeypatch.setattr(cfg, field, ref)
+    monkeypatch.setattr(planning, "vision_role_wanted", lambda _ref: False)
     return monkeypatch
 
 
@@ -248,6 +254,20 @@ def test_mixed_plan_with_a_failed_driver_read_uses_the_visible_count(host) -> No
 def test_cuda_plan_under_a_mask_is_not_refused(host) -> None:
     host.setenv("CUDA_VISIBLE_DEVICES", "1")
     assert _unpinnable(host, "CUDA", seen=1, cards=2) == ()
+
+
+def test_a_role_with_no_model_turns_a_refused_mixed_plan_into_one_engine(host) -> None:
+    """Embed has no model, so only the chat engine is planned: nothing is mixed to refuse."""
+    host.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _unpinnable(host, "Vulkan", seen=1, cards=2) == (_EMBED,)
+    host.setattr(cfg, "embedding_model", "")
+    assert _unpinnable(host, "Vulkan", seen=1, cards=2) == ()
+
+
+def test_a_remote_role_turns_a_refused_mixed_plan_into_one_engine(host) -> None:
+    host.setenv("CUDA_VISIBLE_DEVICES", "1")
+    host.setattr(cfg, "embedding_model", "openai/embed-model")
+    assert _unpinnable(host, "Vulkan", seen=1, cards=2) == ()
 
 
 def test_a_plan_with_no_visible_device_refuses_nothing(host) -> None:
