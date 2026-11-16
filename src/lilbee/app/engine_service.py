@@ -21,6 +21,7 @@ from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.binary import llama_server_ready
 from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
 from lilbee.providers.fleet.engine_store import (
     BundledEngineError,
@@ -342,7 +343,11 @@ def offered_engines() -> choice.InstalledEngines:
 def not_installed() -> list[str]:
     """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    missing = [name for name in choice.ADAPTERS if name not in installed]
+    missing = [
+        name
+        for name, adapter in choice.ADAPTERS.items()
+        if not (llama_server_ready() if adapter.bundled else name in installed)
+    ]
     offered = [str(name) for name in missing if _install_gate(name).ok]
     hidden = [str(name) for name in missing if str(name) not in offered]
     host = session_host()
