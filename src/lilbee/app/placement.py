@@ -20,7 +20,7 @@ from lilbee.providers.fleet.planning import (
     clear_read_device_cache,
     resolve_placement_plan,
 )
-from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
 log = logging.getLogger(__name__)
@@ -356,21 +356,53 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     context sizing, while charging stays against total capacity (bb-a8f).
     """
     reading = _planning_engines()
-    resolved = _resolve(spec, reading)
     spec_json = None if spec is None else spec.to_json()
+    resolved = _plan_for_write(spec, reading)
     if spec_json is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
     else:
         settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
     settings.sync_from_resolver(cfg, [_PLACEMENT_KEY])
     services = peek_services()
-    if services is None:
-        clear_read_device_cache()  # nothing running; let the next boot probe fresh
+    if resolved is None or services is None:
+        clear_read_device_cache()  # nothing can run; let the next boot probe fresh
     else:
         _apply_to_running(services)
+    if resolved is None:
+        return _no_engine_view(reading)
     if cfg.placement != spec_json:
         return get_placement()  # LILBEE_PLACEMENT outranks the saved spec; report what runs
     return _view(resolved, reading.adapters, manual=spec is not None, spec_json=spec_json)
+
+
+def _plan_for_write(spec: PlacementSpec | None, reading: BookReading) -> ResolvedPlacement | None:
+    """The plan for *spec*; None for a clear on a host that cannot plan (a clear needs none)."""
+    try:
+        return _resolve(spec, reading)
+    except (ProviderError, OSError) as exc:
+        if spec is not None:
+            raise
+        log.debug("A placement clear goes ahead without a plan: %s", exc)
+        return None
+
+
+def _no_engine_view(reading: BookReading) -> PlacementView:
+    """The view of a host whose engine cannot plan: nothing is placed."""
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        skipped_no_engine=tuple(
+            SkippedNoEngine(
+                role=role,
+                model=str(getattr(cfg, ROLE_REGISTRY[role].config_field)),
+                notice=notice,
+            )
+            for role, notice in reading.notices.items()
+        ),
+    )
 
 
 def wait_chat_ready(

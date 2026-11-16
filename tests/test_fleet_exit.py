@@ -423,7 +423,7 @@ def test_a_request_before_the_library_opens_changes_nothing_and_joins_nothing(
     _assert_ended_by_the_signal(server, server.stop_and_time_the_exit(), open_still_running=True)
 
 
-def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothing(
+def test_a_placement_clear_with_no_engine_removes_the_saved_placement(
     server_with_no_engine: _Server, tmp_path: Path
 ) -> None:
     server = server_with_no_engine
@@ -432,11 +432,9 @@ def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothi
     config = tmp_path / "config.toml"
     config.write_text(_SAVED_PLACEMENT, encoding="utf-8")
     answer = _request(tmp_path, port, "DELETE", "/api/placement", None)
-    assert answer.status_code == 503
-    detail = answer.json()["detail"]
-    assert detail.startswith(_NO_ENGINE_DETAIL)
-    assert "lilbee engine install" in detail
-    assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["manual"] is False
+    assert "placement" not in config.read_text(encoding="utf-8")
     assert not any(line.startswith("joined") for line in server.lines), server.lines
     _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())
 
