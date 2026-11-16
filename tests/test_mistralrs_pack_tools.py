@@ -243,6 +243,45 @@ def test_the_pack_job_checks_the_notices_in_the_built_wheel() -> None:
     assert "NOTICE-OpenSSL" in check and "SOURCE-MPL-2.0" in check
 
 
+def _run_notice_loop(tmp_path: Path, listing: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run the OpenSSL and MPL notice loop of the wheel check against a wheel listing."""
+    check = next(
+        step["run"]
+        for step in _mistralrs_job()["steps"]
+        if step.get("name") == "Check the licences in the installed wheel"
+    )
+    loop = "for pair in" + check.split("for pair in", 1)[1].split("\ndone", 1)[0] + "\ndone"
+    (tmp_path / "crate-licences.txt").write_text("MPL-2.0\nOpenSSL\n", encoding="utf-8")
+    (tmp_path / "wheel-listing.txt").write_text("\n".join(listing) + "\n", encoding="utf-8")
+    script = tmp_path / "check_notices.sh"
+    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8")
+    return subprocess.run(
+        ["bash", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+_HELD = [
+    "x.dist-info/licenses/SOURCE-MPL-2.0 12",
+    "x.dist-info/licenses/NOTICE-OpenSSL 12",
+]
+
+
+def test_the_pack_job_passes_a_wheel_that_holds_both_notices(tmp_path: Path) -> None:
+    assert _run_notice_loop(tmp_path, _HELD).returncode == 0
+
+
+@pytest.mark.parametrize("missing", ["SOURCE-MPL-2.0", "NOTICE-OpenSSL"])
+def test_the_pack_job_fails_a_wheel_that_lacks_a_notice(tmp_path: Path, missing: str) -> None:
+    listing = [line for line in _HELD if missing not in line]
+    bad = _run_notice_loop(tmp_path, listing)
+    assert bad.returncode == 1
+    assert f"wheel lacks {missing}" in bad.stdout
+
+
 @pytest.mark.parametrize("name", ["LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"])
 def test_the_pack_job_refuses_an_empty_licence_file(tmp_path: Path, name: str) -> None:
     step = next(
