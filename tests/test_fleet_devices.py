@@ -1055,6 +1055,19 @@ def test_a_probe_killed_by_another_signal_is_a_probe_failure_not_a_cpu_host(
     assert "does not appear to support" not in str(caught.value)
 
 
+def test_both_probe_checks_take_the_exit_phrase_from_one_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dev_mod, "_exit_phrase", lambda code: f"ended as <{code}>")
+    monkeypatch.setattr(dev_mod, "run_bounded", lambda *_a, **_k: ("", -9))
+    with pytest.raises(ProviderError) as gpu_probe:
+        probe_devices(Path("llama-server"))
+    with pytest.raises(ProviderError) as listing:
+        dev_mod.require_clean_probe_exit(Path("llama-server"), -9, "")
+    assert "probe (llama-server --list-devices) ended as <-9> before it" in str(gpu_probe.value)
+    assert "probe (llama-server --list-devices) ended as <-9>, so" in str(listing.value)
+
+
 def test_a_probe_killed_by_sigterm_names_the_signal_and_the_probe_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

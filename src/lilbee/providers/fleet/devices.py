@@ -295,8 +295,8 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
         )
     if returncode < 0 and not answered:
         raise ProviderError(
-            f"The GPU device probe ({binary.name} --list-devices) was stopped by signal "
-            f"{-returncode} ({_signal_name(-returncode)}) before it listed any device, so "
+            f"The GPU device probe ({binary.name} --list-devices) {_exit_phrase(returncode)} "
+            "before it listed any device, so "
             "the engine cannot start. Something ended the probe: a GPU driver fault, "
             "the out-of-memory killer or a service manager. lilbee does not guess a GPU "
             "from the host's Vulkan loader here, because the engine would then fail the "
@@ -340,19 +340,21 @@ def require_clean_probe_exit(binary: Path, returncode: int, output: str) -> None
     """Raise a ``ProviderError`` naming the exit status or signal of a probe that did not exit 0."""
     if returncode == 0:
         return
-    how = (
-        f"was stopped by signal {-returncode} ({_signal_name(-returncode)})"
-        if returncode < 0
-        else f"exited with status {returncode}"
-    )
     raise ProviderError(
-        f"The device probe ({binary.name} --list-devices) {how}, so its device list "
-        "may be incomplete and the engine cannot be planned from it. A GPU driver fault, "
-        "the out-of-memory killer or a service manager can end the probe.\n"
+        f"The device probe ({binary.name} --list-devices) {_exit_phrase(returncode)}, "
+        "so its device list may be incomplete and the engine cannot be planned from it. "
+        "A GPU driver fault, the out-of-memory killer or a service manager can end the probe.\n"
         f"The probe reported: {_probe_tail(output)}",
         provider=_PROVIDER,
         kind=ProviderErrorKind.SERVER,
     )
+
+
+def _exit_phrase(returncode: int) -> str:
+    """How a probe ended: the signal that stopped it, or its exit status."""
+    if returncode < 0:
+        return f"was stopped by signal {-returncode} ({_signal_name(-returncode)})"
+    return f"exited with status {returncode}"
 
 
 def _signal_name(number: int) -> str:
