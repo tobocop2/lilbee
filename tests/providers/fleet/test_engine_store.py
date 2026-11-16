@@ -754,6 +754,9 @@ _CUDA_NOTICE = Path(__file__).parent / "fixtures" / "NOTICE-NVIDIA-CUDA"
 _WRAPPED_GPL = "GNU General\nPublic   License\n\n  Version 3, 29 June 2007\n"
 _WRAPPED_LGPL = "gnu lesser\r\ngeneral public license\r\nversion 2.1\r\n"
 _UTF16_GPL = codecs.BOM_UTF16_LE + _GPL_TEXT.encode("utf-16-le")
+_MIT_TEXT = "MIT License\nPermission is hereby granted\n"
+# NUL padding makes the bytes look like UTF-16 without a mark, but the title is UTF-8.
+_NUL_PADDED_GPL = b"\x00\x01" * 1000 + _GPL_TEXT.encode()
 
 
 @pytest.mark.parametrize(
@@ -790,6 +793,22 @@ _UTF16_GPL = codecs.BOM_UTF16_LE + _GPL_TEXT.encode("utf-16-le")
         ("p/lib/libgmp.so.10", "ELF", "libgmp"),
         ("p/lib/libmpfr.6.dylib", "Mach-O", "libmpfr"),
         ("p/bin/readline.dll", "PE", "readline.dll"),
+        ("p/lib/gmp-COPYING", _GPL_TEXT, "gmp-COPYING"),
+        ("p/lib/readline-LICENSE", _GPL_TEXT, "readline-LICENSE"),
+        ("p/lib/mpfr.COPYING.LESSER", "any text", "mpfr.COPYING.LESSER"),
+        ("p/lib/libgmp-COPYING.txt", _LGPL_TEXT, "libgmp-COPYING.txt"),
+        ("p/lib/history-gpl.txt", "any text", "history-gpl.txt"),
+        ("p/COPYING", _GPL_TEXT.encode("utf-16-le"), "COPYING"),
+        ("p/COPYING", _GPL_TEXT.encode("utf-16-be"), "COPYING"),
+        ("p/COPYING", codecs.BOM_UTF32_LE + _GPL_TEXT.encode("utf-32-le"), "COPYING"),
+        ("p/COPYING", codecs.BOM_UTF32_BE + _GPL_TEXT.encode("utf-32-be"), "COPYING"),
+        ("p/COPYING", "GNU GENERAL\xa0PUBLIC LICENSE\nVersion 3".encode("latin-1"), "COPYING"),
+        ("p/COPYING", "GNU GENERAL\xa0PUBLIC LICENSE\nVersion 3".encode(), "COPYING"),
+        ("p/gpl/README", _GPL_TEXT, "README"),
+        ("p/docs/GPL-3.0/terms.txt", _GPL_TEXT, "terms.txt"),
+        pytest.param(
+            "p/notice-model.bin", _NUL_PADDED_GPL, "notice-model.bin", id="nul-padded-utf8-title"
+        ),
     ],
 )
 def test_a_wheel_that_carries_a_copyleft_file_is_refused_whatever_it_declares(
@@ -824,10 +843,21 @@ def test_a_wheel_that_carries_a_copyleft_file_is_refused_whatever_it_declares(
             "Public License (LGPL), with source on request.",
         ),
         ("p/doc/terms.txt", _LGPL_TEXT),
+        ("p/LICENSE-gplus", _MIT_TEXT),
+        ("p/gplus.LICENSE", _MIT_TEXT),
+        ("p/gplus.py", "print('hello')"),
+        ("p/gplearn/gplearn.py", "print('hello')"),
+        ("p/COPYRIGHT-agplot", _MIT_TEXT),
+        ("p/gplus-1.0/LICENSE", _MIT_TEXT),
+        ("p/gplus-1.0/terms.txt", _LGPL_TEXT),
+        ("p/gpl/LICENSE", _MIT_TEXT),
+        ("p/gpl/data.bin", "no title in it"),
+        ("p/COPYING", _MIT_TEXT.encode("utf-16-le")),
+        ("p/COPYING", "no title\xa0here".encode("latin-1")),
     ],
 )
 def test_a_wheel_with_permissive_licence_files_still_installs(
-    store: EngineStore, tmp_path: Path, member: str, text: str
+    store: EngineStore, tmp_path: Path, member: str, text: str | bytes
 ) -> None:
     path = tmp_path / "ok.whl"
     sha = _cuda_wheel(path, notice=False, licence="MIT", extras=((member, text),))
@@ -848,6 +878,10 @@ def test_a_wheel_with_permissive_licence_files_still_installs(
         ("p/COPYING", _UTF16_GPL),
         ("p/lib/libhistory.so.8", "ELF"),
         ("p/lib/libgmp.a", "ar archive"),
+        ("p/lib/gmp-COPYING", _GPL_TEXT),
+        ("p/COPYING", _GPL_TEXT.encode("utf-16-le")),
+        ("p/gpl/README", _GPL_TEXT),
+        pytest.param("p/notice-model.bin", _NUL_PADDED_GPL, id="nul-padded-utf8-title"),
     ],
 )
 def test_a_staged_tree_with_a_copyleft_file_is_refused_whatever_it_declares(
@@ -862,6 +896,42 @@ def test_a_staged_tree_with_a_copyleft_file_is_refused_whatever_it_declares(
     target.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
     with pytest.raises(LicenceRefusedError, match="GPL"):
         engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"", [""]),
+        (b"a", ["a"]),
+        (b"ab", ["ab"]),
+        (b"a\x00b\x00c\x00", ["a\x00b\x00c\x00", "abc"]),
+        (b"\x00a\x00b\x00c", ["\x00a\x00b\x00c", "abc"]),
+        (b"a\x00\x00b\x00c", ["a\x00\x00b\x00c"]),
+        (b"a\x00b\x00c", ["a\x00b\x00c", "ab\ufffd"]),
+        (b"\x00a\x00b\x00", ["\x00a\x00b\x00", "ab\ufffd"]),
+        (b"a\x00b\x01", ["a\x00b\x01"]),
+        (b"a\x00\x00\x00", ["a\x00\x00\x00"]),
+        (b"\x00\x00\x00a", ["\x00\x00\x00a"]),
+        (b"\x00a\x01b", ["\x00a\x01b"]),
+        (b"\xe9t\xe9", ["\xe9t\xe9"]),
+    ],
+)
+def test_licence_texts_lists_every_decoding_of_the_bytes(data: bytes, expected: list[str]) -> None:
+    assert engine_store._licence_texts(data) == expected
+
+
+@pytest.mark.parametrize("encoding", ["utf-32-le", "utf-32-be", "utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("tail", [b"", b"x"])
+def test_licence_texts_reads_a_wide_file_by_its_mark(encoding: str, tail: bytes) -> None:
+    mark = {
+        "utf-32-le": codecs.BOM_UTF32_LE,
+        "utf-32-be": codecs.BOM_UTF32_BE,
+        "utf-16-le": codecs.BOM_UTF16_LE,
+        "utf-16-be": codecs.BOM_UTF16_BE,
+    }[encoding]
+    data = mark + "ab".encode(encoding) + tail
+    expected = "ab" if not tail else "ab\ufffd"
+    assert engine_store._licence_texts(data) == [data.decode("latin-1"), expected]
 
 
 def test_the_real_nvidia_cuda_notice_names_the_gpl_and_still_installs(
