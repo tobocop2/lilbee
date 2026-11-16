@@ -443,6 +443,37 @@ class TestNonStreamingCompletion:
         assert body["choices"][0]["message"]["content"] == "hello"
         assert body["choices"][0]["finish_reason"] == "stop"
 
+    async def test_a_refused_preflight_is_returned_before_a_chat_slot_is_taken(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        # The stub hands the refusal back as a value. The real preflight raises
+        # inside a worker thread, and on Python 3.11 the coverage tracer loses
+        # the route frame after that caught exception.
+        from litestar import Response
+
+        refusal = Response(content={"refused": "by preflight"}, status_code=409)
+
+        async def _refuse(_req):
+            return refusal
+
+        async def _no_slot(_limit):
+            raise AssertionError("a refused request took a chat slot")
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes._preflight_resolved_model", _refuse
+        )
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.acquire_chat_slot_or_busy", _no_slot
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={"model": INSTALLED_REF, "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 409
+        assert resp.json() == {"refused": "by preflight"}
+
     async def test_unknown_model_returns_404_openai_error_body(
         self, services_with_chat_model, _auth_token
     ):
