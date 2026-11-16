@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import adapters
@@ -56,9 +57,12 @@ def test_llama_identity_digests_the_binary(tmp_path: Path) -> None:
 def test_llama_pin_record_version_is_the_version_of_the_pack() -> None:
     record = LLAMA.pin_record()
     assert record["version"] == LLAMA.pack_pin()["version"] == _WHEEL_VERSION
+    assert record["upstream_ref"] == LLAMA.pack_pin()["upstream_ref"] == ENGINE_LLAMA_CPP_REF
+    assert record["upstream_ref"] != record["version"]
     assert set(record) == {
         "engine",
         "version",
+        "upstream_ref",
         "backend",
         "tool",
         "libraries",

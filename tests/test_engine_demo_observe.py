@@ -195,7 +195,8 @@ def test_each_log_line_belongs_to_the_step_that_wrote_it(tmp_path: Path) -> None
     (sync,) = _step(t, StepName.SYNC)
     assert [line.split(": ", 1)[1] for line in sync.log_lines] == [
         "start sync",
-        "served by engine=llama.cpp version=b6123 role=embed model=org/embed-GGUF/embed-GGUF.gguf",
+        "served by engine=llama.cpp version=b6123 build=none role=embed "
+        "model=org/embed-GGUF/embed-GGUF.gguf",
     ]
     (ask,) = _step(t, StepName.ASK)
     assert len(ask.log_lines) == 4  # its own start line and the three roles it serves

@@ -32,12 +32,17 @@ REMOTE_VERSION = "remote"
 """The version reported for a built-in hosted or local-server provider."""
 
 
+NO_BUILD = "none"
+"""The build reported when the engine has no upstream ref apart from its version."""
+
+
 @dataclass(frozen=True)
 class ServingEngine:
-    """One engine name with its version."""
+    """One engine name with its version and the upstream build ref."""
 
     engine: str
     version: str
+    build: str = NO_BUILD
 
 
 def log_name(model: str) -> str:
@@ -46,11 +51,15 @@ def log_name(model: str) -> str:
     return PureWindowsPath(model).name if absolute else model
 
 
-def _pin_version(engine: EngineAdapter) -> str:
+def _pinned(engine: EngineAdapter) -> ServingEngine:
+    name = str(engine.name)
     try:
-        return str(engine.pin_record().get("version", UNKNOWN_VERSION))
+        pin = engine.pin_record()
     except OSError:
-        return UNKNOWN_VERSION
+        return ServingEngine(name, UNKNOWN_VERSION, UNKNOWN_VERSION)
+    return ServingEngine(
+        name, str(pin.get("version", UNKNOWN_VERSION)), str(pin.get("upstream_ref", NO_BUILD))
+    )
 
 
 def served_by(model: str, engine: EngineAdapter | None, *, native: bool) -> ServingEngine:
@@ -58,7 +67,7 @@ def served_by(model: str, engine: EngineAdapter | None, *, native: bool) -> Serv
     if native:
         if engine is None:
             return ServingEngine(UNKNOWN_ENGINE, UNKNOWN_VERSION)
-        return ServingEngine(str(engine.name), _pin_version(engine))
+        return _pinned(engine)
     prefix = model.split("/", 1)[0] or UNKNOWN_ENGINE
     spec = local_server_for_key(prefix)
     if prefix in API_PROVIDERS or spec is not None:

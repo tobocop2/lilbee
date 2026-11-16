@@ -456,7 +456,8 @@ def test_named_step_reads_the_log_line_and_the_status_of_the_first_role(
 ) -> None:
     outcome = _named_outcome(monkeypatch, tmp_path, roles, **answers)
     assert outcome.ok, outcome.detail
-    assert f"engine=check version=preset role={roles[0]} model=check/m" in outcome.detail
+    want = f"engine=check version=preset build=none role={roles[0]} model=check/m"
+    assert want in outcome.detail
 
 
 def test_named_step_reads_the_engine_of_the_recording(
@@ -469,7 +470,8 @@ def test_named_step_reads_the_engine_of_the_recording(
     with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
         outcome = preset_check._STEP_FUNCTIONS["named"](setup)
     assert outcome.ok, outcome.detail
-    assert "engine=llama-cpp-cpu version=preset role=chat model=llama-cpp-cpu/m" in outcome.detail
+    want = "engine=llama-cpp-cpu version=preset build=none role=chat model=llama-cpp-cpu/m"
+    assert want in outcome.detail
     assert "engine=check" not in outcome.detail
 
 

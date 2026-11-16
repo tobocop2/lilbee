@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF
 from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import Config, cfg
@@ -240,7 +241,10 @@ def test_the_served_by_version_is_the_version_the_engine_list_shows(
     served = served_by("org/chat-GGUF/chat.gguf", LLAMA, native=True)
     with caplog.at_level("INFO", logger="lilbee.providers.routing_provider"):
         provider._log_served(WorkerRole.CHAT, "org/chat-GGUF/chat.gguf", served)
-    assert f"served by engine=llama.cpp version={listed[0]} role=chat" in caplog.text
+    line = f"served by engine=llama.cpp version={listed[0]} build={ENGINE_LLAMA_CPP_REF} role=chat"
+    assert line in caplog.text
+    (record,) = EngineStore(engines_root(cfg.models_dir)).installed()
+    assert record.upstream_ref == ENGINE_LLAMA_CPP_REF
 
 
 def test_installing_the_pack_reports_bytes_and_retries_and_honours_cancel(
