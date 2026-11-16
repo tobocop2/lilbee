@@ -70,8 +70,9 @@ def store(tmp_path: Path) -> EngineStore:
 
 
 def assert_no_build_or_copy(root: Path) -> None:
-    """The engines folder holds no build and no private wheel copy; its lock folder may stay."""
+    """The engines folder holds no build, no private wheel copy and no lock file of one."""
     assert [p.name for p in root.glob("*") if p.name != LOCK_DIR] == []
+    assert list((root / LOCK_DIR).glob(".download-*")) == []
 
 
 def names(directory: Path) -> list[str]:
@@ -2369,3 +2370,43 @@ def test_the_private_copy_is_gone_after_a_failed_install(
     with pytest.raises(failure):
         store.install_from_wheel(pin(sha if good_digest else "0" * 64), path)
     assert_no_build_or_copy(store.root)
+
+
+class _ReadSpy:
+    """Wrap a read handle and record the size asked by each read."""
+
+    def __init__(self, handle: Any, reads: list[int]) -> None:
+        self._handle = handle
+        self._reads = reads
+
+    def __enter__(self) -> _ReadSpy:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._handle.close()
+
+    def read(self, size: int = -1) -> bytes:
+        self._reads.append(size)
+        data: bytes = self._handle.read(size)
+        return data
+
+
+def test_the_wheel_is_copied_one_mebibyte_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "big.whl"
+    payload = b"x" * (5 * 1024 * 1024 // 2)
+    source.write_bytes(payload)
+    reads: list[int] = []
+    real_open = Path.open
+
+    def spy_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        handle = real_open(self, mode, *args, **kwargs)
+        return _ReadSpy(handle, reads) if self == source else handle
+
+    monkeypatch.setattr(Path, "open", spy_open)
+    target = tmp_path / "copy.whl"
+    digest = engine_store.copy_with_digest(source, target)
+    assert reads == [1024 * 1024] * 4
+    assert target.read_bytes() == payload
+    assert digest == hashlib.sha256(payload).hexdigest()

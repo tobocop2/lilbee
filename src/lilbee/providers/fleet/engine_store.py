@@ -659,7 +659,7 @@ class EngineStore:
         """
         _check_licences(lock)
         with self._scratch() as scratch:
-            scratch.mkdir(parents=True, exist_ok=True)
+            scratch.mkdir()
             copy = scratch / wheel.name
             return self._install_private(lock, copy, copy_with_digest(wheel, copy))
 
