@@ -438,6 +438,21 @@ class TestTheBoundChargesWhatTheCardsCommit:
         assert set(_launched(plan)) == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert plan.refused_roles == {}
 
+    @pytest.mark.parametrize(
+        ("replicas", "refused"), [(1, False), (2, True)], ids=["one-replica", "two-replicas"]
+    )
+    def test_a_plan_charges_each_replica_of_a_card_role_to_the_cpu_bound(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, replicas: int, refused: bool
+    ) -> None:
+        spec = (
+            f'{{"embed": {{"devices": [0], "replicas": {replicas}}}, "chat": {{"target": "cpu"}}}}'
+        )
+        roles = (Role(WorkerRole.CHAT, 20), Role(WorkerRole.EMBED, 7))
+        engine = _host(monkeypatch, tmp_path, roles, _unified_card(32), 32, spec)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert (WorkerRole.CHAT in plan.refused_roles) is refused
+        assert _launched(plan).count(WorkerRole.EMBED) == replicas
+
     def test_a_swap_group_commits_its_largest_member(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(planning, "total_system_memory", lambda: 32 * GIB)
         spec = PlacementSpec.from_json(
