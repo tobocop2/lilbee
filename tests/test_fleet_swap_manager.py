@@ -1320,6 +1320,9 @@ class _FakeParentProc:
     def name(self) -> str:
         return self._name
 
+    def parent(self) -> None:
+        return None
+
 
 class _FakeServerProc:
     """A stand-in psutil.Process for the orphan-server sweep."""
@@ -1345,12 +1348,20 @@ class _FakeServerProc:
             raise sm.psutil.NoSuchProcess(self.pid)
         return self._cmdline
 
+    def name(self) -> str:
+        return self.info["name"]
+
     def parent(self) -> _FakeParentProc | None:
         if self._parent_name == _PARENT_RAISES:
             raise sm.psutil.NoSuchProcess(self.pid)
         if self._parent_name is None:
             return None
         return _FakeParentProc(self._parent_name)
+
+    def parents(self) -> list[_FakeParentProc]:
+        # Like psutil: the whole chain at once, raising when a hop cannot be read.
+        parent = self.parent()
+        return [] if parent is None else [parent]
 
     def is_running(self) -> bool:
         return True

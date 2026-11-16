@@ -33,6 +33,7 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -140,6 +141,7 @@ class LlamaCppAdapter:
     memory_kind = MemoryKind.SIZED
     takes_device_names = True
     bundled = True
+    server_process = ServerProcess(name="llama-server")
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures

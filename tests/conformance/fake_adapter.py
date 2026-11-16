@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile
+from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile, ServerProcess
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
 from lilbee.providers.fleet.host_caps import Feature, HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -53,6 +53,7 @@ class FakeAdapter:
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     bundled = False
+    server_process = ServerProcess(name="fake-engine-server")
     backend: str | None = "cpu"
 
     def supports_architecture(self, architecture: str) -> bool:
