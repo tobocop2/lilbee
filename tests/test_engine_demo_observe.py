@@ -30,6 +30,9 @@ from tools.qa.engine_demo.observe import (
 )
 from tools.qa.engine_demo.oracles import Rule, Step, StepName, Transcript, judge
 
+from lilbee.catalog.refs import model_format
+from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.roles import WorkerRole
 
 _FAKE = Path(__file__).parent / "engine_demo_fake_cli.py"
@@ -546,21 +549,71 @@ def test_a_dry_run_records_a_bad_run_and_the_report_fails_it(
     assert "served-by-other" in out
 
 
+_SERVED_CELLS = [
+    pytest.param(name, adapter, role, id=f"{name}-{role}")
+    for name, adapter in ADAPTERS.items()
+    for role in sorted(adapter.served_roles)
+]
+
+
+def test_the_served_cells_cover_every_shipped_engine() -> None:
+    assert {name for name, _, _ in (p.values for p in _SERVED_CELLS)} == set(ADAPTERS)
+    assert len(_SERVED_CELLS) >= len(ADAPTERS)
+
+
+@pytest.mark.parametrize(("name", "adapter", "role"), _SERVED_CELLS)
+def test_each_default_model_is_a_format_its_engine_loads(
+    name: str, adapter: EngineAdapter, role: WorkerRole
+) -> None:
+    ref = demo_main.default_models(name, [role])[role]
+    assert model_format(ref) in adapter.formats, f"{name} cannot load {ref}"
+
+
 @pytest.mark.parametrize(
-    ("engine", "role", "ref"),
+    ("engine", "claimed"),
     [
-        ("tei", WorkerRole.EMBED, "Qwen/Qwen3-Embedding-0.6B#safetensors"),
-        ("tei", WorkerRole.RERANK, "BAAI/bge-reranker-v2-m3#safetensors"),
-        ("mistral.rs", WorkerRole.EMBED, "Qwen/Qwen3-Embedding-0.6B#safetensors"),
-        ("mistral.rs", WorkerRole.VISION, "HuggingFaceTB/SmolVLM-256M-Instruct#safetensors"),
-        ("mistral.rs", WorkerRole.CHAT, "Qwen/Qwen3-4B-GGUF"),
-        ("llama.cpp", WorkerRole.EMBED, "Qwen/Qwen3-Embedding-0.6B-GGUF"),
+        ("tei", (WorkerRole.EMBED, WorkerRole.RERANK)),
+        ("mlx", (WorkerRole.CHAT,)),
+        ("lemonade", (WorkerRole.CHAT, WorkerRole.EMBED)),
+        ("ik_llama.cpp", (WorkerRole.CHAT, WorkerRole.EMBED)),
     ],
 )
-def test_the_default_model_is_the_form_the_engine_loads(
-    engine: str, role: WorkerRole, ref: str
+def test_a_bare_run_plans_only_the_roles_the_engine_serves(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], engine: str, claimed: tuple[WorkerRole, ...]
 ) -> None:
-    assert demo_main.default_models(engine, [role]) == {role: ref}
+    args = _run_args(tmp_path)
+    args[args.index("llama.cpp")] = engine
+    assert demo_main.main(args) == 0
+    t = Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+    assert t.claimed_roles == claimed
+    skipped = [r for r in _ROLES if r not in claimed]
+    assert (f"roles skipped: {', '.join(skipped)}" in capsys.readouterr().out) == bool(skipped)
+
+
+def test_a_run_that_skips_no_role_says_nothing_about_skipping(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert demo_main.main(_run_args(tmp_path)) == 0
+    assert "skipped" not in capsys.readouterr().out
+
+
+def test_a_role_the_engine_does_not_serve_is_refused_when_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _run_args(tmp_path, "--roles", "chat", "embed")
+    args[args.index("llama.cpp")] = "tei"
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(args)
+    assert raised.value.code == 2
+    assert "tei does not serve chat" in capsys.readouterr().err
+
+
+def test_an_engine_without_an_adapter_keeps_the_default_roles(tmp_path: Path) -> None:
+    args = _run_args(tmp_path)
+    args[args.index("llama.cpp")] = "not-an-engine"
+    assert demo_main.main(args) == 0
+    t = Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+    assert t.claimed_roles == _ROLES
 
 
 def test_a_tei_run_from_the_command_line_pulls_safetensors_after_choosing_the_engine(
