@@ -60,6 +60,7 @@ from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import ConfigReadError
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
@@ -647,7 +648,8 @@ class LilbeeApp(App[None]):
         except FileLockUnavailableError as exc:
             self.notify(config_write_failure_message(exc), severity="error")
             return None
-        except (ValueError, OSError, RuntimeError) as exc:  # RuntimeError: a store error
+        # RuntimeError: a store error
+        except (ValueError, OSError, RuntimeError, ConfigReadError) as exc:
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return None
         self.notify_warnings(result.warnings)

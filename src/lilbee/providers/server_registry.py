@@ -134,6 +134,17 @@ def stored_entries() -> list[Entry]:
     return decode_entries(settings.load(cfg.data_root).get(PRESETS_KEY))
 
 
+def _readable_entries() -> list[Entry]:
+    """The stored entries; a config.toml that cannot be read raises ConfigReadError."""
+    try:
+        return stored_entries()
+    except OSError as exc:
+        # Deferred: lilbee.app.settings imports the config, which imports this module.
+        from lilbee.app.settings import config_read_failure_message
+
+        raise ConfigReadError(config_read_failure_message(exc)) from exc
+
+
 def is_loopback_url(url: str) -> bool:
     """Whether *url* names this host: localhost, a loopback or the any address; LAN is remote."""
     try:
@@ -166,9 +177,10 @@ def loopback_reserve_bytes() -> int:
     """Bytes of RAM the loopback presets reserve for their servers; 0 when none is set.
 
     A store that does not parse reserves nothing; the read has logged the fault.
+    A config.toml that cannot be read raises ConfigReadError with the text for the user.
     """
     try:
-        entries = stored_entries()
+        entries = _readable_entries()
     except ValueError:
         return 0
     gib = sum(
@@ -200,14 +212,9 @@ def route_for(prefix: str) -> ServerRoute | None:
     if prefix in RESERVED_NAMES:
         return None
     try:
-        entries = stored_entries()
+        entries = _readable_entries()
     except ValueError:
         return None
-    except OSError as exc:
-        # Deferred: lilbee.app.settings imports the config, which imports this module.
-        from lilbee.app.settings import config_read_failure_message
-
-        raise ConfigReadError(config_read_failure_message(exc)) from exc
     for entry in entries:
         if isinstance(entry, StoredPreset) and entry.name == prefix:
             key = entry.api_key.get_secret_value() if entry.api_key else None
