@@ -2073,11 +2073,9 @@ def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> No
 
 
 def test_dispatch_vision_model_error_on_the_retry_replica_surfaces_unchanged() -> None:
-    import httpx as _httpx
-
     dead, other = _fake_client(), _fake_client()
     rejected = ProviderError("bad image", kind=ProviderErrorKind.BAD_REQUEST)
-    dead.chat.side_effect = _httpx.ConnectError("refused")
+    dead.chat.side_effect = httpx.ConnectError("refused")
     other.chat.side_effect = rejected
     pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(other, 1)]
     with pytest.raises(ProviderError) as caught:
@@ -4028,8 +4026,6 @@ class TestReserveSpreadsLoad:
         assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
 
     def test_every_replica_unreachable_raises_a_provider_error(self) -> None:
-        import httpx
-
         refused = httpx.ConnectError("refused")
         first = _FakeReplica(fail=refused)
         second = _FakeReplica(fail=refused)
@@ -4041,8 +4037,6 @@ class TestReserveSpreadsLoad:
         assert first.in_flight == 0 and second.in_flight == 0
 
     def test_a_model_error_on_the_retry_replica_surfaces_unchanged(self) -> None:
-        import httpx
-
         bad = _FakeReplica(fail=httpx.ConnectError("refused"))
         rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
         other = _FakeReplica(fail=rejected)
@@ -6690,11 +6684,9 @@ def test_rediscover_releases_unused_holds_when_the_retry_fails(monkeypatch) -> N
 
 
 def test_a_transport_failure_on_the_rediscover_retry_is_not_responding(monkeypatch) -> None:
-    import httpx as _httpx
-
     p = FleetProvider()
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
-    refused = _httpx.ConnectError("refused")
+    refused = httpx.ConnectError("refused")
 
     def _call() -> str:
         raise refused
@@ -6760,11 +6752,9 @@ def test_a_model_error_after_a_rebuild_surfaces_unchanged(
 
 
 def test_a_transport_failure_after_a_rebuild_is_not_responding(monkeypatch) -> None:
-    import httpx as _httpx
-
     p = FleetProvider()
     monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
-    refused = _httpx.ConnectError("refused")
+    refused = httpx.ConnectError("refused")
     held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
 
     def _call() -> str:
@@ -7643,8 +7633,6 @@ class TestDeadServersThroughTheRoutingProvider:
 
     @staticmethod
     def _dead_endpoint() -> str:
-        import socket
-
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -7652,9 +7640,6 @@ class TestDeadServersThroughTheRoutingProvider:
 
     @classmethod
     def _routing(cls, monkeypatch, replicas: int):
-        from lilbee.providers.fleet.client import LlamaServerClient
-        from lilbee.providers.routing_provider import RoutingProvider
-
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
         monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
         routing = RoutingProvider()
@@ -7711,6 +7696,9 @@ class _RoleOnlyCuttingServer:
         threading.Thread(target=self._accept, daemon=True).start()
 
     def close(self) -> None:
+        # shutdown wakes the accept thread on Linux; close alone leaves it blocked.
+        with contextlib.suppress(OSError):
+            self._listener.shutdown(socket.SHUT_RDWR)
         self._listener.close()
 
     def _accept(self) -> None:
