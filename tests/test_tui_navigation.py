@@ -1691,16 +1691,17 @@ async def test_closing_the_fleet_drawer_in_normal_mode_falls_back_off_the_prompt
         assert await pump_until(pilot, lambda: chat.focused is chat._chat_log)
         drawer = chat.query_one(FleetDrawer)
         target = next(widget for widget in drawer.query("*") if widget.focusable)
-        landed = await pilot.click(target)
-        assert landed, "the click never reached a focusable drawer widget"
+        # A click lands only once the drawer is laid out under the pointer.
+        assert await pump_until(pilot, lambda: target.region.area > 0), "the drawer never laid out"
+        assert await pilot.click(target), "the click never reached a focusable drawer widget"
         assert await pump_until(pilot, chat._focus_in_drawer)
         await pilot.press("escape")
         assert await pump_until(pilot, lambda: not chat.query(FleetDrawer))
-        assert chat.focused is chat._chat_log, f"focus went to {chat.focused!r}"
+        assert await pump_until(pilot, lambda: chat.focused is chat._chat_log), (
+            f"focus went to {chat.focused!r}"
+        )
         await pilot.press("enter")
-        await pilot.pause()
-        assert chat._insert_mode
-        assert chat._chat_input.has_focus
+        assert await pump_until(pilot, lambda: chat._insert_mode and chat._chat_input.has_focus)
 
 
 async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():
