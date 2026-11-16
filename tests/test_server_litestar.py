@@ -829,6 +829,31 @@ class TestModelsPullArchPrecheck:
         assert resp.status_code == 409
         assert resp.json()["extra"]["code"] == "unsupported_arch"
 
+    def test_the_refusal_body_names_five_supported_examples(self, client):
+        from lilbee.catalog.compat import UnsupportedArchError
+
+        manager = mock.MagicMock()
+        manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+        services = mock.MagicMock(model_manager=manager)
+        services.engines.for_ref.return_value.architectures = frozenset(
+            {"qwen2", "llama", "gemma", "phi3", "mistral", "falcon", "bert"}
+        )
+        with mock.patch("lilbee.server.handlers.models.get_services", return_value=services):
+            resp = client.post(
+                "/api/models/pull", json={"model": "acme/foo-GGUF", "source": "native"}
+            )
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["detail"] == "unsupported_arch"
+        assert body["extra"] == {
+            "code": "unsupported_arch",
+            "arch": "kimi_k2",
+            "ref": "acme/foo-GGUF",
+            "supported_examples": ["bert", "falcon", "gemma", "llama", "mistral"],
+            "total_supported": 7,
+        }
+        services.engines.for_ref.assert_called_once_with("acme/foo-GGUF")
+
 
 class TestSyncRoute:
     @mock.patch("lilbee.server.handlers.sync_stream")
