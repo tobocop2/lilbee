@@ -56,16 +56,19 @@ def test_llama_identity_digests_the_binary(tmp_path: Path) -> None:
 def test_llama_pin_record_version_is_the_version_of_the_pack() -> None:
     record = LLAMA.pin_record()
     assert record["version"] == LLAMA.pack_pin()["version"] == _WHEEL_VERSION
-    assert {
+    assert set(record) == {
         "engine",
         "version",
         "backend",
         "tool",
+        "libraries",
         "launch",
         "platforms",
         "memory",
         "licenses",
-    } <= set(record)
+    }
+    assert record["libraries"] == ["ggml-base"]
+    assert record["memory"] == {"sizing": ["gguf-parser", "--model", "{model}"], "rule": None}
 
 
 def test_llama_role_spec_picks_rerank_embed_or_default() -> None:
