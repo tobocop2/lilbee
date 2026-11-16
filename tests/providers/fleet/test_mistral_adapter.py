@@ -120,7 +120,10 @@ def test_the_shipped_table_has_no_cuda_cell_for_mistral() -> None:
 
 def test_a_host_without_a_card_picks_the_cpu_archive() -> None:
     pick = MISTRAL.pick_build(caps("Linux", "x86_64"))
-    assert (pick.backend, "no NVIDIA GPU" in pick.reason) == ("cpu", True)
+    assert (pick.backend, pick.reason) == (
+        "cpu",
+        "This host has no NVIDIA GPU, so the CPU archive runs.",
+    )
 
 
 def test_an_unreadable_driver_picks_the_cpu_archive() -> None:
