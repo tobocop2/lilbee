@@ -31,6 +31,18 @@ MANIFESTS = {
                 "size": 671180426,
                 "min_os": "2.34",
             },
+            "linux-x86_64-rocm": {
+                "sha256": "22b8e8e0df62382db4bdb624df6a569ee4ba147c4f2fce80a42b4e2ea24853e3",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-llama-gpu/lilbee_engine_llama_cpp-1.12032.1-1.rocm-py3-none-manylinux_2_34_x86_64.whl",
+                "size": 507195826,
+                "min_os": "2.34",
+            },
+            "linux-x86_64-vulkan": {
+                "sha256": "4346a6bbbee15dbfa1e0e736f174fa86d568d23b52b69ab64959a5369e727662",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-llama-gpu/lilbee_engine_llama_cpp-1.12032.1-1.vulkan-py3-none-manylinux_2_34_x86_64.whl",
+                "size": 56085481,
+                "min_os": "2.34",
+            },
             "macos-arm64-metal": {
                 "sha256": "07d954f73523abfe72c10ed61fa21d3e1877610be0991b7901e400841db7d8ce",
                 "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115/lilbee_engine_llama_cpp-1.12032.1-1.metal-py3-none-macosx_14_0_arm64.whl",
@@ -47,6 +59,12 @@ MANIFESTS = {
                 "sha256": "f535f6d7a796c957df2bc9799c9a82c86457202d229985bd633a0cd32cc84d69",
                 "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-llama-win/lilbee_engine_llama_cpp-1.12032.1-2.cuda-py3-none-win_amd64.whl",
                 "size": 709724466,
+                "min_os": None,
+            },
+            "windows-x86_64-vulkan": {
+                "sha256": "87e5a2e2735aedb7446273d0989fa9ec69843828fa57cc8e5ca12cee0e3e992d",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-llama-gpu/lilbee_engine_llama_cpp-1.12032.1-2.vulkan-py3-none-win_amd64.whl",
+                "size": 64795105,
                 "min_os": None,
             },
         },

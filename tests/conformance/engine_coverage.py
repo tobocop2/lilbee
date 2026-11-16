@@ -37,6 +37,8 @@ class Device(StrEnum):
     CPU = "cpu"
     CUDA = "cuda"
     METAL = "metal"
+    VULKAN = "vulkan"
+    ROCM = "rocm"
     INTEL_GPU = "intel-gpu"
     NPU = "npu"
 
@@ -50,6 +52,8 @@ _CUDA_HOST = "one rented L4"
 _MAC_HOST = "the Mac"
 _WINDOWS_HOST = "a Windows host"
 _WINDOWS_CUDA_HOST = "a Windows host with an NVIDIA GPU"
+_AMD_HOST = "a Linux host with an AMD GPU"
+_WINDOWS_AMD_HOST = "a Windows host with an AMD or Intel GPU"
 _NO_NPU = "owner: no NPU hardware, so NPU cells are excluded"
 _NO_RECORD = "no comparison record in git yet"
 _MAC_LAST = "Mac runs come last"
@@ -110,6 +114,20 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         Device.CUDA,
         Route.PACK,
         _WINDOWS_CUDA_HOST,
+        _NO_RECORD,
+    ),
+    _deferred(
+        EngineName.LLAMA, "linux-x86_64-vulkan", Device.VULKAN, Route.PACK, _AMD_HOST, _NO_RECORD
+    ),
+    _deferred(
+        EngineName.LLAMA, "linux-x86_64-rocm", Device.ROCM, Route.PACK, _AMD_HOST, _NO_RECORD
+    ),
+    _deferred(
+        EngineName.LLAMA,
+        "windows-x86_64-vulkan",
+        Device.VULKAN,
+        Route.PACK,
+        _WINDOWS_AMD_HOST,
         _NO_RECORD,
     ),
     _deferred(EngineName.IK_LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),

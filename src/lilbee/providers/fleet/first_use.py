@@ -132,9 +132,10 @@ def warn_if_gpu_unserved() -> None:
     for vendor, name in _UNSERVED_GPU_VENDORS.items():
         if vendor in present:
             log.warning(
-                "This computer has an %s GPU, and no llama.cpp pack uses it. "
-                "lilbee installs the CPU build. For a GPU build, use a bundled build "
-                "or set LILBEE_LLAMA_SERVER_PATH to your own llama-server.",
+                "This computer has an %s GPU, and no llama.cpp pack can use it here. "
+                "lilbee installs the CPU build. For the Vulkan build, install the Vulkan "
+                "loader (libvulkan1 or vulkan-loader). Or set LILBEE_LLAMA_SERVER_PATH "
+                "to your own llama-server.",
                 name,
             )
             return
