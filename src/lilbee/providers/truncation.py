@@ -29,12 +29,13 @@ _active: ContextVar[_Tally | None] = ContextVar("lilbee_embed_truncation", defau
 
 
 def _warn(tally: _Tally) -> None:
+    limit = "" if tally.limit is None else f"{tally.limit}-token "
     log.warning(
-        "%d of %d embed inputs are past the embedder's %s-token limit; the server "
-        "truncates them and the cut text is not in the vectors",
+        "%d of %d embed inputs are past the embedder's %slimit and the cut text is not in "
+        "the vectors. Lower chunk_size, or use an embedding model with a larger input limit.",
         tally.cut,
         tally.total,
-        tally.limit,
+        limit,
     )
 
 
@@ -48,7 +49,8 @@ def note_truncated(cut: int, total: int, limit: int | None) -> None:
     with tally.lock:
         tally.cut += cut
         tally.total += total
-        tally.limit = limit
+        if tally.limit is None:
+            tally.limit = limit
 
 
 @contextmanager
