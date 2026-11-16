@@ -16,7 +16,7 @@ from litestar.exceptions.responses import create_exception_response
 from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
-from litestar.status_codes import HTTP_400_BAD_REQUEST, HTTP_503_SERVICE_UNAVAILABLE
+from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
 from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
@@ -32,7 +32,6 @@ from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -41,6 +40,7 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, comp
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
+from lilbee.server.provider_status import CLIENT_FAULT_STATUSES
 from lilbee.server.routes import engines as engine_routes
 from lilbee.server.routes import presets as preset_routes
 from lilbee.server.routes.agent_config import (
@@ -393,13 +393,13 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
 
 
 def _provider_error_response(request: Request, exc: ProviderError) -> Response:
-    """Answer engines still starting as a 503 and a missing engine as a 400, with their text."""
+    """Answer engines still starting as a 503 and a bad request as a 400, with their text."""
     if exc.kind is ProviderErrorKind.STARTING:
         unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
         return _json_error_response(request, unavailable)
-    if isinstance(exc, NoEngineError):
-        refused = HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(exc))
-        return _json_error_response(request, refused)
+    status = CLIENT_FAULT_STATUSES.get(exc.kind)
+    if status is not None:
+        return _json_error_response(request, HTTPException(status_code=status, detail=str(exc)))
     return _unhandled_error_response(request, exc)
 
 
