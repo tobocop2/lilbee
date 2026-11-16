@@ -170,6 +170,7 @@ def test_cgroup_v1_ancestor_quota_caps_a_looser_leaf(tmp_path) -> None:
     assert _cgroup_cpu_quota(root, proc) == 1
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="/proc/self/cgroup is POSIX only")
 def test_cgroup_proc_path_that_is_not_utf8_reads_the_mount(tmp_path) -> None:
     # The kernel prints a cgroup name as raw bytes; no such directory exists here.
     root = tmp_path / "mount"
@@ -270,6 +271,7 @@ def test_cgroup_path_with_parent_reference_reads_the_mount(tmp_path) -> None:
     assert _cgroup_cpu_quota(root, proc) == 3
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows file name cannot hold a colon")
 def test_cgroup_path_may_start_with_an_x_and_contain_a_colon(tmp_path) -> None:
     root = tmp_path / "mount"
     _write_cgroup(root, {"Xray:1.slice/job.scope/cpu.max": "200000 100000\n"})
