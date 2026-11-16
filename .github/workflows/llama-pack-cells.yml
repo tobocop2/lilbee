@@ -923,6 +923,8 @@ jobs:
           export PATH="${RUNNER_TEMP}/bin:${PATH}"
           git clone -q --depth 1 --branch "${TEI_TAG}" "${TEI_REPO}" "${RUNNER_TEMP}/tei"
           grep -q "channel = \"${RUSTC_VERSION}\"" "${RUNNER_TEMP}/tei/rust-toolchain.toml"
+          # The upstream .cargo/config.toml builds for the runner CPU (target-cpu=native); RUSTFLAGS replaces it.
+          export RUSTFLAGS="-C target-cpu=apple-m1"
           (cd "${RUNNER_TEMP}/tei" && cargo build --release --locked --bin text-embeddings-router --no-default-features --features candle,metal,http)
           python -m pip install -q build wheel "delocate==0.13.0"
           bash tools/wheel-build/tei_wheel.sh "${RUNNER_TEMP}/tei" "${RUNNER_TEMP}/tei/target/release/text-embeddings-router" \

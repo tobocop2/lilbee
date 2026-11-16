@@ -727,6 +727,7 @@ case "${name}" in
     : > target/release/text-embeddings-router
     chmod 755 target/release/text-embeddings-router
     echo "${NVCC_APPEND_FLAGS-unset}" > "{record}/nvcc-flags"
+    echo "${RUSTFLAGS-unset}" > "{record}/rustflags"
     ;;
 esac
 exit 0
@@ -736,8 +737,8 @@ _IMAGE_TOOLS += ("auditwheel", "chown")
 _IMAGE_ROOTS = re.compile(r"/(?:etc|usr/local|tmp|opt)(?=/)")
 
 
-def _build_flags(tmp_path: Path, cuda_cc: str) -> str:
-    """Run tei_manylinux.sh on stub tools; return NVCC_APPEND_FLAGS as the cargo build sees it."""
+def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
+    """Run tei_manylinux.sh on stub tools; return a variable as the cargo build sees it."""
     script = (_TOOLS / "tei_manylinux.sh").read_text(encoding="utf-8")
     script = re.sub(_IMAGE_ROOTS, lambda m: f"{tmp_path}{m.group(0)}", script)
     work = tmp_path / "work"
@@ -760,7 +761,7 @@ def _build_flags(tmp_path: Path, cuda_cc: str) -> str:
     (cuda / "lib64/stubs/libcuda.so").write_text("", encoding="utf-8")
     (tmp_path / "tmp").mkdir()
     (tmp_path / "etc").mkdir()
-    env = {k: v for k, v in os.environ.items() if k != "NVCC_APPEND_FLAGS"}
+    env = {k: v for k, v in os.environ.items() if k not in ("NVCC_APPEND_FLAGS", "RUSTFLAGS")}
     env |= {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
@@ -787,12 +788,30 @@ def _build_flags(tmp_path: Path, cuda_cc: str) -> str:
         env=env,
     )
     assert result.returncode == 0, result.stderr
-    return (record / "nvcc-flags").read_text(encoding="utf-8").strip()
+    return (record / recorded).read_text(encoding="utf-8").strip()
 
 
 def test_the_cuda_build_compiles_kernels_position_independent(tmp_path: Path) -> None:
-    assert _build_flags(tmp_path, "89") == "-Xcompiler -fPIC"
+    assert _build_env(tmp_path, "89", "nvcc-flags") == "-Xcompiler -fPIC"
 
 
 def test_the_cpu_build_leaves_the_nvcc_flags_alone(tmp_path: Path) -> None:
-    assert _build_flags(tmp_path, "") == "unset"
+    assert _build_env(tmp_path, "", "nvcc-flags") == "unset"
+
+
+# The upstream source tree sets target-cpu=native in .cargo/config.toml; the RUSTFLAGS variable
+# replaces that setting, so a router built on a CPU with AVX-512 still runs on one without it.
+@pytest.mark.parametrize("cuda_cc", ["", "89"])
+def test_the_linux_build_targets_the_portable_x86_64_baseline(tmp_path: Path, cuda_cc: str) -> None:
+    assert _build_env(tmp_path, cuda_cc, "rustflags") == "-C target-cpu=x86-64-v2"
+
+
+def test_the_metal_build_targets_the_first_apple_silicon_cpu() -> None:
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    tei = text[text.index("\n  tei:\n") :]
+    build = tei[tei.index("- name: Build the router for Metal") :]
+    build = build[: build.index("- name: Collect the wheel")]
+    lines = [line.strip() for line in build.splitlines()]
+    exports = [line for line in lines if line.startswith("export RUSTFLAGS")]
+    assert exports == ['export RUSTFLAGS="-C target-cpu=apple-m1"']
+    assert build.index("export RUSTFLAGS") < build.index("cargo build")
