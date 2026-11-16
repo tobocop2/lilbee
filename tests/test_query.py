@@ -8,7 +8,15 @@ import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import ChunkType, EmbeddingEngineChangedError, MemoryRow, SearchChunk
+from lilbee.data.store import (
+    ChunkType,
+    EmbeddingEngineChangedError,
+    HeldOut,
+    HeldRecord,
+    MemoryRow,
+    SearchChunk,
+    Store,
+)
 from lilbee.providers.base import (
     ChatResult,
     FinishReason,
@@ -1482,6 +1490,67 @@ class TestAskRaw:
         assert result.sources == []
         mock_svc.store.search.assert_not_called()
         mock_svc.provider.chat.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("names", "answer"),
+        [
+            (
+                ["bees.md"],
+                "Nothing is indexed: 1 document failed to ingest. "
+                "Run `lilbee status` to see why, then ask again.",
+            ),
+            (
+                ["bees.md", "ants.md", "wasps.md"],
+                "Nothing is indexed: 3 documents failed to ingest. "
+                "Run `lilbee status` to see why, then ask again.",
+            ),
+        ],
+    )
+    def test_empty_library_after_failed_ingests_names_the_failures(self, mock_svc, names, answer):
+        """Documents held out as failed are counted in the answer, which points at the
+        command that lists each reason; the store is not searched and the model is not called."""
+        mock_svc.store.has_chunks.return_value = False
+        mock_svc.store.held_records.return_value = {
+            name: HeldRecord(HeldOut.FAILED, "h", "dimension mismatch") for name in names
+        }
+        result = get_services().searcher.ask_raw("what do bees eat?")
+        assert result.answer == answer
+        assert result.sources == []
+        mock_svc.store.search.assert_not_called()
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_empty_library_counts_only_failed_holds(self, mock_svc):
+        """A path the user removed is not a failed ingest: the guidance stays when the only
+        held records are removals, and the failed one alone is counted."""
+        mock_svc.store.has_chunks.return_value = False
+        mock_svc.store.held_records.return_value = {
+            "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
+        }
+        assert get_services().searcher.ask_raw("hi").answer == EMPTY_LIBRARY
+        mock_svc.store.held_records.return_value = {
+            "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
+            "bees.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
+        }
+        assert "1 document failed" in get_services().searcher.ask_raw("hi").answer
+
+    def test_real_store_with_failed_holds_answers_with_the_failure_count(self):
+        """Holds written by the sync's own writer reach the answer through the real store."""
+        from tests._held import hold_failed
+        from tests.conftest import make_mock_services
+
+        set_services(make_mock_services(store=Store(cfg)))
+        hold_failed({"bees.md": "h1", "ants.md": "h2"}, reason="dimension mismatch")
+        answer = get_services().searcher.pre_retrieval_answer("what do bees eat?")
+        assert answer is not None
+        assert "2 documents failed to ingest" in answer
+
+    def test_failed_ingests_do_not_hide_an_indexed_library(self, mock_svc):
+        """A failed file beside indexed content leaves the question to retrieval."""
+        mock_svc.store.has_chunks.return_value = True
+        mock_svc.store.held_records.return_value = {
+            "bees.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
+        }
+        assert get_services().searcher.pre_retrieval_answer("what do bees eat?") is None
 
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
