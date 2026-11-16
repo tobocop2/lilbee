@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback, disk_shortfall, download_url, url_filename
 from lilbee.catalog.download_progress import ProgressCallback
-from lilbee.catalog.runnable import session_host
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_store import (
@@ -243,7 +243,7 @@ def install_router(
     A copy of the archive in the packs folder is used with no download. The archive is copied
     into the stage folder, hashed as it is copied, and read only from that copy.
     """
-    _, asset = router_asset(session_host())
+    _, asset = router_asset(runnable.session_host())
     root = _root()
     with file_lock(root / LOCK_DIR / ROUTER_DIRNAME, _INSTALL_LOCK_S):
         found = installed_router()

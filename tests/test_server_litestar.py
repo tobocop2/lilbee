@@ -1200,7 +1200,7 @@ class TestModelsPullByFormat:
     """A pull names the weight format with the ``<repo>#<format>`` reference."""
 
     def test_pull_of_a_repo_hash_mlx_fetches_the_mlx_files(self, client, tmp_path, monkeypatch):
-        from lilbee.app import engine_choice
+        from lilbee.catalog import runnable
         from lilbee.catalog.types import ModelFormat
         from lilbee.providers.fleet.engines import choice
         from lilbee.providers.fleet.engines.base import EngineName
@@ -1213,7 +1213,7 @@ class TestModelsPullByFormat:
 
         monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, _MlxEngine())
         monkeypatch.setattr(
-            engine_choice,
+            runnable,
             "session_host",
             lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
         )

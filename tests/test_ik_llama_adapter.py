@@ -63,8 +63,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cfg, "preferred_engine", "auto")
     monkeypatch.setattr(cfg, "engine_choices", None)
     linux = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
-    monkeypatch.setattr(engine_choice, "session_host", lambda: linux)
-    monkeypatch.setattr(engine_service, "session_host", lambda: linux)
+    monkeypatch.setattr(runnable, "detect", lambda: linux)
 
 
 @pytest.fixture
@@ -279,14 +278,16 @@ def test_install_on_a_system_below_the_published_floor_is_refused(
 @pytest.mark.parametrize("system", ["linux", "darwin"])
 def test_auto_never_picks_the_installed_engine(system: str, build: Path, monkeypatch) -> None:
     machine = "arm64" if system == "darwin" else "x86_64"
+    installed = installed_engines()
+    assert EngineName.IK_LLAMA in installed
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(
             system=system.capitalize(), machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None
         ),
     )
-    assert EngineName.IK_LLAMA in installed_engines()
+    monkeypatch.setattr(engine_choice, "installed_engines", lambda: installed)
     got = engine_choice.resolve_engines(cfg).choices[WorkerRole.CHAT]
     assert got.name is not EngineName.IK_LLAMA
     assert got.name is not None

@@ -14,6 +14,7 @@ import pytest
 
 from lilbee.app import engine_choice
 from lilbee.app.engine_choice import engine_for_format, resolve_engines
+from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -478,7 +479,7 @@ def test_the_launch_plan_puts_rerank_on_the_next_engine_after_the_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(engine_choice, "installed_engines", lambda: BOTH)
-    monkeypatch.setattr(engine_choice, "session_host", lambda: LINUX)
+    monkeypatch.setattr(runnable, "session_host", lambda: LINUX)
     config = Config()
     config.preferred_engine = EngineSetting.MISTRAL
     config.reranker_model = "org/rerank/r.gguf"

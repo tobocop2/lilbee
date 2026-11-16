@@ -14,7 +14,6 @@ from lilbee.providers.fleet.host_caps import HostCaps, collect
 
 def _use_host(monkeypatch: pytest.MonkeyPatch, system: str, machine: str) -> HostCaps:
     host = collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     return host
 
@@ -58,7 +57,6 @@ def _install_mlx_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     mac = mac_host("Darwin", "arm64", "15.2")
-    monkeypatch.setattr(engine_service, "session_host", lambda: mac)
     monkeypatch.setattr(runnable, "session_host", lambda: mac)
     sha = make_pack(tmp_path / "pack.whl")
     publish(monkeypatch, EngineName.MLX, sha)
@@ -142,7 +140,6 @@ def _installed_ik_llama(monkeypatch: pytest.MonkeyPatch, *, avx2: bool) -> None:
 
     flags = ["avx2"] if avx2 else ["sse4_2"]
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": flags}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(
         engine_service, "installed_engines", lambda: {EngineName.IK_LLAMA: IK_LLAMA.formats}

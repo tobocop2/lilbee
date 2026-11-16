@@ -6,9 +6,9 @@ import logging
 import threading
 from pathlib import Path
 
+from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import ProgressCallback
-from lilbee.catalog.runnable import session_host
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import FileLockUnavailableError, file_lock
@@ -130,12 +130,12 @@ def pack_lock() -> tuple[PinLock, str]:
     """
     pin = LLAMA.pack_pin()
     if not pin["platforms"]:
-        cell = cell_key(session_host(), pin["backend"]) or "this computer"
+        cell = cell_key(runnable.session_host(), pin["backend"]) or "this computer"
         raise PackNotPublishedError(
             f"The llama.cpp pack {pin['version']} for {cell} is not published yet."
         )
     lock = pin_lock(pin)
-    cell = host_cell(lock, session_host())
+    cell = host_cell(lock, runnable.session_host())
     return lock.for_cell(cell), cell
 
 
@@ -155,7 +155,7 @@ def installed_tool(tool: str) -> Path | None:
 
 def _unserved_gpu_warning() -> HealthWarning | None:
     """The warning for a GPU the CPU pack cannot use, or ``None`` when there is none."""
-    host = session_host()
+    host = runnable.session_host()
     if pack_backend(host) != "cpu":
         return None
     if gap := cuda_pack_gap(host):

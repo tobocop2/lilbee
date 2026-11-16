@@ -12,6 +12,7 @@ import pytest
 
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import EngineBook, engine_for_ref, resolve_engines, stored_choices
+from lilbee.catalog import runnable
 from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelCompat
 from lilbee.core import settings
@@ -63,8 +64,7 @@ OPENVINO_ENGINE = _OpenvinoEngine()
 @pytest.fixture(autouse=True)
 def _host(monkeypatch: pytest.MonkeyPatch) -> None:
     mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
-    monkeypatch.setattr(engine_choice, "session_host", lambda: mac)
-    monkeypatch.setattr(engine_service, "session_host", lambda: mac)
+    monkeypatch.setattr(runnable, "session_host", lambda: mac)
 
 
 @pytest.fixture

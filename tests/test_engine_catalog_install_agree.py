@@ -33,7 +33,6 @@ class _Reached(Exception):
 
 def _unreadable_host(monkeypatch: pytest.MonkeyPatch) -> HostCaps:
     host = collect(system="", machine="", cpu_info={}, nvidia=_UNREADABLE)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     return host
@@ -133,9 +132,8 @@ def test_a_readable_host_still_lists_and_installs_tei(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
-    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     publish(monkeypatch, EngineName.TEI, "0" * 64)
     assert "tei" in engine_service.not_installed()
     assert _install_verdict(monkeypatch, "tei", tmp_path) is None
@@ -146,7 +144,7 @@ def test_a_half_unread_host_lists_only_the_ungated_engine_and_install_refuses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, system: str, machine: str
 ) -> None:
     host = collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     monkeypatch.setattr(engine_service, "llama_server_ready", lambda: False)
     assert engine_service.not_installed() == ["llama.cpp"]
@@ -184,7 +182,6 @@ def test_the_list_logs_the_hidden_engines_when_only_the_os_is_unreadable(
 ) -> None:
     host = collect(system="", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=_UNREADABLE)
     assert host.os is None and host.arch is not None
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=engine_service.log.name):
         engine_service.not_installed()
@@ -197,7 +194,7 @@ def test_a_readable_host_logs_nothing_about_hidden_engines(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=engine_service.log.name):
         engine_service.not_installed()
     assert [r for r in caplog.records if r.name == engine_service.log.name] == []

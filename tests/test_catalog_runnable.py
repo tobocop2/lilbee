@@ -8,6 +8,7 @@ import pytest
 
 from conftest import stub_hf_listing
 from lilbee.catalog import query as _query
+from lilbee.catalog import runnable
 from lilbee.catalog.formatting import enrich_catalog
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.query import get_catalog
@@ -267,7 +268,7 @@ def test_scan_reads_one_stream_per_engine_format_and_merges_by_downloads(
 ) -> None:
     monkeypatch.setattr(_query, "get_picks", lambda: [])
     monkeypatch.setattr(_query, "default_offers", _two_format_offers)
-    monkeypatch.setattr(_query, "session_host", lambda: _host(gpus=GPU))
+    monkeypatch.setattr(runnable, "session_host", lambda: _host(gpus=GPU))
     gguf = _row("a/gguf", frozenset({ModelFormat.GGUF}))
     st = _row("b/st", frozenset({ModelFormat.SAFETENSORS}))
     both_a = _row("c/both", frozenset({ModelFormat.GGUF}))

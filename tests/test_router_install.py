@@ -93,9 +93,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.models_dir = tmp_path / "models"
     cfg.llama_server_path = ""
     host = _linux()
-    monkeypatch.setattr(router_install, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
     monkeypatch.setattr(binary_mod.shutil, "which", lambda _name: None)
     monkeypatch.setattr(router_install, "_refusals", first_use.RefusedInstalls())
@@ -340,7 +338,7 @@ class TestInstall:
         archive.parent.mkdir()
         _zip(archive, {"llama-swap.exe": BINARY_BODY, LICENCE_FILE: MIT_TEXT.encode()})
         host = collect(system="Windows", machine="AMD64", cpu_info={}, nvidia=None)
-        monkeypatch.setattr(router_install, "session_host", lambda: host)
+        monkeypatch.setattr(runnable, "session_host", lambda: host)
         monkeypatch.setattr(
             router_install,
             "ROUTER_ASSETS",
@@ -458,7 +456,7 @@ class TestInstall:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         host = collect(system="Windows", machine="ARM64", cpu_info={}, nvidia=None)
-        monkeypatch.setattr(router_install, "session_host", lambda: host)
+        monkeypatch.setattr(runnable, "session_host", lambda: host)
         with pytest.raises(RouterNotPublishedError):
             install_router()
 

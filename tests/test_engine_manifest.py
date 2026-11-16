@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from lilbee.catalog import runnable
-from lilbee.providers.fleet import engine_manifest, engine_store, first_use, host_caps
+from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
 from lilbee.providers.fleet.engine_manifest import MANIFESTS
 from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.engines import ik_llama, mistral, tei
@@ -299,7 +299,6 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     cell, digest, release, build = SHIPPED_LLAMA[(system, machine)]
     host = _host(system, machine)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == digest
@@ -331,7 +330,6 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     facts = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
     host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvidia=facts)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["backend"] == "cuda"

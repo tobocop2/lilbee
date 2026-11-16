@@ -67,7 +67,7 @@ def _pick(repo: str) -> CatalogModel:
 def listing(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
     """A browse on an XDNA2 host with the pinned list and two Hub rows; returns the Hub calls."""
     monkeypatch.setattr(_query, "get_picks", lambda: [])
-    monkeypatch.setattr(_query, "session_host", lambda: XDNA2)
+    monkeypatch.setattr(runnable, "session_host", lambda: XDNA2)
     calls = stub_hf_listing(
         monkeypatch,
         {"text-generation": [_hub_row("hub/one", 5), _hub_row("hub/two", 4)]},
@@ -179,7 +179,7 @@ def test_the_installed_filter_selects_the_pulled_npu_row(listing: list[dict[str,
 def test_a_host_without_the_npu_hides_the_rows_with_the_gate_reason(
     monkeypatch: pytest.MonkeyPatch, listing: list[dict[str, object]]
 ) -> None:
-    monkeypatch.setattr(_query, "session_host", lambda: NO_NPU)
+    monkeypatch.setattr(runnable, "session_host", lambda: NO_NPU)
     reason = LEMONADE.host_gate(NO_NPU).reason
     result = get_catalog(task=ModelTask.CHAT, search="qwen3:4b")
     assert _refs(result) == []
@@ -194,7 +194,7 @@ def test_a_host_without_the_npu_hides_the_rows_with_the_gate_reason(
 def test_hidden_rows_follow_the_task_filter(
     monkeypatch: pytest.MonkeyPatch, listing: list[dict[str, object]]
 ) -> None:
-    monkeypatch.setattr(_query, "session_host", lambda: NO_NPU)
+    monkeypatch.setattr(runnable, "session_host", lambda: NO_NPU)
     chat = get_catalog(task=ModelTask.CHAT, limit=100)
     embedding = get_catalog(task=ModelTask.EMBEDDING, limit=100)
     assert (len(chat.hidden), len(embedding.hidden)) == (41, 1)
@@ -207,7 +207,7 @@ def test_an_unknown_host_lists_the_rows(
     unread = host_caps.collect(
         system="Linux", machine="x86_64", cpu_info={}, nvidia=None, accel_devices=None
     )
-    monkeypatch.setattr(_query, "session_host", lambda: unread)
+    monkeypatch.setattr(runnable, "session_host", lambda: unread)
     result = get_catalog(task=ModelTask.CHAT, limit=100)
     assert (len(result.models), result.hidden) == (43, ())
 
@@ -345,7 +345,7 @@ def test_a_second_browse_with_the_publisher_down_makes_no_request(
     monkeypatch: pytest.MonkeyPatch, router: _Router
 ) -> None:
     router.mode = "connect"
-    monkeypatch.setattr(_query, "session_host", lambda: NO_NPU)
+    monkeypatch.setattr(runnable, "session_host", lambda: NO_NPU)
     stub_hf_listing(monkeypatch, {"text-generation": [_hub_row("hub/one")]})
     get_catalog(task=ModelTask.CHAT)
     get_catalog(task=ModelTask.CHAT)
@@ -358,7 +358,7 @@ def test_a_failed_list_read_leaves_the_hub_rows(
 ) -> None:
     router.mode = "connect"
     monkeypatch.setattr(_query, "get_picks", lambda: [])
-    monkeypatch.setattr(_query, "session_host", lambda: XDNA2)
+    monkeypatch.setattr(runnable, "session_host", lambda: XDNA2)
     stub_hf_listing(monkeypatch, {"text-generation": [_hub_row("hub/one")]})
     result = get_catalog(task=ModelTask.CHAT)
     assert [m.hf_repo for m in result.models] == ["hub/one"]

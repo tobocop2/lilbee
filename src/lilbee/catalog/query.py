@@ -10,6 +10,7 @@ from typing import Any
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.app.services import get_services
+from lilbee.catalog import runnable
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
@@ -30,7 +31,6 @@ from lilbee.catalog.runnable import (
     default_offers,
     explain,
     runnable_formats,
-    session_host,
 )
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelFormat, ModelTask
 from lilbee.providers.fleet.host_caps import HostCaps
@@ -97,7 +97,7 @@ def get_catalog(
     HuggingFace exposes no count, so it is None.
     """
     all_picks = get_picks()
-    host, offers = session_host(), default_offers()
+    host, offers = runnable.session_host(), default_offers()
     refused: list[tuple[CatalogModel, HiddenModel]] = []
     picks = list(_runnable_rows(all_picks, host, offers, refused))
     keep = _row_filter(

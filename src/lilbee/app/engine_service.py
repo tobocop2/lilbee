@@ -12,11 +12,12 @@ from typing import Any, TypeVar
 
 from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
 from lilbee.app.services import peek_services
+from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import make_download_callback
 from lilbee.catalog.models import DownloadProgress
 from lilbee.catalog.refs import model_format
-from lilbee.catalog.runnable import refresh_session_host, session_host
+from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -194,7 +195,7 @@ def _require_installed(name: EngineName, installed: InstalledEngines) -> None:
     if name in installed:
         return
     has_build = name in installed_engines()
-    refusal = choice.host_answer(name, session_host) if has_build else _install_gate(name)
+    refusal = choice.host_answer(name, runnable.session_host) if has_build else _install_gate(name)
     if not refusal.ok:
         state = "installed, but" if has_build else "not installed, and"
         raise EngineRefusedError(
@@ -273,7 +274,7 @@ def builds(config: Config = cfg) -> list[BuildView]:
     return [
         BuildView(b.engine, b.version, b.backend, not_run_on(b.engine))
         for b in store.installed()
-        if choice.host_answer(b.engine, session_host).ok
+        if choice.host_answer(b.engine, runnable.session_host).ok
     ]
 
 
@@ -337,7 +338,7 @@ def _install_gate(name: EngineName) -> HostGate:
     adapter = choice.ADAPTERS.get(name)
     if adapter is None or adapter.bundled:
         return PASS
-    return choice.install_answer(adapter, session_host())
+    return choice.install_answer(adapter, runnable.session_host())
 
 
 def offered_engines() -> choice.InstalledEngines:
@@ -345,7 +346,7 @@ def offered_engines() -> choice.InstalledEngines:
     return {
         name: formats
         for name, formats in installed_engines().items()
-        if choice.host_answer(name, session_host).ok
+        if choice.host_answer(name, runnable.session_host).ok
     }
 
 
@@ -359,7 +360,7 @@ def not_installed() -> list[str]:
     ]
     offered = [str(name) for name in missing if _install_gate(name).ok]
     hidden = [str(name) for name in missing if str(name) not in offered]
-    host = session_host()
+    host = runnable.session_host()
     if hidden and (host.os is None or host.arch is None):
         log.warning(
             "The engine list hides %s: the OS or CPU of this host could not be read.",

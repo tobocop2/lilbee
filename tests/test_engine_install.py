@@ -25,7 +25,7 @@ from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
-from lilbee.app import engine_choice, engine_service
+from lilbee.app import engine_service
 from lilbee.catalog import download, runnable
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
@@ -42,7 +42,7 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
+from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.router_install import RouterDownloadError
 from lilbee.runtime.console import PlainConsole
 from lilbee.server.routes import engines as routes
@@ -118,13 +118,6 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.mcp_engines_enabled = True
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
-    monkeypatch.setattr(
-        engine_choice,
-        "session_host",
-        lambda: collect(
-            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None
-        ),
-    )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(runnable, "detect", _live_host)
     yield

@@ -383,12 +383,13 @@ def _gpu_host(kind):
 
 def _install_on_a_gpu_host(mock_svc, rows, kind="amd"):  # noqa: F811
     """Make the search's first engine use install the CPU pack on a computer with *kind* GPU."""
+    from lilbee.catalog import runnable
     from lilbee.providers.fleet import first_use
 
     host = _gpu_host(kind)
     patches = _arrange(mock_svc, "concept_boost", "rows")
     mock_svc.concepts.boost_results.side_effect = lambda r, c: r
-    patches += [mock.patch.object(first_use, "session_host", lambda: host)]
+    patches += [mock.patch.object(runnable, "session_host", lambda: host)]
 
     def search_installs_the_pack(*args, **kwargs):
         first_use.warn_if_gpu_unserved()
@@ -418,6 +419,7 @@ def test_a_gpu_the_pack_cannot_use_reaches_the_user(mock_svc, surface, kind):  #
 
 
 def test_a_later_install_that_serves_the_gpu_clears_the_held_warning(mock_svc):  # noqa: F811
+    from lilbee.catalog import runnable
     from lilbee.providers.fleet import first_use
     from lilbee.providers.fleet.host_caps import collect
 
@@ -427,7 +429,7 @@ def test_a_later_install_that_serves_the_gpu_clears_the_held_warning(mock_svc): 
         p.start()
     try:
         first_use.warn_if_gpu_unserved()
-        with mock.patch.object(first_use, "session_host", lambda: mac):
+        with mock.patch.object(runnable, "session_host", lambda: mac):
             first_use.warn_if_gpu_unserved()
         mock_svc.store.search.side_effect = None
         mock_svc.store.search.return_value = [_make_result(source="direct.md")]
@@ -470,6 +472,7 @@ def test_the_gpu_warning_is_reported_once(mock_svc):  # noqa: F811
 
 
 def test_the_gpu_warning_names_the_card_the_nvidia_pack_cannot_use(mock_svc):  # noqa: F811
+    from lilbee.catalog import runnable
     from lilbee.providers.fleet import first_use
     from tests.test_llama_pack_backend import _nvidia
 
@@ -480,7 +483,7 @@ def test_the_gpu_warning_names_the_card_the_nvidia_pack_cannot_use(mock_svc):  #
         first_use.warn_if_gpu_unserved() or [_make_result(source="direct.md")]
     )
     try:
-        with mock.patch.object(first_use, "session_host", lambda: host):
+        with mock.patch.object(runnable, "session_host", lambda: host):
             report = mock_svc.searcher.search_report(QUESTION)
     finally:
         _stop(patches)

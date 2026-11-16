@@ -61,7 +61,6 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.llama_server_path = ""
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
@@ -423,7 +422,6 @@ def _host_with_vendors(
         display_vendors=tuple(vendors),
     )
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
 
 
@@ -516,7 +514,7 @@ def test_the_log_line_is_the_text_the_user_reads(
     linux = collect(
         system="Linux", machine="x86_64", cpu_info={}, nvidia=None, display_vendors=(0x1002,)
     )
-    monkeypatch.setattr(first_use, "session_host", lambda: linux)
+    monkeypatch.setattr(runnable, "session_host", lambda: linux)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     held = first_use.take_install_warnings()
@@ -812,7 +810,6 @@ def test_an_unreadable_computer_is_named_this_computer_in_the_unpublished_error(
 ) -> None:
     unreadable = collect(system="Plan9", machine="x86_64", cpu_info={}, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: unreadable)
-    monkeypatch.setattr(first_use, "session_host", lambda: unreadable)
     with pytest.raises(ProviderError) as excinfo:
         resolve_llama_server()
     assert "The llama.cpp pack 1.12032.1 for this computer is not published yet." in str(

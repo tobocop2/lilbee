@@ -51,7 +51,6 @@ def _config(tmp_path: Path):
 
 def _host(monkeypatch: pytest.MonkeyPatch, host: HostCaps, cell: str) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     file = wheel_name(EngineName.LLAMA, VERSION, cell)
     monkeypatch.setattr(engine_manifest, "MANIFESTS", render_table([(file, SHA, 1)]))
@@ -225,7 +224,7 @@ def test_the_first_use_warning_names_an_nvidia_card_the_pack_cannot_use(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     host = _nvidia("Linux", "x86_64", cards=((3, 7),))
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.messages == [cuda_pack_gap(host)]
@@ -236,7 +235,7 @@ def test_the_first_use_warning_is_silent_for_a_card_the_pack_serves(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     host = _nvidia("Linux", "x86_64", cards=((12, 0),))
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.records == []
@@ -256,7 +255,7 @@ def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
         },
         display_vendors=(0x1002, 0x10DE),
     )
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert len(caplog.records) == 1

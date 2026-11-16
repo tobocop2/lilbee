@@ -270,7 +270,7 @@ def test_the_warning_for_an_unserved_gpu_matches_the_host_platform(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.messages == [
@@ -284,7 +284,7 @@ def test_a_host_that_gets_the_vulkan_pack_is_not_warned(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     host = _host(vendors=(INTEL,), loader=True)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.records == []
@@ -294,7 +294,7 @@ def test_the_warning_reads_the_vendors_of_the_session_host_not_a_second_reading(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     host = _host(vendors=(INTEL,))
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", lambda: Counter({AMD: 1}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
@@ -333,7 +333,7 @@ def test_the_warning_for_an_amd_gpu_names_the_library_each_pack_needs(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.messages == [
@@ -391,7 +391,6 @@ def test_the_shipped_table_pins_the_published_wheel_of_each_gpu_cell(
 ) -> None:
     host = _host(system, machine, vendors=(AMD,), gfx=gfx, loader=True, numa=True)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == sha256

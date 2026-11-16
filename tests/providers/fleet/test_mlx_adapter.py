@@ -309,7 +309,7 @@ def test_the_engine_list_names_mlx_only_on_apple_silicon_with_macos_14(
         ("Windows", "AMD64", "", False),
     ]:
         caps = host(system, machine, version)
-        monkeypatch.setattr(engine_service, "session_host", lambda caps=caps: caps)
+        monkeypatch.setattr(runnable, "session_host", lambda caps=caps: caps)
         assert ("mlx" in engine_service.not_installed()) is named, (system, machine, version)
 
 

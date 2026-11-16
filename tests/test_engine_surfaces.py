@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import engine_for_ref
+from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
@@ -65,7 +66,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
@@ -771,7 +772,7 @@ def test_every_role_view_shows_why_the_host_refused_an_engine(
         lambda: {EngineName.LLAMA: formats, EngineName.IK_LLAMA: formats},
     )
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(
             system="Linux",

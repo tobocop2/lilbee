@@ -16,6 +16,7 @@ import pytest
 from lilbee.app import engine_choice, placement
 from lilbee.app import services as services_mod
 from lilbee.app.engine_choice import EngineBook, engine_for_ref
+from lilbee.catalog import runnable
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.commands import setup as setup_cmd
@@ -64,7 +65,7 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )

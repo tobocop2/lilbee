@@ -76,7 +76,6 @@ def _on_host(
     table = render_table([(wheel_name(EngineName.LLAMA, _WHEEL_VERSION, cell), sha, 1)])
     monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     fetched: list[str] = []
 

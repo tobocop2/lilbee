@@ -14,6 +14,7 @@ from _async_wait import wait_until
 from conftest import stub_hf_listing
 from lilbee.app.services import get_services
 from lilbee.catalog import query as _query
+from lilbee.catalog import runnable
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT
 from lilbee.cli.tui.widgets.model_grid import ModelGrid
@@ -65,7 +66,7 @@ def _npu_card_shown(screen: CatalogScreen) -> bool:
 
 def _browse(monkeypatch: pytest.MonkeyPatch, host: host_caps.HostCaps) -> None:
     monkeypatch.setattr(_query, "get_picks", lambda: [])
-    monkeypatch.setattr(_query, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
     stub_hf_listing(monkeypatch, {})
     rows = parse_models(PINNED)
     monkeypatch.setattr(get_services().hf_client, "fetch_engine_models", lambda engine: rows)

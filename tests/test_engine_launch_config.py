@@ -17,7 +17,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.app import engine_choice
 from lilbee.app.engine_choice import EngineBook
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
@@ -135,8 +134,6 @@ def _install_host(
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
     pick_cuda_on_gpu_hosts(monkeypatch)
-    # The engine rule holds its own reference to the host read, so it needs the patch too.
-    monkeypatch.setattr(engine_choice, "session_host", lambda: session)
     # The real read builds the process-wide services, and those start a warm-up thread.
     monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
     bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
