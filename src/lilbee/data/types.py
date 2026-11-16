@@ -193,6 +193,11 @@ class SyncResult(BaseModel):
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
 
+    def has_failures(self) -> bool:
+        """Whether a file failed this run, or failed files are held out and none is indexed."""
+        kept = self.added or self.updated or self.unchanged or self.relocated
+        return bool(self.failed or (self.held_out and not kept))
+
     def _lines(self) -> list[list[tuple[str, str]]]:
         """The summary as lines of ``(text, style)`` segments; ``""`` means unstyled."""
         lines: list[list[tuple[str, str]]] = [

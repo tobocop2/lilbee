@@ -18,6 +18,7 @@ from lilbee.core.llm_json import json_reply_format
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
     ChunkType,
+    HeldOut,
     MemoryKind,
     MemoryRow,
     SearchChunk,
@@ -188,6 +189,16 @@ EMPTY_LIBRARY = (
     "Your library is empty, so there's nothing to search yet. "
     "Add documents to your library first, then ask again."
 )
+
+
+def ingest_failed_message(count: int) -> str:
+    """The answer when nothing is indexed because *count* documents failed to ingest."""
+    noun = "document" if count == 1 else "documents"
+    return (
+        f"Nothing is indexed: {count} {noun} failed to ingest. "
+        "Run `lilbee status` to see why, then ask again."
+    )
+
 
 # Ask/search needs an embedder to ground an answer. When none is loaded, refuse
 # with an actionable message rather than hard-failing or silently answering
@@ -1432,7 +1443,10 @@ class Searcher:
         instead of this method telling the user to add documents.
         """
         if self.library_empty() and not self._memory_facts(question):
-            return EMPTY_LIBRARY
+            failed = sum(
+                record.kind is HeldOut.FAILED for record in self._store.held_records().values()
+            )
+            return ingest_failed_message(failed) if failed else EMPTY_LIBRARY
         return self.route_direct_answer(question)
 
     def ask_raw(

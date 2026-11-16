@@ -21,7 +21,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
-from lilbee.data.types import SyncResult
+from lilbee.data.types import SkippedSource, SyncResult
 from lilbee.runtime.cancellation import TaskCancelledError
 from tests._unreadable import deny_listing
 from tests.conftest import make_mock_services, make_pdf
@@ -526,6 +526,31 @@ def test_sync_that_left_a_failed_file_exits_one_and_prints_no_tip(project):
     assert result.exit_code == 1, result.output
     assert "SYNC RESULT" in result.output
     assert "lilbee analyze" not in result.output
+
+
+_HELD = [SkippedSource(filename="bees.md", reason="dimension mismatch")]
+
+
+@pytest.mark.parametrize(
+    ("counts", "exit_code"),
+    [
+        ({"held_out": _HELD}, 1),
+        ({"held_out": _HELD, "skipped": ["scan.pdf"]}, 1),
+        ({"held_out": _HELD, "added": ["a.md"]}, 0),
+        ({"held_out": _HELD, "updated": ["a.md"]}, 0),
+        ({"held_out": _HELD, "unchanged": 2}, 0),
+        ({"held_out": _HELD, "relocated": ["moved.md"]}, 0),
+    ],
+)
+def test_sync_that_only_held_out_failed_files_exits_one(project, counts, exit_code):
+    """Every document failed in an earlier sync: nothing indexed or kept, so the exit says so."""
+    with mock.patch(
+        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
+        return_value=_Shown(**counts),
+    ):
+        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+    assert result.exit_code == exit_code, result.output
+    assert "SYNC RESULT" in result.output
 
 
 @pytest.mark.parametrize(

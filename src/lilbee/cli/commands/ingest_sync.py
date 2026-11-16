@@ -532,10 +532,10 @@ def _run_sync(
 
 
 def _exit_if_failed(result: object) -> None:
-    """Exit 1 when *result* is a sync that left a failed file; call it after printing."""
+    """Exit 1 when a sync failed a file, or kept nothing and held out failed files."""
     from lilbee.data.ingest import SyncResult
 
-    if isinstance(result, SyncResult) and result.failed:
+    if isinstance(result, SyncResult) and result.has_failures():
         raise SystemExit(1)
 
 
