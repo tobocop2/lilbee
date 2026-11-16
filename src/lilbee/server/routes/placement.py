@@ -21,6 +21,7 @@ from litestar.response import Stream
 
 from lilbee.app.placement import PLACEMENT_READ_ERRORS
 from lilbee.core.config import cfg
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
@@ -89,6 +90,8 @@ async def placement_set_route(data: PlacementSpecBody) -> PlacementResponse:
         return await handlers.placement_set(spec_json)
     except ProviderError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
+    except FileLockUnavailableError:
+        raise  # the app's lock handler answers it; it is not a probe failure
     except OSError as exc:
         log.exception("GPU probe failed")
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=_PROBE_FAILED_DETAIL) from exc
