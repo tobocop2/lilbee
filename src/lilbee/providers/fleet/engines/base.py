@@ -150,6 +150,13 @@ class EngineAdapter(Protocol, Hashable):
     server_process: ServerProcess
     """How the orphan sweep recognises this engine's server after its llama-swap is gone."""
 
+    concatenates_pooling: bool
+    """Whether a model that enables several pooling modes gets one vector block per mode.
+
+    An engine that is False serves the first enabled mode only, so the vector
+    keeps the width of one block.
+    """
+
     def supports_architecture(self, architecture: str) -> bool: ...
 
     def host_gate(self, host: HostCaps) -> HostGate:

@@ -52,6 +52,7 @@ class IkLlamaAdapter:
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
     memory_kind = MemoryKind.SIZED
     takes_device_names = True
+    concatenates_pooling = False
     bundled = False
     server_process = ServerProcess(name="llama-server")
 

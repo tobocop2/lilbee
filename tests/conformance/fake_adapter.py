@@ -52,6 +52,7 @@ class FakeAdapter:
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
     server_process = ServerProcess(name="fake-engine-server")
     backend: str | None = "cpu"

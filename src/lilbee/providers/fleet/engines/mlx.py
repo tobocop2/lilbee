@@ -76,6 +76,7 @@ class MlxAdapter:
     served_roles = frozenset({WorkerRole.CHAT})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
     server_process = ServerProcess(name=_TOOL, interpreted=True)
 

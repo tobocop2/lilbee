@@ -120,6 +120,7 @@ class OpenvinoAdapter:
     served_roles = frozenset({WorkerRole.CHAT})
     memory_kind = MemoryKind.SIZED
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
     server_process = ServerProcess(name=_TOOL)
 
