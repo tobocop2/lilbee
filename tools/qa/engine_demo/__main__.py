@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import socket
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from tools.qa.engine_demo.observe import DEFAULT_QUESTION, RunPlan, observe
 from tools.qa.engine_demo.oracles import Transcript, judge
-from tools.qa.engine_demo.scrub import map_strings, scrub_urls
+from tools.qa.engine_demo.scrub import scrub_recording
 
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
@@ -144,7 +145,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     run_dir = Path(tempfile.mkdtemp(prefix="engine-demo-", dir=args.work_dir))
     transcript = observe(plan, run_dir)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    scrubbed = map_strings(transcript.to_json(), scrub_urls)
+    scrubbed = scrub_recording(transcript.to_json(), socket.gethostname())
     args.out.write_text(json.dumps(scrubbed, indent=2) + "\n", encoding="utf-8")
     print(f"run folder: {run_dir}")
     print(f"transcript: {args.out}")

@@ -13,6 +13,7 @@ import os
 import runpy
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -536,6 +537,18 @@ def test_a_run_writes_no_signed_url_query(tmp_path: Path, monkeypatch: pytest.Mo
     written = (tmp_path / "t.json").read_text(encoding="utf-8")
     assert "https://cdn.example.com/m.gguf?<query>" in written
     assert "s3cret" not in written
+
+
+def test_a_run_writes_no_home_path_and_no_hostname(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(socket, "gethostname", lambda: "rec-box.example.org")
+    monkeypatch.setenv("FAKE_PULL_URL", "/home/alice/m.gguf on rec-box")
+    assert demo_main.main(_run_args(tmp_path)) == 0
+    written = (tmp_path / "t.json").read_text(encoding="utf-8")
+    assert "<home>/m.gguf on <host>" in written
+    assert "alice" not in written
+    assert "rec-box" not in written
 
 
 @pytest.mark.parametrize(

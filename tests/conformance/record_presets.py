@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from tools.qa.engine_demo.scrub import scrub_recording
+
 from tests.conformance.preset_check import (
     Outcome,
     Setup,
@@ -18,7 +20,6 @@ from tests.conformance.preset_check import (
     fixture_json,
     recording,
     run_steps,
-    scrub_recording,
 )
 
 
