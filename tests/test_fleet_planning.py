@@ -5068,6 +5068,159 @@ class TestSnapshotEngineWithMixedReadings:
         assert "https://x/redist." in str(caught.value)
         assert "Check that the engine is installed and works" in str(caught.value)
 
+    @staticmethod
+    def _models(monkeypatch, **refs: str) -> None:
+        """Set the four role models; a role not named has no model."""
+        for field in ("chat_model", "embedding_model", "reranker_model", "vision_model"):
+            monkeypatch.setattr(cfg, field, refs.get(field, ""))
+        monkeypatch.setattr(planning_mod, "vision_role_wanted", lambda _ref: False)
+
+    @staticmethod
+    def _missing_llama(monkeypatch, reads: list) -> None:
+        """Reading the llama.cpp engine raises; every other engine reads as a CPU host."""
+        from lilbee.providers.base import ProviderError
+
+        def _read(_binary, engine):
+            reads.append(engine)
+            if engine is LLAMA:
+                raise ProviderError(
+                    "llama-server binary not found. Engine llama.cpp is not installed"
+                )
+            return []
+
+        monkeypatch.setattr(planning_mod, "_plan_devices", _read)
+
+    def test_a_role_with_no_model_does_not_make_its_engine_part_of_the_plan(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        reads: list = []
+        self._missing_llama(monkeypatch, reads)
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod.snapshot_engine(engines) is FAKE
+        assert LLAMA not in reads
+
+    def test_the_clean_box_snapshot_reads_only_the_engines_of_roles_with_a_model(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        read: list = []
+
+        def _probe(engine):
+            read.append(engine)
+            return planning_mod.DeviceReading([], EngineBackend.UNKNOWN, False)
+
+        monkeypatch.setattr(planning_mod, "_probe_engine_devices", _probe)
+        monkeypatch.setattr(planning_mod, "_engine_identity", lambda engine: engine.name)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE})
+        assert read == [FAKE]
+
+    def test_a_plan_with_only_an_embed_model_never_reads_the_llama_engine(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        reads: list = []
+        self._missing_llama(monkeypatch, reads)
+        self._no_launches(monkeypatch)
+        planning_mod.plan_all_launches(engines={WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE})
+        assert LLAMA not in reads
+
+    def test_a_role_with_a_model_still_names_its_engine_that_cannot_be_read(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            embedding_model="org/repo/embed.safetensors",
+        )
+        self._missing_llama(monkeypatch, [])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        with pytest.raises(ProviderError, match=r"Cannot read the GPUs of the llama\.cpp engine"):
+            planning_mod.snapshot_engine(engines)
+
+    def test_a_remote_chat_model_does_not_make_the_llama_engine_part_of_the_plan(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch, chat_model="openai/gpt-x", embedding_model="org/repo/embed.safetensors"
+        )
+        self._missing_llama(monkeypatch, [])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod.snapshot_engine(engines) is FAKE
+
+    def test_with_no_model_at_all_every_engine_still_takes_part(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch)
+        self._missing_llama(monkeypatch, [])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        with pytest.raises(ProviderError, match=r"Cannot read the GPUs of the llama\.cpp engine"):
+            planning_mod.snapshot_engine(engines)
+
+    def test_every_configured_role_without_an_engine_is_listed_past_a_role_that_is_skipped(
+        self, monkeypatch
+    ) -> None:
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            reranker_model="org/repo/rerank.gguf",
+            vision_model="org/repo/vision.gguf",
+        )
+        monkeypatch.setattr(
+            planning_mod, "vision_role_wanted", lambda ref: ref == "org/repo/vision.gguf"
+        )
+        missing = planning_mod._roles_without_engine(None, {WorkerRole.CHAT: LLAMA})
+        assert missing == {
+            WorkerRole.RERANK: "org/repo/rerank.gguf",
+            WorkerRole.VISION: "org/repo/vision.gguf",
+        }
+
+    def test_only_the_asked_roles_are_checked_for_an_engine(self, monkeypatch) -> None:
+        self._models(
+            monkeypatch,
+            embedding_model="org/repo/embed.gguf",
+            reranker_model="org/repo/rerank.gguf",
+        )
+        missing = planning_mod._roles_without_engine((WorkerRole.RERANK,), {})
+        assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
+
+    def test_a_vision_role_that_is_not_wanted_does_not_end_the_check(self, monkeypatch) -> None:
+        self._models(
+            monkeypatch, reranker_model="org/repo/rerank.gguf", vision_model="org/repo/vision.gguf"
+        )
+        missing = planning_mod._roles_without_engine((WorkerRole.VISION, WorkerRole.RERANK), {})
+        assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
+
+    def test_a_role_with_no_model_does_not_make_a_fleet_mixed(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._is_mixed(engines) is False
+
+    def test_two_roles_with_a_model_on_two_engines_are_a_mixed_fleet(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            embedding_model="org/repo/embed.safetensors",
+        )
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._is_mixed(engines) is True
+
     def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
         from lilbee.providers.base import ProviderError
 

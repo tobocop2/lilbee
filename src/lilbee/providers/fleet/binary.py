@@ -272,8 +272,11 @@ def _first_use_tool(tool: EngineTool) -> Path | None:
             if tool is EngineTool.LLAMA_SERVER
             else ProviderErrorKind.UNKNOWN
         )
+        # The router refusal already names the router; llama-server's names the pack.
+        from_pack = tool not in (EngineTool.LLAMA_SERVER, EngineTool.LLAMA_SWAP)
+        source = f" {tool.value} comes from the llama.cpp pack." if from_pack else ""
         raise ProviderError(
-            f"{tool.value} binary not found. {exc} {engine_install_hint()}", kind=kind
+            f"{tool.value} binary not found.{source} {exc} {engine_install_hint()}", kind=kind
         ) from exc
 
 
