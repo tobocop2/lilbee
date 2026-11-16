@@ -20,6 +20,7 @@ from lilbee.app.services import server_is_stopping
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers.base import SERVER_STOPPING_MESSAGE, ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
@@ -96,6 +97,8 @@ def _api_chat_error_status(exc: Exception) -> int:
     if isinstance(exc, ModelNotFoundError):
         return _NOT_FOUND_STATUS
     if isinstance(exc, ModelDoesNotSupportToolsError):
+        return _BAD_REQUEST_STATUS
+    if isinstance(exc, NoEngineError):
         return _BAD_REQUEST_STATUS
     if isinstance(exc, ProviderError):
         return _API_PROVIDER_KIND_STATUSES.get(exc.kind, _SERVICE_UNAVAILABLE_STATUS)
