@@ -2267,6 +2267,76 @@ class TestHydeSearch:
             get_services().searcher._hyde_search("test", top_k=5)
         mock_svc.embedder.embed_query.assert_not_called()
 
+    def test_blank_passage_error_text_names_the_fix(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("   ")
+        with (
+            mock.patch.object(cfg, "chat_model", "org/chat/quiet.gguf"),
+            pytest.raises(ProviderError) as caught,
+        ):
+            get_services().searcher._hyde_search("test", top_k=5)
+        assert str(caught.value) == (
+            "The chat model org/chat/quiet.gguf returned no passage for the hyde search. "
+            "Pick another chat model or search without 'hyde:'."
+        )
+
+    def test_asks_the_chat_model_for_a_non_streamed_passage_about_the_question(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        call = mock_svc.provider.chat.call_args
+        assert call.args == (
+            [{"role": "user", "content": cfg.hyde_prompt.format(question="explain X")}],
+        )
+        assert call.kwargs["stream"] is False
+
+    def test_searches_the_store_with_the_passage_vector_only(self, mock_svc):
+        passage_vec = [0.25, 0.75]
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.return_value = passage_vec
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=7, chunk_type=ChunkType.RAW)
+        mock_svc.store.search.assert_called_once_with(
+            passage_vec, top_k=7, query_text=None, chunk_type=ChunkType.RAW
+        )
+
+    def test_blend_skip_logs_the_failure_at_warning_and_the_trace_at_debug(self, mock_svc, caplog):
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with caplog.at_level("DEBUG", logger="lilbee.retrieval.query.searcher"):
+            get_services().searcher._merge_hyde_results("vague question", [], set(), 5)
+        warning = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert warning.getMessage() == ("HyDE widening disabled for this call: chat engine is down")
+        trace = next(r for r in caplog.records if r.levelname == "DEBUG")
+        assert trace.getMessage() == "HyDE widening exception"
+        assert trace.exc_info
+        assert trace.exc_info[1] is not None
+
+    def test_blend_asks_for_the_question_with_the_caller_depth(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._merge_hyde_results("vague question", [], set(), 9)
+        content = mock_svc.provider.chat.call_args.args[0][0]["content"]
+        assert content == cfg.hyde_prompt.format(question="vague question")
+        assert mock_svc.store.search.call_args.kwargs["top_k"] == 9
+
+    def test_blend_adds_each_unseen_hit_once_and_skips_seen_ones(self, mock_svc):
+        direct = _make_result(source="direct.md", chunk_index=0)
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = [
+            _make_result(source="direct.md", chunk_index=0),
+            _make_result(source="new.md", chunk_index=1),
+            _make_result(source="new.md", chunk_index=1),
+            _make_result(source="other.md", chunk_index=2),
+        ]
+        results = [direct]
+        seen = {("direct.md", 0)}
+        get_services().searcher._merge_hyde_results("vague question", results, seen, 5)
+        assert [(r.source, r.chunk_index) for r in results] == [
+            ("direct.md", 0),
+            ("new.md", 1),
+            ("other.md", 2),
+        ]
+        assert seen == {("direct.md", 0), ("new.md", 1), ("other.md", 2)}
+
     def test_strips_reasoning_before_embedding(self, mock_svc):
         """A reasoning model's deliberation must not be embedded as the
         hypothetical passage."""
