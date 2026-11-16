@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from lilbee.providers.fleet import swap_manager as sm
 
 
@@ -203,3 +205,29 @@ class TestTheSubEphemeralSearch:
             assert ports[0] != first_candidate
         finally:
             sm.release_reserved_ports(ports)
+
+    def test_a_released_port_with_a_live_listener_is_not_handed_out(self, monkeypatch) -> None:
+        # The stop path gave the port back to the picker while the old server's
+        # socket was still bound. The search starts on exactly that port, so only
+        # the bind probe stands between it and a second server.
+        import socket
+
+        monkeypatch.setattr(sm, "_reserved_ports", set())
+        monkeypatch.setattr(sm, "_ephemeral_range", lambda: (32768, 60999))
+        held_port = sm._search_start((32768, 60999))
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            try:
+                holder.bind(("127.0.0.1", held_port))
+            except OSError:
+                pytest.skip(f"port {held_port} is taken on this host")
+            holder.listen()
+            sm.release_reserved_ports([held_port])
+            ports = sm._pick_free_ports(2)
+            try:
+                assert held_port not in ports
+                assert len(set(ports)) == 2
+            finally:
+                sm.release_reserved_ports(ports)
+        finally:
+            holder.close()
