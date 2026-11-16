@@ -2206,9 +2206,7 @@ class TestResolverIsTheOnlyWriter:
             monkeypatch.setenv("LILBEE_EMBEDDING_MODEL", env_model)
         cfg.embedding_model = "acme/a-GGUF/a.gguf"
         cfg.embedding_dim = 768
-        monkeypatch.setattr(
-            appset, "_embedder_dim_from_gguf", lambda ref, registry=None: widths[ref]
-        )
+        monkeypatch.setattr(appset, "_embedder_dim", lambda ref, registry=None: widths[ref])
         monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
         monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
         monkeypatch.setattr(appset, "_embed_reindex_required", lambda: False)
@@ -2490,7 +2488,7 @@ class TestResetRemovesTheUserValue:
             calls.append(settings.load(root).get("embedding_model", "<gone>"))
 
         monkeypatch.setattr(appset, "_pin_legacy_store_meta", pin)
-        monkeypatch.setattr(appset, "_embedder_dim_from_gguf", lambda ref, registry=None: None)
+        monkeypatch.setattr(appset, "_embedder_dim", lambda ref, registry=None: None)
         monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
         monkeypatch.setattr(appset, "_embed_reindex_required", lambda: True)
         result = appset.reset_settings(["embedding_model"])
@@ -2648,7 +2646,7 @@ class TestEmbedPickNeedsRebuild:
                 "lilbee.modelhub.role_validator.validate_model_task_assignment",
                 side_effect=ValueError("Model 'not-a-model' is not installed."),
             ),
-            mock.patch.object(appset, "_embedder_dim_from_gguf", return_value=None),
+            mock.patch.object(appset, "_embedder_dim", return_value=None),
         ):
             assert appset.embed_pick_needs_rebuild("not-a-model") is False
         store.index_mismatch.assert_called_once_with(

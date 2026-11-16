@@ -4040,7 +4040,7 @@ class TestEnsureChatModelWiring:
                 "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
             ),
             mock.patch("lilbee.app.settings._pin_legacy_store_meta") as mock_pin,
-            mock.patch("lilbee.app.settings._embedder_dim_from_gguf", return_value=1024),
+            mock.patch("lilbee.app.settings._embedder_dim", return_value=1024),
             mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
         ):
             result = runner.invoke(app, ["ask", "test"])

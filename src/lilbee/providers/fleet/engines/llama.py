@@ -139,6 +139,7 @@ class LlamaCppAdapter:
     served_roles = frozenset(role for role, spec in ROLE_SPECS.items() if spec.server_capable)
     memory_kind = MemoryKind.SIZED
     takes_device_names = True
+    concatenates_pooling = False
     bundled = True
 
     def supports_architecture(self, architecture: str) -> bool:

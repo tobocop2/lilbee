@@ -132,6 +132,12 @@ class EngineAdapter(Protocol, Hashable):
     """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
     """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
+    concatenates_pooling: bool
+    """Whether a model that enables several pooling modes gets one vector block per mode.
+
+    An engine that is False serves the first enabled mode only, so the vector
+    keeps the width of one block.
+    """
 
     def supports_architecture(self, architecture: str) -> bool: ...
 

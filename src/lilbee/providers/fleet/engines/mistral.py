@@ -211,6 +211,7 @@ class MistralAdapter:
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = True
     bundled = False
 
     def supports_architecture(self, architecture: str) -> bool:

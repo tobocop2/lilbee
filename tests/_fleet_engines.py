@@ -70,6 +70,7 @@ class CardEngine(FakeAdapter):
     ) -> None:
         self.name = name
         self.takes_device_names = takes_device_names
+        self.concatenates_pooling = False
         self._cpu_only = cpu_only
         self._host_bytes = int(host_gib * GIB)
         self._binary = binary

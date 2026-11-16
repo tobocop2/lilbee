@@ -845,7 +845,7 @@ def apply_ephemeral_model_swap(field: str, ref: str) -> None:
     """
     if field == "embedding_model":
         _pin_legacy_store_meta()
-        dim = _embedder_dim_from_gguf(ref)
+        dim = _embedder_dim(ref)
         setattr(cfg, field, ref)
         if dim is not None:
             cfg.embedding_dim = dim
@@ -861,21 +861,41 @@ def _pin_legacy_store_meta() -> None:
     get_services().store.initialize_meta_if_legacy()
 
 
-def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> int | None:
-    """The embedder's output width from its GGUF header (``<arch>.embedding_length``).
+def _concatenates_pooling(ref: str) -> bool:
+    """Whether the engine that serves *ref* gives one vector block per pooling mode.
 
-    None when the model can't be resolved or the header lacks the field. Cheap: a
-    cached header read, no load. *registry* is forwarded to resolve the GGUF without
-    ``get_services()`` (callers running inside its construction).
+    False when no installed engine loads the model: one block is the width
+    that the engines which serve a single mode give.
+    """
+    from lilbee.app.engine_choice import engine_for_ref
+    from lilbee.providers.fleet.engines.choice import NoEngineError
+
+    try:
+        return engine_for_ref(ref, cfg).concatenates_pooling
+    except NoEngineError:
+        return False
+
+
+def _embedder_dim(ref: str, registry: ModelRegistry | None = None) -> int | None:
+    """The embedder's output width, read from the model itself.
+
+    A model folder gives it from its config files; a GGUF file from its header
+    (``<arch>.embedding_length``). None when the model can't be resolved or
+    carries no width. Cheap: no load. *registry* is forwarded to resolve the
+    model without ``get_services()`` (callers running inside its construction).
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.folder_embed_width import folder_embedding_width
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
         # resolve_model_path raises ProviderError for a non-native (ollama/SDK) ref,
-        # which has no local GGUF -- those embedders carry no width to derive here.
-        meta = read_gguf_metadata(resolve_model_path(ref, registry))
+        # which has no local model -- those embedders carry no width to derive here.
+        path = resolve_model_path(ref, registry)
+        if path.is_dir():
+            return folder_embedding_width(path, concatenates_pooling=_concatenates_pooling(ref))
+        meta = read_gguf_metadata(path)
     except (ProviderError, ValueError, OSError, RuntimeError, TypeError):
         return None
     raw = meta.get("embedding_length") if meta else None
@@ -894,7 +914,7 @@ def reconcile_embedding_dim(
     """Pin the embedding dim of *config* (default cfg) to the native embedder's GGUF width;
     no-op for non-native embedders or an already-matching dim."""
     target = cfg if config is None else config
-    dim = _embedder_dim_from_gguf(target.embedding_model, registry)
+    dim = _embedder_dim(target.embedding_model, registry)
     if dim is not None and dim != target.embedding_dim:
         target.embedding_dim = dim
 
@@ -982,7 +1002,7 @@ def embed_pick_needs_rebuild(ref: str) -> bool:
         canonical = canonical_model_ref(_coerce_value("embedding_model", ref))
     except ValueError:  # the write refuses this ref on its own
         canonical = ref
-    dim = _embedder_dim_from_gguf(canonical) or cfg.embedding_dim
+    dim = _embedder_dim(canonical) or cfg.embedding_dim
     return store.index_mismatch(model=canonical, dim=dim) is not None
 
 
