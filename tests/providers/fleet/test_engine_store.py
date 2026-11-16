@@ -14,12 +14,14 @@ import textwrap
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
 
 from lilbee.providers.fleet import engine_store
 from lilbee.providers.fleet.engine_store import (
+    LOCK_DIR,
     RECORD_NAME,
     ChecksumError,
     EngineConflictError,
@@ -32,14 +34,14 @@ from lilbee.providers.fleet.engine_store import (
 from lilbee.providers.fleet.engines.choice import PinError, pin_lock
 
 
-def make_wheel(path: Path, licence: str | None = "MIT") -> str:
+def make_wheel(path: Path, licence: str | None = "MIT", body: str = "#!/bin/sh\n") -> str:
     meta = "Metadata-Version: 2.4\nName: lilbee-engine-fx\nVersion: 1\n"
     if licence:
         meta += f"License-Expression: {licence}\n"
     with zipfile.ZipFile(path, "w") as archive:
         info = zipfile.ZipInfo("lilbee_engine_fx/bin/server")
         info.external_attr = (stat.S_IFREG | 0o755) << 16
-        archive.writestr(info, "#!/bin/sh\n")
+        archive.writestr(info, body)
         plain = zipfile.ZipInfo("lilbee_engine_fx/data.txt")
         plain.external_attr = (stat.S_IFREG | 0o644) << 16
         archive.writestr(plain, "x")
@@ -65,6 +67,11 @@ def wheel(tmp_path: Path) -> tuple[Path, str]:
 @pytest.fixture
 def store(tmp_path: Path) -> EngineStore:
     return EngineStore(tmp_path / "engines")
+
+
+def assert_no_build_or_copy(root: Path) -> None:
+    """The engines folder holds no build and no private wheel copy; its lock folder may stay."""
+    assert [p.name for p in root.glob("*") if p.name != LOCK_DIR] == []
 
 
 def names(directory: Path) -> list[str]:
@@ -192,7 +199,9 @@ def test_one_lock_file_per_engine_outside_the_engine_directory(
 
     with mock.patch.object(engine_store, "file_lock", spy):
         store.install_from_wheel(pin(sha), path)
-    assert taken == [store.root / ".locks" / "fx"]
+    assert [p.parent for p in taken] == [store.root / ".locks"] * 2
+    assert taken[0].name.startswith(".download-")
+    assert taken[1] == store.root / ".locks" / "fx"
     assert names(store.root / "fx") == ["1-cpu"]
 
 
@@ -202,12 +211,12 @@ def test_lock_is_taken_around_the_unpack(store: EngineStore, wheel: tuple[Path, 
     real = engine_store.file_lock
 
     def spy(lock_path: Path, timeout: float):  # type: ignore[no-untyped-def]
-        held.append(True)
+        held.append(lock_path.name == "fx")
         return real(lock_path, timeout)
 
     with mock.patch.object(engine_store, "file_lock", spy):
         store.install_from_wheel(pin(sha), path)
-    assert held == [True]
+    assert held == [False, True]
 
 
 @pytest.mark.parametrize(
@@ -238,7 +247,7 @@ def test_gate_refuses_and_leaves_nothing(
         return
     with pytest.raises((ChecksumError, LicenceRefusedError)):
         store.install_from_wheel(lock, path)
-    assert not store.root.exists()
+    assert_no_build_or_copy(store.root)
 
 
 def test_checksum_error_names_engine_version_and_backend_and_the_next_step(
@@ -1188,7 +1197,7 @@ def test_other_escaping_entry_forms_are_refused(
     sha = evil_wheel(path, entry)
     with pytest.raises(UnsafeWheelError):
         store.install_from_wheel(pin(sha), path)
-    assert not store.root.exists()
+    assert_no_build_or_copy(store.root)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX execute bits")
@@ -1278,7 +1287,7 @@ def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: 
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(UnsafeWheelError, match="as a symbolic link"):
         store.install_from_wheel(pin(sha), path)
-    assert not store.root.exists()
+    assert_no_build_or_copy(store.root)
 
 
 # --- package route -----------------------------------------------------------------------
@@ -1775,7 +1784,7 @@ def test_a_linked_server_is_refused_beside_a_regular_helper(
     sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFLNK})
     with pytest.raises(UnsafeWheelError, match="as a symbolic link"):
         store.install_from_wheel(pin(sha), path)
-    assert not store.root.exists()
+    assert_no_build_or_copy(store.root)
 
 
 def test_package_route_records_the_server_when_a_helper_sorts_first(
@@ -2310,3 +2319,53 @@ def test_the_install_record_names_the_build_and_the_time_of_the_install_in_utc(
     }
     assert record["installed_at"].endswith("+00:00")
     assert [e.installed_at for e in store.installed()] == [record["installed_at"]]
+
+
+def _on_first_open_rewrite(monkeypatch: pytest.MonkeyPatch, path: Path, other: bytes) -> list[Path]:
+    """Overwrite *path* with *other* in place after the first archive opens; list every open."""
+    opened: list[Path] = []
+
+    class RewritingZipFile(zipfile.ZipFile):
+        def __init__(self, file: Path, *args: Any, **kwargs: Any) -> None:
+            super().__init__(file, *args, **kwargs)
+            if not opened:
+                path.write_bytes(other)
+            opened.append(Path(file))
+
+    monkeypatch.setattr(zipfile, "ZipFile", RewritingZipFile)
+    return opened
+
+
+def test_a_wheel_rewritten_after_the_check_installs_the_checked_bytes(
+    store: EngineStore, wheel: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, sha = wheel
+    other = tmp_path / "other.whl"
+    make_wheel(other, body="#!/bin/sh\necho swapped\n")
+    opened = _on_first_open_rewrite(monkeypatch, path, other.read_bytes())
+    build = store.install_from_wheel(pin(sha), path)
+    assert path.read_bytes() == other.read_bytes()
+    server = build / "lilbee_engine_fx" / "bin" / "server"
+    assert server.read_text(encoding="utf-8") == "#!/bin/sh\n"
+    assert len(opened) == 3
+    assert path not in opened
+    assert all(p.is_relative_to(store.root) for p in opened)
+
+
+@pytest.mark.parametrize(
+    ("licence", "good_digest", "failure"),
+    [("MIT", False, ChecksumError), ("GPL-3.0-only", True, LicenceRefusedError)],
+    ids=["wrong-digest", "licence"],
+)
+def test_the_private_copy_is_gone_after_a_failed_install(
+    store: EngineStore,
+    tmp_path: Path,
+    licence: str,
+    good_digest: bool,
+    failure: type[Exception],
+) -> None:
+    path = tmp_path / "w.whl"
+    sha = make_wheel(path, licence)
+    with pytest.raises(failure):
+        store.install_from_wheel(pin(sha if good_digest else "0" * 64), path)
+    assert_no_build_or_copy(store.root)
