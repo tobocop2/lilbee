@@ -30,6 +30,7 @@ from lilbee.providers.fleet.engines.choice import pin_lock
 from lilbee.providers.fleet.engines.llama import LLAMA, cuda_pack_gap, pack_backend
 from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 from lilbee.providers.fleet.gpu_select import PCIVendorID
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.gguf_meta import forget_unanswered_reads
 from lilbee.runtime.cancellation import CancelSignal
 
@@ -38,6 +39,10 @@ log = logging.getLogger(__name__)
 _FIRST_USE_LOCK_S = 1800.0
 _UNSERVED_GPU_VENDORS = {PCIVendorID.AMD: "AMD", PCIVendorID.INTEL: "Intel"}
 _TOOL_SUFFIXES = ("", ".exe")
+_VULKAN_LOADER_ADVICE = {
+    HostOS.LINUX: "install the Vulkan loader (libvulkan1 or vulkan-loader)",
+    HostOS.WINDOWS: "install or update the GPU driver, which provides the Vulkan loader",
+}
 
 
 class PackNotPublishedError(Exception):
@@ -133,12 +138,19 @@ def warn_if_gpu_unserved() -> None:
         if vendor in present:
             log.warning(
                 "This computer has an %s GPU, and no llama.cpp pack can use it here. "
-                "lilbee installs the CPU build. For the Vulkan build, install the Vulkan "
-                "loader (libvulkan1 or vulkan-loader). Or set LILBEE_LLAMA_SERVER_PATH "
-                "to your own llama-server.",
+                "lilbee installs the CPU build. %sTo use your own build, set "
+                "LILBEE_LLAMA_SERVER_PATH to your llama-server.",
                 name,
+                _vulkan_advice(host),
             )
             return
+
+
+def _vulkan_advice(host: HostCaps) -> str:
+    """The sentence that tells *host* how to get the Vulkan pack; empty when none exists."""
+    if host.arch != HostArch.X86_64 or host.os not in _VULKAN_LOADER_ADVICE:
+        return ""
+    return f"For the Vulkan build, {_VULKAN_LOADER_ADVICE[host.os]}. "
 
 
 def install_pack(

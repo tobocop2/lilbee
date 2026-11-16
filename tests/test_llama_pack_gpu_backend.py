@@ -213,16 +213,40 @@ def test_a_missing_library_is_reported_absent(monkeypatch: pytest.MonkeyPatch) -
     assert host_caps._has_library("vulkan") is False
 
 
-def test_the_warning_for_an_unserved_gpu_names_the_vulkan_loader(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    ("host", "advice"),
+    [
+        pytest.param(
+            _host(vendors=(INTEL,)),
+            "For the Vulkan build, install the Vulkan loader (libvulkan1 or vulkan-loader). ",
+            id="linux-x86_64",
+        ),
+        pytest.param(
+            _host("Windows", "AMD64", vendors=(INTEL,)),
+            "For the Vulkan build, install or update the GPU driver, "
+            "which provides the Vulkan loader. ",
+            id="windows-x86_64",
+        ),
+        pytest.param(_host("Linux", "aarch64", vendors=(INTEL,)), "", id="linux-arm64"),
+        pytest.param(_host("Windows", "ARM64", vendors=(INTEL,)), "", id="windows-arm64"),
+        pytest.param(_host("Darwin", "x86_64", vendors=(INTEL,)), "", id="macos-x86_64"),
+    ],
+)
+def test_the_warning_for_an_unserved_gpu_matches_the_host_platform(
+    host: HostCaps,
+    advice: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    host = _host(vendors=(INTEL,), loader=False)
     monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({INTEL}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
-    assert "Intel GPU" in caplog.text
-    assert "Vulkan loader" in caplog.text
+    assert caplog.messages == [
+        "This computer has an Intel GPU, and no llama.cpp pack can use it here. "
+        f"lilbee installs the CPU build. {advice}To use your own build, set "
+        "LILBEE_LLAMA_SERVER_PATH to your llama-server."
+    ]
 
 
 def test_a_host_that_gets_the_vulkan_pack_is_not_warned(
@@ -245,7 +269,7 @@ def test_the_rocm_gfx_set_is_the_target_list_of_the_pack_build_less_gfx906() -> 
 
 
 @pytest.mark.parametrize(
-    ("system", "machine", "gfx", "cell", "sha256"),
+    ("system", "machine", "gfx", "cell", "sha256", "size"),
     [
         (
             "Linux",
@@ -253,6 +277,7 @@ def test_the_rocm_gfx_set_is_the_target_list_of_the_pack_build_less_gfx906() -> 
             ("gfx1100",),
             "linux-x86_64-rocm",
             "22b8e8e0df62382db4bdb624df6a569ee4ba147c4f2fce80a42b4e2ea24853e3",
+            507195826,
         ),
         (
             "Linux",
@@ -260,6 +285,7 @@ def test_the_rocm_gfx_set_is_the_target_list_of_the_pack_build_less_gfx906() -> 
             (),
             "linux-x86_64-vulkan",
             "4346a6bbbee15dbfa1e0e736f174fa86d568d23b52b69ab64959a5369e727662",
+            56085481,
         ),
         (
             "Windows",
@@ -267,6 +293,7 @@ def test_the_rocm_gfx_set_is_the_target_list_of_the_pack_build_less_gfx906() -> 
             (),
             "windows-x86_64-vulkan",
             "87e5a2e2735aedb7446273d0989fa9ec69843828fa57cc8e5ca12cee0e3e992d",
+            64795105,
         ),
     ],
 )
@@ -276,14 +303,20 @@ def test_the_shipped_table_pins_the_published_wheel_of_each_gpu_cell(
     gfx: tuple[str, ...],
     cell: str,
     sha256: str,
+    size: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = _host(system, machine, vendors=(AMD,), gfx=gfx, loader=True, numa=True)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == sha256
     assert list(pin["platforms"]) == [cell]
+    lock, lock_cell = first_use.pack_lock()
+    assert lock_cell == cell
+    # The downloader checks the byte count of the wheel against this size.
+    assert lock.platforms[cell].size == size
     row = engine_manifest.MANIFESTS["llama.cpp"][VERSION][cell]
     assert row["url"].startswith(
         "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-llama-gpu/"
