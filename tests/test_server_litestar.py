@@ -1965,7 +1965,7 @@ class TestCors:
                     "Access-Control-Request-Method": method,
                 },
             )
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         assert resp.headers["access-control-allow-origin"] == "app://custom.example"
 
     def test_preflight_lists_exactly_the_allowed_methods(self):
