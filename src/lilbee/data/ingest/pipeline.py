@@ -119,6 +119,7 @@ from lilbee.data.types import (
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.truncation import one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1503,6 +1504,7 @@ def _sync_turn_for(
 
 @_marks_sync_running
 @owns_ingest_pool
+@one_truncation_warning
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,

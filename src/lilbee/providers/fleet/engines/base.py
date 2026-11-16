@@ -120,7 +120,7 @@ class RequestProfile:
     """Extra fields on a rerank route request, such as one that stops silent truncation."""
     context_overflow_status: int = 400
     """The status the server answers an input past its limit with."""
-    token_count_path: str | None = None
+    input_count_path: str | None = None
     """The route that counts the tokens of a list of inputs, or None for an engine that has none."""
     input_limit_path: str | None = None
     """The route that reports ``max_input_length``, or None. An engine with both routes cuts an
