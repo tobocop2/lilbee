@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from packaging.requirements import Requirement
 
@@ -79,3 +80,56 @@ def test_qa_matrix_excludes_vulnerable_anyio() -> None:
     req = _qa_requirement("anyio")
     assert not req.specifier.contains("4.9.0")
     assert req.specifier.contains("4.14.2")
+
+
+_ROOT = Path(__file__).parents[1]
+_FORK_TAGS = (
+    "macosx_11_0_arm64",
+    "macosx_11_0_x86_64",
+    "manylinux_2_28_aarch64",
+    "manylinux_2_28_x86_64",
+    "musllinux_1_2_aarch64",
+    "musllinux_1_2_x86_64",
+    "win_amd64",
+)
+
+
+def _fork_index() -> dict[str, Any]:
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    indexes = [i for i in data["tool"]["uv"]["index"] if i["name"] == "xberg-fork"]
+    assert len(indexes) == 1
+    index: dict[str, Any] = indexes[0]
+    return index
+
+
+def test_published_range_for_the_fork_dependency_resolves_on_pypi() -> None:
+    # PyPI refuses a direct URL, and 1.4.0 is not on PyPI: the published range
+    # stays at the newest release that is.
+    req = _base_requirement("xberg")
+    assert req.url is None
+    assert req.specifier.contains("1.3.8")
+
+
+def test_fork_index_is_flat_explicit_and_pinned_to_the_dependency() -> None:
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    index = _fork_index()
+    assert index["format"] == "flat"
+    assert index["explicit"] is True
+    assert data["tool"]["uv"]["sources"]["xberg"] == {"index": "xberg-fork"}
+
+
+def test_lock_holds_the_fork_build_for_every_platform() -> None:
+    lock = tomllib.loads((_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    (package,) = [p for p in lock["package"] if p["name"] == "xberg"]
+    assert package["version"] == "1.4.0+lilbee"
+    assert package["source"] == {"registry": _fork_index()["url"]}
+    urls = [w["url"] for w in package["wheels"]]
+    assert len(urls) == len(_FORK_TAGS)
+    for tag in _FORK_TAGS:
+        assert sum(url.endswith(f"-{tag}.whl") for url in urls) == 1, tag
+
+
+def test_intel_mac_install_reads_the_fork_index() -> None:
+    # `uv pip` ignores sources, so the Intel cell names the index itself.
+    workflow = (_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert f"--find-links {_fork_index()['url']}" in workflow

@@ -144,6 +144,16 @@ packages = ["src/lilbee"]
 # the index instead -- this source override is workspace metadata, not published deps.
 [tool.uv.sources]
 lilbee-engine = { path = "packaging/engine-wheel" }
+xberg = { index = "xberg-fork" }
+
+# uv.lock holds the fork build 1.4.0+lilbee; the published range stays on PyPI.
+# The flat index is the release's asset list; uv picks the wheel by platform tag.
+# `uv pip` ignores sources: pass the same URL with --find-links.
+[[tool.uv.index]]
+name = "xberg-fork"
+url = "https://github.com/tobocop2/xberg/releases/expanded_assets/v1.4.0%2Blilbee"
+format = "flat"
+explicit = true
 
 # `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
 # above no matter the specifier (uv drops version bounds on sourced packages),
