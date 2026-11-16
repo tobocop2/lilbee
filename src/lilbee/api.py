@@ -250,6 +250,7 @@ class Lilbee:
         from lilbee.data.store import human_recall_predicate
 
         with config_scope(self._config), services_scope(self._services):
+            self._services.store.ensure_servable()
             return self._services.store.search_memories(
                 self._services.embedder.embed_query(query),
                 owner_predicate=human_recall_predicate(),

@@ -113,6 +113,21 @@ class TestRecall:
         app_memory.recall("q", top_k=2)
         assert svc.store.search_memories.call_args.kwargs["top_k"] == 2
 
+    def test_a_switched_embedder_names_the_mismatch_before_it_embeds(self, svc):
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        svc.store.ensure_servable.side_effect = EmbeddingModelMismatchError(
+            persisted_model="orgA/repoA/built.gguf",
+            persisted_dim=768,
+            current_model="orgB/repoB/configured.gguf",
+            current_dim=1024,
+        )
+
+        with pytest.raises(EmbeddingModelMismatchError, match="rebuild the index"):
+            app_memory.recall("where is auth")
+
+        svc.embedder.embed_query.assert_not_called()
+
 
 class TestListForgetFlags:
     def test_list_local_is_owner_scoped(self, svc):
