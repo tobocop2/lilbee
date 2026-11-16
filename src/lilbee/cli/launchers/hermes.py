@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-from functools import partial
 from pathlib import Path
 
 import typer
@@ -16,7 +15,7 @@ from lilbee.cli.launchers import config_file
 from lilbee.cli.launchers.hermes_mcp import ensure_hermes_http_mcp
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
-from lilbee.cli.launchers.setup_gate import confirm_first_run_setup
+from lilbee.cli.launchers.setup_gate import confirm_mcp_mode_setup
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -27,6 +26,8 @@ _TOKEN_REF = "${" + LILBEE_TOKEN_ENV_VAR + "}"
 _MCP_CONTAINER_KEY = "mcp_servers"
 _CONFIG_LABEL = "hermes config (config.yaml)"
 _SETUP_MARKER_NAME = "hermes-setup.json"
+# Consent to the --no-mcp plan; consent to the MCP plan covers it too.
+_NO_MCP_SETUP_MARKER_NAME = "hermes-no-mcp-setup.json"
 # hermes refuses to start against a model whose window is under this, so a smaller
 # one is worth naming here rather than leaving hermes to fail after the handoff.
 _HERMES_MIN_CTX = 64_000
@@ -124,15 +125,21 @@ class HermesLauncher:
         self._binary = shutil.which("hermes")
         return self._binary
 
+    def _confirm_setup(self) -> bool:
+        """Ask before the first launch of this MCP mode's plan."""
+        return confirm_mcp_mode_setup(
+            mcp_marker_name=_SETUP_MARKER_NAME,
+            no_mcp_marker_name=_NO_MCP_SETUP_MARKER_NAME,
+            client_name="hermes",
+            print_plan=_print_setup_plan,
+            include_mcp=self._include_mcp,
+            assume_yes=self._assume_yes,
+        )
+
     def prepare(
         self, *, token: str, port: int, model_refs: list[str]
     ) -> tuple[list[str], dict[str, str]]:
-        if not confirm_first_run_setup(
-            marker_name=_SETUP_MARKER_NAME,
-            client_name="hermes",
-            print_plan=partial(_print_setup_plan, include_mcp=self._include_mcp),
-            assume_yes=self._assume_yes,
-        ):
+        if not self._confirm_setup():
             raise typer.Exit(0)
         config = config_file.load_config_dict(
             _hermes_config_path(),

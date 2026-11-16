@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from functools import partial
 from pathlib import Path
 
 import typer
@@ -14,7 +13,7 @@ from lilbee.app.agent_configs.claude import claude_http_config
 from lilbee.cli.launchers import config_file
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
-from lilbee.cli.launchers.setup_gate import confirm_first_run_setup
+from lilbee.cli.launchers.setup_gate import confirm_mcp_mode_setup
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -87,14 +86,14 @@ class ClaudeLauncher:
         return _find_claude_binary()
 
     def _confirm_setup(self) -> bool:
-        """Ask before the first launch of this plan; the MCP plan's consent covers --no-mcp."""
-        covered_by: tuple[str, ...] = () if self._include_mcp else (_SETUP_MARKER_NAME,)
-        return confirm_first_run_setup(
-            marker_name=_SETUP_MARKER_NAME if self._include_mcp else _SKILL_SETUP_MARKER_NAME,
+        """Ask before the first launch of this MCP mode's plan."""
+        return confirm_mcp_mode_setup(
+            mcp_marker_name=_SETUP_MARKER_NAME,
+            no_mcp_marker_name=_SKILL_SETUP_MARKER_NAME,
             client_name="Claude Code",
-            print_plan=partial(_print_setup_plan, include_mcp=self._include_mcp),
+            print_plan=_print_setup_plan,
+            include_mcp=self._include_mcp,
             assume_yes=self._assume_yes,
-            covered_by=covered_by,
         )
 
     def prepare(

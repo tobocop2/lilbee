@@ -273,13 +273,17 @@ def test_launch_hermes_hands_the_lazy_install_setting_to_the_mcp_setup(
     assert ensure.call_args.kwargs["allow_lazy_installs"] is expected
 
 
-def _launch_on_a_terminal(*args: str, answer: bool):
+def _launch_on_a_terminal(*args: str, answer: bool, on_confirm=None):
     """Run ``lilbee launch hermes`` on a terminal; return (result, confirm, ensure)."""
     completed = MagicMock(returncode=0)
     with (
         patch("lilbee.cli.launchers.hermes.shutil.which", return_value="/usr/local/bin/hermes"),
         patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
-        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=answer) as confirm,
+        patch(
+            "lilbee.cli.launchers.setup_gate.typer.confirm",
+            return_value=answer,
+            side_effect=on_confirm,
+        ) as confirm,
         patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
         patch("lilbee.cli.launchers.server.spawn_server"),
         patch("lilbee.cli.launchers.hermes.ensure_hermes_http_mcp", return_value=True) as ensure,
@@ -344,3 +348,54 @@ def test_hermes_setup_plan_without_mcp_leaves_out_the_mcp_lines(capsys):
     assert f"lilbee MCP skill -> {Path.home() / '.hermes' / 'skills' / 'lilbee-mcp'}" in out
     assert "MCP entry" not in out
     assert "mcp extra" not in out
+
+
+def _hermes_files(home: Path) -> dict[str, bytes]:
+    root = home / ".hermes"
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("answer", [False, True], ids=["decline", "accept"])
+def test_consent_to_the_no_mcp_plan_still_asks_before_the_mcp_plan(tmp_path, answer):
+    _write_server_session()
+    _launch_on_a_terminal("--no-mcp", answer=True)
+    before = _hermes_files(tmp_path)
+    at_answer: dict[str, dict[str, bytes]] = {}
+
+    def _answer(*_args: object, **_kwargs: object) -> bool:
+        at_answer["files"] = _hermes_files(tmp_path)
+        return answer
+
+    result, confirm, ensure = _launch_on_a_terminal("--mcp", answer=answer, on_confirm=_answer)
+    assert result.exit_code == 0
+    confirm.assert_called_once_with("Proceed with hermes setup?", default=True)
+    assert "lilbee MCP entry -> the same config.yaml" in result.stdout
+    assert at_answer["files"] == before
+    assert (cfg.data_dir / "launchers" / "hermes-setup.json").is_file() is answer
+    if answer:
+        ensure.assert_called_once()
+        assert "lilbee" in _hermes_config(tmp_path)["mcp_servers"]
+    else:
+        ensure.assert_not_called()
+        assert _hermes_files(tmp_path) == before
+
+
+def test_consent_to_the_mcp_plan_covers_a_later_no_mcp_launch(tmp_path):
+    _write_server_session()
+    _launch_on_a_terminal("--mcp", answer=True)
+    (tmp_path / ".hermes" / "skills" / "lilbee-mcp" / "SKILL.md").unlink()
+    result, confirm, _ensure = _launch_on_a_terminal("--no-mcp", answer=False)
+    assert result.exit_code == 0
+    confirm.assert_not_called()
+    assert (tmp_path / ".hermes" / "skills" / "lilbee-mcp" / "SKILL.md").is_file()
+    assert not (cfg.data_dir / "launchers" / "hermes-no-mcp-setup.json").exists()
+
+
+@pytest.mark.parametrize(("mode", "names_mcp"), [("--mcp", True), ("--no-mcp", False)])
+def test_the_launch_prints_the_plan_of_its_mcp_mode(tmp_path, mode, names_mcp):
+    _write_server_session()
+    result, _confirm, _ensure = _launch_on_a_terminal(mode, answer=False)
+    assert result.exit_code == 0
+    assert "First-time hermes setup will write:" in result.stdout
+    assert ("lilbee MCP entry -> the same config.yaml" in result.stdout) is names_mcp
+    assert ("hermes's mcp extra" in result.stdout) is names_mcp
