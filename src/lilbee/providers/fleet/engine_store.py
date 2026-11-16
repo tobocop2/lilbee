@@ -116,11 +116,12 @@ NOTICE_RULES: Mapping[str, NoticeRule] = {
     "MPL-2.0": NoticeRule("SOURCE-MPL-2.0", _mpl_pointer),
 }
 
-# A GPL, AGPL or LGPL text, by its file name or by its title line (case and spacing ignored).
+# A GPL, AGPL or LGPL text, by a whole word in its file name or by its title line.
+# The title match ignores case and spacing.
 # The title needs "version" right after it, so a notice that only names the licence passes.
-_COPYLEFT_NAME = re.compile(r"(?i)(?<![a-z])(?:[al]?gpl|lesser|affero)")
+_COPYLEFT_NAME = re.compile(r"(?i)(?<![a-z])(?:[al]?gplv?|lesser|affero)(?![a-z])")
 _COPYLEFT_TITLE = re.compile(r"gnu (?:(?:affero|lesser|library) )?general public license version")
-_LICENCE_FILE = re.compile(r"(?i)licen[cs]e|copying|notice|gpl|copyright")
+_LICENCE_FILE = re.compile(r"(?i)licen[cs]e|copying|notice|copyright")
 # Libraries whose source licence is LGPL or GPL, as a bundled library name.
 _COPYLEFT_LIBRARIES = re.compile(
     r"(?i)(?:lib)?(?P<name>quadmath|gmp|gmpxx|mpfr|readline|history)(?:[-.][\w.-]*)?"
@@ -341,24 +342,52 @@ def _refuse_repeated_notices(lock: PinLock, entries: list[str]) -> None:
         )
 
 
-def _licence_text(data: bytes) -> str:
-    """Decode a file for the title test: UTF-16 when it has a byte order mark, else UTF-8."""
+def _utf16_without_mark(data: bytes) -> str | None:
+    """Return the text of a UTF-16 file with no byte order mark, found by its NUL bytes."""
+    even, odd = data[0::2], data[1::2]
+    if 0 not in even and odd.count(0) * 2 > len(odd):
+        return data.decode("utf-16-le", errors="replace")
+    if 0 not in odd and even.count(0) * 2 > len(even):
+        return data.decode("utf-16-be", errors="replace")
+    return None
+
+
+def _wide_text(data: bytes) -> str | None:
+    """Return the text of a UTF-16 or UTF-32 file, found by its mark or its NUL bytes."""
+    if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return data.decode("utf-32", errors="replace")
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
         return data.decode("utf-16", errors="replace")
-    return data.decode("utf-8", errors="replace")
+    return _utf16_without_mark(data)
+
+
+def _licence_texts(data: bytes) -> list[str]:
+    """Return every decoding to test for a title: UTF-8 or Latin-1, then a wide one."""
+    try:
+        texts = [data.decode("utf-8")]
+    except UnicodeDecodeError:
+        texts = [data.decode("latin-1")]
+    if (wide := _wide_text(data)) is not None:
+        texts.append(wide)
+    return texts
 
 
 def _is_copyleft_file(name: str, read: Callable[[], bytes]) -> bool:
     """True when the file *name* is a GPL, AGPL or LGPL licence, or a library under one."""
-    base = PurePosixPath(name).name
-    if _COPYLEFT_LIBRARIES.fullmatch(base):
-        lower = base.lower()
-        return lower.endswith(_STATIC_ARCHIVE_SUFFIX) or any(s in lower for s in _LIBRARY_SUFFIXES)
-    if not (_LICENCE_FILE.search(base) or "/licenses/" in f"/{name}"):
+    *folders, base = PurePosixPath(name).parts
+    lower = base.lower()
+    if _COPYLEFT_LIBRARIES.fullmatch(base) and (
+        lower.endswith(_STATIC_ARCHIVE_SUFFIX) or any(s in lower for s in _LIBRARY_SUFFIXES)
+    ):
+        return True
+    in_scanned_folder = "licenses" in folders or any(_COPYLEFT_NAME.search(f) for f in folders)
+    if not (_LICENCE_FILE.search(base) or _COPYLEFT_NAME.search(base) or in_scanned_folder):
         return False
     if _COPYLEFT_NAME.search(base):
         return True
-    return bool(_COPYLEFT_TITLE.search(" ".join(_licence_text(read()).split()).casefold()))
+    return any(
+        _COPYLEFT_TITLE.search(" ".join(text.split()).casefold()) for text in _licence_texts(read())
+    )
 
 
 def _refuse_copyleft_files(lock: PinLock, files: Iterable[tuple[str, Callable[[], bytes]]]) -> None:
