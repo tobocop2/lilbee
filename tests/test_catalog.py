@@ -1868,6 +1868,19 @@ class TestResolveFilename:
         with pytest.raises(RuntimeError, match=r"Pull acme/base-7B instead\.$"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
+    def test_lora_adapter_repo_names_every_base_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            tags=("base_model:adapter:b/two", "base_model:adapter:a/one", "peft"),
+        )
+        with pytest.raises(RuntimeError, match=r"Pull b/two or a/one instead\.$"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
     @pytest.mark.parametrize(
         ("names", "expected"),
         [

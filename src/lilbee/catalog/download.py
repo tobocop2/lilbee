@@ -818,10 +818,9 @@ def _is_adapter_only(siblings: list[str]) -> bool:
 
 
 def _adapter_message(message: str, tags: list[str]) -> str:
-    """The refusal for a LoRA adapter repo, naming its base model when the Hub tags give it."""
-    named = (t.removeprefix(_ADAPTER_BASE_TAG) for t in tags if t.startswith(_ADAPTER_BASE_TAG))
-    base = next(named, "")
-    target = base or "the base model it was trained from"
+    """The refusal for a LoRA adapter repo, naming each base model the Hub tags give."""
+    named = [t.removeprefix(_ADAPTER_BASE_TAG) for t in tags if t.startswith(_ADAPTER_BASE_TAG)]
+    target = " or ".join(named) or "the base model it was trained from"
     return f"{message}. It holds a LoRA adapter, not a model. Pull {target} instead."
 
 
