@@ -3,8 +3,10 @@ the source file with the OS opener instead of a browser."""
 
 from __future__ import annotations
 
+import ctypes
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -21,6 +23,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens import chat as chat_screen
 from lilbee.cli.tui.screens.chat_helpers import (
     LinkOpenResult,
+    _has_alias_flag,
     _opener_argv,
     open_local_file,
 )
@@ -69,6 +72,10 @@ class TestOpenerArgv:
 class TestOpenLocalFile:
     def test_opens_decoded_path_with_platform_opener(self, monkeypatch):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "darwin")
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers._has_resource_fork", lambda p: False
+        )
         run = mock.Mock()
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
         doc = _write_doc("My Docs/doc.md")
@@ -173,7 +180,10 @@ class TestOpenAnswerLink:
         with caplog.at_level("ERROR"):
             chat_screen.ChatScreen._open_file_link.__wrapped__(screen, "file:///tmp/doc.md")
         told.assert_called_once_with(
-            screen, screen.notify, "Link not opened: boom", severity="error"
+            screen,
+            screen.notify,
+            "Link not opened: the file could not be opened. See the log for details",
+            severity="error",
         )
         assert "Could not open link: file:///tmp/doc.md" in caplog.messages
         assert caplog.records[0].exc_info is not None
@@ -193,6 +203,11 @@ class TestProgramsAndFoldersAreNotOpened:
     @pytest.fixture()
     def run(self, monkeypatch):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "darwin")
+        # Linux has no Finder metadata; TestMacosAliases covers these two reads.
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers._has_resource_fork", lambda p: False
+        )
         run = mock.Mock()
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
         return run
@@ -335,6 +350,203 @@ class TestProgramsAndFoldersAreNotOpened:
         doc.write_text("hi", encoding="utf-8")
         assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
         run.assert_called_once()
+
+
+def _fake_libc(finder_info: bytes | None) -> mock.Mock:
+    """A libc whose getxattr returns *finder_info*, or -1 when it is None."""
+    libc = mock.Mock()
+
+    def getxattr(path, name, buf, size, position, options):
+        assert isinstance(buf, ctypes.Array), "getxattr needs a writable buffer"
+        if finder_info is None:
+            return -1
+        ctypes.memmove(buf, finder_info, len(finder_info))
+        return len(finder_info)
+
+    libc.getxattr.side_effect = getxattr
+    return libc
+
+
+def _patch_libc(monkeypatch, finder_info: bytes | None, errno_after: int = 0):
+    """Patch ctypes.CDLL to hand out a fake libc; return the CDLL mock and the libc."""
+    libc = _fake_libc(finder_info)
+    cdll = mock.Mock(return_value=libc)
+    monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.ctypes.CDLL", cdll)
+    monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.ctypes.get_errno", lambda: errno_after)
+    return cdll, libc
+
+
+def _finder_info(flags: int) -> bytes:
+    return b"\0" * 8 + flags.to_bytes(2, "big") + b"\0" * 22
+
+
+class TestMacosAliases:
+    """A legacy Finder alias keeps its target in the resource fork and a flag in the Finder info."""
+
+    @pytest.fixture()
+    def run(self, monkeypatch):
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "darwin")
+        run = mock.Mock()
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
+        return run
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS resource forks and xattr")
+    @pytest.mark.parametrize("data", [b"", b"# plain notes\n"], ids=["empty-data", "text-data"])
+    def test_a_resource_fork_alias_is_refused_on_macos(self, run, data):
+        alias = _write_doc("legacy.md", data)
+        with open(f"{alias}/..namedfork/rsrc", "wb") as fork:
+            fork.write(b"alis resource bytes")
+        flags = _finder_info(0x8000).hex()
+        subprocess.check_call(["/usr/bin/xattr", "-wx", "com.apple.FinderInfo", flags, str(alias)])
+        assert open_local_file(alias.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS xattr")
+    def test_the_alias_flag_alone_is_refused_on_macos(self, run):
+        doc = _write_doc("flag-only.md", b"# plain notes\n")
+        flags = _finder_info(0x8000).hex()
+        subprocess.check_call(["/usr/bin/xattr", "-wx", "com.apple.FinderInfo", flags, str(doc)])
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS resource forks")
+    def test_any_resource_fork_is_refused_on_macos(self, run):
+        doc = _write_doc("forked.md", b"hi")
+        with open(f"{doc}/..namedfork/rsrc", "wb") as fork:
+            fork.write(b"x")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS Finder metadata")
+    def test_a_plain_document_opens_on_macos(self, run):
+        doc = _write_doc("plain.md", b"hi")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
+    @pytest.fixture()
+    def no_fork(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers._has_resource_fork", lambda p: False
+        )
+
+    @pytest.mark.parametrize(
+        ("flags", "expected"),
+        [
+            (0x8000, LinkOpenResult.NOT_A_DOCUMENT),
+            (0xFFFF, LinkOpenResult.NOT_A_DOCUMENT),
+            (0x4000, LinkOpenResult.OPENED),
+            (0x7FFF, LinkOpenResult.OPENED),
+            (0x0080, LinkOpenResult.OPENED),
+            (0x0000, LinkOpenResult.OPENED),
+        ],
+    )
+    def test_only_the_alias_bit_of_the_finder_flags_refuses(
+        self, run, no_fork, monkeypatch, flags, expected
+    ):
+        cdll, libc = _patch_libc(monkeypatch, _finder_info(flags))
+        doc = _write_doc("flagged.md")
+        assert open_local_file(doc.as_uri()) is expected
+        cdll.assert_called_once_with(None, use_errno=True)
+        libc.getxattr.assert_called_once_with(
+            os.fsencode(doc.resolve()), b"com.apple.FinderInfo", mock.ANY, 32, 0, 0
+        )
+
+    def test_the_getxattr_signature_is_declared(self, run, no_fork, monkeypatch):
+        _, libc = _patch_libc(monkeypatch, _finder_info(0))
+        open_local_file(_write_doc("sig.md").as_uri())
+        assert libc.getxattr.argtypes == [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_uint32,
+            ctypes.c_int,
+        ]
+        assert libc.getxattr.restype is ctypes.c_ssize_t
+
+    @pytest.mark.parametrize("offset", [0, 7, 10, 31])
+    def test_a_set_bit_outside_the_flags_field_does_not_refuse(
+        self, run, no_fork, monkeypatch, offset
+    ):
+        info = bytearray(32)
+        info[offset] = 0x80
+        _patch_libc(monkeypatch, bytes(info))
+        assert open_local_file(_write_doc("elsewhere.md").as_uri()) is LinkOpenResult.OPENED
+
+    def test_an_empty_finder_info_attribute_is_not_an_alias(self, run, no_fork, monkeypatch):
+        _patch_libc(monkeypatch, b"", errno_after=13)
+        assert open_local_file(_write_doc("empty.md").as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
+    def test_a_missing_finder_info_attribute_is_not_an_alias(self, run, no_fork, monkeypatch):
+        _patch_libc(monkeypatch, None, errno_after=93)
+        doc = _write_doc("bare.md")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
+    def test_a_finder_info_read_error_refuses_the_document(self, run, no_fork, monkeypatch):
+        _patch_libc(monkeypatch, None, errno_after=13)
+        doc = _write_doc("denied.md")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_the_finder_info_read_error_names_the_file_and_the_cause(self, monkeypatch):
+        _patch_libc(monkeypatch, None, errno_after=13)
+        with pytest.raises(OSError, match="Permission denied") as caught:
+            _has_alias_flag(Path("/some/file.md"))
+        assert caught.value.errno == 13
+        assert caught.value.filename == "/some/file.md"
+
+    @pytest.mark.parametrize(
+        ("fork_size", "expected"),
+        [
+            (5, LinkOpenResult.NOT_A_DOCUMENT),
+            (1, LinkOpenResult.NOT_A_DOCUMENT),
+            (0, LinkOpenResult.OPENED),
+        ],
+        ids=["forked", "one-byte-fork", "empty-fork"],
+    )
+    def test_the_resource_fork_size_decides(self, run, monkeypatch, fork_size, expected):
+        doc = _write_doc("fork.md")
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers.os.stat", _stat_with_fork(fork_size, doc)
+        )
+        assert open_local_file(doc.as_uri()) is expected
+
+    def test_a_file_without_a_resource_fork_is_not_an_alias(self, run, monkeypatch):
+        doc = _write_doc("nofork.md")
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers.os.stat",
+            _stat_with_fork(FileNotFoundError(), doc),
+        )
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+
+    def test_a_resource_fork_read_error_refuses_the_document(self, run, monkeypatch):
+        doc = _write_doc("locked.md")
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers.os.stat",
+            _stat_with_fork(PermissionError("denied"), doc),
+        )
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+
+def _stat_with_fork(fork: int | Exception, doc: Path):
+    """An os.stat that answers the resource-fork path of *doc* with *fork*, other paths for real."""
+    real_stat = os.stat
+    fork_path = f"{doc.resolve()}/..namedfork/rsrc"
+
+    def fake(path, *args, **kwargs):
+        if str(path) == fork_path:
+            if isinstance(fork, Exception):
+                raise fork
+            return mock.Mock(st_size=fork)
+        return real_stat(path, *args, **kwargs)
+
+    return fake
 
 
 class TestOpenerKeepsTheScreenResponsive:

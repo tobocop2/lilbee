@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import logging
+import os
 import stat
 import subprocess
 import sys
@@ -101,10 +103,46 @@ _LAUNCHING_CODE_SUFFIXES = frozenset(
 # A Finder alias or bookmark file starts with this data; it opens its target.
 _BOOKMARK_MAGIC = b"book\0\0\0\0mark"
 
+_FINDER_INFO = b"com.apple.FinderInfo"
+_FINDER_INFO_SIZE = 32
+_FINDER_FLAGS_OFFSET = 8
+_IS_ALIAS_FLAG = 0x8000
+_ENOATTR_DARWIN = 93
 
-def _is_openable_document(path: Path) -> bool:
-    """Whether *path* is a regular, non-executable, non-alias file of a type the
-    ingest accepts and whose default handler shows it instead of running it."""
+
+def _has_alias_flag(path: Path) -> bool:
+    """Whether the Finder flags of *path* mark it as an alias; raises OSError on a read error."""
+    libc = ctypes.CDLL(None, use_errno=True)  # os.getxattr does not exist on macOS
+    libc.getxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    libc.getxattr.restype = ctypes.c_ssize_t
+    buf = ctypes.create_string_buffer(_FINDER_INFO_SIZE)
+    size = libc.getxattr(os.fsencode(path), _FINDER_INFO, buf, _FINDER_INFO_SIZE, 0, 0)
+    if size < 0:
+        err = ctypes.get_errno()
+        if err == _ENOATTR_DARWIN:
+            return False
+        raise OSError(err, os.strerror(err), str(path))
+    flags = int.from_bytes(buf.raw[_FINDER_FLAGS_OFFSET : _FINDER_FLAGS_OFFSET + 2], "big")
+    return bool(flags & _IS_ALIAS_FLAG)
+
+
+def _has_resource_fork(path: Path) -> bool:
+    """Whether *path* has a non-empty macOS resource fork; raises OSError on a read error."""
+    try:
+        return os.stat(f"{path}/..namedfork/rsrc").st_size > 0
+    except FileNotFoundError:
+        return False
+
+
+def _is_plain_file(path: Path) -> bool:
+    """Whether *path* is a regular, non-executable, non-alias file; False on a read error."""
     try:
         mode = path.stat().st_mode
         if not stat.S_ISREG(mode) or mode & 0o111:
@@ -112,7 +150,17 @@ def _is_openable_document(path: Path) -> bool:
         with path.open("rb") as handle:
             if handle.read(len(_BOOKMARK_MAGIC)) == _BOOKMARK_MAGIC:
                 return False
+        return not (
+            sys.platform == "darwin" and (_has_alias_flag(path) or _has_resource_fork(path))
+        )
     except OSError:
+        return False
+
+
+def _is_openable_document(path: Path) -> bool:
+    """Whether *path* is a plain file of a type the ingest accepts and whose
+    default handler shows it instead of running it."""
+    if not _is_plain_file(path):
         return False
     content_type = classify_file(path)
     if content_type is None:

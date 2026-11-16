@@ -210,6 +210,9 @@ def opener(monkeypatch):
     browser = mock.Mock()
     monkeypatch.setattr(f"{_HELPERS}.subprocess.run", run)
     monkeypatch.setattr(f"{_HELPERS}.webbrowser.open", browser)
+    # A macOS platform on Linux has no Finder metadata to read.
+    monkeypatch.setattr(f"{_HELPERS}._has_alias_flag", lambda path: False)
+    monkeypatch.setattr(f"{_HELPERS}._has_resource_fork", lambda path: False)
     return run, browser
 
 
