@@ -591,6 +591,13 @@ use, when a model needs it. Every other engine needs this command. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
 REST route `POST /api/engines/install`.
 
+Every engine starts behind the llama-swap router. `lilbee engine install` also installs
+the router from its pinned release (MIT licence, digest checked) into the `router` folder of
+the engines folder, so an install without llama.cpp can start its engine. To install the
+router with no network, copy the release archive into the `packs` folder
+(for example `llama-swap_267_linux_amd64.tar.gz`). The router also installs on first use.
+A `llama-swap` on PATH, or one inside the llama.cpp pack, is used when no router is installed.
+
 During the download, the command line shows a progress bar on stderr, and the
 chat screen shows the bytes in the task bar. Each failed attempt prints its
 cause and its number. The MCP tool and the REST route return one result at the

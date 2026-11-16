@@ -37,6 +37,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
+from lilbee.providers.fleet.router_install import RouterDownloadError
 from lilbee.server.routes import engines as routes
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
@@ -1033,3 +1034,48 @@ def test_the_cli_shows_download_progress_on_stderr_and_keeps_stdout_clean(
         result = CliRunner().invoke(cli_app, ["--json", "engine", "install", ENGINE.value])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["installed"] == f"{ENGINE.value} {VERSION} (cpu)"
+
+
+def test_an_engine_install_also_installs_the_router_that_starts_it(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heard: list[list[str]] = []
+
+    def router(**signals: object) -> Path:
+        heard.append(sorted(signals))
+        return Path("llama-swap")
+
+    monkeypatch.setattr(engine_service, "install_router", router)
+    engine_service.install(ENGINE.value, good)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+    assert heard == [["cancel", "on_progress", "on_retry"]]
+
+
+def test_a_router_that_cannot_install_names_the_engine_that_did(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(**_signals: object) -> Path:
+        raise RouterDownloadError("The router cannot be downloaded.")
+
+    monkeypatch.setattr(engine_service, "install_router", refuse)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, good)
+    assert str(exc.value) == (
+        f"Engine {ENGINE} is installed, but the router that starts it is not. "
+        "The router cannot be downloaded."
+    )
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_a_refused_engine_install_never_reaches_the_router(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = tmp_path / "other.whl"
+    make_wheel(other, package="lilbee_engine_other")
+
+    def fail(**_signals: object) -> Path:
+        raise AssertionError("no engine was installed, so no router is installed")
+
+    monkeypatch.setattr(engine_service, "install_router", fail)
+    with pytest.raises(engine_service.EngineRefusedError, match="does not match its pin"):
+        engine_service.install(ENGINE.value, other)
