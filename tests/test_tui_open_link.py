@@ -194,13 +194,23 @@ class TestProgramsAndFoldersAreNotOpened:
         run.assert_not_called()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
-    def test_a_file_with_the_execute_bit_is_refused(self, run):
+    @pytest.mark.parametrize("mode", [0o700, 0o610, 0o601])
+    def test_a_file_with_any_execute_bit_is_refused(self, run, mode):
         script = cfg.documents_dir / "notes.txt"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("#!/bin/sh\n", encoding="utf-8")
-        script.chmod(0o755)
+        script.chmod(mode)
         assert open_local_file(script.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
         run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
+    def test_a_file_that_is_writable_but_not_executable_opens(self, run):
+        doc = cfg.documents_dir / "notes.txt"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("hi", encoding="utf-8")
+        doc.chmod(0o662)
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
 
     def test_a_regular_document_still_opens(self, run):
         doc = cfg.documents_dir / "notes.md"
