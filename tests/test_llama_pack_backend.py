@@ -321,6 +321,11 @@ def test_every_shipped_llama_url_names_the_wheel_that_its_cell_builds() -> None:
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
     steps = _pack_cells()["jobs"]["cell"]["steps"]
+    noticed = [s for s in steps if _NOTICE_NAME in s.get("run", "")]
+    assert len(noticed) == 2
+    assert not _pack_cells()["jobs"]["cell"].get("continue-on-error")
+    for step in noticed:
+        _assert_step_stops_on_failure(step)
     workflow = _uncommented("\n".join(step.get("run", "") for step in steps))
     notice = "NOTICE-MICROSOFT-VC-RUNTIME"
     bundle = [line for line in workflow.splitlines() if "bundle_windows_runtime.sh" in line]
@@ -330,16 +335,26 @@ def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -
 
 
 _NOTICE_NAME = "NOTICE-MICROSOFT-VC-RUNTIME"
-_NON_FATAL_SHELL = re.compile(r"^\s*(set\s+\+\w*e\b|trap\b)", re.MULTILINE)
-_FATAL_SHELL = re.compile(r"^\s*set\s+-\w*e\w*\b", re.MULTILINE)
+_NON_FATAL_SHELL = re.compile(r"^\s*(set\s+\+\w*e|set\s+\+o\s+errexit|trap\b)", re.MULTILINE)
+_FATAL_SHELL = re.compile(r"^\s*set\s+(-\w*e\w*\b|-o\s+errexit)", re.MULTILINE)
+_WINDOWS_STEP_CONDITION = re.compile(r"(\$\{\{\s*)?runner\.os\s*==\s*['\"]Windows['\"](\s*\}\})?")
+_WINDOWS_SHELL_CONDITION = re.compile(
+    r"\[\[?\s*\"?\$\{?RUNNER_OS\}?\"?\s*==?\s*\"?Windows\"?\s*\]\]?"
+)
 _SWALLOWED_STATUS = re.compile(r"\|\|\s*(true|:)\s*($|[;)}&|])")
 _NOTICE_BUNDLE_CALL = re.compile(
-    rf"^bash\s+\S*bundle_windows_runtime\.sh\s+\S+\s+\S*{_NOTICE_NAME}[\"']?\s*$"
+    rf"^bash(\s+-\S+)*\s+\S*bundle_windows_runtime\.sh\s+\S+\s+\S*{_NOTICE_NAME}[\"']?\s*$"
 )
 _NOTICE_LISTING_CHECK = re.compile(
-    rf"^grep\s+-q\s+\"[^\"]*dist-info/licenses/{_NOTICE_NAME}[^\"]*\"\s+wheel-listing\.txt"
-    r"\s*\|\|\s*\{[^}]*\bexit\s+1\b[^}]*\}\s*$"
+    rf"^grep\s+-q\s+\"[^\"]*dist-info/licenses/{_NOTICE_NAME} [^\"]*\"\s+wheel-listing\.txt"
+    r"\s*\|\|\s*\{[^}]*\bexit\s+[1-9]\d*\b[^}]*\}\s*$"
 )
+
+
+def _assert_step_stops_on_failure(step: dict[str, Any]) -> None:
+    """Fail if the step can pass after a failed command."""
+    assert not step.get("continue-on-error")
+    assert not _NON_FATAL_SHELL.search(_uncommented(step["run"]))
 
 
 def _mistralrs_job() -> dict[str, Any]:
@@ -359,24 +374,23 @@ def _mistralrs_step_with(line: re.Pattern[str]) -> tuple[dict[str, Any], list[st
     [step] = found
     script = _uncommented(step["run"])
     [text] = [raw.strip() for raw in script.splitlines() if line.match(raw.strip())]
-    assert not step.get("continue-on-error")
+    _assert_step_stops_on_failure(step)
     assert _FATAL_SHELL.search(script)
-    assert not _NON_FATAL_SHELL.search(script)
     assert not _SWALLOWED_STATUS.search(text)
     return step, _enclosing_conditions(script, text)
 
 
 def test_the_mistralrs_job_bundles_the_windows_runtime_notice_fatally() -> None:
     step, conditions = _mistralrs_step_with(_NOTICE_BUNDLE_CALL)
-    assert re.fullmatch(r"runner\.os\s*==\s*['\"]Windows['\"]", str(step["if"]))
+    assert _WINDOWS_STEP_CONDITION.fullmatch(str(step["if"]))
     assert conditions == []
 
 
 def test_the_mistralrs_job_checks_the_windows_runtime_notice_fatally() -> None:
     step, conditions = _mistralrs_step_with(_NOTICE_LISTING_CHECK)
     assert "if" not in step
-    assert [c for c in conditions if "Windows" in c and "RUNNER_OS" in c] == conditions
     assert len(conditions) == 1
+    assert _WINDOWS_SHELL_CONDITION.fullmatch(conditions[0])
 
 
 def _enclosing_conditions(script: str, line_text: str) -> list[str]:
