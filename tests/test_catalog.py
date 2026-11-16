@@ -57,6 +57,7 @@ from lilbee.catalog import (
 from lilbee.catalog import (
     query as _query,
 )
+from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.header_probe import GgufHeader
 from lilbee.catalog.hf_client import HfClient, hf_token
 from lilbee.catalog.models import HfPage
@@ -1804,6 +1805,111 @@ class TestResolveFilename:
         self._headers(monkeypatch, _bonsai_header)
         self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "mmproj-BF16.gguf")
         assert catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA) == "inkling-Q4_K_M.gguf"
+
+    @staticmethod
+    def _refusing(*refused: str) -> tuple[Callable[[str, str], None], list[tuple[str, str]]]:
+        """An engine verdict that refuses each file in *refused* and records every ask."""
+        asked: list[tuple[str, str]] = []
+
+        def can_load(repo: str, name: str) -> None:
+            asked.append((repo, name))
+            if name in refused:
+                raise UnsupportedQuantError(name, "IQ1_S")
+
+        return can_load, asked
+
+    def test_engine_refusal_moves_the_pull_to_the_next_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A packing the engine cannot read loses to one it can."""
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        can_load, asked = self._refusing("Qwen3-0.6B-Q4_K_M.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Qwen3-0.6B-Q8_0.gguf"
+        repo = PICKS_CHAT[0].hf_repo
+        assert asked == [(repo, "Qwen3-0.6B-Q4_K_M.gguf"), (repo, "Qwen3-0.6B-Q8_0.gguf")]
+
+    def test_engine_accepting_the_best_file_stops_the_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        can_load, asked = self._refusing()
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert asked == [(PICKS_CHAT[0].hf_repo, "Qwen3-0.6B-Q4_K_M.gguf")]
+
+    def test_every_file_refused_raises_the_first_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The user reads the refusal of the best-ranked file, not the last one tried."""
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        can_load, asked = self._refusing("Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        with pytest.raises(UnsupportedQuantError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert raised.value.ref == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert len(asked) == 2
+
+    def test_engine_is_not_asked_about_files_the_header_rules_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A projector and an unsupported architecture never reach the expensive verdict."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(
+            monkeypatch,
+            "Bonsai-27B-mmproj-Q8_0.gguf",
+            "Bonsai-27B-dspark-Q4_1.gguf",
+            "Bonsai-27B-Q2_g64.gguf",
+        )
+        can_load, asked = self._refusing()
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Bonsai-27B-Q2_g64.gguf"
+        assert asked == [(PICKS_CHAT[0].hf_repo, "Bonsai-27B-Q2_g64.gguf")]
+
+    def test_unsupported_architecture_outranks_an_engine_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With nothing loadable, the architecture guard still gets the best unsupported file."""
+        self._headers(
+            monkeypatch,
+            lambda name: GgufHeader(
+                architecture="inkling" if name.startswith("inkling") else "qwen35",
+                file_type="model",
+            ),
+        )
+        self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "inkling-Q8_0.gguf", "m-Q2_K.gguf")
+        can_load, _ = self._refusing("m-Q2_K.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "inkling-Q4_K_M.gguf"
+
+    def test_named_file_is_returned_without_a_listing_or_an_engine_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A catalog row naming a real model file pulls it as named."""
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=httpx.ConnectError("x"))
+        can_load, asked = self._refusing("exact.gguf")
+        entry = replace(PICKS_CHAT[0], gguf_filename="exact.gguf")
+        assert catalog.resolve_filename(entry, engine=LLAMA, can_load=can_load) == "exact.gguf"
+        assert asked == []
+
+    def test_named_wildcard_is_never_probed_as_a_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pattern is not a file name: the header probe sees only listed files."""
+        probed: list[str] = []
+
+        def lookup(name: str) -> GgufHeader:
+            probed.append(name)
+            return GgufHeader(architecture="llama", file_type="model")
+
+        self._headers(monkeypatch, lookup)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert chosen == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert probed == ["Qwen3-0.6B-Q4_K_M.gguf"]
 
     def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._headers(monkeypatch)
