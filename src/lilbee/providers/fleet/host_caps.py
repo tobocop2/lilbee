@@ -9,12 +9,14 @@ from __future__ import annotations
 import platform
 import re
 from collections.abc import Callable, Collection, Sequence
+from ctypes.util import find_library
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
 from lilbee.providers.fleet.gpu_backends.nvidia import CUDA_MAJOR_UNIT, CUDA_MINOR_UNIT, host_facts
+from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 
 T = TypeVar("T")
 
@@ -23,6 +25,8 @@ NVIDIA_UNREADABLE = "the NVIDIA driver answers could not be read"
 MACOS_UNREADABLE = "The macOS version of this computer could not be read."
 _SYSFS_ACCEL_DIR = Path("/sys/class/accel")
 NPU_UNREAD = "The NPU list of this computer could not be read."
+_SYSFS_KFD_NODES = Path("/sys/class/kfd/kfd/topology/nodes")
+_GFX_VERSION = re.compile(r"^gfx_target_version\s+(?P<version>\d+)$", re.MULTILINE)
 
 
 class HostOS(StrEnum):
@@ -129,6 +133,14 @@ class HostCaps:
     npu_known: bool = False
     """False when the NPU list could not be read, as on Windows; ``npus`` then says nothing."""
     npu_reason: str = NPU_UNREAD
+    display_vendors: frozenset[int] = frozenset()
+    """PCI vendor ids of the display controllers that a driver runs; empty when none can be read."""
+    amd_gfx: tuple[str, ...] = ()
+    """The gfx target of each AMD GPU that the Linux compute driver reports, such as gfx1100."""
+    vulkan_loader: bool = False
+    """True when the Vulkan loader library is installed."""
+    libnuma: bool = False
+    """True when the NUMA library is installed."""
 
 
 def _read_or_none(read: Callable[[], T]) -> T | None:
@@ -232,6 +244,10 @@ def collect(
     nvidia: dict[str, Any] | None,
     mac_ver: str = "",
     accel_devices: Sequence[tuple[str, str]] | None = None,
+    display_vendors: Collection[int] = (),
+    amd_gfx: Sequence[str] = (),
+    vulkan_loader: bool = False,
+    libnuma: bool = False,
 ) -> HostCaps:
     """Build the host answer from raw readings; a value that cannot be read is unknown."""
     host_os = _OS_BY_SYSTEM.get(system)
@@ -257,6 +273,10 @@ def collect(
         npus=npus,
         npu_known=npu_known,
         npu_reason=npu_reason,
+        display_vendors=frozenset(display_vendors),
+        amd_gfx=tuple(amd_gfx),
+        vulkan_loader=vulkan_loader,
+        libnuma=libnuma,
     )
 
 
@@ -287,6 +307,29 @@ def _accel_devices() -> list[tuple[str, str]]:
     return found
 
 
+def gfx_target(version: int) -> str:
+    """The gfx name for a kernel ``gfx_target_version``: 110000 is gfx1100, 90010 is gfx90a."""
+    return f"gfx{version // 10000}{version // 100 % 100:x}{version % 100:x}"
+
+
+def _amd_gfx_targets() -> list[str]:
+    """The gfx target of each GPU node in the Linux compute driver's topology."""
+    try:
+        files = sorted(_SYSFS_KFD_NODES.glob("*/properties"))
+    except OSError:
+        return []
+    found = []
+    for path in files:
+        match = _GFX_VERSION.search(_read_text(path) or "")
+        if match and int(match["version"]) > 0:
+            found.append(gfx_target(int(match["version"])))
+    return found
+
+
+def _has_library(name: str) -> bool:
+    return find_library(name) is not None
+
+
 def _cpu_info() -> dict[str, Any]:
     import cpuinfo
 
@@ -296,11 +339,16 @@ def _cpu_info() -> dict[str, Any]:
 
 def detect() -> HostCaps:
     """Read the live host."""
+    system = platform.system()
     return collect(
-        system=platform.system(),
+        system=system,
         machine=platform.machine(),
         cpu_info=_read_or_none(_cpu_info) or {},
         nvidia=host_facts(),
         mac_ver=platform.mac_ver()[0],
-        accel_devices=_accel_devices() if platform.system() == "Linux" else None,
+        accel_devices=_accel_devices() if system == "Linux" else None,
+        display_vendors=installed_gpu_vendor_ids(),
+        amd_gfx=_amd_gfx_targets() if system == "Linux" else (),
+        vulkan_loader=_has_library("vulkan-1" if system == "Windows" else "vulkan"),
+        libnuma=system == "Linux" and _has_library("numa"),
     )

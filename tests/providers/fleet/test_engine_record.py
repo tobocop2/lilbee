@@ -33,7 +33,7 @@ def _shipped_rows() -> list[dict[str, Any]]:
 
 def test_the_table_is_built_from_the_shipped_record_once() -> None:
     rows = _shipped_rows()
-    assert len(rows) == 17
+    assert len(rows) == 20
     assert load_manifests() == engine_manifest.MANIFESTS
     by_url = {
         row["url"]: row
