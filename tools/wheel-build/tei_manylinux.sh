@@ -78,6 +78,11 @@ if [ -n "${CUDA_CC}" ]; then
   case "${CUDA_CC}" in 7[5-9]) features=candle-cuda-turing,static-linking,http ;; *) features=candle-cuda,static-linking,http ;; esac
 fi
 
+# The upstream .cargo/config.toml builds for the CPU of the build host (target-cpu=native), and a
+# runner with AVX-512 then yields a router that stops with SIGILL on a CPU without it. RUSTFLAGS
+# replaces that setting. The x86-64-v2 baseline needs SSE4.2 and nothing newer.
+export RUSTFLAGS="-C target-cpu=x86-64-v2"
+
 build_log=/tmp/cargo-build.log
 (cd "${src}" && cargo build -vv --release --locked --bin text-embeddings-router --no-default-features \
   --features "${features}" --jobs "${jobs}") 2>&1 | tee "${build_log}"
