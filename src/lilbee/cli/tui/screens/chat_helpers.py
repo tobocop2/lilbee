@@ -6,7 +6,6 @@ import contextlib
 import ctypes
 import logging
 import os
-import stat
 import subprocess
 import sys
 import time
@@ -74,11 +73,13 @@ class LinkOpenResult(StrEnum):
     OPENED = "opened"
     OUTSIDE_ROOTS = "outside_roots"
     NOT_A_DOCUMENT = "not_a_document"
+    RESOURCE_FORK = "resource_fork"
 
 
 LINK_REFUSAL_NOTICES = {
     LinkOpenResult.OUTSIDE_ROOTS: msg.LINK_NOT_OPENED,
     LinkOpenResult.NOT_A_DOCUMENT: msg.LINK_NOT_A_DOCUMENT,
+    LinkOpenResult.RESOURCE_FORK: msg.LINK_RESOURCE_FORK,
 }
 
 # Source types the ingest accepts whose default handler can run them as a program.
@@ -142,17 +143,14 @@ def _has_resource_fork(path: Path) -> bool:
 
 
 def _is_plain_file(path: Path) -> bool:
-    """Whether *path* is a regular, non-executable, non-alias file; False on a read error."""
+    """Whether *path* is a regular file and not an alias; False on a read error."""
     try:
-        mode = path.stat().st_mode
-        if not stat.S_ISREG(mode) or mode & 0o111:
+        if not path.is_file():
             return False
         with path.open("rb") as handle:
             if handle.read(len(_BOOKMARK_MAGIC)) == _BOOKMARK_MAGIC:
                 return False
-        return not (
-            sys.platform == "darwin" and (_has_alias_flag(path) or _has_resource_fork(path))
-        )
+        return not (sys.platform == "darwin" and _has_alias_flag(path))
     except OSError:
         return False
 
@@ -170,12 +168,23 @@ def _is_openable_document(path: Path) -> bool:
     return sys.platform != "win32" and path.suffix.lower() not in _LAUNCHING_CODE_SUFFIXES
 
 
+def _document_refusal(path: Path) -> LinkOpenResult | None:
+    """Why the opener refuses *path*, or None when it is a document the opener shows."""
+    if not _is_openable_document(path):
+        return LinkOpenResult.NOT_A_DOCUMENT
+    try:
+        forked = sys.platform == "darwin" and _has_resource_fork(path)
+    except OSError:
+        return LinkOpenResult.NOT_A_DOCUMENT
+    return LinkOpenResult.RESOURCE_FORK if forked else None
+
+
 def open_local_file(href: str) -> LinkOpenResult:
     """Open a ``file:`` URL with the OS opener so it lands in the default app
     for its type (an editor for markdown, a viewer for PDF), not a browser
     rendering raw text. Platforms without a known opener fall back to the
     webbrowser module. Only a document inside the document roots is opened;
-    any other path, and any file that is not an ingestible document, opens nothing."""
+    any other path, and any file that is not a plain ingestible document, opens nothing."""
     path = url2pathname(urlparse(href).path)
     try:
         resolved = Path(path).resolve(strict=False)
@@ -185,9 +194,10 @@ def open_local_file(href: str) -> LinkOpenResult:
     if not inside:
         log.warning("Refused to open a file outside the document roots: %s", path)
         return LinkOpenResult.OUTSIDE_ROOTS
-    if not _is_openable_document(resolved):
-        log.warning("Refused to open a file that is not a document: %s", resolved)
-        return LinkOpenResult.NOT_A_DOCUMENT
+    refusal = _document_refusal(resolved)
+    if refusal is not None:
+        log.warning("Refused to open a file (%s): %s", refusal, resolved)
+        return refusal
     argv = _opener_argv(sys.platform)
     if argv is None:
         webbrowser.open(resolved.as_uri())

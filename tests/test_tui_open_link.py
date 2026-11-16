@@ -22,6 +22,7 @@ from lilbee.app.services import set_services
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens import chat as chat_screen
 from lilbee.cli.tui.screens.chat_helpers import (
+    LINK_REFUSAL_NOTICES,
     LinkOpenResult,
     _has_alias_flag,
     _opener_argv,
@@ -151,6 +152,10 @@ class TestOpenAnswerLink:
                 LinkOpenResult.NOT_A_DOCUMENT,
                 "Link not opened: the target is not a document lilbee can show",
             ),
+            (
+                LinkOpenResult.RESOURCE_FORK,
+                "Link not opened: the file carries Finder resource data, such as a custom icon",
+            ),
         ],
     )
     def test_refused_file_link_tells_the_user(self, monkeypatch, result, notice):
@@ -160,6 +165,11 @@ class TestOpenAnswerLink:
         screen = mock.Mock()
         chat_screen.ChatScreen._open_file_link.__wrapped__(screen, "file:///etc/passwd")
         told.assert_called_once_with(screen, screen.notify, notice, severity="warning")
+
+    def test_every_refusal_has_a_notice(self):
+        refusals = set(LinkOpenResult) - {LinkOpenResult.OPENED}
+        assert len(refusals) == 3
+        assert set(LINK_REFUSAL_NOTICES) == refusals
 
     def test_opened_file_link_shows_no_notice(self, monkeypatch):
         monkeypatch.setattr(
@@ -326,14 +336,28 @@ class TestProgramsAndFoldersAreNotOpened:
         run.assert_not_called()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
-    @pytest.mark.parametrize("mode", [0o700, 0o610, 0o601])
-    def test_a_file_with_any_execute_bit_is_refused(self, run, mode):
-        script = cfg.documents_dir / "notes.txt"
+    @pytest.mark.parametrize("mode", [0o755, 0o700, 0o610, 0o601])
+    @pytest.mark.parametrize("name", ["Dockerfile", "Makefile", "go", "sh"])
+    def test_an_executable_file_without_a_suffix_is_refused(self, run, mode, name):
+        # macOS opens an executable file without a suffix in Terminal, which runs it.
+        script = cfg.documents_dir / "sub" / name
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("#!/bin/sh\n", encoding="utf-8")
         script.chmod(mode)
         assert open_local_file(script.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
         run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
+    @pytest.mark.parametrize("mode", [0o700, 0o755, 0o610, 0o601])
+    @pytest.mark.parametrize("name", ["notes.txt", "notes.md", "paper.pdf", "page.html"])
+    def test_a_document_with_an_execute_bit_opens(self, run, mode, name):
+        # FAT and exFAT volumes report every file as executable.
+        doc = cfg.documents_dir / name
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("#!/bin/sh\n", encoding="utf-8")
+        doc.chmod(mode)
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
     def test_a_file_that_is_writable_but_not_executable_opens(self, run):
@@ -410,11 +434,11 @@ class TestMacosAliases:
         run.assert_not_called()
 
     @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS resource forks")
-    def test_any_resource_fork_is_refused_on_macos(self, run):
+    def test_a_document_with_any_resource_fork_is_refused_as_finder_data_on_macos(self, run):
         doc = _write_doc("forked.md", b"hi")
         with open(f"{doc}/..namedfork/rsrc", "wb") as fork:
             fork.write(b"x")
-        assert open_local_file(doc.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.RESOURCE_FORK
         run.assert_not_called()
 
     @pytest.mark.skipif(sys.platform != "darwin", reason="needs macOS Finder metadata")
@@ -500,8 +524,8 @@ class TestMacosAliases:
     @pytest.mark.parametrize(
         ("fork_size", "expected"),
         [
-            (5, LinkOpenResult.NOT_A_DOCUMENT),
-            (1, LinkOpenResult.NOT_A_DOCUMENT),
+            (5, LinkOpenResult.RESOURCE_FORK),
+            (1, LinkOpenResult.RESOURCE_FORK),
             (0, LinkOpenResult.OPENED),
         ],
         ids=["forked", "one-byte-fork", "empty-fork"],
@@ -513,6 +537,21 @@ class TestMacosAliases:
             "lilbee.cli.tui.screens.chat_helpers.os.stat", _stat_with_fork(fork_size, doc)
         )
         assert open_local_file(doc.as_uri()) is expected
+
+    def test_a_resource_fork_refusal_is_logged_with_its_reason(self, run, monkeypatch, caplog):
+        doc = _write_doc("icon.md")
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.os.stat", _stat_with_fork(3, doc))
+        with caplog.at_level("WARNING"):
+            open_local_file(doc.as_uri())
+        assert caplog.messages == [f"Refused to open a file (resource_fork): {doc.resolve()}"]
+
+    def test_a_program_with_a_resource_fork_is_refused_as_not_a_document(self, run, monkeypatch):
+        tool = _write_doc("tool.command")
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers._has_alias_flag", lambda p: False)
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.os.stat", _stat_with_fork(5, tool))
+        assert open_local_file(tool.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
 
     def test_a_file_without_a_resource_fork_is_not_an_alias(self, run, monkeypatch):
         doc = _write_doc("nofork.md")
