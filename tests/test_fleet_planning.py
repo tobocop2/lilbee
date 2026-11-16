@@ -5203,6 +5203,24 @@ class TestSnapshotEngineWithMixedReadings:
         missing = planning_mod._roles_without_engine((WorkerRole.VISION, WorkerRole.RERANK), {})
         assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
 
+    def test_a_role_with_no_model_does_not_make_a_fleet_mixed(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._is_mixed(engines) is False
+
+    def test_two_roles_with_a_model_on_two_engines_are_a_mixed_fleet(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            embedding_model="org/repo/embed.safetensors",
+        )
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._is_mixed(engines) is True
+
     def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
         from lilbee.providers.base import ProviderError
 

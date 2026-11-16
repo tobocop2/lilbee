@@ -3897,8 +3897,8 @@ class FleetPlan:
 
 
 def _is_mixed(engines: Mapping[WorkerRole, EngineAdapter]) -> bool:
-    """Whether *engines* holds more than one engine."""
-    return len({engine.name for engine in engines.values()}) > 1
+    """Whether the planned roles of *engines* run on more than one engine."""
+    return len({engine.name for engine in _planned_engines(engines).values()}) > 1
 
 
 def _log_refused_roles(
@@ -4323,12 +4323,13 @@ def _local_model_ref(role: WorkerRole) -> str | None:
     return None if not ref or parse_model_ref(ref).is_remote else ref
 
 
-def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[EngineAdapter]:
-    """Each engine of a role that runs a local model, once; raises when no role has an engine.
+def _planned_engines(
+    engines: Mapping[WorkerRole, EngineAdapter],
+) -> Mapping[WorkerRole, EngineAdapter]:
+    """The roles of *engines* that run a local model; all of them when none does.
 
     An engine that serves only roles with no model, or with a remote one, is left out:
-    the plan never asks it for a device. When no role runs a local model, every engine
-    stays in.
+    the plan never asks it for a device.
     """
     running = set(_launched_roles(engines))
     planned = {
@@ -4336,7 +4337,12 @@ def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[Engin
         for role, engine in engines.items()
         if role in running and _local_model_ref(role) is not None
     }
-    distinct = list({engine.name: engine for engine in (planned or engines).values()}.values())
+    return planned or engines
+
+
+def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[EngineAdapter]:
+    """Each engine of a planned role once; raises when no role has an engine."""
+    distinct = list({engine.name: engine for engine in _planned_engines(engines).values()}.values())
     if not distinct:
         raise ProviderError(
             f"No engine is assigned to any role, so there is nothing to plan. {LIST_HINT}"
