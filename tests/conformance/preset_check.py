@@ -407,9 +407,18 @@ def scrub_host(text: str, hostname: str) -> str:
     return re.sub(rf"(?<![\w-])(?:{pattern})(?![\w-])", HOST_TOKEN, text, flags=re.IGNORECASE)
 
 
+QUERY_TOKEN = "<query>"
+_URL_QUERY = re.compile(r"(https?://[^\s\"'\\?#<>]+)\?[^\s\"'\\<>]+")
+
+
+def scrub_url_queries(text: str) -> str:
+    """The text with the query string of each URL replaced by the query token."""
+    return _URL_QUERY.sub(rf"\1?{QUERY_TOKEN}", text)
+
+
 def scrub_recording(text: str, hostname: str) -> str:
-    """The text with each home directory and the hostname replaced by their tokens."""
-    return scrub_host(scrub_home(text), hostname)
+    """The text with each home directory, the hostname and each URL query replaced by tokens."""
+    return scrub_url_queries(scrub_host(scrub_home(text), hostname))
 
 
 def _origin(url: str) -> tuple[str, str]:

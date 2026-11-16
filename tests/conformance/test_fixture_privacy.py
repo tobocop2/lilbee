@@ -15,11 +15,14 @@ from tests.conformance import record_presets
 from tests.conformance.preset_check import (
     HOME_TOKEN,
     HOST_TOKEN,
+    QUERY_TOKEN,
     Exchange,
     Outcome,
     _Tape,
     scrub_home,
     scrub_host,
+    scrub_recording,
+    scrub_url_queries,
 )
 
 TESTS = Path(__file__).resolve().parents[1]
@@ -137,6 +140,57 @@ def test_scrub_home_replaces_the_home_directory_with_the_token(
 def test_scrub_home_is_idempotent() -> None:
     once = scrub_home("/home/alice/f3/m.gguf")
     assert scrub_home(once) == once
+
+
+@pytest.mark.parametrize(
+    ("raw", "scrubbed"),
+    [
+        (
+            "GET https://cdn.example.com/a/b.gguf?Signature=abc&Expires=9 HTTP/1.1",
+            f"GET https://cdn.example.com/a/b.gguf?{QUERY_TOKEN} HTTP/1.1",
+        ),
+        (
+            '"url": "http://h:8080/p?x=1%3B2"',
+            f'"url": "http://h:8080/p?{QUERY_TOKEN}"',
+        ),
+        (
+            "pulled https://cdn.example.com/m?k=v\\nnext https://cdn.example.com/n?k=w\\n",
+            f"pulled https://cdn.example.com/m?{QUERY_TOKEN}\\nnext https://cdn.example.com/n?{QUERY_TOKEN}\\n",
+        ),
+        (
+            "https://cdn.example.com/m?a=1?b=2 end",
+            f"https://cdn.example.com/m?{QUERY_TOKEN} end",
+        ),
+        (
+            "<https://cdn.example.com/m?a=1<next",
+            f"<https://cdn.example.com/m?{QUERY_TOKEN}<next",
+        ),
+        ("https://example.com/path/only", "https://example.com/path/only"),
+        ("https://example.com/p?", "https://example.com/p?"),
+        ("what? no url, a=b", "what? no url, a=b"),
+    ],
+)
+def test_scrub_url_queries_keeps_scheme_host_and_path(raw: str, scrubbed: str) -> None:
+    assert scrub_url_queries(raw) == scrubbed
+
+
+def test_scrub_url_queries_is_idempotent() -> None:
+    once = scrub_url_queries("https://cdn.example.com/m?Signature=abc")
+    assert scrub_url_queries(once) == once
+
+
+def test_scrub_recording_drops_the_signed_query_of_a_url() -> None:
+    raw = (
+        "get https://cdn.example.com/m.gguf?Signature=s3cret&Expires=1 from /home/alice on rec-box"
+    )
+    assert scrub_recording(raw, "rec-box") == (
+        f"get https://cdn.example.com/m.gguf?{QUERY_TOKEN} from {HOME_TOKEN} on {HOST_TOKEN}"
+    )
+
+
+def test_no_committed_recording_holds_a_url_query() -> None:
+    leaks = [f"{name}:{n}" for name, n, line in _fixture_lines() if scrub_url_queries(line) != line]
+    assert leaks == []
 
 
 def test_write_recording_scrubs_the_json_and_the_log(
