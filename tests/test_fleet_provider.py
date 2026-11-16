@@ -10,6 +10,7 @@ import os
 import struct
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -6702,10 +6703,29 @@ def test_a_transport_failure_on_the_rediscover_retry_is_not_responding(monkeypat
     assert caught.value.__cause__ is refused
 
 
-def test_a_model_error_on_the_rediscover_retry_surfaces_unchanged(monkeypatch) -> None:
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError(f"server answered {status}", request=request, response=response)
+
+
+_MODEL_ERRORS = [
+    pytest.param(
+        lambda: ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST),
+        id="provider-error",
+    ),
+    pytest.param(lambda: ValueError("malformed reply"), id="value-error"),
+    pytest.param(lambda: _status_error(500), id="http-status-error"),
+]
+
+
+@pytest.mark.parametrize("make_error", _MODEL_ERRORS)
+def test_a_model_error_on_the_rediscover_retry_surfaces_unchanged(
+    monkeypatch, make_error: Callable[[], Exception]
+) -> None:
     p = FleetProvider()
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
-    rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
+    rejected = make_error()
     calls = {"n": 0}
 
     def _call() -> str:
@@ -6714,8 +6734,26 @@ def test_a_model_error_on_the_rediscover_retry_surfaces_unchanged(monkeypatch) -
             raise _connection_error()
         raise rejected
 
-    with pytest.raises(ProviderError) as caught:
+    with pytest.raises(type(rejected), match=str(rejected)) as caught:
         p._with_rediscover(_call)
+    assert caught.value is rejected
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("make_error", _MODEL_ERRORS)
+def test_a_model_error_after_a_rebuild_surfaces_unchanged(
+    monkeypatch, make_error: Callable[[], Exception]
+) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
+    rejected = make_error()
+    held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
+
+    def _call() -> str:
+        raise rejected
+
+    with pytest.raises(type(rejected), match=str(rejected)) as caught:
+        p._retry_rebuilt(_call, WorkerRole.CHAT, held_port)
     assert caught.value is rejected
 
 
