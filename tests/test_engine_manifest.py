@@ -279,6 +279,32 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     )
 
 
+SHIPPED_MISTRAL = {
+    ("Darwin", "arm64"): (
+        "macos-arm64-metal",
+        "08c30b536f6b6795587902fbe050ae2e53b27cc6873da6ceff55faca21179c2a",
+    ),
+    ("Linux", "x86_64"): (
+        "linux-x86_64-cpu",
+        "b55ace7732b20c64a0f91e46325d68370388620b02e5deeee4317d7e2e9fef4d",
+    ),
+}
+
+
+@pytest.mark.parametrize(("system", "machine"), SHIPPED_MISTRAL)
+def test_each_host_resolves_its_own_mistral_pack_from_the_shipped_table(
+    system: str, machine: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cell, digest = SHIPPED_MISTRAL[(system, machine)]
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
+    pin = _pin(monkeypatch, EngineName.MISTRAL, system, machine)
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    assert pin["platforms"][cell]["url"].startswith(
+        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115-mistralrs/"
+    )
+
+
 class _Reached(Exception):
     """The download check passed and the fetch went on to the disk check."""
 
