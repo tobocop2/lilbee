@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from lilbee.runtime.cpu import (
     _cgroup_cpu_quota,
@@ -138,6 +142,55 @@ def test_cgroup_v2_child_quota_wins_when_tighter_than_parent(tmp_path) -> None:
     )
     proc = _proc_cgroup(tmp_path, "0::/a/b\n")
     assert _cgroup_cpu_quota(root, proc) == 1.5
+
+
+def test_cgroup_v2_ancestor_quota_caps_a_looser_leaf(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {"a/cpu.max": "100000 100000\n", "a/b/cpu.max": "400000 100000\n"},
+    )
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+def test_cgroup_v1_ancestor_quota_caps_a_looser_leaf(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu/a/cpu.cfs_quota_us": "100000\n",
+            "cpu/a/cpu.cfs_period_us": "100000\n",
+            "cpu/a/b/cpu.cfs_quota_us": "400000\n",
+            "cpu/a/b/cpu.cfs_period_us": "100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+def test_cgroup_proc_path_that_is_not_utf8_reads_the_mount(tmp_path) -> None:
+    # The kernel prints a cgroup name as raw bytes; no such directory exists here.
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "200000 100000\n"})
+    proc = tmp_path / "proc-self-cgroup"
+    proc.write_bytes(b"0::/a\xff\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs a POSIX permission check that root and Windows skip",
+)
+def test_cgroup_unsearchable_parent_directory_reads_the_other_levels(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "200000 100000\n", "a/b/cpu.max": "100000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    (root / "a").chmod(0)
+    try:
+        assert _cgroup_cpu_quota(root, proc) == 2
+    finally:
+        (root / "a").chmod(0o755)
 
 
 def test_cgroup_v1_reads_the_process_own_cpu_cgroup(tmp_path) -> None:

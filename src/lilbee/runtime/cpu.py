@@ -59,7 +59,7 @@ def _v1_dir_quota(directory: Path) -> float | None:
 def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
     """Map each controller (v2 unified hierarchy: the empty name) to this process's cgroup path."""
     try:
-        lines = proc_cgroup.read_text(encoding="utf-8").splitlines()
+        lines = proc_cgroup.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
     except OSError:
         return {}
     paths: dict[str, str] = {}
@@ -74,17 +74,14 @@ def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
 def _cgroup_chain(base: Path, relative: str | None) -> list[Path]:
     """The process's cgroup directory and each ancestor up to ``base``.
 
-    A path that does not exist under ``base`` means the mount already is the
-    process's own cgroup (a container with its own cgroup namespace, or a
-    runtime that mounts the container's cgroup at the controller root), so
-    ``base`` alone is the chain.
+    A level that does not exist or cannot be read gives no limit, so a path
+    absent under ``base`` (a container with its own cgroup namespace, or a
+    runtime that mounts the container's cgroup at the controller root) leaves
+    the mount's own limit.
     """
     if relative is None or ".." in Path(relative).parts:
         return [base]
-    leaf = base / relative.lstrip("/")
-    if not leaf.is_dir():
-        return [base]
-    chain = [leaf]
+    chain = [base / relative.lstrip("/")]
     while chain[-1] != base:
         chain.append(chain[-1].parent)
     return chain
