@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -140,14 +140,32 @@ class Step:
 
 @dataclass(frozen=True)
 class Transcript:
-    """What one engine did when lilbee ran it end to end on a host."""
+    """What the engines did when lilbee ran them end to end on a host."""
 
     engine: str
+    """The engine of every claimed role that *role_engines* does not name."""
     backend: str
     pin: str
-    """The version the install recorded; a served-by line must carry it."""
+    """The version the install of *engine* recorded; a served-by line must carry it."""
     claimed_roles: tuple[WorkerRole, ...]
     steps: tuple[Step, ...]
+    role_engines: Mapping[WorkerRole, str] = field(default_factory=dict)
+    """The roles that run on an engine other than *engine*, each with its engine."""
+    engine_pins: Mapping[str, str] = field(default_factory=dict)
+    """The recorded version of each engine in *role_engines*."""
+
+    def engine_of(self, role: WorkerRole) -> str:
+        """The engine that must serve *role*."""
+        return self.role_engines.get(role, self.engine)
+
+    def pin_of(self, engine: str) -> str:
+        """The recorded version of *engine*, or "" when the run recorded none."""
+        return self.pin if engine == self.engine else self.engine_pins.get(engine, "")
+
+    def engines_used(self) -> tuple[str, ...]:
+        """The engines the claimed roles run on, once each, in role order."""
+        used = dict.fromkeys(self.engine_of(role) for role in self.claimed_roles)
+        return tuple(used) or (self.engine,)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -156,6 +174,8 @@ class Transcript:
             "backend": self.backend,
             "pin": self.pin,
             "claimed_roles": [str(r) for r in self.claimed_roles],
+            "role_engines": {str(r): e for r, e in self.role_engines.items()},
+            "engine_pins": dict(self.engine_pins),
             "steps": [
                 {
                     "name": str(s.name),
@@ -177,7 +197,17 @@ class Transcript:
             raise ValueError(
                 f"transcript was written by schema {schema!r}, this harness reads {SCHEMA_VERSION}"
             )
-        unknown = set(payload) - {"schema", "engine", "backend", "pin", "claimed_roles", "steps"}
+        known = {
+            "schema",
+            "engine",
+            "backend",
+            "pin",
+            "claimed_roles",
+            "steps",
+            "role_engines",
+            "engine_pins",
+        }
+        unknown = set(payload) - known
         if unknown:
             raise ValueError(f"transcript carries unknown fields {sorted(unknown)}")
         return cls(
@@ -185,6 +215,8 @@ class Transcript:
             backend=payload["backend"],
             pin=payload["pin"],
             claimed_roles=tuple(WorkerRole(r) for r in payload["claimed_roles"]),
+            role_engines={WorkerRole(r): e for r, e in payload.get("role_engines", {}).items()},
+            engine_pins=dict(payload.get("engine_pins", {})),
             steps=tuple(
                 Step(
                     name=StepName(s["name"]),
@@ -216,7 +248,7 @@ def judge(transcript: Transcript) -> list[Failure]:
         _json_parses,
         _pin_is_an_install,
         _pin_is_installed,
-        _every_role_served_by_this_engine,
+        _every_role_served_by_its_engine,
         _every_role_assigned,
         _every_ask_returned_cited_text,
         _every_chat_returned_cited_text,
@@ -296,30 +328,34 @@ def _json_parses(t: Transcript) -> list[Failure]:
 
 
 def _pin_is_an_install(t: Transcript) -> list[Failure]:
-    if t.pin and t.pin not in _NOT_AN_INSTALL:
-        return []
-    return [Failure(Rule.PIN_NOT_AN_INSTALL, f"pin {t.pin!r} names no install of {t.engine}")]
+    return [
+        Failure(Rule.PIN_NOT_AN_INSTALL, f"pin {t.pin_of(engine)!r} names no install of {engine}")
+        for engine in t.engines_used()
+        if not t.pin_of(engine) or t.pin_of(engine) in _NOT_AN_INSTALL
+    ]
 
 
 def _pin_is_installed(t: Transcript) -> list[Failure]:
-    """Each list after the install shows a build of this engine at the pin on this backend."""
+    """Each list after the install shows a build of each engine at its pin on this backend."""
     failures = []
     for step in _steps(t, StepName.ENGINE_LIST_AFTER):
         listing = _payload(step)
         builds = listing.get("builds") if isinstance(listing, dict) else None
-        installed = any(
-            isinstance(b, dict)
-            and (b.get("engine"), b.get("version"), b.get("backend"))
-            == (t.engine, t.pin, t.backend)
-            for b in builds or []
-        )
-        if not installed:
-            failures.append(
-                Failure(
-                    Rule.PIN_NOT_INSTALLED,
-                    f"engine list shows no {t.engine} build at {t.pin} on {t.backend}",
-                )
+        for engine in t.engines_used():
+            pin = t.pin_of(engine)
+            installed = any(
+                isinstance(b, dict)
+                and (b.get("engine"), b.get("version"), b.get("backend"))
+                == (engine, pin, t.backend)
+                for b in builds or []
             )
+            if not installed:
+                failures.append(
+                    Failure(
+                        Rule.PIN_NOT_INSTALLED,
+                        f"engine list shows no {engine} build at {pin} on {t.backend}",
+                    )
+                )
     return failures
 
 
@@ -339,12 +375,13 @@ def _served_lines(t: Transcript) -> list[tuple[str, str, str, str]]:
     return [(m[1], m[2], m[3], m[4]) for m in map(_SERVED_BY.search, lines) if m]
 
 
-def _every_role_served_by_this_engine(t: Transcript) -> list[Failure]:
-    """Every serving line of a claimed role names this engine, this pin and the assigned model."""
+def _every_role_served_by_its_engine(t: Transcript) -> list[Failure]:
+    """Every serving line of a claimed role names its engine, that pin and the assigned model."""
     served = _served_lines(t)
     assigned = [v for views in _role_views(t) for v in views]
     failures = []
     for role in t.claimed_roles:
+        engine, pin = t.engine_of(role), t.pin_of(t.engine_of(role))
         lines = [(e, v, m) for e, v, r, m in served if r == role]
         if not lines:
             failures.append(Failure(Rule.SERVED_BY_MISSING, f"no served-by line for {role}"))
@@ -352,11 +389,9 @@ def _every_role_served_by_this_engine(t: Transcript) -> list[Failure]:
             failures.append(
                 Failure(Rule.SERVED_BY_PRESET, f"{role} was served on the preset path: {lines}")
             )
-        elif any((e, v) != (t.engine, t.pin) or v in _NOT_AN_INSTALL for e, v, _ in lines):
+        elif any((e, v) != (engine, pin) or v in _NOT_AN_INSTALL for e, v, _ in lines):
             failures.append(
-                Failure(
-                    Rule.SERVED_BY_OTHER, f"{role} was served by {lines}, not {t.engine} {t.pin}"
-                )
+                Failure(Rule.SERVED_BY_OTHER, f"{role} was served by {lines}, not {engine} {pin}")
             )
         else:
             models = {log_name(str(v.get("model"))) for v in assigned if v.get("role") == role}
@@ -389,9 +424,12 @@ def _every_role_assigned(t: Transcript) -> list[Failure]:
         for engine in {v.get("engine") for v in seen}:
             if engine is None:
                 failures.append(Failure(Rule.ROLE_UNASSIGNED, f"{role} has no engine"))
-            elif engine != t.engine:
+            elif engine != t.engine_of(role):
                 failures.append(
-                    Failure(Rule.ROLE_WRONG_ENGINE, f"{role} runs on {engine}, not {t.engine}")
+                    Failure(
+                        Rule.ROLE_WRONG_ENGINE,
+                        f"{role} runs on {engine}, not {t.engine_of(role)}",
+                    )
                 )
     return failures
 

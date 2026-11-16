@@ -879,3 +879,112 @@ def test_a_chat_reply_that_is_not_an_answer_object_fails(stdout: str) -> None:
 
 def test_a_chat_step_that_failed_is_reported_once_as_a_failed_step() -> None:
     assert _rules(_run1_edited(("chat",), exit_code=1)) == {Rule.STEP_FAILED}
+
+
+_TEI = "tei"
+_TEI_PIN = "1.9.4"
+
+
+def _mixed() -> Transcript:
+    """The good run with the embed role on a second engine, as a mixed run records it."""
+    lines = (
+        _served(_TEI, _TEI_PIN, "embed"),
+        _served(_ENGINE, _PIN, "rerank"),
+        _served(_ENGINE, _PIN, "chat"),
+    )
+    views = [_role_view(str(r), _TEI if r is WorkerRole.EMBED else _ENGINE) for r in _ROLES]
+    return replace(
+        _good(),
+        role_engines={WorkerRole.EMBED: _TEI},
+        engine_pins={_TEI: _TEI_PIN},
+        steps=(
+            _json_step(StepName.ENGINE_LIST_BEFORE, _listing([])),
+            Step(StepName.INSTALL, ("lilbee", "engine", "install"), 0),
+            Step(StepName.ADD, ("lilbee", "add"), 0, _INGEST_OUT),
+            Step(StepName.SYNC, ("lilbee", "sync"), 0, _INGEST_OUT, log_lines=lines[:1]),
+            _ask_step(lines=lines),
+            _json_step(StepName.ENGINE_ROLES, _roles_payload(views)),
+            _json_step(StepName.ENGINE_LIST_AFTER, _listing([_build(), _build(_TEI, _TEI_PIN)])),
+        ),
+    )
+
+
+def test_a_mixed_run_with_each_role_on_its_own_engine_passes() -> None:
+    assert judge(_mixed()) == []
+
+
+def test_a_role_served_by_the_default_engine_when_its_own_is_another_fails() -> None:
+    lines = tuple(_served(_ENGINE, _PIN, r) for r in ("embed", "rerank", "chat"))
+    assert _rules(_ask_lines(_mixed(), lines)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_role_assigned_to_the_default_engine_when_its_own_is_another_fails() -> None:
+    views = [_role_view(str(r)) for r in _ROLES]
+    failures = judge(_roles_with(_mixed(), views))
+    assert [(f.rule, f.detail) for f in failures] == [
+        (Rule.ROLE_WRONG_ENGINE, "embed runs on llama.cpp, not tei")
+    ]
+
+
+def test_the_default_role_served_by_the_other_engine_fails() -> None:
+    lines = (
+        _served(_TEI, _TEI_PIN, "embed"),
+        _served(_TEI, _TEI_PIN, "rerank"),
+        _served(_ENGINE, _PIN, "chat"),
+    )
+    assert _rules(_ask_lines(_mixed(), lines)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_second_engine_at_another_pin_fails() -> None:
+    lines = (
+        _served(_TEI, "9.9.9", "embed"),
+        _served(_ENGINE, _PIN, "rerank"),
+        _served(_ENGINE, _PIN, "chat"),
+    )
+    assert _rules(_ask_lines(_mixed(), lines)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_second_engine_with_no_install_fails() -> None:
+    listing = _json_step(StepName.ENGINE_LIST_AFTER, _listing([_build()]))
+    t = _mixed()
+    steps = tuple(listing if s.name is StepName.ENGINE_LIST_AFTER else s for s in t.steps)
+    failures = judge(replace(t, steps=steps))
+    assert [(f.rule, f.detail) for f in failures] == [
+        (Rule.PIN_NOT_INSTALLED, "engine list shows no tei build at 1.9.4 on cpu")
+    ]
+
+
+def test_a_second_engine_with_no_recorded_pin_is_not_an_install() -> None:
+    failures = judge(replace(_mixed(), engine_pins={}))
+    assert Rule.PIN_NOT_AN_INSTALL in {f.rule for f in failures}
+
+
+def test_a_run_that_moves_every_role_off_the_default_engine_needs_no_default_install() -> None:
+    views = [_role_view(str(r), _TEI) for r in _ROLES]
+    lines = tuple(_served(_TEI, _TEI_PIN, r) for r in ("embed", "rerank", "chat"))
+    t = replace(
+        _ask_lines(_roles_with(_mixed(), views), lines),
+        pin="",
+        role_engines=dict.fromkeys(_ROLES, _TEI),
+    )
+    assert judge(t) == []
+
+
+def test_a_mixed_transcript_round_trips_through_json() -> None:
+    t = _mixed()
+    payload = json.loads(json.dumps(t.to_json()))
+    assert payload["role_engines"] == {"embed": _TEI}
+    assert payload["engine_pins"] == {_TEI: _TEI_PIN}
+    assert Transcript.from_json(payload) == t
+
+
+def test_a_transcript_without_per_role_fields_reads_as_one_engine() -> None:
+    payload = _good().to_json()
+    del payload["role_engines"], payload["engine_pins"]
+    assert Transcript.from_json(payload) == _good()
+
+
+def test_a_role_engine_for_a_role_that_does_not_exist_is_refused() -> None:
+    payload = {**_mixed().to_json(), "role_engines": {"bogus": _TEI}}
+    with pytest.raises(ValueError, match="bogus"):
+        Transcript.from_json(payload)

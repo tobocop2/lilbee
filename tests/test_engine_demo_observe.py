@@ -699,3 +699,116 @@ def test_python_dash_m_runs_the_entry_point(
         runpy.run_module("tools.qa.engine_demo", run_name="__main__")
     assert raised.value.code == 0
     assert "PASS" in capsys.readouterr().out
+
+
+_SAFETENSORS_EMBED = "org/embed#safetensors"
+
+
+def _mixed_plan(**changes: object) -> RunPlan:
+    """Chat and rerank on llama.cpp, embed on tei with a safetensors model."""
+    models = {**{r: _MODELS[r] for r in _ROLES}, WorkerRole.EMBED: _SAFETENSORS_EMBED}
+    return _plan(models=models, role_engines={WorkerRole.EMBED: "tei"}, **changes)
+
+
+def _tails(t: Transcript) -> list[tuple[str, ...]]:
+    return [s.command[len(_CLI) :] for s in t.steps if s.command[: len(_CLI)] == _CLI]
+
+
+def test_a_mixed_run_passes_the_oracles_with_each_engine_recorded(tmp_path: Path) -> None:
+    t = observe(_mixed_plan(), tmp_path)
+    assert judge(t) == []
+    assert t.engine == "llama.cpp"
+    assert t.role_engines == {WorkerRole.EMBED: "tei"}
+    assert t.engine_pins == {"tei": "1.9.4"}
+
+
+def test_a_mixed_run_installs_each_engine_once(tmp_path: Path) -> None:
+    installs = [
+        c for c in _tails(observe(_mixed_plan(), tmp_path)) if c[:2] == ("engine", "install")
+    ]
+    assert installs == [("engine", "install", "llama.cpp"), ("engine", "install", "tei")]
+
+
+def test_a_mixed_run_chooses_the_engine_of_each_role(tmp_path: Path) -> None:
+    t = observe(_mixed_plan(), tmp_path)
+    used = {c[2]: c[4] for c in _tails(t) if c[:2] == ("engine", "use")}
+    assert used == {"chat": "llama.cpp", "embed": "tei", "rerank": "llama.cpp"}
+
+
+def test_a_mixed_run_prefers_the_engine_of_a_role_for_its_pull_and_then_resets(
+    tmp_path: Path,
+) -> None:
+    tails = _tails(observe(_mixed_plan(), tmp_path))
+    steps = [c for c in tails if c[:2] in {("engine", "prefer"), ("model", "pull")}]
+    assert steps == [
+        ("engine", "prefer", "llama.cpp", "--yes"),
+        ("model", "pull", _MODELS[WorkerRole.CHAT]),
+        ("engine", "prefer", "tei", "--yes"),
+        ("model", "pull", _SAFETENSORS_EMBED),
+        ("engine", "prefer", "llama.cpp", "--yes"),
+        ("model", "pull", _MODELS[WorkerRole.RERANK]),
+        ("engine", "prefer", "tei", "--yes"),
+        ("engine", "prefer", "auto", "--yes"),
+    ]
+    assert tails.index(("use-embedder", _SAFETENSORS_EMBED)) > tails.index(steps[6])
+
+
+def test_a_single_engine_run_prefers_its_engine_once_before_the_first_pull(
+    tmp_path: Path,
+) -> None:
+    tails = _tails(observe(_plan(), tmp_path))
+    steps = [c for c in tails if c[:2] in {("engine", "prefer"), ("model", "pull")}]
+    assert steps[0] == ("engine", "prefer", "llama.cpp", "--yes")
+    assert [c for c in steps if c[:2] == ("engine", "prefer")] == steps[:1]
+
+
+def test_a_mixed_run_with_the_embed_role_served_by_the_wrong_engine_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_SERVED_ENGINE", "llama.cpp")
+    monkeypatch.setenv("FAKE_SERVED_ROLE", "embed")
+    assert _rules(observe(_mixed_plan(), tmp_path)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_mixed_run_that_moves_every_role_installs_no_default_engine(tmp_path: Path) -> None:
+    plan = _plan(role_engines=dict.fromkeys(_ROLES, "tei"))
+    t = observe(plan, tmp_path)
+    installs = [c for c in _tails(t) if c[:2] == ("engine", "install")]
+    assert installs == [("engine", "install", "tei")]
+    assert judge(t) == []
+
+
+def test_a_plan_with_an_engine_for_an_unclaimed_role_is_refused() -> None:
+    with pytest.raises(ValueError, match="rerank"):
+        _plan((WorkerRole.CHAT,), role_engines={WorkerRole.RERANK: "tei"})
+
+
+def test_a_mixed_dry_run_writes_a_transcript_the_report_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _run_args(
+        tmp_path, "--model", f"embed={_SAFETENSORS_EMBED}", "--role-engine", "embed=tei"
+    )
+    assert demo_main.main(args) == 0
+    capsys.readouterr()
+    assert demo_main.main(["report", str(tmp_path / "t.json")]) == 0
+    assert "PASS llama.cpp cpu b6123 embed=tei 1.9.4" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pair", ["embed", "bogus=tei", "embed="])
+def test_a_malformed_role_engine_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], pair: str
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(_run_args(tmp_path, "--role-engine", pair))
+    assert raised.value.code == 2
+    assert "ROLE=ENGINE" in capsys.readouterr().err
+
+
+def test_an_engine_for_an_unclaimed_role_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(_run_args(tmp_path, "--roles", "chat", "--role-engine", "embed=tei"))
+    assert raised.value.code == 2
+    assert "embed" in capsys.readouterr().err

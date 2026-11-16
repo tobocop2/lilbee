@@ -1,7 +1,12 @@
 """Run one engine through the lilbee CLI, or judge a transcript a run wrote.
 
     python -m tools.qa.engine_demo run --engine mistral.rs --backend cpu --out mistral-rs-cpu.json
+    python -m tools.qa.engine_demo run --engine llama.cpp --backend cpu --out mixed.json \\
+        --model embed=Qwen/Qwen3-Embedding-0.6B#safetensors --role-engine embed=tei
     python -m tools.qa.engine_demo report mistral-rs-cpu.json
+
+``--engine`` runs every claimed role; ``--role-engine ROLE=ENGINE`` moves one role to
+another engine, and the run installs each engine and judges each role against its own.
 
 ``run`` records and exits 0 when it wrote a transcript, whatever the engine did;
 ``report`` judges it and exits 1 on any failure.
@@ -64,13 +69,21 @@ def served_roles(engine: str) -> frozenset[WorkerRole] | None:
     return None if adapter is None else frozenset(adapter.served_roles)
 
 
-def _role_model(value: str) -> tuple[WorkerRole, str]:
-    role, _, ref = value.partition("=")
-    if role not in list(WorkerRole) or not ref:
+def _role_pair(value: str, what: str) -> tuple[WorkerRole, str]:
+    role, _, text = value.partition("=")
+    if role not in list(WorkerRole) or not text:
         raise argparse.ArgumentTypeError(
-            f"{value!r} must be ROLE=REF, with ROLE one of {', '.join(WorkerRole)}"
+            f"{value!r} must be ROLE={what}, with ROLE one of {', '.join(WorkerRole)}"
         )
-    return WorkerRole(role), ref
+    return WorkerRole(role), text
+
+
+def _role_model(value: str) -> tuple[WorkerRole, str]:
+    return _role_pair(value, "REF")
+
+
+def _role_engine(value: str) -> tuple[WorkerRole, str]:
+    return _role_pair(value, "ENGINE")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -96,6 +109,14 @@ def _parser() -> argparse.ArgumentParser:
         type=_role_model,
         metavar="ROLE=REF",
         help="model for a claimed role, in place of the default",
+    )
+    run.add_argument(
+        "--role-engine",
+        action="append",
+        default=[],
+        type=_role_engine,
+        metavar="ROLE=ENGINE",
+        help="engine for a claimed role, in place of --engine; the run installs each engine",
     )
     run.add_argument("--image-pdf", type=Path, help="image-only PDF; the vision role needs it")
     run.add_argument("--question", default=DEFAULT_QUESTION, help="question for ask and chat")
@@ -129,6 +150,9 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if role not in models:
             parser.error(f"--model names {role}, which --roles does not claim")
         models[role] = ref
+    for role, _ in args.role_engine:
+        if role not in models:
+            parser.error(f"--role-engine names {role}, which --roles does not claim")
     try:
         plan = RunPlan(
             cli=tuple(shlex.split(args.cli)),
@@ -137,6 +161,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             models=models,
             image_pdf=args.image_pdf,
             question=args.question,
+            role_engines=dict(args.role_engine),
         )
     except ValueError as exc:
         parser.error(f"{exc}: pass --image-pdf")
@@ -156,6 +181,8 @@ def _report(args: argparse.Namespace) -> int:
         raise SystemExit(f"cannot read {args.transcript}: {exc}") from exc
     failures = judge(transcript)
     label = f"{transcript.engine} {transcript.backend} {transcript.pin}"
+    for role, engine in transcript.role_engines.items():
+        label += f" {role}={engine} {transcript.pin_of(engine)}"
     print(f"{'FAIL' if failures else 'PASS'} {label}")
     for failure in failures:
         print(f"  {failure.rule}: {failure.detail}")

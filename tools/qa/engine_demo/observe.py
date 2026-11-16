@@ -20,6 +20,9 @@ Known limits:
   through the server's model routes in one short server session, and each
   route's reply names the stored ref. The demo moves to the CLI command when the
   CLI gains a setter.
+- A run that uses more than one engine prefers the engine of each role before it pulls or
+  sets that role's model, then resets the preference to auto after the embed model is set.
+  A run on one engine keeps its engine preferred.
 - The engines-left-running steps only record the processes below the server that
   outlive it, each with its command line. No oracle reads them: the engine reaper
   and a kept-warm engine outlive the server by design. A run on a host calibrates
@@ -41,7 +44,7 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -49,6 +52,7 @@ import psutil
 from tools.qa.engine_demo.corpus import CORPUS
 from tools.qa.engine_demo.oracles import Step, StepName, Transcript
 
+from lilbee.providers.fleet.engines.choice import AUTO
 from lilbee.providers.roles import WorkerRole
 
 # The exit code ``timeout(1)`` uses; a server step reports it for a server that never answers.
@@ -79,6 +83,7 @@ class RunPlan:
     cli: tuple[str, ...]
     """The command that starts lilbee, for example ``("lilbee",)``."""
     engine: str
+    """The engine of every claimed role that *role_engines* does not name."""
     backend: str
     models: Mapping[WorkerRole, str]
     """The claimed roles, in run order, each with the model ref assigned to it."""
@@ -88,10 +93,25 @@ class RunPlan:
     step_timeout_s: float = 3600.0
     server_wait_s: float = 600.0
     stop_grace_s: float = 10.0
+    role_engines: Mapping[WorkerRole, str] = field(default_factory=dict)
+    """The claimed roles that run on an engine other than *engine*, each with its engine."""
 
     def __post_init__(self) -> None:
         if WorkerRole.VISION in self.models and self.image_pdf is None:
             raise ValueError("the vision role needs an image-only PDF to ingest")
+        unclaimed = [str(role) for role in self.role_engines if role not in self.models]
+        if unclaimed:
+            raise ValueError(f"an engine is named for {', '.join(unclaimed)}, which is not claimed")
+
+    def engine_of(self, role: WorkerRole) -> str:
+        """The engine that runs *role*."""
+        return self.role_engines.get(role, self.engine)
+
+    @property
+    def engines(self) -> tuple[str, ...]:
+        """The engines the claimed roles run on, once each, in role order."""
+        used = dict.fromkeys(self.engine_of(role) for role in self.models)
+        return tuple(used) or (self.engine,)
 
 
 @dataclass(frozen=True)
@@ -139,17 +159,35 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
     def session(*requests: _Request) -> list[Step]:
         return _http_session(plan, env, data_root, log_path, requests)
 
+    preferred: list[str] = []
+
+    def prefer(engine: str) -> list[Step]:
+        """Prefer *engine* for the next pull or model set unless it already is the preference."""
+        if preferred[-1:] == [engine]:
+            return []
+        preferred.append(engine)
+        return [cli(StepName.PREFER, "engine", "prefer", engine, "--yes")]
+
     steps = [
         cli(StepName.ENGINE_LIST_BEFORE, "--json", "engine", "list", json_output=True),
-        cli(StepName.INSTALL, "engine", "install", plan.engine),
-        cli(StepName.PREFER, "engine", "prefer", plan.engine, "--yes"),
-        *(cli(StepName.PULL, "model", "pull", ref) for ref in plan.models.values()),
+        *(cli(StepName.INSTALL, "engine", "install", engine) for engine in plan.engines),
     ]
-    set_steps, stored = _set_models(plan.models, cli, session)
+    for role, ref in plan.models.items():
+        steps += prefer(plan.engine_of(role))
+        steps.append(cli(StepName.PULL, "model", "pull", ref))
+    set_steps, stored = _set_models(plan, cli, session, prefer)
     steps += set_steps
     steps += [
         *(
-            cli(StepName.USE, "engine", "use", str(role), stored[role], plan.engine, "--yes")
+            cli(
+                StepName.USE,
+                "engine",
+                "use",
+                str(role),
+                stored[role],
+                plan.engine_of(role),
+                "--yes",
+            )
             for role in plan.models
         ),
         cli(StepName.ADD, "add", *map(str, corpus)),
@@ -163,28 +201,40 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
         cli(StepName.ENGINE_ROLES, "--json", "engine", "roles", json_output=True),
         cli(StepName.ENGINE_LIST_AFTER, "--json", "engine", "list", json_output=True),
     ]
+    listing = steps[-1].stdout
     return Transcript(
         engine=plan.engine,
         backend=plan.backend,
-        pin=installed_pin(steps[-1].stdout, plan.engine, plan.backend),
+        pin=installed_pin(listing, plan.engine, plan.backend),
         claimed_roles=tuple(plan.models),
         steps=tuple(steps),
+        role_engines=plan.role_engines,
+        engine_pins={
+            engine: installed_pin(listing, engine, plan.backend)
+            for engine in dict.fromkeys(plan.role_engines.values())
+            if engine != plan.engine
+        },
     )
 
 
 def _set_models(
-    models: Mapping[WorkerRole, str],
+    plan: RunPlan,
     cli: Callable[..., Step],
     session: Callable[..., list[Step]],
+    prefer: Callable[[str], list[Step]],
 ) -> tuple[list[Step], dict[WorkerRole, str]]:
     """Set the model of each role; returns the steps and the ref each role stored."""
+    models = plan.models
     steps: list[Step] = []
     stored = dict(models)
     if WorkerRole.EMBED in models:
+        steps += prefer(plan.engine_of(WorkerRole.EMBED))
         steps.append(cli(StepName.SET_MODEL, "use-embedder", models[WorkerRole.EMBED]))
         read = cli(StepName.STORED_MODELS, "--json", "engine", "roles", json_output=True)
         steps.append(read)
         stored[WorkerRole.EMBED] = _role_model(read, WorkerRole.EMBED, models[WorkerRole.EMBED])
+    if len(plan.engines) > 1:
+        steps += prefer(AUTO)
     routed_roles = [role for role in models if role in _MODEL_ROUTES]
     if routed_roles:
         routed = session(

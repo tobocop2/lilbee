@@ -19,9 +19,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PIN = "b6123"
+# The version each engine installs; an engine not named here installs PIN.
+PINS = {"tei": "1.9.4"}
 ROOT = Path(os.environ["LILBEE_DATA"])
 MODE = os.environ.get("FAKE_MODE", "")
-SERVED_ENGINE = os.environ.get("FAKE_SERVED_ENGINE", "llama.cpp")
+SERVED_ENGINE = os.environ.get("FAKE_SERVED_ENGINE", "")
+# With FAKE_SERVED_ROLE set, FAKE_SERVED_ENGINE applies to that role only.
+SERVED_ROLE = os.environ.get("FAKE_SERVED_ROLE", "")
 MARKER = ROOT / "installed"
 PREFERRED = ROOT / "preferred"
 ROLES_FILE = ROOT / "roles.json"
@@ -48,6 +52,16 @@ def models() -> dict[str, str]:
     return json.loads(MODELS_FILE.read_text(encoding=UTF8)) if MODELS_FILE.exists() else {}
 
 
+def preferred() -> str:
+    return PREFERRED.read_text(encoding=UTF8) if PREFERRED.exists() else "auto"
+
+
+def refuse_unchosen_format(ref: str) -> None:
+    """A safetensors ref needs a chosen engine, as the real CLI wants before it pulls or sets."""
+    if "#" in ref and preferred() == "auto":
+        sys.exit(f"No engine is chosen by default for the safetensors format of {ref}.")
+
+
 def set_model(role: str, ref: str) -> str:
     """Store the model of *role*; a bare repo ref becomes a file ref, as the real settings do."""
     keeps_ref = ref.endswith(".gguf") or ref.endswith(SAFETENSORS_SUFFIX)
@@ -57,16 +71,22 @@ def set_model(role: str, ref: str) -> str:
 
 
 def served(role: str) -> None:
-    model = roles().get(role, {}).get("model", "unassigned")
-    log(f"served by engine={SERVED_ENGINE} version={PIN} build=none role={role} model={model}")
+    view = roles().get(role, {})
+    model = view.get("model", "unassigned")
+    engine = str(view.get("engine") or "llama.cpp")
+    if SERVED_ENGINE and SERVED_ROLE in ("", role):
+        engine = SERVED_ENGINE
+    version = PINS.get(engine, PIN)
+    log(f"served by engine={engine} version={version} build=none role={role} model={model}")
 
 
 def listing() -> dict[str, object]:
-    builds = (
-        [{"engine": "llama.cpp", "version": PIN, "backend": "cpu", "not_run_on": []}]
-        if MARKER.exists() and MODE != "no-build"
-        else []
-    )
+    installed = MARKER.read_text(encoding=UTF8).split() if MARKER.exists() else []
+    builds = [
+        {"engine": name, "version": PINS.get(name, PIN), "backend": "cpu", "not_run_on": []}
+        for name in installed
+        if MODE != "no-build"
+    ]
     return {"command": "engine list", "builds": builds, "not_installed": []}
 
 
@@ -162,7 +182,8 @@ def engine_install(argv: list[str]) -> None:
     print("begun", flush=True)
     if MODE == "hang-install":
         time.sleep(60)
-    MARKER.write_text(argv[2], encoding=UTF8)
+    with MARKER.open("a", encoding=UTF8) as installed:
+        installed.write(f"{argv[2]}\n")
 
 
 def engine_prefer(argv: list[str]) -> None:
@@ -174,13 +195,12 @@ def engine_prefer(argv: list[str]) -> None:
 
 
 def model_pull(argv: list[str]) -> None:
-    """Refuse a safetensors ref until an engine is preferred, as the real pull does."""
-    if argv[2].endswith(SAFETENSORS_SUFFIX) and not PREFERRED.exists():
-        sys.exit(f"No engine is chosen by default for the safetensors format of {argv[2]}.")
+    refuse_unchosen_format(argv[2])
     print(f"pulled {argv[2]}")
 
 
 def use_embedder(argv: list[str]) -> None:
+    refuse_unchosen_format(argv[1])
     set_model("embed", argv[1])
     print(f"Now embedding with {argv[1]}.")
 
