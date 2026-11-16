@@ -1835,38 +1835,41 @@ class TestOpenAPISchema:
         }
         assert published == expected
 
-    def test_guarded_routes_publish_the_401_and_the_bearer_scheme(self, client):
-        """The schema lists a 401 and the bearer requirement on each route the
-        auth middleware guards, and neither on a route that checks the token itself."""
+    def test_every_route_that_answers_401_publishes_it_and_the_bearer_scheme(self, client):
+        """A route that answers 401 to a caller with no token lists the 401 and
+        the bearer requirement in the schema, whoever checks the token."""
+        import re
+
         from litestar.routes import HTTPRoute
 
-        from lilbee.server.auth import BEARER_SCHEME, authenticates_itself
+        from lilbee.server.auth import BEARER_SCHEME, session_manager
 
         schema = client.get("/schema/openapi.json").json()
         assert schema["components"]["securitySchemes"][BEARER_SCHEME] == {
             "type": "http",
             "scheme": "bearer",
         }
-        guarded, self_checked = set(), set()
+        session_manager.token = "secret"
+        answers_401, bare = set(), set()
         for route in client.app.routes:
             if not isinstance(route, HTTPRoute):
                 continue
-            for handler in route.route_handlers:
-                for method in handler.http_methods:
-                    key = (method.lower(), route.path_format)
-                    if key[1] in schema["paths"] and key[0] in schema["paths"][key[1]]:
-                        (self_checked if authenticates_itself(handler.fn) else guarded).add(key)
-        assert guarded, "no guarded route is in the schema"
-        assert self_checked, "no self-authenticating route is in the schema"
-
-        def published(key):
-            operation = schema["paths"][key[1]][key[0]]
-            return "401" in operation["responses"], {BEARER_SCHEME: []} in operation.get(
-                "security", []
-            )
-
-        assert {key for key in guarded if published(key) != (True, True)} == set()
-        assert {key for key in self_checked if published(key) != (False, False)} == set()
+            path = re.sub(r"\{[^}]*\}", "1", route.path_format)
+            for method in route.methods:
+                if method == "OPTIONS" or route.path_format not in schema["paths"]:
+                    continue
+                operation = schema["paths"][route.path_format].get(method.lower())
+                if operation is None or client.request(method, path).status_code != 401:
+                    continue
+                key = (method, route.path_format)
+                answers_401.add(key)
+                if "401" not in operation["responses"] or {BEARER_SCHEME: []} not in operation.get(
+                    "security", []
+                ):
+                    bare.add(key)
+        assert len(answers_401) > 90, "the walk found too few routes that answer 401"
+        assert ("GET", "/v1/models") in answers_401
+        assert bare == set()
 
     def test_export_publishes_the_octet_stream_media_type(self, client):
         """/api/export answers with a parquet or jsonl body. It set its media
