@@ -1,0 +1,19 @@
+{
+ "engine-packs-20261104/lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl": 15073566,
+ "engine-packs-20261104/lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-manylinux_2_35_x86_64.whl": 36283476,
+ "engine-packs-20261104/lilbee_engine_mistral_rs-0.9.5-1.cuda128_sm89-py3-none-manylinux_2_35_x86_64.whl": 1095951263,
+ "engine-packs-20261105-cuda/lilbee_engine_llama_cpp-1.12032.1-1.cuda-py3-none-manylinux_2_34_x86_64.whl": 670996649,
+ "engine-packs-20261105-cuda/lilbee_engine_llama_cpp-1.12032.1-1.cuda-py3-none-win_amd64.whl": 709531626,
+ "engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.cpu-py3-none-manylinux_2_34_x86_64.whl": 45434295,
+ "engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.cpu-py3-none-win_amd64.whl": 51673055,
+ "engine-packs-20261105/lilbee_engine_llama_cpp-1.12032.1-1.metal-py3-none-macosx_14_0_arm64.whl": 42006543,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl": 13045675,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm100-py3-none-manylinux_2_34_x86_64.whl": 708463736,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm120-py3-none-manylinux_2_34_x86_64.whl": 707695248,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm75-py3-none-manylinux_2_34_x86_64.whl": 605572892,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm80-py3-none-manylinux_2_34_x86_64.whl": 694539355,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm86-py3-none-manylinux_2_34_x86_64.whl": 694146182,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm89-py3-none-manylinux_2_34_x86_64.whl": 693616480,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.cuda_sm90-py3-none-manylinux_2_34_x86_64.whl": 696284765,
+ "engine-packs-20261116-tei-2/lilbee_engine_tei-1.9.4-1.metal-py3-none-macosx_14_0_arm64.whl": 9494777
+}

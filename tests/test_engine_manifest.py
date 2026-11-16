@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,36 @@ def test_every_row_of_the_shipped_table_states_a_wheel() -> None:
                 assert row["url"].startswith("https://")
                 assert row["size"] > 0
                 assert row["min_os"] is None or re.fullmatch(r"\d+\.\d+", row["min_os"])
+
+
+PUBLISHED_SIZES: dict[str, int] = json.loads(
+    (Path(__file__).parent / "fixtures" / "published_pack_sizes.json").read_text(encoding="utf-8")
+)
+
+
+def _shipped_rows() -> dict[str, int]:
+    return {
+        row["url"].removeprefix(PACKAGES_URL): row["size"]
+        for versions in engine_manifest.MANIFESTS.values()
+        for cells in versions.values()
+        for row in cells.values()
+    }
+
+
+@pytest.mark.parametrize("asset", sorted(_shipped_rows()))
+def test_a_shipped_row_has_the_size_of_its_published_asset(asset: str) -> None:
+    assert _shipped_rows()[asset] == PUBLISHED_SIZES[asset]
+
+
+def test_the_recorded_sizes_and_the_shipped_rows_name_the_same_assets() -> None:
+    assert PUBLISHED_SIZES
+    assert set(_shipped_rows()) == set(PUBLISHED_SIZES)
+    assert {asset.split("/")[1].split("-")[0] for asset in PUBLISHED_SIZES} == {
+        "lilbee_engine_llama_cpp",
+        "lilbee_engine_ik_llama_cpp",
+        "lilbee_engine_mistral_rs",
+        "lilbee_engine_tei",
+    }
 
 
 def test_every_shipped_row_lives_under_the_pack_index_and_matches_its_adapter(
