@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import errno
 import hashlib
 import os
@@ -16,8 +17,14 @@ from lilbee.cli.launchers.skill_install import install_bundled_skill
 
 _OLD = "old text\n"
 _NEW = "new text\n"
-# The SKILL.md that v0.6.90b692, the first release with the skill, installed.
-_RELEASED_SKILL = Path(__file__).parents[1] / "fixtures" / "skill" / "SKILL-v0.6.90b692.md"
+_SKILL_FIXTURES = Path(__file__).parents[1] / "fixtures" / "skill"
+# The SKILL.md that the first release with the skill, a later one and the last release installed.
+_RELEASED_SKILLS = [
+    _SKILL_FIXTURES / f"SKILL-v{release}.md"
+    for release in ("0.6.90b420.dev710", "0.6.90b691", "0.6.90b692")
+]
+# Every skill file in every release's PyPI wheel: release, path, sha256, installed, installer.
+_RELEASED_DIGESTS = _SKILL_FIXTURES / "released-skill-digests.tsv"
 
 
 @pytest.fixture
@@ -102,8 +109,9 @@ def test_refreshes_only_the_files_that_changed(bundle, dest, monkeypatch):
     assert written == ["SKILL.md"]
 
 
-def test_a_copy_from_the_last_release_is_refreshed_without_a_warning(dest, caplog):
-    released = _RELEASED_SKILL.read_bytes()
+@pytest.mark.parametrize("fixture", _RELEASED_SKILLS, ids=lambda path: path.stem)
+def test_a_copy_from_a_release_is_refreshed_without_a_warning(dest, caplog, fixture):
+    released = fixture.read_bytes()
     assert released != (skill_install.bundled_skill_dir() / "SKILL.md").read_bytes()
     dest.mkdir(parents=True)
     (dest / "SKILL.md").write_bytes(released)
@@ -276,6 +284,32 @@ def test_every_bundled_skill_file_is_in_the_known_versions():
         assert hashlib.sha256(data).hexdigest() in skill_install._KNOWN_SKILL_FILES[name], (
             f"add the sha256 of the bundled {name} to the known skill versions"
         )
+
+
+def test_the_known_versions_keep_every_file_a_release_installed():
+    with _RELEASED_DIGESTS.open(encoding="utf-8", newline="") as table:
+        rows = list(csv.DictReader(table, delimiter="\t"))
+    installed: dict[str, set[str]] = {}
+    for row in rows:
+        if row["installed"] == "yes":
+            installed.setdefault(Path(row["path"]).name, set()).add(row["digest"])
+    assert len({row["release"] for row in rows}) == 58
+    assert {name: len(digests) for name, digests in installed.items()} == {"SKILL.md": 14}
+    for name, digests in installed.items():
+        missing = digests - skill_install._KNOWN_SKILL_FILES.get(name, frozenset())
+        assert not missing, f"keep the sha256 of every released {name}: {sorted(missing)}"
+
+
+def test_each_released_fixture_has_the_digest_of_its_release():
+    with _RELEASED_DIGESTS.open(encoding="utf-8", newline="") as table:
+        shipped = {
+            (row["release"], row["digest"])
+            for row in csv.DictReader(table, delimiter="\t")
+            if row["path"].endswith("/SKILL.md")
+        }
+    for fixture in _RELEASED_SKILLS:
+        release = fixture.stem.removeprefix("SKILL-v")
+        assert (release, hashlib.sha256(fixture.read_bytes()).hexdigest()) in shipped
 
 
 def test_bundled_skill_dir_prefers_installed_copy(tmp_path, monkeypatch):

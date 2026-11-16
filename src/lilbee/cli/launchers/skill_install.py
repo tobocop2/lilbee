@@ -20,13 +20,38 @@ _PACKAGED_AGENT_PLUGIN = _PACKAGE_ROOT / "agent_plugin"
 _CHECKOUT_AGENT_PLUGIN = _PACKAGE_ROOT.parents[1] / "packages" / "lilbee" / "plugin"
 _PI_EXTENSION = Path("extensions") / "lilbee.js"
 
-# sha256 of every released or bundled version of each file lilbee owns in the skill folder.
+# sha256 of each version of each file lilbee owns in the skill folder: every version a
+# release installed (the PyPI wheels of v0.6.90b420.dev710 to v0.6.90b692) and the bundled one.
 _KNOWN_SKILL_FILES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "SKILL.md": frozenset(
             {
+                # v0.6.90b420.dev710 to v0.6.90b420.dev721
+                "d00d77d707c1d304f0875aec70d23da8185bb10e3a2892590b3118d128fe78b1",
+                # v0.6.90b420.dev722 to v0.6.90b420.dev725
+                "eb5054bacfd91b3974b16a8e883ce6be4ae8f483ab6b6f68a17d1f39e4a0e894",
+                # v0.6.90b420.dev726 to v0.6.90b420.dev728
+                "dcbe37b289d61526630e4131cf41be40fae37f9707805e1e5cb66461832db120",
+                # v0.6.90b420.dev729
+                "9e3266549a9ca2063ed648f84d02a58baccdb4865fe68cdeb95c1aff17d74cce",
+                # v0.6.90b420.dev730 to v0.6.90b423
+                "aa00332947c4caed23f750a3b72779c072278c1c5c4fb23dc1eddee619371adb",
+                # v0.6.90b424 to v0.6.90b425
+                "49b82ef46ee302b20969431ef0f288be03bcd325778b41db05a049ec000e3e66",
+                # v0.6.90b426 to v0.6.90b432
+                "5241a8368c653904fbea8fd44b589da54902a8971070c1cd6a94efdf266ad12b",
+                # v0.6.90b433 to v0.6.90b435
+                "594ac5714cc5add0ae4ea9503c325b9c6b18f2a4f86640a958ffbbfe4455ae1c",
+                # v0.6.90b436 to v0.6.90b445
+                "21fd3f7c8c99a7562dfa6f1bef2a28816bf12e1ec34435459169e4539aa542bb",
+                # v0.6.90b446 to v0.6.90b447
+                "99411a0d234f453429f7c9fde42368ff32ed907108ce8556b072c5c6bac7a588",
+                "dcf2b2213a73201385a248d018052d170aef87c1258c131854d04769e83a9fec",  # v0.6.90b448
+                # v0.6.90b449 to v0.6.90b690
+                "0c77b8b84e8317bdede1b77393e450088dc1fb0b0027c8d630205e1fe3aeeb9e",
+                "a58cd4cab79874535b5983b1d5bedc05f7be66d632260d84e767dd4266bd6d04",  # v0.6.90b691
                 "92bddb8e9d3b92c18c71747ba323d15d35a072ea3f04ef557b2b9a24cbe646a7",  # v0.6.90b692
-                "eceed74a30d320e55506464fc8d800a1189647d336b4de0e5f99aa289646c5eb",
+                "eceed74a30d320e55506464fc8d800a1189647d336b4de0e5f99aa289646c5eb",  # bundled
             }
         ),
         "reference-settings.md": frozenset(
