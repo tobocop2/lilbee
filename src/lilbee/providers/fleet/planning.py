@@ -1764,8 +1764,6 @@ def _server_model_inputs(
     A model the estimator cannot size is enrolled at its file size instead of
     skipped, so the load, not the estimator, decides.
     """
-    from lilbee.core.config import cfg
-
     inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
     skipped_not_installed: dict[WorkerRole, str] = {}
@@ -1773,13 +1771,10 @@ def _server_model_inputs(
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if (roles is not None and role not in roles) or role not in engines:
             return
-        # Any role may be "" (unconfigured) -> skipped, so that role has no
-        # server and no not-installed complaint.
-        ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
-        if not ref:
-            return  # unconfigured optional role -> no server
-        if parse_model_ref(ref).is_remote:
-            return  # SDK-routed role: no local server to plan, not a missing install
+        # An unconfigured or SDK-routed role has no server and no not-installed complaint.
+        ref = _local_model_ref(role)
+        if ref is None:
+            return
         if _vision_without_mmproj(role, ref):
             return  # no projector -> vision can't run on a server
         estimate = (
@@ -4320,9 +4315,28 @@ def _launched_roles(engines: Mapping[WorkerRole, EngineAdapter]) -> tuple[Worker
     )
 
 
+def _local_model_ref(role: WorkerRole) -> str | None:
+    """The model *role* is set to, or ``None`` when it has none or is served by a remote SDK."""
+    from lilbee.core.config import cfg
+
+    ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
+    return None if not ref or parse_model_ref(ref).is_remote else ref
+
+
 def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[EngineAdapter]:
-    """Each engine in *engines* once; raises when no role has an engine."""
-    distinct = list({engine.name: engine for engine in engines.values()}.values())
+    """Each engine of a role that runs a local model, once; raises when no role has an engine.
+
+    An engine that serves only roles with no model, or with a remote one, is left out:
+    the plan never asks it for a device. When no role runs a local model, every engine
+    stays in.
+    """
+    running = set(_launched_roles(engines))
+    planned = {
+        role: engine
+        for role, engine in engines.items()
+        if role in running and _local_model_ref(role) is not None
+    }
+    distinct = list({engine.name: engine for engine in (planned or engines).values()}.values())
     if not distinct:
         raise ProviderError(
             f"No engine is assigned to any role, so there is nothing to plan. {LIST_HINT}"
@@ -4384,14 +4398,12 @@ def _roles_without_engine(
     roles: tuple[WorkerRole, ...] | None, engines: Mapping[WorkerRole, EngineAdapter]
 ) -> dict[WorkerRole, str]:
     """Configured local roles in *roles* that *engines* leaves without an engine (role -> ref)."""
-    from lilbee.core.config import cfg
-
     missing: dict[WorkerRole, str] = {}
     for role in ROLE_REGISTRY if roles is None else roles:
         if role in engines:
             continue
-        ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
-        if not ref or parse_model_ref(ref).is_remote:
+        ref = _local_model_ref(role)
+        if ref is None:
             continue
         if role is WorkerRole.VISION and not vision_role_wanted(ref):
             continue
