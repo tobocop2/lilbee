@@ -13,8 +13,11 @@ from lilbee.providers.base import ProviderError
 from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reasoning import RetrievalNotice
 from tests.server.conftest import parse_sse_events
-from tests.test_query import _make_result, _text_result
-from tests.test_query import mock_svc  # noqa: F401
+from tests.test_query import (
+    _make_result,
+    _text_result,
+    mock_svc,  # noqa: F401
+)
 
 # step -> (expected warning code, phrase the text surfaces must contain)
 STEPS = {
@@ -58,7 +61,9 @@ QUESTION = "python question about kubernetes"
 
 
 def _arrange(mock_svc, step, rows):  # noqa: F811
-    mock_svc.store.search.return_value = [_make_result(source="direct.md")] if rows == "rows" else []
+    mock_svc.store.search.return_value = (
+        [_make_result(source="direct.md")] if rows == "rows" else []
+    )
     mock_svc.provider.chat.side_effect = lambda *a, **k: (
         iter(["an answer"]) if k.get("stream") else _text_result("an answer")
     )
@@ -66,6 +71,8 @@ def _arrange(mock_svc, step, rows):  # noqa: F811
     mock_svc.concepts.get_graph.return_value = True
     mock_svc.concepts.extract_concepts.return_value = ["python"]
     patches = [
+        # a host with no installed chat model must not stop the CLI ask
+        mock.patch("lilbee.modelhub.models.ensure_chat_model", return_value=None),
         mock.patch.object(cfg, "concept_graph", step.startswith("concept")),
         mock.patch.object(cfg, "query_expansion_count", 3 if step == "llm_expansion" else 0),
         mock.patch.object(cfg, "expansion_short_query_tokens", 0),
@@ -101,9 +108,9 @@ def _cli(surface):
 
 
 def _rest(surface):
-    import lilbee.server.auth as auth_mod
     from litestar.testing import TestClient
 
+    import lilbee.server.auth as auth_mod
     from lilbee.server.app import create_app
 
     auth_mod.session_manager.disable()
@@ -135,7 +142,7 @@ def _probe(surface, mock_svc):  # noqa: F811
         res = _cli(surface)
         if surface.endswith("json"):
             body = json.loads(res.stdout)
-            assert OLD_KEYS[surface] <= set(body), f"existing keys lost: {set(body)}"
+            assert OLD_KEYS[surface] <= set(body), f"existing keys lost: {body}"
             return _codes(body["warnings"]), ""
         return [], res.stderr.lower()
     if surface == "mcp_search":
@@ -185,6 +192,163 @@ def test_healthy_search_carries_no_warning(mock_svc, surface):  # noqa: F811
 
 
 def test_hyde_prefix_still_raises_not_warns(mock_svc):  # noqa: F811
-    with mock.patch.object(Searcher, "_hyde_search", side_effect=ProviderError("x")):
-        with pytest.raises(ProviderError):
-            mock_svc.searcher.search("hyde: python question")
+    with (
+        mock.patch.object(Searcher, "_hyde_search", side_effect=ProviderError("x")),
+        pytest.raises(ProviderError),
+    ):
+        mock_svc.searcher.search("hyde: python question")
+
+
+def _arranged(mock_svc, step):  # noqa: F811
+    patches = _arrange(mock_svc, step, "rows")
+    for p in patches:
+        p.start()
+    return patches
+
+
+def _stop(patches):
+    for p in patches:
+        p.stop()
+
+
+def test_each_failed_step_is_reported_once_per_call(mock_svc):  # noqa: F811
+    patches = _arranged(mock_svc, "concept_expansion")
+    try:
+        mock_svc.embedder.embed_query_batch.side_effect = ConnectionError("down")
+        mock_svc.concepts.expand_query.side_effect = None
+        mock_svc.concepts.expand_query.return_value = ["python tutorial"]
+        degraded: list = []
+        mock_svc.searcher._concept_query_expansion("q", degraded)
+        mock_svc.searcher._concept_query_expansion("q", degraded)
+    finally:
+        _stop(patches)
+    assert [w.code.value for w in degraded] == ["concept_expansion_failed"]
+
+
+def test_failed_llm_expansion_keeps_the_concept_variants(mock_svc):  # noqa: F811
+    patches = _arranged(mock_svc, "llm_expansion")
+    try:
+        mock_svc.concepts.expand_query.return_value = ["python tutorial"]
+        mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [[0.1] * 4 for _ in texts]
+        degraded: list = []
+        with mock.patch.object(cfg, "concept_graph", True):
+            variants = mock_svc.searcher._expand_query("q", [0.1] * 4, degraded)
+    finally:
+        _stop(patches)
+    assert [text for text, _ in variants] == ["python tutorial"]
+    assert [w.code.value for w in degraded] == ["query_expansion_failed"]
+
+
+def test_concept_embedding_failure_is_a_concept_expansion_failure(mock_svc):  # noqa: F811
+    patches = _arranged(mock_svc, "concept_expansion")
+    try:
+        mock_svc.concepts.expand_query.side_effect = None
+        mock_svc.concepts.expand_query.return_value = ["python tutorial"]
+        mock_svc.embedder.embed_query_batch.side_effect = ConnectionError("embedder down")
+        report = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    assert [w.code.value for w in report.degraded] == ["concept_expansion_failed"]
+    assert report.rows
+
+
+def test_warning_text_is_fixed_and_never_carries_the_exception(mock_svc):  # noqa: F811
+    patches = _arranged(mock_svc, "concept_boost")
+    try:
+        report = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    text = report.degraded[0].line
+    assert "socket closed" not in text
+    assert "concept boost" in text.lower()
+
+
+def test_refused_context_is_marked_refused(mock_svc):  # noqa: F811
+    mock_svc.store.search.return_value = []
+    rag = mock_svc.searcher.build_rag_context(QUESTION, [])
+    assert rag.refused
+    assert rag.messages == []
+
+
+def test_announce_degraded_prints_one_stderr_line_per_warning(capsys):
+    from lilbee.cli.helpers import announce_degraded
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+    first = HealthWarning(code=WarningCode.HYDE_BLEND_FAILED, message="One.", remedy="Fix one.")
+    second = HealthWarning(code=WarningCode.CONCEPT_BOOST_FAILED, message="Two.", remedy="Fix two.")
+    announce_degraded([first, second])
+    captured = capsys.readouterr()
+    assert "One. Fix one." in captured.err
+    assert "Two. Fix two." in captured.err
+    assert captured.out == ""
+
+
+def test_announce_degraded_is_silent_without_warnings(capsys):
+    from lilbee.cli.helpers import announce_degraded
+
+    announce_degraded([])
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+
+
+def test_rest_search_exposes_the_warnings_header_to_browsers():
+    from lilbee.server.app import create_app
+    from lilbee.server.routes.search import SEARCH_WARNINGS_HEADER
+
+    cors = create_app().cors_config
+    assert cors is not None
+    assert SEARCH_WARNINGS_HEADER in (cors.expose_headers or [])
+
+
+def test_rest_healthy_search_omits_the_warnings_header(mock_svc):  # noqa: F811
+    from litestar.testing import TestClient
+
+    import lilbee.server.auth as auth_mod
+    from lilbee.server.app import create_app
+
+    patches = _arranged(mock_svc, "concept_boost")
+    mock_svc.concepts.boost_results.side_effect = lambda r, c: r
+    try:
+        auth_mod.session_manager.disable()
+        res = TestClient(create_app()).get("/api/search", params={"q": QUESTION})
+    finally:
+        _stop(patches)
+    assert "x-lilbee-warnings" not in res.headers
+
+
+def test_stream_sends_the_degraded_event_before_the_refusal(mock_svc):  # noqa: F811
+    from litestar.testing import TestClient
+
+    import lilbee.server.auth as auth_mod
+    from lilbee.server.app import create_app
+
+    patches = _arranged(mock_svc, "concept_expansion")
+    mock_svc.store.search.return_value = []
+    try:
+        auth_mod.session_manager.disable()
+        res = TestClient(create_app()).post("/api/ask/stream", json={"question": QUESTION})
+    finally:
+        _stop(patches)
+    names = [name for name, _ in parse_sse_events(res.content)]
+    assert "search_degraded" in names
+    assert names.index("search_degraded") < names.index("error")
+
+
+async def test_mcp_search_schema_accepts_warnings_and_lists_one_text_block_each(
+    mock_svc,  # noqa: F811
+):
+    from lilbee.mcp_server import build_mcp_server, search
+
+    patches = _arranged(mock_svc, "concept_boost")
+    try:
+        result = search(QUESTION)
+        tools = await build_mcp_server().list_tools()
+    finally:
+        _stop(patches)
+    tool = next(t for t in tools if t.name == "search")
+    assert "warnings" in tool.output_schema["properties"]
+    warnings = result.structured_content["warnings"]
+    assert len(warnings) == 1
+    rows = result.structured_content["result"]
+    assert len(result.content) == len(rows) + len(warnings)
