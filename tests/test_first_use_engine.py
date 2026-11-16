@@ -406,6 +406,25 @@ def test_an_unreadable_store_leaves_the_engine_pin_unpinned(monkeypatch) -> None
     assert binary_mod.engine_build_id() == "unpinned"
 
 
+def _host_with_vendors(
+    monkeypatch: pytest.MonkeyPatch,
+    vendors: frozenset[int],
+    system: str = "Linux",
+    machine: str = "x86_64",
+) -> None:
+    """Make the session host a computer whose display controllers have these PCI vendors."""
+    host = collect(
+        system=system,
+        machine=machine,
+        cpu_info={"flags": ["avx2"]},
+        nvidia=None,
+        display_vendors=tuple(vendors),
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
+
+
 @pytest.mark.parametrize(("vendor_id", "vendor"), [(0x1002, "AMD"), (0x8086, "Intel")])
 def test_installing_the_cpu_pack_on_an_unserved_gpu_host_names_the_vendor(
     vendor_id: int,
@@ -414,7 +433,7 @@ def test_installing_the_cpu_pack_on_an_unserved_gpu_host_names_the_vendor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({vendor_id}))
+    _host_with_vendors(monkeypatch, frozenset({vendor_id}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack()
     assert fetched == [CELL]
@@ -436,7 +455,7 @@ def test_a_host_with_no_amd_or_intel_gpu_installs_the_cpu_pack_silently(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: vendors)
+    _host_with_vendors(monkeypatch, vendors)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack()
     assert fetched == [CELL]
@@ -446,7 +465,7 @@ def test_a_host_with_no_amd_or_intel_gpu_installs_the_cpu_pack_silently(
 def test_a_repeat_install_with_the_pack_present_is_not_warned(
     fetched: list[str], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack()
         assert len(caplog.records) == 1
@@ -461,7 +480,7 @@ def test_an_install_from_a_given_wheel_is_not_warned(
 ) -> None:
     wheel = tmp_path / "given.whl"
     publish(monkeypatch, make_pack(wheel))
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack(wheel)
     assert first_use.installed_tool("gguf-parser") is not None
@@ -471,9 +490,7 @@ def test_an_install_from_a_given_wheel_is_not_warned(
 def test_a_host_with_no_pack_is_refused_before_any_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    arm = collect(system="Linux", machine="aarch64", cpu_info={}, nvidia=None)
-    monkeypatch.setattr(first_use, "session_host", lambda: arm)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}), machine="aarch64")
     with (
         caplog.at_level("WARNING", logger=first_use.__name__),
         pytest.raises(first_use.PackNotPublishedError, match="not published yet"),
@@ -485,9 +502,7 @@ def test_a_host_with_no_pack_is_refused_before_any_warning(
 def test_a_host_whose_pack_uses_the_gpu_is_not_warned(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
-    monkeypatch.setattr(first_use, "session_host", lambda: mac)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}), "Darwin", "arm64")
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.records == []
