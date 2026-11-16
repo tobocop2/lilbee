@@ -136,7 +136,13 @@ def _packs_copy(source_name: str, body: bytes) -> Path:
 
 class TestPinTable:
     def test_every_cell_is_a_release_asset_of_the_pinned_version(self) -> None:
-        assert set(ROUTER_ASSETS) == {"linux-x86_64", "macos-arm64", "windows-x86_64"}
+        assert set(ROUTER_ASSETS) == {
+            "linux-x86_64",
+            "linux-arm64",
+            "macos-arm64",
+            "macos-x86_64",
+            "windows-x86_64",
+        }
         for asset in ROUTER_ASSETS.values():
             assert re.fullmatch(r"[0-9a-f]{64}", asset.sha256)
             assert asset.filename.startswith(f"llama-swap_{ROUTER_VERSION.removeprefix('v')}_")
@@ -147,24 +153,37 @@ class TestPinTable:
         assert f"ENGINE_LLAMA_SWAP_VERSION={ROUTER_VERSION}\n" in text
 
     @pytest.mark.parametrize(
-        ("system", "machine", "cell", "binary"),
+        ("system", "machine", "cell", "filename", "binary"),
         [
-            ("Linux", "x86_64", "linux-x86_64", "llama-swap"),
-            ("Darwin", "arm64", "macos-arm64", "llama-swap"),
-            ("Windows", "AMD64", "windows-x86_64", "llama-swap.exe"),
+            ("Linux", "x86_64", "linux-x86_64", "llama-swap_267_linux_amd64.tar.gz", "llama-swap"),
+            ("Linux", "aarch64", "linux-arm64", "llama-swap_267_linux_arm64.tar.gz", "llama-swap"),
+            ("Darwin", "arm64", "macos-arm64", "llama-swap_267_darwin_arm64.tar.gz", "llama-swap"),
+            (
+                "Darwin",
+                "x86_64",
+                "macos-x86_64",
+                "llama-swap_267_darwin_amd64.tar.gz",
+                "llama-swap",
+            ),
+            (
+                "Windows",
+                "AMD64",
+                "windows-x86_64",
+                "llama-swap_267_windows_amd64.zip",
+                "llama-swap.exe",
+            ),
         ],
     )
     def test_a_computer_with_an_engine_build_has_a_router_asset(
-        self, system: str, machine: str, cell: str, binary: str
+        self, system: str, machine: str, cell: str, filename: str, binary: str
     ) -> None:
         host = collect(system=system, machine=machine, cpu_info={}, nvidia=None)
         found_cell, asset = router_asset(host)
         assert found_cell == cell
+        assert asset.filename == filename
         assert asset.binary == binary
 
-    @pytest.mark.parametrize(
-        ("system", "machine"), [("Linux", "aarch64"), ("Darwin", "x86_64"), ("Plan9", "x86_64")]
-    )
+    @pytest.mark.parametrize(("system", "machine"), [("Windows", "ARM64"), ("Plan9", "x86_64")])
     def test_a_computer_with_no_asset_is_refused_in_plain_words(
         self, system: str, machine: str
     ) -> None:
@@ -389,7 +408,7 @@ class TestInstall:
     def test_a_computer_with_no_asset_installs_nothing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        host = collect(system="Linux", machine="aarch64", cpu_info={}, nvidia=None)
+        host = collect(system="Windows", machine="ARM64", cpu_info={}, nvidia=None)
         monkeypatch.setattr(router_install, "session_host", lambda: host)
         with pytest.raises(RouterNotPublishedError):
             install_router()
