@@ -964,7 +964,8 @@ def lost_card_reason(
 ) -> str:
     """The sentence for *role* pinned to the *lost* devices that the machine does not list."""
     present = f"only {_device_phrase(listed)}" if listed else "no devices"
-    count = f" ({on_host} cards on this host)" if on_host > len(listed) else ""
+    noun = "card" if on_host == 1 else "cards"
+    count = f" ({on_host} {noun} on this host)" if on_host > len(listed) else ""
     fix = f"Set the {role.value} devices to a card that exists, or set its target to cpu."
     found = f"{role.value} is pinned to {_device_phrase(lost)}, but this machine lists {present}"
     return " ".join(part for part in (f"{found}{count}.", hint, fix) if part)
