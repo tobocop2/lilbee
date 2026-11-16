@@ -223,7 +223,19 @@ _CONTEXT_TEMPLATE_TOKENS = 16
 # (source path plus page/line span), and the blank-line separator.
 _PER_SOURCE_TOKENS = 24
 
-_STATUS_REMEDY = "Run lilbee status, then search again."
+_HYDE_REMEDY = (
+    "Search again, or turn off the hyde setting. Check the chat model with lilbee status."
+)
+_EXPANSION_REMEDY = (
+    "Search again, or set query_expansion_count to 0. Check the chat model with lilbee status."
+)
+_BOOST_REMEDY = (
+    "Search again, or turn off the concept_graph setting. Run lilbee status to check it."
+)
+_CONCEPT_EXPANSION_REMEDY = (
+    "Search again, or turn off the concept_graph setting. Check the embedding model with "
+    "lilbee status."
+)
 
 
 class _DegradedStep(NamedTuple):
@@ -239,7 +251,7 @@ _DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
         HealthWarning(
             code=WarningCode.HYDE_BLEND_FAILED,
             message="HyDE search failed: results do not include its hypothetical-answer matches.",
-            remedy=_STATUS_REMEDY,
+            remedy=_HYDE_REMEDY,
         ),
     ),
     WarningCode.QUERY_EXPANSION_FAILED: _DegradedStep(
@@ -247,7 +259,7 @@ _DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
         HealthWarning(
             code=WarningCode.QUERY_EXPANSION_FAILED,
             message="Query expansion failed: results do not include reworded queries.",
-            remedy=_STATUS_REMEDY,
+            remedy=_EXPANSION_REMEDY,
         ),
     ),
     WarningCode.CONCEPT_BOOST_FAILED: _DegradedStep(
@@ -255,7 +267,7 @@ _DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
         HealthWarning(
             code=WarningCode.CONCEPT_BOOST_FAILED,
             message="Concept boost failed: results are not re-ranked by concept.",
-            remedy=_STATUS_REMEDY,
+            remedy=_BOOST_REMEDY,
         ),
     ),
     WarningCode.CONCEPT_EXPANSION_FAILED: _DegradedStep(
@@ -263,7 +275,7 @@ _DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
         HealthWarning(
             code=WarningCode.CONCEPT_EXPANSION_FAILED,
             message="Concept expansion failed: results do not include related-concept queries.",
-            remedy=_STATUS_REMEDY,
+            remedy=_CONCEPT_EXPANSION_REMEDY,
         ),
     ),
 }

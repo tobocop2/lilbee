@@ -263,6 +263,44 @@ def test_warning_text_is_fixed_and_never_carries_the_exception(mock_svc):  # noq
     assert "concept boost" in text.lower()
 
 
+@pytest.mark.parametrize(
+    ("step", "setting"),
+    [
+        ("hyde_blend", "hyde"),
+        ("llm_expansion", "query_expansion_count"),
+        ("concept_boost", "concept_graph"),
+        ("concept_expansion", "concept_graph"),
+    ],
+)
+def test_each_failed_step_names_its_own_remedy(mock_svc, step, setting):  # noqa: F811
+    patches = _arranged(mock_svc, step)
+    try:
+        report = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    remedy = report.degraded[0].remedy
+    assert setting in remedy
+    assert "socket closed" not in remedy
+
+
+def test_the_four_remedies_differ():
+    from lilbee.retrieval.query.searcher import _DEGRADED_STEPS
+
+    remedies = [step.warning.remedy for step in _DEGRADED_STEPS.values()]
+    assert len(set(remedies)) == len(remedies)
+
+
+def test_mcp_search_errors_keep_their_structured_shape(mock_svc):  # noqa: F811
+    """An error carries `result` only, as before the warnings existed."""
+    from lilbee.mcp_server import search
+
+    with mock.patch.object(Searcher, "search_report", side_effect=RuntimeError("embed failed")):
+        failed = search(QUESTION)
+    empty = search("  ")
+    assert failed.structured_content == {"result": {"error": "embed failed"}}
+    assert empty.structured_content == {"result": {"error": "query must not be empty"}}
+
+
 def test_refused_context_is_marked_refused(mock_svc):  # noqa: F811
     mock_svc.store.search.return_value = []
     rag = mock_svc.searcher.build_rag_context(QUESTION, [])

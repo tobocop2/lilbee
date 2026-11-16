@@ -378,22 +378,27 @@ class SearchOutput(BaseModel):
     """Structured result of the ``search`` tool: the rows, or an error, and the failed steps."""
 
     result: list[dict[str, Any]] | dict[str, Any]
-    warnings: list[HealthWarning]
+    warnings: list[HealthWarning] = Field(default_factory=list)
 
 
 def _search_result(
-    result: list[dict[str, Any]] | dict[str, Any], warnings: Iterable[HealthWarning] = ()
+    result: list[dict[str, Any]] | dict[str, Any],
+    warnings: Iterable[HealthWarning] | None = None,
 ) -> CallToolResult:
-    """A ``search`` result: one text block per row and per warning, plus the structured form."""
+    """A ``search`` result: one text block per row and per warning, plus the structured form.
+
+    An error passes no warnings and keeps the ``{"result": ...}`` shape it had before.
+    """
     rows = result if isinstance(result, list) else [result]
     content: list[ContentBlock] = [
         TextContent(type="text", text=json.dumps(row, indent=2, default=str)) for row in rows
     ]
-    content.extend(TextContent(type="text", text=w.line) for w in warnings)
-    return CallToolResult(
-        content=content,
-        structured_content={"result": result, "warnings": warnings_payload(warnings)},
-    )
+    structured: dict[str, Any] = {"result": result}
+    if warnings is not None:
+        shown = list(warnings)
+        content.extend(TextContent(type="text", text=w.line) for w in shown)
+        structured["warnings"] = warnings_payload(shown)
+    return CallToolResult(content=content, structured_content=structured)
 
 
 @_tool
