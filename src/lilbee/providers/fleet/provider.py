@@ -451,6 +451,7 @@ def _retry_on_other_replica(
     except Exception as retry_exc:
         if is_connection_failure(retry_exc):
             retry.mark_unhealthy()
+            _raise_no_healthy_replica(retry_exc)
         raise
     else:
         retry.mark_healthy()
@@ -476,6 +477,16 @@ def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
     raise ProviderError(
         _NOT_RESPONDING_MESSAGE, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION
     ) from cause
+
+
+def _final_attempt(call: Callable[[], _T]) -> _T:
+    """Run *call* as the last attempt: a connection failure becomes the no-healthy-replica error."""
+    try:
+        return call()
+    except Exception as exc:
+        if is_connection_failure(exc):
+            _raise_no_healthy_replica(exc)
+        raise
 
 
 # Env vars a launch pins its devices with, one per backend (Metal has none).
@@ -688,6 +699,7 @@ def _dispatch_vision(
         except Exception as retry_exc:
             if is_connection_failure(retry_exc):
                 retry_client.mark_unhealthy()
+                _raise_no_healthy_replica(retry_exc)
             raise
         retry_client.mark_healthy()
         return retry_result
@@ -1898,7 +1910,7 @@ class FleetProvider:
                 # waits for that rebuild (see _acquire_in_dir) instead of overflowing.
                 if self._config_refresh is not None:
                     self._config_refresh()
-                return call()
+                return _final_attempt(call)
             finally:
                 if opened:
                     with self._lock:
@@ -1935,7 +1947,7 @@ class FleetProvider:
         else:
             log.warning("%s could not claim its port; rebuilding it on a new one", role.value)
         self._rebuild_role(role)
-        return call()
+        return _final_attempt(call)
 
     def _rebuild_role(self, role: WorkerRole) -> None:
         """Restart just *role*'s dead group (new port) from a fresh plan.

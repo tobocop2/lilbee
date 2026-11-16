@@ -20,7 +20,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
-from lilbee.providers.base import ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.client import LlamaServerClient
@@ -2053,17 +2053,34 @@ def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
     # The failover leg stamps health too: a second dead replica is marked
-    # unhealthy and the failure propagates.
+    # unhealthy and the failure surfaces as the not-responding provider error.
     import httpx as _httpx
 
     dead_a, dead_b = _fake_client(), _fake_client()
+    refused = _httpx.ConnectError("refused")
     dead_a.chat.side_effect = _httpx.ConnectError("refused")
-    dead_b.chat.side_effect = _httpx.ConnectError("refused")
+    dead_b.chat.side_effect = refused
     pool = [prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1)]
-    with pytest.raises(_httpx.ConnectError):
+    with pytest.raises(ProviderError, match="not responding") as caught:
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
+    assert caught.value.__cause__ is refused
     dead_a.mark_unhealthy.assert_called_once()
     dead_b.mark_unhealthy.assert_called_once()
+
+
+def test_dispatch_vision_model_error_on_the_retry_replica_surfaces_unchanged() -> None:
+    import httpx as _httpx
+
+    dead, other = _fake_client(), _fake_client()
+    rejected = ProviderError("bad image", kind=ProviderErrorKind.BAD_REQUEST)
+    dead.chat.side_effect = _httpx.ConnectError("refused")
+    other.chat.side_effect = rejected
+    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(other, 1)]
+    with pytest.raises(ProviderError) as caught:
+        prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert caught.value is rejected
+    other.mark_unhealthy.assert_not_called()
 
 
 def test_chat_streams_from_server() -> None:
@@ -4006,6 +4023,30 @@ class TestReserveSpreadsLoad:
         prov_mod._call_with_failover([bad, good], lambda c: c.embed(["x"]))
         assert bad.in_flight == 0 and good.in_flight == 0  # both released
         assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
+
+    def test_every_replica_unreachable_raises_a_provider_error(self) -> None:
+        import httpx
+
+        refused = httpx.ConnectError("refused")
+        first = _FakeReplica(fail=refused)
+        second = _FakeReplica(fail=refused)
+        with pytest.raises(ProviderError, match="not responding") as info:
+            prov_mod._call_with_failover([first, second], lambda c: c.embed(["x"]))
+        assert info.value.kind is ProviderErrorKind.CONNECTION
+        assert info.value.__cause__ is refused
+        assert not first.healthy and not second.healthy
+        assert first.in_flight == 0 and second.in_flight == 0
+
+    def test_a_model_error_on_the_retry_replica_surfaces_unchanged(self) -> None:
+        import httpx
+
+        bad = _FakeReplica(fail=httpx.ConnectError("refused"))
+        rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
+        other = _FakeReplica(fail=rejected)
+        with pytest.raises(ProviderError) as info:
+            prov_mod._call_with_failover([bad, other], lambda c: c.embed(["x"]))
+        assert info.value is rejected
+        assert other.healthy
 
     def test_concurrent_dispatch_does_not_pile_on_one_replica(self) -> None:
         import threading
@@ -6645,6 +6686,55 @@ def test_rediscover_releases_unused_holds_when_the_retry_fails(monkeypatch) -> N
     assert released == [1]
 
 
+def test_a_transport_failure_on_the_rediscover_retry_is_not_responding(monkeypatch) -> None:
+    import httpx as _httpx
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    refused = _httpx.ConnectError("refused")
+
+    def _call() -> str:
+        raise refused
+
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p._with_rediscover(_call)
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
+    assert caught.value.__cause__ is refused
+
+
+def test_a_model_error_on_the_rediscover_retry_surfaces_unchanged(monkeypatch) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        raise rejected
+
+    with pytest.raises(ProviderError) as caught:
+        p._with_rediscover(_call)
+    assert caught.value is rejected
+
+
+def test_a_transport_failure_after_a_rebuild_is_not_responding(monkeypatch) -> None:
+    import httpx as _httpx
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
+    refused = _httpx.ConnectError("refused")
+    held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
+
+    def _call() -> str:
+        raise refused
+
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p._retry_rebuilt(_call, WorkerRole.CHAT, held_port)
+    assert caught.value.__cause__ is refused
+
+
 def test_a_failed_sweep_after_a_rediscover_keeps_the_retry_result(monkeypatch) -> None:
     p = FleetProvider()
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
@@ -7506,3 +7596,59 @@ def test_an_engine_write_during_a_chat_leaves_the_chat_client_open(
     streaming.in_flight = 0
     engine_service.prefer("llama.cpp")  # the next reload closes the finished stream's client
     streaming.close.assert_called_once_with()
+
+
+class TestDeadServersThroughTheRoutingProvider:
+    """The routing provider over a fleet whose replicas listen on no port."""
+
+    @staticmethod
+    def _dead_endpoint() -> str:
+        import socket
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        return f"http://127.0.0.1:{port}"
+
+    @classmethod
+    def _routing(cls, monkeypatch, replicas: int):
+        from lilbee.providers.fleet.client import LlamaServerClient
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        routing = RoutingProvider()
+        fleet = routing._get_local()
+        assert isinstance(fleet, FleetProvider)
+        pools = {
+            role: [
+                LlamaServerClient(
+                    cls._dead_endpoint(), f"{role.value}-{i}", profile=LLAMA.request_profile(role)
+                )
+                for i in range(replicas)
+            ]
+            for role in (WorkerRole.EMBED, WorkerRole.CHAT)
+        }
+        monkeypatch.setattr(fleet, "_require_clients", lambda role: pools[role])
+        # The fleet start-up layer is out; the clients and their sockets are real.
+        monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
+        monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
+        return routing, pools
+
+    @pytest.mark.parametrize("replicas", [1, 2])
+    def test_embed_with_every_server_down_is_a_provider_error(self, monkeypatch, replicas) -> None:
+        routing, pools = self._routing(monkeypatch, replicas)
+        with pytest.raises(ProviderError, match="not responding") as caught:
+            routing.embed(["text"])
+        assert caught.value.kind is ProviderErrorKind.CONNECTION
+        assert not any(client.healthy for client in pools[WorkerRole.EMBED])
+
+    @pytest.mark.parametrize("replicas", [1, 2])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_chat_with_every_server_down_is_a_provider_error(
+        self, monkeypatch, replicas, stream
+    ) -> None:
+        routing, _pools = self._routing(monkeypatch, replicas)
+        with pytest.raises(ProviderError, match="not responding") as caught:
+            routing.chat([{"role": "user", "content": "hi"}], stream=stream)
+        assert caught.value.kind is ProviderErrorKind.CONNECTION
