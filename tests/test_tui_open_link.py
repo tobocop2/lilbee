@@ -399,6 +399,20 @@ class TestProgramsAndFoldersAreNotOpened:
         assert open_local_file(script.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
         run.assert_not_called()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses every code file")
+    @pytest.mark.parametrize("name", ["main.c", "tool.go", "lib.rs"])
+    def test_a_code_file_with_a_short_suffix_that_shows_in_an_editor_opens(
+        self, run, monkeypatch, name
+    ):
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers.classify_file", lambda _path: CODE_CONTENT_TYPE
+        )
+        source = cfg.documents_dir / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("x\n", encoding="utf-8")
+        assert open_local_file(source.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no execute bit")
     @pytest.mark.parametrize("mode", [0o700, 0o755, 0o610, 0o601])
     @pytest.mark.parametrize("name", ["notes.txt", "notes.md", "paper.pdf", "page.html"])
