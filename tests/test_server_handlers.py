@@ -6820,3 +6820,19 @@ class TestSourceLabelsOnTheWire:
             _WEB_PAGE: "example.com · The Guide",
         }
         assert all("citation_number" not in r for r in dumped)
+
+
+class TestRefusedChatCarriesTheFailedSteps:
+    async def test_chat_refusal_lists_the_steps_that_failed(self, mock_svc):
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+        from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL
+
+        warning = HealthWarning(
+            code=WarningCode.CONCEPT_EXPANSION_FAILED, message="Failed.", remedy="Retry."
+        )
+        mock_svc.searcher.build_rag_context.return_value = RagContext(
+            [], [], degraded=(warning,), refused=True
+        )
+        result = await handlers.chat("q", [])
+        assert result.answer == GROUNDED_REFUSAL
+        assert result.warnings == [warning]
