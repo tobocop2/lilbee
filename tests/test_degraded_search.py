@@ -410,6 +410,34 @@ def test_mcp_search_blocks_are_the_indented_json_of_each_row_and_warning():
     assert result.structured_content["result"] is rows
 
 
+@pytest.mark.parametrize("step", list(STEPS))
+async def test_chat_answer_carries_the_failed_step(mock_svc, step):  # noqa: F811
+    from lilbee.server import handlers
+
+    patches = _arranged(mock_svc, step)
+    try:
+        with (
+            mock.patch("lilbee.server.handlers.rag.dispatch_chat"),
+            mock.patch("lilbee.server.handlers.rag._join_text_blocks", return_value="an answer"),
+        ):
+            result = await handlers.chat(QUESTION, [])
+    finally:
+        _stop(patches)
+    assert [w.code.value for w in result.warnings] == [STEPS[step][0]]
+
+
+def test_the_cli_keeps_a_long_warning_on_one_line(capsys, monkeypatch):
+    from lilbee.cli.helpers import announce_degraded
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+    monkeypatch.setenv("COLUMNS", "40")
+    long_line = "word " * 30
+    announce_degraded(
+        [HealthWarning(code=WarningCode.HYDE_BLEND_FAILED, message=long_line, remedy="r.")]
+    )
+    assert capsys.readouterr().err.count("\n") == 1
+
+
 def test_warnings_payload_holds_plain_strings():
     from lilbee.core.health_warnings import HealthWarning, WarningCode, warnings_payload
 
