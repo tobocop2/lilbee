@@ -2257,11 +2257,7 @@ class ChatScreen(Screen[None]):
                 break
             try:
                 if isinstance(token, RetrievalNotice):
-                    if token.query is not None:
-                        status = msg.SEARCHING_FOR.format(query=token.query)
-                        call_from_thread(self, widget.set_thinking_status, status)
-                    for warning in token.degraded:
-                        call_from_thread(self, self.notify, warning.line, severity="warning")
+                    self._show_retrieval_notice(widget, token)
                     continue
                 if isinstance(token, AnswerSources):
                     # Shown under the answer, saved beside it: never part of its text.
@@ -2274,6 +2270,15 @@ class ChatScreen(Screen[None]):
                 break  # App shutting down (Ctrl-C) -- stop streaming
         with contextlib.suppress(Exception):
             flush()
+
+    def _show_retrieval_notice(self, widget: Any, notice: RetrievalNotice) -> None:
+        """Show the rewritten query in the status row and a toast for each failed search step."""
+        if notice.query is not None:
+            call_from_thread(
+                self, widget.set_thinking_status, msg.SEARCHING_FOR.format(query=notice.query)
+            )
+        for warning in notice.degraded:
+            call_from_thread(self, self.notify, warning.line, severity="warning")
 
     @staticmethod
     def _buffer_token(
