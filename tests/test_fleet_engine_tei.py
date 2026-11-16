@@ -922,6 +922,44 @@ def test_embed_returns_its_vectors_when_the_count_route_fails(kind, caplog) -> N
     assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
 
 
+def test_a_tokenize_body_of_an_empty_object_is_a_failed_check(caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json={}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_the_skipped_check_logs_why_at_debug(caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json={"tokens": 1}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == "DEBUG"
+    assert record.getMessage() == (
+        "Embed truncation check skipped: the count route answered with an unexpected body"
+    )
+
+
+def test_a_missing_limit_key_is_named_in_the_skipped_check_line(caplog) -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(200, json={"model_id": "x"}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.getMessage() == "Embed truncation check skipped: 'max_input_length'"
+
+
+def test_a_second_embed_after_a_failed_limit_read_logs_no_second_skip(caplog) -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(404, json={}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+        client.embed([_words(30)])
+    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+
+
 def test_a_failed_limit_read_is_not_tried_again_by_the_same_client() -> None:
     router = _BrokenSideRoute("/info", httpx.Response(404, json={}))
     client = _tei_client(router, WorkerRole.EMBED)
@@ -944,7 +982,7 @@ def test_a_cut_with_no_known_limit_never_prints_none(caplog) -> None:
         note_truncated(1, 4, None)
     [record] = caplog.records
     assert "None" not in record.getMessage()
-    assert "1 of 4" in record.getMessage()
+    assert "1 of 4 embed inputs are past the embedder's limit and" in record.getMessage()
 
 
 def test_the_warning_names_the_chunk_size_setting_and_a_larger_limit_model(caplog) -> None:
@@ -952,5 +990,4 @@ def test_the_warning_names_the_chunk_size_setting_and_a_larger_limit_model(caplo
     with caplog.at_level("WARNING"):
         client.embed([_words(30)])
     message = caplog.records[0].getMessage()
-    assert "chunk_size" in message
-    assert "larger input limit" in message
+    assert "Lower chunk_size, or use an embedding model with a larger input limit." in message
