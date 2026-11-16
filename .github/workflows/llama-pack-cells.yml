@@ -687,7 +687,10 @@ jobs:
       - name: Repack the upstream archive into the wheel tree
         run: |
           set -euo pipefail
-          python tools/wheel-build/repack_mistralrs.py "upstream/${ASSET}" "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
+          # The script prints SOURCE_DATE_EPOCH; the wheel build and the retag read it from the job env.
+          python tools/wheel-build/repack_mistralrs.py "upstream/${ASSET}" "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin" \
+            | tr -d '\r' >> "$GITHUB_ENV"
+          grep -c '^SOURCE_DATE_EPOCH=' "$GITHUB_ENV"
           ls -lR "${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
 
       - name: Add the Visual C++ runtime beside the exe
