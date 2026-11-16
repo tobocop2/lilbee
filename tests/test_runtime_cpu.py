@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -176,6 +177,30 @@ def test_cgroup_proc_path_that_is_not_utf8_reads_the_mount(tmp_path) -> None:
     proc = tmp_path / "proc-self-cgroup"
     proc.write_bytes(b"0::/a\xff\n")
     assert _cgroup_cpu_quota(root, proc) == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="/proc/self/cgroup is POSIX only")
+def test_cgroup_proc_path_with_utf8_name_reads_its_limit_under_a_c_locale(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "200000 100000\n", "café/cpu.max": "100000 100000\n"})
+    proc = tmp_path / "proc-self-cgroup"
+    proc.write_bytes("0::/café\n".encode())
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from lilbee.runtime.cpu import _cgroup_cpu_quota\n"
+        "print(_cgroup_cpu_quota(Path(sys.argv[1]), Path(sys.argv[2])))\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), str(proc)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    assert result.stdout.strip() == "1.0"
 
 
 @pytest.mark.skipif(

@@ -59,7 +59,7 @@ def _v1_dir_quota(directory: Path) -> float | None:
 def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
     """Map each controller (v2 unified hierarchy: the empty name) to this process's cgroup path."""
     try:
-        lines = proc_cgroup.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
+        lines = os.fsdecode(proc_cgroup.read_bytes()).splitlines()
     except OSError:
         return {}
     paths: dict[str, str] = {}
