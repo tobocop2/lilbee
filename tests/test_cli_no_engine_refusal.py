@@ -36,6 +36,7 @@ def _installed_safetensors_engine(
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.AUTO)
     monkeypatch.setattr(cfg, "engine_choices", None)
+    monkeypatch.setattr(cfg, "worker_pool_eager_start", False)
     yield
 
 

@@ -205,10 +205,11 @@ def test_auto_names_the_installed_engine_that_loads_a_format_the_default_skips()
 
 
 def test_a_choice_for_no_role_names_prefer_and_never_use() -> None:
-    both = {L: {ST}, M: {ST}}
+    both = {IK: {ST}, M: {ST}}
     got = _ask(fmt=ST, installed=both, model="org/m#safetensors")
+    assert got.name is None
     assert got.notice is not None
-    assert "Choose llama.cpp or mlx with lilbee engine prefer." in got.notice
+    assert f"Choose {IK} or {M} with lilbee engine prefer." in got.notice
     assert "engine use" not in got.notice
 
 
