@@ -48,12 +48,14 @@ from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import installed_safetensors_bytes, unknown_size_text
 from lilbee.providers.fleet.placement import (
     InstancePlan,
+    LostCardWording,
     ModelPlacementInput,
     PeakEstimator,
     Placement,
     RoomHolder,
     SplitCtxFitter,
     card_refusal,
+    lost_card_reason,
     placement_from_spec,
     plan_placement,
 )
@@ -3307,7 +3309,7 @@ def _resolve_placement(
             estimate_peak=estimate_peak,
             plan_auto=plan_auto,
             model_refs=model_refs,
-            absent_hint=lambda: _hidden_device_hint(devices),
+            lost_card=_lost_card_wording(devices, host_cards),
         )
         if _cpu_roles(placement).isdisjoint(model_refs):
             return placed
@@ -3348,6 +3350,21 @@ def _hidden_device_hint(devices: Sequence[FleetDevice]) -> str:
     """The sentence that explains a pin to hardware the launch hides, or empty."""
     choice = _hidden_choice(devices)
     return choice.hidden_sentence() if choice else ""
+
+
+def _lost_card_wording(devices: Sequence[FleetDevice], host_cards: HostCards) -> LostCardWording:
+    """The one wording of a role pinned to a card this machine lacks, for set and view."""
+
+    def wording(role: WorkerRole, lost: Sequence[int]) -> str:
+        return lost_card_reason(
+            role,
+            lost,
+            [d.index for d in devices],
+            on_host=host_cards.total,
+            hint=_hidden_device_hint(devices),
+        )
+
+    return wording
 
 
 def _auto_roles_past_named(
@@ -3538,23 +3555,15 @@ def _roles_on_missing_cards(
     if spec is None or all(entry.target is None for entry in spec.roles.values()):
         return {}
     present = {d.index for d in devices}
-    hint = _hidden_device_hint(devices)
+    wording = _lost_card_wording(devices, host_cards)
     refused: dict[WorkerRole, str] = {}
     for role in roles:
         entry = spec.roles.get(role)
         if entry is None or entry.device_target is not RoleTarget.GPU:
             continue
-        missing = [str(idx) for idx in entry.devices if idx not in present]
+        missing = [idx for idx in entry.devices if idx not in present]
         if missing:
-            on_host = (
-                f", {host_cards.total} on this host" if host_cards.total > len(present) else ""
-            )
-            found = (
-                f"{role.value}: GPU {', '.join(missing)} is not on this machine "
-                f"({len(present)} found{on_host})."
-            )
-            fix = f"Set the {role.value} devices to a GPU that exists, or set its target to cpu."
-            refused[role] = " ".join(part for part in (found, hint, fix) if part)
+            refused[role] = wording(role, missing)
     return refused
 
 

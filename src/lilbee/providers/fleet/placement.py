@@ -46,6 +46,8 @@ SplitCtxFitter = Callable[[tuple[int, ...], Sequence[int]], int]
 # Plans the auto roles of a spec on the cards the other roles leave (index to
 # total bytes) and the roles that were charged to cards.
 AutoPlanner = Callable[[dict[int, int], frozenset[WorkerRole]], "Placement"]
+# Words a role pinned to devices the machine lacks, from the role and those devices.
+LostCardWording = Callable[[WorkerRole, Sequence[int]], str]
 
 
 @dataclass(frozen=True)
@@ -779,15 +781,15 @@ def placement_from_spec(
     estimate_peak: PeakEstimator,
     plan_auto: AutoPlanner | None = None,
     model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
-    absent_hint: Callable[[], str] | None = None,
+    lost_card: LostCardWording | None = None,
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
     ``device_capacity`` is each card's total VRAM (not instantaneous free): the
     plan defines the fleet's full intended residency, so charging it against live
     free VRAM would double-count models already loaded. Every active role must
-    have an entry; every device must exist (*absent_hint* adds a sentence to the
-    refusal for a device the machine lacks); each card must fit the sum of the
+    have an entry; every device must exist (*lost_card* words the refusal for a
+    device the machine lacks); each card must fit the sum of the
     per-device peaks charged to it, within the cfg.usable_vram_fraction headroom.
 
     A role with the auto target is planned last by *plan_auto*, on the capacity
@@ -806,7 +808,7 @@ def placement_from_spec(
     card_roles: list[WorkerRole] = []
     held: dict[int, list[RoomHolder]] = {}
     for role in active_roles:
-        rp = _required_entry(spec, role, device_capacity, absent_hint)
+        rp = _required_entry(spec, role, device_capacity, lost_card)
         if rp.device_target is RoleTarget.AUTO:
             auto_roles.append(role)
             continue
@@ -944,21 +946,35 @@ def _shifted_toward_roomiest(
     return tuple(shifted)
 
 
-def _listed_devices(indices: Sequence[int]) -> str:
-    """The device indices a machine lists, as a phrase: "devices 0 and 1"."""
-    if not indices:
-        return "no devices"
+def _device_phrase(indices: Sequence[int]) -> str:
+    """The device indices as a phrase: "device 0", "devices 0 and 1"."""
     labels = [str(index) for index in sorted(indices)]
     if len(labels) == 1:
-        return f"only device {labels[0]}"
-    return f"only devices {', '.join(labels[:-1])} and {labels[-1]}"
+        return f"device {labels[0]}"
+    return f"devices {', '.join(labels[:-1])} and {labels[-1]}"
+
+
+def lost_card_reason(
+    role: WorkerRole,
+    lost: Sequence[int],
+    listed: Sequence[int],
+    *,
+    on_host: int = 0,
+    hint: str = "",
+) -> str:
+    """The sentence for *role* pinned to the *lost* devices that the machine does not list."""
+    present = f"only {_device_phrase(listed)}" if listed else "no devices"
+    count = f" ({on_host} cards on this host)" if on_host > len(listed) else ""
+    fix = f"Set the {role.value} devices to a card that exists, or set its target to cpu."
+    found = f"{role.value} is pinned to {_device_phrase(lost)}, but this machine lists {present}"
+    return " ".join(part for part in (f"{found}{count}.", hint, fix) if part)
 
 
 def _required_entry(
     spec: PlacementSpec,
     role: WorkerRole,
     device_capacity: dict[int, int],
-    absent_hint: Callable[[], str] | None = None,
+    lost_card: LostCardWording | None = None,
 ) -> RolePlacement:
     """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
     rp = spec.roles.get(role)
@@ -967,14 +983,10 @@ def _required_entry(
             f"{role.value} has a model but the placement has no entry for it. "
             f"Add an entry for {role.value} with devices or a target, or clear the placement."
         )
-    for idx in rp.devices:
-        if idx not in device_capacity:
-            reason = (
-                f"{role.value} is pinned to device {idx}, but this machine lists "
-                f"{_listed_devices(list(device_capacity))}."
-            )
-            hint = absent_hint() if absent_hint else ""
-            raise PlacementError(f"{reason} {hint}".strip())
+    lost = [idx for idx in rp.devices if idx not in device_capacity]
+    if lost:
+        word = lost_card or functools.partial(lost_card_reason, listed=list(device_capacity))
+        raise PlacementError(word(role, lost))
     return rp
 
 
