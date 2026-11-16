@@ -266,11 +266,14 @@ jobs:
         # 3.13 own the coverage story. Windows 3.11 is excluded above.
         # Windows measures with .coveragerc-windows: same 100% gate, minus the
         # two POSIX-only modules the Linux/macOS lanes already hold at 100%.
+        # macOS runs the TUI files and the rest as two sessions on one coverage file.
         run: |
           if [ "${{ matrix.python-version }}" = "3.11" ]; then
             make test-ci-forked
           elif [ "${{ runner.os }}" = "Windows" ]; then
             make test-ci COV_FLAGS="--cov-config=.coveragerc-windows"
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            make test-ci-split
           else
             make test-ci
           fi
