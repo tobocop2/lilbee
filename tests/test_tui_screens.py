@@ -8146,6 +8146,68 @@ def test_consume_stream_shows_the_rewrite_in_the_status_row():
     widget.append_content.assert_called_once_with("In 1910.")
 
 
+def test_consume_stream_toasts_each_degraded_step_and_keeps_the_status_row():
+    """A notice with no rewrite still toasts every failed step, and sets no status."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    warning = HealthWarning(
+        code=WarningCode.HYDE_BLEND_FAILED, message="hyde failed.", remedy="Run lilbee status."
+    )
+    screen = ChatScreen.__new__(ChatScreen)
+    widget = MagicMock()
+    stream = iter(
+        [
+            RetrievalNotice(degraded=(warning,)),
+            StreamToken(content="Answer.", is_reasoning=False),
+        ]
+    )
+    with (
+        patch(
+            "lilbee.cli.tui.screens.chat.call_from_thread",
+            side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+        ),
+        patch.object(ChatScreen, "notify", create=True) as notify,
+    ):
+        screen._consume_stream(stream, _Turn("q", widget, 0, None), [])
+    notify.assert_called_once_with(warning.line, severity="warning")
+    widget.set_thinking_status.assert_not_called()
+
+
+@pytest.mark.parametrize("size", [(80, 24), (160, 48)])
+async def test_chat_toasts_a_failed_search_step(mock_svc, size):
+    """The chat screen raises a warning toast when a search step failed."""
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    warning = HealthWarning(
+        code=WarningCode.CONCEPT_BOOST_FAILED,
+        message="Concept boost failed.",
+        remedy="Run lilbee status, then search again.",
+    )
+    mock_svc.searcher.ask_stream = MagicMock(
+        return_value=iter(
+            [
+                RetrievalNotice(query="q", degraded=(warning,)),
+                StreamToken(content="Answer.", is_reasoning=False),
+            ]
+        )
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=size) as pilot:
+        inp = app.screen.query_one("#chat-input", ChatInput)
+        inp.value = "test"
+        await pilot.press("enter")
+        await wait_until(
+            pilot,
+            lambda: any(n.message == warning.line for n in app._notifications),
+            timeout=10,
+        )
+        toast = next(n for n in app._notifications if n.message == warning.line)
+        assert toast.severity == "warning"
+
+
 async def test_chat_stream_response_error_worker(mock_svc):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()

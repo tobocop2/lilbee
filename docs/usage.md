@@ -822,6 +822,15 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   when your agent has its own LLM and just needs context from your files. `ask` runs
   lilbee's local RAG end-to-end and returns an answer with sources. Most
   non-MCP agents want `search`.
+- **Read `warnings`.** When a search step fails (hyde blend, query
+  expansion, concept boost or concept expansion), the search still returns
+  the rows it has, and `warnings` names each failed step with a `code`, a
+  `message` and a `remedy`. The rows can miss matches. The text CLI prints
+  the same warnings on stderr. `GET /api/search` keeps its array body and
+  sends the list in the `X-Lilbee-Warnings` response header, only when it is
+  not empty. `/api/ask` and `/api/chat` carry `warnings` in the body, the
+  streams send a `search_degraded` event before the first token, and the MCP
+  `search` tool returns `warnings` in its structured result.
 - **Citation rule still applies.** Every fact stated from `search` results must
   trace back to a chunk's `source` + line range, exactly as returned. Don't
   invent.
@@ -832,12 +841,12 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 // lilbee --json search "oil change interval" --top-k 3
 {"command": "search", "query": "oil change interval", "results": [
   {"source": "manual.pdf", "label": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
-]}
+], "warnings": []}
 
 // lilbee --json ask "oil change interval?"  (each source also carries the [n] the answer cites it by)
 {"command": "ask", "question": "oil change interval?", "answer": "Every 5,000 miles [1].", "sources": [
   {"source": "manual.pdf", "label": "manual.pdf", "citation_number": 1, "chunk": "Change oil every 5,000 miles...", "chunk_type": "raw"}
-], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null}
+], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null, "warnings": []}
 
 // lilbee --json status  (sources: the newest 10; document_count: the real count)
 {"command": "status", "config": {...}, "sources": [{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12"}], "source_kinds": {"document": 1}, "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0, "ocr_note": "..."}
