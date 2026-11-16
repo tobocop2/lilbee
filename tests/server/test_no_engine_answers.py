@@ -47,6 +47,7 @@ def test_another_provider_failure_on_the_chat_route_stays_503() -> None:
         (ProviderErrorKind.CONTEXT_OVERFLOW, 400),
         (ProviderErrorKind.NOT_FOUND, 404),
         (ProviderErrorKind.AUTH, 503),
+        (ProviderErrorKind.BAD_REQUEST, 503),
     ],
 )
 def test_the_chat_route_keeps_the_status_of_each_other_kind(
