@@ -166,23 +166,40 @@ def test_chat_and_vision_serve_on_the_cpu_with_the_cpu_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
-    for role, subcommand in ((WorkerRole.CHAT, "text"), (WorkerRole.VISION, "multimodal")):
-        spec = MISTRAL.role_spec(role, None, None)
-        argv = MISTRAL.launch_argv(spec, request(tmp_path))
-        assert argv == [
-            str(tmp_path / "mistralrs"),
-            "serve",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            PORT_SLOT,
-            subcommand,
-            "--cpu",
-            "--max-model-len",
-            "4096",
-            "-m",
-            str(tmp_path / "model"),
-        ]
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    assert MISTRAL.launch_argv(spec, request(tmp_path)) == [
+        str(tmp_path / "mistralrs"),
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        PORT_SLOT,
+        "text",
+        "--cpu",
+        "--max-model-len",
+        "4096",
+        "-m",
+        str(tmp_path / "model"),
+    ]
+
+
+def test_vision_passes_no_context_because_the_multimodal_loader_refuses_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    spec = MISTRAL.role_spec(WorkerRole.VISION, None, None)
+    assert MISTRAL.launch_argv(spec, request(tmp_path)) == [
+        str(tmp_path / "mistralrs"),
+        "serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        PORT_SLOT,
+        "multimodal",
+        "--cpu",
+        "-m",
+        str(tmp_path / "model"),
+    ]
 
 
 def test_chat_passes_the_planned_context_of_each_slot(
@@ -364,6 +381,121 @@ def test_the_memory_estimate_of_a_folder_prices_its_weights_and_its_cache(tmp_pa
     cache = 2 * 2 * 1 * 4 * 2 * 100 * 2
     assert estimate.device_bytes == 1000 + cache + 512 * 1024**2
     assert estimate.size_known is True
+
+
+def _vision_folder(tmp_path: Path, config: dict[str, Any]) -> Path:
+    folder = tmp_path / "vlm"
+    folder.mkdir()
+    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return folder
+
+
+_VLM_TEXT = {"num_hidden_layers": 2, "num_attention_heads": 2, "num_key_value_heads": 1}
+
+
+def test_a_vision_folder_with_a_large_window_is_priced_at_the_planned_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planner asks for the vision role, so the request carries whatever it carries."""
+    priced: dict[str, int] = {}
+    for name, window in (("small", 4096), ("large", 262144)):
+        text = {**_VLM_TEXT, "head_dim": 4, "max_position_embeddings": window}
+        (tmp_path / name).mkdir()
+        folder = _vision_folder(tmp_path / name, {"text_config": text})
+        monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref, f=folder: f)
+        monkeypatch.setattr(planning, "vision_mmproj", lambda _ref: None)
+        placed = planning._estimate_role(WorkerRole.VISION, "org/vlm", engine=MISTRAL, slots=2)
+        priced[name] = placed.est_vram_bytes
+    assert priced["large"] == priced["small"]
+
+
+def _vision_launch(
+    tmp_path: Path, architectures: list[str], window: int = 8192, nested: bool = False
+) -> list[str]:
+    config: dict[str, Any] = {"architectures": architectures}
+    config.update({"text_config": {_WINDOW: window}} if nested else {_WINDOW: window})
+    folder = _vision_folder(tmp_path, config)
+    spec = MISTRAL.role_spec(WorkerRole.VISION, None, None)
+    return MISTRAL.launch_argv(spec, request(tmp_path, model_path=folder))
+
+
+_WINDOW = "max_position_embeddings"
+_QWEN = "Qwen3_5ForConditionalGeneration"
+
+
+def _flag(argv: list[str]) -> str | None:
+    return argv[argv.index("--max-model-len") + 1] if "--max-model-len" in argv else None
+
+
+@pytest.mark.parametrize(
+    ("window", "nested", "flag"),
+    [
+        (8192, False, "4096"),
+        (2048, False, "2048"),
+        (4096, True, "4096"),
+        (1024, True, "1024"),
+    ],
+)
+def test_the_vision_context_flag_never_exceeds_the_window_of_the_model(
+    window: int, nested: bool, flag: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    assert _flag(_vision_launch(tmp_path, [_QWEN], window, nested)) == flag
+
+
+def test_a_capped_vision_architecture_with_no_declared_window_gets_no_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    folder = _vision_folder(tmp_path, {"architectures": [_QWEN]})
+    spec = MISTRAL.role_spec(WorkerRole.VISION, None, None)
+    assert _flag(MISTRAL.launch_argv(spec, request(tmp_path, model_path=folder))) is None
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    [
+        "Qwen3_5ForConditionalGeneration",
+        "Qwen3_5MoeForConditionalGeneration",
+        "Qwen4ExpForConditionalGeneration",
+        "Gemma4ForConditionalGeneration",
+        "Gemma4ForCausalLM",
+        "Gemma4UnifiedForConditionalGeneration",
+        "Gemma4UnifiedForCausalLM",
+        "MuseGlimmerForConditionalGeneration",
+    ],
+)
+def test_a_vision_architecture_whose_loader_caps_the_window_gets_the_context_flag(
+    architecture: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    argv = _vision_launch(tmp_path, [architecture])
+    assert argv[argv.index("--max-model-len") + 1] == "4096"
+
+
+@pytest.mark.parametrize(
+    "architectures",
+    [["Idefics3ForConditionalGeneration"], ["Qwen3_5ForConditionalGeneration", "Other"], []],
+)
+def test_a_vision_architecture_whose_loader_refuses_the_flag_gets_none(
+    architectures: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    assert "--max-model-len" not in _vision_launch(tmp_path, architectures)
+
+
+@pytest.mark.parametrize("config", ["not json", "[]", '{"architectures": "Gemma4ForCausalLM"}'])
+def test_a_vision_folder_with_an_unreadable_architecture_gets_no_context_flag(
+    config: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Windows", "x86_64"))
+    folder = tmp_path / "vlm"
+    folder.mkdir()
+    (folder / "config.json").write_text(config, encoding="utf-8")
+    spec = MISTRAL.role_spec(WorkerRole.VISION, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=folder))
+    assert "--max-model-len" not in argv
 
 
 def _no_read() -> list[NvidiaCard]:
@@ -583,6 +715,17 @@ def test_device_flags_follow_the_subcommand(
     assert argv.index("--cpu") == subcommand + 1
 
 
+def test_a_cpu_target_runs_on_the_cpu_even_with_a_cuda_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64", gpus=[L4]))
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    cpu = MISTRAL.launch_argv(spec, request(tmp_path, target=RoleTarget.CPU))
+    gpu = MISTRAL.launch_argv(spec, request(tmp_path, target=RoleTarget.GPU))
+    assert "--cpu" in cpu
+    assert "--cpu" not in gpu
+
+
 # ---- a role across several cards ----
 
 
@@ -649,10 +792,10 @@ def test_an_uneven_split_is_refused_for_the_engine_that_cannot_run_it(
 
 
 @pytest.mark.parametrize("split", [(1, 1), (22, 22), (1, 1, 1, 1)])
-@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
 def test_an_equal_split_launch_passes_the_planned_context(
-    role: WorkerRole, split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    split: tuple[int, ...], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    role = WorkerRole.CHAT
     _cuda_host(monkeypatch, cards=len(split))
     _gguf_meta(monkeypatch, _HEADS)
     req = request(

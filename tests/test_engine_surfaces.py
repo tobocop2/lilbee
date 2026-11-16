@@ -41,6 +41,7 @@ from tests.test_engine_service import (
     UNREADABLE_NOTICE,
 )
 
+GGUF_EMBED_REF = "org/embed/embed-Q8_0.gguf"
 ALL_ROUTES = [routes.engine_roles_route, routes.engine_use_route, routes.engine_prefer_route]
 SURFACES = ("cli", "rest", "mcp", "slash")
 FALLBACK = (
@@ -58,6 +59,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.allow_http_engines = True
     cfg.mcp_engines_enabled = True
     cfg.chat_model = GGUF_REF
+    cfg.embedding_model = GGUF_EMBED_REF
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
     monkeypatch.setattr(
@@ -120,7 +122,15 @@ REFUSALS = [
     pytest.param("chat", GGUF_REF, "nonesuch", id="unknown-engine"),
     pytest.param("chat", GGUF_REF, "mlx", id="cannot-load-format"),
     pytest.param("chat", MLX_REF, "mlx", id="model-is-not-the-role-model"),
+    pytest.param("embed", GGUF_EMBED_REF, "mistral.rs", id="gguf-embed-on-mistral"),
 ]
+
+
+def test_the_refusal_of_a_gguf_embed_on_mistral_names_the_format_and_the_role() -> None:
+    assert _service_refusal("embed", GGUF_EMBED_REF, "mistral.rs") == (
+        "Engine mistral.rs cannot load the gguf format of org/embed/embed-Q8_0.gguf for embed. "
+        "Choose an engine that loads gguf for embed."
+    )
 
 
 @pytest.mark.parametrize("surface", SURFACES)

@@ -25,7 +25,12 @@ from lilbee.providers.fleet.engine_store import (
     UnsupportedPlatformError,
     engines_root,
 )
-from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
+from lilbee.providers.fleet.engines.base import (
+    EngineAdapter,
+    EngineName,
+    RoleFormatChecked,
+    UserInstalled,
+)
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.proof import is_proven
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -100,10 +105,23 @@ def _adapter(name: str) -> EngineAdapter | None:
     return next((a for n, a in ADAPTERS.items() if n == name), None)
 
 
+def refuses_format_for_role(name: str, role: WorkerRole, fmt: str) -> bool:
+    """True when a shipped adapter serves *role* but cannot load *fmt* for it."""
+    adapter = _adapter(name)
+    return isinstance(adapter, RoleFormatChecked) and fmt in adapter.refused_role_formats.get(
+        role, ()
+    )
+
+
 def _serves(name: str, role: WorkerRole | None) -> bool:
     """False only for a shipped adapter that does not serve *role*."""
     adapter = _adapter(name)
     return role is None or adapter is None or role in adapter.served_roles
+
+
+def _accepts(name: str, role: WorkerRole | None, fmt: str) -> bool:
+    """``_serves``, and no refusal of *fmt* for *role* by the adapter."""
+    return _serves(name, role) and (role is None or not refuses_format_for_role(name, role, fmt))
 
 
 def host_answer(name: str, host: HostSource) -> HostGate:
@@ -188,7 +206,7 @@ def _candidates(
     return [
         name
         for name in engines_loading(fmt, installed)
-        if _serves(name, role) and host_answer(name, host).ok
+        if _accepts(name, role, fmt) and host_answer(name, host).ok
     ]
 
 
@@ -239,7 +257,7 @@ def choose_engine(
         return _by_default(fmt, host, installed, role, of_model)
     name, kind = request
     loads = name in engines_loading(fmt, installed)
-    serves = _serves(name, role)
+    serves = _accepts(name, role, fmt)
     answer = host_answer(name, host) if loads and serves else PASS
     if loads and serves and answer.ok:
         return EngineChoice(EngineName(name), None, None)
@@ -253,6 +271,9 @@ def choose_engine(
         reason = f"{subject} cannot load the {fmt} format{of_model}."
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
+    elif role is not None and refuses_format_for_role(name, role, fmt):
+        reason = f"{subject} cannot load the {fmt} format{of_model}."
+        left = f"loads the {fmt} format for {role}"
     elif not serves:
         reason = f"{subject} does not serve this role."
         left = "serves this role"

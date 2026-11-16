@@ -43,6 +43,22 @@ _CONFIG = "config.json"
 _LAYERS_KEY = "num_hidden_layers"
 _HEADS_KEY = "num_attention_heads"
 _KV_HEADS_KEY = "num_key_value_heads"
+_ARCHITECTURES_KEY = "architectures"
+_WINDOW_KEY = "max_position_embeddings"
+# The multimodal loaders of mistral.rs v0.9.5 that cap their window to ``--max-model-len``
+# (their ``runtime_config``); the trait default of every other loader refuses the flag.
+_CAPPED_VISION_ARCHITECTURES = frozenset(
+    {
+        "Qwen3_5ForConditionalGeneration",
+        "Qwen3_5MoeForConditionalGeneration",
+        "Qwen4ExpForConditionalGeneration",
+        "Gemma4ForConditionalGeneration",
+        "Gemma4ForCausalLM",
+        "Gemma4UnifiedForConditionalGeneration",
+        "Gemma4UnifiedForCausalLM",
+        "MuseGlimmerForConditionalGeneration",
+    }
+)
 _TEXT_CONFIG_KEY = "text_config"
 _GGUF_LAYERS_KEY = "block_count"
 _GGUF_HEADS_KEY = "head_count"
@@ -60,9 +76,10 @@ _SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
 # The model subcommand each role names; the device flags go after it.
 _EMBEDDING = "embedding"
+_MULTIMODAL = "multimodal"
 _SUBCOMMAND = {
     WorkerRole.EMBED: _EMBEDDING,
-    WorkerRole.VISION: "multimodal",
+    WorkerRole.VISION: _MULTIMODAL,
 }
 _TEXT = "text"
 _METAL = "metal"
@@ -163,6 +180,28 @@ def _layer_count(path: Path) -> int | None:
     return None
 
 
+def _vision_context(path: Path, planned: int) -> int:
+    """The context flag of a vision folder, or 0 for none.
+
+    The loaders that take the flag refuse a figure above the window their config
+    declares, so the flag is the smaller of the planned context and that window. A
+    config that declares none gets no flag.
+    """
+    sections = _config_sections(path)
+    if _architecture(sections) not in _CAPPED_VISION_ARCHITECTURES:
+        return 0
+    window = _positive_int(sections[-1].get(_WINDOW_KEY))
+    return min(planned, window) if window else 0
+
+
+def _architecture(sections: list[Mapping[str, Any]]) -> str | None:
+    """The one architecture the top level of a config names, or ``None``."""
+    names = sections[0].get(_ARCHITECTURES_KEY) if sections else None
+    if isinstance(names, list) and len(names) == 1 and isinstance(names[0], str):
+        return names[0]
+    return None
+
+
 def _heads_in(section: Mapping[str, Any], heads_key: str, kv_key: str) -> tuple[int, int] | None:
     """Query and key-value head counts of *section*; an absent key-value count equals the first."""
     heads = _positive_int(section.get(heads_key))
@@ -210,6 +249,9 @@ class MistralAdapter:
     formats = frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS})
     architectures: frozenset[str] = frozenset()
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION})
+    refused_role_formats: Mapping[WorkerRole, frozenset[str]] = {
+        WorkerRole.EMBED: frozenset({ModelFormat.GGUF})
+    }
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     bundled = False
@@ -283,9 +325,11 @@ class MistralAdapter:
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         """The serve command; an equal split over cards adds no flag.
 
-        Chat and vision pass the planned context as ``--max-model-len``, the figure the
-        memory estimate prices. An embedding model takes none: its context is its
-        tokenizer limit, and no cache grows with it.
+        Chat passes the planned context as ``--max-model-len``, the figure the memory
+        estimate prices. An embedding model takes none: its context is its tokenizer
+        limit, and no cache grows with it. Vision takes it only for the architectures in
+        ``_CAPPED_VISION_ARCHITECTURES``: any other multimodal loader refuses the flag and
+        the launch fails. The estimate prices the planned context in every case.
 
         A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
         decides the device flags: a CPU build gets ``--cpu``, and
@@ -302,9 +346,14 @@ class MistralAdapter:
         argv.append(subcommand)
         argv += self._device_flags(request.target)
         self._check_split(request)
-        if subcommand != _EMBEDDING:
-            argv += ["--max-model-len", str(request.ctx_per_slot)]
         path = request.model_path
+        context = request.ctx_per_slot
+        if subcommand == _MULTIMODAL:
+            context = _vision_context(path, context)
+        elif subcommand != _TEXT:
+            context = 0
+        if context:
+            argv += ["--max-model-len", str(context)]
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
         return [*argv, "-m", str(path)]

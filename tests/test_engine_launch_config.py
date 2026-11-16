@@ -95,12 +95,11 @@ _ROWS = [
 
 
 def _ref(role: WorkerRole, engine: EngineName) -> str:
-    """The configured model of *role*: TEI loads safetensors, the others a GGUF file."""
-    return (
-        f"org/{role.value}#safetensors"
-        if engine is EngineName.TEI
-        else f"org/repo/{role.value}.gguf"
+    """The configured model of *role*: safetensors for TEI and a mistral.rs embed, else GGUF."""
+    safetensors = engine is EngineName.TEI or (
+        engine is EngineName.MISTRAL and role is WorkerRole.EMBED
     )
+    return f"org/{role.value}#safetensors" if safetensors else f"org/repo/{role.value}.gguf"
 
 
 def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineName) -> Path:

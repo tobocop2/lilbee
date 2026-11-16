@@ -157,8 +157,6 @@
       "multimodal",
       "--paged-attn",
       "off",
-      "--max-model-len",
-      "4096",
       "-m",
       "/models",
       "-f",

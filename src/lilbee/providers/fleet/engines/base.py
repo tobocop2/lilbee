@@ -225,6 +225,14 @@ class SplitChecked(Protocol):
 
 
 @runtime_checkable
+class RoleFormatChecked(Protocol):
+    """An engine that loads a format for some roles and not for others."""
+
+    refused_role_formats: Mapping[WorkerRole, frozenset[str]]
+    """The formats the engine cannot load for each role, though it loads them for another."""
+
+
+@runtime_checkable
 class UserInstalled(Protocol):
     """An engine that lilbee has no pack for: the user installs it and lilbee finds it."""
 
