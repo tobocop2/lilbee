@@ -90,6 +90,7 @@ class IkLlamaAdapter:
         return {
             "engine": self.name.value,
             "version": VERSION,
+            "upstream_ref": IK_LLAMA_COMMIT,
             "backend": BACKEND,
             "sha256": pack_digest(self.name.value, VERSION, host, BACKEND),
             "tool": EngineTool.LLAMA_SERVER.value,

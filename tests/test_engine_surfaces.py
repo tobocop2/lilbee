@@ -441,6 +441,7 @@ def test_every_request_path_checks_the_notice(
 class _Served:
     engine = "llama.cpp"
     version = "1"
+    build = "none"
 
 
 _SERVED = _Served()

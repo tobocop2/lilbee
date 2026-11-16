@@ -47,9 +47,9 @@ _PIN = "b6123"
 _ROLES = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
 
 
-def _served(engine: str, version: str, role: str, model: str = "m") -> str:
+def _served(engine: str, version: str, role: str, model: str = "m", build: str = "none") -> str:
     prefix = "INFO lilbee.providers.routing_provider served by"
-    return f"{prefix} engine={engine} version={version} role={role} model={model}"
+    return f"{prefix} engine={engine} version={version} build={build} role={role} model={model}"
 
 
 def _json_step(name: StepName, payload: object, command: tuple[str, ...] = ("lilbee",)) -> Step:
@@ -183,13 +183,20 @@ def test_a_run_of_the_real_llama_engine_is_served_by_the_version_engine_list_sho
     served = served_by("org/chat-GGUF/chat.gguf", LLAMA, native=True)
 
     def line(role: str) -> str:
-        return _served(served.engine, served.version, role)
+        return _served(served.engine, served.version, role, build=served.build)
 
     t = replace(_good(), pin=version)
     t = _with_step(t, StepName.SYNC, log_lines=(line("embed"),))
     t = _ask_lines(t, tuple(line(str(r)) for r in _ROLES))
     listing = json.dumps(_listing([_build(_ENGINE, version)]))
     assert judge(_with_step(t, StepName.ENGINE_LIST_AFTER, stdout=listing)) == []
+
+
+def test_the_oracle_compares_the_version_and_not_the_build() -> None:
+    lines = tuple(_served(_ENGINE, _PIN, str(r), build="memory-20261102") for r in _ROLES)
+    assert _rules(_ask_lines(_good(), lines)) == set()
+    other = tuple(_served(_ENGINE, "b9999", str(r), build=_PIN) for r in _ROLES)
+    assert _rules(_ask_lines(_good(), other)) == {Rule.SERVED_BY_OTHER}
 
 
 def test_served_by_another_pin_fails() -> None:

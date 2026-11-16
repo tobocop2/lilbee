@@ -17,7 +17,7 @@
   },
   "named": {
    "ok": true,
-   "detail": "log=['served by engine=infinity-embed version=preset role=embed model=infinity-embed/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'infinity-embed'}"
+   "detail": "log=['served by engine=infinity-embed version=preset build=none role=embed model=infinity-embed/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'infinity-embed'}"
   }
  },
  "error_answers": [],

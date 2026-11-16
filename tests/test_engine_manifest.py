@@ -191,6 +191,7 @@ def test_ik_llama_pin_record_does_not_read_the_llama_record(
     assert set(pin) == {
         "engine",
         "version",
+        "upstream_ref",
         "backend",
         "sha256",
         "tool",

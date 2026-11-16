@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
-from lilbee._generated.engine_archs import SUPPORTED_ARCHS
+from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.adapters import (
@@ -166,6 +166,7 @@ class LlamaCppAdapter:
         return {
             "engine": self.name.value,
             "version": _WHEEL_VERSION,
+            "upstream_ref": ENGINE_LLAMA_CPP_REF,
             "backend": None,
             "tool": EngineTool.LLAMA_SERVER.value,
             "libraries": _PIN_LIBRARIES,

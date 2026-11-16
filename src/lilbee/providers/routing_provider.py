@@ -102,9 +102,10 @@ class RoutingProvider(LLMProvider):
     def _log_served(self, role: WorkerRole, model: str, served: ServingEngine) -> None:
         """Name the engine that serves this request."""
         log.info(
-            "served by engine=%s version=%s role=%s model=%s",
+            "served by engine=%s version=%s build=%s role=%s model=%s",
             served.engine,
             served.version,
+            served.build,
             role.value,
             log_name(model),
         )

@@ -88,6 +88,9 @@ def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     pin = IK_LLAMA.pin_record()
     assert ik_llama.IK_LLAMA_COMMIT == COMMIT
     assert pin["version"] == f"0+git{COMMIT[:12]}"
+    assert pin["upstream_ref"] == COMMIT
+    assert choice.pin_lock({**pin, "sha256": "a" * 64}).upstream_ref == COMMIT
+    assert pin["memory"] == {"sizing": ["gguf-parser", "--model", "{model}"], "rule": None}
     assert (pin["engine"], pin["backend"], pin["licenses"]) == ("ik_llama.cpp", "cpu", ["MIT"])
     assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
 

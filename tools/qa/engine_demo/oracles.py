@@ -40,8 +40,10 @@ SCHEMA_VERSION = 1
 # Versions a served-by line carries when no managed engine install served the request.
 _NOT_AN_INSTALL = frozenset({PRESET_VERSION, REMOTE_VERSION, UNKNOWN_VERSION})
 
-# The line routing_provider logs per request: "served by engine=%s version=%s role=%s model=%s".
-_SERVED_BY = re.compile(r"served by engine=(\S+) version=(\S+) role=(\S+) model=(\S+)")
+# The line routing_provider logs per request, in this field order:
+# "served by engine=%s version=%s build=%s role=%s model=%s".
+# The oracle compares the version only; the build names the upstream ref and is not compared.
+_SERVED_BY = re.compile(r"served by engine=(\S+) version=(\S+) build=\S+ role=(\S+) model=(\S+)")
 
 # Keys of the CLI JSON, pinned: cli/engine.py writes them from RoleView and BuildView.
 ROLE_KEYS = frozenset({"role", "model", "format", "engine", "notice"})

@@ -17,7 +17,7 @@
   },
   "named": {
    "ok": true,
-   "detail": "log=['served by engine=infinity-rerank version=preset role=rerank model=infinity-rerank/BAAI/bge-reranker-base'] status={<WorkerRole.RERANK: 'rerank'>: 'infinity-rerank'}"
+   "detail": "log=['served by engine=infinity-rerank version=preset build=none role=rerank model=infinity-rerank/BAAI/bge-reranker-base'] status={<WorkerRole.RERANK: 'rerank'>: 'infinity-rerank'}"
   }
  },
  "error_answers": [],

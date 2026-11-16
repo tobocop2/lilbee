@@ -58,7 +58,7 @@ def set_model(role: str, ref: str) -> str:
 
 def served(role: str) -> None:
     model = roles().get(role, {}).get("model", "unassigned")
-    log(f"served by engine={SERVED_ENGINE} version={PIN} role={role} model={model}")
+    log(f"served by engine={SERVED_ENGINE} version={PIN} build=none role={role} model={model}")
 
 
 def listing() -> dict[str, object]:

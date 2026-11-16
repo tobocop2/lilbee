@@ -13,6 +13,7 @@ import sys
 import textwrap
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -2290,3 +2291,46 @@ def test_prune_engines_survives_an_oserror_while_pruning(
         assert engine_store.prune_engines(models) == []
     assert str(tmp_path / "engines") in caplog.text
     assert _versions(tmp_path) == ["1"]
+
+
+def test_the_record_keeps_the_upstream_ref_of_the_pin(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    lock = replace(pin(sha), upstream_ref="memory-20261102")
+    build = store.install_from_wheel(lock, path)
+    record = json.loads((build / RECORD_NAME).read_text(encoding="utf-8"))
+    assert record["upstream_ref"] == "memory-20261102"
+    assert [e.upstream_ref for e in store.installed()] == ["memory-20261102"]
+    assert record["installed_at"].endswith("+00:00")
+    assert [e.installed_at for e in store.installed()] == [record["installed_at"]]
+
+
+def test_a_pin_without_an_upstream_ref_locks_with_an_empty_ref() -> None:
+    record = {
+        "engine": "fx",
+        "version": "1",
+        "backend": "cpu",
+        "platforms": {},
+        "licenses": ["MIT"],
+        "sha256": "a" * 64,
+        "tool": "server",
+    }
+    assert pin_lock(record).upstream_ref == ""
+    assert pin_lock({**record, "upstream_ref": "abc"}).upstream_ref == "abc"
+
+
+def test_a_record_written_before_the_upstream_ref_still_loads(store: EngineStore) -> None:
+    build = store.root / "fx" / "1-cpu"
+    build.mkdir(parents=True)
+    record = {
+        "engine": "fx",
+        "version": "1",
+        "backend": "cpu",
+        "sha256": "a",
+        "licences": ["MIT"],
+        "installed_at": "t",
+        "binary": None,
+    }
+    (build / RECORD_NAME).write_text(json.dumps(record), encoding="utf-8")
+    assert [(e.version, e.upstream_ref) for e in store.installed()] == [("1", "")]
