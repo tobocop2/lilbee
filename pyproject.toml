@@ -259,8 +259,6 @@ max-complexity = 10
 extend-immutable-calls = ["litestar.params.Body"]
 
 [tool.ruff.lint.per-file-ignores]
-# Machine output: a wheel URL on one line is longer than the line limit.
-"src/lilbee/providers/fleet/engine_digests.py" = ["E501"]
 # The namespace names of non-English wikis hold letters that look like ASCII, such as the
 # Turkish dotless i; the table is the names as the wikis write them.
 "src/lilbee/core/config/mediawiki_namespaces.py" = ["RUF001"]
@@ -298,6 +296,8 @@ extend-immutable-calls = ["litestar.params.Body"]
 ]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
 "tools/build_wheel_indexes.py" = ["S603", "S607"]
+# Invokes the trusted `gh` CLI with fixed args to read the release assets.
+"tools/gen_engine_packs.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]

@@ -13,7 +13,7 @@ from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import Config, cfg
 from lilbee.providers.fleet import engine_manifest, first_use
-from lilbee.providers.fleet.engine_digests import MANIFESTS
+from lilbee.providers.fleet.engine_manifest import MANIFESTS
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import (

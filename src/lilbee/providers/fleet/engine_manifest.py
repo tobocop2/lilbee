@@ -6,7 +6,7 @@ import platform
 from collections.abc import Mapping
 from typing import Any, TypeVar
 
-from lilbee.providers.fleet.engine_digests import MANIFESTS
+from lilbee.providers.fleet.engine_record import Manifests, load_manifests
 from lilbee.providers.fleet.engine_store import (
     PinLock,
     PlatformAsset,
@@ -23,6 +23,8 @@ _FLOOR_LABELS = {
 _OWN_ENGINE_HINT = ", or set LILBEE_LLAMA_SERVER_PATH to an engine you built"
 
 _T = TypeVar("_T")
+
+MANIFESTS: Manifests = load_manifests()
 
 
 class UnsupportedOsError(Exception):
