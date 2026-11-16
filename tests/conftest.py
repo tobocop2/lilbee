@@ -186,6 +186,16 @@ def _no_real_browser(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_held_install_warnings() -> Generator[None]:
+    """Start and end each test with no install warning held, so one test's warning never leaks."""
+    from lilbee.providers.fleet import first_use
+
+    first_use.take_install_warnings()
+    yield
+    first_use.take_install_warnings()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_nvidia_probes() -> Generator[None]:
     """Start and end each test with no cached nvidia-smi answer, so one test's fake never leaks."""
     from lilbee.providers.fleet.gpu_backends import nvidia

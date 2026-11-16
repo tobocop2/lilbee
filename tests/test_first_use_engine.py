@@ -510,6 +510,32 @@ def test_a_host_whose_pack_uses_the_gpu_is_not_warned(
     assert caplog.records == []
 
 
+def test_the_log_line_is_the_text_the_user_reads(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    linux = collect(
+        system="Linux", machine="x86_64", cpu_info={}, nvidia=None, display_vendors=(0x1002,)
+    )
+    monkeypatch.setattr(first_use, "session_host", lambda: linux)
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    held = first_use.take_install_warnings()
+    assert len(held) == 1
+    assert [record.getMessage() for record in caplog.records] == [held[0].line]
+    assert held[0].line.startswith("This computer has an AMD GPU")
+
+
+def test_a_new_holder_holds_nothing_and_returns_a_warning_once() -> None:
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+    holder = first_use._InstallWarnings()
+    assert holder.take() == []
+    warning = HealthWarning(code=WarningCode.GPU_NOT_SERVED, message="No GPU use.")
+    holder.set(warning)
+    assert holder.take() == [warning]
+    assert holder.take() == []
+
+
 def test_a_wheel_that_is_not_a_zip_is_refused_by_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.catalog.runnable import session_host
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, cell_key, host_cell
 from lilbee.providers.fleet.engine_store import (
@@ -92,6 +94,31 @@ class RefusedInstalls:
 _refusals = RefusedInstalls()
 
 
+class _InstallWarnings:
+    """The warning of the latest install, held until a search reports it to its user."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: HealthWarning | None = None
+
+    def set(self, warning: HealthWarning | None) -> None:
+        with self._lock:
+            self._held = warning
+
+    def take(self) -> list[HealthWarning]:
+        with self._lock:
+            held, self._held = self._held, None
+        return [] if held is None else [held]
+
+
+_install_warnings = _InstallWarnings()
+
+
+def take_install_warnings() -> list[HealthWarning]:
+    """The warnings the pack install raised since the last call; each is returned once."""
+    return _install_warnings.take()
+
+
 def _store() -> EngineStore:
     return EngineStore(engines_root(cfg.models_dir))
 
@@ -126,28 +153,40 @@ def installed_tool(tool: str) -> Path | None:
     return None
 
 
-def warn_if_gpu_unserved() -> None:
-    """Warn once when the CPU pack installs on a computer with a GPU it cannot use.
-
-    An NVIDIA card or driver below the CUDA pack gets its own warning; otherwise an AMD or
-    Intel GPU does.
-    """
+def _unserved_gpu_warning() -> HealthWarning | None:
+    """The warning for a GPU the CPU pack cannot use, or ``None`` when there is none."""
     host = session_host()
     if pack_backend(host) != "cpu":
-        return
+        return None
     if gap := cuda_pack_gap(host):
-        log.warning("%s", gap)
-        return
+        return HealthWarning(code=WarningCode.GPU_NOT_SERVED, message=gap)
     for vendor, name in _UNSERVED_GPU_VENDORS.items():
         if vendor in host.display_vendors:
-            log.warning(
-                "This computer has an %s GPU, and no llama.cpp pack can use it here. "
-                "lilbee installs the CPU build. %sTo use your own build, set "
-                "LILBEE_LLAMA_SERVER_PATH to your llama-server.",
-                name,
-                _pack_advice(host),
+            return HealthWarning(
+                code=WarningCode.GPU_NOT_SERVED,
+                message=(
+                    f"This computer has an {name} GPU, and no llama.cpp pack can use it here. "
+                    "lilbee installs the CPU build."
+                ),
+                remedy=(
+                    f"{_pack_advice(host)}To use your own build, set "
+                    "LILBEE_LLAMA_SERVER_PATH to your llama-server."
+                ),
             )
-            return
+    return None
+
+
+def warn_if_gpu_unserved() -> None:
+    """Log and hold a warning when the CPU pack installs on a computer with a GPU it cannot use.
+
+    An NVIDIA card or driver below the CUDA pack gets its own warning; otherwise an AMD or
+    Intel GPU does. The next search reports the held warning to its user. An install that
+    leaves no GPU unserved clears a warning an earlier install held.
+    """
+    warning = _unserved_gpu_warning()
+    if warning is not None:
+        log.warning("%s", warning.line)
+    _install_warnings.set(warning)
 
 
 def _pack_advice(host: HostCaps) -> str:

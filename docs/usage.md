@@ -856,7 +856,9 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   sends the list in the `X-Lilbee-Warnings` response header, only when it is
   not empty. `/api/ask` and `/api/chat` carry `warnings` in the body, the
   streams send a `search_degraded` event before the first token, and the MCP
-  `search` tool returns `warnings` in its structured result.
+  `search` tool returns `warnings` in its structured result. The first search
+  after the engine pack installs on a computer with a GPU the pack cannot use
+  carries one more warning, with the code `gpu_not_served`, once.
 - **Citation rule still applies.** Every fact stated from `search` results must
   trace back to a chunk's `source` + line range, exactly as returned. Don't
   invent.

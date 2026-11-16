@@ -118,38 +118,49 @@ def _rest(surface):
     if surface == "rest_search":
         res = client.get("/api/search", params={"q": QUESTION})
         assert res.status_code == 200 and isinstance(res.json(), list), "array shape kept"
-        return _codes(json.loads(res.headers.get("x-lilbee-warnings", "[]")))
+        return json.loads(res.headers.get("x-lilbee-warnings", "[]"))
     if surface == "rest_ask":
         res = client.post("/api/ask", json={"question": QUESTION})
         assert res.status_code == 201, res.text
-        return _codes(res.json()["warnings"])
+        return res.json()["warnings"]
     res = client.post("/api/ask/stream", json={"question": QUESTION})
     found = [d for name, d in parse_sse_events(res.content) if name == "search_degraded"]
-    return _codes(found[0]["warnings"] if found else None)
+    return found[0]["warnings"] if found else []
+
+
+def _shown(warnings):
+    """The text a user reads for each warning dict: the message, then the remedy."""
+    return "\n".join(
+        f"{w['message']} {w['remedy']}" if w.get("remedy") else w["message"] for w in warnings
+    )
 
 
 def _probe(surface, mock_svc):  # noqa: F811
-    """Return (warning codes, stderr text) for the surface."""
+    """Return (warning codes, the text the user sees) for the surface."""
     if surface == "searcher_report":
         report = mock_svc.searcher.search_report(QUESTION)
-        return [w.code.value for w in report.degraded], ""
+        return [w.code.value for w in report.degraded], "\n".join(w.line for w in report.degraded)
     if surface == "tui_stream_event":
         notices = [
             e for e in mock_svc.searcher.ask_stream(QUESTION) if isinstance(e, RetrievalNotice)
         ]
-        return [w.code.value for n in notices for w in n.degraded], ""
+        shown = [w for n in notices for w in n.degraded]
+        return [w.code.value for w in shown], "\n".join(w.line for w in shown)
     if surface.startswith("cli_"):
         res = _cli(surface)
         if surface.endswith("json"):
             body = json.loads(res.stdout)
             assert OLD_KEYS[surface] <= set(body), f"existing keys lost: {body}"
-            return _codes(body["warnings"]), ""
+            return _codes(body["warnings"]), _shown(body["warnings"])
         return [], res.stderr.lower()
     if surface == "mcp_search":
         from lilbee.mcp_server import search
 
-        return _codes(search(QUESTION).structured_content["warnings"]), ""
-    return _rest(surface), ""
+        out = search(QUESTION)
+        blocks = "\n".join(block.text for block in out.content)
+        return _codes(out.structured_content["warnings"]), blocks
+    raw = _rest(surface)
+    return _codes(raw), _shown(raw)
 
 
 @pytest.mark.parametrize("surface", SURFACES)
@@ -328,6 +339,153 @@ def test_announce_degraded_is_silent_without_warnings(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+_PACK_TAIL = "lilbee installs the CPU build."
+_REMEDY = (
+    "For the Vulkan build, install the Vulkan loader (libvulkan1 or vulkan-loader). "
+    "To use your own build, set LILBEE_LLAMA_SERVER_PATH to your llama-server."
+)
+# gpu kind -> (vendor ids on the bus, the text the user reads)
+GPU_HOSTS = {
+    "amd": (
+        0x1002,
+        "This computer has an AMD GPU, and no llama.cpp pack can use it here. "
+        f"{_PACK_TAIL} {_REMEDY}",
+    ),
+    "intel": (
+        0x8086,
+        "This computer has an Intel GPU, and no llama.cpp pack can use it here. "
+        f"{_PACK_TAIL} {_REMEDY}",
+    ),
+    "nvidia": (
+        None,
+        "The NVIDIA GPU card0 has compute capability 3.7, and the llama.cpp CUDA build "
+        f"supports 5.0 or newer. {_PACK_TAIL}",
+    ),
+}
+
+
+def _gpu_host(kind):
+    from lilbee.providers.fleet.host_caps import collect
+    from tests.test_llama_pack_backend import _nvidia
+
+    if kind == "nvidia":
+        return _nvidia("Linux", "x86_64", cards=((3, 7),))
+    return collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={},
+        nvidia=None,
+        display_vendors=(GPU_HOSTS[kind][0],),
+    )
+
+
+def _install_on_a_gpu_host(mock_svc, rows, kind="amd"):  # noqa: F811
+    """Make the search's first engine use install the CPU pack on a computer with *kind* GPU."""
+    from lilbee.providers.fleet import first_use
+
+    host = _gpu_host(kind)
+    patches = _arrange(mock_svc, "concept_boost", "rows")
+    mock_svc.concepts.boost_results.side_effect = lambda r, c: r
+    patches += [mock.patch.object(first_use, "session_host", lambda: host)]
+
+    def search_installs_the_pack(*args, **kwargs):
+        first_use.warn_if_gpu_unserved()
+        return rows
+
+    mock_svc.store.search.side_effect = search_installs_the_pack
+    return patches
+
+
+@pytest.mark.parametrize("kind", GPU_HOSTS)
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_gpu_the_pack_cannot_use_reaches_the_user(mock_svc, surface, kind):  # noqa: F811
+    patches = _install_on_a_gpu_host(mock_svc, [_make_result(source="direct.md")], kind)
+    for p in patches:
+        p.start()
+    try:
+        codes, text = _probe(surface, mock_svc)
+    finally:
+        _stop(patches)
+    line = GPU_HOSTS[kind][1]
+    if surface in TEXT_SURFACES:
+        assert codes == []
+        assert line.lower() in " ".join(text.split())
+    else:
+        assert codes == ["gpu_not_served"]
+        assert line in text
+
+
+def test_a_later_install_that_serves_the_gpu_clears_the_held_warning(mock_svc):  # noqa: F811
+    from lilbee.providers.fleet import first_use
+    from lilbee.providers.fleet.host_caps import collect
+
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
+    patches = _install_on_a_gpu_host(mock_svc, [_make_result(source="direct.md")])
+    for p in patches:
+        p.start()
+    try:
+        first_use.warn_if_gpu_unserved()
+        with mock.patch.object(first_use, "session_host", lambda: mac):
+            first_use.warn_if_gpu_unserved()
+        mock_svc.store.search.side_effect = None
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        report = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    assert report.degraded == ()
+
+
+def test_a_repeat_unserved_install_holds_one_warning(mock_svc):  # noqa: F811
+    from lilbee.providers.fleet import first_use
+
+    patches = _install_on_a_gpu_host(mock_svc, [_make_result(source="direct.md")])
+    for p in patches:
+        p.start()
+    try:
+        first_use.warn_if_gpu_unserved()
+        first_use.warn_if_gpu_unserved()
+        mock_svc.store.search.side_effect = None
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        report = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    assert [w.code.value for w in report.degraded] == ["gpu_not_served"]
+
+
+def test_the_gpu_warning_is_reported_once(mock_svc):  # noqa: F811
+    patches = _install_on_a_gpu_host(mock_svc, [_make_result(source="direct.md")])
+    for p in patches:
+        p.start()
+    try:
+        first = mock_svc.searcher.search_report(QUESTION)
+        mock_svc.store.search.side_effect = None
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        second = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    assert [w.code.value for w in first.degraded] == ["gpu_not_served"]
+    assert second.degraded == ()
+
+
+def test_the_gpu_warning_names_the_card_the_nvidia_pack_cannot_use(mock_svc):  # noqa: F811
+    from lilbee.providers.fleet import first_use
+    from tests.test_llama_pack_backend import _nvidia
+
+    host = _nvidia("Linux", "x86_64", cards=((3, 7),))
+    patches = _arranged(mock_svc, "concept_boost")
+    mock_svc.concepts.boost_results.side_effect = lambda r, c: r
+    mock_svc.store.search.side_effect = lambda *a, **k: (
+        first_use.warn_if_gpu_unserved() or [_make_result(source="direct.md")]
+    )
+    try:
+        with mock.patch.object(first_use, "session_host", lambda: host):
+            report = mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    assert [w.code.value for w in report.degraded] == ["gpu_not_served"]
+    assert "compute capability 3.7" in report.degraded[0].message
 
 
 def test_rest_search_exposes_the_warnings_header_to_browsers():

@@ -39,6 +39,7 @@ from lilbee.providers.base import (
     estimate_budget_tokens,
     prompt_token_budget,
 )
+from lilbee.providers.fleet import first_use
 from lilbee.providers.truncation import truncation_scope
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.language import noun_variants, query_language
@@ -357,6 +358,11 @@ def _degrade(degraded: list[HealthWarning], code: WarningCode, exc: Exception) -
     log.debug("%s exception", step.label, exc_info=True)
     if step.warning not in degraded:
         degraded.append(step.warning)
+
+
+def _note_install_warnings(degraded: list[HealthWarning]) -> None:
+    """Add the warnings an engine install raised during this call, once each."""
+    degraded.extend(w for w in first_use.take_install_warnings() if w not in degraded)
 
 
 class Searcher:
@@ -769,10 +775,10 @@ class Searcher:
                 if known_item:
                     return SearchReport(known_item[:top_k])
             degraded: list[HealthWarning] = []
+            candidates = self._candidates(question, top_k, chunk_type, degraded)
+            _note_install_warnings(degraded)
             kept = filter_results(
-                self._candidates(question, top_k, chunk_type, degraded),
-                self._config.max_distance,
-                self._config.min_relevance_score,
+                candidates, self._config.max_distance, self._config.min_relevance_score
             )
             rows = diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
             return SearchReport(rows, tuple(degraded))
@@ -1165,6 +1171,7 @@ class Searcher:
             if self._config.reranker_model:
                 retrieve_k = max(retrieve_k, self._config.rerank_candidates)
             results = self._candidates(retrieval_query, retrieve_k, chunk_type, degraded)
+            _note_install_warnings(degraded)
             if rewrite is not None:
                 typed_results = self._search_typed_arm(question, retrieve_k, chunk_type)
                 results = fuse_ranked_lists([results, typed_results])
