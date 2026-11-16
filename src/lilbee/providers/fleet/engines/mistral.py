@@ -83,9 +83,7 @@ _SUBCOMMAND = {
 }
 _TEXT = "text"
 _METAL = "metal"
-_CUDA_DRIVER_FLOOR = (12, 8)
-# The compute capabilities the release publishes a CUDA 12.8 archive for.
-_CUDA_ARCHIVES = frozenset({(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)})
+_NO_CUDA_PACK = "The mistral.rs CUDA pack is not offered, so the cpu pack runs."
 _SUPPORTED_HOSTS = frozenset(
     {
         (HostOS.LINUX, HostArch.X86_64),
@@ -116,34 +114,13 @@ class BuildPick:
     reason: str
 
 
-def _compute_text(compute: tuple[int, int]) -> str:
-    return f"{compute[0]}.{compute[1]}"
-
-
 def _linux_pick(host: HostCaps) -> BuildPick:
-    """The CUDA archive of the host's GPUs, else the CPU archive with the reason."""
+    """The CPU archive, with the reason when an NVIDIA GPU could have asked for a CUDA one."""
     if not host.nvidia_known:
         return BuildPick(_CPU, f"{host.nvidia_reason}, so the CPU archive runs.")
     if not host.gpus:
         return BuildPick(_CPU, "This host has no NVIDIA GPU, so the CPU archive runs.")
-    computes = {gpu.compute for gpu in host.gpus}
-    if len(computes) > 1:
-        return BuildPick(_CPU, "The GPUs differ in compute capability, so the CPU archive runs.")
-    compute = next(iter(computes))
-    if compute not in _CUDA_ARCHIVES:
-        return BuildPick(
-            _CPU,
-            f"No CUDA archive targets compute capability {_compute_text(compute)}, "
-            "so the CPU archive runs.",
-        )
-    driver = host.nvidia_driver_cuda or (0, 0)
-    if driver < _CUDA_DRIVER_FLOOR:
-        return BuildPick(
-            _CPU,
-            f"The CUDA archive needs a driver for CUDA {_compute_text(_CUDA_DRIVER_FLOOR)}; "
-            f"this driver offers CUDA {_compute_text(driver)}, so the CPU archive runs.",
-        )
-    return BuildPick(f"cuda128-sm{compute[0]}{compute[1]}", "")
+    return BuildPick(_CPU, _NO_CUDA_PACK)
 
 
 def _positive_int(value: object) -> int | None:
