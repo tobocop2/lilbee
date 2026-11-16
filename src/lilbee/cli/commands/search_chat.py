@@ -141,6 +141,13 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
         err.print(notice, style=theme.WARNING, soft_wrap=True)
 
 
+def _announce_notice(notice: Any) -> None:
+    """Print the rewritten query, when there is one, and every failed search step."""
+    if notice.query is not None:
+        announce_retrieval_query(notice.query)
+    announce_degraded(notice.degraded)
+
+
 def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
     """Stream an answer to stdout verbatim, then render its Sources block.
 
@@ -163,9 +170,7 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     try:
         for token in stream:
             if isinstance(token, RetrievalNotice):
-                if token.query is not None:
-                    announce_retrieval_query(token.query)
-                announce_degraded(token.degraded)
+                _announce_notice(token)
                 continue
             if isinstance(token, AnswerSources):
                 text = token.block(answer)

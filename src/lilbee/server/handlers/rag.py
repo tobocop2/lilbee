@@ -920,9 +920,7 @@ def _resolve_stream_context(
         return _StreamResolution([], None, [frame])
     announce = _degraded_frames(rag.degraded)
     if rag.refused:
-        return _StreamResolution(
-            [], None, [*announce, sse_error("No relevant documents found.")]
-        )
+        return _StreamResolution([], None, [*announce, sse_error("No relevant documents found.")])
     if rag.retrieval_query:
         announce.append(sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query}))
     return _StreamResolution(rag.results, rag.messages, announce)
