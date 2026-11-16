@@ -22,6 +22,8 @@ _CLAUDE_INSTALL_HINT = (
     "claude binary not found on PATH. Install Claude Code from https://claude.com/claude-code."
 )
 _SETUP_MARKER_NAME = "claude-setup.json"
+# Consent to the skill-only plan (--no-mcp); consent to the MCP plan covers it too.
+_SKILL_SETUP_MARKER_NAME = "claude-skill-setup.json"
 _MCP_CONFIG_NAME = "claude-mcp.json"
 # The written MCP config references the token by env var (Claude Code expands
 # ${...} at load), so the file never holds the literal.
@@ -84,6 +86,17 @@ class ClaudeLauncher:
     def find_binary(self) -> str | None:
         return _find_claude_binary()
 
+    def _confirm_setup(self) -> bool:
+        """Ask before the first launch of this plan; the MCP plan's consent covers --no-mcp."""
+        covered_by: tuple[str, ...] = () if self._include_mcp else (_SETUP_MARKER_NAME,)
+        return confirm_first_run_setup(
+            marker_name=_SETUP_MARKER_NAME if self._include_mcp else _SKILL_SETUP_MARKER_NAME,
+            client_name="Claude Code",
+            print_plan=partial(_print_setup_plan, include_mcp=self._include_mcp),
+            assume_yes=self._assume_yes,
+            covered_by=covered_by,
+        )
+
     def prepare(
         self, *, token: str, port: int, model_refs: list[str]
     ) -> tuple[list[str], dict[str, str]]:
@@ -121,12 +134,7 @@ class ClaudeLauncher:
         # with a populated ~/.claude), which no local model's window absorbs.
         # Project-level CLAUDE.md and .claude/ still load.
         extra_args = ["--model", model_id, "--setting-sources", "project,local"]
-        if not confirm_first_run_setup(
-            marker_name=_SETUP_MARKER_NAME,
-            client_name="Claude Code",
-            print_plan=partial(_print_setup_plan, include_mcp=self._include_mcp),
-            assume_yes=self._assume_yes,
-        ):
+        if not self._confirm_setup():
             raise typer.Exit(0)
         if self._include_mcp:
             block = claude_http_config(base_url=base_url, api_key=_TOKEN_REF)

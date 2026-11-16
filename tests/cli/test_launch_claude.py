@@ -170,7 +170,8 @@ def test_launch_claude_no_mcp_skips_config_and_installs_skill_after_consent(tmp_
     assert "--strict-mcp-config" not in argv  # the user's own MCP config applies
     assert not (cfg.data_dir / "launchers" / "claude-mcp.json").exists()
     assert (tmp_path / ".claude" / "skills" / "lilbee-mcp" / "SKILL.md").is_file()
-    assert (cfg.data_dir / "launchers" / "claude-setup.json").exists()
+    assert (cfg.data_dir / "launchers" / "claude-skill-setup.json").exists()
+    assert not (cfg.data_dir / "launchers" / "claude-setup.json").exists()
     assert "First-time Claude Code setup will write" in result.stdout
     assert "lilbee MCP skill ->" in result.stdout
     assert "lilbee MCP config ->" not in result.stdout
@@ -189,7 +190,41 @@ def test_launch_claude_no_mcp_decline_writes_no_skill(tmp_path):
     confirm.assert_called_once()
     run.assert_not_called()
     assert not (tmp_path / ".claude" / "skills" / "lilbee-mcp").exists()
-    assert not (cfg.data_dir / "launchers" / "claude-setup.json").exists()
+    assert not (cfg.data_dir / "launchers").exists()
+
+
+def _launch_on_a_terminal(*args: str, answer: bool):
+    """Run ``lilbee launch claude`` as if stdin were a terminal; return (result, confirm)."""
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.claude.shutil.which", return_value="/usr/local/bin/claude"),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=answer) as confirm,
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "claude", *args])
+    return result, confirm
+
+
+def test_consent_to_the_skill_only_plan_still_asks_before_the_mcp_config(tmp_path):
+    _write_server_session()
+    _launch_on_a_terminal("--no-mcp", answer=True)
+    result, confirm = _launch_on_a_terminal("--mcp", answer=False)
+    assert result.exit_code == 0
+    confirm.assert_called_once_with("Proceed with Claude Code setup?", default=True)
+    assert "lilbee MCP config ->" in result.stdout
+    assert not (cfg.data_dir / "launchers" / "claude-mcp.json").exists()
+
+
+def test_consent_to_the_mcp_plan_covers_a_later_skill_only_launch(tmp_path):
+    _write_server_session()
+    _launch_on_a_terminal("--mcp", answer=True)
+    (tmp_path / ".claude" / "skills" / "lilbee-mcp" / "SKILL.md").unlink()
+    result, confirm = _launch_on_a_terminal("--no-mcp", answer=False)
+    assert result.exit_code == 0
+    confirm.assert_not_called()
+    assert (tmp_path / ".claude" / "skills" / "lilbee-mcp" / "SKILL.md").is_file()
+    assert not (cfg.data_dir / "launchers" / "claude-skill-setup.json").exists()
 
 
 def test_launch_claude_interactive_decline_skips_launch(tmp_path):

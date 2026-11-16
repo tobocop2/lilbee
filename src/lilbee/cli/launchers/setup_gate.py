@@ -46,14 +46,16 @@ def confirm_first_run_setup(
     client_name: str,
     print_plan: Callable[[], None],
     assume_yes: bool,
+    covered_by: tuple[str, ...] = (),
 ) -> bool:
     """Prompt before a client's first setup; True means proceed.
 
-    Skipped when already recorded, when *assume_yes* is set, or when stdin is
+    Skipped when this setup or a wider one named in *covered_by* is already
+    recorded, when *assume_yes* is set, or when stdin is
     not a TTY (scripts/CI: invoking the launch is the consent there). The
     choice is remembered so later launches don't re-prompt.
     """
-    if _marker_path(marker_name).exists():
+    if any(_marker_path(name).exists() for name in (marker_name, *covered_by)):
         return True
     print_plan()
     if assume_yes or not _is_interactive():
