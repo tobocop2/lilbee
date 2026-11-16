@@ -707,24 +707,24 @@ async def _drive_mcp(scenario: Scenario, world: World) -> Outcome:
     return _payload_outcome(scenario, payload)
 
 
-def _seen(app: LilbeeApp) -> set[str]:
+def _seen() -> set[str]:
     return {notification.identity for notification in posted_toasts()}
 
 
-def _new_notices(app: LilbeeApp, seen: set[str]) -> list[Notification]:
+def _new_notices(seen: set[str]) -> list[Notification]:
     return [n for n in posted_toasts() if n.identity not in seen]
 
 
-def _warnings(app: LilbeeApp, seen: set[str]) -> list[str]:
-    return [n.message for n in _new_notices(app, seen) if n.severity == "warning"]
+def _warnings(seen: set[str]) -> list[str]:
+    return [n.message for n in _new_notices(seen) if n.severity == "warning"]
 
 
-async def _notified(app: LilbeeApp, pilot: Pilot, seen: set[str]) -> None:
+async def _notified(pilot: Pilot, seen: set[str]) -> None:
     """Wait until a new toast appears and the toasts queued behind it show.
 
     The end state judges the outcome.
     """
-    assert await until(pilot, lambda: bool(_new_notices(app, seen)))
+    assert await until(pilot, lambda: bool(_new_notices(seen)))
     await pilot.pause()
 
 
@@ -771,9 +771,9 @@ async def _pill(app: LilbeeApp, pilot: Pilot, pill_id: str) -> None:
 
 async def _pill_then_toast(app: LilbeeApp, pilot: Pilot, pill_id: str) -> set[str]:
     """Press *pill_id*, wait for the toast it causes, and return the toasts seen before it."""
-    seen = _seen(app)
+    seen = _seen()
     await _pill(app, pilot, pill_id)
-    await _notified(app, pilot, seen)
+    await _notified(pilot, seen)
     return seen
 
 
@@ -811,18 +811,18 @@ async def _tui_save_as_project(app: LilbeeApp, pilot: Pilot, _world: World) -> O
 
 
 async def _tui_update(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
-    seen = _seen(app)
+    seen = _seen()
     await _tab_pill(app, pilot, TabAction.UPDATE)
-    await _notified(app, pilot, seen)
+    await _notified(pilot, seen)
     return Outcome()
 
 
 async def _tui_discard(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
-    seen = _seen(app)
+    seen = _seen()
     await _tab_pill(app, pilot, TabAction.DISCARD)
-    await _notified(app, pilot, seen)
+    await _notified(pilot, seen)
     # Read before the wait for an offer: a toast expires during that wait.
-    warnings = _warnings(app, seen)
+    warnings = _warnings(seen)
     offered = await _rebuild_owed_on_leaving(app, pilot)
     return Outcome(report={"reindex_required": offered, "warnings": warnings})
 
@@ -835,10 +835,10 @@ async def _apply_in_dialog(app: LilbeeApp, pilot: Pilot, pill_id: str) -> dict[s
     # The apply posts its warnings right after its success toast, so wait for that one.
     applied = msg.PROFILE_APPLIED.split("{name}")[0]
     assert await until(
-        pilot, lambda: any(n.message.startswith(applied) for n in _new_notices(app, seen))
+        pilot, lambda: any(n.message.startswith(applied) for n in _new_notices(seen))
     )
     await pilot.pause()
-    return {"reindex_required": reindex, "warnings": _warnings(app, seen)}
+    return {"reindex_required": reindex, "warnings": _warnings(seen)}
 
 
 async def _tui_apply_reindex(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
@@ -971,10 +971,10 @@ async def _tui_reset(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
     screen = await _all_panes(app, pilot, RESET_KEYS)
     warnings: list[str] = []
     for key in RESET_KEYS:
-        seen = _seen(app)
+        seen = _seen()
         await press(pilot, _editor(screen, key), "ctrl+r")
         assert await until(pilot, partial(_not_yours, key)), key
-        warnings += _warnings(app, seen)
+        warnings += _warnings(seen)
     offered = await _rebuild_owed_on_leaving(app, pilot)
     return Outcome(report={"reindex_required": offered, "warnings": warnings})
 
@@ -1068,10 +1068,10 @@ async def _tui_analyze_apply(
 
 
 async def _tui_dismiss(app: LilbeeApp, pilot: Pilot, chat: ChatScreen, _world: World) -> Outcome:
-    seen = _seen(app)
+    seen = _seen()
     await _submit(pilot, chat, "/analyze off")
-    await _notified(app, pilot, seen)
-    hidden = any(n.message == msg.ANALYZE_TIP_HIDDEN for n in _new_notices(app, seen))
+    await _notified(pilot, seen)
+    hidden = any(n.message == msg.ANALYZE_TIP_HIDDEN for n in _new_notices(seen))
     return Outcome(answer={"tip_dismissed": hidden})
 
 
@@ -1239,14 +1239,14 @@ async def test_the_toast_wait_reads_a_warning_still_queued_behind_the_first_toas
     with ready_services():
         host = SettingsHost()
         async with host.run_test(size=_TUI_SIZE) as pilot:
-            seen = _seen(host)
+            seen = _seen()
             host.notify(_FIRST_TOAST)
             host.notify(_WARNING_TOAST, severity="warning")
             await first_shown.wait()
-            assert [n.message for n in _new_notices(host, seen)] == [_FIRST_TOAST]
+            assert [n.message for n in _new_notices(seen)] == [_FIRST_TOAST]
             asyncio.get_running_loop().call_soon(release_warning.set)
-            await _notified(host, pilot, seen)
-            assert _warnings(host, seen) == [_WARNING_TOAST]
+            await _notified(pilot, seen)
+            assert _warnings(seen) == [_WARNING_TOAST]
 
 
 async def test_every_scenario_changes_or_answers_something(

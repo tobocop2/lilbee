@@ -8,7 +8,7 @@ import pytest
 from textual.app import App
 
 from tests._async_wait import wait_until
-from tests._toasts import posted_toasts
+from tests._toasts import posted_toasts, reset_posted_toasts
 
 
 async def test_a_toast_shown_before_a_long_stall_is_still_recorded(
@@ -37,3 +37,15 @@ async def test_the_record_holds_each_toast_in_the_order_shown() -> None:
             ("first", "information"),
             ("second", "warning"),
         ]
+
+
+async def test_the_reset_forgets_a_toast_recorded_since_the_last_reset() -> None:
+    reset_posted_toasts()
+    app = App[None]()
+    async with app.run_test() as pilot:
+        app.notify("left by the previous test")
+        assert await wait_until(pilot, lambda: bool(posted_toasts()))
+
+    reset_posted_toasts()
+
+    assert posted_toasts() == []
