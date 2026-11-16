@@ -61,11 +61,13 @@ jobs:
         run: uv python install 3.12
 
       # Audit the locked third-party set; lilbee-engine is first-party vendored
-      # binaries resolved from a local path, not a PyPI package.
+      # binaries resolved from a local path, not a PyPI package. xberg is the
+      # fork build from a GitHub release: it has no hashes and no PyPI entry,
+      # so the hash-checked audit cannot take it.
       - name: Export locked requirements for audit
         run: >
           uv export --locked --all-extras --no-emit-project
-          --no-emit-package lilbee-engine
+          --no-emit-package lilbee-engine --no-emit-package xberg
           --format requirements-txt -o requirements-audit.txt
 
       - name: Run pip-audit
