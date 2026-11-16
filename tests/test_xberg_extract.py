@@ -255,3 +255,39 @@ async def test_extract_document_in_a_running_loop_reads_the_scoped_config():
     with mock.patch("xberg.progress.extract", _capture_extract(captured)), config_scope(scoped):
         xberg_extract.extract_document(b"x", "text/plain", config=ExtractionConfig())
     assert captured["config"].concurrency == ConcurrencyConfig(max_threads=3)
+
+
+_OCR_CANCEL = (
+    "Plugin error in 'ocr': OCR failed on all 4 page(s); first failure: "
+    "Plugin 'lilbee-vision' method 'process_image' failed: TaskCancelledError:"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_ocr_backend_surfaces_as_a_runtime_error():
+    """xberg's plugin error for a backend cancel reaches the caller as a RuntimeError."""
+    from xberg import PluginError
+
+    async def cancelled(_input, _config, _on_progress):
+        raise PluginError(_OCR_CANCEL)
+
+    with (
+        mock.patch("xberg.progress.extract", cancelled),
+        pytest.raises(RuntimeError, match="TaskCancelledError") as caught,
+    ):
+        await xberg_extract.aextract_document(b"x", config=ExtractionConfig())
+    assert isinstance(caught.value.__cause__, PluginError)
+
+
+@pytest.mark.asyncio
+async def test_any_other_plugin_error_keeps_its_type():
+    from xberg import PluginError
+
+    async def failed(_input, _config, _on_progress):
+        raise PluginError("Plugin error in 'ocr': model file missing")
+
+    with (
+        mock.patch("xberg.progress.extract", failed),
+        pytest.raises(PluginError, match="model file missing"),
+    ):
+        await xberg_extract.aextract_document(b"x", config=ExtractionConfig())
