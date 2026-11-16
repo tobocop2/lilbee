@@ -1708,15 +1708,20 @@ def _bonsai_header(name: str) -> GgufHeader:
 
 
 def _stub_listing(
-    monkeypatch: pytest.MonkeyPatch, *names: str, error: Exception | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    *names: str,
+    error: Exception | None = None,
+    tags: tuple[str, ...] = (),
 ) -> None:
-    """Answer the Hub repo listing with *names*, or raise *error*, through the Hub client."""
+    """Answer the Hub listing with *names* and *tags*, or raise *error*, through the Hub client."""
     from huggingface_hub import HfApi
 
     def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
         if error is not None:
             raise error
-        return SimpleNamespace(siblings=[RepoSibling(rfilename=name) for name in names])
+        return SimpleNamespace(
+            siblings=[RepoSibling(rfilename=name) for name in names], tags=list(tags)
+        )
 
     monkeypatch.setattr(HfApi, "model_info", model_info)
 
@@ -1805,6 +1810,199 @@ class TestResolveFilename:
         self._siblings(monkeypatch, "something-else.bin")
         with pytest.raises(RuntimeError, match="No GGUF model weights found"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_safetensors_only_repo_names_the_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "config.json", "model.safetensors", "tokenizer.json")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        repo = PICKS_CHAT[0].hf_repo
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {repo}. It holds safetensors weights: "
+            f"pull them with 'lilbee model pull {repo}#safetensors' "
+            "(or POST /api/models/pull)."
+        )
+
+    def test_mlx_repo_names_the_mlx_pull(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An MLX repo lists plain safetensors files; only the Hub tag says it is MLX."""
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            tags=("mlx", "safetensors"),
+        )
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        repo = PICKS_CHAT[0].hf_repo
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {repo}. It holds mlx weights: "
+            f"pull them with 'lilbee model pull {repo}#mlx' (or POST /api/models/pull)."
+        )
+
+    def test_lora_adapter_repo_is_not_told_to_pull_a_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "adapter_config.json", "adapter_model.safetensors")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}. It holds a LoRA adapter, "
+            "not a model. Pull the base model it was trained from instead."
+        )
+
+    def test_lora_adapter_repo_names_its_base_model_from_the_tags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            tags=("peft", "base_model:adapter:acme/base-7B"),
+        )
+        with pytest.raises(RuntimeError, match=r"Pull acme/base-7B instead\.$"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_lora_adapter_repo_names_every_base_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            tags=("base_model:adapter:b/two", "base_model:adapter:a/one", "peft"),
+        )
+        with pytest.raises(RuntimeError, match=r"Pull b/two or a/one instead\.$"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            # Only a root adapter_model*.safetensors beside adapter_config.json is an adapter.
+            (("adapter_config.json", "model.safetensors"), "#safetensors'"),
+            (("adapter_model.safetensors",), "#safetensors'"),
+            (("adapter_config.json", "adapter_model.safetensors", "sub/model.safetensors"), "LoRA"),
+        ],
+    )
+    def test_adapter_shape_is_told_apart_from_a_model(
+        self, monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...], expected: str
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, *names)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert expected in str(raised.value)
+
+    def test_gated_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 401 on the tag read is not an error of its own: the refusal still names no ref."""
+        from huggingface_hub import HfApi
+
+        answers: list[object] = [
+            SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[]),
+            _hub_http_error(401),
+        ]
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer  # type: ignore[return-value]
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
+
+    def test_hub_reads_carry_the_timeout_and_the_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from huggingface_hub import HfApi
+
+        from lilbee.catalog import download
+
+        calls: list[dict[str, object]] = []
+
+        def model_info(self: HfApi, repo_id: str, **kw: object) -> SimpleNamespace:
+            calls.append(kw)
+            return SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[])
+
+        monkeypatch.setattr(download, "hf_token", lambda: "tok")
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert len(calls) == 2
+        assert all(c == {"timeout": download.DEFAULT_TIMEOUT, "token": "tok"} for c in calls)
+
+    def test_gated_listing_says_how_to_authenticate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        with pytest.raises(PermissionError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"{PICKS_CHAT[0].hf_repo} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
+        )
+
+    def test_unreadable_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A tag read that fails cannot tell MLX from safetensors, so the refusal names nothing."""
+        from huggingface_hub import HfApi
+
+        answers: list[object] = [
+            SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[]),
+            _hub_http_error(500),
+        ]
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer  # type: ignore[return-value]
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
+
+    def test_the_listing_is_asked_for_the_entry_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from huggingface_hub import HfApi
+
+        asked: list[str] = []
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            asked.append(repo_id)
+            return SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[])
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError, match="No GGUF model weights found"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert set(asked) == {PICKS_CHAT[0].hf_repo}
+
+    def test_incomplete_safetensors_shards_still_name_the_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "model-00001-of-00002.safetensors")
+        with pytest.raises(RuntimeError, match="#safetensors'"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_repo_without_any_weights_names_no_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "config.json", "pytorch_model.bin")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
 
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_listing(monkeypatch, error=httpx.ConnectError("x"))

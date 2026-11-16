@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
-from lilbee.catalog.formats import select_files
+from lilbee.catalog.formats import formats_from_tags, select_files
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HfToken,
@@ -26,6 +26,7 @@ from lilbee.catalog.refs import (
     DEFAULT_MMPROJ_PATTERN,
     FLOAT_QUANTS,
     WILDCARD,
+    ModelRef,
     quant_label,
     rank_gguf_candidates,
     split_shard_filenames,
@@ -35,6 +36,8 @@ from lilbee.catalog.xdna import write_ticket
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
+    from huggingface_hub.hf_api import ModelInfo
+
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 _T = TypeVar("_T")
@@ -678,18 +681,13 @@ def _fetch_mmproj(
     return path
 
 
-def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
-    """Every filename the HuggingFace Hub lists for *hf_repo*.
-
-    Raises:
-        PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the listing could not be fetched, or offline mode is on.
-    """
+def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
+    """The Hub record of *hf_repo*, with a gated repo and a failed read as typed errors."""
     from huggingface_hub import HfApi
     from huggingface_hub.errors import HfHubHTTPError
 
     try:
-        info = HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
+        return HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
     except HfHubHTTPError as exc:
         if exc.response.status_code == HTTPStatus.UNAUTHORIZED:
             raise PermissionError(
@@ -699,7 +697,26 @@ def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> li
         raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
-    return [s.rfilename for s in info.siblings or []]
+
+
+def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """Every filename the HuggingFace Hub lists for *hf_repo*.
+
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        RuntimeError: the listing could not be fetched, or offline mode is on.
+    """
+    return [s.rfilename for s in _model_info(hf_repo, timeout).siblings or []]
+
+
+def _repo_tags(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """The Hub tags of *hf_repo*.
+
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        RuntimeError: the record could not be fetched, or offline mode is on.
+    """
+    return list(_model_info(hf_repo, timeout).tags or [])
 
 
 def _mmproj_rank(filename: str) -> tuple[bool, str]:
@@ -756,7 +773,8 @@ def resolve_filename(
         return named
     unsupported: str | None = None
     refused: UnsupportedQuantError | None = None
-    for candidate in rank_gguf_candidates(_repo_sibling_files(entry.hf_repo)):
+    siblings = _repo_sibling_files(entry.hf_repo)
+    for candidate in rank_gguf_candidates(siblings):
         header = file_header(entry.hf_repo, candidate)
         if not header.is_model:
             continue
@@ -774,7 +792,58 @@ def resolve_filename(
         return unsupported
     if refused is not None:
         raise refused
-    raise RuntimeError(f"No GGUF model weights found in {entry.hf_repo}")
+    raise RuntimeError(_no_gguf_message(entry.hf_repo, siblings))
+
+
+_ADAPTER_BASE_TAG = "base_model:adapter:"
+_ADAPTER_CONFIG = "adapter_config.json"
+_ADAPTER_WEIGHTS_PREFIX = "adapter_model"
+
+
+def _holds_weights(siblings: list[str]) -> bool:
+    """Whether the listing holds safetensors weight files, complete or not."""
+    try:
+        return bool(select_files(ModelFormat.SAFETENSORS, siblings))
+    except ValueError:
+        # An incomplete shard set still means weights; the folder pull names the missing part.
+        return True
+
+
+def _is_adapter_only(siblings: list[str]) -> bool:
+    """Whether every root safetensors file of the listing is a LoRA adapter's weights."""
+    weights = [n for n in siblings if "/" not in n and n.endswith(".safetensors")]
+    return _ADAPTER_CONFIG in siblings and all(
+        name.startswith(_ADAPTER_WEIGHTS_PREFIX) for name in weights
+    )
+
+
+def _adapter_message(message: str, tags: list[str]) -> str:
+    """The refusal for a LoRA adapter repo, naming each base model the Hub tags give."""
+    named = [t.removeprefix(_ADAPTER_BASE_TAG) for t in tags if t.startswith(_ADAPTER_BASE_TAG)]
+    target = " or ".join(named) or "the base model it was trained from"
+    return f"{message}. It holds a LoRA adapter, not a model. Pull {target} instead."
+
+
+def _no_gguf_message(hf_repo: str, siblings: list[str]) -> str:
+    """The refusal for a repo with no GGUF weights, naming the ref that pulls its folder."""
+    message = f"No GGUF model weights found in {hf_repo}"
+    if not _holds_weights(siblings):
+        return message
+    try:
+        tags = _repo_tags(hf_repo)
+    except (RuntimeError, PermissionError):
+        # Without the tags an MLX repo reads as plain safetensors, so name nothing.
+        tags = None
+    if _is_adapter_only(siblings):
+        return _adapter_message(message, tags or [])
+    if tags is None:
+        return message
+    fmt = ModelFormat.MLX if ModelFormat.MLX in formats_from_tags(tags) else ModelFormat.SAFETENSORS
+    ref = ModelRef(hf_repo, "", fmt).canonical
+    return (
+        f"{message}. It holds {fmt} weights: pull them with 'lilbee model pull {ref}' "
+        "(or POST /api/models/pull)."
+    )
 
 
 _SIZE_UNKNOWN = 0
