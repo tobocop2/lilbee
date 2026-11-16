@@ -112,9 +112,7 @@ def test_tei_digest_follows_the_host_cell(monkeypatch: pytest.MonkeyPatch) -> No
     assert _pin(monkeypatch, EngineName.TEI, "Windows", "AMD64")["sha256"] is None
 
 
-_RELEASES = "https://github.com/tobocop2/lilbee/releases/download/"
-_TEI_RELEASE = _RELEASES + "engine-packs-20261116-tei/"
-_TEI_CPU_RELEASE = _RELEASES + "engine-packs-20261116-tei-cpu/"
+_TEI_RELEASE = "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei-2/"
 SHIPPED_TEI = {
     "cpu": (
         "linux-x86_64-cpu",
@@ -122,35 +120,35 @@ SHIPPED_TEI = {
     ),
     "metal": (
         "macos-arm64-metal",
-        "7abc80ae1b3c964f2c093a1fb620ffc010df7ba1d7572e3525ea9c719476ff7c",
+        "adef1ba024f7fd18e65f335820cd9d6169eee5a3ca823108650bf67a45afed04",
     ),
     "sm75": (
         "linux-x86_64-cuda-sm75",
-        "538f3e098272ad50cb70796e0d529e51f16eb94089beed28b7e1d8397adb595d",
+        "1245143a609c9669950602affa9133e1ec5730f334c4f0f585015e84e1f518f4",
     ),
     "sm80": (
         "linux-x86_64-cuda-sm80",
-        "c01b576a492fdfdf095a0f34d3f2ae338307a704ad37054b28e233f35e5e6f3c",
+        "1fd3fd7a9b50db3f0b5bae956f6fb8c2865dd23c0c454ef7e4d6a54740343cfd",
     ),
     "sm86": (
         "linux-x86_64-cuda-sm86",
-        "a9d02124104f06d072c435ab7456a3824e677a678f36ca78df00804acd499d09",
+        "538c78b6280c25df33acd6bf9fb0c02291a1056ff0091aad20c529b2b824fba1",
     ),
     "sm89": (
         "linux-x86_64-cuda-sm89",
-        "d10b2f9ab2337eff71907144e98643693ad54bcf5eb30d1dd8a5e15763aa12c8",
+        "e697869e269c936a99e39244a2098d2c0c5ee7e8ae7798de48d3714ad4a4a19b",
     ),
     "sm90": (
         "linux-x86_64-cuda-sm90",
-        "53182c951e255fc23835d53ab86674a5dc1ecef0943394394e33568c31228aac",
+        "61258fdcccd2322665ab3523c309204a986c2f461e843449cf1e53aeac63dca7",
     ),
     "sm100": (
         "linux-x86_64-cuda-sm100",
-        "593835778f3b792556b29a7fe03f0cbb40a0c02691e26d213061cbf33d7ffd1e",
+        "9fc0a9bff5b4a69b290858f6d761c629e4050727e76de22a29d216d20e920880",
     ),
     "sm120": (
         "linux-x86_64-cuda-sm120",
-        "000efa36bf89969ca7aafe29b7cea5a4db2ec5e8e2ac80ea14f58d982fab1512",
+        "0482fe2efecfaed8cea2e90f6dd6f0978aa7b73878d93fd972b4bf86741ac656",
     ),
 }
 _TEI_HOSTS = {
@@ -191,7 +189,7 @@ def test_each_host_resolves_its_own_tei_pack_from_the_shipped_table(
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     url = pin["platforms"][cell]["url"]
-    assert url.startswith(_TEI_CPU_RELEASE if build == "cpu" else _TEI_RELEASE)
+    assert url.startswith(_TEI_RELEASE)
     assert f"-1.{backend.replace('-', '_')}-py3-none-" in url
 
 
