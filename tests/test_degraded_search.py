@@ -390,3 +390,84 @@ async def test_mcp_search_schema_accepts_warnings_and_lists_one_text_block_each(
     assert len(warnings) == 1
     rows = result.structured_content["result"]
     assert len(result.content) == len(rows) + len(warnings)
+
+
+def test_mcp_search_blocks_are_the_indented_json_of_each_row_and_warning():
+    from pathlib import Path
+
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.mcp_server import _search_result
+
+    rows = [{"source": "a.md", "where": Path("x")}, {"source": "b.md"}]
+    warning = HealthWarning(code=WarningCode.CONCEPT_BOOST_FAILED, message="m.", remedy="r.")
+    result = _search_result(rows, [warning])
+    assert [b.text for b in result.content] == [
+        json.dumps(rows[0], indent=2, default=str),
+        json.dumps(rows[1], indent=2, default=str),
+        warning.line,
+    ]
+    assert {b.type for b in result.content} == {"text"}
+    assert result.structured_content["result"] is rows
+
+
+def test_warnings_payload_holds_plain_strings():
+    from lilbee.core.health_warnings import HealthWarning, WarningCode, warnings_payload
+
+    payload = warnings_payload([HealthWarning(code=WarningCode.HYDE_BLEND_FAILED, message="m.")])
+    assert type(payload[0]["code"]) is str
+    assert payload == [{"code": "hyde_blend_failed", "message": "m.", "remedy": None}]
+
+
+def test_llm_expansion_runs_for_a_count_of_one_and_gets_the_question(mock_svc):  # noqa: F811
+    mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [[0.1] * 4 for _ in texts]
+    with (
+        mock.patch.object(cfg, "query_expansion_count", 1),
+        mock.patch.object(cfg, "expansion_short_query_tokens", 0),
+        mock.patch.object(cfg, "expansion_guardrails", False),
+        mock.patch.object(Searcher, "_llm_expand", return_value=["reworded"]) as expand,
+    ):
+        variants = mock_svc.searcher._llm_query_variants("a long question here", [0.1] * 4, [])
+    expand.assert_called_once_with("a long question here", 1)
+    assert [text for text, _ in variants] == ["reworded"]
+
+
+def test_llm_expansion_skips_a_question_as_short_as_the_threshold(mock_svc):  # noqa: F811
+    with (
+        mock.patch.object(cfg, "query_expansion_count", 3),
+        mock.patch.object(cfg, "expansion_short_query_tokens", 1),
+        mock.patch.object(Searcher, "_llm_expand", return_value=["reworded"]) as expand,
+    ):
+        variants = mock_svc.searcher._llm_query_variants("python", [0.1] * 4, [])
+    assert variants == []
+    expand.assert_not_called()
+
+
+def test_llm_expansion_with_a_vector_count_mismatch_is_a_failed_step(mock_svc, caplog):  # noqa: F811
+    mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [[0.1] * 4]
+    degraded: list = []
+    with (
+        mock.patch.object(cfg, "query_expansion_count", 3),
+        mock.patch.object(cfg, "expansion_short_query_tokens", 0),
+        mock.patch.object(Searcher, "_llm_expand", return_value=["one", "two"]),
+        caplog.at_level(logging.WARNING),
+    ):
+        variants = mock_svc.searcher._llm_query_variants(
+            "a long question here", [0.1] * 4, degraded
+        )
+    assert variants == []
+    assert [w.code.value for w in degraded] == ["query_expansion_failed"]
+    assert "zip() argument 2 is shorter" in caplog.text
+
+
+def test_concept_expansion_gets_the_question_and_fails_on_a_vector_count_mismatch(
+    mock_svc,  # noqa: F811
+):
+    mock_svc.concepts.get_graph.return_value = True
+    mock_svc.concepts.expand_query.return_value = ["one", "two"]
+    mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [[0.1] * 4]
+    degraded: list = []
+    with mock.patch.object(cfg, "concept_graph", True):
+        variants = mock_svc.searcher._concept_query_expansion("the question", degraded)
+    mock_svc.concepts.expand_query.assert_called_once_with("the question")
+    assert variants == []
+    assert [w.code.value for w in degraded] == ["concept_expansion_failed"]
