@@ -54,9 +54,9 @@ MANIFESTS = {
     "mistral.rs": {
         "0.9.5": {
             "linux-x86_64-cpu": {
-                "sha256": "0f2ec09fde8523a73b4aec3a5a78b9f8a3688bfcf81ad284a6ae905b0909a0e9",
-                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261104/lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-manylinux_2_35_x86_64.whl",
-                "size": 36283476,
+                "sha256": "b55ace7732b20c64a0f91e46325d68370388620b02e5deeee4317d7e2e9fef4d",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115-mistralrs/lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-manylinux_2_35_x86_64.whl",
+                "size": 36675724,
                 "min_os": "2.35",
             },
             "linux-x86_64-cuda128-sm89": {
@@ -64,6 +64,12 @@ MANIFESTS = {
                 "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261104/lilbee_engine_mistral_rs-0.9.5-1.cuda128_sm89-py3-none-manylinux_2_35_x86_64.whl",
                 "size": 1095951263,
                 "min_os": "2.35",
+            },
+            "macos-arm64-metal": {
+                "sha256": "08c30b536f6b6795587902fbe050ae2e53b27cc6873da6ceff55faca21179c2a",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115-mistralrs/lilbee_engine_mistral_rs-0.9.5-1.metal-py3-none-macosx_11_0_arm64.whl",
+                "size": 50923671,
+                "min_os": "11.0",
             },
         },
     },
