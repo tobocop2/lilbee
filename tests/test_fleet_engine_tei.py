@@ -6,19 +6,25 @@ import base64
 import dataclasses
 import hashlib
 import json
+import re
 import stat
+import threading
+import time
 import zipfile
 from pathlib import Path
 
 import httpx
 import numpy as np
 import pytest
+from pytest_httpserver import HTTPServer
+from werkzeug import Request, Response
 
 from lilbee.app import engine_service
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.engine_params import EMBED_FALLBACK_CTX
+from lilbee.providers.fleet import client as fleet_client
 from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engine_store import EngineNotInstalledError, EngineStore, PinLock
@@ -861,6 +867,7 @@ def test_an_engine_with_no_count_route_gives_no_warning(routes, caplog) -> None:
         client.embed([_words(30)])
     assert router.tokenized == []
     assert caplog.records == []
+    assert all(path.endswith(("/info", "/embeddings")) for path in router.paths)
 
 
 class _BrokenSideRoute(_Embedder):
@@ -991,3 +998,58 @@ def test_the_warning_names_the_chunk_size_setting_and_a_larger_limit_model(caplo
         client.embed([_words(30)])
     message = caplog.records[0].getMessage()
     assert "Lower chunk_size, or use an embedding model with a larger input limit." in message
+
+
+_HANG_S = 3.0
+_CHECK_BOUND_S = 1.5
+
+
+@pytest.fixture
+def hung_side_route(monkeypatch: pytest.MonkeyPatch):
+    """A real threaded router whose /info or /tokenize answer waits ``_HANG_S``."""
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 0.2)
+    release = threading.Event()
+    server = HTTPServer(host="127.0.0.1", port=0, threaded=True)
+    server.start()
+    paths: list[str] = []
+
+    def serve(hung: str) -> LlamaServerClient:
+        def answer(request: Request) -> Response:
+            paths.append(request.path)
+            if request.path.endswith(hung):
+                release.wait(_HANG_S)
+            if request.path.endswith("/info"):
+                return Response(json.dumps({"max_input_length": _ROUTER_LIMIT}))
+            inputs = json.loads(request.data)
+            if request.path.endswith("/tokenize"):
+                tokens = [[{"id": i} for i, _ in enumerate(t.split())] for t in inputs["inputs"]]
+                return Response(json.dumps(tokens))
+            return Response(json.dumps(_base64_vectors([[0.5, 0.5]] * len(inputs["input"]))))
+
+        server.expect_request(re.compile(".*")).respond_with_handler(answer)
+        profile = TEI.request_profile(WorkerRole.EMBED)
+        base = f"http://127.0.0.1:{server.port}"
+        return LlamaServerClient(base, "m", timeout=_HANG_S, profile=profile)
+
+    yield serve, paths
+    release.set()
+    server.clear()
+    server.stop()
+
+
+def _timed_embed(client: LlamaServerClient) -> float:
+    start = time.monotonic()
+    vectors = client.embed([_words(30), _words(3)])
+    assert len(vectors) == 2
+    return time.monotonic() - start
+
+
+@pytest.mark.parametrize("hung", ["/info", "/tokenize"])
+def test_a_hung_side_route_never_holds_an_embed_back(hung, hung_side_route) -> None:
+    serve, paths = hung_side_route
+    client = serve(hung)
+    first, second = _timed_embed(client), _timed_embed(client)
+    assert first < _CHECK_BOUND_S, f"first embed took {first:.2f} s with {hung} hung"
+    assert second < _CHECK_BOUND_S, f"second embed took {second:.2f} s with {hung} hung"
+    assert sum(path.endswith(hung) for path in paths) == 1
+    assert sum(path.endswith("/embeddings") for path in paths) == 2
