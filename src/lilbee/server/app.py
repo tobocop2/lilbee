@@ -32,6 +32,7 @@ from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -411,6 +412,12 @@ def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> 
     return _json_error_response(request, unavailable)
 
 
+def _config_unreadable_response(request: Request, exc: ConfigReadError) -> Response:
+    """Answer a config.toml that cannot be read as a 503 with its text."""
+    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    return _json_error_response(request, unavailable)
+
+
 def create_app() -> Litestar:
     """Create the Litestar application instance."""
     cors = CORSConfig(
@@ -429,6 +436,7 @@ def create_app() -> Litestar:
             HTTPException: _json_error_response,
             ValidationException: _validation_error_response,
             FileLockUnavailableError: _config_locked_response,
+            ConfigReadError: _config_unreadable_response,
             ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },
