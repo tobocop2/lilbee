@@ -15,6 +15,7 @@ from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
 from lilbee.core.config.enums import ChatMode
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.llm_json import json_reply_format
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
@@ -210,6 +211,51 @@ _CONTEXT_TEMPLATE_TOKENS = 16
 # (source path plus page/line span), and the blank-line separator.
 _PER_SOURCE_TOKENS = 24
 
+_STATUS_REMEDY = "Run lilbee status, then search again."
+
+
+class _DegradedStep(NamedTuple):
+    """How a failed widening step is logged and what the user is told."""
+
+    label: str
+    warning: HealthWarning
+
+
+_DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
+    WarningCode.HYDE_BLEND_FAILED: _DegradedStep(
+        "HyDE widening",
+        HealthWarning(
+            code=WarningCode.HYDE_BLEND_FAILED,
+            message="HyDE search failed: results do not include its hypothetical-answer matches.",
+            remedy=_STATUS_REMEDY,
+        ),
+    ),
+    WarningCode.QUERY_EXPANSION_FAILED: _DegradedStep(
+        "Query expansion",
+        HealthWarning(
+            code=WarningCode.QUERY_EXPANSION_FAILED,
+            message="Query expansion failed: results do not include reworded queries.",
+            remedy=_STATUS_REMEDY,
+        ),
+    ),
+    WarningCode.CONCEPT_BOOST_FAILED: _DegradedStep(
+        "Concept boost",
+        HealthWarning(
+            code=WarningCode.CONCEPT_BOOST_FAILED,
+            message="Concept boost failed: results are not re-ranked by concept.",
+            remedy=_STATUS_REMEDY,
+        ),
+    ),
+    WarningCode.CONCEPT_EXPANSION_FAILED: _DegradedStep(
+        "Concept query expansion",
+        HealthWarning(
+            code=WarningCode.CONCEPT_EXPANSION_FAILED,
+            message="Concept expansion failed: results do not include related-concept queries.",
+            remedy=_STATUS_REMEDY,
+        ),
+    ),
+}
+
 
 class ChatMessage(TypedDict):
     """A single chat message with role and content."""
@@ -228,6 +274,8 @@ class AskResult(BaseModel):
     when the question as typed was searched.
     ``dropped_sources`` names the chunks the budget fit shed, so a caller can say
     what went in and what was trimmed.
+    ``degraded`` names the widening steps that failed, so a caller can say the
+    search ran without them.
     """
 
     answer: str
@@ -235,6 +283,7 @@ class AskResult(BaseModel):
     cited_sources: list[SearchChunk] = Field(default_factory=list)
     retrieval_query: str | None = None
     dropped_sources: list[SearchChunk] = Field(default_factory=list)
+    degraded: list[HealthWarning] = Field(default_factory=list)
 
 
 class StructuredQuery(NamedTuple):
@@ -256,6 +305,9 @@ class RagContext(NamedTuple):
 
     ``dropped`` names the chunks the budget fit shed, so a caller can say what
     went in and what was trimmed. ``None`` when no fit ran.
+
+    ``degraded`` names the widening steps that failed during retrieval.
+    ``refused`` is set when retrieval found nothing to ground an answer on.
     """
 
     results: list[SearchChunk]
@@ -263,6 +315,24 @@ class RagContext(NamedTuple):
     base_results: list[SearchChunk] | None = None
     retrieval_query: str | None = None
     dropped: list[SearchChunk] | None = None
+    degraded: tuple[HealthWarning, ...] = ()
+    refused: bool = False
+
+
+class SearchReport(NamedTuple):
+    """The rows of one search and the widening steps that failed while finding them."""
+
+    rows: list[SearchChunk]
+    degraded: tuple[HealthWarning, ...] = ()
+
+
+def _degrade(degraded: list[HealthWarning], code: WarningCode, exc: Exception) -> None:
+    """Log a failed widening step with its cause and record it once for the user."""
+    step = _DEGRADED_STEPS[code]
+    log.warning("%s disabled for this call: %s", step.label, exc)
+    log.debug("%s exception", step.label, exc_info=True)
+    if step.warning not in degraded:
+        degraded.append(step.warning)
 
 
 class Searcher:
@@ -334,17 +404,21 @@ class Searcher:
         threshold = self._config.expansion_similarity_threshold
         return [(text, vec) for text, vec in variants if cosine_sim(question_vec, vec) >= threshold]
 
-    def _concept_query_expansion(self, question: str) -> list[str]:
-        """Concept-graph query variants; a failed graph skips them with a warning."""
+    def _concept_query_expansion(
+        self, question: str, degraded: list[HealthWarning]
+    ) -> list[tuple[str, Vector]]:
+        """Concept-graph ``(variant, vector)`` pairs; a failed graph skips them and is recorded."""
         if not self._config.concept_graph:
             return []
         try:
             if not self._concepts.get_graph():
                 return []
-            return self._concepts.expand_query(question)
+            texts = list(self._concepts.expand_query(question))
+            if not texts:
+                return []
+            return list(zip(texts, self._embedder.embed_query_batch(texts), strict=True))
         except Exception as exc:
-            log.warning("Concept query expansion disabled for this call: %s", exc)
-            log.debug("Concept query expansion exception", exc_info=True)
+            _degrade(degraded, WarningCode.CONCEPT_EXPANSION_FAILED, exc)
             return []
 
     def _repeatable_options(self, num_predict: int, **extra: Any) -> dict[str, Any]:
@@ -379,40 +453,39 @@ class Searcher:
         log.info("Query expansion produced %d variants", len(kept))
         return kept
 
-    def _expand_query(self, question: str, question_vec: Vector) -> list[tuple[str, Vector]]:
+    def _llm_query_variants(
+        self, question: str, question_vec: Vector, degraded: list[HealthWarning]
+    ) -> list[tuple[str, Vector]]:
+        """Guardrailed ``(variant, vector)`` pairs from the chat model; a failure is recorded."""
+        count = self._config.query_expansion_count
+        # Short queries skip LLM expansion: BM25/vector signal is already strong
+        # and the LLM round-trip dominates latency on small local models.
+        short_threshold = self._config.expansion_short_query_tokens
+        if count <= 0 or (short_threshold > 0 and len(_tokenize(question)) <= short_threshold):
+            return []
+        try:
+            texts = list(self._llm_expand(question, count))
+            if not texts:
+                return []
+            pairs = list(zip(texts, self._embedder.embed_query_batch(texts), strict=True))
+            return self._apply_guardrails(pairs, question_vec)
+        except Exception as exc:
+            _degrade(degraded, WarningCode.QUERY_EXPANSION_FAILED, exc)
+            return []
+
+    def _expand_query(
+        self, question: str, question_vec: Vector, degraded: list[HealthWarning]
+    ) -> list[tuple[str, Vector]]:
         """Return ``(variant, variant_vec)`` pairs for downstream search.
 
         LLM variants run through ``_apply_guardrails``; concept-graph
         variants bypass it since they come from deterministic traversal.
-        Embeddings batch per source: one provider round-trip per source.
+        Each step fails on its own, so a failed LLM step keeps the concept variants.
         """
-        count = self._config.query_expansion_count
-        if count <= 0 and not self._config.concept_graph:
-            return []
-        # Short queries skip LLM expansion: BM25/vector signal is already strong
-        # and the LLM round-trip dominates latency on small local models.
-        # Concept-graph expansion still runs.
-        short_threshold = self._config.expansion_short_query_tokens
-        skip_llm = short_threshold > 0 and len(_tokenize(question)) <= short_threshold
-        try:
-            llm_variants: list[tuple[str, Vector]] = []
-            if count > 0 and not skip_llm:
-                llm_texts = list(self._llm_expand(question, count))
-                if llm_texts:
-                    llm_vectors = self._embedder.embed_query_batch(llm_texts)
-                    llm_variants = list(zip(llm_texts, llm_vectors, strict=True))
-            llm_variants = self._apply_guardrails(llm_variants, question_vec)
-
-            concept_texts = list(self._concept_query_expansion(question))
-            if concept_texts:
-                concept_vectors = self._embedder.embed_query_batch(concept_texts)
-                llm_variants.extend(zip(concept_texts, concept_vectors, strict=True))
-
-            return llm_variants
-        except Exception as exc:
-            log.warning("Query expansion disabled for this call: %s", exc)
-            log.debug("Query expansion exception", exc_info=True)
-            return []
+        return [
+            *self._llm_query_variants(question, question_vec, degraded),
+            *self._concept_query_expansion(question, degraded),
+        ]
 
     def _should_skip_expansion(self, question: str, chunk_type: ChunkType | None = None) -> bool:
         if self._config.expansion_skip_threshold <= 0:
@@ -443,8 +516,10 @@ class Searcher:
             )
         return skip
 
-    def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
-        """Re-rank by concept overlap; a failed graph keeps the rows with a warning."""
+    def _apply_concept_boost(
+        self, results: list[SearchChunk], question: str, degraded: list[HealthWarning]
+    ) -> list[SearchChunk]:
+        """Re-rank by concept overlap; a failed graph keeps the rows and is recorded."""
         if not self._config.concept_graph or not results:
             return results
         try:
@@ -459,8 +534,7 @@ class Searcher:
             # that consume search() order directly (CLI search, MCP search).
             return order_by_fusion(boosted)
         except Exception as exc:
-            log.warning("Concept boost disabled for this call: %s", exc)
-            log.debug("Concept boost exception", exc_info=True)
+            _degrade(degraded, WarningCode.CONCEPT_BOOST_FAILED, exc)
             return results
 
     def _hyde_search(
@@ -588,9 +662,10 @@ class Searcher:
         seen: set[tuple[str, int]],
         top_k: int,
         chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
     ) -> None:
         """Append unseen variant-search hits to ``results`` (in place)."""
-        for variant, variant_vec in self._expand_query(question, query_vec):
+        for variant, variant_vec in self._expand_query(question, query_vec, degraded):
             variant_results = self._store.search(
                 variant_vec,
                 top_k=top_k,
@@ -609,19 +684,19 @@ class Searcher:
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,
-        chunk_type: ChunkType | None = None,
+        chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
     ) -> None:
         """Append unseen HyDE hits to ``results`` (in place), down-weighted by
         ``hyde_weight`` in canonical score space (a weight of 1.0 trusts HyDE
         hits as much as direct hits; lower discounts them proportionally).
 
         HyDE here only widens a search that already ran, so a failure skips the
-        widening with a warning, as a failed query expansion does."""
+        widening and records it, as a failed query expansion does."""
         try:
             hyde_results = self._hyde_search(question, top_k, chunk_type=chunk_type)
         except Exception as exc:
-            log.warning("HyDE widening disabled for this call: %s", exc)
-            log.debug("HyDE widening exception", exc_info=True)
+            _degrade(degraded, WarningCode.HYDE_BLEND_FAILED, exc)
             return
         for r in hyde_results:
             key = (r.source, r.chunk_index)
@@ -639,7 +714,17 @@ class Searcher:
         *,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        """The search result every surface shows: at most ``top_k`` rows.
+        """The rows of ``search_report``."""
+        return self.search_report(question, top_k, chunk_type=chunk_type).rows
+
+    def search_report(
+        self,
+        question: str,
+        top_k: int = 0,
+        *,
+        chunk_type: ChunkType | None = None,
+    ) -> SearchReport:
+        """The search result every surface shows: at most ``top_k`` rows, and the failed steps.
 
         The relevance floor, the per-source cap and ``top_k`` apply last, after
         every step that adds rows. A query that names one document returns that
@@ -651,16 +736,22 @@ class Searcher:
         if self._config.intent_routing and self._parse_structured_query(question).mode is None:
             known_item = self._known_item_results(question, self._retrieval_scope(chunk_type))
             if known_item:
-                return known_item[:top_k]
+                return SearchReport(known_item[:top_k])
+        degraded: list[HealthWarning] = []
         kept = filter_results(
-            self._candidates(question, top_k, chunk_type),
+            self._candidates(question, top_k, chunk_type, degraded),
             self._config.max_distance,
             self._config.min_relevance_score,
         )
-        return diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
+        rows = diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
+        return SearchReport(rows, tuple(degraded))
 
     def _candidates(
-        self, question: str, top_k: int, chunk_type: ChunkType | None
+        self,
+        question: str,
+        top_k: int,
+        chunk_type: ChunkType | None,
+        degraded: list[HealthWarning],
     ) -> list[SearchChunk]:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for the caller to filter and cut.
@@ -704,9 +795,11 @@ class Searcher:
         # apply -- the early return used to drop it on the skip path.
         if not self._should_skip_expansion(question, chunk_type):
             seen = {(r.source, r.chunk_index) for r in results}
-            self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
+            self._merge_variant_results(
+                question, query_vec, results, seen, top_k, chunk_type, degraded
+            )
             if self._config.hyde:
-                self._merge_hyde_results(question, results, seen, top_k, chunk_type)
+                self._merge_hyde_results(question, results, seen, top_k, chunk_type, degraded)
         # Merged variant/HyDE hits arrive appended, not ranked; every consumer
         # of this method (bare search surfaces included) gets one global order
         # over the canonical score rather than insertion order.
@@ -722,7 +815,7 @@ class Searcher:
         # Runs before the concept boost so a boost cannot promote a
         # structural chunk into the rank-0 exemption.
         results = self._drop_structural(results)
-        results = self._apply_concept_boost(results, question)
+        results = self._apply_concept_boost(results, question, degraded)
         results = order_by_fusion(results)
         # Rerank when a cross-encoder is loaded so every search surface (HTTP,
         # MCP, CLI, ask) gets reranked order, not just the ask/chat path. A
@@ -1002,8 +1095,8 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> RagContext | None:
-        """Build RAG context from search results.
+    ) -> RagContext:
+        """Build RAG context from search results; a context with no messages is a refusal.
 
         ``chunk_type`` restricts the pool to ``"raw"`` (which covers table
         chunks too) or ``"wiki"`` rows; ``None`` (default) searches the
@@ -1026,6 +1119,7 @@ class Searcher:
         known_item = (
             self._known_item_results(clean_query, scope) if self._config.intent_routing else []
         )
+        degraded: list[HealthWarning] = []
         if known_item:
             # The named document IS the context; ranking and reranking would
             # only reorder or drop parts of it. The budget fit below still
@@ -1039,7 +1133,7 @@ class Searcher:
             retrieve_k = top_k or self._config.top_k
             if self._config.reranker_model:
                 retrieve_k = max(retrieve_k, self._config.rerank_candidates)
-            results = self._candidates(retrieval_query, retrieve_k, chunk_type)
+            results = self._candidates(retrieval_query, retrieve_k, chunk_type, degraded)
             if rewrite is not None:
                 typed_results = self._search_typed_arm(question, retrieve_k, chunk_type)
                 results = fuse_ranked_lists([results, typed_results])
@@ -1058,12 +1152,14 @@ class Searcher:
                         memory_chunks,
                         self.direct_messages(question, history),
                         retrieval_query=rewrite,
+                        degraded=tuple(degraded),
                     )
-                return None
+                return RagContext([], [], degraded=tuple(degraded), refused=True)
             results = prepare_results(results, self._config.diversity_max_per_source)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
-        return self._finalize_context(results, question, history, retrieval_query=rewrite)
+        context = self._finalize_context(results, question, history, retrieval_query=rewrite)
+        return context._replace(degraded=tuple(degraded))
 
     def _finalize_context(
         self,
@@ -1493,8 +1589,8 @@ class Searcher:
         if pre_answer is not None:
             return AskResult(answer=pre_answer, sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
-        if rag is None:
-            return AskResult(answer=GROUNDED_REFUSAL, sources=[])
+        if rag.refused:
+            return AskResult(answer=GROUNDED_REFUSAL, sources=[], degraded=list(rag.degraded))
         results, messages = rag.results, rag.messages
         dropped = rag.dropped or []
         opts = options if options is not None else self._config.generation_options()
@@ -1531,6 +1627,7 @@ class Searcher:
             cited_sources=cited_subset(strip_llm_citations(clean), results),
             retrieval_query=rag.retrieval_query,
             dropped_sources=dropped,
+            degraded=list(rag.degraded),
         )
 
     def ask(
@@ -1586,8 +1683,8 @@ class Searcher:
     ) -> Generator[StreamToken | RetrievalNotice | AnswerSources, None, None]:
         """Stream answer tokens, then the sources they cite as one ``AnswerSources``.
 
-        When retrieval ran on a rewrite of the question, a ``RetrievalNotice``
-        carrying that rewrite precedes the first token.
+        When retrieval ran on a rewrite of the question or a widening step
+        failed, a ``RetrievalNotice`` carrying both precedes the first token.
         """
         if self.search_unavailable():
             yield StreamToken(content=SEARCH_NEEDS_EMBEDDER, is_reasoning=False)
@@ -1601,11 +1698,11 @@ class Searcher:
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
-        if rag is None:
+        if rag.retrieval_query or rag.degraded:
+            yield RetrievalNotice(query=rag.retrieval_query, degraded=rag.degraded)
+        if rag.refused:
             yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
-        if rag.retrieval_query:
-            yield RetrievalNotice(query=rag.retrieval_query)
         results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
         # been yielded, so the conservative budget the context fit already

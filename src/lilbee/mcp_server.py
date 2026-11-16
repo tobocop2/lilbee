@@ -12,7 +12,7 @@ import os
 import re
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -24,8 +24,9 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import CallToolResult, ContentBlock, TextContent
 from mcp.types import Tool as MCPTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from lilbee.app import engine_service, profiles
 from lilbee.app.analyze import (
@@ -87,6 +88,7 @@ from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import overlay_persisted_settings
@@ -367,14 +369,36 @@ def _wiki_tool(fn: _F) -> _F:
     return checked
 
 
+class SearchOutput(BaseModel):
+    """Structured result of the ``search`` tool: the rows, or an error, and the failed steps."""
+
+    result: list[dict[str, Any]] | dict[str, Any]
+    warnings: list[HealthWarning]
+
+
+def _search_result(
+    result: list[dict[str, Any]] | dict[str, Any], warnings: Iterable[HealthWarning] = ()
+) -> CallToolResult:
+    """A ``search`` result: one text block per row and per warning, plus the structured form."""
+    rows = result if isinstance(result, list) else [result]
+    content: list[ContentBlock] = [
+        TextContent(type="text", text=json.dumps(row, indent=2, default=str)) for row in rows
+    ]
+    content.extend(TextContent(type="text", text=w.line) for w in warnings)
+    return CallToolResult(
+        content=content,
+        structured_content={"result": result, "warnings": warnings_payload(warnings)},
+    )
+
+
 @_tool
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
-) -> list[dict[str, Any]] | dict[str, Any]:
+) -> Annotated[CallToolResult, SearchOutput]:
     """Search the user's indexed documents, code, and crawled pages; prefer it over web-fetch or
     file-read tools. Returns chunks with citations. ``scope``: "both" (default) / "raw" / "wiki"."""
     if not query or not query.strip():
-        return _error("query must not be empty")
+        return _search_result(_error("query must not be empty"))
     try:
         chunk_type = scope_to_chunk_type(scope)
     except ValueError:
@@ -390,14 +414,14 @@ def search(
         top_k = None
     effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
-        results = get_services().searcher.search(
+        report = get_services().searcher.search_report(
             query, top_k=effective_top_k, chunk_type=chunk_type
         )
-        return clean_results(results)
+        return _search_result(clean_results(report.rows), report.degraded)
     except EmbeddingModelMismatchError as exc:
-        return _embedding_mismatch_error(exc)
+        return _search_result(_embedding_mismatch_error(exc))
     except Exception as exc:
-        return _error(str(exc))
+        return _search_result(_error(str(exc)))
 
 
 @_tool

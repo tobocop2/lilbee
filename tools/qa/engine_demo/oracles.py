@@ -48,6 +48,7 @@ ASK_KEYS = frozenset(
         "cited_sources",
         "retrieval_query",
         "dropped_sources",
+        "warnings",
     }
 )
 

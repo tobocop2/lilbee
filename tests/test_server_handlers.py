@@ -18,7 +18,7 @@ from lilbee.core.config.enums import ChatMode, OcrMode
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.retrieval.query.searcher import RagContext
+from lilbee.retrieval.query.searcher import RagContext, SearchReport
 from lilbee.runtime.progress import OcrBackendUsed, SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
@@ -76,9 +76,9 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
-    searcher.build_rag_context.return_value = None
+    searcher.build_rag_context.return_value = RagContext([], [], refused=True)
     # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
     searcher.search_unavailable.return_value = False
@@ -561,16 +561,17 @@ class TestSearch:
             chunk_index=0,
             vector=[0.1],
         )
-        mock_svc.searcher.search.return_value = [chunk]
-        result = await handlers.search("test", top_k=3)
+        mock_svc.searcher.search_report.return_value = SearchReport([chunk])
+        result = (await handlers.search("test", top_k=3)).documents
         assert len(result) == 1
         assert result[0].source == "doc.pdf"
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=3, chunk_type=None)
 
     async def test_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = await handlers.search("nothing")
-        assert result == []
+        assert result.documents == []
+        assert result.warnings == ()
 
     async def test_empty_query_raises(self):
         with pytest.raises(ValueError, match="query must not be empty"):
@@ -581,27 +582,31 @@ class TestSearch:
             await handlers.search("   ")
 
     async def test_chunk_type_passed_to_searcher(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         await handlers.search("test", chunk_type="wiki")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type="wiki")
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test", top_k=cfg.top_k, chunk_type="wiki"
+        )
 
     async def test_chunk_type_defaults_to_none(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test", top_k=cfg.top_k, chunk_type=None
+        )
 
     async def test_omitted_top_k_uses_configured_value(self, mock_svc):
         """Omitting top_k resolves to cfg.top_k read at call time, not a hardcoded default."""
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         cfg.top_k = 7
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=7, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=7, chunk_type=None)
 
     async def test_explicit_top_k_wins_over_configured_value(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         cfg.top_k = 7
         await handlers.search("test", top_k=3)
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=3, chunk_type=None)
 
 
 class TestAsk:
@@ -726,7 +731,7 @@ class TestAsk:
 
 class TestAskStream:
     async def test_no_results_yields_error(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         events = [e async for e in handlers.ask_stream("test")]
         non_empty = [e for e in events if e]
         assert len(non_empty) == 1
@@ -774,7 +779,7 @@ class TestAskStream:
         assert "warming" not in event_types
 
     async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
@@ -1138,7 +1143,7 @@ class TestChat:
         surface instead of silently answering off-corpus."""
         from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL
 
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         result = await handlers.chat("q", [])
         assert result.answer == GROUNDED_REFUSAL
         assert result.sources == []
@@ -1467,7 +1472,7 @@ class TestChat:
 
 class TestChatStream:
     async def test_no_results_yields_error(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
@@ -1494,7 +1499,7 @@ class TestChatStream:
         assert "done" in event_types
 
     async def test_forwards_chunk_type_to_build_rag_context(self, mock_svc):
-        mock_svc.searcher.build_rag_context.return_value = None
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
         async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
@@ -5799,7 +5804,7 @@ class TestSearchRouteErrors:
 
         async with AsyncTestClient(create_app()) as client:
             with patch("lilbee.server.handlers.rag.get_services") as mock_svc:
-                mock_svc.return_value.searcher.search.side_effect = RuntimeError("down")
+                mock_svc.return_value.searcher.search_report.side_effect = RuntimeError("down")
                 resp = await client.get(
                     "/api/search", params={"q": "test"}, headers=self._auth_headers()
                 )
@@ -6805,9 +6810,9 @@ class TestSourceLabelsOnTheWire:
         ]
 
     async def test_search_results_carry_a_label_and_no_number(self, mock_svc):
-        mock_svc.searcher.search.return_value = list(_LABELLED)
+        mock_svc.searcher.search_report.return_value = SearchReport(list(_LABELLED))
         result = await handlers.search("q")
-        dumped = [r.model_dump(exclude_none=True) for r in result]
+        dumped = [r.model_dump(exclude_none=True) for r in result.documents]
         assert {r["source"]: r["label"] for r in dumped} == {
             "first.md": "first.md",
             "second.md": "second.md",

@@ -2257,8 +2257,11 @@ class ChatScreen(Screen[None]):
                 break
             try:
                 if isinstance(token, RetrievalNotice):
-                    status = msg.SEARCHING_FOR.format(query=token.query)
-                    call_from_thread(self, widget.set_thinking_status, status)
+                    if token.query is not None:
+                        status = msg.SEARCHING_FOR.format(query=token.query)
+                        call_from_thread(self, widget.set_thinking_status, status)
+                    for warning in token.degraded:
+                        call_from_thread(self, self.notify, warning.line, severity="warning")
                     continue
                 if isinstance(token, AnswerSources):
                     # Shown under the answer, saved beside it: never part of its text.

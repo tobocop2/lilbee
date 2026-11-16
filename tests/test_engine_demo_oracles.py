@@ -76,6 +76,7 @@ _ASK = {
     "cited_sources": [{"source": "a.md", "label": "a.md"}],
     "retrieval_query": "q",
     "dropped_sources": [],
+    "warnings": [],
 }
 
 _GOOD_ASK_LINES = tuple(_served(_ENGINE, _PIN, r) for r in ("embed", "rerank", "chat"))

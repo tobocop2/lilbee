@@ -803,7 +803,9 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result(
             "explain how X works in detail\nexplain the purpose of X"
         )
-        variants = get_services().searcher._expand_query("explain X in detail", self._QUESTION_VEC)
+        variants = get_services().searcher._expand_query(
+            "explain X in detail", self._QUESTION_VEC, []
+        )
         assert len(variants) == 2
         for text, vec in variants:
             assert isinstance(text, str)
@@ -832,7 +834,7 @@ class TestExpandQuery:
     def test_caps_at_three(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("A\nB\nC\nD\nE")
         variants = get_services().searcher._expand_query(
-            "explain how kubernetes pods schedule", self._QUESTION_VEC
+            "explain how kubernetes pods schedule", self._QUESTION_VEC, []
         )
         assert len(variants) == 3
 
@@ -867,14 +869,14 @@ class TestExpandQuery:
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
         assert (
             get_services().searcher._expand_query(
-                "explain how kubernetes pods schedule", self._QUESTION_VEC
+                "explain how kubernetes pods schedule", self._QUESTION_VEC, []
             )
             == []
         )
 
     def test_disabled_when_count_zero(self, mock_svc):
         cfg.query_expansion_count = 0
-        assert get_services().searcher._expand_query("anything", self._QUESTION_VEC) == []
+        assert get_services().searcher._expand_query("anything", self._QUESTION_VEC, []) == []
         cfg.query_expansion_count = 3
 
     def test_count_zero_still_runs_concept_expansion_when_enabled(self, mock_svc):
@@ -889,7 +891,7 @@ class TestExpandQuery:
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes"]
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
             assert [text for text, _ in variants] == ["kubernetes"]
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -902,7 +904,7 @@ class TestExpandQuery:
         old = cfg.query_expansion_count
         cfg.query_expansion_count = 0
         try:
-            assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
+            assert get_services().searcher._expand_query("q", self._QUESTION_VEC, []) == []
             mock_svc.provider.chat.assert_not_called()
             mock_svc.embedder.embed_query_batch.assert_not_called()
         finally:
@@ -912,7 +914,7 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = iter(["stream"])
         assert (
             get_services().searcher._expand_query(
-                "kubernetes scheduling internals", self._QUESTION_VEC
+                "kubernetes scheduling internals", self._QUESTION_VEC, []
             )
             == []
         )
@@ -921,20 +923,20 @@ class TestExpandQuery:
         # 1-token query is below the default threshold of 2, so LLM expansion
         # should not fire. Concept-graph is off in this test, so the result is [].
         mock_svc.provider.chat.return_value = _text_result("should not be reached")
-        assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC) == []
+        assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC, []) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_skips_llm_at_threshold_boundary(self, mock_svc):
         # 2-token query == threshold; ≤ short_threshold means skip.
         mock_svc.provider.chat.return_value = _text_result("should not be reached")
-        assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC) == []
+        assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC, []) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_runs_llm_above_threshold(self, mock_svc):
         # 3-token query > threshold; LLM expansion runs.
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         variants = get_services().searcher._expand_query(
-            "kubernetes scheduling internals", self._QUESTION_VEC
+            "kubernetes scheduling internals", self._QUESTION_VEC, []
         )
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
@@ -943,7 +945,7 @@ class TestExpandQuery:
         # "R" is query content, so a 3-token query with a single-character
         # subject runs LLM expansion instead of skipping as short.
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
-        variants = get_services().searcher._expand_query("R intro guide", self._QUESTION_VEC)
+        variants = get_services().searcher._expand_query("R intro guide", self._QUESTION_VEC, [])
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
 
@@ -952,7 +954,7 @@ class TestExpandQuery:
         cfg.expansion_short_query_tokens = 0
         mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
             assert len(variants) == 2
             mock_svc.provider.chat.assert_called_once()
         finally:
@@ -965,7 +967,7 @@ class TestExpandQuery:
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes"]
         try:
-            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
+            variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC, [])
             assert [text for text, _ in variants] == ["kubernetes"]
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -976,7 +978,9 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result(
             "variant one\nvariant two\nvariant three"
         )
-        get_services().searcher._expand_query("kubernetes scheduling internals", self._QUESTION_VEC)
+        get_services().searcher._expand_query(
+            "kubernetes scheduling internals", self._QUESTION_VEC, []
+        )
         assert mock_svc.embedder.embed_query_batch.call_count >= 1
         batch_call_args = mock_svc.embedder.embed_query_batch.call_args_list[0].args[0]
         assert len(batch_call_args) == 3
@@ -994,7 +998,7 @@ class TestExpandQuery:
         mock_svc.provider.chat.return_value = _text_result("restate one\nrestate two")
         try:
             get_services().searcher._expand_query(
-                "kubernetes scheduling internals", self._QUESTION_VEC
+                "kubernetes scheduling internals", self._QUESTION_VEC, []
             )
         finally:
             cfg.concept_graph = old_concept
@@ -2130,7 +2134,7 @@ class TestSearchAppliesConceptBoostOnExpansionSkip:
         monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
         called: list[bool] = []
 
-        def _boost(results, question):
+        def _boost(results, question, degraded):
             called.append(True)
             return results
 
@@ -2302,7 +2306,7 @@ class TestHydeSearch:
     def test_blend_skip_logs_the_failure_at_warning_and_the_trace_at_debug(self, mock_svc, caplog):
         mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
         with caplog.at_level("DEBUG", logger="lilbee.retrieval.query.searcher"):
-            get_services().searcher._merge_hyde_results("vague question", [], set(), 5)
+            get_services().searcher._merge_hyde_results("vague question", [], set(), 5, None, [])
         warning = next(r for r in caplog.records if r.levelname == "WARNING")
         assert warning.getMessage() == ("HyDE widening disabled for this call: chat engine is down")
         trace = next(r for r in caplog.records if r.levelname == "DEBUG")
@@ -2313,7 +2317,7 @@ class TestHydeSearch:
     def test_blend_asks_for_the_question_with_the_caller_depth(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("a passage")
         mock_svc.store.search.return_value = []
-        get_services().searcher._merge_hyde_results("vague question", [], set(), 9)
+        get_services().searcher._merge_hyde_results("vague question", [], set(), 9, None, [])
         content = mock_svc.provider.chat.call_args.args[0][0]["content"]
         assert content == cfg.hyde_prompt.format(question="vague question")
         assert mock_svc.store.search.call_args.kwargs["top_k"] == 9
@@ -2329,7 +2333,7 @@ class TestHydeSearch:
         ]
         results = [direct]
         seen = {("direct.md", 0)}
-        get_services().searcher._merge_hyde_results("vague question", results, seen, 5)
+        get_services().searcher._merge_hyde_results("vague question", results, seen, 5, None, [])
         assert [(r.source, r.chunk_index) for r in results] == [
             ("direct.md", 0),
             ("new.md", 1),
@@ -3043,7 +3047,7 @@ class TestKnownItemRoute:
             result = get_services().searcher.build_rag_context("wiki: survey_report.pdf")
         finally:
             cfg.wiki = True
-        assert result is None
+        assert result.refused
         mock_svc.store.get_chunks_by_source.assert_not_called()
 
     def test_named_document_bypasses_similarity_search(self, mock_svc):
@@ -3870,7 +3874,7 @@ class TestTypedRewriteFusion:
             [_make_result(source="rewrite.md", chunk="rewrite evidence")],
             [_make_result(source="typed.md", chunk="typed evidence")],
         )
-        assert rag is None
+        assert rag.refused
         rag = self._build(
             mock_svc,
             "and when was it written?",
@@ -3892,7 +3896,7 @@ class TestTypedRewriteFusion:
             history=list(self._HISTORY),
             chunk_type=ChunkType.WIKI,
         )
-        assert rag is None
+        assert rag.refused
         assert mock_svc.store.search.call_count == 0
 
 
@@ -4023,7 +4027,7 @@ class TestConceptFailuresAreReported:
             mock.patch.object(cfg, "expansion_short_query_tokens", 0),
             caplog.at_level("WARNING"),
         ):
-            variants = get_services().searcher._expand_query("kubernetes scheduling", vec)
+            variants = get_services().searcher._expand_query("kubernetes scheduling", vec, [])
         assert [text for text, _ in variants] == ["restate one", "restate two"]
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert len(warnings) == 1
@@ -4083,7 +4087,9 @@ class TestConceptBoosting:
         old = cfg.concept_graph
         cfg.concept_graph = True
         try:
-            out = get_services().searcher._apply_concept_boost([weak, strong], "python question")
+            out = get_services().searcher._apply_concept_boost(
+                [weak, strong], "python question", []
+            )
             assert [r.source for r in out] == ["strong.md", "weak.md"]
         finally:
             cfg.concept_graph = old
@@ -4101,7 +4107,7 @@ class TestConceptBoosting:
         old = cfg.concept_graph
         cfg.concept_graph = True
         try:
-            out = get_services().searcher._apply_concept_boost([strong, weak, hyde], "python q")
+            out = get_services().searcher._apply_concept_boost([strong, weak, hyde], "python q", [])
             assert out[0].source == "strong.md"
         finally:
             cfg.concept_graph = old
@@ -4124,7 +4130,7 @@ class TestConceptBoosting:
         cfg.concept_graph = True
         try:
             results = [_make_result(source="a.md", distance=0.5)]
-            out = get_services().searcher._apply_concept_boost(results, "empty question")
+            out = get_services().searcher._apply_concept_boost(results, "empty question", [])
             assert out == results
             mock_svc.concepts.boost_results.assert_not_called()
         finally:
@@ -4189,7 +4195,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            variants = searcher._expand_query("python frameworks", [0.1] * 768)
+            variants = searcher._expand_query("python frameworks", [0.1] * 768, [])
             texts = [text for text, _ in variants]
             assert "python web frameworks" in texts
         finally:
@@ -4199,7 +4205,7 @@ class TestConceptQueryExpansion:
         old = cfg.concept_graph
         cfg.concept_graph = False
         try:
-            result = get_services().searcher._concept_query_expansion("test query")
+            result = get_services().searcher._concept_query_expansion("test query", [])
             assert result == []
         finally:
             cfg.concept_graph = old
@@ -4217,7 +4223,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            result = searcher._concept_query_expansion("test query")
+            result = searcher._concept_query_expansion("test query", [])
             assert result == []
         finally:
             cfg.concept_graph = old
@@ -4235,7 +4241,7 @@ class TestConceptQueryExpansion:
                 mock_svc.reranker,
                 mock_svc.concepts,
             )
-            result = searcher._concept_query_expansion("test query")
+            result = searcher._concept_query_expansion("test query", [])
             assert result == []
         finally:
             cfg.concept_graph = old
@@ -4913,11 +4919,13 @@ class TestBuildRagContextFilters:
         assert "close.pdf" in sources
         assert "far.pdf" not in sources
 
-    def test_returns_none_when_all_filtered(self, mock_svc):
+    def test_refuses_when_all_filtered(self, mock_svc):
         far = _make_result(source="far.pdf", distance=0.95, chunk="irrelevant")
         mock_svc.store.search.return_value = [far]
         result = get_services().searcher.build_rag_context("question")
-        assert result is None
+        assert result.refused
+        assert result.messages == []
+        assert result.results == []
 
 
 class TestNearDuplicateSuppression:

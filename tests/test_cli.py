@@ -41,6 +41,7 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk, SourceSummary
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
@@ -122,7 +123,7 @@ def mock_svc():
 
     searcher = MagicMock()
     searcher.search_unavailable.return_value = False
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     searcher.ask_stream.return_value = _mock_stream("")
     store = MagicMock()
     store.search.return_value = []
@@ -1030,9 +1031,9 @@ class TestDiagnosticsRouting:
             logging.getLogger("lilbee.data.ingest.pipeline").warning(
                 "Sync reconciliation: 1 document file(s) on disk are absent from the index"
             )
-            return []
+            return SearchReport([])
 
-        mock_svc.searcher.search.side_effect = _noisy_search
+        mock_svc.searcher.search_report.side_effect = _noisy_search
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 0
         assert "No results found." in result.stdout
@@ -1079,20 +1080,20 @@ class TestEmbeddingMismatchCli:
         assert "use-embedder orgA/repoA/built.gguf" in result.output
 
     def test_search_mismatch_adoptable_hint(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _mismatch_error()
+        mock_svc.searcher.search_report.side_effect = _mismatch_error()
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 1
         assert "use-embedder orgA/repoA/built.gguf" in result.output
 
     def test_search_mismatch_dim_incompatible_points_to_rebuild(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _mismatch_error(dims_match=False)
+        mock_svc.searcher.search_report.side_effect = _mismatch_error(dims_match=False)
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 1
         assert "rebuild" in result.output.lower()
         assert "use-embedder" not in result.output
 
     def test_search_mismatch_json_carries_persisted_model(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _mismatch_error()
+        mock_svc.searcher.search_report.side_effect = _mismatch_error()
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 1
         payload = json.loads(result.output)
@@ -1111,14 +1112,14 @@ class TestEngineChangedCli:
     """An engine change names the rebuild and the earlier engine, and no adopt command."""
 
     def test_search_prints_the_stop_message(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        mock_svc.searcher.search_report.side_effect = _engine_changed_error()
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 1
         assert "lilbee rebuild" in result.output
         assert "use-embedder" not in result.output
 
     def test_search_json_carries_the_message_only(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        mock_svc.searcher.search_report.side_effect = _engine_changed_error()
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 1
         payload = json.loads(result.output)
@@ -2394,7 +2395,7 @@ _MOCK_SEARCH_RESULTS = [
 
 class TestSearch:
     def test_search_json_with_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
+        mock_svc.searcher.search_report.return_value = SearchReport(_MOCK_SEARCH_RESULTS)
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -2405,30 +2406,30 @@ class TestSearch:
         assert "distance" in data["results"][0]
 
     def test_search_json_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["--json", "search", "nothing"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["results"] == []
 
     def test_search_caps_top_k(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "q", "--top-k", "500"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == 100
 
     def test_search_omitted_top_k_uses_configured_value(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         cfg.top_k = 7
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 7
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == 7
 
     def test_search_rejects_non_positive_top_k(self, mock_svc):
         for bad in ("0", "-3"):
             result = runner.invoke(app, ["search", "q", "--top-k", bad])
             assert result.exit_code != 0
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_search_rejects_empty_query(self, mock_svc):
         result = runner.invoke(app, ["search", "   "])
@@ -2442,45 +2443,45 @@ class TestSearch:
         supported = _MOCK_SEARCH_RESULTS[0].model_copy(
             update={"source": "far-but-lexical.pdf", "distance": 1.4, "bm25_score": 12.0}
         )
-        mock_svc.searcher.search.return_value = [supported]
+        mock_svc.searcher.search_report.return_value = SearchReport([supported])
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 0
         sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
         assert sources == ["far-but-lexical.pdf"]
 
     def test_search_human_output(self, mock_svc):
-        mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
+        mock_svc.searcher.search_report.return_value = SearchReport(_MOCK_SEARCH_RESULTS)
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "manual.pdf" in result.output
 
     def test_search_human_truncates_long_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})]
+        )
         result = runner.invoke(app, ["search", "test"])
         assert result.exit_code == 0
         assert result.output.count("x") < 100
 
     def test_search_human_no_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "nothing"])
         assert result.exit_code == 0
         assert "No results found" in result.output
 
     def test_search_human_hybrid_shows_score(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "Score" in result.output
         assert "0.85" in result.output
 
     def test_search_json_hybrid_has_relevance_score(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})]
+        )
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -2492,34 +2493,34 @@ class TestSearch:
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "error" in data
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_search_scope_wiki_passes_wiki_chunk_type(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "--scope", "wiki", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "wiki"
+        assert mock_svc.searcher.search_report.call_args.kwargs.get("chunk_type") == "wiki"
 
     def test_search_scope_raw_passes_raw_chunk_type(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "--scope", "raw", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "raw"
+        assert mock_svc.searcher.search_report.call_args.kwargs.get("chunk_type") == "raw"
 
     def test_search_default_scope_is_mixed_pool(self, mock_svc):
         """Omitting --scope means chunk_type=None (both)."""
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") is None
+        assert mock_svc.searcher.search_report.call_args.kwargs.get("chunk_type") is None
 
     def test_search_invalid_scope_exits_nonzero(self, mock_svc):
         result = runner.invoke(app, ["search", "--scope", "bogus", "q"])
         assert result.exit_code != 0
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_search_json_provider_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("provider down")
+        mock_svc.searcher.search_report.side_effect = RuntimeError("provider down")
         result = runner.invoke(app, ["--json", "search", "test"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
@@ -2531,7 +2532,7 @@ class TestSearch:
         assert "empty" in result.output.lower()
 
     def test_search_human_provider_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("connection refused")
+        mock_svc.searcher.search_report.side_effect = RuntimeError("connection refused")
         result = runner.invoke(app, ["search", "test"])
         assert result.exit_code == 1
         assert "connection refused" in result.output
@@ -9209,18 +9210,18 @@ class TestTerminalSafeSourceNames:
     def test_the_search_table_writes_no_control_character_of_a_source(self, mock_svc, name):
         from tests._crafted_titles import TERMINAL_CONTROL_RE
 
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0, result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
 
     @pytest.mark.parametrize("name", CONTROL_TITLES)
     def test_search_json_keeps_the_source_as_stored(self, mock_svc, name):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})]
+        )
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert json.loads(result.output.strip())["results"][0]["source"] == name
 
@@ -9303,18 +9304,18 @@ class TestTerminalSafeStoredText:
     def test_the_search_table_writes_no_control_character_of_a_preview(self, mock_svc, text):
         from tests._crafted_titles import TERMINAL_CONTROL_RE
 
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0, result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
 
     @pytest.mark.parametrize("text", CONTROL_TITLES)
     def test_search_json_keeps_the_chunk_as_stored(self, mock_svc, text):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})]
+        )
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert json.loads(result.output.strip())["results"][0]["chunk"] == text
 
@@ -9386,9 +9387,9 @@ class TestTerminalSafeStoredText:
         assert result.output == body + "\n"
 
     def test_the_search_table_keeps_the_lines_of_a_preview(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "alpha\nbeta\x1b[31m"})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "alpha\nbeta\x1b[31m"})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0, result.output
         assert "alpha" in result.output and "beta" in result.output

@@ -21,7 +21,9 @@ from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.progress import EmbedEvent, EventType
+from lilbee.server.handlers.rag import SearchResponse
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests.server.conftest import parse_sse_events
 
@@ -121,7 +123,11 @@ class TestGpuStatsStreamRoute:
 
 
 class TestSearchRoute:
-    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
+    @mock.patch(
+        "lilbee.server.handlers.search",
+        new_callable=AsyncMock,
+        return_value=SearchResponse([], ()),
+    )
     def test_empty_results(self, mock_search, client):
         resp = client.get("/api/search", params={"q": "hello", "top_k": "3"})
         assert resp.status_code == 200
@@ -131,14 +137,18 @@ class TestSearchRoute:
     @mock.patch(
         "lilbee.server.handlers.search",
         new_callable=AsyncMock,
-        return_value=[{"source": "a.md", "chunks": []}],
+        return_value=SearchResponse([{"source": "a.md", "chunks": []}], ()),
     )
     def test_with_results(self, mock_patched, client):
         resp = client.get("/api/search", params={"q": "test"})
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
-    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
+    @mock.patch(
+        "lilbee.server.handlers.search",
+        new_callable=AsyncMock,
+        return_value=SearchResponse([], ()),
+    )
     def test_omitted_top_k_forwarded_as_none(self, mock_search, client):
         """The route carries no hardcoded default; the handler resolves an omitted top_k."""
         client.get("/api/search", params={"q": "x"})
@@ -150,14 +160,14 @@ class TestSearchRoute:
         from tests.conftest import make_mock_services
 
         searcher = mock.MagicMock()
-        searcher.search.return_value = []
+        searcher.search_report.return_value = SearchReport([])
         services = make_mock_services(searcher=searcher)
         cfg.top_k = 7
         set_services(services)
         try:
             resp = client.get("/api/search", params={"q": "x"})
             assert resp.status_code == 200
-            searcher.search.assert_called_once_with("x", top_k=7, chunk_type=None)
+            searcher.search_report.assert_called_once_with("x", top_k=7, chunk_type=None)
         finally:
             set_services(None)
 

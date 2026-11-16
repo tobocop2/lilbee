@@ -63,6 +63,7 @@ from lilbee.mcp_server import (
     wiki_update,
     wiki_wipe,
 )
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.progress import (
     CrawlPageFailedEvent,
     EmbedEvent,
@@ -102,7 +103,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     services = make_mock_services(searcher=searcher)
     svc_mod.set_services(services)
     yield services
@@ -123,62 +124,71 @@ _SYNC_NOOP = SyncResult()
 _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
+def _rows(result):
+    """The rows (or error) in a search result's structured content."""
+    return result.structured_content["result"]
+
+
 class TestSearch:
     def test_returns_cleaned_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="doc.pdf",
-                content_type="pdf",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="content",
-                chunk_index=0,
-                vector=[0.1] * 768,
-                distance=0.3,
-            ),
-        ]
-        results = search("test query", top_k=3)
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="doc.pdf",
+                    content_type="pdf",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="content",
+                    chunk_index=0,
+                    vector=[0.1] * 768,
+                    distance=0.3,
+                ),
+            ]
+        )
+        results = _rows(search("test query", top_k=3))
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test query", top_k=3, chunk_type=None
+        )
 
     def test_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
-        assert search("nothing") == []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
+        assert _rows(search("nothing")) == []
 
     def test_empty_query_returns_error(self, mock_svc):
-        result = search("", top_k=3)
+        result = _rows(search("", top_k=3))
         assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_whitespace_query_returns_error(self, mock_svc):
-        result = search("   ", top_k=3)
+        result = _rows(search("   ", top_k=3))
         assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_embedding_failure_returns_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("embed failed")
-        result = search("test", top_k=3)
+        mock_svc.searcher.search_report.side_effect = RuntimeError("embed failed")
+        result = _rows(search("test", top_k=3))
         assert "error" in result
         assert "embed failed" in result["error"]
 
     def test_scope_wiki_filters_to_wiki_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="wiki")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="wiki")
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type="wiki")
 
     def test_scope_raw_filters_to_raw_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="raw")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="raw")
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type="raw")
 
     def test_scope_both_means_no_filter(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="both")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type=None)
 
     def test_invalid_scope_falls_back_to_both(self, mock_svc, caplog):
         """Smaller models echo prose like 'indexed docs' back as scope; we
@@ -187,13 +197,13 @@ class TestSearch:
         """
         import logging
 
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
-            result = search("q", top_k=3, scope="bogus")
+            result = _rows(search("q", top_k=3, scope="bogus"))
         assert result == []
-        mock_svc.searcher.search.assert_called_once()
+        mock_svc.searcher.search_report.assert_called_once()
         # chunk_type=None means "both" -> no filter at the data layer.
-        call_kwargs = mock_svc.searcher.search.call_args.kwargs
+        call_kwargs = mock_svc.searcher.search_report.call_args.kwargs
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
 
@@ -203,33 +213,35 @@ class TestSearch:
         of a negative limit reaching the store."""
         import logging
 
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
-            result = search("q", top_k=-3)
+            result = _rows(search("q", top_k=-3))
         assert result == []
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == cfg.top_k
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == cfg.top_k
         assert any("not positive" in record.message for record in caplog.records)
 
     def test_returns_searcher_results_unfiltered(self, mock_svc):
         """The relevance cutoff lives in Searcher.search (with the
         lexical-support exemption); MCP must not re-filter on bare distance,
         which dropped both-arm rows the fusion layer deliberately keeps."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="far-but-lexical.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="PX4471 spotted",
-                chunk_index=0,
-                vector=[0.1],
-                distance=1.4,
-                bm25_score=12.0,
-            ),
-        ]
-        results = search("PX4471")
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="far-but-lexical.md",
+                    content_type="text",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="PX4471 spotted",
+                    chunk_index=0,
+                    vector=[0.1],
+                    distance=1.4,
+                    bm25_score=12.0,
+                ),
+            ]
+        )
+        results = _rows(search("PX4471"))
         assert [r["source"] for r in results] == ["far-but-lexical.md"]
 
     def test_results_carry_a_label_and_no_number(self, mock_svc):
@@ -246,8 +258,8 @@ class TestSearch:
             chunk_index=0,
             vector=[0.1],
         )
-        mock_svc.searcher.search.return_value = [chunk]
-        [result] = search("guide")
+        mock_svc.searcher.search_report.return_value = SearchReport([chunk])
+        [result] = _rows(search("guide"))
         assert result["label"] == "example.com · The Guide"
         assert "citation_number" not in result
 
@@ -256,13 +268,13 @@ class TestSearch:
         carries, not just prose it would have to parse."""
         from lilbee.data.store import EmbeddingModelMismatchError
 
-        mock_svc.searcher.search.side_effect = EmbeddingModelMismatchError(
+        mock_svc.searcher.search_report.side_effect = EmbeddingModelMismatchError(
             persisted_model="orgA/repoA/modelA.gguf",
             persisted_dim=768,
             current_model="orgB/repoB/modelB.gguf",
             current_dim=768,
         )
-        result = search("q")
+        result = _rows(search("q"))
         assert result["code"] == "INDEX_EMBEDDER_MISMATCH"
         assert result["persisted_model"] == "orgA/repoA/modelA.gguf"
         assert result["persisted_dim"] == 768
@@ -272,10 +284,10 @@ class TestSearch:
     def test_engine_change_carries_the_shared_code(self, mock_svc):
         from lilbee.data.store import EmbeddingEngineChangedError
 
-        mock_svc.searcher.search.side_effect = EmbeddingEngineChangedError(
+        mock_svc.searcher.search_report.side_effect = EmbeddingEngineChangedError(
             model="m", dim=8, distance=0.2, verified=True
         )
-        result = search("q")
+        result = _rows(search("q"))
         assert result["code"] == "embedding_mismatch"
         assert "lilbee rebuild" in result["error"]
         assert "adoptable" not in result
@@ -283,27 +295,29 @@ class TestSearch:
     def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
         """settings_set top_k must govern search calls that omit the arg."""
         cfg.top_k = 15
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=15, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=15, chunk_type=None)
 
     def test_keeps_hybrid_results_without_distance(self, mock_svc):
         """Hybrid/RRF results with distance=None are not filtered."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="hybrid.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="hybrid result",
-                chunk_index=0,
-                vector=[0.1],
-                distance=None,
-            ),
-        ]
-        results = search("test")
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="hybrid.md",
+                    content_type="text",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="hybrid result",
+                    chunk_index=0,
+                    vector=[0.1],
+                    distance=None,
+                ),
+            ]
+        )
+        results = _rows(search("test"))
         assert len(results) == 1
         assert results[0]["source"] == "hybrid.md"
 
