@@ -59,12 +59,6 @@ MANIFESTS = {
                 "size": 36675724,
                 "min_os": "2.35",
             },
-            "linux-x86_64-cuda128-sm89": {
-                "sha256": "f4abebf6069a0e3e5276f65adf6719f7837912456c5acbf3ebe25377535e74f8",
-                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261104/lilbee_engine_mistral_rs-0.9.5-1.cuda128_sm89-py3-none-manylinux_2_35_x86_64.whl",
-                "size": 1095951263,
-                "min_os": "2.35",
-            },
             "macos-arm64-metal": {
                 "sha256": "08c30b536f6b6795587902fbe050ae2e53b27cc6873da6ceff55faca21179c2a",
                 "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115-mistralrs/lilbee_engine_mistral_rs-0.9.5-1.metal-py3-none-macosx_11_0_arm64.whl",
