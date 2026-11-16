@@ -31,35 +31,88 @@ _ENV_VAR = "LILBEE_CPU_QUOTA"
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 
 
-def _cgroup_cpu_quota(root: Path = _CGROUP_ROOT) -> float | None:
-    """Cores the CFS quota allows, unrounded, or None when unlimited or unreadable.
+_PROC_CGROUP = Path("/proc/self/cgroup")
 
-    cgroup v2 keeps ``<quota> <period>`` (or ``max`` for unlimited) in
-    ``cpu.max``; v1 splits it across ``cpu.cfs_quota_us`` (-1 = unlimited) and
-    ``cpu.cfs_period_us``. Quotas are routinely fractional (a rented pod gets
-    765ms per 100ms period, i.e. 7.65 cores), and which way that rounds differs
-    per caller, so it is left to them.
-    """
+_V1_CPU_CONTROLLER = "cpu"
+
+
+def _v2_dir_quota(directory: Path) -> float | None:
+    """Cores ``cpu.max`` in one cgroup v2 directory allows, or None."""
     try:
-        v2 = (root / "cpu.max").read_text(encoding="utf-8").split()
-    except OSError:
-        v2 = []
-    if v2:
-        if v2[0] == "max":
-            return None
-        try:
-            quota, period = int(v2[0]), int(v2[1])
-        except (ValueError, IndexError):
-            return None
-        return quota / period if period > 0 else None
+        fields = (directory / "cpu.max").read_text(encoding="utf-8").split()
+        quota, period = int(fields[0]), int(fields[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return quota / period if period > 0 else None
+
+
+def _v1_dir_quota(directory: Path) -> float | None:
+    """Cores the CFS files in one cgroup v1 directory allow, or None."""
     try:
-        quota = int((root / "cpu" / "cpu.cfs_quota_us").read_text(encoding="utf-8"))
-        period = int((root / "cpu" / "cpu.cfs_period_us").read_text(encoding="utf-8"))
+        quota = int((directory / "cpu.cfs_quota_us").read_text(encoding="utf-8"))
+        period = int((directory / "cpu.cfs_period_us").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if quota <= 0 or period <= 0:
-        return None
-    return quota / period
+    return quota / period if quota > 0 and period > 0 else None
+
+
+def _own_cgroup_paths(proc_cgroup: Path) -> dict[str, str]:
+    """Map each controller (v2 unified hierarchy: the empty name) to this process's cgroup path."""
+    try:
+        lines = proc_cgroup.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    paths: dict[str, str] = {}
+    for line in lines:
+        _, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        for name in controllers.split(",") if controllers else [""]:
+            paths[name] = path
+    return paths
+
+
+def _cgroup_chain(base: Path, relative: str | None) -> list[Path]:
+    """The process's cgroup directory and each ancestor up to ``base``.
+
+    A path that does not exist under ``base`` means the mount already is the
+    process's own cgroup (a container with its own cgroup namespace, or a
+    runtime that mounts the container's cgroup at the controller root), so
+    ``base`` alone is the chain.
+    """
+    if relative is None or ".." in Path(relative).parts:
+        return [base]
+    leaf = base / relative.lstrip("/")
+    if not leaf.is_dir():
+        return [base]
+    chain = [leaf]
+    while chain[-1] != base:
+        chain.append(chain[-1].parent)
+    return chain
+
+
+def _cgroup_cpu_quota(root: Path | None = None, proc_cgroup: Path | None = None) -> float | None:
+    """Cores the tightest CFS quota on the process's cgroup path allows, or None.
+
+    The quota is read at the process's own cgroup (named in ``/proc/self/cgroup``)
+    and every ancestor up to the mount; a parent's lower quota caps the process
+    like its own. cgroup v2 keeps ``<quota> <period>`` (or ``max`` for
+    unlimited) in ``cpu.max``; v1 splits it across ``cpu.cfs_quota_us`` (-1 =
+    unlimited) and ``cpu.cfs_period_us``. Quotas are routinely fractional (a
+    rented pod gets 765ms per 100ms period, i.e. 7.65 cores), and which way that
+    rounds differs per caller, so it is left to them.
+    """
+    root = _CGROUP_ROOT if root is None else root
+    paths = _own_cgroup_paths(_PROC_CGROUP if proc_cgroup is None else proc_cgroup)
+    v2 = [q for d in _cgroup_chain(root, paths.get("")) if (q := _v2_dir_quota(d)) is not None]
+    if v2:
+        return min(v2)
+    v1_base = root / "cpu"
+    v1 = [
+        q
+        for d in _cgroup_chain(v1_base, paths.get(_V1_CPU_CONTROLLER))
+        if (q := _v1_dir_quota(d)) is not None
+    ]
+    return min(v1) if v1 else None
 
 
 def _cpu_budget() -> float:

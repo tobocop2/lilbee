@@ -101,6 +101,116 @@ def test_cgroup_absent_is_none(tmp_path) -> None:
     assert _cgroup_cpu_quota(tmp_path) is None
 
 
+def _proc_cgroup(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "proc-self-cgroup"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_cgroup_v2_reads_the_process_own_cgroup(tmp_path) -> None:
+    # A systemd scope without a cgroup namespace: the mount is the host root,
+    # which has no cpu.max, and the limit sits at the process's own path.
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"system.slice/job.scope/cpu.max": "200000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/system.slice/job.scope\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+def test_cgroup_v2_parent_quota_caps_an_unlimited_child(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {"a/cpu.max": "100000 100000\n", "a/b/cpu.max": "max 100000\n"},
+    )
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+def test_cgroup_v2_child_quota_wins_when_tighter_than_parent(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu.max": "800000 100000\n",
+            "a/cpu.max": "400000 100000\n",
+            "a/b/cpu.max": "150000 100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1.5
+
+
+def test_cgroup_v1_reads_the_process_own_cpu_cgroup(tmp_path) -> None:
+    # A v1 host also lists a unified "0::" line; the cpu line names the path.
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu/cpu.cfs_quota_us": "-1\n",
+            "cpu/cpu.cfs_period_us": "100000\n",
+            "cpu/job/cpu.cfs_quota_us": "300000\n",
+            "cpu/job/cpu.cfs_period_us": "100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/job\n4:memory:/job\n0::/job\n")
+    assert _cgroup_cpu_quota(root, proc) == 3
+
+
+def test_cgroup_v1_parent_quota_caps_the_child(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu/a/cpu.cfs_quota_us": "200000\n",
+            "cpu/a/cpu.cfs_period_us": "100000\n",
+            "cpu/a/b/cpu.cfs_quota_us": "-1\n",
+            "cpu/a/b/cpu.cfs_period_us": "100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+def test_cgroup_path_missing_under_the_mount_reads_the_mount(tmp_path) -> None:
+    # Docker on v1 mounts the container's own cgroup at the controller root
+    # while /proc/self/cgroup still shows the host path.
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {"cpu/cpu.cfs_quota_us": "250000\n", "cpu/cpu.cfs_period_us": "100000\n"},
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/docker/abc\n0::/docker/abc\n")
+    assert _cgroup_cpu_quota(root, proc) == 2.5
+
+
+def test_cgroup_path_with_parent_reference_reads_the_mount(tmp_path) -> None:
+    # "x" sits beside the mount, so a walk that followed ".." would find it.
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "100000 100000\n"})
+    _write_cgroup(tmp_path, {"x/cpu.max": "900000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/../x\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+def test_cgroup_unreadable_proc_file_reads_the_mount(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "300000 100000\n"})
+    assert _cgroup_cpu_quota(root, tmp_path / "absent") == 3
+
+
+def test_engine_thread_count_honours_the_process_own_cgroup(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"system.slice/job.scope/cpu.max": "200000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/system.slice/job.scope\n")
+    with (
+        mock.patch("lilbee.runtime.cpu._CGROUP_ROOT", root),
+        mock.patch("lilbee.runtime.cpu._PROC_CGROUP", proc),
+        mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        _affinity(96),
+    ):
+        assert engine_thread_count() == 2
+
+
 def test_available_cpu_count_rounds_a_fractional_quota_up() -> None:
     with (
         mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
