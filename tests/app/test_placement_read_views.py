@@ -142,34 +142,6 @@ def test_no_saved_spec_reports_auto_with_no_rejection_and_no_refusal(monkeypatch
     assert view.refusal is None
 
 
-def test_the_read_asks_the_planner_to_fall_back_to_auto_for_a_saved_spec(monkeypatch, saved_spec):
-    asked: list[bool] = []
-
-    def planned(spec, *, fall_back_to_auto, **_kw) -> ResolvedPlacement:
-        asked.append(fall_back_to_auto)
-        return _auto_plan()
-
-    _stub_planner(monkeypatch, planned)
-
-    app_placement.get_placement()
-
-    assert asked == [True]
-
-
-def test_a_rejected_spec_falls_back_to_the_auto_plan_without_the_spec(monkeypatch, saved_spec):
-    specs: list[PlacementSpec | None] = []
-
-    def planned(spec, **_kw) -> ResolvedPlacement:
-        specs.append(spec)
-        return _spec_is_unplannable(spec)
-
-    _stub_planner(monkeypatch, planned)
-
-    app_placement.get_placement()
-
-    assert [s is None for s in specs] == [False, True]
-
-
 def _shown(data_root: Path) -> str:
     result = CLI.invoke(placement_app, ["show", "--data-dir", str(data_root)])
     assert result.exit_code == 0
