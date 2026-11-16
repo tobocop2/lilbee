@@ -1818,6 +1818,21 @@ class TestResolveFilename:
             f"weights: pull them with 'lilbee model pull {PICKS_CHAT[0].hf_repo}#safetensors'."
         )
 
+    def test_the_listing_is_asked_for_the_entry_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from huggingface_hub import HfApi
+
+        asked: list[str] = []
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            asked.append(repo_id)
+            return SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")])
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError, match="No GGUF model weights found"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert asked == [PICKS_CHAT[0].hf_repo]
+
     def test_incomplete_safetensors_shards_still_name_the_folder_pull(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
