@@ -2290,3 +2290,22 @@ def test_prune_engines_survives_an_oserror_while_pruning(
         assert engine_store.prune_engines(models) == []
     assert str(tmp_path / "engines") in caplog.text
     assert _versions(tmp_path) == ["1"]
+
+
+def test_the_install_record_names_the_build_and_the_time_of_the_install_in_utc(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    build = store.install_from_wheel(pin(sha), path)
+    record = json.loads((build / RECORD_NAME).read_text(encoding="utf-8"))
+    assert set(record) == {
+        "engine",
+        "version",
+        "backend",
+        "sha256",
+        "licences",
+        "installed_at",
+        "binary",
+    }
+    assert record["installed_at"].endswith("+00:00")
+    assert [e.installed_at for e in store.installed()] == [record["installed_at"]]
