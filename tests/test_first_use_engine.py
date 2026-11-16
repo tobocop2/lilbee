@@ -178,6 +178,47 @@ def test_a_failed_download_names_the_pack_to_copy(
         resolve_llama_server()
 
 
+@pytest.mark.parametrize(
+    ("tool", "source"),
+    [
+        (EngineTool.LLAMA_SERVER, ""),
+        (EngineTool.GGUF_PARSER, " gguf-parser comes from the llama.cpp pack."),
+    ],
+    ids=["llama-server", "gguf-parser"],
+)
+def test_a_helper_refusal_says_the_tool_comes_from_the_llama_cpp_pack(
+    tool: EngineTool, source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    publish(monkeypatch, make_pack(tmp_path / "w.whl"))
+
+    def offline(*_args: object, **_kwargs: object) -> Path:
+        raise OSError("no network")
+
+    monkeypatch.setattr(first_use, "fetch_frozen", offline)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_engine_tool(tool)
+    assert str(excinfo.value).startswith(f"{tool.value} binary not found.{source} ")
+
+
+def test_a_refused_router_install_names_the_router_not_the_llama_cpp_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.providers.fleet import router_install
+
+    def refused() -> Path:
+        raise router_install.RouterDownloadError("the router download failed")
+
+    monkeypatch.setattr(router_install, "router_on_first_use", refused)
+    monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
+    monkeypatch.setattr(binary_mod, "_installed_helper", lambda _tool: None)
+    monkeypatch.setattr(binary_mod, "_has_server", lambda: False)
+    monkeypatch.setattr(binary_mod.shutil, "which", lambda _name: None)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_engine_tool(EngineTool.LLAMA_SWAP)
+    assert str(excinfo.value).startswith("llama-swap binary not found. the router download failed")
+    assert "llama.cpp pack" not in str(excinfo.value)
+
+
 def test_an_unreadable_engine_store_gives_the_engine_error_not_a_raw_os_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
