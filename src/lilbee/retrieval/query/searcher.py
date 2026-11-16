@@ -335,14 +335,16 @@ class Searcher:
         return [(text, vec) for text, vec in variants if cosine_sim(question_vec, vec) >= threshold]
 
     def _concept_query_expansion(self, question: str) -> list[str]:
+        """Concept-graph query variants; a failed graph skips them with a warning."""
         if not self._config.concept_graph:
             return []
         try:
             if not self._concepts.get_graph():
                 return []
             return self._concepts.expand_query(question)
-        except Exception:
-            log.debug("Concept query expansion failed", exc_info=True)
+        except Exception as exc:
+            log.warning("Concept query expansion disabled for this call: %s", exc)
+            log.debug("Concept query expansion exception", exc_info=True)
             return []
 
     def _repeatable_options(self, num_predict: int, **extra: Any) -> dict[str, Any]:
@@ -442,6 +444,7 @@ class Searcher:
         return skip
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
+        """Re-rank by concept overlap; a failed graph keeps the rows with a warning."""
         if not self._config.concept_graph or not results:
             return results
         try:
@@ -455,8 +458,9 @@ class Searcher:
             # input order; re-sort so the boost actually re-ranks for callers
             # that consume search() order directly (CLI search, MCP search).
             return order_by_fusion(boosted)
-        except Exception:
-            log.debug("Concept boost failed", exc_info=True)
+        except Exception as exc:
+            log.warning("Concept boost disabled for this call: %s", exc)
+            log.debug("Concept boost exception", exc_info=True)
             return results
 
     def _hyde_search(

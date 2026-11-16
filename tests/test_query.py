@@ -3969,6 +3969,82 @@ class TestAskStreamWithReranker:
             cfg.reranker_model = old
 
 
+class TestConceptFailuresAreReported:
+    """The concept steps only widen a search that has rows: warn once, keep the rows."""
+
+    @pytest.mark.parametrize(
+        ("error", "cause"),
+        [
+            (ProviderError("graph provider is down"), "graph provider is down"),
+            (ConnectionError("socket closed by the engine"), "socket closed by the engine"),
+            (_engine_changed_error(), "rebuild"),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    @pytest.mark.parametrize("path", ["boost", "expansion"])
+    def test_failure_keeps_the_rows_and_warns_once(self, mock_svc, caplog, path, error, cause):
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        mock_svc.concepts.boost_results.side_effect = lambda rows, concepts: rows
+        if path == "boost":
+            mock_svc.concepts.boost_results.side_effect = error
+        else:
+            mock_svc.concepts.expand_query.side_effect = error
+        with (
+            mock.patch.object(cfg, "concept_graph", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("python question")
+        assert [r.source for r in results] == ["direct.md"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert cause in warnings[0].getMessage()
+        assert ("boost" if path == "boost" else "query expansion") in warnings[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ProviderError("graph provider is down"),
+            ConnectionError("socket closed by the engine"),
+            _engine_changed_error(),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    def test_failed_concept_expansion_keeps_the_model_variants(self, mock_svc, caplog, error):
+        vec = [1.0, 0.0]
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.expand_query.side_effect = error
+        mock_svc.provider.chat.return_value = _text_result("restate one\nrestate two")
+        mock_svc.embedder.embed_query_batch.side_effect = lambda texts: [vec] * len(texts)
+        with (
+            mock.patch.object(cfg, "concept_graph", True),
+            mock.patch.object(cfg, "expansion_short_query_tokens", 0),
+            caplog.at_level("WARNING"),
+        ):
+            variants = get_services().searcher._expand_query("kubernetes scheduling", vec)
+        assert [text for text, _ in variants] == ["restate one", "restate two"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "Concept query expansion disabled" in warnings[0].getMessage()
+
+    def test_cli_search_shows_the_rows_and_exits_zero_on_a_failed_boost(self, mock_svc, caplog):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        mock_svc.concepts.boost_results.side_effect = ConnectionError("socket closed")
+        with mock.patch.object(cfg, "concept_graph", True), caplog.at_level("WARNING"):
+            result = CliRunner().invoke(app, ["search", "python question"])
+        assert result.exit_code == 0
+        assert "direct.md" in result.output
+        assert "socket closed" in caplog.text
+
+
 class TestConceptBoosting:
     def test_boost_applied_when_enabled(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]
