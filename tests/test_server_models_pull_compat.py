@@ -40,6 +40,24 @@ async def testenforce_arch_compat_raises_409() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_precheck_reads_a_ref_with_no_source_as_native() -> None:
+    mock_manager = MagicMock()
+    mock_manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+
+    with (
+        patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ),
+        pytest.raises(HTTPException) as excinfo,
+    ):
+        await handlers.enforce_pull_arch_compat("acme/foo-GGUF")
+
+    assert excinfo.value.status_code == 409
+    mock_manager.enforce_arch_compat.assert_called_once_with("acme/foo-GGUF")
+
+
+@pytest.mark.asyncio
 async def testenforce_arch_compat_skips_remote_and_override() -> None:
     """Remote source and allow_unsupported both bypass the native arch precheck."""
     mock_manager = MagicMock()

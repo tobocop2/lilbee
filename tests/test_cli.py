@@ -4191,6 +4191,85 @@ class TestAskJsonModelPicker:
         assert "Choice [" in result.stderr
 
 
+class TestAskPickerReadsTheDataDirDisk:
+    """The picked model must fit on the disk that holds the data directory."""
+
+    def test_a_pick_larger_than_the_data_dir_disk_is_refused(self, mock_svc):
+        from lilbee.modelhub import models as models_mod
+
+        asked: list[Path] = []
+
+        def nearly_full_disk(path):
+            asked.append(Path(path))
+            return mock.Mock(total=10 * 1024**3, used=10 * 1024**3, free=0)
+
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch("typer.testing._NamedTextIOWrapper.isatty", return_value=True),
+            mock.patch("builtins.input", return_value="1"),
+            mock.patch.object(models_mod.shutil, "disk_usage", nearly_full_disk),
+            mock.patch.object(models_mod, "pull_with_progress") as mock_pull,
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 1
+        assert "Not enough disk space to download" in result.output
+        assert "have 0.0 GB free" in result.output
+        mock_pull.assert_not_called()
+        assert asked
+        assert all(cfg.data_dir.is_relative_to(path) for path in asked)
+
+
+class TestAskNamesTheMissingEngine:
+    """A chat model is installed but no engine loads it: ask says which engine is missing."""
+
+    @staticmethod
+    def _install_engines(monkeypatch, engines) -> None:
+        def installed():
+            return dict(engines)
+
+        monkeypatch.setattr("lilbee.providers.fleet.engines.choice.installed_engines", installed)
+        monkeypatch.setattr("lilbee.modelhub.models.installed_engines", installed)
+
+    @staticmethod
+    def _ask():
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("tiny/Tiny-1B-GGUF", "tiny-1b-Q4_K_M.gguf", "chat")
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        return ref, result
+
+    def test_names_the_preferred_engine_that_is_not_installed(self, monkeypatch, mock_svc):
+        from lilbee.providers.fleet.engines.base import EngineName
+
+        self._install_engines(monkeypatch, {})
+        monkeypatch.setattr(cfg, "preferred_engine", EngineName.LLAMA.value)
+        _, result = self._ask()
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert (
+            f"Engine {EngineName.LLAMA} is not installed. "
+            "No installed engine loads the gguf format." in flat
+        )
+
+    def test_an_engine_of_another_format_does_not_load_the_model(self, monkeypatch, mock_svc):
+        from lilbee.catalog.types import ModelFormat
+        from lilbee.providers.fleet.engines.base import EngineName
+
+        self._install_engines(monkeypatch, {EngineName.MLX: frozenset({ModelFormat.MLX})})
+        ref, result = self._ask()
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert f"No installed engine loads the gguf format of {ref}." in flat
+        assert "Run lilbee engine list to see the installed engines." in flat
+
+
 class TestAskWithoutEmbedder:
     """Ask that cannot ground an answer exits non-zero with the guidance text."""
 
