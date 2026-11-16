@@ -23,10 +23,13 @@ ROOT = Path(os.environ["LILBEE_DATA"])
 MODE = os.environ.get("FAKE_MODE", "")
 SERVED_ENGINE = os.environ.get("FAKE_SERVED_ENGINE", "llama.cpp")
 MARKER = ROOT / "installed"
+PREFERRED = ROOT / "preferred"
 ROLES_FILE = ROOT / "roles.json"
 MODELS_FILE = ROOT / "models.json"
 CALLS_FILE = ROOT / "calls.txt"
 UTF8 = "utf-8"
+# The ref suffix that picks the safetensors format of a repo.
+SAFETENSORS_SUFFIX = "#safetensors"
 # The route that sets each role's model on the server.
 ROUTE_ROLES = {"chat": "chat", "reranker": "rerank", "vision": "vision"}
 # Every role, in the order engine roles lists them.
@@ -47,7 +50,8 @@ def models() -> dict[str, str]:
 
 def set_model(role: str, ref: str) -> str:
     """Store the model of *role*; a bare repo ref becomes a file ref, as the real settings do."""
-    stored = ref if ref.endswith(".gguf") else f"{ref}/{ref.rsplit('/', 1)[-1]}.gguf"
+    keeps_ref = ref.endswith(".gguf") or ref.endswith(SAFETENSORS_SUFFIX)
+    stored = ref if keeps_ref else f"{ref}/{ref.rsplit('/', 1)[-1]}.gguf"
     MODELS_FILE.write_text(json.dumps({**models(), role: stored}), encoding=UTF8)
     return stored
 
@@ -161,7 +165,18 @@ def engine_install(argv: list[str]) -> None:
     MARKER.write_text(argv[2], encoding=UTF8)
 
 
+def engine_prefer(argv: list[str]) -> None:
+    assert argv[-1] == "--yes", argv
+    if not MARKER.exists():
+        sys.exit(f"Engine {argv[2]} is not installed.")
+    PREFERRED.write_text(argv[2], encoding=UTF8)
+    print(f"The preferred engine is {argv[2]}.")
+
+
 def model_pull(argv: list[str]) -> None:
+    """Refuse a safetensors ref until an engine is preferred, as the real pull does."""
+    if argv[2].endswith(SAFETENSORS_SUFFIX) and not PREFERRED.exists():
+        sys.exit(f"No engine is chosen by default for the safetensors format of {argv[2]}.")
     print(f"pulled {argv[2]}")
 
 
@@ -218,6 +233,7 @@ def engine_roles(argv: list[str]) -> None:
 COMMANDS = {
     ("engine", "list"): engine_list,
     ("engine", "install"): engine_install,
+    ("engine", "prefer"): engine_prefer,
     ("model", "pull"): model_pull,
     ("use-embedder",): use_embedder,
     ("engine", "use"): engine_use,

@@ -14,11 +14,13 @@ import json
 import shlex
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 from tools.qa.engine_demo.observe import DEFAULT_QUESTION, RunPlan, observe
 from tools.qa.engine_demo.oracles import Transcript, judge
 
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.roles import WorkerRole
 
 # The model each role runs when --model does not name one.
@@ -28,7 +30,25 @@ DEFAULT_MODELS = {
     WorkerRole.RERANK: "gpustack/bge-reranker-v2-m3-GGUF",
     WorkerRole.VISION: "ggml-org/SmolVLM-256M-Instruct-GGUF",
 }
+# An engine that loads safetensors runs the safetensors form of its models; the
+# "#safetensors" suffix is how a pull picks that format.
+SAFETENSORS_MODELS: dict[str, dict[WorkerRole, str]] = {
+    EngineName.TEI: {
+        WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B#safetensors",
+        WorkerRole.RERANK: "BAAI/bge-reranker-v2-m3#safetensors",
+    },
+    EngineName.MISTRAL: {
+        WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B#safetensors",
+        WorkerRole.VISION: "HuggingFaceTB/SmolVLM-256M-Instruct#safetensors",
+    },
+}
 _DEFAULT_ROLES = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
+
+
+def default_models(engine: str, roles: Sequence[WorkerRole]) -> dict[WorkerRole, str]:
+    """The model of each role for *engine*: its safetensors form where it has one."""
+    overrides = SAFETENSORS_MODELS.get(engine, {})
+    return {role: overrides.get(role, DEFAULT_MODELS[role]) for role in roles}
 
 
 def _role_model(value: str) -> tuple[WorkerRole, str]:
@@ -73,7 +93,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
-    models = {role: DEFAULT_MODELS[role] for role in args.roles}
+    models = default_models(args.engine, args.roles)
     for role, ref in args.model:
         if role not in models:
             parser.error(f"--model names {role}, which --roles does not claim")

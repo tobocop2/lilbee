@@ -84,6 +84,7 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
     assert [str(s.name) for s in t.steps] == [
         "engine-list-before",
         "install",
+        "prefer",
         "pull",
         "pull",
         "pull",
@@ -105,11 +106,45 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("engine", "roles"),
+    [
+        ("tei", (WorkerRole.EMBED, WorkerRole.RERANK)),
+        ("mistral.rs", (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION)),
+    ],
+)
+def test_a_safetensors_engine_is_chosen_before_its_first_pull(
+    tmp_path: Path, engine: str, roles: tuple[WorkerRole, ...]
+) -> None:
+    models = demo_main.default_models(engine, roles)
+    t = observe(_plan(roles, engine=engine, models=models), tmp_path)
+    names = [s.name for s in t.steps]
+    first_pull = names.index(StepName.PULL)
+    assert names.index(StepName.INSTALL) < names.index(StepName.PREFER) < first_pull
+    (prefer,) = _step(t, StepName.PREFER)
+    assert prefer.command[len(_CLI) :] == ("engine", "prefer", engine, "--yes")
+    pulls = _step(t, StepName.PULL)
+    refs = {s.command[-1] for s in pulls}
+    assert refs == set(models.values())
+    assert any(ref.endswith("#safetensors") for ref in refs)
+    assert [s.exit_code for s in pulls] == [0] * len(roles)
+    assert [s.exit_code for s in _step(t, StepName.USE)] == [0] * len(roles)
+
+
+def test_a_pull_before_the_engine_is_chosen_refuses_on_the_fake_as_on_the_real_cli(
+    tmp_path: Path,
+) -> None:
+    done = _fake(tmp_path, "model", "pull", "Qwen/Qwen3-Embedding-0.6B#safetensors")
+    assert done.returncode == 1
+    assert "No engine is chosen by default for the safetensors format" in done.stderr
+
+
 def test_each_step_records_its_command(tmp_path: Path) -> None:
     t = observe(_plan(), tmp_path)
     tails = [s.command[len(_CLI) :] for s in t.steps if s.name is not StepName.ADD]
     assert tails[0] == ("--json", "engine", "list")
     assert tails[1] == ("engine", "install", "llama.cpp")
+    assert tails[2] == ("engine", "prefer", "llama.cpp", "--yes")
     assert ("model", "pull", _MODELS[WorkerRole.CHAT]) in tails
     embed_file = _STORED[WorkerRole.EMBED]
     assert ("engine", "use", "embed", embed_file, "llama.cpp", "--yes") in tails
@@ -509,6 +544,38 @@ def test_a_dry_run_records_a_bad_run_and_the_report_fails_it(
     out = capsys.readouterr().out
     assert "FAIL llama.cpp cpu b6123" in out
     assert "served-by-other" in out
+
+
+@pytest.mark.parametrize(
+    ("engine", "role", "ref"),
+    [
+        ("tei", WorkerRole.EMBED, "Qwen/Qwen3-Embedding-0.6B#safetensors"),
+        ("tei", WorkerRole.RERANK, "BAAI/bge-reranker-v2-m3#safetensors"),
+        ("mistral.rs", WorkerRole.EMBED, "Qwen/Qwen3-Embedding-0.6B#safetensors"),
+        ("mistral.rs", WorkerRole.VISION, "HuggingFaceTB/SmolVLM-256M-Instruct#safetensors"),
+        ("mistral.rs", WorkerRole.CHAT, "Qwen/Qwen3-4B-GGUF"),
+        ("llama.cpp", WorkerRole.EMBED, "Qwen/Qwen3-Embedding-0.6B-GGUF"),
+    ],
+)
+def test_the_default_model_is_the_form_the_engine_loads(
+    engine: str, role: WorkerRole, ref: str
+) -> None:
+    assert demo_main.default_models(engine, [role]) == {role: ref}
+
+
+def test_a_tei_run_from_the_command_line_pulls_safetensors_after_choosing_the_engine(
+    tmp_path: Path,
+) -> None:
+    args = _run_args(tmp_path, "--roles", "embed", "rerank")
+    args[args.index("llama.cpp")] = "tei"
+    assert demo_main.main(args) == 0
+    t = Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+    commands = [s.command[len(_CLI) :] for s in t.steps]
+    prefer = commands.index(("engine", "prefer", "tei", "--yes"))
+    pulls = [i for i, c in enumerate(commands) if c[:2] == ("model", "pull")]
+    assert len(pulls) == 2 and prefer < min(pulls)
+    assert all(commands[i][2].endswith("#safetensors") for i in pulls)
+    assert [s.exit_code for s in t.steps if s.name is StepName.PULL] == [0, 0]
 
 
 def test_roles_and_models_come_from_the_command_line(tmp_path: Path) -> None:

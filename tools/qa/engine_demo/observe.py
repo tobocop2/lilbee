@@ -6,6 +6,10 @@ so each step's stderr goes to one log file and the lines a step produced are the
 bytes appended to that file while the step ran. The oracles count served-by lines
 only from the steps that serve a request, so a line must belong to its own step.
 
+The engine is chosen before the first pull: a pull of a format with no chosen
+engine refuses, so ``engine prefer`` follows ``engine install`` and precedes every
+pull.
+
 Known limits:
 - ``lilbee chat`` refuses a stdin or stdout that is not a terminal, so the chat
   step starts ``lilbee serve`` and posts one turn to its chat route instead.
@@ -138,6 +142,7 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
     steps = [
         cli(StepName.ENGINE_LIST_BEFORE, "--json", "engine", "list", json_output=True),
         cli(StepName.INSTALL, "engine", "install", plan.engine),
+        cli(StepName.PREFER, "engine", "prefer", plan.engine, "--yes"),
         *(cli(StepName.PULL, "model", "pull", ref) for ref in plan.models.values()),
     ]
     set_steps, stored = _set_models(plan.models, cli, session)
