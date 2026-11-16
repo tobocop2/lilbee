@@ -1,4 +1,4 @@
-.PHONY: lint lint-shell test-shell format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/record_profile_responses.py hatch_build.py
@@ -47,6 +47,14 @@ test:
 
 test-ci:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v $(XDIST)
+
+# One coverage session over the whole suite stalls the TUI pilot past its 30 s
+# screen wait on the 3 vCPU macOS runner; two shorter sessions do not.
+TUI_TESTS := tests/test_tui*.py
+
+test-ci-split:
+	uv run pytest --cov=lilbee --cov-report= --cov-fail-under=0 -v $(XDIST) $(wildcard $(TUI_TESTS))
+	uv run pytest --cov=lilbee --cov-append --cov-report=term-missing --cov-report=html -v $(XDIST) '--ignore-glob=$(TUI_TESTS)'
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist

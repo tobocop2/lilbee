@@ -22,9 +22,10 @@ _GRANDCHILD_EXIT_WAIT_S = 5.0
 _GRANDCHILD_POLL_S = 0.05
 _GRANDCHILD_SLEEP_S = 600
 _CHILD_START_LIMIT_S = 5.0
-# Coverage flags are irrelevant to the toy suite. --forked moves the test into a child
-# process, so the child dies and the xdist worker does not; the worker is what is under test.
-_DROPPED_FLAG_PREFIXES = ("--cov", "--forked")
+# Coverage flags and the suite's own test paths are irrelevant to the toy suite. --forked moves
+# the test into a child process, so the child dies and the xdist worker does not; the worker is
+# what is under test.
+_DROPPED_WORD_PREFIXES = ("--cov", "--forked", "tests/")
 _RULE_LINE = re.compile(r"^([A-Za-z][\w.-]*):(?!=)")
 _CHILD_ENV_PREFIXES = ("PYTEST_", "COV_CORE_")
 _PYTEST_WORD = "pytest"
@@ -33,6 +34,7 @@ _AUTO_WORKERS = ("auto", "logical")
 _NO_WORKER_RESTARTS = 0
 _XDIST_PLUGIN = "xdist"
 _EXIT_OK = 0
+_FIRST_SESSION = 1
 _MAKE_RECURSION_ENV_VARS = ("MAKEFLAGS", "MAKELEVEL")
 _MAKE_STDOUT_TAIL_CHARS = 500
 _CRASH_NODEID = "test_toy.py::test_worker_dies"
@@ -93,22 +95,31 @@ def _rule_targets() -> list[str]:
     return list(targets)
 
 
-def _pytest_args(target: str, all_targets: list[str]) -> list[str] | None:
-    """The pytest arguments of the target's own expanded recipe, or None if it has no pytest.
+def _line_pytest_args(line: str) -> list[str] | None:
+    """The pytest arguments of one recipe line, or None if the line runs no pytest."""
+    words = shlex.split(line)
+    for index, word in enumerate(words):
+        if word == _PYTEST_WORD and (index == 0 or words[index - 1] in _PYTEST_LAUNCHERS):
+            rest = words[index + 1 :]
+            return [w for w in rest if not w.startswith(_DROPPED_WORD_PREFIXES)]
+    return None
+
+
+def _pytest_runs(target: str, all_targets: list[str]) -> list[list[str]]:
+    """The pytest arguments of each pytest line in the target's own expanded recipe.
 
     `make -n` expands variables, so `$(PYTEST)` and `$(XDIST)` are read as the shell sees them.
     `-o` marks every other target as up to date, so a prerequisite's recipe is not attributed here.
     """
     others = [flag for other in all_targets if other != target for flag in ("-o", other)]
-    for line in _make("-n", *others, target).splitlines():
-        if _PYTEST_WORD not in line:
-            continue
-        words = shlex.split(line)
-        for index, word in enumerate(words):
-            if word == _PYTEST_WORD and (index == 0 or words[index - 1] in _PYTEST_LAUNCHERS):
-                rest = words[index + 1 :]
-                return [w for w in rest if not w.startswith(_DROPPED_FLAG_PREFIXES)]
-    return None
+    lines = _make("-n", *others, target).splitlines()
+    parsed = [_line_pytest_args(line) for line in lines if _PYTEST_WORD in line]
+    return [args for args in parsed if args is not None]
+
+
+def _run_name(target: str, session: int) -> str:
+    """The target's name for its first pytest run, and `target#n` for a later run."""
+    return target if session == _FIRST_SESSION else f"{target}#{session}"
 
 
 class _OptionProbe:
@@ -143,13 +154,15 @@ def _is_distributed(probe: _OptionProbe) -> bool:
 
 
 def _xdist_targets() -> dict[str, list[str]]:
-    """Every target whose pytest run uses more than one xdist worker, with its arguments."""
+    """Every pytest run of a target that uses more than one xdist worker, with its arguments."""
     all_targets = _rule_targets()
-    args_by_target = {target: _pytest_args(target, all_targets) for target in all_targets}
+    args_by_run = {
+        _run_name(target, session): args
+        for target in all_targets
+        for session, args in enumerate(_pytest_runs(target, all_targets), start=_FIRST_SESSION)
+    }
     return {
-        target: args
-        for target, args in args_by_target.items()
-        if args is not None and _is_distributed(_parsed_options(args))
+        run: args for run, args in args_by_run.items() if _is_distributed(_parsed_options(args))
     }
 
 
@@ -157,7 +170,9 @@ _XDIST_TARGETS = _xdist_targets()
 
 
 def test_the_makefile_has_xdist_targets_to_check() -> None:
-    assert {"test", "test-ci", "test-ci-forked"} <= set(_XDIST_TARGETS)
+    assert {"test", "test-ci", "test-ci-forked", "test-ci-split", "test-ci-split#2"} <= set(
+        _XDIST_TARGETS
+    )
     assert "test-ci-serial" not in _XDIST_TARGETS
 
 
