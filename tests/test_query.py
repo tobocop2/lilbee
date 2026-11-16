@@ -2392,6 +2392,36 @@ class TestHydeSearch:
         assert [r.source for r in results] == ["direct.md"]
         assert "chat engine is down" in caplog.text
 
+    @pytest.mark.parametrize(
+        ("layer", "error", "cause"),
+        [
+            ("chat", ProviderError("chat engine is down"), "chat engine is down"),
+            ("chat", ConnectionError("socket closed by the engine"), "socket closed by the engine"),
+            ("store", _engine_changed_error(), "rebuild"),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    def test_blend_skips_any_widening_failure_with_one_warning(
+        self, mock_svc, caplog, layer, error, cause
+    ):
+        direct = [_make_result(source="direct.md")]
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        if layer == "chat":
+            mock_svc.provider.chat.side_effect = error
+            mock_svc.store.search.return_value = direct
+        else:
+            mock_svc.store.search.side_effect = [direct, error]
+        with (
+            mock.patch.object(cfg, "hyde", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("vague question")
+        assert [r.source for r in results] == ["direct.md"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert cause in warnings[0].getMessage()
+
 
 class TestTemporalFilter:
     def test_filters_by_date(self, mock_svc):
