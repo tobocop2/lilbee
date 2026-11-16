@@ -449,7 +449,8 @@ def test_the_default_skips_an_engine_that_does_not_serve_the_role(
     assert chat.name is None
     assert chat.notice == (
         "For chat: No engine is chosen by default for the gguf format of org/m. "
-        "Choose mistral.rs with lilbee engine use or lilbee engine prefer."
+        "Choose mistral.rs with lilbee engine use for this model, "
+        "or with lilbee engine prefer for every model without its own choice."
     )
     assert _rule(WorkerRole.EMBED).name is EngineName.LLAMA
 

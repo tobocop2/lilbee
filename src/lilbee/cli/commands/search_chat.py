@@ -395,10 +395,11 @@ def use_embedder(
 
     from lilbee.app.models import adopt_embedder
     from lilbee.catalog.compat import UnsupportedArchError
+    from lilbee.providers.fleet.engines.choice import NoEngineError
 
     try:
         result = adopt_embedder(ref)
-    except (RuntimeError, ValueError, OSError, UnsupportedArchError) as exc:
+    except (RuntimeError, ValueError, OSError, UnsupportedArchError, NoEngineError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
