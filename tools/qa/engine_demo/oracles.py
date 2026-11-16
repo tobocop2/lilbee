@@ -68,6 +68,7 @@ class StepName(StrEnum):
 
     ENGINE_LIST_BEFORE = "engine-list-before"
     INSTALL = "install"
+    PREFER = "prefer"
     PULL = "pull"
     SET_MODEL = "set-model"
     STORED_MODELS = "stored-models"

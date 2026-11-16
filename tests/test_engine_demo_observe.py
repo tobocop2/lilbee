@@ -30,6 +30,9 @@ from tools.qa.engine_demo.observe import (
 )
 from tools.qa.engine_demo.oracles import Rule, Step, StepName, Transcript, judge
 
+from lilbee.catalog.refs import model_format
+from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.engines.choice import ADAPTERS
 from lilbee.providers.roles import WorkerRole
 
 _FAKE = Path(__file__).parent / "engine_demo_fake_cli.py"
@@ -84,6 +87,7 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
     assert [str(s.name) for s in t.steps] == [
         "engine-list-before",
         "install",
+        "prefer",
         "pull",
         "pull",
         "pull",
@@ -105,11 +109,45 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("engine", "roles"),
+    [
+        ("tei", (WorkerRole.EMBED, WorkerRole.RERANK)),
+        ("mistral.rs", (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION)),
+    ],
+)
+def test_a_safetensors_engine_is_chosen_before_its_first_pull(
+    tmp_path: Path, engine: str, roles: tuple[WorkerRole, ...]
+) -> None:
+    models = demo_main.default_models(engine, roles)
+    t = observe(_plan(roles, engine=engine, models=models), tmp_path)
+    names = [s.name for s in t.steps]
+    first_pull = names.index(StepName.PULL)
+    assert names.index(StepName.INSTALL) < names.index(StepName.PREFER) < first_pull
+    (prefer,) = _step(t, StepName.PREFER)
+    assert prefer.command[len(_CLI) :] == ("engine", "prefer", engine, "--yes")
+    pulls = _step(t, StepName.PULL)
+    refs = {s.command[-1] for s in pulls}
+    assert refs == set(models.values())
+    assert any(ref.endswith("#safetensors") for ref in refs)
+    assert [s.exit_code for s in pulls] == [0] * len(roles)
+    assert [s.exit_code for s in _step(t, StepName.USE)] == [0] * len(roles)
+
+
+def test_a_pull_before_the_engine_is_chosen_refuses_on_the_fake_as_on_the_real_cli(
+    tmp_path: Path,
+) -> None:
+    done = _fake(tmp_path, "model", "pull", "Qwen/Qwen3-Embedding-0.6B#safetensors")
+    assert done.returncode == 1
+    assert "No engine is chosen by default for the safetensors format" in done.stderr
+
+
 def test_each_step_records_its_command(tmp_path: Path) -> None:
     t = observe(_plan(), tmp_path)
     tails = [s.command[len(_CLI) :] for s in t.steps if s.name is not StepName.ADD]
     assert tails[0] == ("--json", "engine", "list")
     assert tails[1] == ("engine", "install", "llama.cpp")
+    assert tails[2] == ("engine", "prefer", "llama.cpp", "--yes")
     assert ("model", "pull", _MODELS[WorkerRole.CHAT]) in tails
     embed_file = _STORED[WorkerRole.EMBED]
     assert ("engine", "use", "embed", embed_file, "llama.cpp", "--yes") in tails
@@ -509,6 +547,88 @@ def test_a_dry_run_records_a_bad_run_and_the_report_fails_it(
     out = capsys.readouterr().out
     assert "FAIL llama.cpp cpu b6123" in out
     assert "served-by-other" in out
+
+
+_SERVED_CELLS = [
+    pytest.param(name, adapter, role, id=f"{name}-{role}")
+    for name, adapter in ADAPTERS.items()
+    for role in sorted(adapter.served_roles)
+]
+
+
+def test_the_served_cells_cover_every_shipped_engine() -> None:
+    assert {name for name, _, _ in (p.values for p in _SERVED_CELLS)} == set(ADAPTERS)
+    assert len(_SERVED_CELLS) >= len(ADAPTERS)
+
+
+@pytest.mark.parametrize(("name", "adapter", "role"), _SERVED_CELLS)
+def test_each_default_model_is_a_format_its_engine_loads(
+    name: str, adapter: EngineAdapter, role: WorkerRole
+) -> None:
+    ref = demo_main.default_models(name, [role])[role]
+    assert model_format(ref) in adapter.formats, f"{name} cannot load {ref}"
+
+
+@pytest.mark.parametrize(
+    ("engine", "claimed"),
+    [
+        ("tei", (WorkerRole.EMBED, WorkerRole.RERANK)),
+        ("mlx", (WorkerRole.CHAT,)),
+        ("lemonade", (WorkerRole.CHAT, WorkerRole.EMBED)),
+        ("ik_llama.cpp", (WorkerRole.CHAT, WorkerRole.EMBED)),
+    ],
+)
+def test_a_bare_run_plans_only_the_roles_the_engine_serves(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], engine: str, claimed: tuple[WorkerRole, ...]
+) -> None:
+    args = _run_args(tmp_path)
+    args[args.index("llama.cpp")] = engine
+    assert demo_main.main(args) == 0
+    t = Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+    assert t.claimed_roles == claimed
+    skipped = [r for r in _ROLES if r not in claimed]
+    assert (f"roles skipped: {', '.join(skipped)}" in capsys.readouterr().out) == bool(skipped)
+
+
+def test_a_run_that_skips_no_role_says_nothing_about_skipping(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert demo_main.main(_run_args(tmp_path)) == 0
+    assert "skipped" not in capsys.readouterr().out
+
+
+def test_a_role_the_engine_does_not_serve_is_refused_when_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _run_args(tmp_path, "--roles", "chat", "embed")
+    args[args.index("llama.cpp")] = "tei"
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(args)
+    assert raised.value.code == 2
+    assert "tei does not serve chat" in capsys.readouterr().err
+
+
+def test_an_engine_without_an_adapter_keeps_the_default_roles(tmp_path: Path) -> None:
+    args = _run_args(tmp_path)
+    args[args.index("llama.cpp")] = "not-an-engine"
+    assert demo_main.main(args) == 0
+    t = Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+    assert t.claimed_roles == _ROLES
+
+
+def test_a_tei_run_from_the_command_line_pulls_safetensors_after_choosing_the_engine(
+    tmp_path: Path,
+) -> None:
+    args = _run_args(tmp_path, "--roles", "embed", "rerank")
+    args[args.index("llama.cpp")] = "tei"
+    assert demo_main.main(args) == 0
+    t = Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+    commands = [s.command[len(_CLI) :] for s in t.steps]
+    prefer = commands.index(("engine", "prefer", "tei", "--yes"))
+    pulls = [i for i, c in enumerate(commands) if c[:2] == ("model", "pull")]
+    assert len(pulls) == 2 and prefer < min(pulls)
+    assert all(commands[i][2].endswith("#safetensors") for i in pulls)
+    assert [s.exit_code for s in t.steps if s.name is StepName.PULL] == [0, 0]
 
 
 def test_roles_and_models_come_from_the_command_line(tmp_path: Path) -> None:
