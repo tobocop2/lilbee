@@ -29,6 +29,7 @@ from lilbee.catalog.refs import (
     ModelRef,
     canonical_ref,
     format_native_gguf_ref,
+    invalid_repo_id_message,
     is_bare_hf_repo,
     is_gguf_filename,
     parse_model_ref,
@@ -63,7 +64,7 @@ _MANIFEST_SUFFIX = ".json"
 def _validate_hf_repo(hf_repo: str) -> str:
     """Validate that a HuggingFace repo id has the form ``org/name``."""
     if not hf_repo or not _REPO_SEGMENT_RE.match(hf_repo) or ".." in hf_repo:
-        raise ValueError(f"Invalid hf_repo: {hf_repo!r}")
+        raise ValueError(invalid_repo_id_message(hf_repo))
     return hf_repo
 
 

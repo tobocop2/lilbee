@@ -22,6 +22,8 @@ WILDCARD = "*"
 GGUF_SUFFIX = ".gguf"
 GGUF_GLOB = f"{WILDCARD}{GGUF_SUFFIX}"
 
+REPO_ID_HINT = "Write a repo id as '<org>/<repo>', for example 'Qwen/Qwen3-0.6B-GGUF'."
+
 # Vision models need both the main GGUF and an mmproj (CLIP projection) file.
 # Resolved by glob rather than a per-repo table: every mainstream VL repo names
 # its projector this way, and a table would be one more thing to maintain.
@@ -209,6 +211,11 @@ def rank_gguf_candidates(filenames: Iterable[str]) -> list[str]:
     """
     candidates = {_first_shard(name) for name in filenames if name.endswith(GGUF_SUFFIX)}
     return sorted(candidates, key=_rank_key)
+
+
+def invalid_repo_id_message(value: str) -> str:
+    """The error text for a rejected repo id: the value, the form, and an example."""
+    return f"Invalid repo id {value!r}. {REPO_ID_HINT}"
 
 
 def is_gguf_filename(name: str) -> bool:

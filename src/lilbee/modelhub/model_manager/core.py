@@ -11,7 +11,7 @@ from cachetools import TTLCache
 
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.refs import canonical_ref, model_format
+from lilbee.catalog.refs import REPO_ID_HINT, canonical_ref, model_format
 from lilbee.catalog.refs import parse_model_ref as parse_catalog_ref
 from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
@@ -47,6 +47,17 @@ def _prefixed_source(model: str) -> ModelSource | None:
     except ValueError:
         return None
     return ModelSource.FRONTIER if ref.is_api else None
+
+
+def _pull_refusal(model: str) -> ModelNotFoundError:
+    """The refusal for a *model* that names no pullable repo: the format error, else the hint."""
+    try:
+        parse_catalog_ref(model)
+    except ValueError as exc:
+        return ModelNotFoundError(str(exc))
+    return ModelNotFoundError(
+        f"Model '{model}' not recognized. {REPO_ID_HINT} Or give a featured model name."
+    )
 
 
 class ModelManager:
@@ -300,10 +311,7 @@ class ModelManager:
 
         entry = resolve_pull_target(model)
         if entry is None:
-            raise ModelNotFoundError(
-                f"Model '{model}' not recognized. "
-                "Pass a HuggingFace repo id (owner/name) or a featured model name."
-            )
+            raise _pull_refusal(model)
         entry = self._resolved_entry(entry, engine, verify=not allow_unsupported)
         notice = self._log_memory_need(entry, engine)
         if notice is not None and on_notice is not None:

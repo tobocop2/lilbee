@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -14,6 +15,7 @@ import pytest
 from cachetools import TTLCache
 
 from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.refs import REPO_ID_HINT
 from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import (
@@ -938,7 +940,7 @@ class TestModelManagerPull:
         mgr = ModelManager(models_dir, cfg)
         with (
             mock.patch("lilbee.catalog.resolve_pull_target", return_value=None),
-            pytest.raises(RuntimeError, match="HuggingFace repo id"),
+            pytest.raises(RuntimeError, match=re.escape(REPO_ID_HINT)),
         ):
             mgr.pull("nonexistent-model", ModelSource.NATIVE)
 
