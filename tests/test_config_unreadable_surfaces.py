@@ -6,12 +6,14 @@ Each test locks a real config.toml with chmod 000, then goes through the surface
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from lilbee import mcp_server
@@ -65,6 +67,16 @@ class TestCli:
         assert "Traceback" not in result.output
         assert result.exception is None or isinstance(result.exception, SystemExit)
 
+    def test_a_write_failure_prints_the_caller_message(self, capsys: pytest.CaptureFixture) -> None:
+        from lilbee.cli.commands._shared import run_or_fail
+
+        def denied() -> None:
+            raise PermissionError(13, "denied")
+
+        with pytest.raises(typer.Exit):
+            run_or_fail(denied, lambda exc: f"write failed with code {exc.errno}")
+        assert "write failed with code 13" in capsys.readouterr().out
+
 
 class TestRest:
     def test_set_chat_model_answers_503_with_the_read_text(self, locked_config: Path) -> None:
@@ -100,6 +112,29 @@ class TestTui:
         notify.assert_called_once()
         assert READ_TEXT in notify.call_args.args[0]
         assert notify.call_args.kwargs["severity"] == "error"
+
+    def test_the_startup_swap_logs_the_read_text_and_boots(
+        self, locked_config: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+
+        stale = CanonicalRef("gone/model", "wired/m", ValidationResult.UNKNOWN)
+        fine = CanonicalRef("ok/model", "ok/model", ValidationResult.OK)
+        with (
+            mock.patch("lilbee.modelhub.model_manager.canonicalize_chat_model", return_value=fine),
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_embedding_model", return_value=stale
+            ),
+            mock.patch("lilbee.cli.tui.app.call_from_thread"),
+            caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
+        ):
+            LilbeeApp().canonicalize_persisted_models()
+        assert any(
+            "gone/model" in r.getMessage() and READ_TEXT in str(r.exc_info[1])
+            for r in caplog.records
+            if r.exc_info
+        )
 
     def test_the_settings_screen_toasts_the_read_text(self, locked_config: Path) -> None:
         from lilbee.cli.tui.app import LilbeeApp
