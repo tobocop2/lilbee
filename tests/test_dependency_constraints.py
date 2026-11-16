@@ -12,6 +12,7 @@ guarded here too.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -127,6 +128,36 @@ def test_lock_holds_the_fork_build_for_every_platform() -> None:
     assert len(urls) == len(_FORK_TAGS)
     for tag in _FORK_TAGS:
         assert sum(url.endswith(f"-{tag}.whl") for url in urls) == 1, tag
+
+
+def _lock_hashes() -> dict[str, str]:
+    lock = tomllib.loads((_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    (package,) = [p for p in lock["package"] if p["name"] == "xberg"]
+    return {w["url"].rsplit("/", 1)[1]: w["hash"] for w in package["wheels"]}
+
+
+def test_lock_holds_a_hash_for_every_fork_wheel() -> None:
+    hashes = _lock_hashes()
+    assert len(hashes) == len(_FORK_TAGS)
+    assert all(h.startswith("sha256:") and len(h) == len("sha256:") + 64 for h in hashes.values())
+
+
+def test_fork_index_page_carries_the_hashes_the_lock_holds() -> None:
+    page = (_ROOT / "site/forks/xberg/index.html").read_text(encoding="utf-8")
+    links = re.findall(r'href="[^"#]*/([^"#/]+)#sha256=([0-9a-f]{64})"', page)
+    assert len(links) == len(_FORK_TAGS)
+    assert {name: f"sha256:{digest}" for name, digest in links} == _lock_hashes()
+
+
+def test_fork_index_url_is_where_the_site_serves_the_page() -> None:
+    assert _fork_index()["url"] == "https://lilbee.sh/forks/xberg/"
+    assert (_ROOT / "site/forks/xberg/index.html").is_file()
+
+
+def test_security_audit_covers_the_fork_build() -> None:
+    workflow = (_ROOT / ".github/workflows/security-scan.yml").read_text(encoding="utf-8")
+    assert "--no-emit-package lilbee-engine" in workflow
+    assert "--no-emit-package xberg" not in workflow
 
 
 def test_intel_mac_install_reads_the_fork_index() -> None:
