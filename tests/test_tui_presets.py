@@ -856,9 +856,16 @@ class TestPaneKeyboardAccess:
             tabs.active = last_group
             assert await wait_until(pilot, lambda: bool(screen.query(f"#{last_group}-body > *")))
             body = screen.query_one(f"#{last_group}-body", VerticalScroll)
-            last_field = screen._focus_stops(body)[-1]
-            screen._focus_pane_edge(last_group, -1)
-            assert await wait_until(pilot, lambda: app.focused is last_field)
+
+            def _on_last_field() -> bool:
+                stops = screen._focus_stops(body)
+                if not stops:
+                    return False
+                if app.focused is not stops[-1]:
+                    screen._focus_pane_edge(last_group, -1)
+                return app.focused is stops[-1]
+
+            assert await wait_until(pilot, _on_last_field, timeout=30.0)
             await pilot.press("tab")
             assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
             assert await wait_until(

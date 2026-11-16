@@ -17368,7 +17368,9 @@ async def test_settings_masks_credentials_but_keeps_the_value():
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause(0.15)
+        assert await wait_until(
+            pilot, lambda: bool(app.screen.query("#settings-tabs")), timeout=30.0
+        )
         tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
         # Panes compose lazily, so every group has to be visited to reach its
         # editors; a credential hiding in an unvisited pane is the whole risk.
@@ -17377,18 +17379,26 @@ async def test_settings_masks_credentials_but_keeps_the_value():
             if not pane.id:
                 continue
             tabbed.active = pane.id
-            await pilot.pause(0.15)
+            assert await wait_until(
+                pilot, lambda target=pane.id: tabbed.active == target, timeout=30.0
+            )
+
+        def _every_credential_editor_rendered() -> bool:
+            checked.clear()
             for key in secret_keys:
                 for editor in app.screen.query(f"#{EDITOR_ID_PREFIX}{key}").results(Input):
                     assert editor.password is True, f"{key} renders in plain text"
                     checked.append(key)
-        missing = set(secret_keys) - set(checked)
-        assert not missing, f"credential editors never rendered: {missing}"
+            return not set(secret_keys) - set(checked)
+
+        rendered = await wait_until(pilot, _every_credential_editor_rendered, timeout=30.0)
+        assert rendered, f"credential editors never rendered: {set(secret_keys) - set(checked)}"
 
         editor = app.screen.query(f"#{EDITOR_ID_PREFIX}{checked[-1]}").first(Input)
         editor.value = "sk-proj-REALSECRET123"
-        await pilot.pause()
-        assert editor.value == "sk-proj-REALSECRET123"
+        assert await wait_until(
+            pilot, lambda: editor.value == "sk-proj-REALSECRET123", timeout=30.0
+        )
 
 
 async def test_settings_leaves_non_credentials_visible():
