@@ -243,8 +243,6 @@ def test_the_served_by_version_is_the_version_the_engine_list_shows(
         provider._log_served(WorkerRole.CHAT, "org/chat-GGUF/chat.gguf", served)
     line = f"served by engine=llama.cpp version={listed[0]} build={ENGINE_LLAMA_CPP_REF} role=chat"
     assert line in caplog.text
-    (record,) = EngineStore(engines_root(cfg.models_dir)).installed()
-    assert record.upstream_ref == ENGINE_LLAMA_CPP_REF
 
 
 def test_installing_the_pack_reports_bytes_and_retries_and_honours_cancel(

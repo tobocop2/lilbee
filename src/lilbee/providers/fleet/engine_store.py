@@ -227,8 +227,6 @@ class PinLock:
     """The file name of the engine server in the wheel."""
     libraries: tuple[str, ...] = ()
     """The shared libraries, by name without prefix or suffix, that the wheel must hold."""
-    upstream_ref: str = ""
-    """The upstream source ref the pack is built from; empty when the version names it."""
 
     def __post_init__(self) -> None:
         for part in (self.engine, self.version, self.backend):
@@ -254,7 +252,6 @@ class InstalledEngine:
     installed_at: str
     path: Path
     binary: Path | None
-    upstream_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -553,7 +550,6 @@ def _read_record(directory: Path) -> InstalledEngine | None:
             installed_at=data["installed_at"],
             path=directory,
             binary=directory / data["binary"] if data["binary"] is not None else None,
-            upstream_ref=data.get("upstream_ref", ""),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -852,7 +848,6 @@ class EngineStore:
             "licences": list(lock.licences),
             "installed_at": datetime.now(UTC).isoformat(),
             "binary": binary,
-            "upstream_ref": lock.upstream_ref,
         }
         (stage / RECORD_NAME).write_text(json.dumps(record), encoding="utf-8")
 

@@ -251,6 +251,15 @@ def test_a_pin_with_no_upstream_ref_has_no_build() -> None:
     assert served == ServingEngine("tei", "1.9.4", NO_BUILD)
 
 
+@pytest.mark.parametrize("ref", ["", None])
+def test_a_pin_with_an_empty_upstream_ref_has_no_build(ref: str | None) -> None:
+    engine = MagicMock()
+    engine.name = "tei"
+    engine.pin_record.return_value = {"version": "1.9.4", "upstream_ref": ref}
+    served = served_by(NATIVE, engine, native=True)
+    assert served == ServingEngine("tei", "1.9.4", NO_BUILD)
+
+
 def test_a_pin_with_no_version_is_reported_as_unknown() -> None:
     engine = MagicMock()
     engine.name = "tei"
