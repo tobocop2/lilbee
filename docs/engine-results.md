@@ -27,7 +27,6 @@ No recording is taken yet. Each row changes when its recording lands. A recordin
 | llama.cpp-cpu | chat, embed, rerank, vision | CPU host | not recorded |
 | llama.cpp-cuda | chat, embed, rerank, vision | NVIDIA GPU | not recorded |
 | mistralrs-cpu | chat, embed, vision | CPU host | not recorded |
-| mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |
 | tei-cpu | embed, rerank | CPU host | not recorded |
 | tei-cuda | embed, rerank | NVIDIA GPU | not recorded |
 | lemonade-ryzen-ai | chat, embed | Ryzen AI machine with an XDNA2 NPU | not recorded, no machine |

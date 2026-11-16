@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
-from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
+from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
@@ -28,21 +27,11 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
-from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _MIN_SPLIT_CARDS = 2
-# With two or more visible cards the engine starts tensor parallelism unless this is "1".
 _NO_COLLECTIVE_ENV = "MISTRALRS_NO_NCCL"
-# A split uses peer-to-peer only over NVLink; a PCIe pair in a VM can stall without this.
-_P2P_LEVEL_ENV = "NCCL_P2P_LEVEL"
-_P2P_NVLINK_ONLY = "NVL"
-# A user who sets either variable keeps their choice.
-_P2P_USER_ENV = (_P2P_LEVEL_ENV, "NCCL_P2P_DISABLE")
 _CONFIG = "config.json"
-_LAYERS_KEY = "num_hidden_layers"
-_HEADS_KEY = "num_attention_heads"
-_KV_HEADS_KEY = "num_key_value_heads"
 _ARCHITECTURES_KEY = "architectures"
 _WINDOW_KEY = "max_position_embeddings"
 # The multimodal loaders of mistral.rs v0.9.5 that cap their window to ``--max-model-len``
@@ -60,16 +49,11 @@ _CAPPED_VISION_ARCHITECTURES = frozenset(
     }
 )
 _TEXT_CONFIG_KEY = "text_config"
-_GGUF_LAYERS_KEY = "block_count"
-_GGUF_HEADS_KEY = "head_count"
-_GGUF_KV_HEADS_KEY = "head_count_kv"
 _SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
-# The expression a CUDA pack declares: it bundles NVIDIA runtime libraries.
-_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"]
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
@@ -83,9 +67,6 @@ _SUBCOMMAND = {
 }
 _TEXT = "text"
 _METAL = "metal"
-_CUDA_DRIVER_FLOOR = (12, 8)
-# The compute capabilities the release publishes a CUDA 12.8 archive for.
-_CUDA_ARCHIVES = frozenset({(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)})
 _SUPPORTED_HOSTS = frozenset(
     {
         (HostOS.LINUX, HostArch.X86_64),
@@ -116,34 +97,13 @@ class BuildPick:
     reason: str
 
 
-def _compute_text(compute: tuple[int, int]) -> str:
-    return f"{compute[0]}.{compute[1]}"
-
-
 def _linux_pick(host: HostCaps) -> BuildPick:
-    """The CUDA archive of the host's GPUs, else the CPU archive with the reason."""
+    """The CPU archive, with the reason the host gets no GPU archive."""
     if not host.nvidia_known:
         return BuildPick(_CPU, f"{host.nvidia_reason}, so the CPU archive runs.")
     if not host.gpus:
         return BuildPick(_CPU, "This host has no NVIDIA GPU, so the CPU archive runs.")
-    computes = {gpu.compute for gpu in host.gpus}
-    if len(computes) > 1:
-        return BuildPick(_CPU, "The GPUs differ in compute capability, so the CPU archive runs.")
-    compute = next(iter(computes))
-    if compute not in _CUDA_ARCHIVES:
-        return BuildPick(
-            _CPU,
-            f"No CUDA archive targets compute capability {_compute_text(compute)}, "
-            "so the CPU archive runs.",
-        )
-    driver = host.nvidia_driver_cuda or (0, 0)
-    if driver < _CUDA_DRIVER_FLOOR:
-        return BuildPick(
-            _CPU,
-            f"The CUDA archive needs a driver for CUDA {_compute_text(_CUDA_DRIVER_FLOOR)}; "
-            f"this driver offers CUDA {_compute_text(driver)}, so the CPU archive runs.",
-        )
-    return BuildPick(f"cuda128-sm{compute[0]}{compute[1]}", "")
+    return BuildPick(_CPU, "The release has no CUDA archive for Linux, so the CPU archive runs.")
 
 
 def _positive_int(value: object) -> int | None:
@@ -168,18 +128,6 @@ def _config_sections(path: Path) -> list[Mapping[str, Any]]:
     return [s for s in (config, config.get(_TEXT_CONFIG_KEY)) if isinstance(s, dict)]
 
 
-def _layer_count(path: Path) -> int | None:
-    """The layer count a GGUF file or a model folder declares, or ``None``."""
-    if path.suffix.lower() == _GGUF_SUFFIX:
-        meta = read_gguf_metadata(path)
-        return _positive_int(meta.get(_GGUF_LAYERS_KEY)) if meta else None
-    for section in _config_sections(path):
-        count = _positive_int(section.get(_LAYERS_KEY))
-        if count is not None:
-            return count
-    return None
-
-
 def _vision_context(path: Path, planned: int) -> int:
     """The context flag of a vision folder, or 0 for none.
 
@@ -200,46 +148,6 @@ def _architecture(sections: list[Mapping[str, Any]]) -> str | None:
     if isinstance(names, list) and len(names) == 1 and isinstance(names[0], str):
         return names[0]
     return None
-
-
-def _heads_in(section: Mapping[str, Any], heads_key: str, kv_key: str) -> tuple[int, int] | None:
-    """Query and key-value head counts of *section*; an absent key-value count equals the first."""
-    heads = _positive_int(section.get(heads_key))
-    if heads is None:
-        return None
-    kv_heads = section.get(kv_key)
-    return heads, heads if kv_heads is None else (_positive_int(kv_heads) or 0)
-
-
-def _head_counts(path: Path) -> tuple[int, int] | None:
-    """Query and key-value head counts a GGUF file or a model folder declares, or ``None``."""
-    if path.suffix.lower() == _GGUF_SUFFIX:
-        meta = read_gguf_metadata(path)
-        return _heads_in(meta, _GGUF_HEADS_KEY, _GGUF_KV_HEADS_KEY) if meta else None
-    for section in _config_sections(path):
-        counts = _heads_in(section, _HEADS_KEY, _KV_HEADS_KEY)
-        if counts is not None:
-            return counts
-    return None
-
-
-def _heads_divide(heads: int, kv_heads: int, cards: int) -> bool:
-    """Whether the heads shard over *cards*: queries divide, key-value heads divide or repeat."""
-    if heads % cards or kv_heads <= 0:
-        return False
-    return kv_heads % cards == 0 if cards <= kv_heads else cards % kv_heads == 0
-
-
-def _apportion(layers: int, ratio: tuple[int, ...]) -> tuple[int, ...] | None:
-    """Layers per card by largest remainder; ``None`` when a card gets none."""
-    total = sum(ratio)
-    if total <= 0:
-        return None
-    shares = [layers * part // total for part in ratio]
-    by_remainder = sorted(range(len(ratio)), key=lambda i: (-(layers * ratio[i] % total), i))
-    for i in by_remainder[: layers - sum(shares)]:
-        shares[i] += 1
-    return tuple(shares) if min(shares) > 0 else None
 
 
 class MistralAdapter:
@@ -299,7 +207,7 @@ class MistralAdapter:
             "launch": [_TOOL, "serve"],
             "platforms": platforms,
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
-            "licenses": _LICENCES if backend == _CPU else _CUDA_LICENCES,
+            "licenses": _LICENCES,
         }
 
     def binary(self) -> Path:
@@ -324,7 +232,7 @@ class MistralAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The serve command; an equal split over cards adds no flag.
+        """The serve command.
 
         Chat passes the planned context as ``--max-model-len``, the figure the memory
         estimate prices. An embedding model takes none: its context is its tokenizer
@@ -334,8 +242,8 @@ class MistralAdapter:
 
         A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
         decides the device flags: a CPU build gets ``--cpu``, and
-        any GPU build turns paged attention off, because its cache takes the whole card
-        and the first chat then answers 503. The port flag
+        the Metal build turns paged attention off, because its cache takes the whole
+        memory and the first chat then answers 503. The port flag
         belongs to ``serve``, so it sits before the model subcommand. The device flags
         belong to the subcommand: before it the engine ignores ``--cpu`` and takes the
         whole card (20536 MiB measured), so every role names its subcommand. A GGUF file
@@ -372,32 +280,16 @@ class MistralAdapter:
             self.check_split(request.model_path, request.tensor_split)
 
     def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
-        """Refuse a split over several cards unless the engine can run it as equal shards."""
+        """Refuse a split over several cards: no mistral.rs build runs one."""
         if len(ratio) < _MIN_SPLIT_CARDS:
             return
         from lilbee.catalog.runnable import session_host
 
-        name = model_path.name
-        cards = len(ratio)
-        backend = self.pick_build(session_host()).backend
-        if backend in (None, _CPU, _METAL):
-            label = "Metal" if backend == _METAL else "CPU"
-            raise SplitRefusedError(
-                f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
-                f"{_SPLIT_FIX}"
-            )
-        if len(set(ratio)) != 1:
-            raise SplitRefusedError(
-                f"mistral.rs splits {name} only evenly across cards. "
-                f"Use the {EngineName.LLAMA.value} engine for an uneven split."
-            )
-        heads = _head_counts(model_path)
-        if heads is None or not _heads_divide(*heads, cards):
-            raise SplitRefusedError(
-                f"mistral.rs cannot split {name} across {cards} cards: "
-                f"the attention heads of the model do not divide over {cards} cards, "
-                f"or the model does not list its heads. {_SPLIT_FIX}"
-            )
+        label = "Metal" if self.pick_build(session_host()).backend == _METAL else "CPU"
+        raise SplitRefusedError(
+            f"mistral.rs cannot split {model_path.name} across {len(ratio)} cards "
+            f"on the {label} build. {_SPLIT_FIX}"
+        )
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
@@ -407,27 +299,9 @@ class MistralAdapter:
         return frozenset({RoleTarget.CPU, RoleTarget.GPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        from lilbee.catalog.runnable import session_host
-
-        if self.pick_build(session_host()).backend in (None, _CPU):
-            return DeviceProbe(devices=[], output="")
-        return DeviceProbe(devices=visible_nvidia_cards(), output="")
+        return DeviceProbe(devices=[], output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        whole = self._whole_estimate(request)
-        if len(request.tensor_split) < _MIN_SPLIT_CARDS:
-            return whole
-        layers = _layer_count(request.model_path)
-        if layers is None:
-            return whole
-        shares = _apportion(layers, request.tensor_split)
-        if shares is None:
-            return whole
-        per_device = tuple(whole.device_bytes * count // layers for count in shares)
-        return replace(whole, per_device=per_device)
-
-    @staticmethod
-    def _whole_estimate(request: MemoryRequest) -> MemoryEstimate:
         if request.model_path.is_dir():
             return estimate_memory(ModelFormat.SAFETENSORS, request)
         try:
@@ -455,11 +329,7 @@ class MistralAdapter:
         return {}
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
-        """Tensor parallelism needs the collective library; any other launch turns it off."""
-        if target is not RoleTarget.CPU and cards >= _MIN_SPLIT_CARDS:
-            if any(name in os.environ for name in _P2P_USER_ENV):
-                return {}
-            return {_P2P_LEVEL_ENV: _P2P_NVLINK_ONLY}
+        """The collective library stays off: no mistral.rs build runs a split."""
         return {_NO_COLLECTIVE_ENV: "1"}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:

@@ -57,8 +57,9 @@ PORT_FLAG = "--port"
 _CONCURRENCY_PROCESSES = 4
 # Part of the engine pin, so a peer never binds an engine launched under another
 # contract. Raise it when a launch rule changes. 1: every model carries
-# concurrencyLimit. 2: an equal mistral.rs split runs tensor parallel.
-SWAP_CONFIG_REVISION = 2
+# concurrencyLimit. 2: an equal mistral.rs split runs tensor parallel. 3: mistral.rs
+# runs no CUDA build, so a role on cards never runs tensor parallel.
+SWAP_CONFIG_REVISION = 3
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"

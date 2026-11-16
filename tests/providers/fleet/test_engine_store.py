@@ -469,13 +469,12 @@ def _cuda_wheel(
     *,
     notice: bool,
     licence: str = _CUDA_EXPRESSION,
-    tool: str = "server",
     notice_path: str = "p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA",
     notice_text: str | bytes = "notice",
     extras: tuple[tuple[str, str | bytes], ...] = (),
 ) -> str:
     with zipfile.ZipFile(path, "w") as archive:
-        server = zipfile.ZipInfo(f"p/bin/{tool}")
+        server = zipfile.ZipInfo("p/bin/server")
         server.external_attr = (stat.S_IFREG | 0o755) << 16
         archive.writestr(server, "#!/bin/sh\n")
         archive.writestr("p-1.dist-info/METADATA", f"Name: p\nLicense-Expression: {licence}\n")
@@ -637,36 +636,16 @@ def test_a_cuda_wheel_with_an_empty_notice_is_refused(store: EngineStore, tmp_pa
         store.install_from_wheel(pin(sha), path)
 
 
-def test_the_mistral_cuda_pin_record_installs_a_cuda_wheel(
-    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("backend", ["cpu", "metal"])
+def test_the_mistral_pin_record_of_every_build_states_only_mit(
+    backend: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lilbee.catalog import runnable
     from lilbee.providers.fleet.engines import mistral
 
     monkeypatch.setattr(runnable, "session_host", lambda: object())
     monkeypatch.setattr(
-        mistral.MistralAdapter,
-        "pick_build",
-        lambda self, host: mistral.BuildPick("cuda128-sm89", ""),
-    )
-    monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
-    monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
-    record = mistral.MistralAdapter().pin_record()
-    assert record["licenses"] == [_CUDA_EXPRESSION]
-    path = tmp_path / "m.whl"
-    sha = _cuda_wheel(path, notice=True, tool=str(record["tool"]))
-    lock = pin_lock({**record, "sha256": sha})
-    store.install_from_wheel(lock, path)
-    assert len(store.installed()) == 1
-
-
-def test_the_mistral_cpu_pin_record_states_only_mit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lilbee.catalog import runnable
-    from lilbee.providers.fleet.engines import mistral
-
-    monkeypatch.setattr(runnable, "session_host", lambda: object())
-    monkeypatch.setattr(
-        mistral.MistralAdapter, "pick_build", lambda self, host: mistral.BuildPick("cpu", "")
+        mistral.MistralAdapter, "pick_build", lambda self, host: mistral.BuildPick(backend, "")
     )
     monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
     monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)

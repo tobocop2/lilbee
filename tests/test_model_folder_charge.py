@@ -41,13 +41,13 @@ _REF = "org/repo/model"
 
 pytestmark = pytest.mark.usefixtures("stated_sizes")
 
-# Heads that divide over two cards and no layer count, so a split has no per-card breakdown.
+# A config that declares heads and no layer count.
 _HEADS_CONFIG = '{"num_attention_heads": 32, "num_key_value_heads": 8}'
 
 
 @pytest.fixture(autouse=True)
 def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A host whose mistral.rs build can split over two cards, whatever runs the tests."""
+    """A host with two CUDA cards, whatever runs the tests."""
     nvidia = {
         "driver": "570.0",
         "cuda_driver": 12080,
@@ -119,13 +119,23 @@ def _request(path: Path) -> MemoryRequest:
 
 
 class _StatedEngine(type(MISTRAL)):
-    """The mistral.rs adapter with a stated estimate in place of its own."""
+    """The mistral.rs adapter with a stated estimate and an open split rule in place of its own."""
 
     def __init__(self, estimate: MemoryEstimate) -> None:
         self.estimate = estimate
 
+    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
+        return None
+
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return self.estimate
+
+
+def _no_breakdown_engine() -> _StatedEngine:
+    """An engine that sizes a model in one figure, with no per-card share."""
+    return _StatedEngine(
+        MemoryEstimate(kind=MemoryKind.SIZED, device_bytes=GIB, host_bytes=0, shared_bytes=GIB)
+    )
 
 
 def _pin(engine, role: WorkerRole, path: Path, devices: tuple[int, ...], monkeypatch, alone=False):
@@ -260,13 +270,18 @@ class TestAOneCardPin:
 
 @pytest.mark.parametrize("alone", [False, True], ids=["whole-spec", "role-alone"])
 def test_a_pin_on_two_cards_with_no_breakdown_says_to_pin_one(tmp_path, monkeypatch, alone) -> None:
-    folder = _folder(tmp_path, GIB)
     expected = (
         r"^chat has no per-card memory figure, so it cannot be pinned to 2 cards\. "
         r"Pin one card, or set its target to auto\.$"
     )
     with pytest.raises(PlacementError, match=expected):
-        _pin(MISTRAL, WorkerRole.CHAT, folder, (0, 1), monkeypatch, alone)
+        _pin(_no_breakdown_engine(), WorkerRole.CHAT, tmp_path, (0, 1), monkeypatch, alone)
+
+
+def test_a_pin_on_two_cards_is_refused_by_the_split_rule_of_mistral(tmp_path, monkeypatch) -> None:
+    expected = r"mistral\.rs cannot split model across 2 cards on the CPU build"
+    with pytest.raises(PlacementError, match=expected):
+        _pin(MISTRAL, WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, alone=False)
 
 
 def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
@@ -284,7 +299,7 @@ def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
 
 def test_the_refusal_of_a_two_card_pin_names_the_role_alone(tmp_path, monkeypatch) -> None:
     with pytest.raises(TargetRefusedError) as refused:
-        _pin(MISTRAL, WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, alone=True)
+        _pin(_no_breakdown_engine(), WorkerRole.CHAT, tmp_path, (0, 1), monkeypatch, alone=True)
     assert set(refused.value.reasons) == {WorkerRole.CHAT}
 
 

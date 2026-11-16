@@ -301,6 +301,10 @@ class TestEnginePin:
         assert engine_pin() != current
         assert current.endswith(f"|swap-config={revision}")
 
+    def test_the_revision_is_past_the_removal_of_the_mistral_cuda_launch(self) -> None:
+        # Revision 2 is the last one under which a mistral.rs split ran tensor parallel.
+        assert swap_config_mod.SWAP_CONFIG_REVISION >= 3
+
     def test_a_setting_never_moves_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Settings are matched per launch, so no write can make a kept group foreign.
         monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
