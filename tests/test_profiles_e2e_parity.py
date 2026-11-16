@@ -947,8 +947,13 @@ def _editor(screen: SettingsScreen, key: str) -> Any:
 
 async def _all_panes(app: LilbeeApp, pilot: Pilot, keys: tuple[str, ...]) -> SettingsScreen:
     screen = await _tab(app, pilot)
-    screen.populate_all_panes()
-    assert await until(pilot, lambda: all(screen.query(f"#ed-{k}") for k in keys))
+
+    def _editors_mounted() -> bool:
+        # A pane body that is not mounted yet is skipped, so ask again on every poll.
+        screen.populate_all_panes()
+        return all(screen.query(f"#ed-{k}") for k in keys)
+
+    assert await until(pilot, _editors_mounted)
     return screen
 
 

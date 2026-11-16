@@ -84,13 +84,25 @@ class _Visit:
         self._push = mock.patch.object(self.app, "push_screen", _push)
         self._push.start()
         self.screen = await _loaded(self.app, self.pilot, "Default")
-        self.screen.populate_all_panes()
-        assert await _until(
-            self.pilot,
-            lambda: bool(
+
+        used = {_REBUILD_KEY, _PLAIN_KEY, _LIMIT_KEY}
+        panes = [
+            pane_id
+            for pane_id, group in self.screen._pane_groups.items()
+            if used & {key for key, _ in group.items}
+        ]
+
+        def _editors_mounted() -> bool:
+            # Mounting every pane is thousands of widgets that every wait must visit, which a
+            # loaded host cannot do in time; the visit needs only the panes of the keys it edits.
+            # A pane body that is not mounted yet is skipped, so ask again on every poll.
+            for pane_id in panes:
+                self.screen._populate_pane(pane_id)
+            return bool(
                 self.screen.query(f"#ed-{_REBUILD_KEY}") and self.screen.query(f"#ed-{_PLAIN_KEY}")
-            ),
-        )
+            )
+
+        assert await _until(self.pilot, _editors_mounted)
         return self
 
     async def __aexit__(self, *exc: object) -> None:
