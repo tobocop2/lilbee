@@ -657,8 +657,8 @@ class TestAGoneCardRefusesOnlyItsRole:
     @staticmethod
     def _gone(role: str, card: int = 1) -> str:
         return (
-            f"{role}: GPU {card} is not on this machine (1 found). Set the {role} devices "
-            "to a GPU that exists, or set its target to cpu."
+            f"{role} is pinned to device {card}, but this machine lists only device 0. "
+            f"Set the {role} devices to a card that exists, or set its target to cpu."
         )
 
     def test_vision_on_the_missing_card_is_refused_and_the_rest_launch(

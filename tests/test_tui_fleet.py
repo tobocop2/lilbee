@@ -1365,8 +1365,8 @@ async def test_one_card_still_offers_the_cpu_choice(monkeypatch):
 
 
 _LOST_CARD = (
-    "chat: GPU 1 is not on this machine (1 found). "
-    "Set the chat devices to a GPU that exists, or set its target to cpu."
+    "chat is pinned to device 1, but this machine lists only device 0. "
+    "Set the chat devices to a card that exists, or set its target to cpu."
 )
 _LOST_CARD_SPEC = (
     '{"chat": {"devices": [1], "target": "gpu"}, "embed": {"target": "cpu"}, '

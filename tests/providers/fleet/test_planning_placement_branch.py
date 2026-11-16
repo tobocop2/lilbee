@@ -90,7 +90,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     captured = {}
 
     def fake_from_spec(
-        spec, active_roles, device_capacity, *, estimate_peak, plan_auto, model_refs, absent_hint
+        spec, active_roles, device_capacity, *, estimate_peak, plan_auto, model_refs, lost_card
     ):
         captured["spec"] = spec
         captured["roles"] = active_roles

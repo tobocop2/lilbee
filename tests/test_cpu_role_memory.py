@@ -57,8 +57,8 @@ TOO_BIG = (
     "Choose a smaller model or a GPU."
 )
 LOST_CARD = (
-    "chat: GPU 3 is not on this machine (1 found). "
-    "Set the chat devices to a GPU that exists, or set its target to cpu."
+    "chat is pinned to device 3, but this machine lists only device 0. "
+    "Set the chat devices to a card that exists, or set its target to cpu."
 )
 ROLES = (Role(WorkerRole.CHAT, 10), Role(WorkerRole.EMBED, 6))
 

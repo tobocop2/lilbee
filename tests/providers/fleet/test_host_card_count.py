@@ -234,10 +234,10 @@ class TestPinRefusal:
         return plan.refused_roles[E]
 
     @staticmethod
-    def _text(found: str) -> str:
+    def _text(on_host: str = "") -> str:
         return (
-            f"embed: GPU 1 is not on this machine ({found}). "
-            "Set the embed devices to a GPU that exists, or set its target to cpu."
+            f"embed is pinned to device 1, but this machine lists only device 0{on_host}. "
+            "Set the embed devices to a card that exists, or set its target to cpu."
         )
 
     def test_a_card_a_mask_hides_is_counted_on_the_host(
@@ -245,7 +245,7 @@ class TestPinRefusal:
     ) -> None:
         host.driver_answers = [2]
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
-        assert refusal == self._text("1 found, 2 on this host")
+        assert refusal == self._text(" (2 cards on this host)")
 
     def test_a_hidden_card_of_another_vendor_is_counted(
         self, host: _Host, monkeypatch, tmp_path
@@ -253,13 +253,13 @@ class TestPinRefusal:
         host.driver_answers = [1]
         host.tree = Counter({_NVIDIA_ID: 1, _AMD_ID: 1})
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
-        assert refusal == self._text("1 found, 2 on this host")
+        assert refusal == self._text(" (2 cards on this host)")
 
     def test_a_host_with_no_readable_table_keeps_the_visible_count(
         self, host: _Host, monkeypatch, tmp_path
     ) -> None:
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _AMD_NAME)])
-        assert refusal == self._text("1 found")
+        assert refusal == self._text()
 
     def test_a_pin_to_a_card_that_exists_reads_no_table(
         self, host: _Host, monkeypatch, tmp_path
@@ -277,4 +277,4 @@ class TestPinRefusal:
     ) -> None:
         host.driver_answers = [1]
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
-        assert refusal == self._text("1 found")
+        assert refusal == self._text()

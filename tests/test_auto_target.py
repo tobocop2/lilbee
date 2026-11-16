@@ -38,8 +38,8 @@ VISION_REFUSED = (
     "Use a smaller model, or set its target to cpu."
 )
 LOST_CHAT = (
-    "chat: GPU 1 is not on this machine (1 found). "
-    "Set the chat devices to a GPU that exists, or set its target to cpu."
+    "chat is pinned to device 1, but this machine lists only device 0. "
+    "Set the chat devices to a card that exists, or set its target to cpu."
 )
 
 
