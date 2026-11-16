@@ -549,7 +549,7 @@ class LilbeeApp(App[None]):
             # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
                 apply_settings_update({field: canon.effective})
-            except (ValueError, OSError):
+            except (ValueError, OSError, ConfigReadError):
                 log.warning(
                     msg.MODEL_FALLBACK_FAILED.format(
                         label=label,
@@ -682,6 +682,9 @@ class LilbeeApp(App[None]):
             result = apply_settings_update({key: value})
         except OSError as exc:
             self.notify(config_write_failure_message(exc), severity="error")
+            return False
+        except ConfigReadError as exc:
+            self.notify(str(exc), severity="error")
             return False
         self.notify_warnings(result.warnings)
         self.publish_settings([key])

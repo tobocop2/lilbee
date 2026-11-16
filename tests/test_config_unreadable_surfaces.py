@@ -101,6 +101,16 @@ class TestTui:
         assert READ_TEXT in notify.call_args.args[0]
         assert notify.call_args.kwargs["severity"] == "error"
 
+    def test_the_settings_screen_toasts_the_read_text(self, locked_config: Path) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        tui = LilbeeApp()
+        with mock.patch.object(tui, "notify") as notify:
+            assert tui.set_setting("chat_model", "wired/m") is False
+        notify.assert_called_once()
+        assert READ_TEXT in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+
 
 class TestPlanner:
     def test_planning_the_fleet_refuses_with_the_read_text(
