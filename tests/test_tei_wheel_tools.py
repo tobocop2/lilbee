@@ -947,3 +947,4 @@ def test_the_linux_pack_cells_run_the_smoke_on_an_emulated_cpu() -> None:
     assert "if: matrix.os == 'linux'" in step
     assert "EMULATE_CPU: Nehalem" in step
     assert step.count("smoke_tei.sh") == 1
+    assert "continue-on-error" not in step
