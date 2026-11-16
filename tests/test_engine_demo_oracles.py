@@ -94,6 +94,7 @@ _ASK = {
     "cited_sources": [{"source": "bees.md", "label": "bees.md"}],
     "retrieval_query": "q",
     "dropped_sources": [],
+    "warnings": [],
 }
 
 _GOOD_ASK_LINES = tuple(_served(_ENGINE, _PIN, r) for r in ("embed", "rerank", "chat"))

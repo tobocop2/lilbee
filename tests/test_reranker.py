@@ -279,7 +279,7 @@ class TestSearchAppliesReranker:
         monkeypatch.setattr(cfg, "intent_routing", False)
         monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
         monkeypatch.setattr(searcher, "_apply_temporal_filter", lambda r, q: r)
-        monkeypatch.setattr(searcher, "_apply_concept_boost", lambda r, q: r)
+        monkeypatch.setattr(searcher, "_apply_concept_boost", lambda r, q, degraded: r)
 
     def test_search_reranks_and_bumps_depth_when_loaded(self, monkeypatch):
         cfg.reranker_model = _RERANKER_MODEL

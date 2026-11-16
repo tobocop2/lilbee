@@ -368,6 +368,8 @@ class AskResponse(BaseModel):
     """The standalone rewrite retrieval ran on, when a follow-up was rewritten."""
     dropped_sources: list[CleanedChunk] = Field(default_factory=list)
     """Chunks the budget fit shed, so a client can say what was trimmed."""
+    warnings: list[HealthWarning] = Field(default_factory=list)
+    """Search steps that failed, so a client can say the answer used fewer matches."""
 
 
 class SetModelResponse(BaseModel):

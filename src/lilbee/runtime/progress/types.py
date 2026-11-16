@@ -46,6 +46,7 @@ class SseEvent(StrEnum):
     REASONING = "reasoning"
     SOURCES = "sources"
     RETRIEVAL_QUERY = "retrieval_query"
+    SEARCH_DEGRADED = "search_degraded"
     ERROR = "error"
     DONE = "done"
     PROGRESS = "progress"

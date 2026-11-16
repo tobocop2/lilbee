@@ -85,6 +85,7 @@ ASK = {
     "cited_sources": [{"source": "bees.md", "label": "bees.md"}],
     "retrieval_query": "q",
     "dropped_sources": [],
+    "warnings": [],
 }
 
 

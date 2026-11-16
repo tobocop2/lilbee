@@ -101,6 +101,7 @@ from lilbee.server.routes.placement import (
 )
 from lilbee.server.routes.profiles import profiles_router
 from lilbee.server.routes.search import (
+    SEARCH_WARNINGS_HEADER,
     ask_route,
     ask_stream_route,
     chat_route,
@@ -425,7 +426,7 @@ def create_app() -> Litestar:
         allow_origin_regex=cfg.cors_origin_regex,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
-        expose_headers=[CONTENT_DISPOSITION],
+        expose_headers=[CONTENT_DISPOSITION, SEARCH_WARNINGS_HEADER],
     )
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(

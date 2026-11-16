@@ -34,6 +34,7 @@ from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN, REBUILD_HINT
 from lilbee.cli.commands.ingest_sync import run_sync_with_signal_cancel
 from lilbee.cli.helpers import (
     announce_cold_start,
+    announce_degraded,
     announce_ready,
     announce_retrieval_query,
     auto_sync,
@@ -42,6 +43,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import warnings_payload
 from lilbee.core.text import strip_control_characters
 from lilbee.data.store import (
     EmbeddingEngineChangedError,
@@ -161,7 +163,9 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
     try:
         for token in stream:
             if isinstance(token, RetrievalNotice):
-                announce_retrieval_query(token.query)
+                if token.query is not None:
+                    announce_retrieval_query(token.query)
+                announce_degraded(token.degraded)
                 continue
             if isinstance(token, AnswerSources):
                 text = token.block(answer)
@@ -251,7 +255,7 @@ def search(
 
     err = announce_cold_start(WorkerRole.EMBED, str(cfg.embedding_model))
     try:
-        results = get_services().searcher.search(
+        report = get_services().searcher.search_report(
             query,
             top_k=min(top_k or cfg.top_k, _MAX_TOP_K),
             chunk_type=scope_to_chunk_type(scope),
@@ -265,12 +269,20 @@ def search(
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
-    cleaned = clean_results(results)
+    cleaned = clean_results(report.rows)
 
     if cfg.json_mode:
-        json_output({"command": "search", "query": query, "results": cleaned})
+        json_output(
+            {
+                "command": "search",
+                "query": query,
+                "results": cleaned,
+                "warnings": warnings_payload(report.degraded),
+            }
+        )
         return
 
+    announce_degraded(report.degraded)
     if not cleaned:
         console.print("No results found.")
         return
@@ -358,6 +370,7 @@ def ask(
                     "cited_sources": clean_results(result.cited_sources, result.sources),
                     "retrieval_query": result.retrieval_query,
                     "dropped_sources": clean_results(result.dropped_sources, result.sources),
+                    "warnings": warnings_payload(result.degraded),
                 }
             )
             return

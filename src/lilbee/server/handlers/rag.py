@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import logging
 import threading
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from lilbee.app.memory import auto_extract, auto_extract_enabled
 from lilbee.app.search import clean_results, source_labels
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.results import DocumentResult, group
 from lilbee.data.store import ChunkType, EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -121,10 +122,23 @@ def _classify_stream_error(exc: BaseException) -> tuple[SseErrorCodeValue | None
     return classify_load_error(str(exc))
 
 
+class SearchResponse(NamedTuple):
+    """Grouped documents for one search and the steps that failed while finding them."""
+
+    documents: list[DocumentResult]
+    warnings: tuple[HealthWarning, ...]
+
+
+def _degraded_frames(warnings: Iterable[HealthWarning]) -> list[str]:
+    """One ``search_degraded`` SSE frame carrying *warnings*, or nothing when none failed."""
+    payload = warnings_payload(warnings)
+    return [sse_event(SseEvent.SEARCH_DEGRADED, {"warnings": payload})] if payload else []
+
+
 async def search(
     q: str, top_k: int | None = None, chunk_type: ChunkType | None = None
-) -> list[DocumentResult]:
-    """Search and return grouped DocumentResults.
+) -> SearchResponse:
+    """Search and return grouped DocumentResults with the failed search steps.
 
     An omitted ``top_k`` resolves to ``cfg.top_k``, read live at call time.
     """
@@ -133,11 +147,12 @@ async def search(
     resolved_top_k = top_k if top_k is not None else cfg.top_k
     # search() blocks on retrieval; run it off the event loop so other admitted
     # requests stay responsive, matching the sibling ask() handler.
-    results = await asyncio.to_thread(
-        get_services().searcher.search, q, top_k=resolved_top_k, chunk_type=chunk_type
+    report = await asyncio.to_thread(
+        get_services().searcher.search_report, q, top_k=resolved_top_k, chunk_type=chunk_type
     )
-    labels = source_labels(results)
-    return [r.model_copy(update={"label": labels[r.source]}) for r in group(results)]
+    labels = source_labels(report.rows)
+    documents = [r.model_copy(update={"label": labels[r.source]}) for r in group(report.rows)]
+    return SearchResponse(documents, report.degraded)
 
 
 async def ask(
@@ -170,6 +185,7 @@ async def ask(
         cited_sources=_cleaned_chunks(result.cited_sources, result.sources),
         retrieval_query=result.retrieval_query,
         dropped_sources=_cleaned_chunks(result.dropped_sources, result.sources),
+        warnings=result.degraded,
     )
 
 
@@ -534,6 +550,7 @@ async def chat(
     _persist_summary(session_id, compaction)
     retrieval_query: str | None = None
     dropped: list[SearchChunk] = []
+    degraded: list[HealthWarning] = []
     if _retrieval_off(searcher, top_k):
         # Chat-only mode or an explicit top_k:0 pure-LLM call.
         sources: list[SearchChunk] = []
@@ -549,15 +566,20 @@ async def chat(
         rag = searcher.build_rag_context(
             question, top_k=top_k or 0, history=history, chunk_type=chunk_type
         )
-        if rag is None:
+        if rag.refused:
             # Refuse like every sibling surface; the old fallback silently
             # answered off-corpus with nothing telling the caller so.
             return AskResponse(
-                answer=GROUNDED_REFUSAL, sources=[], cited_sources=[], compaction=compaction
+                answer=GROUNDED_REFUSAL,
+                sources=[],
+                cited_sources=[],
+                compaction=compaction,
+                warnings=list(rag.degraded),
             )
         sources, messages = rag.results, rag.messages
         retrieval_query = rag.retrieval_query
         dropped = rag.dropped or []
+        degraded = list(rag.degraded)
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -578,6 +600,7 @@ async def chat(
         compaction=compaction,
         retrieval_query=retrieval_query,
         dropped_sources=_cleaned_chunks(dropped, sources),
+        warnings=degraded,
     )
 
 
@@ -895,15 +918,14 @@ def _resolve_stream_context(
             detail=_mismatch_detail(mismatch),
         )
         return _StreamResolution([], None, [frame])
-    if rag is None:
-        return _StreamResolution([], None, [sse_error("No relevant documents found.")])
-    results, messages = rag.results, rag.messages
-    announce = (
-        [sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query})]
-        if rag.retrieval_query
-        else []
-    )
-    return _StreamResolution(results, messages, announce)
+    announce = _degraded_frames(rag.degraded)
+    if rag.refused:
+        return _StreamResolution(
+            [], None, [*announce, sse_error("No relevant documents found.")]
+        )
+    if rag.retrieval_query:
+        announce.append(sse_event(SseEvent.RETRIEVAL_QUERY, {"query": rag.retrieval_query}))
+    return _StreamResolution(rag.results, rag.messages, announce)
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +18,7 @@ from lilbee.app.settings import SCANNED_PAGES_LABEL
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.text import strip_control_characters
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.lock import LibraryUnlockableError
@@ -93,6 +94,13 @@ def announce_retrieval_query(query: str) -> None:
     """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
     line = SEARCHING_FOR.format(query=query)
     PlainConsole(stderr=True).print(line, style=theme.MUTED, soft_wrap=True)
+
+
+def announce_degraded(warnings: Iterable[HealthWarning]) -> None:
+    """Print one stderr line per failed search step."""
+    err = PlainConsole(stderr=True)
+    for warning in warnings:
+        err.print(warning.line, style=theme.WARNING, soft_wrap=True)
 
 
 def _chat_warm_error(role: object) -> str | None:

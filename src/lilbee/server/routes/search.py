@@ -6,6 +6,7 @@ Every route needs the token: these return the user's own documents.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Annotated, NoReturn
@@ -14,9 +15,10 @@ from litestar import get, post
 from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import FromQuery, QueryParameter
-from litestar.response import Stream
+from litestar.response import Response, Stream
 
 from lilbee.app.services import server_is_stopping
+from lilbee.core.health_warnings import warnings_payload
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
 from lilbee.providers.base import SERVER_STOPPING_MESSAGE, ProviderError, ProviderErrorKind
@@ -46,6 +48,9 @@ from lilbee.server.provider_status import CLIENT_FAULT_STATUSES
 _BAD_REQUEST_STATUS = 400
 _NOT_FOUND_STATUS = 404
 _SERVICE_UNAVAILABLE_STATUS = 503
+
+SEARCH_WARNINGS_HEADER = "X-Lilbee-Warnings"
+"""Response header on ``GET /api/search``: a JSON list of the search steps that failed."""
 
 # Shipped clients read /api 401/429 as lilbee-session signals, so upstream kinds stay 503.
 _API_PROVIDER_KIND_STATUSES: dict[ProviderErrorKind, int] = {
@@ -165,14 +170,20 @@ async def search_route(
     q: FromQuery[str],
     top_k: Annotated[int | None, QueryParameter(ge=1, le=100)] = None,
     chunk_type: FromQuery[str | None] = None,
-) -> list[DocumentResult]:
+) -> Response[list[DocumentResult]]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     try:
         parsed_chunk_type = decode_chunk_type(chunk_type)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     try:
-        return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
+        outcome = await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
+        headers = (
+            {SEARCH_WARNINGS_HEADER: json.dumps(warnings_payload(outcome.warnings))}
+            if outcome.warnings
+            else {}
+        )
+        return Response(outcome.documents, headers=headers)
     except EmbeddingModelMismatchError as exc:
         if isinstance(exc, EmbeddingEngineChangedError):
             raise _embedding_mismatch_http(exc) from exc
