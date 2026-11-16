@@ -5169,6 +5169,40 @@ class TestSnapshotEngineWithMixedReadings:
         with pytest.raises(ProviderError, match=r"Cannot read the GPUs of the llama\.cpp engine"):
             planning_mod.snapshot_engine(engines)
 
+    def test_every_configured_role_without_an_engine_is_listed_past_a_role_that_is_skipped(
+        self, monkeypatch
+    ) -> None:
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            reranker_model="org/repo/rerank.gguf",
+            vision_model="org/repo/vision.gguf",
+        )
+        monkeypatch.setattr(
+            planning_mod, "vision_role_wanted", lambda ref: ref == "org/repo/vision.gguf"
+        )
+        missing = planning_mod._roles_without_engine(None, {WorkerRole.CHAT: LLAMA})
+        assert missing == {
+            WorkerRole.RERANK: "org/repo/rerank.gguf",
+            WorkerRole.VISION: "org/repo/vision.gguf",
+        }
+
+    def test_only_the_asked_roles_are_checked_for_an_engine(self, monkeypatch) -> None:
+        self._models(
+            monkeypatch,
+            embedding_model="org/repo/embed.gguf",
+            reranker_model="org/repo/rerank.gguf",
+        )
+        missing = planning_mod._roles_without_engine((WorkerRole.RERANK,), {})
+        assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
+
+    def test_a_vision_role_that_is_not_wanted_does_not_end_the_check(self, monkeypatch) -> None:
+        self._models(
+            monkeypatch, reranker_model="org/repo/rerank.gguf", vision_model="org/repo/vision.gguf"
+        )
+        missing = planning_mod._roles_without_engine((WorkerRole.VISION, WorkerRole.RERANK), {})
+        assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
+
     def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
         from lilbee.providers.base import ProviderError
 
