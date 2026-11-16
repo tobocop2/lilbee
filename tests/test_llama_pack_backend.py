@@ -320,7 +320,8 @@ def test_every_shipped_llama_url_names_the_wheel_that_its_cell_builds() -> None:
 
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
-    workflow = _uncommented(_PACK_CELLS.read_text(encoding="utf-8"))
+    steps = _pack_cells()["jobs"]["cell"]["steps"]
+    workflow = _uncommented("\n".join(step.get("run", "") for step in steps))
     notice = "NOTICE-MICROSOFT-VC-RUNTIME"
     bundle = [line for line in workflow.splitlines() if "bundle_windows_runtime.sh" in line]
     assert len(bundle) == 1
