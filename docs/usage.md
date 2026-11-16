@@ -466,7 +466,10 @@ the request again with `confirm_embed_change` set to `true` to write the change.
 #### See the installed engines
 
 Run `lilbee engine list` to see the engine builds installed beside the models.
-If none is installed, it prints `No engine builds are installed.` Run
+If none is installed, it prints `No engine builds are installed.` The command
+and `lilbee engine install` end with the line `Engines folder:` and its path.
+Every data directory shares that folder, so `LILBEE_DATA` does not move it. To
+move it, set `LILBEE_MODELS_DIR`. Run
 `lilbee engine remove <engine> <version> <backend>` to delete one build. Use
 the three values that `engine list` shows. The `/engine list` and
 `/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,

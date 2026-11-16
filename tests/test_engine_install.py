@@ -505,6 +505,29 @@ def test_the_cli_text_mode_says_what_was_installed(good: Path) -> None:
     assert f"Installed engine {ENGINE} {VERSION} (cpu)." in result.output
 
 
+def test_with_lilbee_data_set_the_cli_names_the_shared_engines_folder(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    for variable in ("HOME", "XDG_DATA_HOME", "LOCALAPPDATA"):
+        monkeypatch.setenv(variable, str(home))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "library"))
+    resolved = Config()
+    cfg.models_dir = resolved.models_dir
+    folder = resolved.models_dir.parent / "engines"
+    assert not folder.is_relative_to(resolved.data_root)
+
+    installed = CliRunner().invoke(
+        cli_app, ["engine", "install", ENGINE.value, "--wheel", str(good)]
+    )
+    listed = CliRunner().invoke(cli_app, ["engine", "list"])
+
+    assert (folder / ENGINE.value).is_dir()
+    for result in (installed, listed):
+        assert result.exit_code == 0
+        assert f"Engines folder: {folder} (shared by every data directory)" in result.output
+
+
 def test_the_cli_refuses_with_the_service_text(good: Path, tmp_path: Path) -> None:
     other = tmp_path / "other.whl"
     make_wheel(other, package="lilbee_engine_other")
