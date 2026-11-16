@@ -1,10 +1,15 @@
-"""Print the Distributable Code section of a Visual Studio licence terms .docx file.
+"""Write or verify the Distributable Code section of a Visual Studio licence terms .docx file.
 
-Usage: vs_distributable_terms.py LICENSE.docx
+Usage:
+  vs_distributable_terms.py LICENSE.docx OUTPUT
+  vs_distributable_terms.py --verify LICENSE.docx WHEEL
 
 The section starts at the paragraph "DISTRIBUTABLE CODE." and ends before the next
-paragraph that opens with an upper case heading. The tool fails when it finds no
-section, or a section without the distribution requirements.
+paragraph that opens with an upper case heading. The first form writes the section to
+OUTPUT as UTF-8. It fails when it finds no section, or a section without the
+distribution requirements and restrictions. The second form fails unless the notice in
+WHEEL is valid UTF-8, holds the section line for line, and holds the sentence that the
+licence check needs.
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ from xml.etree import ElementTree
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _START = "DISTRIBUTABLE CODE."
 _REQUIRED = ("Distribution Requirements", "Distribution Restrictions")
+_NOTICE_SUFFIX = ".dist-info/licenses/NOTICE-MICROSOFT-VC-RUNTIME"
+_SENTENCE = "They are distributable code"
 
 
 def paragraphs(docx: str) -> list[str]:
@@ -48,16 +55,41 @@ def distributable_section(lines: list[str]) -> list[str]:
     return section
 
 
+def verify_notice(section: list[str], wheel: str) -> None:
+    """Raise ValueError unless the wheel's notice is UTF-8 and holds *section* line for line."""
+    with zipfile.ZipFile(wheel) as archive:
+        names = [name for name in archive.namelist() if name.endswith(_NOTICE_SUFFIX)]
+        if len(names) != 1:
+            raise ValueError(f"the wheel has {len(names)} Visual C++ runtime notices, not one")
+        raw = archive.read(names[0])
+    try:
+        notice = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"the notice is not valid UTF-8: {error}") from error
+    if _SENTENCE not in notice:
+        raise ValueError(f"the notice lacks the sentence {_SENTENCE!r}")
+    lines = notice.split("\n")
+    held = any(lines[i : i + len(section)] == section for i in range(len(lines)))
+    if not held:
+        raise ValueError("the notice does not hold the licence terms line for line")
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    verifying = argv[1:2] == ["--verify"]
+    args = argv[2:] if verifying else argv[1:]
+    if len(args) != 2:
         print(__doc__, file=sys.stderr)
         return 2
     try:
-        section = distributable_section(paragraphs(argv[1]))
+        section = distributable_section(paragraphs(args[0]))
+        if verifying:
+            verify_notice(section, args[1])
+        else:
+            with open(args[1], "w", encoding="utf-8", newline="\n") as out:
+                out.write("\n".join(section) + "\n")
     except (ValueError, KeyError, zipfile.BadZipFile) as error:
         print(f"vs_distributable_terms: {error}", file=sys.stderr)
         return 1
-    sys.stdout.write("\n".join(section) + "\n")
     return 0
 
 
