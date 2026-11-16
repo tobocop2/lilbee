@@ -208,6 +208,7 @@ def _engine(name: str, backend: str, count: int, takes_names: bool) -> SimpleNam
         name=name,
         binary=lambda: Path(f"/nonexistent/{name}"),
         takes_device_names=takes_names,
+        served_roles=frozenset(WorkerRole),
         reading=[FleetDevice(backend, i, "n", 8 * GIB, 8 * GIB) for i in range(count)],
     )
 
