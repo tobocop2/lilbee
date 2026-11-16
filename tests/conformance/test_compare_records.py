@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from packaging.version import Version
 
-from lilbee.providers.fleet.engine_digests import MANIFESTS
+from lilbee.providers.fleet.engine_manifest import MANIFESTS
 from lilbee.providers.roles import WorkerRole
 from tests.conformance import compare_record as cr
 from tests.conformance import compare_verdicts as cv

@@ -10,12 +10,13 @@ import pytest
 
 from lilbee.catalog import runnable
 from lilbee.providers.fleet import engine_manifest, engine_store, first_use, host_caps
-from lilbee.providers.fleet.engine_digests import MANIFESTS, PACKAGES_URL
+from lilbee.providers.fleet.engine_manifest import MANIFESTS
+from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.engines import ik_llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, NoPublishedPackError, pin_lock
 from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION, LLAMA, LlamaCppAdapter
-from tests._published import render_table, render_table_from_record, wheel_name
+from tests._published import render_table, wheel_name
 
 LINUX = "a" * 64
 WINDOWS = "b" * 64
@@ -54,7 +55,7 @@ def test_every_row_of_the_shipped_table_states_a_wheel() -> None:
 
 def _recorded_digest(engine: str, cell: str) -> str:
     """The sha256 that the committed pack record gives the *cell* of *engine*."""
-    versions = render_table_from_record()[engine]
+    versions = MANIFESTS[engine]
     assert len(versions) == 1
     return str(next(iter(versions.values()))[cell]["sha256"])
 
