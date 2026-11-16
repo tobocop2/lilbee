@@ -693,7 +693,7 @@ jobs:
         run: |
           set -euo pipefail
           bin="${WHEEL_TREE}/lilbee_engine_mistral_rs/bin"
-          bash tools/wheel-build/bundle_windows_runtime.sh "${bin}" "${WHEEL_TREE}/NOTICE-Microsoft-VC-Runtime"
+          bash tools/wheel-build/bundle_windows_runtime.sh "${bin}" "${WHEEL_TREE}/NOTICE-MICROSOFT-VC-RUNTIME"
           # The OpenMP runtime stays only when the exe imports it.
           if ! grep -qiaF vcomp140 "${bin}/mistralrs.exe"; then rm -f "${bin}/vcomp140.dll"; fi
           ls "${bin}"
@@ -760,7 +760,7 @@ jobs:
             fi
           done
           if [ "${RUNNER_OS}" = Windows ]; then
-            grep -q "dist-info/licenses/NOTICE-Microsoft-VC-Runtime " wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
+            grep -q "dist-info/licenses/NOTICE-MICROSOFT-VC-RUNTIME " wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
           fi
 
       - name: Start mistralrs from the installed wheel
