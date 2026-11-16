@@ -773,15 +773,20 @@ def test_device_flags_follow_the_subcommand(
     assert argv.index("--cpu") == subcommand + 1
 
 
-def test_a_cpu_target_runs_on_the_cpu_even_with_a_cuda_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
+@pytest.mark.parametrize("target", [RoleTarget.CPU, RoleTarget.GPU])
+def test_a_cuda_host_runs_every_target_on_the_cpu_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: WorkerRole, target: RoleTarget
 ) -> None:
-    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64", gpus=[L4]))
-    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
-    cpu = MISTRAL.launch_argv(spec, request(tmp_path, target=RoleTarget.CPU))
-    gpu = MISTRAL.launch_argv(spec, request(tmp_path, target=RoleTarget.GPU))
-    assert "--cpu" in cpu
-    assert "--cpu" not in gpu
+    host = caps("Linux", "x86_64", gpus=[L4], cuda=(12, 8))
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    pick = MISTRAL.pick_build(host)
+    assert (pick.backend, pick.reason) == ("cpu", NO_CUDA_PACK)
+    spec = MISTRAL.role_spec(role, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, target=target))
+    subcommand = argv.index("multimodal" if role is WorkerRole.VISION else "text")
+    assert argv[subcommand + 1] == "--cpu"
+    assert "--paged-attn" not in argv
 
 
 # ---- a role across several cards ----
