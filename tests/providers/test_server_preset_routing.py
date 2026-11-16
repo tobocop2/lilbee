@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import socket
 from collections.abc import Iterator
@@ -253,6 +254,24 @@ class TestParse:
     def test_a_ref_with_no_slash_names_the_presets_in_its_error(self) -> None:
         with pytest.raises(ValueError, match="name of a server preset"):
             parse_model_ref("noslash")
+
+    def test_a_config_file_that_cannot_be_read_refuses_the_ref_and_names_the_file(self) -> None:
+        _store(_preset())
+        denied = PermissionError(errno.EACCES, "Permission denied")
+        with (
+            mock.patch("lilbee.core.settings.harden_private_file", side_effect=denied),
+            pytest.raises(ValueError, match=r"Could not read config\.toml: .*Permission"),
+        ):
+            parse_model_ref("wired/m")
+
+    def test_a_config_file_that_cannot_be_read_refuses_route_for(self) -> None:
+        _store(_preset())
+        denied = PermissionError(errno.EACCES, "Permission denied")
+        with (
+            mock.patch("lilbee.core.settings.harden_private_file", side_effect=denied),
+            pytest.raises(ValueError, match=r"Could not read config\.toml"),
+        ):
+            route_for("wired")
 
     def test_a_preset_ref_keeps_its_raw_options(self) -> None:
         _store(_preset())
