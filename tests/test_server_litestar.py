@@ -3279,8 +3279,33 @@ class TestUnhandledErrorsReachTheLog:
         assert "engine exploded" in caplog.text
 
 
-class TestServerSideDecodeErrorStaysAServerError:
-    """A decode error raised by server code is a 500; only the request body decode is a 400."""
+class TestOnlyADecodeErrorInTheBodyReadIsA400:
+    """Only a UnicodeDecodeError raised by the body read is a 400; any other error stays a 500."""
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("not a decode error"),
+            UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed"),
+            UnicodeError("not a decode error"),
+        ],
+        ids=["ValueError", "UnicodeEncodeError", "UnicodeError"],
+    )
+    def test_another_error_in_the_body_read_is_a_500(self, error, client):
+        from litestar import Request
+
+        with mock.patch.object(Request, "json", new_callable=AsyncMock, side_effect=error):
+            resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 500, resp.text
+
+    def test_a_decode_error_in_the_body_read_is_a_400(self, client):
+        resp = client.post(
+            "/api/chat",
+            content=b'{"question": "\xff"}',
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == "The request body is not valid UTF-8"
 
     @mock.patch(
         "lilbee.server.handlers.health",

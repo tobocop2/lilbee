@@ -375,6 +375,9 @@ def _validation_error_response(request: Request, exc: ValidationException) -> Re
 class Utf8Request(Request[Any, Any, Any]):
     """A request that refuses a body which is not UTF-8 with a validation error."""
 
+    # msgspec raises UnicodeDecodeError, not its DecodeError, so Litestar cannot catch it
+    # (https://github.com/msgspec/msgspec/issues/714). Delete this class when msgspec fixes it.
+
     async def json(self) -> Any:
         try:
             return await super().json()
