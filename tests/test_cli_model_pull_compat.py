@@ -75,7 +75,7 @@ def test_pull_of_a_safetensors_repo_names_the_working_command(monkeypatch) -> No
         HfApi,
         "model_info",
         lambda self, repo_id, **_kw: SimpleNamespace(
-            siblings=[RepoSibling(rfilename=name) for name in names]
+            siblings=[RepoSibling(rfilename=name) for name in names], tags=["safetensors"]
         ),
     )
 
