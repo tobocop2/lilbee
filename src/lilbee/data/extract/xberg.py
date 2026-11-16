@@ -30,7 +30,10 @@ if TYPE_CHECKING:
     from xberg.progress import ProgressCallback, ProgressEvent
 
 
-# xberg reports an OCR backend's cancel only as text in a plugin error.
+# TEMPORARY: matching the cancel class name in the error text is a stopgap.
+# xberg turns an OCR backend's exception into text and keeps no cause
+# (xberg-io/alef#927), then wraps it again as a plugin error
+# (xberg-io/xberg#3175). Remove this match when both fixes ship.
 _CANCEL_MARK = TaskCancelledError.__name__
 
 
