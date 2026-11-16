@@ -1067,6 +1067,20 @@ class TestSetRerankerModelRoute:
         assert mock_set.call_args.args[1] == full_ref
 
 
+class TestSetModelConfigUnreadable:
+    @mock.patch(
+        "lilbee.providers.server_registry.stored_entries",
+        side_effect=PermissionError(13, "Permission denied"),
+    )
+    def test_set_chat_model_answers_503_with_the_config_read_text(self, mock_store, client):
+        services = mock.Mock()
+        services.provider.list_models.return_value = []
+        with mock.patch("lilbee.server.handlers.models.get_services", return_value=services):
+            resp = client.put("/api/models/chat", json={"model": "wired/m"})
+        assert resp.status_code == 503
+        assert "Could not read config.toml" in resp.json()["detail"]
+
+
 class TestModelsCatalogRoute:
     @mock.patch(
         "lilbee.server.handlers.models_catalog",
