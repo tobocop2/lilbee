@@ -223,6 +223,11 @@ class EngineAdapter(Protocol, Hashable):
     def request_profile(self, role: WorkerRole) -> RequestProfile: ...
 
 
+def engine_label(engine: EngineAdapter) -> str:
+    """The name of *engine*'s server in messages, from the profile of its first role."""
+    return engine.request_profile(min(engine.served_roles)).label
+
+
 class SplitRefusedError(ProviderError):
     """An engine's launch refuses a tensor split; the message names the rule."""
 

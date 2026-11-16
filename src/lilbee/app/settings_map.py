@@ -438,7 +438,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Restrict llama.cpp to specific GPU indexes on dual-GPU machines "
+            "Restrict the engine to specific GPU indexes on dual-GPU machines "
             "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
             "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
         ),
@@ -1515,7 +1515,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         help_text=(
-            "Inference provider: auto (default, runs models locally on llama-server) "
+            "Inference provider: auto (default, runs models locally on the managed engine) "
             "or remote (external OpenAI-compatible endpoint)"
         ),
     ),

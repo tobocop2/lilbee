@@ -38,7 +38,7 @@ from lilbee.providers.fleet.devices import (
     visible_env,
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
-from lilbee.providers.fleet.engines.base import SplitChecked
+from lilbee.providers.fleet.engines.base import SplitChecked, engine_label
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
 from lilbee.providers.fleet.gpu_backends.nvidia import card_rows as nvidia_card_rows
@@ -2270,7 +2270,7 @@ _VENDOR_VISIBILITY_HINT = {
 }
 
 
-def _warn_gpu_present_but_unenumerated(binary: Path) -> None:
+def _warn_gpu_present_but_unenumerated(binary: Path, engine: EngineAdapter) -> None:
     """Say so when the host has a GPU the engine did not list.
 
     Previously asked only whether an NVIDIA card was present, so an AMD or Intel
@@ -2303,11 +2303,12 @@ def _warn_gpu_present_but_unenumerated(binary: Path) -> None:
     log.warning(
         "This host has a %s GPU but the engine's device probe (%s --list-devices) "
         "reported none; placement is falling back to shared-memory mode with unpinned "
-        "GPUs. Check the GPU driver, %s, and that this llama-server build supports "
+        "GPUs. Check the GPU driver, %s, and that this %s build supports "
         "that GPU.",
         " and ".join(names),
         binary,
         " / ".join(hints) if hints else "the vendor's visibility variable",
+        engine_label(engine),
     )
 
 
@@ -2375,7 +2376,7 @@ def _read_devices(binary: Path, engine: EngineAdapter) -> DeviceReading:
         assert_cuda_devices_usable(binary, devices, probe.output)
         assert_rocm_devices_usable(binary, devices, probe.output)
     if not devices and probe.spoke_protocol:
-        _warn_gpu_present_but_unenumerated(binary)
+        _warn_gpu_present_but_unenumerated(binary, engine)
     if not devices and not probe.spoke_protocol:
         # Only when the binary never answered the question. An engine that ran
         # and listed nothing is reporting a fact, not a gap: believing the host
