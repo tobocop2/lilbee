@@ -1415,10 +1415,10 @@ def _admit_estimate(
     if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
-    if total_vram > 0 and weights > total_vram:
-        _warn_weights_spill(role, ref, weights, total_vram)
     if _host_memory_refuses(role, ref, ram_bytes, host_committed):
         return None
+    if total_vram > 0 and weights > total_vram:
+        _warn_weights_spill(role, ref, weights, total_vram)
     return estimate
 
 
