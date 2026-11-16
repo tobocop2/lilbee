@@ -724,6 +724,28 @@ jobs:
           cd /
           STUB_DIR="${stubs}" bash "${GITHUB_WORKSPACE}/tools/wheel-build/smoke_tei.sh" "${router}" "${BACKEND}"
 
+      - name: Install the CPU emulator
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y qemu-user-static
+
+      # The runner CPU has AVX-512, so the run above cannot see a router built for it. Nehalem has SSE4.2
+      # and no AVX, the same floor as the x86-64-v2 build; qemu stops the router with SIGILL on any newer
+      # instruction.
+      - name: Start the router on an emulated CPU without AVX
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          router="$(check-venv/bin/python -c "import lilbee_engine_tei as m, pathlib; print(pathlib.Path(m.__file__).parent / 'bin' / 'text-embeddings-router')")"
+          stubs=""
+          if [ -d out/stubs ]; then stubs="${PWD}/out/stubs"; fi
+          cd /
+          STUB_DIR="${stubs}" bash "${GITHUB_WORKSPACE}/tools/wheel-build/smoke_tei.sh" "${router}" "${BACKEND}"
+        env:
+          EMULATE_CPU: Nehalem
+
       - uses: actions/upload-artifact@v7
         with:
           name: tei-pack-${{ matrix.cell }}

@@ -815,3 +815,135 @@ def test_the_metal_build_targets_the_first_apple_silicon_cpu() -> None:
     exports = [line for line in lines if line.startswith("export RUSTFLAGS")]
     assert exports == ['export RUSTFLAGS="-C target-cpu=apple-m1"']
     assert build.index("export RUSTFLAGS") < build.index("cargo build")
+
+
+_SMOKE_QEMU_STUB = """#!/bin/sh
+# Stands in for qemu-x86_64-static: records the call, then runs the program after -cpu <model>.
+echo "$*" >> "{record}/qemu-args"
+shift 2
+exec "$@"
+"""
+_SMOKE_ROUTER_STUB = """#!/bin/sh
+echo "router $*" >> "{record}/router-calls"
+echo "text-embeddings-router 1.9.4"
+"""
+_SMOKE_UNAME_STUB = "#!/bin/sh\necho Linux\n"
+_SMOKE_LDD_STUB = "#!/bin/sh\necho 'libc.so.6 => /lib/libc.so.6'\n"
+
+
+def _run_smoke(
+    tmp_path: Path, backend: str, cpu: str | None, qemu: str = _SMOKE_QEMU_STUB
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    """Run smoke_tei.sh on a stub router; return the record folder and the result."""
+    record = tmp_path / "record"
+    record.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stubs = {
+        "qemu-x86_64-static": qemu,
+        "router": _SMOKE_ROUTER_STUB,
+        "uname": _SMOKE_UNAME_STUB,
+        "ldd": _SMOKE_LDD_STUB,
+    }
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text(body.replace("{record}", str(record)), encoding="utf-8")
+        stub.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "EMULATE_CPU"}
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    if cpu is not None:
+        env["EMULATE_CPU"] = cpu
+    result = subprocess.run(
+        ["bash", str(_TOOLS / "smoke_tei.sh"), str(bin_dir / "router"), backend],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env=env,
+    )
+    return record, result
+
+
+@pytest.mark.parametrize("backend", ["cuda-sm89", "cuda-sm120"])
+def test_the_smoke_runs_the_router_on_an_emulated_cpu_without_avx(
+    tmp_path: Path, backend: str
+) -> None:
+    record, result = _run_smoke(tmp_path, backend, "Nehalem")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (record / "qemu-args").read_text(encoding="utf-8").startswith("-cpu Nehalem ")
+    assert (record / "router-calls").read_text(encoding="utf-8").strip() == "router --version"
+
+
+def test_the_smoke_runs_the_router_directly_without_an_emulated_cpu(tmp_path: Path) -> None:
+    record, result = _run_smoke(tmp_path, "cuda-sm89", None)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (record / "qemu-args").exists()
+    assert (record / "router-calls").read_text(encoding="utf-8").strip() == "router --version"
+
+
+_SMOKE_SERVING_ROUTER_STUB = """#!/bin/sh
+echo "router $*" >> "{record}/router-calls"
+case "$1" in --version) echo "text-embeddings-router 1.9.4"; exit 0 ;; esac
+exec sleep 30
+"""
+_SMOKE_CURL_STUB = """#!/bin/sh
+case "$*" in
+  */embed*) echo "[[$(yes 0 | head -n 384 | paste -s -d, -)]]" ;;
+esac
+"""
+
+
+def test_the_cpu_smoke_serves_a_model_on_the_emulated_cpu(tmp_path: Path) -> None:
+    record = tmp_path / "record"
+    record.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stubs = {
+        "qemu-x86_64-static": _SMOKE_QEMU_STUB,
+        "router": _SMOKE_SERVING_ROUTER_STUB,
+        "uname": _SMOKE_UNAME_STUB,
+        "ldd": _SMOKE_LDD_STUB,
+        "curl": _SMOKE_CURL_STUB,
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(body.replace("{record}", str(record)), encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(_TOOLS / "smoke_tei.sh"), str(bin_dir / "router"), "cpu"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "EMULATE_CPU": "Nehalem",
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "embedding length 384" in result.stdout
+    calls = (record / "router-calls").read_text(encoding="utf-8").splitlines()
+    assert [call.split()[1] for call in calls] == ["--version", "--model-id"]
+    emulated = (record / "qemu-args").read_text(encoding="utf-8").splitlines()
+    assert len(emulated) == 2
+    assert all(line.startswith("-cpu Nehalem ") for line in emulated)
+
+
+def test_the_emulated_smoke_fails_when_the_router_dies_on_the_cpu(tmp_path: Path) -> None:
+    _, result = _run_smoke(tmp_path, "cuda-sm89", "Nehalem", "#!/bin/sh\nkill -ILL $$\n")
+    assert result.returncode != 0
+
+
+def test_the_linux_pack_cells_run_the_smoke_on_an_emulated_cpu() -> None:
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    tei = text[text.index("\n  tei:\n") :]
+    install = tei.index("- name: Install the CPU emulator")
+    smoke = tei.index("- name: Start the router on an emulated CPU without AVX")
+    step = tei[smoke : tei.index("- uses: actions/upload-artifact", smoke)]
+    emulator = tei[install:smoke]
+    assert install < smoke
+    assert "if: matrix.os == 'linux'" in emulator
+    assert "apt-get install -y qemu-user-static" in emulator
+    assert "if: matrix.os == 'linux'" in step
+    assert "EMULATE_CPU: Nehalem" in step
+    assert step.count("smoke_tei.sh") == 1

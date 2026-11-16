@@ -3,6 +3,10 @@
 #
 # Usage: smoke_tei.sh <router-binary> <backend>
 #
+# EMULATE_CPU=<qemu cpu model> runs every router call under qemu-x86_64-static with that CPU. The
+# GitHub runners have AVX-512, so a router built for the runner CPU passes there and dies with SIGILL
+# on a CPU without it. A model such as Nehalem (SSE4.2, the x86-64-v2 baseline) has no AVX at all.
+#
 # Every backend must print its version and resolve its libraries (on Linux, with STUB_DIR on
 # LD_LIBRARY_PATH when the binary loads libcuda from the GPU driver). Only the cpu backend can serve
 # a model on a runner: the CUDA and Metal backends stop after the version and the library check, because
@@ -18,7 +22,9 @@ port=18080
 if [ -n "${STUB_DIR:-}" ]; then
   export LD_LIBRARY_PATH="${STUB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
-"${router}" --version
+run=()
+if [ -n "${EMULATE_CPU:-}" ]; then run=(qemu-x86_64-static -cpu "${EMULATE_CPU}"); fi
+${run[@]+"${run[@]}"} "${router}" --version
 work="$(mktemp -d)"
 if [ "$(uname -s)" = Linux ]; then
   ldd "${router}" > "${work}/ldd.txt"
@@ -33,7 +39,7 @@ if [ "${backend}" != cpu ]; then
   exit 0
 fi
 
-"${router}" --model-id "${model}" --hostname 127.0.0.1 --port "${port}" > "${work}/router.log" 2>&1 &
+${run[@]+"${run[@]}"} "${router}" --model-id "${model}" --hostname 127.0.0.1 --port "${port}" > "${work}/router.log" 2>&1 &
 pid=$!
 trap 'kill "${pid}" 2>/dev/null || true' EXIT
 for _ in $(seq 1 120); do
