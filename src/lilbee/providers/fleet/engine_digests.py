@@ -70,9 +70,9 @@ MANIFESTS = {
     "tei": {
         "1.9.4": {
             "linux-x86_64-cpu": {
-                "sha256": "c96420e257a65ef874f3141d441b88e2bf3392c2121e55785ccb53dee49cc975",
-                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei/lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
-                "size": 13232334,
+                "sha256": "a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8",
+                "url": "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei-cpu/lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
+                "size": 13045675,
                 "min_os": "2.34",
             },
             "linux-x86_64-cuda-sm100": {

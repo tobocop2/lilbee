@@ -112,11 +112,13 @@ def test_tei_digest_follows_the_host_cell(monkeypatch: pytest.MonkeyPatch) -> No
     assert _pin(monkeypatch, EngineName.TEI, "Windows", "AMD64")["sha256"] is None
 
 
-_TEI_RELEASE = "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei/"
+_RELEASES = "https://github.com/tobocop2/lilbee/releases/download/"
+_TEI_RELEASE = _RELEASES + "engine-packs-20261116-tei/"
+_TEI_CPU_RELEASE = _RELEASES + "engine-packs-20261116-tei-cpu/"
 SHIPPED_TEI = {
     "cpu": (
         "linux-x86_64-cpu",
-        "c96420e257a65ef874f3141d441b88e2bf3392c2121e55785ccb53dee49cc975",
+        "a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8",
     ),
     "metal": (
         "macos-arm64-metal",
@@ -189,7 +191,7 @@ def test_each_host_resolves_its_own_tei_pack_from_the_shipped_table(
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     url = pin["platforms"][cell]["url"]
-    assert url.startswith(_TEI_RELEASE)
+    assert url.startswith(_TEI_CPU_RELEASE if build == "cpu" else _TEI_RELEASE)
     assert f"-1.{backend.replace('-', '_')}-py3-none-" in url
 
 
