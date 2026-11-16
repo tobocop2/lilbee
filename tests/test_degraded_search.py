@@ -438,6 +438,38 @@ def test_the_cli_keeps_a_long_warning_on_one_line(capsys, monkeypatch):
     assert capsys.readouterr().err.count("\n") == 1
 
 
+def test_a_memory_grounded_context_carries_the_failed_step(mock_svc):  # noqa: F811
+    patches = _arrange(mock_svc, "hyde_blend", "empty")
+    for p in patches:
+        p.start()
+    try:
+        with mock.patch.object(Searcher, "_memory_sources", return_value=[_make_result()]):
+            rag = mock_svc.searcher.build_rag_context(QUESTION, [])
+    finally:
+        _stop(patches)
+    assert not rag.refused
+    assert [w.code.value for w in rag.degraded] == ["hyde_blend_failed"]
+
+
+def test_expansion_and_boost_steps_get_the_question(mock_svc):  # noqa: F811
+    patches = _arranged(mock_svc, "concept_boost")
+    try:
+        mock_svc.concepts.expand_query.return_value = []
+        with mock.patch.object(cfg, "query_expansion_count", 0):
+            mock_svc.searcher.search_report(QUESTION)
+    finally:
+        _stop(patches)
+    mock_svc.concepts.expand_query.assert_called_with(QUESTION)
+    mock_svc.concepts.extract_concepts.assert_called_with(QUESTION)
+
+
+def test_an_mcp_search_error_is_one_block_of_its_json():
+    from lilbee.mcp_server import _search_result
+
+    result = _search_result({"error": "boom"})
+    assert [b.text for b in result.content] == [json.dumps({"error": "boom"}, indent=2)]
+
+
 def test_warnings_payload_holds_plain_strings():
     from lilbee.core.health_warnings import HealthWarning, WarningCode, warnings_payload
 
