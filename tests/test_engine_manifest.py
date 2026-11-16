@@ -58,23 +58,43 @@ PUBLISHED_SIZES: dict[str, int] = json.loads(
 )
 
 
-def _shipped_rows() -> dict[str, int]:
+def _shipped_cells(manifests: Any = None) -> dict[tuple[str, str, str], tuple[str, int]]:
+    """Map each (engine, version, cell) to its asset path and size."""
+    table = engine_manifest.MANIFESTS if manifests is None else manifests
     return {
-        row["url"].removeprefix(PACKAGES_URL): row["size"]
-        for versions in engine_manifest.MANIFESTS.values()
-        for cells in versions.values()
-        for row in cells.values()
+        (engine, version, cell): (row["url"].removeprefix(PACKAGES_URL), row["size"])
+        for engine, versions in table.items()
+        for version, cells in versions.items()
+        for cell, row in cells.items()
     }
 
 
-@pytest.mark.parametrize("asset", sorted(_shipped_rows()))
-def test_a_shipped_row_has_the_size_of_its_published_asset(asset: str) -> None:
-    assert _shipped_rows()[asset] == PUBLISHED_SIZES[asset]
+def _wrong_sizes(manifests: Any, recorded: dict[str, int]) -> list[tuple[str, str, str]]:
+    return [
+        key
+        for key, (asset, size) in _shipped_cells(manifests).items()
+        if recorded.get(asset) != size
+    ]
+
+
+@pytest.mark.parametrize("cell", sorted(_shipped_cells()), ids="/".join)
+def test_a_shipped_row_has_the_size_of_its_published_asset(cell: tuple[str, str, str]) -> None:
+    asset, size = _shipped_cells()[cell]
+    assert size == PUBLISHED_SIZES[asset]
+
+
+def test_two_cells_sharing_one_asset_are_each_checked_against_its_size() -> None:
+    row = {"url": PACKAGES_URL + "tag/a.whl", "sha256": "0" * 64, "min_os": None}
+    table = {
+        "e": {"1": {"c1": {**row, "size": 10}, "c2": {**row, "size": 11}}},
+    }
+    assert _wrong_sizes(table, {"tag/a.whl": 10}) == [("e", "1", "c2")]
+    assert _wrong_sizes(table, {"tag/a.whl": 11}) == [("e", "1", "c1")]
 
 
 def test_the_recorded_sizes_and_the_shipped_rows_name_the_same_assets() -> None:
     assert PUBLISHED_SIZES
-    assert set(_shipped_rows()) == set(PUBLISHED_SIZES)
+    assert {asset for asset, _ in _shipped_cells().values()} == set(PUBLISHED_SIZES)
     assert {asset.split("/")[1].split("-")[0] for asset in PUBLISHED_SIZES} == {
         "lilbee_engine_llama_cpp",
         "lilbee_engine_ik_llama_cpp",
