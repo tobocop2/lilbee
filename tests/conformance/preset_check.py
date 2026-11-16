@@ -299,7 +299,7 @@ def _named(setup: Setup) -> Outcome:
         logger.removeHandler(tap)
         logger.setLevel(level)
     engine = setup.preset
-    want = f"served by engine={engine} version=preset role={role} model={model}"
+    want = f"served by engine={engine} version=preset build=none role={role} model={model}"
     status = {row.role: row.engine for row in serving_roles()}
     status_ok = status.get(WorkerRole(role)) == engine and (
         role != "chat" or chat_engine() == engine
