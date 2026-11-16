@@ -177,7 +177,7 @@ def model_pull(argv: list[str]) -> None:
     """Refuse a safetensors ref until an engine is preferred, as the real pull does."""
     if argv[2].endswith(SAFETENSORS_SUFFIX) and not PREFERRED.exists():
         sys.exit(f"No engine is chosen by default for the safetensors format of {argv[2]}.")
-    print(f"pulled {argv[2]}")
+    print(f"pulled {argv[2]} {os.environ.get('FAKE_PULL_URL', '')}".rstrip())
 
 
 def use_embedder(argv: list[str]) -> None:
