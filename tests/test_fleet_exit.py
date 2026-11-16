@@ -129,7 +129,6 @@ _PROBE_NO_ENGINE = _PROBE_SETUP + _NO_BUNDLED_ENGINE + _BUILD_WITH_THE_LIBRARY_O
 
 # The placement route plans before it saves, and the plan reads the engine's devices.
 _FAKE_LLAMA_SERVER = "#!/bin/sh\necho 'Available devices:'\n"
-_NO_ENGINE_DETAIL = "llama-server binary not found."
 
 
 def _plant_engine(home: Path) -> Path:

@@ -13,6 +13,11 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.server import handlers
 
 _SPEC = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
+_OTHER_SPEC = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(1,))})
+
+
+def _planner_fails_with_os_error(spec, reading):
+    raise OSError("the engine binary cannot be read")
 
 
 @pytest.fixture
@@ -50,5 +55,20 @@ def test_the_handler_clears_with_no_engine(no_engine_host):
 
 def test_setting_a_spec_with_no_engine_still_refuses_and_writes_nothing(no_engine_host):
     with pytest.raises(ProviderError, match="No engine is assigned to any role"):
-        app_placement.set_placement(_SPEC)
+        app_placement.set_placement(_OTHER_SPEC)
+    assert settings.load(no_engine_host)["placement"] == _SPEC.to_json()
+    assert cfg.placement == _SPEC.to_json()
+
+
+def test_clear_goes_ahead_when_the_planner_raises_os_error(no_engine_host, monkeypatch):
+    monkeypatch.setattr(app_placement, "_resolve", _planner_fails_with_os_error)
+    view = app_placement.set_placement(None)
+    assert "placement" not in settings.load(no_engine_host)
+    assert view.roles == ()
+
+
+def test_setting_a_spec_refuses_when_the_planner_raises_os_error(no_engine_host, monkeypatch):
+    monkeypatch.setattr(app_placement, "_resolve", _planner_fails_with_os_error)
+    with pytest.raises(OSError, match="cannot be read"):
+        app_placement.set_placement(_OTHER_SPEC)
     assert settings.load(no_engine_host)["placement"] == _SPEC.to_json()
