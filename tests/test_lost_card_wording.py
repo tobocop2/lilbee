@@ -57,6 +57,15 @@ def test_a_machine_that_lists_nothing_says_so() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("on_host", "count"),
+    [(1, "(1 card on this host)"), (2, "(2 cards on this host)")],
+)
+def test_the_host_count_agrees_with_its_noun(on_host: int, count: str) -> None:
+    sentence = lost_card_reason(WorkerRole.CHAT, [0], [], on_host=on_host)
+    assert f"lists no devices {count}. " in sentence
+
+
 def test_three_listed_devices_are_joined_with_commas_and_an_and() -> None:
     assert lost_card_reason(WorkerRole.CHAT, [9], [2, 0, 1]).startswith(
         "chat is pinned to device 9, but this machine lists only devices 0, 1 and 2. "
