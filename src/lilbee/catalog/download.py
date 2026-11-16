@@ -681,10 +681,18 @@ def _fetch_mmproj(
     return path
 
 
+class ListingOfflineError(RuntimeError):
+    """The Hub cannot be reached: offline mode is on, or the network is down."""
+
+
+class ListingFailedError(RuntimeError):
+    """The Hub answered, or failed in transit, without giving the repo listing."""
+
+
 def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
-    """The Hub record of *hf_repo*, with a gated repo and a failed read as typed errors."""
+    """The Hub record of *hf_repo*; a gated repo, an unreachable Hub and a failed read are typed."""
     from huggingface_hub import HfApi
-    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
 
     try:
         return HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
@@ -694,9 +702,14 @@ def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
                 f"{hf_repo} requires HuggingFace authentication. "
                 "Set HF_TOKEN env var or visit the repo page to request access."
             ) from exc
-        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
+        raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
+    except (OfflineModeIsEnabled, httpx2.TransportError) as exc:
+        raise ListingOfflineError(
+            f"Cannot reach HuggingFace to list the files of {hf_repo}. "
+            f"Connect to the network, or turn offline mode off, and pull again. ({exc})"
+        ) from exc
     except Exception as exc:
-        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
+        raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
 
 
 def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
@@ -704,7 +717,8 @@ def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> li
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the listing could not be fetched, or offline mode is on.
+        ListingOfflineError: the Hub cannot be reached, or offline mode is on.
+        ListingFailedError: the Hub did not give the listing.
     """
     return [s.rfilename for s in _model_info(hf_repo, timeout).siblings or []]
 
@@ -714,7 +728,8 @@ def _repo_tags(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the record could not be fetched, or offline mode is on.
+        ListingOfflineError: the Hub cannot be reached, or offline mode is on.
+        ListingFailedError: the Hub did not give the record.
     """
     return list(_model_info(hf_repo, timeout).tags or [])
 

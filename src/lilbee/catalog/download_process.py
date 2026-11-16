@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.models import CatalogModel
@@ -59,7 +60,9 @@ child then resolves restarts this clock, so the budget does not grow with
 the shard count."""
 
 # The child's translated errors, rebuilt in the parent by type name.
-_ERRORS_BY_NAME: dict[str, type[Exception]] = {PermissionError.__name__: PermissionError}
+_ERRORS_BY_NAME: dict[str, type[Exception]] = {
+    error.__name__: error for error in (PermissionError, ListingOfflineError, ListingFailedError)
+}
 
 
 @dataclass(frozen=True)
