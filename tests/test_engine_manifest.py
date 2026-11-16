@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,7 @@ from lilbee.providers.fleet.engines import ik_llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, NoPublishedPackError, pin_lock
 from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION, LLAMA, LlamaCppAdapter
-from tests._published import render_table, wheel_name
+from tests._published import render_table, render_table_from_record, wheel_name
 
 LINUX = "a" * 64
 WINDOWS = "b" * 64
@@ -53,54 +52,11 @@ def test_every_row_of_the_shipped_table_states_a_wheel() -> None:
                 assert row["min_os"] is None or re.fullmatch(r"\d+\.\d+", row["min_os"])
 
 
-PUBLISHED_SIZES: dict[str, int] = json.loads(
-    (Path(__file__).parent / "fixtures" / "published_pack_sizes.json").read_text(encoding="utf-8")
-)
-
-
-def _shipped_cells(manifests: Any = None) -> dict[tuple[str, str, str], tuple[str, int]]:
-    """Map each (engine, version, cell) to its asset path and size."""
-    table = engine_manifest.MANIFESTS if manifests is None else manifests
-    return {
-        (engine, version, cell): (row["url"].removeprefix(PACKAGES_URL), row["size"])
-        for engine, versions in table.items()
-        for version, cells in versions.items()
-        for cell, row in cells.items()
-    }
-
-
-def _wrong_sizes(manifests: Any, recorded: dict[str, int]) -> list[tuple[str, str, str]]:
-    return [
-        key
-        for key, (asset, size) in _shipped_cells(manifests).items()
-        if recorded.get(asset) != size
-    ]
-
-
-@pytest.mark.parametrize("cell", sorted(_shipped_cells()), ids="/".join)
-def test_a_shipped_row_has_the_size_of_its_published_asset(cell: tuple[str, str, str]) -> None:
-    asset, size = _shipped_cells()[cell]
-    assert size == PUBLISHED_SIZES[asset]
-
-
-def test_two_cells_sharing_one_asset_are_each_checked_against_its_size() -> None:
-    row = {"url": PACKAGES_URL + "tag/a.whl", "sha256": "0" * 64, "min_os": None}
-    table = {
-        "e": {"1": {"c1": {**row, "size": 10}, "c2": {**row, "size": 11}}},
-    }
-    assert _wrong_sizes(table, {"tag/a.whl": 10}) == [("e", "1", "c2")]
-    assert _wrong_sizes(table, {"tag/a.whl": 11}) == [("e", "1", "c1")]
-
-
-def test_the_recorded_sizes_and_the_shipped_rows_name_the_same_assets() -> None:
-    assert PUBLISHED_SIZES
-    assert {asset for asset, _ in _shipped_cells().values()} == set(PUBLISHED_SIZES)
-    assert {asset.split("/")[1].split("-")[0] for asset in PUBLISHED_SIZES} == {
-        "lilbee_engine_llama_cpp",
-        "lilbee_engine_ik_llama_cpp",
-        "lilbee_engine_mistral_rs",
-        "lilbee_engine_tei",
-    }
+def _recorded_digest(engine: str, cell: str) -> str:
+    """The sha256 that the committed pack record gives the *cell* of *engine*."""
+    versions = render_table_from_record()[engine]
+    assert len(versions) == 1
+    return str(next(iter(versions.values()))[cell]["sha256"])
 
 
 def test_every_shipped_row_lives_under_the_pack_index_and_matches_its_adapter(
@@ -164,43 +120,16 @@ def test_tei_digest_follows_the_host_cell(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 _TEI_RELEASE = "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei-2/"
-SHIPPED_TEI = {
-    "cpu": (
-        "linux-x86_64-cpu",
-        "a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8",
-    ),
-    "metal": (
-        "macos-arm64-metal",
-        "adef1ba024f7fd18e65f335820cd9d6169eee5a3ca823108650bf67a45afed04",
-    ),
-    "sm75": (
-        "linux-x86_64-cuda-sm75",
-        "1245143a609c9669950602affa9133e1ec5730f334c4f0f585015e84e1f518f4",
-    ),
-    "sm80": (
-        "linux-x86_64-cuda-sm80",
-        "1fd3fd7a9b50db3f0b5bae956f6fb8c2865dd23c0c454ef7e4d6a54740343cfd",
-    ),
-    "sm86": (
-        "linux-x86_64-cuda-sm86",
-        "538c78b6280c25df33acd6bf9fb0c02291a1056ff0091aad20c529b2b824fba1",
-    ),
-    "sm89": (
-        "linux-x86_64-cuda-sm89",
-        "e697869e269c936a99e39244a2098d2c0c5ee7e8ae7798de48d3714ad4a4a19b",
-    ),
-    "sm90": (
-        "linux-x86_64-cuda-sm90",
-        "61258fdcccd2322665ab3523c309204a986c2f461e843449cf1e53aeac63dca7",
-    ),
-    "sm100": (
-        "linux-x86_64-cuda-sm100",
-        "9fc0a9bff5b4a69b290858f6d761c629e4050727e76de22a29d216d20e920880",
-    ),
-    "sm120": (
-        "linux-x86_64-cuda-sm120",
-        "0482fe2efecfaed8cea2e90f6dd6f0978aa7b73878d93fd972b4bf86741ac656",
-    ),
+_TEI_CELLS = {
+    "cpu": "linux-x86_64-cpu",
+    "metal": "macos-arm64-metal",
+    "sm75": "linux-x86_64-cuda-sm75",
+    "sm80": "linux-x86_64-cuda-sm80",
+    "sm86": "linux-x86_64-cuda-sm86",
+    "sm89": "linux-x86_64-cuda-sm89",
+    "sm90": "linux-x86_64-cuda-sm90",
+    "sm100": "linux-x86_64-cuda-sm100",
+    "sm120": "linux-x86_64-cuda-sm120",
 }
 _TEI_HOSTS = {
     "cpu": ("Linux", "x86_64", None),
@@ -215,11 +144,12 @@ _TEI_HOSTS = {
 }
 
 
-@pytest.mark.parametrize("build", SHIPPED_TEI)
+@pytest.mark.parametrize("build", _TEI_CELLS)
 def test_each_host_resolves_its_own_tei_pack_from_the_shipped_table(
     build: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_TEI[build]
+    cell = _TEI_CELLS[build]
+    digest = _recorded_digest("tei", cell)
     system, machine, compute = _TEI_HOSTS[build]
     facts = (
         {"driver": "570.00", "cuda_driver": 12080, "gpus": [{"name": "gpu", "cc": compute}]}
@@ -338,27 +268,19 @@ def test_no_adapter_keeps_a_single_pack_digest() -> None:
         assert not hasattr(module, "PACK_SHA256")
 
 
-SHIPPED_LLAMA = {
-    ("Darwin", "arm64"): (
-        "macos-arm64-metal",
-        "ddec445038beea9c83ff50a540ddf0e88a3b70c06edec301ef458cd1a46580ff",
-    ),
-    ("Linux", "x86_64"): (
-        "linux-x86_64-cpu",
-        "b306bfa9ede1eaef1ce762fe1c772905ec2e10cfc315ea02b58138e77688899b",
-    ),
-    ("Windows", "AMD64"): (
-        "windows-x86_64-cpu",
-        "91e9670756cf84252d8382050c74901ef4fc5f07fa7af803fef8bda5438c938d",
-    ),
+_LLAMA_CELLS = {
+    ("Darwin", "arm64"): "macos-arm64-metal",
+    ("Linux", "x86_64"): "linux-x86_64-cpu",
+    ("Windows", "AMD64"): "windows-x86_64-cpu",
 }
 
 
-@pytest.mark.parametrize(("system", "machine"), SHIPPED_LLAMA)
+@pytest.mark.parametrize(("system", "machine"), _LLAMA_CELLS)
 def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_LLAMA[(system, machine)]
+    cell = _LLAMA_CELLS[(system, machine)]
+    digest = _recorded_digest("llama.cpp", cell)
     host = _host(system, machine)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(first_use, "session_host", lambda: host)
@@ -369,23 +291,18 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     assert f"-1.{cell.rsplit('-', 1)[1]}-py3-none-" in pin["platforms"][cell]["url"]
 
 
-SHIPPED_LLAMA_CUDA = {
-    ("Linux", "x86_64"): (
-        "linux-x86_64-cuda",
-        "6cdd44291d036a352fd496b2a2c146f0a5aaf35cd38f73e8f795ca5a2d87edd4",
-    ),
-    ("Windows", "AMD64"): (
-        "windows-x86_64-cuda",
-        "975be314c81ab5c518c40be68fd72edb080b4e4d3f3ba4adbbb3380985cd117c",
-    ),
+_LLAMA_CUDA_CELLS = {
+    ("Linux", "x86_64"): "linux-x86_64-cuda",
+    ("Windows", "AMD64"): "windows-x86_64-cuda",
 }
 
 
-@pytest.mark.parametrize(("system", "machine"), SHIPPED_LLAMA_CUDA)
+@pytest.mark.parametrize(("system", "machine"), _LLAMA_CUDA_CELLS)
 def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_LLAMA_CUDA[(system, machine)]
+    cell = _LLAMA_CUDA_CELLS[(system, machine)]
+    digest = _recorded_digest("llama.cpp", cell)
     facts = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
     host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvidia=facts)
     monkeypatch.setattr(runnable, "session_host", lambda: host)

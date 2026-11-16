@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -21,6 +22,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 
 GENERATOR = Path(__file__).resolve().parents[1] / "tools" / "gen_engine_digests.py"
+RECORD = Path(__file__).resolve().parents[1] / "tools" / "engine_packs.json"
 PREFIX = "https://index.test/packs/"
 NEWEST_HOST_OS = "99.0"
 _SLUGS = {
@@ -44,9 +46,20 @@ def generator() -> ModuleType:
 
 def render_table(wheels: list[tuple[str, str, int]]) -> dict[str, Any]:
     """The table the generator writes for *wheels*, as (file name, sha256, size) rows."""
-    packages = [{"filename": name, "hash": f"sha256={sha}"} for name, sha, _ in wheels]
-    sizes = {name: size for name, _, size in wheels}
-    tree = ast.parse(generator().render(packages, sizes, PREFIX))
+    record = [
+        {"file": name, "url": PREFIX + name, "sha256": sha, "size": size}
+        for name, sha, size in wheels
+    ]
+    tree = ast.parse(generator().render(record))
+    assignment = next(node.value for node in tree.body if isinstance(node, ast.Assign))
+    table: dict[str, Any] = ast.literal_eval(assignment)
+    return table
+
+
+def render_table_from_record() -> dict[str, Any]:
+    """The table the generator writes for the committed pack record."""
+    record = json.loads(RECORD.read_text(encoding="utf-8"))
+    tree = ast.parse(generator().render(record))
     assignment = next(node.value for node in tree.body if isinstance(node, ast.Assign))
     table: dict[str, Any] = ast.literal_eval(assignment)
     return table
