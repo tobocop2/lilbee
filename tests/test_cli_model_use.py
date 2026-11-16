@@ -178,3 +178,63 @@ def test_help_lists_every_role_the_command_accepts():
     flat = _flat(help_text.output)
     assert "Set the model for a role" in flat
     assert "embed is refused: use 'lilbee use-embedder <ref>'" in flat
+
+
+class TestModelUseNamesTheMissingEngine:
+    """A model that no installed engine loads is assigned, with the engine notice beside it."""
+
+    _NOTICE = "No installed engine loads the gguf format"
+
+    @pytest.fixture
+    def no_engine(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("lilbee.app.engine_choice.installed_engines", dict)
+
+    @pytest.mark.parametrize(
+        ("role", "ref", "field"),
+        [
+            ("chat", _CHAT_REF, "chat_model"),
+            ("rerank", _RERANK_REF, "reranker_model"),
+            ("vision", _VISION_REF, "vision_model"),
+        ],
+    )
+    @patch(_SERVICES)
+    def test_warns_and_still_assigns(self, mock_svc, no_engine, role, ref, field, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = [ref]
+        result = _use(role, ref, "--data-dir", str(tmp_path))
+        assert result.exit_code == 0, result.output
+        assert getattr(cfg, field) == ref
+        flat = _flat(result.output)
+        assert f"{role} model is now {ref}." in flat
+        assert f"For {role}: {self._NOTICE}" in flat
+        assert "Run lilbee engine list to see the installed engines." in flat
+
+    @patch(_SERVICES)
+    def test_json_carries_the_notice_in_warnings(self, mock_svc, no_engine, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
+        result = _use("chat", _CHAT_REF, "--json", "--data-dir", str(tmp_path))
+        assert result.exit_code == 0, result.output
+        (warning,) = json.loads(result.output)["warnings"]
+        assert warning.startswith(f"For chat: {self._NOTICE}")
+
+    @patch(_SERVICES)
+    def test_no_warning_when_an_engine_loads_the_model(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = [_CHAT_REF]
+        result = _use("chat", _CHAT_REF, "--json", "--data-dir", str(tmp_path))
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["warnings"] == []
+
+    @patch(_SERVICES)
+    def test_clearing_a_role_does_not_warn(self, mock_svc, no_engine, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
+        result = _use("vision", "", "--json", "--data-dir", str(tmp_path))
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["warnings"] == []
+
+    @patch(_SERVICES)
+    def test_a_remote_model_needs_no_local_engine(self, mock_svc, no_engine, tmp_path):
+        remote = "ollama/llama3"
+        mock_svc.return_value.provider.list_models.return_value = [remote]
+        with patch(_VALIDATE, return_value=remote):
+            result = _use("chat", remote, "--json", "--data-dir", str(tmp_path))
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["warnings"] == []

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import ValidationError
 
+from lilbee.app.engine_choice import resolve_engines
 from lilbee.app.settings_map import CHUNK_LIMIT_KEY, SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.catalog.hf_client import is_hf_token_sendable
 from lilbee.config_meta import (
@@ -52,6 +53,7 @@ from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
     MODEL_FIELD_TO_ROLE,
@@ -160,9 +162,25 @@ def list_setting_value(raw: str) -> list[str]:
     return [line.strip() for line in raw.split("\n") if line.strip()]
 
 
+def _no_engine_notices(changed_keys: set[str]) -> tuple[str, ...]:
+    """The engine notice of each changed local model that no installed engine loads."""
+    fields = [key for key in MODEL_FIELD_TO_ROLE if key in changed_keys]
+    if not fields:
+        return ()
+    choices = resolve_engines(cfg).choices
+    notices = []
+    for key in fields:
+        ref = str(getattr(cfg, key))
+        choice = choices[MODEL_FIELD_TO_ROLE[key]]
+        if ref and choice.name is None and not parse_model_ref(ref).is_remote:
+            notices.append(choice.notice or "")
+    return tuple(notices)
+
+
 def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
-    """The notice for a vision model picked while ocr = off keeps it unused."""
-    return ocr_off_vision_notice() if "vision_model" in changed_keys else ()
+    """The notices for a vision model picked while ocr = off, and for a model with no engine."""
+    ocr = ocr_off_vision_notice() if "vision_model" in changed_keys else ()
+    return ocr + _no_engine_notices(changed_keys)
 
 
 def _is_write_only(key: str) -> bool:
