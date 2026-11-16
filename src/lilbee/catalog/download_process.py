@@ -190,7 +190,7 @@ def download_in_subprocess(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None,
     *,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
@@ -230,7 +230,7 @@ def _run_one_attempt(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
 ) -> Path:
@@ -264,7 +264,7 @@ def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> 
 
 
 def _start_worker(
-    entry: CatalogModel, models_dir: Path, token: HfToken, engine: EngineAdapter
+    entry: CatalogModel, models_dir: Path, token: HfToken, engine: EngineAdapter | None
 ) -> tuple[_Worker, Connection]:
     """Spawn the download child; fork is unsafe under the parent's threads.
 
@@ -365,7 +365,7 @@ def _run_download_child(
     entry: CatalogModel,
     models_dir: str,
     token: HfToken,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None,
 ) -> None:
     """Child-process entry: fetch the files and report the verdict over *conn*."""
     _silence_output()

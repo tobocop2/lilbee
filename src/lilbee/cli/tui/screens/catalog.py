@@ -2134,8 +2134,8 @@ class CatalogScreen(Screen[None]):
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
         try:
-            engine = get_services().engines.for_ref(model.pull_ref)
             if model.format is ModelFormat.GGUF:
+                engine = get_services().engines.for_ref(model.pull_ref)
                 filename = resolve_filename(model, engine)
                 dest = cfg.models_dir / filename
                 if dest.exists():
