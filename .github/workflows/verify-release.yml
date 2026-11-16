@@ -223,9 +223,20 @@ jobs:
           clash = schema["paths"].get("/api/profiles/{name}/duplicate", {}).get("post", {})
           if "409" not in clash.get("responses", {}):
               sys.exit("published schema no longer documents the 409 a profile name clash answers")
-          search = schema["paths"].get("/api/search", {}).get("get", {})
-          if "401" not in search.get("responses", {}):
-              sys.exit("published schema no longer documents the 401 a guarded route answers")
+          methods = {"get", "put", "post", "delete", "patch", "head"}
+          operations = [
+              (method, path, op)
+              for path, ops in schema["paths"].items()
+              for method, op in ops.items()
+              if method in methods
+          ]
+          bare = sorted(
+              f"{method.upper()} {path}"
+              for method, path, op in operations
+              if "401" not in op.get("responses", {}) or {"bearerAuth": []} not in op.get("security", [])
+          )
+          if not operations or bare:
+              sys.exit(f"published schema lacks the 401 or the bearer requirement on: {bare}")
           print(f"{len(schema['paths'])} paths, {len(streamed)} streaming")
           PY
 

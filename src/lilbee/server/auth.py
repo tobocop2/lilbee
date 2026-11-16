@@ -208,14 +208,14 @@ BEARER_SCHEME = "bearerAuth"
 
 
 def _document_guard(handlers: Iterable[Any]) -> None:
-    """Add the 401 and the bearer requirement to each handler the middleware guards."""
+    """Add the 401 and the bearer requirement to every handler, which all answer 401."""
     requirement: dict[str, list[str]] = {BEARER_SCHEME: []}
     for handler in handlers:
         if isinstance(handler, Router):
             for route in handler.routes:
                 if isinstance(route, HTTPRoute):
                     _document_guard(route.route_handlers)
-        elif isinstance(handler, HTTPRouteHandler) and not authenticates_itself(handler.fn):
+        elif isinstance(handler, HTTPRouteHandler):
             raises = list(handler.raises or [])
             if NotAuthorizedException not in raises:
                 handler.raises = [*raises, NotAuthorizedException]
@@ -225,7 +225,7 @@ def _document_guard(handlers: Iterable[Any]) -> None:
 
 
 class GuardSchemaPlugin(InitPlugin):
-    """Publish in the OpenAPI schema what ``AuthMiddleware`` enforces."""
+    """Publish in the OpenAPI schema the bearer token every route requires."""
 
     def on_app_init(self, app_config: AppConfig) -> AppConfig:
         _document_guard(app_config.route_handlers)
