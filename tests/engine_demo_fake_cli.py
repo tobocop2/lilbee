@@ -66,10 +66,12 @@ def listing() -> dict[str, object]:
     return {"command": "engine list", "builds": builds, "not_installed": []}
 
 
+INGEST_OUT = "Added: 3\nUpdated: 0\nRemoved: 0\nUnchanged: 0\nSkipped: 0\nFailed: 0\nTruncated: 0"
+
 ASK = {
     "command": "ask",
     "question": "q",
-    "answer": "Bees dance [1].",
+    "answer": "A forager bee does a waggle dance [1].",
     "sources": [{"source": "bees.md"}],
     "cited_sources": [{"source": "bees.md", "label": "bees.md"}],
     "retrieval_query": "q",
@@ -107,7 +109,12 @@ class Api(BaseHTTPRequestHandler):
             return
         for role in ("chat",) if MODE == "ask-silent" else ("embed", "rerank", "chat"):
             served(role)
-        self.reply(500 if MODE == "chat-500" else 200, {"answer": f"echo {question}"})
+        reply = {
+            "answer": f"echo {question}: bees do a waggle dance [1].",
+            "sources": ASK["sources"],
+            "cited_sources": ASK["cited_sources"],
+        }
+        self.reply(500 if MODE == "chat-500" else 200, reply)
 
     def do_POST(self) -> None:
         self.handle_request()
@@ -178,11 +185,12 @@ def engine_use(argv: list[str]) -> None:
 def add(argv: list[str]) -> None:
     if "--ocr" in argv:
         served("vision")
-    print("added")
+    print(INGEST_OUT)
 
 
 def sync(argv: list[str]) -> None:
     served("embed")
+    print(INGEST_OUT)
 
 
 def ask(argv: list[str]) -> None:

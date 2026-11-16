@@ -42,6 +42,7 @@ from pathlib import Path
 
 import httpx
 import psutil
+from tools.qa.engine_demo.corpus import CORPUS
 from tools.qa.engine_demo.oracles import Step, StepName, Transcript
 
 from lilbee.providers.roles import WorkerRole
@@ -65,21 +66,6 @@ _SESSION_FILE = Path("data") / "server.json"
 _POLL_S = 0.1
 
 DEFAULT_QUESTION = "How do honeybees tell each other where the flowers are?"
-_CORPUS = {
-    "bees.md": (
-        "# Honeybees\n\nA forager bee that finds flowers returns to the hive and performs a "
-        "waggle dance. The angle of the dance shows the direction of the flowers and its "
-        "length shows the distance.\n"
-    ),
-    "tides.md": (
-        "# Tides\n\nThe moon pulls on the ocean and makes two high tides and two low tides "
-        "in most places each day.\n"
-    ),
-    "bread.md": (
-        "# Bread\n\nSourdough rises because wild yeast and bacteria in the starter make gas "
-        "and acid while the dough rests.\n"
-    ),
-}
 
 
 @dataclass(frozen=True)
@@ -138,9 +124,9 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
     for folder in (data_root, corpus_dir):
         folder.mkdir(parents=True, exist_ok=True)
     log_path.touch()
-    corpus = [corpus_dir / name for name in _CORPUS]
+    corpus = [corpus_dir / name for name in CORPUS]
     for path in corpus:
-        path.write_text(_CORPUS[path.name], encoding="utf-8")
+        path.write_text(CORPUS[path.name], encoding="utf-8")
     env = {**os.environ, "LILBEE_DATA": str(data_root), "LILBEE_LOG_LEVEL": "INFO"}
 
     def cli(name: StepName, *args: str, json_output: bool = False) -> Step:

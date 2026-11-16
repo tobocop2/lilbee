@@ -11,6 +11,8 @@ from __future__ import annotations
 import dataclasses
 import json
 from dataclasses import replace
+from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -68,12 +70,21 @@ def _roles_payload(views: list[dict[str, object]]) -> dict[str, object]:
     return {"command": "engine roles", "roles": views}
 
 
+_INGEST_OUT = (
+    "Added: 3\nUpdated: 0\nRemoved: 0\nUnchanged: 0\nSkipped: 0\nFailed: 0\nTruncated: 0\n"
+)
+_CHAT = {
+    "answer": "A forager bee does a waggle dance [1].",
+    "sources": [{"source": "bees.md"}],
+    "cited_sources": [{"source": "bees.md", "label": "bees.md"}],
+}
+
 _ASK = {
     "command": "ask",
     "question": "q",
-    "answer": "Bees dance [1].",
-    "sources": [{"source": "a.md"}],
-    "cited_sources": [{"source": "a.md", "label": "a.md"}],
+    "answer": "A forager bee does a waggle dance [1].",
+    "sources": [{"source": "bees.md"}],
+    "cited_sources": [{"source": "bees.md", "label": "bees.md"}],
     "retrieval_query": "q",
     "dropped_sources": [],
 }
@@ -101,10 +112,12 @@ def _good() -> Transcript:
         steps=(
             _json_step(StepName.ENGINE_LIST_BEFORE, _listing([])),
             Step(StepName.INSTALL, ("lilbee", "engine", "install"), 0),
+            Step(StepName.ADD, ("lilbee", "add"), 0, _INGEST_OUT),
             Step(
                 StepName.SYNC,
                 ("lilbee", "sync"),
                 0,
+                _INGEST_OUT,
                 log_lines=(_served(_ENGINE, _PIN, "embed"),),
             ),
             _ask_step(),
@@ -213,6 +226,7 @@ def test_a_chat_step_carries_the_roles_it_serves() -> None:
         StepName.CHAT,
         ("lilbee", "chat"),
         0,
+        json.dumps(_CHAT),
         log_lines=(_served(_ENGINE, _PIN, "chat"),),
     )
     lines = (_served(_ENGINE, _PIN, "embed"), _served(_ENGINE, _PIN, "rerank"))
@@ -296,9 +310,10 @@ def test_a_second_ask_without_citation_fails() -> None:
         {"cited_sources": []},
         {"cited_sources": [None]},
         {"cited_sources": [{}]},
-        {"cited_sources": [{"source": "a.md"}]},
-        {"cited_sources": [{"label": "a.md"}]},
+        {"cited_sources": [{"source": "bees.md"}]},
+        {"cited_sources": [{"label": "bees.md"}]},
         {"cited_sources": "x"},
+        {"sources": []},
     ],
 )
 def test_ask_without_answer_or_citation_fails(changes: dict[str, object]) -> None:
@@ -536,3 +551,307 @@ def test_a_set_model_step_round_trips_and_a_failed_one_fails() -> None:
     t = _plus(_good(), step)
     assert Transcript.from_json(json.loads(json.dumps(t.to_json()))) == t
     assert _rules(t) == {Rule.STEP_FAILED}
+
+
+_RUN1 = Path(__file__).parent / "fixtures" / "engine_demo" / "run1_llamacpp.json"
+
+
+def _run1() -> dict[str, Any]:
+    payload: dict[str, Any] = json.loads(_RUN1.read_text(encoding="utf-8"))
+    return payload
+
+
+def _run1_edited(step_names: tuple[str, ...], **fields: object) -> Transcript:
+    """The recorded run with *fields* of each named step replaced."""
+    payload = _run1()
+    touched = [s for s in payload["steps"] if s["name"] in step_names]
+    assert touched, step_names
+    for s in touched:
+        s.update(fields)
+    return Transcript.from_json(payload)
+
+
+def _run1_json_edited(step_name: str, **answer_fields: object) -> Transcript:
+    """The recorded run with *answer_fields* of the step's JSON stdout replaced."""
+    payload = _run1()
+    touched = [s for s in payload["steps"] if s["name"] == step_name]
+    assert touched, step_name
+    for s in touched:
+        s["stdout"] = json.dumps({**json.loads(s["stdout"]), **answer_fields})
+    return Transcript.from_json(payload)
+
+
+def test_the_recorded_correct_run_passes() -> None:
+    t = Transcript.from_json(_run1())
+    assert {s.name for s in t.steps} >= {StepName.ASK, StepName.CHAT, StepName.ADD, StepName.SYNC}
+    assert judge(t) == []
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+def test_an_answer_unrelated_to_the_corpus_fails(step: str) -> None:
+    failures = judge(_run1_json_edited(step, answer="Bananas are yellow."))
+    assert [f.rule for f in failures] == [Rule.ANSWER_OFF_CORPUS]
+    assert "Bananas are yellow." in failures[0].detail
+
+
+def test_an_answer_that_names_a_corpus_fact_in_other_case_passes() -> None:
+    assert judge(_run1_json_edited("ask", answer="The WAGGLE dance [1].")) == []
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+def test_a_citation_naming_no_corpus_file_fails(step: str) -> None:
+    cited = [{"source": "nowhere.md", "label": "x"}]
+    failures = judge(_run1_json_edited(step, cited_sources=cited))
+    assert Rule.CITATION_OFF_CORPUS in {f.rule for f in failures}
+    assert any("'nowhere.md'" in f.detail for f in failures)
+
+
+@pytest.mark.parametrize("source", [None, 7])
+def test_a_citation_whose_source_is_not_a_name_fails(source: object) -> None:
+    cited = [{"source": source, "label": "x"}]
+    failures = judge(_run1_json_edited("ask", cited_sources=cited))
+    assert Rule.CITATION_OFF_CORPUS in {f.rule for f in failures}
+    assert any(f"cited {source!r}, no corpus file" in f.detail for f in failures)
+
+
+def test_a_citation_of_a_corpus_file_that_holds_no_fact_of_the_answer_fails() -> None:
+    cited = [{"source": "bread.md", "label": "x"}]
+    failures = judge(_run1_json_edited("ask", cited_sources=cited))
+    assert [f.rule for f in failures] == [Rule.CITATION_OFF_CORPUS]
+    assert "none of which holds" in failures[0].detail
+
+
+@pytest.mark.parametrize("source", ["/elsewhere/bees.md", "corpus/bees.md", "bees.md.bak"])
+def test_a_citation_that_is_a_path_to_a_corpus_name_fails(source: str) -> None:
+    cited = [{"source": source, "label": "x"}]
+    failures = judge(_run1_json_edited("ask", cited_sources=cited))
+    assert Rule.CITATION_OFF_CORPUS in {f.rule for f in failures}
+    assert any(f"cited {source!r}, no corpus file" in f.detail for f in failures)
+
+
+def _ingest(**counts: int) -> str:
+    """The summary lilbee prints for add and sync, with *counts* replacing the clean run's."""
+    clean = {"Added": 3, "Updated": 0, "Removed": 0, "Unchanged": 0, "Held out": 0}
+    lines = {**clean, "Skipped": 0, "Failed": 0, "Truncated": 0, **counts}
+    return "".join(f"{label}: {n}\n" for label, n in lines.items())
+
+
+@pytest.mark.parametrize("step", ["add", "sync"])
+def test_ingest_that_reports_failures_fails_though_it_exited_zero(step: str) -> None:
+    failures = judge(_run1_edited((step,), stdout=_ingest(Failed=3)))
+    assert [(f.rule, f.detail) for f in failures] == [
+        (Rule.INGEST_FAILED, f"{step} printed Failed: 3")
+    ]
+
+
+def test_ingest_that_prints_no_failed_count_fails() -> None:
+    stdout = _ingest().replace("Failed: 0\n", "")
+    failures = judge(_run1_edited(("sync",), stdout=stdout))
+    assert [f.detail for f in failures] == ["sync printed no Failed count"]
+
+
+@pytest.mark.parametrize("step", ["add", "sync"])
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {"Added": 0, "Skipped": 3},
+        {"Added": 0, "Unchanged": 0},
+        {"Added": 1, "Unchanged": 1},
+        {"Added": 0, "Held out": 3},
+    ],
+)
+def test_ingest_that_took_in_fewer_files_than_the_corpus_fails(
+    step: str, counts: dict[str, int]
+) -> None:
+    failures = judge(_run1_edited((step,), stdout=_ingest(**counts)))
+    assert any(f"{step} covered" in f.detail for f in failures)
+    assert {f.rule for f in failures} == {Rule.INGEST_FAILED}
+
+
+def test_ingest_that_added_some_and_left_the_rest_unchanged_passes() -> None:
+    assert judge(_run1_edited(("sync",), stdout=_ingest(Added=1, Unchanged=2))) == []
+
+
+@pytest.mark.parametrize("step", ["add", "sync"])
+def test_ingest_that_holds_a_file_out_fails_though_the_corpus_is_covered(step: str) -> None:
+    failures = judge(_run1_edited((step,), stdout=_ingest(**{"Held out": 2})))
+    assert [f.detail for f in failures] == [f"{step} printed Held out: 2"]
+
+
+def test_ingest_that_prints_an_index_mismatch_fails() -> None:
+    stdout = _ingest().replace("Held out", "Index mismatch: built with another embedder\nHeld out")
+    failures = judge(_run1_edited(("sync",), stdout=stdout))
+    assert [f.detail for f in failures] == ["sync printed an Index mismatch"]
+
+
+_PARAPHRASES = [
+    ("ask", "Foragers tell the hive by dancing, and the angle gives the direction.", "bees.md"),
+    ("chat", "A forager does a waggling dance [1].", "bees.md"),
+    ("ask", "The moon pulls the ocean, causing tides.", "tides.md"),
+    ("chat", "Two high tides a day [1].", "tides.md"),
+    ("ask", "Bacteria in the starter make acid.", "bread.md"),
+    ("chat", "Wild YEAST makes the dough rise.", "bread.md"),
+]
+
+
+@pytest.mark.parametrize(("step", "answer", "source"), _PARAPHRASES)
+def test_a_correct_paraphrase_that_cites_its_file_passes(
+    step: str, answer: str, source: str
+) -> None:
+    cited = [{"source": source, "label": source}]
+    assert judge(_run1_json_edited(step, answer=answer, cited_sources=cited)) == []
+
+
+@pytest.mark.parametrize(
+    "answer", ["Bananas are yellow.", "It rains in spring.", "The tool returned nothing."]
+)
+def test_an_unrelated_answer_still_fails_beside_the_paraphrases(answer: str) -> None:
+    failures = judge(_run1_json_edited("ask", answer=answer))
+    assert [f.rule for f in failures] == [Rule.ANSWER_OFF_CORPUS]
+
+
+def test_a_paraphrase_that_cites_another_corpus_file_fails() -> None:
+    cited = [{"source": "bread.md", "label": "bread.md"}]
+    failures = judge(
+        _run1_json_edited("ask", answer="The forager is dancing.", cited_sources=cited)
+    )
+    assert [f.rule for f in failures] == [Rule.CITATION_OFF_CORPUS]
+
+
+def _with_question(step: str, question: str, answer: str, source: str = "bees.md") -> Transcript:
+    """The recorded run where *step* was asked *question* and replied *answer*, citing *source*."""
+    payload = _run1()
+    for s in payload["steps"]:
+        if s["name"] != step:
+            continue
+        reply = {
+            **json.loads(s["stdout"]),
+            "answer": answer,
+            "cited_sources": [{"source": source, "label": source}],
+        }
+        if step == "ask":
+            reply["question"] = question
+        else:
+            s["command"] = [
+                "POST",
+                "http://127.0.0.1:1/api/chat",
+                json.dumps({"question": question}),
+            ]
+        s["stdout"] = json.dumps(reply)
+    return Transcript.from_json(payload)
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+def test_a_fact_that_only_the_question_holds_does_not_count(step: str) -> None:
+    t = _with_question(step, "Why do bees waggle?", "You asked why they waggle, so waggle.")
+    assert [f.rule for f in judge(t)] == [Rule.ANSWER_OFF_CORPUS]
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+def test_a_stem_the_question_lacks_still_counts_when_the_question_has_another(step: str) -> None:
+    t = _with_question(step, "Why do bees waggle?", "They dance to show the flowers.")
+    assert judge(t) == []
+
+
+_QUESTIONS = [
+    ("Why do bees dance?", "They perform a dance.", "bees.md"),
+    ("Why do bees dance?", "Foragers show the hive where the flowers are.", "bees.md"),
+    ("What causes tides?", "The moon pulls on the ocean.", "tides.md"),
+    ("What causes tides?", "Two tides each day, from the moon.", "tides.md"),
+    ("How do forager bees dance the waggle?", "They return to the hive and perform.", "bees.md"),
+    ("How does sourdough rise?", "Wild yeast makes gas in the dough.", "bread.md"),
+]
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+@pytest.mark.parametrize(("question", "answer", "source"), _QUESTIONS)
+def test_a_correct_answer_passes_when_the_question_names_some_of_its_stems(
+    step: str, question: str, answer: str, source: str
+) -> None:
+    assert judge(_with_question(step, question, answer, source)) == []
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+@pytest.mark.parametrize(
+    ("question", "answer", "source"),
+    [
+        ("Why do bees dance?", "Because they dance.", "bees.md"),
+        ("What causes tides?", "The tides, it asks.", "tides.md"),
+        ("How do forager bees dance the waggle?", "The waggle dance by foragers.", "bees.md"),
+    ],
+)
+def test_an_echo_of_the_question_still_fails(
+    step: str, question: str, answer: str, source: str
+) -> None:
+    t = _with_question(step, question, answer, source)
+    assert [f.rule for f in judge(t)] == [Rule.ANSWER_OFF_CORPUS]
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+def test_a_question_that_names_every_stem_of_a_file_counts_them_as_usual(step: str) -> None:
+    question = "Do forager bees dance the waggle to perform for the hive?"
+    t = _with_question(step, question, "Yes, the waggle dance.")
+    assert judge(t) == []
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+@pytest.mark.parametrize("sources", [[], None, "bees.md"])
+def test_an_answer_with_no_retrieved_source_fails(step: str, sources: object) -> None:
+    rule = Rule.ASK_UNCITED if step == "ask" else Rule.CHAT_UNCITED
+    assert _rules(_run1_json_edited(step, sources=sources)) == {rule}
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I don't know, but bees waggle.",
+        "I do not know. The waggle dance is unrelated.",
+        "I cannot answer that, forager.",
+        "Sorry, nothing about the waggle dance.",
+        "  I'm sorry, but bees dance.",
+        "The context does not say, though bees waggle.",
+        "Unfortunately, I do not know. Bees waggle.",
+        "The provided context does not say, but bees dance.",
+        "**I don't know** whether the forager dances.",
+        f"I don{chr(0x2019)}t know, but bees waggle.",
+        "_Sorry_, bees waggle.",
+        "> I couldn't find it; the waggle dance is elsewhere.",
+        "There is no information on bees, only a waggle.",
+    ],
+)
+def test_a_refusal_that_quotes_a_fact_fails(step: str, answer: str) -> None:
+    failures = judge(_run1_json_edited(step, answer=answer))
+    assert [f.rule for f in failures] == [Rule.ANSWER_REFUSED]
+
+
+@pytest.mark.parametrize("step", ["ask", "chat"])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can't wait to explain: bees do a waggle dance.",
+        "Sorry for the delay: bees do a waggle dance.",
+        "No information is lost when a forager does the waggle dance.",
+        "The context says bees waggle.",
+        "I know the waggle dance shows the direction.",
+    ],
+)
+def test_an_answer_with_a_refusal_like_opening_that_answers_passes(step: str, answer: str) -> None:
+    assert judge(_run1_json_edited(step, answer=answer)) == []
+
+
+def test_the_chat_answer_that_says_the_library_is_empty_fails() -> None:
+    answer = json.dumps({"answer": "Your library is empty.", "sources": [], "cited_sources": []})
+    assert _rules(_run1_edited(("chat",), stdout=answer)) == {
+        Rule.CHAT_UNCITED,
+        Rule.ANSWER_OFF_CORPUS,
+    }
+
+
+@pytest.mark.parametrize("stdout", ["", "not json", "[]"])
+def test_a_chat_reply_that_is_not_an_answer_object_fails(stdout: str) -> None:
+    assert _rules(_run1_edited(("chat",), stdout=stdout)) == {Rule.CHAT_UNCITED}
+
+
+def test_a_chat_step_that_failed_is_reported_once_as_a_failed_step() -> None:
+    assert _rules(_run1_edited(("chat",), exit_code=1)) == {Rule.STEP_FAILED}
