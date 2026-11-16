@@ -3,6 +3,8 @@ the source file with the OS opener instead of a browser."""
 
 from __future__ import annotations
 
+import os
+import socket
 import sys
 import threading
 import time
@@ -43,6 +45,13 @@ class TestAnswerMarkdownParser:
         assert [link.attrs["href"] for link in links] == ["file:///Users/t/My%20Docs/doc.md"]
 
 
+def _write_doc(name: str, content: bytes = b"hi") -> Path:
+    path = cfg.documents_dir / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
 class TestOpenerArgv:
     @pytest.mark.parametrize(
         ("platform", "expected"),
@@ -62,7 +71,7 @@ class TestOpenLocalFile:
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "darwin")
         run = mock.Mock()
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
-        doc = cfg.documents_dir / "My Docs" / "doc.md"
+        doc = _write_doc("My Docs/doc.md")
         open_local_file(doc.as_uri())
         opener, path = run.call_args.args[0]
         assert opener == "open"
@@ -74,9 +83,9 @@ class TestOpenLocalFile:
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "win32")
         opened = mock.Mock()
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.webbrowser.open", opened)
-        href = (cfg.documents_dir / "doc.md").as_uri()
-        open_local_file(href)
-        opened.assert_called_once_with((cfg.documents_dir / "doc.md").resolve().as_uri())
+        doc = _write_doc("doc.md")
+        open_local_file(doc.as_uri())
+        opened.assert_called_once_with(doc.resolve().as_uri())
 
     def test_opener_failure_is_logged_not_raised(self, monkeypatch, caplog):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "linux")
@@ -84,7 +93,7 @@ class TestOpenLocalFile:
             "lilbee.cli.tui.screens.chat_helpers.subprocess.run",
             mock.Mock(side_effect=OSError("no xdg-open")),
         )
-        href = (cfg.documents_dir / "doc.md").as_uri()
+        href = _write_doc("doc.md").as_uri()
         with caplog.at_level("WARNING"):
             open_local_file(href)  # must not raise
         assert caplog.messages == [
@@ -107,7 +116,7 @@ class TestOpenLocalFile:
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "linux")
         run = mock.Mock()
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
-        open_local_file((cfg.documents_dir / "doc.md").as_uri() + "%00.md")
+        open_local_file(_write_doc("doc.md").as_uri() + "%00.md")
         run.assert_not_called()
 
 
@@ -133,7 +142,7 @@ class TestOpenAnswerLink:
             ),
             (
                 LinkOpenResult.NOT_A_DOCUMENT,
-                "Link not opened: the target is a program or a folder, not a document",
+                "Link not opened: the target is not a document lilbee can show",
             ),
         ],
     )
@@ -154,6 +163,21 @@ class TestOpenAnswerLink:
         chat_screen.ChatScreen._open_file_link.__wrapped__(mock.Mock(), "file:///tmp/doc.md")
         told.assert_not_called()
 
+    def test_an_unexpected_opener_error_reaches_the_user_and_the_log(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            chat_screen, "open_local_file", mock.Mock(side_effect=RuntimeError("boom"))
+        )
+        told = mock.Mock()
+        monkeypatch.setattr(chat_screen, "call_from_thread", told)
+        screen = mock.Mock()
+        with caplog.at_level("ERROR"):
+            chat_screen.ChatScreen._open_file_link.__wrapped__(screen, "file:///tmp/doc.md")
+        told.assert_called_once_with(
+            screen, screen.notify, "Link not opened: boom", severity="error"
+        )
+        assert "Could not open link: file:///tmp/doc.md" in caplog.messages
+        assert caplog.records[0].exc_info is not None
+
     def test_web_link_opens_in_browser(self, monkeypatch):
         opened = mock.Mock()
         monkeypatch.setattr(chat_screen, "open_local_file", opened)
@@ -173,13 +197,106 @@ class TestProgramsAndFoldersAreNotOpened:
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
         return run
 
-    @pytest.mark.parametrize("name", ["Tool.command", "Shell.terminal", "run.SH", "a.exe"])
-    def test_a_program_type_is_refused(self, run, name):
-        target = cfg.documents_dir / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("echo hi", encoding="utf-8")
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Tool.command",
+            "Shell.terminal",
+            "run.SH",
+            "a.exe",
+            "a.fileloc",
+            "a.jar",
+            "a.jnlp",
+            "a.pkg",
+            "a.dmg",
+            "a.iso",
+            "a.mobileconfig",
+            "a.webloc",
+            "a.url",
+            "no-suffix",
+            "run.sh",
+            "run.py",
+            "run.ps1",
+        ],
+    )
+    def test_a_type_that_is_not_an_ingestible_document_is_refused(self, run, name):
+        target = _write_doc(name, b"echo hi")
         assert open_local_file(target.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
         run.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["alias", "alias.md", "alias.pdf", "alias.command"])
+    def test_a_finder_alias_is_refused_whatever_its_name(self, run, name):
+        # The first bytes of a real alias file made by Finder on macOS.
+        alias = _write_doc(name, b"book\0\0\0\0mark\0\0\0\0\x38\0\0\0")
+        assert open_local_file(alias.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_a_text_file_that_starts_with_the_word_book_opens(self, run):
+        doc = _write_doc("books.txt", b"bookmark list")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a POSIX fifo")
+    def test_a_fifo_named_like_a_document_is_refused_without_a_read(self, run):
+        fifo = cfg.documents_dir / "pipe.txt"
+        fifo.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(fifo, 0o644)
+        assert open_local_file(fifo.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="needs a unix socket")
+    def test_a_socket_named_like_a_document_is_refused(self, run, monkeypatch):
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(
+            cfg.documents_dir
+        )  # a relative name keeps the path under the socket limit
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.bind("s.txt")
+            sock_path = cfg.documents_dir / "s.txt"
+            sock_path.chmod(0o644)
+            assert open_local_file(sock_path.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_a_file_that_cannot_be_read_is_refused(self, run, monkeypatch):
+        doc = _write_doc("doc.md")
+        real_open = Path.open
+
+        def refuse(self, *args, **kwargs):
+            if self == doc.resolve():
+                raise PermissionError("no read")
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", refuse)
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_a_missing_file_is_refused(self, run):
+        missing = cfg.documents_dir / "gone.md"
+        missing.parent.mkdir(parents=True, exist_ok=True)
+        assert open_local_file(missing.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    def test_a_source_file_that_an_editor_shows_opens(self, run):
+        doc = _write_doc("lib.rs", b"fn main() {}")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        run.assert_called_once()
+
+    def test_no_code_file_opens_on_windows(self, monkeypatch):
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "win32")
+        browser = mock.Mock()
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.webbrowser.open", browser)
+        for name in ("lib.rs", "run.js", "tool.vbs", "a.jar", "a.url", "a.hta"):
+            target = _write_doc(name, b"x")
+            assert open_local_file(target.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT, name
+        browser.assert_not_called()
+
+    def test_a_document_opens_through_the_browser_on_windows(self, monkeypatch):
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "win32")
+        browser = mock.Mock()
+        monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.webbrowser.open", browser)
+        doc = _write_doc("notes.md")
+        assert open_local_file(doc.as_uri()) is LinkOpenResult.OPENED
+        browser.assert_called_once()
 
     def test_an_app_bundle_folder_is_refused(self, run):
         bundle = cfg.documents_dir / "Tool.app"

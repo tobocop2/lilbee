@@ -2593,7 +2593,14 @@ class ChatScreen(Screen[None]):
     @work(thread=True, name="open_file_link", exit_on_error=False)
     def _open_file_link(self, href: str) -> None:
         """Open a ``file:`` link off the UI thread and tell the user when it is refused."""
-        notice = LINK_REFUSAL_NOTICES.get(open_local_file(href))
+        try:
+            notice = LINK_REFUSAL_NOTICES.get(open_local_file(href))
+        except Exception as exc:
+            log.exception("Could not open link: %s", href)
+            call_from_thread(
+                self, self.notify, msg.LINK_OPEN_FAILED.format(error=exc), severity="error"
+            )
+            return
         if notice is not None:
             call_from_thread(self, self.notify, notice, severity="warning")
 

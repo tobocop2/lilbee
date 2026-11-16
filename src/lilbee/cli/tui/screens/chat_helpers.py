@@ -19,7 +19,8 @@ from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.data.ingest.discovery import path_within_roots
+from lilbee.data.ingest.discovery import classify_file, path_within_roots
+from lilbee.data.types import CODE_CONTENT_TYPE
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -78,40 +79,47 @@ LINK_REFUSAL_NOTICES = {
     LinkOpenResult.NOT_A_DOCUMENT: msg.LINK_NOT_A_DOCUMENT,
 }
 
-# The OS opener starts these types as programs instead of showing them.
-_PROGRAM_SUFFIXES = frozenset(
+# Source types the ingest accepts whose default handler can run them as a program.
+_LAUNCHING_CODE_SUFFIXES = frozenset(
     {
-        ".app",
-        ".command",
-        ".terminal",
-        ".tool",
-        ".workflow",
-        ".action",
-        ".scpt",
-        ".scptd",
         ".sh",
+        ".bash",
+        ".zsh",
+        ".ksh",
+        ".fish",
         ".desktop",
         ".bat",
         ".cmd",
-        ".com",
-        ".exe",
-        ".msi",
         ".ps1",
-        ".lnk",
+        ".psm1",
+        ".py",
+        ".pyw",
+        ".applescript",
     }
 )
 
+# A Finder alias or bookmark file starts with this data; it opens its target.
+_BOOKMARK_MAGIC = b"book\0\0\0\0mark"
 
-def _is_program_or_container(path: Path) -> bool:
-    """Whether the opener would start or enter *path*: a program type, an execute
-    bit, or anything that is not a regular file (an app bundle, a folder)."""
-    if path.suffix.lower() in _PROGRAM_SUFFIXES:
-        return True
+
+def _is_openable_document(path: Path) -> bool:
+    """Whether *path* is a regular, non-executable, non-alias file of a type the
+    ingest accepts and whose default handler shows it instead of running it."""
     try:
         mode = path.stat().st_mode
+        if not stat.S_ISREG(mode) or mode & 0o111:
+            return False
+        with path.open("rb") as handle:
+            if handle.read(len(_BOOKMARK_MAGIC)) == _BOOKMARK_MAGIC:
+                return False
     except OSError:
         return False
-    return not stat.S_ISREG(mode) or bool(mode & 0o111)
+    content_type = classify_file(path)
+    if content_type is None:
+        return False
+    if content_type != CODE_CONTENT_TYPE:
+        return True
+    return sys.platform != "win32" and path.suffix.lower() not in _LAUNCHING_CODE_SUFFIXES
 
 
 def open_local_file(href: str) -> LinkOpenResult:
@@ -119,7 +127,7 @@ def open_local_file(href: str) -> LinkOpenResult:
     for its type (an editor for markdown, a viewer for PDF), not a browser
     rendering raw text. Platforms without a known opener fall back to the
     webbrowser module. Only a document inside the document roots is opened;
-    any other path, program or folder opens nothing."""
+    any other path, and any file that is not an ingestible document, opens nothing."""
     path = url2pathname(urlparse(href).path)
     try:
         resolved = Path(path).resolve(strict=False)
@@ -129,8 +137,8 @@ def open_local_file(href: str) -> LinkOpenResult:
     if not inside:
         log.warning("Refused to open a file outside the document roots: %s", path)
         return LinkOpenResult.OUTSIDE_ROOTS
-    if _is_program_or_container(resolved):
-        log.warning("Refused to open a program or folder: %s", resolved)
+    if not _is_openable_document(resolved):
+        log.warning("Refused to open a file that is not a document: %s", resolved)
         return LinkOpenResult.NOT_A_DOCUMENT
     argv = _opener_argv(sys.platform)
     if argv is None:
