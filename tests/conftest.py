@@ -346,21 +346,49 @@ def _fresh_engine_help():
     _warn_once.cache_clear()
 
 
+@pytest.fixture(scope="session")
+def _engine_free_path(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """The ``PATH`` of this session with every engine tool hidden and the other tools kept.
+
+    A folder that holds an engine tool is swapped for a scratch folder of links to
+    the other files in it, so a child finds no engine on ``PATH`` and still finds
+    ``git`` or ``pdfseparate`` from the same folder.
+    """
+    sealed = {tool.value for tool in EngineTool}
+    scratch = tmp_path_factory.mktemp("engine-free-path")
+    folders = []
+    for index, folder in enumerate(os.environ.get("PATH", "").split(os.pathsep)):
+        if not any(shutil.which(name, path=folder) for name in sealed):
+            folders.append(folder)
+            continue
+        shadow = scratch / str(index)
+        shadow.mkdir()
+        for entry in Path(folder).resolve().iterdir():
+            if entry.stem not in sealed:
+                shadow.joinpath(entry.name).symlink_to(entry)
+        folders.append(str(shadow))
+    return os.pathsep.join(folders)
+
+
 @pytest.fixture(autouse=True)
-def _sealed_engine_resolution(request, monkeypatch):
+def _sealed_engine_resolution(request, monkeypatch, _engine_free_path):
     """Seal engine-binary resolution so every machine behaves like CI.
 
     resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
     empty (always, outside a release build), so a developer with llama-server
-    installed resolves a real binary where CI raises ProviderError. Blocking
-    the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
-    override forces a test that needs a binary to plant its own (a tmp-file
-    ``cfg.llama_server_path``, a fake ``lilbee_engine_llama_cpp``, or a
-    ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
+    installed resolves a real binary where CI raises ProviderError. Resolution
+    reads the LILBEE_LLAMA_SERVER_PATH override and the engine names on PATH.
+    Both are sealed in the environment, which a child process a test spawns
+    inherits, and in shutil.which for this process. A test that needs a binary
+    plants its own (a tmp-file ``cfg.llama_server_path``, a fake
+    ``lilbee_engine_llama_cpp``, or a ``shutil.which`` patch) or uses
+    ``@pytest.mark.real_engine_resolution``.
     """
     if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
         return
     monkeypatch.setattr(cfg, "llama_server_path", "")
+    monkeypatch.delenv("LILBEE_LLAMA_SERVER_PATH", raising=False)
+    monkeypatch.setenv("PATH", _engine_free_path)
     sealed = {tool.value for tool in EngineTool}
     real_which = shutil.which
 
