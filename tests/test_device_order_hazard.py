@@ -39,7 +39,11 @@ _AMD = "AMD Radeon RX 7900"
 _INTEL = "Intel Arc A770"
 _INSTALL_HINT = object()
 # Chat and embed each run a local model, so a plan on two engines is a mixed fleet.
-_MODELS = {"chat_model": "chat-model", "embedding_model": "embed-model", "reranker_model": ""}
+_MODELS = {
+    "chat_model": "org/repo/chat.gguf",
+    "embedding_model": "org/repo/embed.gguf",
+    "reranker_model": "",
+}
 
 
 def _card_free(index: int) -> int:
