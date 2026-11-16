@@ -473,22 +473,21 @@ class Searcher:
         space as every other query this searcher issues. Changing that is a
         retrieval-quality experiment for the embedding bench, not a refactor.
         """
-        try:
-            response = self._provider.chat(
-                [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
-                stream=False,
-                options=self._repeatable_options(HYDE_MAX_TOKENS),
+        response = self._provider.chat(
+            [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
+            stream=False,
+            options=self._repeatable_options(HYDE_MAX_TOKENS),
+        )
+        # Reasoning models front-load deliberation; embedding it instead
+        # of the passage would search for the model's thought process.
+        text = strip_reasoning(response.text).strip()
+        if not text:
+            raise ProviderError(
+                f"The chat model {self._config.chat_model} returned no passage for the "
+                "hyde search. Pick another chat model or search without 'hyde:'."
             )
-            # Reasoning models front-load deliberation; embedding it instead
-            # of the passage would search for the model's thought process.
-            text = strip_reasoning(response.text).strip()
-            if not text:
-                return []
-            hyde_vec = self._embedder.embed_query(text)
-            return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
-        except Exception:
-            log.debug("HyDE search failed", exc_info=True)
-            return []
+        hyde_vec = self._embedder.embed_query(text)
+        return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
 
     def _refuse_wiki_scope(self, chunk_type: ChunkType | None) -> bool:
         """Whether a wiki-scoped search must serve nothing because wiki is off.
@@ -610,8 +609,17 @@ class Searcher:
     ) -> None:
         """Append unseen HyDE hits to ``results`` (in place), down-weighted by
         ``hyde_weight`` in canonical score space (a weight of 1.0 trusts HyDE
-        hits as much as direct hits; lower discounts them proportionally)."""
-        for r in self._hyde_search(question, top_k, chunk_type=chunk_type):
+        hits as much as direct hits; lower discounts them proportionally).
+
+        HyDE here only widens a search that already ran, so a failure skips the
+        widening with a warning, as a failed query expansion does."""
+        try:
+            hyde_results = self._hyde_search(question, top_k, chunk_type=chunk_type)
+        except Exception as exc:
+            log.warning("HyDE widening disabled for this call: %s", exc)
+            log.debug("HyDE widening exception", exc_info=True)
+            return
+        for r in hyde_results:
             key = (r.source, r.chunk_index)
             if key in seen:
                 continue

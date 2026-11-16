@@ -8,8 +8,14 @@ import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import ChunkType, MemoryRow, SearchChunk
-from lilbee.providers.base import ChatResult, FinishReason, estimate_budget_tokens
+from lilbee.data.store import ChunkType, EmbeddingEngineChangedError, MemoryRow, SearchChunk
+from lilbee.providers.base import (
+    ChatResult,
+    FinishReason,
+    ProviderError,
+    ProviderErrorKind,
+    estimate_budget_tokens,
+)
 from lilbee.retrieval.query import (
     Searcher,
     build_context,
@@ -2175,6 +2181,12 @@ class TestParseStructuredQuery:
         assert mode == "term"
 
 
+def _engine_changed_error() -> EmbeddingEngineChangedError:
+    return EmbeddingEngineChangedError(
+        model="orgA/repoA/built.gguf", dim=768, distance=0.2, verified=True
+    )
+
+
 class TestHydeSearch:
     def test_returns_results(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("hypothetical document about X")
@@ -2227,17 +2239,103 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
 
-    def test_returns_empty_on_error(self, mock_svc):
-        mock_svc.provider.chat.side_effect = RuntimeError("fail")
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+    def test_chat_failure_reaches_the_caller(self, mock_svc):
+        mock_svc.provider.chat.side_effect = ProviderError(
+            "chat engine is down", kind=ProviderErrorKind.CONNECTION
+        )
+        with pytest.raises(ProviderError, match="chat engine is down"):
+            get_services().searcher._hyde_search("test", top_k=5)
 
-    def test_returns_empty_on_non_string(self, mock_svc):
-        mock_svc.provider.chat.return_value = iter(["stream"])
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+    def test_embed_failure_reaches_the_caller(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.side_effect = ProviderError("embedder refused the passage")
+        with pytest.raises(ProviderError, match="embedder refused the passage"):
+            get_services().searcher._hyde_search("test", top_k=5)
 
-    def test_returns_empty_on_blank(self, mock_svc):
+    def test_store_failure_reaches_the_caller(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.side_effect = _engine_changed_error()
+        with pytest.raises(EmbeddingEngineChangedError, match="rebuild"):
+            get_services().searcher._hyde_search("test", top_k=5)
+
+    def test_blank_passage_names_the_chat_model(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("   ")
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+        with (
+            mock.patch.object(cfg, "chat_model", "org/chat/quiet.gguf"),
+            pytest.raises(ProviderError, match=r"org/chat/quiet\.gguf"),
+        ):
+            get_services().searcher._hyde_search("test", top_k=5)
+        mock_svc.embedder.embed_query.assert_not_called()
+
+    def test_blank_passage_error_text_names_the_fix(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("   ")
+        with (
+            mock.patch.object(cfg, "chat_model", "org/chat/quiet.gguf"),
+            pytest.raises(ProviderError) as caught,
+        ):
+            get_services().searcher._hyde_search("test", top_k=5)
+        assert str(caught.value) == (
+            "The chat model org/chat/quiet.gguf returned no passage for the hyde search. "
+            "Pick another chat model or search without 'hyde:'."
+        )
+
+    def test_asks_the_chat_model_for_a_non_streamed_passage_about_the_question(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        call = mock_svc.provider.chat.call_args
+        assert call.args == (
+            [{"role": "user", "content": cfg.hyde_prompt.format(question="explain X")}],
+        )
+        assert call.kwargs["stream"] is False
+
+    def test_searches_the_store_with_the_passage_vector_only(self, mock_svc):
+        passage_vec = [0.25, 0.75]
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.return_value = passage_vec
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=7, chunk_type=ChunkType.RAW)
+        mock_svc.store.search.assert_called_once_with(
+            passage_vec, top_k=7, query_text=None, chunk_type=ChunkType.RAW
+        )
+
+    def test_blend_skip_logs_the_failure_at_warning_and_the_trace_at_debug(self, mock_svc, caplog):
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with caplog.at_level("DEBUG", logger="lilbee.retrieval.query.searcher"):
+            get_services().searcher._merge_hyde_results("vague question", [], set(), 5)
+        warning = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert warning.getMessage() == ("HyDE widening disabled for this call: chat engine is down")
+        trace = next(r for r in caplog.records if r.levelname == "DEBUG")
+        assert trace.getMessage() == "HyDE widening exception"
+        assert trace.exc_info
+        assert trace.exc_info[1] is not None
+
+    def test_blend_asks_for_the_question_with_the_caller_depth(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._merge_hyde_results("vague question", [], set(), 9)
+        content = mock_svc.provider.chat.call_args.args[0][0]["content"]
+        assert content == cfg.hyde_prompt.format(question="vague question")
+        assert mock_svc.store.search.call_args.kwargs["top_k"] == 9
+
+    def test_blend_adds_each_unseen_hit_once_and_skips_seen_ones(self, mock_svc):
+        direct = _make_result(source="direct.md", chunk_index=0)
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.return_value = [
+            _make_result(source="direct.md", chunk_index=0),
+            _make_result(source="new.md", chunk_index=1),
+            _make_result(source="new.md", chunk_index=1),
+            _make_result(source="other.md", chunk_index=2),
+        ]
+        results = [direct]
+        seen = {("direct.md", 0)}
+        get_services().searcher._merge_hyde_results("vague question", results, seen, 5)
+        assert [(r.source, r.chunk_index) for r in results] == [
+            ("direct.md", 0),
+            ("new.md", 1),
+            ("other.md", 2),
+        ]
+        assert seen == {("direct.md", 0), ("new.md", 1), ("other.md", 2)}
 
     def test_strips_reasoning_before_embedding(self, mock_svc):
         """A reasoning model's deliberation must not be embedded as the
@@ -2249,9 +2347,80 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         mock_svc.embedder.embed_query.assert_called_once_with("the actual passage")
 
-    def test_returns_empty_when_output_is_all_reasoning(self, mock_svc):
+    def test_output_that_is_all_reasoning_is_a_blank_passage(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("<think>only deliberation</think>")
-        assert get_services().searcher._hyde_search("test", top_k=5) == []
+        with pytest.raises(ProviderError, match="no passage"):
+            get_services().searcher._hyde_search("test", top_k=5)
+
+    def test_hyde_prefix_search_raises_the_chat_failure(self, mock_svc):
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with pytest.raises(ProviderError, match="chat engine is down"):
+            get_services().searcher.search("hyde: explain caching")
+
+    def test_hyde_prefix_search_raises_the_embed_failure(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.embedder.embed_query.side_effect = ProviderError("embedder refused the passage")
+        with pytest.raises(ProviderError, match="embedder refused the passage"):
+            get_services().searcher.search("hyde: explain caching")
+
+    def test_hyde_prefix_search_raises_the_store_failure(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        mock_svc.store.search.side_effect = _engine_changed_error()
+        with pytest.raises(EmbeddingEngineChangedError, match="rebuild"):
+            get_services().searcher.search("hyde: explain caching")
+
+    def test_cli_search_prints_the_chat_failure_and_exits_nonzero(self, mock_svc):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        result = CliRunner().invoke(app, ["search", "hyde: explain caching"])
+        assert result.exit_code == 1
+        assert "chat engine is down" in result.output
+
+    def test_blend_keeps_the_direct_results_when_the_passage_fails(self, mock_svc, caplog):
+        """A failed HyDE widening on top of a real search is skipped with a warning."""
+        mock_svc.store.search.return_value = [_make_result(source="direct.md")]
+        mock_svc.provider.chat.side_effect = ProviderError("chat engine is down")
+        with (
+            mock.patch.object(cfg, "hyde", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("vague question")
+        assert [r.source for r in results] == ["direct.md"]
+        assert "chat engine is down" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("layer", "error", "cause"),
+        [
+            ("chat", ProviderError("chat engine is down"), "chat engine is down"),
+            ("chat", ConnectionError("socket closed by the engine"), "socket closed by the engine"),
+            ("store", _engine_changed_error(), "rebuild"),
+        ],
+        ids=["provider-error", "raw-connection-error", "store-engine-changed"],
+    )
+    def test_blend_skips_any_widening_failure_with_one_warning(
+        self, mock_svc, caplog, layer, error, cause
+    ):
+        direct = [_make_result(source="direct.md")]
+        mock_svc.provider.chat.return_value = _text_result("a passage")
+        if layer == "chat":
+            mock_svc.provider.chat.side_effect = error
+            mock_svc.store.search.return_value = direct
+        else:
+            mock_svc.store.search.side_effect = [direct, error]
+        with (
+            mock.patch.object(cfg, "hyde", True),
+            mock.patch.object(cfg, "query_expansion_count", 0),
+            caplog.at_level("WARNING"),
+        ):
+            results = get_services().searcher.search("vague question")
+        assert [r.source for r in results] == ["direct.md"]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert cause in warnings[0].getMessage()
 
 
 class TestTemporalFilter:
