@@ -56,9 +56,10 @@ def stop() -> None:
 
 
 def _print_engines_folder() -> None:
-    """Name the engines folder, which every data directory shares."""
+    """Name the engines folder and the variable that moves it."""
+    folder = engine_service.engines_folder()
     console.print(
-        f"Engines folder: {engine_service.engines_folder()} (shared by every data directory)",
+        f"Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)",
         soft_wrap=True,
     )
 

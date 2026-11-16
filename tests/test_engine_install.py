@@ -525,7 +525,10 @@ def test_with_lilbee_data_set_the_cli_names_the_shared_engines_folder(
     assert (folder / ENGINE.value).is_dir()
     for result in (installed, listed):
         assert result.exit_code == 0
-        assert f"Engines folder: {folder} (shared by every data directory)" in result.output
+        assert (
+            f"Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
+            in result.output
+        )
 
 
 def test_the_cli_refuses_with_the_service_text(good: Path, tmp_path: Path) -> None:
