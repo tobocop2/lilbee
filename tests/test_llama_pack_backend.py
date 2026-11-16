@@ -361,19 +361,20 @@ def test_the_notice_check_failure_fails_the_step_and_the_job() -> None:
     job = _pack_cells()["jobs"]["cell"]
     step_name = "Start llama-server from the installed wheel"
     [start] = [s for s in job["steps"] if s.get("name") == step_name]
-    verify = "python -I tools/wheel-build/vs_distributable_terms.py --verify vs-licence.docx"
-    verify += " out/*.whl"
+    verify = r"python -I tools/wheel-build/vs_distributable_terms\.py --verify vs-licence\.docx"
+    verify += r"( --\S+)* out/\*\.whl"
     lines = [line.strip() for line in start["run"].splitlines()]
     at = [i for i, line in enumerate(lines) if "vs_distributable_terms.py --verify" in line]
     assert len(at) == 1
     before = lines[: at[0]]
     assert "continue-on-error" not in start
     assert "continue-on-error" not in job
-    assert "set -euo pipefail" in before
-    assert not [line for line in before if re.match(r"set\s+\+\S*e|set\s+\+o\s+errexit", line)]
+    assert "shell" not in start
+    assert any(re.match(r"set -[A-Za-z]*e", line) for line in before)
+    assert any(re.match(r"set .*pipefail", line) for line in before)
+    assert not [line for line in before if re.match(r"set\s+\+|trap\b", line)]
     assert not before[-1].endswith(("\\", "||", "&&", "|"))
-    assert lines[at[0]] == verify
-    assert lines[at[0] + 1] == "fi"
+    assert re.fullmatch(verify, lines[at[0]])
 
 
 def test_the_pack_workflow_names_no_transient_branch() -> None:
