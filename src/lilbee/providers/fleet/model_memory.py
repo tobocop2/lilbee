@@ -352,6 +352,7 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
         device_bytes=parsed.vram_bytes,
         host_bytes=parsed.ram_bytes,
         shared_bytes=parsed.unified_bytes,
+        mapped_weights_bytes=parsed.mapped_weights_bytes,
         per_device=parsed.per_device_vram,
         per_device_shared=parsed.per_device_unified,
     )

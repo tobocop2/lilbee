@@ -3288,11 +3288,12 @@ class TestSlotsAreChargedOnce:
             total = 10**9 + int(argv[argv.index("--ctx-size") + 1]) * 10**5
             return json.dumps(
                 {
+                    "metadata": {"fileSize": 0},
                     "estimate": {
                         "items": [
                             {"ram": {"uma": 0, "nonuma": 0}, "vrams": [{"uma": 0, "nonuma": total}]}
                         ]
-                    }
+                    },
                 }
             )
 
@@ -3311,6 +3312,140 @@ class TestSlotsAreChargedOnce:
             )
             == 2
         )
+
+
+class TestTheSharedPoolBacksTheMappedWeights:
+    """One rule for the charge, the slot fit and the ctx fit on a shared pool."""
+
+    @staticmethod
+    def _parser(monkeypatch, tmp_path, *, file_size: int, per_token: int) -> Path:
+        import json
+
+        from lilbee.providers.fleet import vram as vram_mod
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"GGUF")
+        vram_mod._cached_footprint.cache_clear()
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
+        )
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+
+        def _priced_by_context(argv: list[str], _path: str) -> str:
+            total = int(argv[argv.index("--ctx-size") + 1]) * per_token
+            return json.dumps(
+                {
+                    "metadata": {"fileSize": file_size},
+                    "estimate": {
+                        "items": [
+                            {
+                                "ram": {"uma": 0, "nonuma": 0},
+                                "vrams": [{"uma": total, "nonuma": total}],
+                            }
+                        ]
+                    },
+                }
+            )
+
+        monkeypatch.setattr(vram_mod, "_run_parser", _priced_by_context)
+        return model
+
+    def test_the_slot_fit_counts_the_weights_on_a_shared_pool_only(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The unified figure alone backs three slots in 1.5e9 bytes. The 1e9 bytes of
+        # weights it leaves out leave room for one. A card keeps the three.
+        model = self._parser(monkeypatch, tmp_path, file_size=10**9, per_token=10**5)
+
+        def fit(*, unified: bool) -> int:
+            return planning_mod._fit_slots(
+                4,
+                WorkerRole.CHAT,
+                model,
+                4096,
+                mmproj_path=None,
+                unified=unified,
+                budget=int(1.5e9),
+                engine=LLAMA,
+            )
+
+        assert fit(unified=True) == 1
+        assert fit(unified=False) == 3
+
+    def test_the_charge_is_the_unified_figure_plus_the_weights_on_a_shared_pool_only(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        model = self._parser(monkeypatch, tmp_path, file_size=5000, per_token=1)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+        shared = planning_mod._estimate_role(
+            WorkerRole.EMBED, "ref", slots=1, unified_budget=10**9, engine=LLAMA
+        )
+        card = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, engine=LLAMA)
+        # The parser prices one token of context at one byte, so the figure is the ctx.
+        assert shared.est_vram_bytes == card.est_vram_bytes + 5000
+        assert card.est_vram_bytes > 0
+
+    def test_the_slot_sizing_gets_the_shared_budget_and_the_chat_reservation(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        model = self._parser(monkeypatch, tmp_path, file_size=5000, per_token=1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+        seen: dict[str, object] = {}
+
+        def _slots(*_a: object, **kw: object) -> int:
+            seen.update(kw)
+            return 1
+
+        monkeypatch.setattr(planning_mod, "_slots_for", _slots)
+        planning_mod._estimate_role(
+            WorkerRole.EMBED,
+            "ref",
+            slots=None,
+            unified_budget=7000,
+            chat_reservation=3000,
+            engine=LLAMA,
+        )
+        assert seen["unified_budget"] == 7000
+        assert seen["chat_reservation"] == 3000
+
+    def test_the_admission_path_hands_the_shared_budget_to_the_sizing(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The charge that admission records comes from the sizing step, so the shared
+        # budget has to reach it: without it the weights drop out of the charge.
+        model = self._parser(monkeypatch, tmp_path, file_size=5000, per_token=1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+        monkeypatch.setattr(planning_mod, "_cpu_offload_in_play", lambda: False)
+        monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda *_a: 5000)
+
+        def admit(unified_budget: int | None):
+            return planning_mod._estimate_or_fallback(
+                WorkerRole.EMBED,
+                "ref",
+                engine=LLAMA,
+                unified_budget=unified_budget,
+                chat_reservation=0,
+                device_count=0,
+                total_vram=0,
+                skipped_not_installed={},
+            )
+
+        shared = admit(10**9)
+        card = admit(None)
+        assert shared is not None and card is not None
+        assert shared.est_vram_bytes == card.est_vram_bytes + 5000
 
 
 class TestSizingBudgetComesFromTheDevice:

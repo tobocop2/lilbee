@@ -43,6 +43,8 @@ _KEY_RAM = "ram"
 _KEY_VRAMS = "vrams"
 _KEY_UMA = "uma"
 _KEY_NONUMA = "nonuma"
+_KEY_METADATA = "metadata"
+_KEY_FILE_SIZE = "fileSize"
 
 _PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
@@ -88,7 +90,9 @@ class GgufVramEstimate:
     ram_bytes: int
     """Discrete-GPU model: host RAM bytes (mmap pages, compute buffers)."""
     unified_bytes: int
-    """Unified-memory model: total resident footprint (RAM + would-be VRAM)."""
+    """Unified-memory model: the footprint without the mapped weights."""
+    mapped_weights_bytes: int = 0
+    """Weight file bytes (the parser's file size) that ``unified_bytes`` leaves out."""
     per_device_vram: tuple[int, ...] = ()
     """Discrete-GPU VRAM per device (gguf-parser ``vrams[].nonuma``)."""
     per_device_unified: tuple[int, ...] = ()
@@ -176,6 +180,7 @@ def _corrected_projector_estimate(
         vram_bytes=base.vram_bytes + projector,
         ram_bytes=with_projector.ram_bytes,
         unified_bytes=with_projector.unified_bytes,
+        mapped_weights_bytes=base.mapped_weights_bytes + mmproj_bytes,
         per_device_vram=per_device_vram,
         per_device_unified=with_projector.per_device_unified,
     )
@@ -327,7 +332,8 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
     past the pin still sizes instead of failing every launch plan.
     """
     try:
-        estimate = json.loads(stdout)[_KEY_ESTIMATE]
+        report = json.loads(stdout)
+        estimate = report[_KEY_ESTIMATE]
         item = (estimate.get(_KEY_ITEMS) or estimate[_KEY_MEMORY])[0]
         ram = item[_KEY_RAM]
         vrams = item[_KEY_VRAMS]
@@ -337,10 +343,11 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
             vram_bytes=sum(per_device_vram),
             ram_bytes=int(ram[_KEY_NONUMA]),
             unified_bytes=int(ram[_KEY_UMA]) + sum(per_device_unified),
+            mapped_weights_bytes=int((report.get(_KEY_METADATA) or {}).get(_KEY_FILE_SIZE, 0)),
             per_device_vram=per_device_vram,
             per_device_unified=per_device_unified,
         )
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise ProviderError(
             f"Could not size the model {path_str!r}: unexpected estimator output "
             f"({type(exc).__name__}: {exc}).",
