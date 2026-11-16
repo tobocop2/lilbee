@@ -1613,6 +1613,8 @@ class CatalogScreen(Screen[None]):
         already produces). Also re-renders the detail drawer for the newly
         highlighted row.
         """
+        if not self._grid_mounted():
+            return
         self._maybe_prefetch_on_grid_nav()
         self._reveal_scroll_hint_at_catalog_end()
         self._update_drawer_for_grid(event.grid, event.index)

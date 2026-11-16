@@ -587,8 +587,12 @@ async def test_apply_dialog_scrolls_to_fit_a_big_profile_at_80x24(sources) -> No
         await _dialog(app, pilot, ApplyProfileDialog)
         dialog = app.screen
         scroll = dialog.query_one("#apply-scroll")
-        # content overflows the visible viewport: this is what makes scrolling necessary
-        assert scroll.virtual_size.height > scroll.size.height
+        # content overflows the visible viewport: this is what makes scrolling necessary;
+        # a dialog that is on top may not be laid out yet, so wait for a real viewport
+        assert await _until(pilot, lambda: 0 < scroll.size.height < scroll.virtual_size.height), (
+            scroll.size,
+            scroll.virtual_size,
+        )
         screen_region = app.screen.region
         for pill in dialog.query("#apply-actions ConfirmPill"):
             assert _inside(pill.region, screen_region), pill.id
