@@ -44,6 +44,8 @@ _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
 _RERANK_QUERY_TOKENS = 128
 """The floor of the batch-token figure for a rerank query; lilbee sets no query limit."""
+_DENSEST_CHARS_PER_TOKEN = 2
+"""The density below which a chunk is cut; a larger batch makes the warm-up far slower."""
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
@@ -104,12 +106,13 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
 def _longest_input_tokens() -> int:
     """The token ceiling of the longest input lilbee sends: a chunk, plus a rerank query.
 
-    A token is at least one character, so the chunk character budget bounds its tokens.
+    Text of two characters per token or more fits whole; denser text is cut at the ceiling.
     The router warms up with one batch of this length, so it must not grow with the context.
     """
     from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
-    return cfg.chunk_size * CHARS_PER_TOKEN + _RERANK_QUERY_TOKENS
+    chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
+    return -(-chunk_chars // _DENSEST_CHARS_PER_TOKEN) + _RERANK_QUERY_TOKENS
 
 
 class TeiAdapter:

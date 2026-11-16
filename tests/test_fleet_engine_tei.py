@@ -17,6 +17,7 @@ import pytest
 from lilbee.app import engine_service
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
+from lilbee.data.extract import chunk as chunk_module
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.engine_params import EMBED_FALLBACK_CTX
 from lilbee.providers.fleet import engine_manifest
@@ -261,7 +262,7 @@ def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path
         "--max-client-batch-size",
         "64",
         "--max-batch-tokens",
-        "2176",
+        "1152",
     ]
 
 
@@ -477,16 +478,25 @@ def _batch_tokens(tmp_path: Path, ctx: int, target: RoleTarget = RoleTarget.GPU)
 def test_the_default_chunk_size_bounds_the_warm_up_batch(
     tmp_path: Path, target: RoleTarget
 ) -> None:
-    """The default chunk size of 512 gives 512 * 4 chunk tokens plus 128 for a rerank query."""
+    """The default chunk size of 512 gives 2048 chunk characters at two per token, plus 128."""
     assert cfg.chunk_size == 512
-    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX, target) == 2176
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX, target) == 1152
 
 
 def test_a_larger_chunk_size_raises_the_warm_up_batch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(cfg, "chunk_size", 1024)
-    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX) == 4224
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX) == 2176
+
+
+def test_an_odd_character_budget_rounds_the_warm_up_batch_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A chunk of 2049 characters needs 1025 tokens at two per token, not 1024."""
+    monkeypatch.setattr(chunk_module, "CHARS_PER_TOKEN", 1)
+    monkeypatch.setattr(cfg, "chunk_size", 2049)
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX) == 1025 + 128
 
 
 @pytest.mark.parametrize("ctx", [512, EMBED_FALLBACK_CTX, 8192, 32768])
