@@ -13,7 +13,7 @@ import json
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -45,6 +45,7 @@ _MISMATCH = IndexMismatch(
 
 _CYAN = "\x1b[36m"
 _YELLOW = "\x1b[33m"
+_RED = "\x1b[31m"
 
 
 def _flat(output: str) -> str:
@@ -213,3 +214,25 @@ class TestSavedSetting:
         assert "Cannot use --global with --data-dir" in _flat(result.output)
         assert not (folder / "config.toml").exists()
         assert cfg.embedding_model == _OTHER_REF
+
+
+class TestFailureLine:
+    """The line a refused adoption prints starts with a red ``Error: `` prefix."""
+
+    def test_the_line_reads_error_prefix_then_the_reason_and_the_exit_code_is_one(self, tmp_path):
+        with patch("lilbee.app.models.adopt_embedder", side_effect=RuntimeError("no such model")):
+            result = runner.invoke(app, ["use-embedder", _REF, "--data-dir", str(tmp_path)])
+        assert result.exit_code == 1
+        assert result.output.splitlines() == ["Error: no such model"]
+
+    def test_the_prefix_is_red_and_the_reason_is_plain(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERM", "xterm-256color")
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        buffer = io.StringIO()
+        monkeypatch.setattr(
+            search_chat, "console", PlainConsole(file=buffer, force_terminal=True, width=200)
+        )
+        with patch("lilbee.app.models.adopt_embedder", side_effect=RuntimeError("no such model")):
+            result = runner.invoke(app, ["use-embedder", _REF, "--data-dir", str(tmp_path)])
+        assert result.exit_code == 1
+        assert buffer.getvalue().splitlines() == [f"{_RED}Error: \x1b[0mno such model"]
