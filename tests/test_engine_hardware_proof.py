@@ -60,7 +60,8 @@ def test_l1_a_missing_engine_and_an_installed_build_carry_the_same_sentence(
     built = engine_service.install(ENGINE.value, wheel)
     assert built.label == BUILD_LINE
     assert BUILD_LINE in _cli("list").output
-    assert run_engine_command("list").text == BUILD_LINE
+    folder_line = engine_service.FOLDER_LINE.format(folder=engine_service.engines_folder())
+    assert run_engine_command("list").text == f"{BUILD_LINE}\n{folder_line}"
 
 
 def test_l1_install_prints_the_same_sentence_on_the_cli_and_the_slash_command(

@@ -65,7 +65,12 @@ def _build(engine: str = _ENGINE, version: str = _PIN) -> dict[str, object]:
 
 
 def _listing(builds: list[dict[str, object]]) -> dict[str, object]:
-    return {"command": "engine list", "builds": builds, "not_installed": []}
+    return {
+        "command": "engine list",
+        "builds": builds,
+        "not_installed": [],
+        "engines_folder": "/fake/engines",
+    }
 
 
 def _roles_payload(views: list[dict[str, object]]) -> dict[str, object]:
@@ -500,7 +505,8 @@ def test_pinned_keys_equal_what_the_cli_writes_for_engine_roles() -> None:
 
 
 def test_pinned_keys_equal_what_the_cli_writes_for_engine_list() -> None:
-    view = engine_service.EngineListView([BuildView(_ENGINE, _PIN, "cpu", ())], [])
+    builds = [BuildView(_ENGINE, _PIN, "cpu", ())]
+    view = engine_service.EngineListView(builds, [], Path("/fake/engines"))
     with mock.patch.object(engine_service, "engine_list", return_value=view):
         payload = _cli_json(["engine", "list"])
     assert set(payload) == LIST_TOP_KEYS

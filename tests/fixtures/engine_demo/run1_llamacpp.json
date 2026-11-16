@@ -19,7 +19,7 @@
         "list"
       ],
       "exit_code": 0,
-      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"]}\n",
+      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"], \"engines_folder\": \"<home>/fix-385d/home/.local/share/lilbee/engines\"}\n",
       "json_output": true,
       "log_lines": []
     },
@@ -930,7 +930,7 @@
         "list"
       ],
       "exit_code": 0,
-      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"]}\n",
+      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"], \"engines_folder\": \"<home>/fix-385d/home/.local/share/lilbee/engines\"}\n",
       "json_output": true,
       "log_lines": []
     }

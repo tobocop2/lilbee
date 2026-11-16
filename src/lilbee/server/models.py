@@ -1103,6 +1103,7 @@ class EngineBuildsResponse(BaseModel):
 
     builds: list[EngineBuildResponse]
     not_installed: list[str]
+    engines_folder: str
 
 
 class EngineRemovedResponse(BaseModel):

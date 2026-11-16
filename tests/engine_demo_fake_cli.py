@@ -67,7 +67,12 @@ def listing() -> dict[str, object]:
         if MARKER.exists() and MODE != "no-build"
         else []
     )
-    return {"command": "engine list", "builds": builds, "not_installed": []}
+    return {
+        "command": "engine list",
+        "builds": builds,
+        "not_installed": [],
+        "engines_folder": "/fake/engines",
+    }
 
 
 INGEST_OUT = "Added: 3\nUpdated: 0\nRemoved: 0\nUnchanged: 0\nSkipped: 0\nFailed: 0\nTruncated: 0"

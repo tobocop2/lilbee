@@ -64,6 +64,9 @@ _T = TypeVar("_T")
 
 STORE_REFUSALS = (BundledEngineError, EngineInUseError, EngineNotInstalledError, StorePathError)
 NO_BUILDS = "No engine builds are installed."
+FOLDER_LINE = (
+    "Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
+)
 REMOVE_DONE = "Removed engine {build}."
 PREFERRED_KEY = "preferred_engine"
 NOT_APPLIED_CODE = "engine_not_applied"
@@ -272,12 +275,13 @@ def builds(config: Config = cfg) -> list[BuildView]:
 
 @dataclass(frozen=True)
 class EngineListView:
-    """What every surface returns for the engine list: the builds and the missing engines."""
+    """What every surface returns for the engine list: builds, missing engines, engines folder."""
 
     builds: list[BuildView]
     not_installed: list[str]
+    folder: Path
 
-    def payload(self) -> dict[str, list[dict[str, Any]] | list[str]]:
+    def payload(self) -> dict[str, list[dict[str, Any]] | list[str] | str]:
         """The list as plain data, the same on the CLI, REST and MCP."""
         return {
             "builds": [
@@ -290,12 +294,13 @@ class EngineListView:
                 for b in self.builds
             ],
             "not_installed": self.not_installed,
+            "engines_folder": str(self.folder),
         }
 
 
 def engine_list(config: Config = cfg) -> EngineListView:
     """The installed builds and the engines with no installed build."""
-    return EngineListView(builds(config), not_installed())
+    return EngineListView(builds(config), not_installed(), engines_folder(config))
 
 
 def remove_build(engine: str, version: str, backend: str, config: Config = cfg) -> str:

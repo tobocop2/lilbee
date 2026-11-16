@@ -58,10 +58,7 @@ def stop() -> None:
 def _print_engines_folder() -> None:
     """Name the engines folder and the variable that moves it."""
     folder = engine_service.engines_folder()
-    console.print(
-        f"Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)",
-        soft_wrap=True,
-    )
+    console.print(engine_service.FOLDER_LINE.format(folder=folder), soft_wrap=True)
 
 
 @engine_app.command("list")

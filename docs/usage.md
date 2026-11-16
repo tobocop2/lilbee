@@ -467,7 +467,8 @@ the request again with `confirm_embed_change` set to `true` to write the change.
 
 Run `lilbee engine list` to see the engine builds installed beside the models.
 If none is installed, it prints `No engine builds are installed.` The command
-and `lilbee engine install` print the line `Engines folder:` with its path.
+and `lilbee engine install` print the line `Engines folder:` with its path. The
+list in a chat session shows it too.
 Every data directory shares that folder, so `LILBEE_DATA` does not move it. To
 move it, set `LILBEE_MODELS_DIR`. That variable also moves the models folder and
 the Hugging Face cache. `LILBEE_ENGINE_DIR` moves the machine engine slot. To
@@ -478,8 +479,10 @@ the three values that `engine list` shows. The `/engine list` and
 `/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,
 and the REST routes `GET /api/engines` and
 `DELETE /api/engines/{engine}/{version}/{backend}` do the same. With `--json`, the
-CLI, the MCP tool and the REST route return the same two fields: `builds` and
-`not_installed`, the engines with no installed build. On the HTTP
+CLI, the MCP tool and the REST route return the same three fields: `builds`,
+`not_installed` (the engines with no installed build) and `engines_folder` (the
+path that the `Engines folder:` line shows). The `/engine list` chat command ends
+with the same `Engines folder:` line. On the HTTP
 server the removal needs `allow_http_engines`.
 
 If the build of an engine differs from the pin, `engine list` prints one line:
