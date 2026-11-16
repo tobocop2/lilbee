@@ -285,6 +285,11 @@ class Searcher:
         self._reranker = reranker
         self._concepts = concepts
 
+    def _embed_query(self, text: str) -> Vector:
+        """Embed *text* for a search, once the index is known to answer cfg's embedder."""
+        self._store.ensure_servable()
+        return self._embedder.embed_query(text)
+
     def _apply_temporal_filter(
         self, results: list[SearchChunk], question: str
     ) -> list[SearchChunk]:
@@ -539,11 +544,12 @@ class Searcher:
         if mode is QueryMode.TERM:
             return self._store.bm25_probe(query, top_k=top_k, chunk_type=scope)
         if mode is QueryMode.VEC:
-            query_vec = self._embedder.embed_query(query)
+            query_vec = self._embed_query(query)
             return self._store.search(query_vec, top_k=top_k, query_text=None, chunk_type=scope)
         if mode is QueryMode.HYDE:
+            self._store.ensure_servable()
             return self._hyde_search(query, top_k, chunk_type=scope)
-        query_vec = self._embedder.embed_query(query)
+        query_vec = self._embed_query(query)
         return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=scope)
 
     def select_context(
@@ -674,7 +680,7 @@ class Searcher:
         if self._refuse_wiki_scope(chunk_type):
             return []
         chunk_type = self._retrieval_scope(chunk_type)
-        query_vec = self._embedder.embed_query(question)
+        query_vec = self._embed_query(question)
         # Retrieve the reranker's candidate depth when one is loaded, else top_k.
         retrieve_k = (
             max(top_k, self._config.rerank_candidates) if self._config.reranker_model else top_k
@@ -974,7 +980,7 @@ class Searcher:
         if self._refuse_wiki_scope(chunk_type):
             return []
         typed = self._store.search(
-            self._embedder.embed_query(question),
+            self._embed_query(question),
             top_k=top_k,
             query_text=question,
             chunk_type=self._retrieval_scope(chunk_type),
@@ -1202,7 +1208,7 @@ class Searcher:
             return []
         if self._config.memory_top_k <= 0 or not self._embedder.embedding_available():
             return []
-        vector = self._embedder.embed_query(question)
+        vector = self._embed_query(question)
         return self._store.search_memories(
             vector,
             owner_predicate=human_recall_predicate(),

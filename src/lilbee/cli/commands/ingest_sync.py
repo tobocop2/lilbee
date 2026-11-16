@@ -532,10 +532,13 @@ def _run_sync(
 
 
 def _exit_if_failed(result: object) -> None:
-    """Exit 1 when *result* is a sync that left a failed file; call it after printing."""
+    """Exit 1 when *result* is a sync that left a failed file or an index of another embedder.
+
+    Call it after printing, so the result names the failed files or the rebuild advice.
+    """
     from lilbee.data.ingest import SyncResult
 
-    if isinstance(result, SyncResult) and result.failed:
+    if isinstance(result, SyncResult) and (result.failed or result.index_mismatch is not None):
         raise SystemExit(1)
 
 

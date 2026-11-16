@@ -549,6 +549,26 @@ class TestMemory:
         results = bee.recall("how do I bleed the brakes", top_k=5)
         assert any("brake bleed" in m.text for m in results)
 
+    def test_recall_names_a_switched_embedder_before_it_embeds(self, tmp_path):
+        from lilbee import Lilbee
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        bee = Lilbee(tmp_path / "mem")
+        mismatch = EmbeddingModelMismatchError(
+            persisted_model="orgA/repoA/built.gguf",
+            persisted_dim=768,
+            current_model="orgB/repoB/configured.gguf",
+            current_dim=1024,
+        )
+        with (
+            mock.patch.object(bee._services.store, "ensure_servable", side_effect=mismatch),
+            mock.patch.object(bee._services.embedder, "embed_query") as embed_query,
+            pytest.raises(EmbeddingModelMismatchError, match="rebuild the index"),
+        ):
+            bee.recall("how do I bleed the brakes")
+
+        embed_query.assert_not_called()
+
     def test_forget_removes_memory(self, tmp_path):
         from lilbee import Lilbee
 

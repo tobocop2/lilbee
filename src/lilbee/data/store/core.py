@@ -1545,6 +1545,17 @@ class Store:
         """The verdict a report shows: the embedder name first, then the canary check."""
         return self.index_mismatch() or self.canary_mismatch()
 
+    def ensure_servable(self) -> None:
+        """Raise ``EmbeddingModelMismatchError`` when the index cannot answer cfg's embedder.
+
+        Callers run it before they embed a query, so a switched model fails with the
+        rebuild advice instead of a width error from its own vector. A store with no
+        meta row has no verdict. Call it with no write lock held.
+        """
+        self.initialize_meta_if_legacy()
+        self.canonicalize_meta_if_legacy()
+        self._ensure_embedding_servable()
+
     def _ensure_embedding_servable(self) -> None:
         """Raise when the index and the embedder disagree. Call it with no write lock held."""
         mismatch = self.embedding_mismatch()
@@ -2367,9 +2378,7 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
-        self.initialize_meta_if_legacy()
-        self.canonicalize_meta_if_legacy()
-        self._ensure_embedding_servable()
+        self.ensure_servable()
         self._warn_stale_doc_prefix()
 
         if not self._scalar_ready:

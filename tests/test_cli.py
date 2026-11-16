@@ -38,7 +38,7 @@ from lilbee.core.security import PathTraversalError
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError, CrawlerBrowserError
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
-from lilbee.data.store import SearchChunk, SourceSummary
+from lilbee.data.store import IndexMismatch, SearchChunk, SourceSummary
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.lock import _no_sync_running
@@ -80,6 +80,16 @@ runner = CliRunner()
 _HANG_LIMIT_S = 30.0
 
 _SYNC_NOOP = SyncResult()
+_SYNC_OVER_OTHER_EMBEDDER = SyncResult(
+    index_mismatch=IndexMismatch(
+        persisted_model="orgA/repoA/built.gguf",
+        persisted_dim=768,
+        current_model="orgB/repoB/configured.gguf",
+        current_dim=384,
+        adoptable=False,
+        message="This index needs a rebuild under 'orgB/repoB/configured.gguf'.",
+    )
+)
 # A terminal reads these as commands: C0 and C1 controls other than tab and newline, and DEL.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _LINK_CODE_RE = re.compile("\x1b\\]8;[^\x1b]*\x1b\\\\")
@@ -290,6 +300,28 @@ class TestSync:
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 1
         assert json.loads(result.output)["failed"] == ["bad.txt"]
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=_SYNC_OVER_OTHER_EMBEDDER,
+    )
+    def test_sync_over_an_index_of_another_embedder_exits_1_and_names_the_fix(self, mock_sync):
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "Index mismatch" in result.output
+        assert "needs a rebuild" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=_SYNC_OVER_OTHER_EMBEDDER,
+    )
+    def test_json_sync_over_an_index_of_another_embedder_exits_1_with_json(self, mock_sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["index_mismatch"]["persisted_model"] == "orgA/repoA/built.gguf"
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
     def test_sync_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
