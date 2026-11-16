@@ -131,7 +131,7 @@ def test_gpu_stream_os_error_returns_503(monkeypatch):
     def boom():
         raise OSError("device node unreadable")
 
-    monkeypatch.setattr("lilbee.app.placement.get_placement", boom)
+    monkeypatch.setattr("lilbee.app.placement.get_planned_placement", boom)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")
         assert r.status_code == 503
@@ -311,7 +311,7 @@ def test_gpu_stats_stream_provider_error_returns_503(monkeypatch):
     def _boom():
         raise ProviderError("llama-server binary not found")
 
-    monkeypatch.setattr(placement_mod, "get_placement", _boom)
+    monkeypatch.setattr(placement_mod, "get_planned_placement", _boom)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")
         assert r.status_code == 503
@@ -328,7 +328,7 @@ def test_gpu_stats_stream_streams_events(monkeypatch):
     async def _fake_stream(devices):
         yield 'event: gpu_stats\ndata: {"gpus": []}\n\n'
 
-    monkeypatch.setattr(placement_mod, "get_placement", lambda: view)
+    monkeypatch.setattr(placement_mod, "get_planned_placement", lambda: view)
     monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")
@@ -357,7 +357,7 @@ def test_gpu_stats_stream_probes_off_the_event_loop(monkeypatch):
         loop_tid.append(threading.get_ident())
         yield "event: gpu_stats\ndata: {}\n\n"
 
-    monkeypatch.setattr(placement_mod, "get_placement", _probe)
+    monkeypatch.setattr(placement_mod, "get_planned_placement", _probe)
     monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
     with create_test_client([gpu_stats_stream_route]) as client:
         r = client.get("/api/gpus/stream")

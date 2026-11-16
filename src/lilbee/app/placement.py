@@ -247,7 +247,19 @@ def get_placement() -> PlacementView:
     the fleet runs the auto plan, and this reports that rather than a manual layout
     nothing is using. A spec that drops a role (a target its engine cannot run, a
     card the machine lacks) reports the roles that run and the reason for the rest.
-    Each model of unknown size is logged once per read.
+    Each model of unknown size is logged once per read. With no engine installed
+    nothing can be planned: this reports the saved spec and each missing engine.
+    """
+    reading = _planning_engines()
+    if not reading.adapters:
+        return _no_engine_view(reading)
+    return get_planned_placement()
+
+
+def get_planned_placement() -> PlacementView:
+    """The placement of :func:`get_placement` for a reader that needs the devices.
+
+    Raises the planner's no-engine error when no engine is installed.
     """
     view = _read_placement()
     _log_size_unknown(unknown.notice for unknown in view.size_unknown)
@@ -255,7 +267,7 @@ def get_placement() -> PlacementView:
 
 
 def _read_placement() -> PlacementView:
-    """The placement of :func:`get_placement`, without the size log."""
+    """The placement of :func:`get_planned_placement`, without the size log."""
     reading = _planning_engines()
     try:
         spec = _active_spec()
@@ -387,13 +399,24 @@ def _plan_for_write(spec: PlacementSpec | None, reading: BookReading) -> Resolve
 
 
 def _no_engine_view(reading: BookReading) -> PlacementView:
-    """The view of a host whose engine cannot plan: nothing is placed."""
+    """The view of a host whose engine cannot plan: nothing is placed, the saved spec is kept."""
+    spec_json: str | None = None
+    rejected_spec_json: str | None = None
+    refusal: str | None = None
+    try:
+        spec = _active_spec()
+    except PlacementError as exc:
+        rejected_spec_json, refusal = cfg.placement, str(exc)
+    else:
+        spec_json = None if spec is None else spec.to_json()
     return PlacementView(
         gpus=(),
         roles=(),
         unplaceable=(),
-        manual=False,
-        spec_json=None,
+        manual=spec_json is not None,
+        spec_json=spec_json,
+        rejected_spec_json=rejected_spec_json,
+        refusal=refusal,
         skipped_no_engine=tuple(
             SkippedNoEngine(
                 role=role,

@@ -4120,6 +4120,7 @@ class TestPlacementHandlersRunOffTheLoop:
         loop_tid = threading.get_ident()
         threads, stub = _thread_recorder(self._view())
         monkeypatch.setattr("lilbee.app.placement.get_placement", stub)
+        monkeypatch.setattr("lilbee.app.placement.get_planned_placement", stub)
 
         await handlers.placement()
         await handlers.gpus()
@@ -6308,7 +6309,7 @@ class TestPlacementHandlers:
             free_bytes=40 * 1024**3,
         )
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
-        with patch("lilbee.app.placement.get_placement", return_value=view):
+        with patch("lilbee.app.placement.get_planned_placement", return_value=view):
             result = await handlers.gpus()
         assert len(result.gpus) == 1
         assert result.gpus[0].name == "A100"
@@ -6329,7 +6330,7 @@ class TestPlacementHandlers:
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
         hint = IntelUtilHint(IntelHintKind.INSTALL, None)
         with (
-            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.app.placement.get_planned_placement", return_value=view),
             patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
         ):
             result = await handlers.gpus()

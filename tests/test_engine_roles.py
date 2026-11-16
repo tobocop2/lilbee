@@ -546,7 +546,7 @@ def no_role_has_an_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPa
     return chat_without_engine
 
 
-def test_the_placement_command_refuses_when_no_role_has_an_engine(
+def test_the_placement_command_shows_each_missing_engine_when_no_role_has_an_engine(
     no_role_has_an_engine: Any,
 ) -> None:
     from typer.testing import CliRunner
@@ -554,20 +554,23 @@ def test_the_placement_command_refuses_when_no_role_has_an_engine(
     from lilbee.cli.placement import placement_app
 
     result = CliRunner().invoke(placement_app, ["show"])
-    assert result.exit_code == 1
-    assert _NO_ENGINE_ANYWHERE in " ".join(result.output.split())
+    assert result.exit_code == 0
+    assert "No installed engine loads" in " ".join(result.output.split())
     assert "Traceback" not in result.output
 
 
-def test_the_mcp_placement_tool_refuses_when_no_role_has_an_engine(
+def test_the_mcp_placement_tool_shows_each_missing_engine_when_no_role_has_an_engine(
     no_role_has_an_engine: Any,
 ) -> None:
     from lilbee.mcp_server import get_placement_tool
 
-    assert _NO_ENGINE_ANYWHERE in get_placement_tool()["error"]
+    out = get_placement_tool()
+    assert "error" not in out
+    assert out["roles"] == []
+    assert out["skipped_no_engine"]
 
 
-def test_the_placement_route_answers_503_when_no_role_has_an_engine(
+def test_the_placement_route_shows_each_missing_engine_when_no_role_has_an_engine(
     no_role_has_an_engine: Any,
 ) -> None:
     from lilbee.server.routes.placement import placement_route
@@ -575,8 +578,29 @@ def test_the_placement_route_answers_503_when_no_role_has_an_engine(
 
     with create_test_client([placement_route]) as client:
         response = client.get("/api/placement")
+    assert response.status_code == 200
+    assert response.json()["roles"] == []
+    assert response.json()["skipped_no_engine"]
+
+
+def test_the_gpus_route_answers_503_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.server.routes.placement import gpus_route
+    from tests._litestar_test_client import create_test_client
+
+    with create_test_client([gpus_route]) as client:
+        response = client.get("/api/gpus")
     assert response.status_code == 503
     assert _NO_ENGINE_ANYWHERE in response.text
+
+
+def test_the_mcp_gpus_tool_refuses_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.mcp_server import get_gpus_tool
+
+    assert _NO_ENGINE_ANYWHERE in get_gpus_tool()["error"]
 
 
 def test_the_gpu_stream_route_answers_503_when_no_role_has_an_engine(
