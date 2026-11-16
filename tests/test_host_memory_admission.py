@@ -185,3 +185,48 @@ def test_the_estimators_own_host_figure_is_what_gets_judged(monkeypatch, tmp_pat
         engine=LLAMA,
     )
     assert seen == [7 * _GB]
+
+
+class TestTheSpillWarningFollowsAdmission:
+    """A role that is refused must not also be told that it will run."""
+
+    def _spilling(self, monkeypatch, *, total: int, free: int) -> None:
+        from lilbee.providers.fleet import planning
+
+        monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: 40 * _GB)
+        monkeypatch.setattr(planning, "_weights_exceed_hardware", lambda *_a, **_k: False)
+        monkeypatch.setattr(planning, "total_system_memory", lambda: total)
+        monkeypatch.setattr(planning, "free_system_memory", lambda: free)
+
+    def _admit(self):
+        from lilbee.providers.fleet import planning
+
+        estimate = _estimate()
+        admitted = planning._admit_estimate(
+            estimate,
+            WorkerRole.CHAT,
+            _REF,
+            total_vram=24 * _GB,
+            ram_bytes=40 * _GB,
+            engine=LLAMA,
+        )
+        return estimate, admitted
+
+    def test_a_refused_spilling_role_logs_only_the_refusal(
+        self, monkeypatch, offload_configured, caplog
+    ) -> None:
+        self._spilling(monkeypatch, total=16 * _GB, free=8 * _GB)
+        with caplog.at_level(logging.WARNING):
+            _, admitted = self._admit()
+        assert admitted is None
+        assert "cannot load" in caplog.text
+        assert "It will run" not in caplog.text
+
+    def test_an_admitted_spilling_role_is_told_it_will_run_slower(
+        self, monkeypatch, offload_configured, caplog
+    ) -> None:
+        self._spilling(monkeypatch, total=64 * _GB, free=64 * _GB)
+        with caplog.at_level(logging.WARNING):
+            estimate, admitted = self._admit()
+        assert admitted is estimate
+        assert "It will run" in caplog.text
