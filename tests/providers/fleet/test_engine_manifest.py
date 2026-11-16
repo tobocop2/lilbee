@@ -231,8 +231,13 @@ def test_a_pin_without_cells_installs_on_a_host_of_unknown_os_and_architecture()
 def test_a_host_of_unknown_os_has_no_cell_in_a_pin_with_cells() -> None:
     host = collect(system="Plan9", machine="x86_64", cpu_info={}, nvidia=None)
     lock = lock_with({"linux-x86_64-vulkan": PlatformAsset(BASE + "x.whl", SHA, 1, None)})
-    with pytest.raises(UnsupportedPlatformError, match="has no vulkan build for this computer"):
+    with pytest.raises(UnsupportedPlatformError) as caught:
         host_cell(lock, host)
+    assert str(caught.value) == (
+        "Engine llama.cpp cannot be installed: lilbee could not read the operating system "
+        "of this computer. Run lilbee on Windows, macOS or Linux with an x86-64 or ARM64 "
+        "processor."
+    )
 
 
 def test_a_cell_digest_that_differs_from_the_pin_digest_is_the_digest_of_the_lock() -> None:

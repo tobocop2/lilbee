@@ -252,7 +252,11 @@ def test_a_host_the_manifest_cannot_name_is_refused(
     )
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
-    assert str(exc.value) == f"Engine {ENGINE} has no cpu build for this computer."
+    assert str(exc.value) == (
+        f"Engine {ENGINE} cannot be installed: lilbee could not read the operating system "
+        "of this computer. Run lilbee on Windows, macOS or Linux with an x86-64 or ARM64 "
+        "processor."
+    )
 
 
 def test_a_download_the_network_keeps_cutting_gives_the_missing_pack_text(

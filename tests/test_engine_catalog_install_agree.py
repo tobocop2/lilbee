@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineRefusedError
 from lilbee.catalog import runnable
+from lilbee.cli import app as cli_app
+from lilbee.cli.tui.engine_commands import run_engine_command
+from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import ADAPTERS
+from lilbee.providers.fleet.engines.choice import ADAPTERS, install_answer
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import HostCaps, collect
+from lilbee.server.routes import engines as routes
+from tests._litestar_test_client import create_test_client
 from tests._published import publish
 from tests.conformance.fake_adapter import FakeAdapter
 
@@ -70,8 +78,52 @@ def test_install_names_the_unreadable_host_as_the_reason(
 ) -> None:
     _unreadable_host(monkeypatch)
     refusal = _install_verdict(monkeypatch, name, tmp_path)
-    backend = ADAPTERS[EngineName(name)].pin_record()["backend"]
-    assert refusal == f"Engine {name} has no {backend} build for this computer."
+    assert refusal == (
+        f"Engine {name} cannot be installed: lilbee could not read the operating system "
+        "and the processor of this computer. Run lilbee on Windows, macOS or Linux with an "
+        "x86-64 or ARM64 processor."
+    )
+
+
+def test_every_install_surface_shows_the_unreadable_host_sentence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _unreadable_host(monkeypatch)
+    monkeypatch.setattr(cfg, "allow_http_engines", True)
+    monkeypatch.setattr(cfg, "mcp_engines_enabled", True)
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setattr(cfg, "json_mode", False)
+    expected = (
+        "Engine tei cannot be installed: lilbee could not read the operating system and the "
+        "processor of this computer. Run lilbee on Windows, macOS or Linux with an x86-64 or "
+        "ARM64 processor."
+    )
+    assert _install_verdict(monkeypatch, "tei", tmp_path) == expected
+    cli = CliRunner().invoke(cli_app, ["--json", "engine", "install", "tei"])
+    assert (cli.exit_code, json.loads(cli.output.strip().splitlines()[-1])["error"]) == (
+        1,
+        expected,
+    )
+    with create_test_client([routes.engine_install_route], debug=False) as client:
+        res = client.post("/api/engines/install", json={"engine": "tei"})
+    assert (res.status_code, res.json()["detail"]) == (422, expected)
+    monkeypatch.setattr(cfg, "mcp_engines_enabled", True)  # the CLI run reloads the settings
+    assert mcp_server.engine_install_tool("tei") == {"error": expected}
+    slash = run_engine_command("install tei")
+    assert (slash.ok, slash.text) == (False, expected)
+
+
+@pytest.mark.parametrize("name", _NAMES)
+def test_the_install_gate_of_an_unread_host_is_a_plain_unknown_refusal(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    host = _unreadable_host(monkeypatch)
+    gate = install_answer(ADAPTERS[EngineName(name)], host)
+    assert (gate.ok, gate.known, gate.reason.startswith(f"Engine {name} cannot be installed")) == (
+        False,
+        False,
+        True,
+    )
 
 
 def test_a_readable_host_still_lists_and_installs_tei(
@@ -95,8 +147,11 @@ def test_a_half_unread_host_lists_no_engine_and_install_refuses(
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     assert engine_service.not_installed() == []
     refusal = _install_verdict(monkeypatch, "tei", tmp_path)
-    backend = ADAPTERS[EngineName.TEI].pin_record()["backend"]
-    assert refusal == f"Engine tei has no {backend} build for this computer."
+    unread = "operating system" if system == "" else "processor"
+    assert refusal == (
+        f"Engine tei cannot be installed: lilbee could not read the {unread} of this "
+        "computer. Run lilbee on Windows, macOS or Linux with an x86-64 or ARM64 processor."
+    )
 
 
 def test_a_bundled_engine_with_no_install_stays_listed_on_an_unreadable_host(

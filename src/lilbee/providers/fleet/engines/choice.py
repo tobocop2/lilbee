@@ -16,7 +16,11 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import engines as engines_package
-from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
+from lilbee.providers.fleet.engine_manifest import (
+    UnsupportedOsError,
+    host_cell,
+    unread_host_refusal,
+)
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -141,9 +145,7 @@ def install_answer(adapter: EngineAdapter, host: HostCaps) -> HostGate:
         return gate
     pin = adapter.pin_record()
     if pin["platforms"] or pin["sha256"] is None:
-        return HostGate(
-            False, f"Engine {adapter.name} has no {pin['backend']} build for this computer.", False
-        )
+        return HostGate(False, unread_host_refusal(adapter.name, host), False)
     return gate
 
 
