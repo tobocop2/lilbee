@@ -668,18 +668,17 @@ def pulls(no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return started
 
 
-async def test_the_mcp_pull_of_a_format_nothing_loads_starts_no_download(
+async def test_the_mcp_pull_of_a_format_nothing_loads_downloads_it(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.mcp_server import model_pull
 
     result = await model_pull(MLX_REF, source="native")
-    assert _NO_MLX_TEXT in result["error"]
-    assert pulls == []
-    assert not no_mlx_engine.exists()
+    assert "error" not in result
+    assert pulls == ["download"]
 
 
-def test_the_rest_pull_of_a_format_nothing_loads_is_refused_with_the_text(
+def test_the_rest_pull_of_a_format_nothing_loads_downloads_it(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.server.routes.models import models_pull_route
@@ -691,13 +690,27 @@ def test_the_rest_pull_of_a_format_nothing_loads_is_refused_with_the_text(
             {"model": MLX_REF, "allow_unsupported": True},
         ):
             response = client.post("/api/models/pull", json=body)
-            assert response.status_code == 409
-            assert _NO_MLX_TEXT in response.text
+            assert response.status_code == 201
+            assert _NO_MLX_TEXT not in response.text
+    assert pulls == ["download", "download"]
+
+
+def test_the_rest_pull_of_a_gguf_nothing_loads_is_refused_with_the_text(
+    pulls: list[str], no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.app import engine_choice
+    from lilbee.server.routes.models import models_pull_route
+    from tests._litestar_test_client import create_test_client
+
+    monkeypatch.setattr(engine_choice, "installed_engines", lambda: {})
+    with create_test_client([models_pull_route]) as client:
+        response = client.post("/api/models/pull", json={"model": GGUF_REF})
+    assert response.status_code == 409
+    assert "No installed engine loads the gguf format" in response.text
     assert pulls == []
-    assert not no_mlx_engine.exists()
 
 
-def test_the_cli_pull_of_a_format_nothing_loads_prints_the_text(
+def test_the_cli_pull_of_a_format_nothing_loads_downloads_it(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from typer.testing import CliRunner
@@ -705,24 +718,24 @@ def test_the_cli_pull_of_a_format_nothing_loads_prints_the_text(
     from lilbee.cli import app
 
     result = CliRunner().invoke(app, ["model", "pull", MLX_REF])
-    assert result.exit_code == 1
-    assert _NO_MLX_TEXT in result.output
-    assert pulls == []
-    assert not no_mlx_engine.exists()
+    assert result.exit_code == 0
+    assert _NO_MLX_TEXT not in result.output
+    assert pulls == ["download"]
 
 
-def test_the_task_bar_download_of_a_format_nothing_loads_fails_with_the_text(
+def test_the_task_bar_download_of_a_format_nothing_loads_downloads_it(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.cli.tui.widgets.task_bar_controller import _download_target
 
-    with pytest.raises(RuntimeError, match=_NO_MLX_TEXT):
-        _download_target(SimpleNamespace(), SimpleNamespace(pull_ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
-    assert pulls == []
-    assert not no_mlx_engine.exists()
+    warnings: list[str] = []
+    reporter = SimpleNamespace(update=lambda *_a: None, warn=warnings.append)
+    _download_target(reporter, SimpleNamespace(pull_ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
+    assert pulls == ["download"]
+    assert not any(_NO_MLX_TEXT in w for w in warnings)
 
 
-async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_nothing(
+async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_it(
     no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import dataclasses
@@ -738,10 +751,11 @@ async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_nothing(
         notices: list[str] = []
         monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
-        screen._install_model(dataclasses.replace(_model(), hf_repo=MLX_REF))
-    assert enqueued == []
-    assert any(_NO_MLX_TEXT in n for n in notices)
-    assert not no_mlx_engine.exists()
+        screen._install_model(
+            dataclasses.replace(_model(), hf_repo=MLX_REF, format=ModelFormat.MLX)
+        )
+    assert enqueued == [MLX_REF]
+    assert notices == []
 
 
 def test_a_container_retries_on_the_engine_choice_the_file_now_holds(
