@@ -1,0 +1,77 @@
+"""One warning per ingest or search for the embed inputs a server cuts."""
+
+from __future__ import annotations
+
+import functools
+import logging
+import threading
+from collections.abc import Callable, Coroutine, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Any, ParamSpec, TypeVar
+
+log = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+@dataclass
+class _Tally:
+    cut: int = 0
+    total: int = 0
+    limit: int | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_active: ContextVar[_Tally | None] = ContextVar("lilbee_embed_truncation", default=None)
+
+
+def _warn(tally: _Tally) -> None:
+    log.warning(
+        "%d of %d embed inputs are past the embedder's %s-token limit; the server "
+        "truncates them and the cut text is not in the vectors",
+        tally.cut,
+        tally.total,
+        tally.limit,
+    )
+
+
+def note_truncated(cut: int, total: int, limit: int | None) -> None:
+    """Record *cut* of *total* embed inputs past *limit*; log at once outside a scope."""
+    tally = _active.get()
+    if tally is None:
+        if cut:
+            _warn(_Tally(cut, total, limit))
+        return
+    with tally.lock:
+        tally.cut += cut
+        tally.total += total
+        tally.limit = limit
+
+
+@contextmanager
+def truncation_scope() -> Iterator[None]:
+    """Collect the embed truncation counts of one run and log one warning at its end."""
+    tally = _Tally()
+    token = _active.set(tally)
+    try:
+        yield
+    finally:
+        _active.reset(token)
+        if tally.cut:
+            _warn(tally)
+
+
+def one_truncation_warning(
+    fn: Callable[_P, Coroutine[Any, Any, _R]],
+) -> Callable[_P, Coroutine[Any, Any, _R]]:
+    """Run the async *fn* inside a truncation scope."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with truncation_scope():
+            return await fn(*args, **kwargs)
+
+    return wrapper

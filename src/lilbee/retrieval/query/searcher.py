@@ -38,6 +38,7 @@ from lilbee.providers.base import (
     estimate_budget_tokens,
     prompt_token_budget,
 )
+from lilbee.providers.truncation import truncation_scope
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.language import noun_variants, query_language
 from lilbee.retrieval.query.compaction import (
@@ -661,16 +662,17 @@ class Searcher:
         """
         if top_k == 0:
             top_k = self._config.top_k
-        if self._config.intent_routing and self._parse_structured_query(question).mode is None:
-            known_item = self._known_item_results(question, self._retrieval_scope(chunk_type))
-            if known_item:
-                return known_item[:top_k]
-        kept = filter_results(
-            self._candidates(question, top_k, chunk_type),
-            self._config.max_distance,
-            self._config.min_relevance_score,
-        )
-        return diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
+        with truncation_scope():
+            if self._config.intent_routing and self._parse_structured_query(question).mode is None:
+                known_item = self._known_item_results(question, self._retrieval_scope(chunk_type))
+                if known_item:
+                    return known_item[:top_k]
+            kept = filter_results(
+                self._candidates(question, top_k, chunk_type),
+                self._config.max_distance,
+                self._config.min_relevance_score,
+            )
+            return diversify_sources(kept, self._config.diversity_max_per_source)[:top_k]
 
     def _candidates(
         self, question: str, top_k: int, chunk_type: ChunkType | None
