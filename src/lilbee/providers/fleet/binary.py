@@ -6,6 +6,7 @@ import functools
 import hashlib
 import shutil
 import subprocess
+from collections.abc import Callable
 from enum import StrEnum
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -177,38 +178,33 @@ def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     bundled wheel).
     """
     if tool is EngineTool.LLAMA_SERVER:
-        from lilbee.core.config import cfg
+        server = _find_llama_server(_first_use_tool if install else _no_pack)
+        if server is not None:
+            return server
+    else:
+        bundled = _bundled_tool(tool)
+        if bundled is not None:
+            return bundled
 
-        if cfg.llama_server_path:
-            configured = Path(cfg.llama_server_path)
-            if not configured.is_file():
-                raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
-            return configured
-
-    bundled = _bundled_tool(tool)
-    if bundled is not None:
-        return bundled
-
-    if tool is not EngineTool.LLAMA_SERVER:
         packed = _installed_helper(tool)
         if packed is not None:
             return packed
 
-    found = shutil.which(tool.value)
-    if found is not None:
-        return Path(found)
+        found = shutil.which(tool.value)
+        if found is not None:
+            return Path(found)
 
-    if tool is not EngineTool.LLAMA_SERVER and _has_server():
-        raise ProviderError(
-            f"{tool.value} binary not found. lilbee already has a llama-server, so it "
-            f"installs no engine pack. Install {tool.value} with '{_HELPER_INSTALL[tool]}' "
-            f"and put it on PATH.",
-            kind=ProviderErrorKind.UNKNOWN,
-        )
+        if _has_server():
+            raise ProviderError(
+                f"{tool.value} binary not found. lilbee already has a llama-server, so it "
+                f"installs no engine pack. Install {tool.value} with '{_HELPER_INSTALL[tool]}' "
+                f"and put it on PATH.",
+                kind=ProviderErrorKind.UNKNOWN,
+            )
 
-    packed = _first_use_tool(tool) if install else None
-    if packed is not None:
-        return packed
+        packed = _first_use_tool(tool) if install else None
+        if packed is not None:
+            return packed
 
     # Only llama-server carries NOT_FOUND: it marks the engine-less host that
     # legitimately serves nothing. A missing sibling tool (gguf-parser) must not
@@ -240,6 +236,40 @@ def _installed_helper(tool: EngineTool) -> Path | None:
         if router is not None:
             return router
     return _installed_pack_tool(tool)
+
+
+def _no_pack(_tool: EngineTool) -> Path | None:
+    """The pack step of a lookup that never reads the pack."""
+    return None
+
+
+def _find_llama_server(pack: Callable[[EngineTool], Path | None]) -> Path | None:
+    """The llama-server in launch order: configured file, wheel, PATH, then *pack*'s answer.
+
+    A configured path that is not a file raises ``ProviderError``.
+    """
+    from lilbee.core.config import cfg
+
+    if cfg.llama_server_path:
+        configured = Path(cfg.llama_server_path)
+        if not configured.is_file():
+            raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
+        return configured
+    bundled = _bundled_tool(EngineTool.LLAMA_SERVER)
+    if bundled is not None:
+        return bundled
+    found = shutil.which(EngineTool.LLAMA_SERVER.value)
+    if found is not None:
+        return Path(found)
+    return pack(EngineTool.LLAMA_SERVER)
+
+
+def llama_server_ready() -> bool:
+    """True when a launch finds a llama-server with no install; a bad configured path is not."""
+    try:
+        return _find_llama_server(_installed_pack_tool) is not None
+    except ProviderError:
+        return False
 
 
 def _installed_router() -> Path | None:

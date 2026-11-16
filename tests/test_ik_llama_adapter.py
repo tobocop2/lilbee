@@ -319,10 +319,18 @@ def test_engine_list_json_names_the_engines_that_are_not_installed(
     import json
 
     monkeypatch.setattr(LemonadeAdapter, "user_binary", lambda self: None)
+    monkeypatch.setattr("lilbee.app.engine_service.llama_server_ready", lambda: False)
     result = runner.invoke(cli_app, ["--json", "engine", "list"])
     body = json.loads(result.output)
     assert body["builds"] == []
-    assert body["not_installed"] == ["ik_llama.cpp", "mistral.rs", "tei", "openvino", "lemonade"]
+    assert body["not_installed"] == [
+        "llama.cpp",
+        "ik_llama.cpp",
+        "mistral.rs",
+        "tei",
+        "openvino",
+        "lemonade",
+    ]
 
 
 def test_engine_list_shows_an_installed_build_and_no_not_installed_line(build: Path) -> None:
