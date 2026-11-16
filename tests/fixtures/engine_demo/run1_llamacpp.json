@@ -1,0 +1,586 @@
+{
+ "backend": "cpu",
+ "claimed_roles": [
+  "chat",
+  "embed",
+  "rerank",
+  "vision"
+ ],
+ "engine": "llama.cpp",
+ "pin": "1.12032.1",
+ "schema": 1,
+ "steps": [
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "--json",
+    "engine",
+    "list"
+   ],
+   "exit_code": 0,
+   "json_output": true,
+   "log_lines": [],
+   "name": "engine-list-before",
+   "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"]}\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "engine",
+    "install",
+    "llama.cpp"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    ""
+   ],
+   "name": "install",
+   "stdout": "Installed engine llama.cpp 1.12032.1 (cpu).\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "model",
+    "pull",
+    "Qwen/Qwen3-4B-GGUF"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "\u001b[?25l",
+    "\u001b[2KDownloading Qwen/Qwen3-4B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading Qwen/Qwen3-4B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading Qwen/Qwen3-4B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading Qwen/Qwen3-4B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0mINFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen3-4B-GGUF \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.catalog.download: Qwen/Qwen3-4B-GGUF lists no mmproj file",
+    "",
+    "\u001b[2KDownloading Qwen/Qwen3-4B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[?25h"
+   ],
+   "name": "pull",
+   "stdout": "Qwen/Qwen3-4B-GGUF is already installed.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "model",
+    "pull",
+    "Qwen/Qwen3-Embedding-0.6B-GGUF"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "\u001b[?25l",
+    "\u001b[2KDownloading Qwen/Qwen3-Embedding-0.6B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading Qwen/Qwen3-Embedding-0.6B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading Qwen/Qwen3-Embedding-0.6B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading Qwen/Qwen3-Embedding-0.6B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0mINFO httpx2: HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen3-Embedding-0.6B-GGUF \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.catalog.download: Qwen/Qwen3-Embedding-0.6B-GGUF lists no mmproj file",
+    "",
+    "\u001b[2KDownloading Qwen/Qwen3-Embedding-0.6B-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[?25h"
+   ],
+   "name": "pull",
+   "stdout": "Qwen/Qwen3-Embedding-0.6B-GGUF is already installed.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "model",
+    "pull",
+    "gpustack/bge-reranker-v2-m3-GGUF"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "\u001b[?25l",
+    "\u001b[2KDownloading gpustack/bge-reranker-v2-m3-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading gpustack/bge-reranker-v2-m3-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading gpustack/bge-reranker-v2-m3-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading gpustack/bge-reranker-v2-m3-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0mINFO httpx2: HTTP Request: GET https://huggingface.co/api/models/gpustack/bge-reranker-v2-m3-GGUF \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.catalog.download: gpustack/bge-reranker-v2-m3-GGUF lists no mmproj file",
+    "",
+    "\u001b[2KDownloading gpustack/bge-reranker-v2-m3-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[?25h"
+   ],
+   "name": "pull",
+   "stdout": "gpustack/bge-reranker-v2-m3-GGUF is already installed.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "model",
+    "pull",
+    "ggml-org/SmolVLM-256M-Instruct-GGUF"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "\u001b[?25l",
+    "\u001b[2KDownloading ggml-org/SmolVLM-256M-Instruct-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading ggml-org/SmolVLM-256M-Instruct-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading ggml-org/SmolVLM-256M-Instruct-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[2KDownloading ggml-org/SmolVLM-256M-Instruct-GGUF \u001b[90m\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u001b[0m   0%  \u001b[36m-:--:--\u001b[0m",
+    "\u001b[?25h"
+   ],
+   "name": "pull",
+   "stdout": "ggml-org/SmolVLM-256M-Instruct-GGUF is already installed.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "use-embedder",
+    "Qwen/Qwen3-Embedding-0.6B-GGUF"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec("
+   ],
+   "name": "set-model",
+   "stdout": "Now embedding with Qwen/Qwen3-Embedding-0.6B-GGUF.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "--json",
+    "engine",
+    "roles"
+   ],
+   "exit_code": 0,
+   "json_output": true,
+   "log_lines": [],
+   "name": "stored-models",
+   "stdout": "{\"command\": \"engine roles\", \"roles\": [{\"role\": \"chat\", \"model\": \"\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}, {\"role\": \"embed\", \"model\": \"Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}, {\"role\": \"rerank\", \"model\": \"\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}, {\"role\": \"vision\", \"model\": \"\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}]}\n"
+  },
+  {
+   "command": [
+    "PUT",
+    "http://127.0.0.1:36761/api/models/chat",
+    "{\"model\": \"Qwen/Qwen3-4B-GGUF\"}"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "INFO:     Waiting for application startup.",
+    "INFO lilbee.server.app: Open-file limit is 1024. Each connected agent holds a socket, so a large fleet will hit this before it saturates the machine; raise it with 'ulimit -n 4096' before starting the server (this shell allows up to 1048576).",
+    "INFO lilbee.server.app: LLM provider pre-loaded",
+    "INFO lilbee.server.app: Embedding model validated",
+    "INFO mcp.server.streamable_http_manager: StreamableHTTP session manager started",
+    "INFO:     Application startup complete.",
+    "INFO:     Uvicorn running on http://127.0.0.1:36761 (Press CTRL+C to quit)",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec("
+   ],
+   "name": "set-model",
+   "stdout": "{\"model\":\"Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf\",\"reindex_required\":false,\"warnings\":[]}"
+  },
+  {
+   "command": [
+    "PUT",
+    "http://127.0.0.1:36761/api/models/reranker",
+    "{\"model\": \"gpustack/bge-reranker-v2-m3-GGUF\"}"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "set-model",
+   "stdout": "{\"model\":\"gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf\",\"reindex_required\":false,\"warnings\":[]}"
+  },
+  {
+   "command": [
+    "PUT",
+    "http://127.0.0.1:36761/api/models/vision",
+    "{\"model\": \"ggml-org/SmolVLM-256M-Instruct-GGUF\"}"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "INFO lilbee.app.services: Received signal SIGTERM; stopping the engine fleet before exit",
+    "INFO:     Shutting down",
+    "INFO:     Waiting for application shutdown.",
+    "INFO mcp.server.streamable_http_manager: StreamableHTTP session manager shutting down",
+    "INFO:     Application shutdown complete.",
+    "WARNING lilbee.providers.fleet.provider: Engine warm-up failed: The local model engine exited before it was ready. Engine log (/work/homes/r1-llamacpp/.local/state/lilbee/engine/logs/llama-swap-embed.log):",
+    "[INFO] GPU monitoring not available: no GPU monitoring tool available",
+    "[INFO] llama-swap listening on http://127.0.0.1:20448"
+   ],
+   "name": "set-model",
+   "stdout": "{\"model\":\"ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf\",\"reindex_required\":false,\"warnings\":[]}"
+  },
+  {
+   "command": [
+    "engines-left-running",
+    "36761"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "engines-left-running",
+   "stdout": ""
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "engine",
+    "use",
+    "chat",
+    "Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+    "llama.cpp",
+    "--yes"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "use",
+   "stdout": "chat model Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf uses engine llama.cpp.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "engine",
+    "use",
+    "embed",
+    "Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "llama.cpp",
+    "--yes"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "use",
+   "stdout": "embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf uses \nengine llama.cpp.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "engine",
+    "use",
+    "rerank",
+    "gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf",
+    "llama.cpp",
+    "--yes"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "use",
+   "stdout": "rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf \nuses engine llama.cpp.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "engine",
+    "use",
+    "vision",
+    "ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf",
+    "llama.cpp",
+    "--yes"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "use",
+   "stdout": "vision model ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf\nuses engine llama.cpp.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "add",
+    "/work/work/r1-llamacpp/engine-demo-ig9bds_s/corpus/bees.md",
+    "/work/work/r1-llamacpp/engine-demo-ig9bds_s/corpus/tides.md",
+    "/work/work/r1-llamacpp/engine-demo-ig9bds_s/corpus/bread.md"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21280/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched embed-0 serving Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21280/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21282/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched rerank-0 serving gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21280/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21282/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21284/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched vision-0 serving ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21280/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21282/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21284/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21286/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched chat-0 serving Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:21280/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:21280/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "WARNING lilbee.retrieval.concepts.graph: Concept graph disabled: spaCy model unavailable",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:21280/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:21280/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.provider: Engine stopped at /work/homes/r1-llamacpp/.local/state/lilbee/engine (last user out)"
+   ],
+   "name": "add",
+   "stdout": "Registered 3 source(s)\nSyncing [1/3]: bees.md\nSyncing [2/3]: bread.md\nSyncing [3/3]: tides.md\n\nAdded: 3\nUpdated: 0\nRemoved: 0\nUnchanged: 0\nHeld out: 0\nSkipped: 0\nFailed: 0\nTruncated: 0\nThis project uses the Default profile. Run lilbee analyze to get a profile recommendation, or lilbee analyze --off to hide this tip.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "sync"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "sync",
+   "stdout": "Added: 0\nUpdated: 0\nRemoved: 0\nUnchanged: 3\nHeld out: 0\nSkipped: 0\nFailed: 0\nTruncated: 0\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "--json",
+    "ask",
+    "How do honeybees tell each other where the flowers are?"
+   ],
+   "exit_code": 0,
+   "json_output": true,
+   "log_lines": [
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25888/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched embed-0 serving Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25888/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25890/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched rerank-0 serving gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25888/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25890/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25892/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched vision-0 serving ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25888/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25890/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25892/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25894/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched chat-0 serving Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25890/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25888/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25888/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=chat model=Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25894/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25894/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25894/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.retrieval.query.searcher: Query expansion produced 3 variants",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25888/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "WARNING lilbee.retrieval.concepts.graph: Concept graph disabled: spaCy model unavailable",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=rerank model=gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25890/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=chat model=Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:25894/running \"HTTP/1.1 200 OK\"",
+    "WARNING lilbee.providers.fleet.readback: The chat engine (build 1 (dde879b)) finished loading but reported no memory usage where lilbee reads it, so its estimate could not be checked. The engine's log format or verbosity levels have most likely changed since build 9310 (e2ef8fe42), which lilbee's parser was written against; placement estimates are unverified until it is updated to match.",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:25894/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "lilbee: stopping the engine. Press Ctrl-C again to force quit.",
+    "INFO lilbee.providers.fleet.provider: Engine stopped at /work/homes/r1-llamacpp/.local/state/lilbee/engine (last user out)"
+   ],
+   "name": "ask",
+   "stdout": "{\"command\": \"ask\", \"question\": \"How do honeybees tell each other where the flowers are?\", \"answer\": \"Honeybees communicate the location of flowers through a **waggle dance**. The **angle** of the dance relative to the sun indicates the **direction** of the flowers, while the **length** of the dance correlates with the **distance** to the flowers [1]. This dance allows forager bees to share information about floral resources with other hive members.\", \"sources\": [{\"source\": \"bees.md\", \"content_type\": \"text\", \"chunk_type\": \"raw\", \"title\": \"Honeybees\", \"page_start\": 0, \"page_end\": 0, \"line_start\": 0, \"line_end\": 0, \"chunk\": \"# Honeybees\\n\\nHoneybees\\nA forager bee that finds flowers returns to the hive and performs a waggle dance. The angle of the dance shows the direction of the flowers and its length shows the distance.\", \"chunk_index\": 0, \"distance\": 0.286742627620697, \"bm25_score\": 2.5449869632720947, \"rerank_score\": 0.5, \"score\": 1.0, \"label\": \"bees.md\", \"citation_number\": 1}], \"cited_sources\": [{\"source\": \"bees.md\", \"content_type\": \"text\", \"chunk_type\": \"raw\", \"title\": \"Honeybees\", \"page_start\": 0, \"page_end\": 0, \"line_start\": 0, \"line_end\": 0, \"chunk\": \"# Honeybees\\n\\nHoneybees\\nA forager bee that finds flowers returns to the hive and performs a waggle dance. The angle of the dance shows the direction of the flowers and its length shows the distance.\", \"chunk_index\": 0, \"distance\": 0.286742627620697, \"bm25_score\": 2.5449869632720947, \"rerank_score\": 0.5, \"score\": 1.0, \"label\": \"bees.md\", \"citation_number\": 1}], \"retrieval_query\": null, \"dropped_sources\": []}\n"
+  },
+  {
+   "command": [
+    "POST",
+    "http://127.0.0.1:33615/api/chat",
+    "{\"question\": \"How do honeybees tell each other where the flowers are?\"}"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "INFO:     Waiting for application startup.",
+    "INFO lilbee.server.app: Open-file limit is 1024. Each connected agent holds a socket, so a large fleet will hit this before it saturates the machine; raise it with 'ulimit -n 4096' before starting the server (this shell allows up to 1048576).",
+    "INFO lilbee.server.app: LLM provider pre-loaded",
+    "INFO lilbee.server.app: Embedding model validated",
+    "INFO mcp.server.streamable_http_manager: StreamableHTTP session manager started",
+    "INFO:     Application startup complete.",
+    "INFO:     Uvicorn running on http://127.0.0.1:33615 (Press CTRL+C to quit)",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27040/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched embed-0 serving Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27040/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27042/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched rerank-0 serving gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27040/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27042/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27044/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched vision-0 serving ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27040/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27042/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27044/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27046/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched chat-0 serving Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27040/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27040/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=chat model=Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27042/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27046/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27046/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27046/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.retrieval.query.searcher: Query expansion produced 3 variants",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27040/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "WARNING lilbee.retrieval.concepts.graph: Concept graph disabled: spaCy model unavailable",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=rerank model=gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27042/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=chat model=Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:27046/running \"HTTP/1.1 200 OK\"",
+    "WARNING lilbee.providers.fleet.readback: The chat engine (build 1 (dde879b)) finished loading but reported no memory usage where lilbee reads it, so its estimate could not be checked. The engine's log format or verbosity levels have most likely changed since build 9310 (e2ef8fe42), which lilbee's parser was written against; placement estimates are unverified until it is updated to match.",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:27046/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.app.services: Received signal SIGTERM; stopping the engine fleet before exit",
+    "INFO:     Shutting down",
+    "INFO:     Waiting for application shutdown.",
+    "INFO mcp.server.streamable_http_manager: StreamableHTTP session manager shutting down",
+    "INFO:     Application shutdown complete.",
+    "lilbee: stopping the engine. Press Ctrl-C again to force quit.",
+    "INFO lilbee.providers.fleet.provider: Engine stopped at /work/homes/r1-llamacpp/.local/state/lilbee/engine (last user out)"
+   ],
+   "name": "chat",
+   "stdout": "{\"answer\":\"Honeybees communicate the location of flowers through a **waggle dance**. The **angle** of the dance relative to the sun indicates the **direction** of the flowers, while the **length** of the dance correlates to the **distance** from the hive to the flowers [1]. This dance allows forager bees to share information about floral resources with other bees in the hive.\",\"sources\":[{\"source\":\"bees.md\",\"content_type\":\"text\",\"chunk\":\"# Honeybees\\n\\nHoneybees\\nA forager bee that finds flowers returns to the hive and performs a waggle dance. The angle of the dance shows the direction of the flowers and its length shows the distance.\",\"distance\":0.286742627620697,\"relevance_score\":null,\"rerank_score\":0.5,\"score\":1.0,\"page_start\":0,\"page_end\":0,\"line_start\":0,\"line_end\":0,\"chunk_index\":0,\"vault_path\":null,\"memory_id\":null,\"label\":\"bees.md\",\"citation_number\":1}],\"cited_sources\":[{\"source\":\"bees.md\",\"content_type\":\"text\",\"chunk\":\"# Honeybees\\n\\nHoneybees\\nA forager bee that finds flowers returns to the hive and performs a waggle dance. The angle of the dance shows the direction of the flowers and its length shows the distance.\",\"distance\":0.286742627620697,\"relevance_score\":null,\"rerank_score\":0.5,\"score\":1.0,\"page_start\":0,\"page_end\":0,\"line_start\":0,\"line_end\":0,\"chunk_index\":0,\"vault_path\":null,\"memory_id\":null,\"label\":\"bees.md\",\"citation_number\":1}],\"compaction\":null,\"retrieval_query\":null,\"dropped_sources\":[]}"
+  },
+  {
+   "command": [
+    "engines-left-running",
+    "33615"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [],
+   "name": "engines-left-running",
+   "stdout": ""
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "add",
+    "--ocr",
+    "all",
+    "/work/work/scan.pdf"
+   ],
+   "exit_code": 0,
+   "json_output": false,
+   "log_lines": [
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=vision model=ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "/home/user/.local/share/uv/python/cpython-3.12.16-linux-x86_64-gnu/lib/python3.12/subprocess.py:1885: RuntimeWarning: lancedb fork support is experimental: the internal async runtime has been reset in the forked child, but a small chance of deadlock remains if other state was mid-operation at fork time. The 'forkserver' or 'spawn' multiprocessing start method is likely a safer alternative.",
+    "  self.pid = _fork_exec(",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the embed model Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf at 0.1 GiB, below the 0.6 GiB of weights the card has to hold. Charging the weights instead.",
+    "WARNING lilbee.providers.fleet.planning: The estimator sized the rerank model gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf at 0.1 GiB, below the 0.4 GiB of weights the card has to hold. Charging the weights instead.",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21536/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched embed-0 serving Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21536/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21538/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched rerank-0 serving gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21536/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21538/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21540/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched vision-0 serving ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21536/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21538/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21540/running \"HTTP/1.1 200 OK\"",
+    "INFO httpx: HTTP Request: GET http://127.0.0.1:21542/health \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.providers.fleet.planning: Launched chat-0 serving Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf on /work/homes/r1-llamacpp/.local/share/lilbee/engines/llama.cpp/1.12032.1-cpu/lilbee_engine_llama_cpp/bin/llama-server (build llama-cpp-memory-20261102-180518+swap-v267+gguf-v0.27.0, backend cpu, devices: none)",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:21540/v1/chat/completions \"HTTP/1.1 200 OK\"",
+    "INFO lilbee.ingest.trace: extract source='scan.pdf' type=pdf elapsed_ms=29752 pages=1 chunks=1 ocr=vision ocr_pages=1 vision=yes",
+    "INFO lilbee.ingest.vision: vision-ocr source='scan.pdf' ocr_pages=1 elapsed_ms=29752",
+    "INFO lilbee.providers.routing_provider: served by engine=llama.cpp version=1.12032.1 role=embed model=Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "INFO httpx: HTTP Request: POST http://127.0.0.1:21536/v1/embeddings \"HTTP/1.1 200 OK\"",
+    "WARNING lilbee.retrieval.concepts.graph: Concept graph disabled: spaCy model unavailable",
+    "INFO lilbee.providers.fleet.provider: Engine stopped at /work/homes/r1-llamacpp/.local/state/lilbee/engine (last user out)"
+   ],
+   "name": "vision-ingest",
+   "stdout": "Registered 1 source(s)\nSyncing [1/1]: scan.pdf\n\nAdded: 1\nUpdated: 0\nRemoved: 0\nUnchanged: 3\nHeld out: 0\nSkipped: 0\nFailed: 0\nTruncated: 0\nThis project uses the Default profile. Run lilbee analyze to get a profile recommendation, or lilbee analyze --off to hide this tip.\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "--json",
+    "engine",
+    "roles"
+   ],
+   "exit_code": 0,
+   "json_output": true,
+   "log_lines": [],
+   "name": "engine-roles",
+   "stdout": "{\"command\": \"engine roles\", \"roles\": [{\"role\": \"chat\", \"model\": \"Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}, {\"role\": \"embed\", \"model\": \"Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}, {\"role\": \"rerank\", \"model\": \"gpustack/bge-reranker-v2-m3-GGUF/bge-reranker-v2-m3-Q4_K_M.gguf\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}, {\"role\": \"vision\", \"model\": \"ggml-org/SmolVLM-256M-Instruct-GGUF/SmolVLM-256M-Instruct-Q8_0.gguf\", \"format\": \"gguf\", \"engine\": \"llama.cpp\", \"notice\": null}]}\n"
+  },
+  {
+   "command": [
+    "/work/tree/.venv/bin/lilbee",
+    "--json",
+    "engine",
+    "list"
+   ],
+   "exit_code": 0,
+   "json_output": true,
+   "log_lines": [],
+   "name": "engine-list-after",
+   "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"]}\n"
+  }
+ ]
+}

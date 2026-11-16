@@ -7,6 +7,15 @@ tests/test_engine_demo_oracles.py.
 Known limits:
 - The served-by log line holds the file name of a local model path, so two models with one
   file name in different directories look the same, and a file name with a space is cut at it.
+- An answer passes when one of its words starts with a word stem of a corpus file. A stem
+  that a word of the question starts with does not count, unless the question names every
+  stem of the file. An answer that uses a stem and says something false about it passes, as
+  does a negation ("bees do not waggle").
+- A refusal is caught only by its opening phrase (a short list: "I don't know", "I cannot
+  find", "Sorry", "the context does not say", with an optional "Unfortunately,"). A refusal
+  in other words, or one that starts after a first sentence, passes if it names a stem.
+- A citation names a corpus file when its source equals the file name. lilbee reports the
+  document name, not a path, so the transcript has no directory to compare; a path fails.
 - A log line that only quotes the served-by text counts: the match is not anchored on the
   log-record prefix.
 """
@@ -19,6 +28,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+from tools.qa.engine_demo.corpus import CORPUS, CORPUS_FACTS
 
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.serving import PRESET_VERSION, REMOTE_VERSION, UNKNOWN_VERSION, log_name
@@ -103,6 +114,11 @@ class Rule(StrEnum):
     SERVED_BY_MODEL = "served-by-model"
     PIN_NOT_INSTALLED = "pin-not-installed"
     ROLE_CONFLICT = "role-conflict"
+    CHAT_UNCITED = "chat-uncited"
+    ANSWER_OFF_CORPUS = "answer-off-corpus"
+    ANSWER_REFUSED = "answer-refused"
+    CITATION_OFF_CORPUS = "citation-off-corpus"
+    INGEST_FAILED = "ingest-failed"
 
 
 @dataclass(frozen=True)
@@ -200,6 +216,10 @@ def judge(transcript: Transcript) -> list[Failure]:
         _every_role_served_by_this_engine,
         _every_role_assigned,
         _every_ask_returned_cited_text,
+        _every_chat_returned_cited_text,
+        _every_answer_names_a_corpus_fact,
+        _every_citation_names_a_corpus_file,
+        _no_ingest_failed,
         _json_shape_is_pinned,
     )
     return [failure for check in checks for failure in check(transcript)]
@@ -210,6 +230,22 @@ def _steps(t: Transcript, *names: StepName) -> list[Step]:
 
 
 _ABSENT: Any = object()
+
+# The curly single quotes (U+2019, U+2018) a model writes in place of an apostrophe.
+_STRAIGHT_QUOTES = {0x2019: "'", 0x2018: "'"}
+
+# The opening of an answer that declines to answer, matched on lower-case text with emphasis
+# marks and curly quotes already normalised.
+_REFUSAL_OPENING = re.compile(
+    r"(?:(?:unfortunately|sadly|however|well|hmm)[,.]?\s+)?(?:"
+    r"(?:i|we)\s+(?:do not|don't)\s+know\b"
+    r"|(?:i|we)\s+(?:cannot|can't|could not|couldn't)\s+(?:find|answer|say|tell|determine)\b"
+    r"|(?:(?:i'm|i am)\s+)?sorry\b(?!\s+for)"
+    r"|there\s+(?:is|are)\s+no\s+(?:information|mention)\b"
+    r"|the\s+(?:(?:provided|given|retrieved)\s+)?(?:context|documents?|sources?|text)\s+"
+    r"(?:does not|do not|doesn't|don't)\s+(?:say|mention|contain|provide|include|have)\b"
+    r")"
+)
 
 
 def _payload(step: Step) -> Any:
@@ -366,16 +402,179 @@ def _every_ask_returned_cited_text(t: Transcript) -> list[Failure]:
         payload = _payload(step)
         if not isinstance(payload, dict):
             continue
-        answer = payload.get("answer")
-        cited = payload.get("cited_sources")
-        cited_ok = (
-            isinstance(cited, list)
-            and bool(cited)
-            and all(isinstance(c, dict) and set(c) >= CITED_SOURCE_KEYS for c in cited)
-        )
-        if not isinstance(answer, str) or not answer.strip() or not cited_ok:
+        if not _has_cited_text(payload):
             failures.append(
                 Failure(Rule.ASK_UNCITED, "ask returned no answer text or no cited source")
+            )
+    return failures
+
+
+def _every_chat_returned_cited_text(t: Transcript) -> list[Failure]:
+    """A chat turn that exited zero answers with text and cites a source, like ask."""
+    failures = []
+    for step in _steps(t, StepName.CHAT):
+        if step.exit_code != 0:
+            continue
+        payload = _payload(step)
+        if not (isinstance(payload, dict) and _has_cited_text(payload)):
+            failures.append(
+                Failure(Rule.CHAT_UNCITED, "chat returned no answer text or no cited source")
+            )
+    return failures
+
+
+def _has_cited_text(payload: Mapping[str, Any]) -> bool:
+    answer = payload.get("answer")
+    cited = payload.get("cited_sources")
+    sources = payload.get("sources")
+    return (
+        isinstance(answer, str)
+        and bool(answer.strip())
+        and isinstance(sources, list)
+        and bool(sources)
+        and isinstance(cited, list)
+        and bool(cited)
+        and all(isinstance(c, dict) and set(c) >= CITED_SOURCE_KEYS for c in cited)
+    )
+
+
+def _answered(t: Transcript) -> list[tuple[Step, dict[str, Any]]]:
+    """Each ask and chat step that exited zero with a JSON object, with that object."""
+    pairs = []
+    for step in _steps(t, StepName.ASK, StepName.CHAT):
+        payload = _payload(step)
+        if step.exit_code == 0 and isinstance(payload, dict):
+            pairs.append((step, payload))
+    return pairs
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z]+", text.casefold())
+
+
+def _asked(step: Step, payload: Mapping[str, Any]) -> str:
+    """The question *step* sent: ask echoes it in its JSON, chat carries it in the request body."""
+    if step.name is StepName.ASK:
+        question = payload.get("question")
+    else:
+        try:
+            question = json.loads(step.command[2]).get("question")
+        except (IndexError, ValueError, AttributeError):
+            question = None
+    return question if isinstance(question, str) else ""
+
+
+def _files_named(answer: str, question: str) -> set[str]:
+    """The corpus files whose word stems *answer* uses.
+
+    A stem that a word of the question starts with does not count, unless the question names
+    every stem of the file: then the stems count as usual.
+    """
+    asked = _words(question)
+    given = _words(answer)
+    named = {}
+    for name, stems in CORPUS_FACTS.items():
+        unasked = [s for s in stems if not any(w.startswith(s) for w in asked)]
+        named[name] = any(w.startswith(s) for s in unasked or stems for w in given)
+    return {name for name, uses in named.items() if uses}
+
+
+def _refuses(answer: str) -> bool:
+    """The answer opens with a refusal, so a fact it quotes is not an answer."""
+    text = answer.casefold().translate(_STRAIGHT_QUOTES)
+    text = re.sub(r"[*_`~#>]", "", text)
+    return _REFUSAL_OPENING.match(text.lstrip(" \t\r\n\"'-•")) is not None
+
+
+def _every_answer_names_a_corpus_fact(t: Transcript) -> list[Failure]:
+    """An ask or chat answer must use a stem of the corpus, and must not open with a refusal."""
+    failures = []
+    for step, payload in _answered(t):
+        answer = payload.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            continue
+        if _refuses(answer):
+            failures.append(
+                Failure(Rule.ANSWER_REFUSED, f"{step.name} answered {answer[:80]!r}, a refusal")
+            )
+        elif not _files_named(answer, _asked(step, payload)):
+            failures.append(
+                Failure(
+                    Rule.ANSWER_OFF_CORPUS,
+                    f"{step.name} answered {answer[:80]!r}, which names no corpus fact",
+                )
+            )
+    return failures
+
+
+def _corpus_file(source: object) -> str | None:
+    """The corpus file *source* names, or None when it names none; a path names none."""
+    return source if isinstance(source, str) and source in CORPUS else None
+
+
+def _every_citation_names_a_corpus_file(t: Transcript) -> list[Failure]:
+    """Each citation is a corpus file, and one cited file is a file the answer draws on."""
+    failures = []
+    for step, payload in _answered(t):
+        cited = payload.get("cited_sources")
+        # An entry with no source is a malformed citation, which the cited-text rules report.
+        entries = (
+            [e for e in cited if isinstance(e, dict) and "source" in e]
+            if isinstance(cited, list)
+            else []
+        )
+        names = [_corpus_file(e["source"]) for e in entries]
+        for entry, name in zip(entries, names, strict=True):
+            if name is None:
+                failures.append(
+                    Failure(
+                        Rule.CITATION_OFF_CORPUS,
+                        f"{step.name} cited {entry['source']!r}, no corpus file",
+                    )
+                )
+        answer = payload.get("answer")
+        if not isinstance(answer, str) or _refuses(answer):
+            continue
+        named = _files_named(answer, _asked(step, payload))
+        if named and names and not named & {n for n in names if n is not None}:
+            failures.append(
+                Failure(
+                    Rule.CITATION_OFF_CORPUS,
+                    f"{step.name} cited {names}, none of which holds the facts of {sorted(named)}",
+                )
+            )
+    return failures
+
+
+_COUNT_LINE = re.compile(r"^([A-Za-z ]+): (\d+)$", re.MULTILINE)
+_INDEX_MISMATCH = re.compile(r"^Index mismatch:", re.MULTILINE)
+
+
+def _no_ingest_failed(t: Transcript) -> list[Failure]:
+    """Add and sync each ingest the corpus: a zero Failed count, nothing held out or mismatched."""
+    failures = []
+    for step in _steps(t, StepName.ADD, StepName.SYNC):
+        counts: dict[str, list[int]] = {}
+        for label, number in _COUNT_LINE.findall(step.stdout):
+            counts.setdefault(label, []).append(int(number))
+        if "Failed" not in counts:
+            failures.append(Failure(Rule.INGEST_FAILED, f"{step.name} printed no Failed count"))
+        for label in ("Failed", "Held out"):
+            if any(counts.get(label, [])):
+                failures.append(
+                    Failure(
+                        Rule.INGEST_FAILED, f"{step.name} printed {label}: {max(counts[label])}"
+                    )
+                )
+        if _INDEX_MISMATCH.search(step.stdout):
+            failures.append(Failure(Rule.INGEST_FAILED, f"{step.name} printed an Index mismatch"))
+        covered = sum(sum(counts.get(label, [])) for label in ("Added", "Updated", "Unchanged"))
+        if covered < len(CORPUS):
+            failures.append(
+                Failure(
+                    Rule.INGEST_FAILED,
+                    f"{step.name} covered {covered} of {len(CORPUS)} corpus files",
+                )
             )
     return failures
 
