@@ -304,3 +304,17 @@ def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow()
     built = {cell["cell"] for cell in _pack_matrix(_pack_cells())}
     assert shipped
     assert shipped - built == set()
+
+
+def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
+    workflow = _uncommented(_PACK_CELLS.read_text(encoding="utf-8"))
+    notice = "NOTICE-MICROSOFT-VC-RUNTIME"
+    bundle = [line for line in workflow.splitlines() if "bundle_windows_runtime.sh" in line]
+    assert len(bundle) == 1
+    assert f"packaging/engine-wheel/{notice} vs-licence.docx" in bundle[0]
+    assert f'dist-info/licenses/{notice}$" wheel-listing.txt' in workflow
+    assert "vs_distributable_terms.py --verify vs-licence.docx out/*.whl" in workflow
+
+
+def test_the_pack_workflow_names_no_transient_branch() -> None:
+    assert "fix/llama-pack-licences" not in _PACK_CELLS.read_text(encoding="utf-8")

@@ -14,6 +14,8 @@
 # Argument:
 #   the wheel's bin/ directory, holding the freshly built engine
 #   optional second: the path that receives the Microsoft redistribution notice
+#   optional third: the path that receives a copy of the verified licence file, for
+#                   vs_distributable_terms.py --verify on the finished wheel
 
 set -euo pipefail
 
@@ -79,7 +81,9 @@ if [ -n "${notice_file}" ]; then
     got="$(shasum -a 256 "${work}/license.docx" | cut -d' ' -f1)"
   fi
   [ "${got}" = "${license_sha256}" ] || { echo "the Visual Studio licence has digest ${got}, not ${license_sha256}" >&2; exit 1; }
-  "${PYTHON:-python}" -I "$(dirname "${BASH_SOURCE[0]}")/vs_distributable_terms.py" "${work}/license.docx" | tr -d '\r' > "${work}/terms.txt"
+  # The tool writes the terms as UTF-8 itself: a redirected stdout uses the runner's locale encoding.
+  "${PYTHON:-python}" -I "$(dirname "${BASH_SOURCE[0]}")/vs_distributable_terms.py" "${work}/license.docx" "${work}/terms.txt"
+  [ -z "${3:-}" ] || cp "${work}/license.docx" "$3"
   {
     echo "These files are licensed under the Microsoft terms below, not under the other terms of this wheel."
     echo
