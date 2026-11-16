@@ -10,7 +10,13 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
-from tools.qa.engine_demo.scrub import QUERY_TOKEN, USERINFO_TOKEN, scrub_urls
+from tools.qa.engine_demo.scrub import (
+    QUERY_TOKEN,
+    UNPARSED_TOKEN,
+    USERINFO_TOKEN,
+    map_strings,
+    scrub_urls,
+)
 
 from tests.conformance import record_presets
 from tests.conformance.preset_check import (
@@ -153,9 +159,21 @@ def test_scrub_home_is_idempotent() -> None:
             f'"url": "http://h:8080/p?{QUERY_TOKEN}"',
         ),
         (
-            "pulled https://cdn.example.com/m?k=v\\nnext https://cdn.example.com/n?k=w\\n",
-            f"pulled https://cdn.example.com/m?{QUERY_TOKEN}\\nnext https://cdn.example.com/n?{QUERY_TOKEN}\\n",
+            "pulled https://cdn.example.com/m?k=v\nnext https://cdn.example.com/n?k=w\n",
+            f"pulled https://cdn.example.com/m?{QUERY_TOKEN}\nnext https://cdn.example.com/n?{QUERY_TOKEN}\n",
         ),
+        (
+            "https://u:pw@h/é?a=1",
+            f"https://{USERINFO_TOKEN}@h/é?{QUERY_TOKEN}",
+        ),
+        (
+            "https://usér:pw@h/p?a=1",
+            f"https://{USERINFO_TOKEN}@h/p?{QUERY_TOKEN}",
+        ),
+        ("https://u:p@ss@h/p", f"https://{USERINFO_TOKEN}@h/p"),
+        ("https://u:p@h:8080/p#f?x", f"https://{USERINFO_TOKEN}@h:8080/p#f?x"),
+        ("https://h/p#", "https://h/p#"),
+        ("https://[bad/p?a=1 next", f"{UNPARSED_TOKEN} next"),
         (
             "https://cdn.example.com/m?a=1?b=2 end",
             f"https://cdn.example.com/m?{QUERY_TOKEN} end",
@@ -192,6 +210,19 @@ def test_scrub_urls_is_idempotent() -> None:
     assert scrub_urls(once) == once
 
 
+def test_map_strings_scrubs_each_string_key_and_item_and_keeps_the_rest() -> None:
+    value = {"https://k:s@h/a": ["https://h/p?x=1", 3, None, True, {"n": 1.5, "u": "https://h?q"}]}
+    assert map_strings(value, scrub_urls) == {
+        f"https://{USERINFO_TOKEN}@h/a": [
+            f"https://h/p?{QUERY_TOKEN}",
+            3,
+            None,
+            True,
+            {"n": 1.5, "u": f"https://h?{QUERY_TOKEN}"},
+        ]
+    }
+
+
 def test_scrub_recording_drops_the_signed_query_of_a_url() -> None:
     raw = (
         "get https://cdn.example.com/m.gguf?Signature=s3cret&Expires=1 from /home/alice on rec-box"
@@ -203,6 +234,26 @@ def test_scrub_recording_drops_the_signed_query_of_a_url() -> None:
 
 def test_no_committed_recording_holds_a_url_query() -> None:
     leaks = [f"{name}:{n}" for name, n, line in _fixture_lines() if scrub_urls(line) != line]
+    assert leaks == []
+
+
+def _decoded(path: Path) -> list[object]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        return [json.loads(text)]
+    except ValueError:
+        return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def test_no_committed_json_recording_holds_a_url_secret_in_a_decoded_string() -> None:
+    files = [p for p in _fixture_files() if p.suffix == ".json"]
+    assert files
+    leaks = [
+        f"{p.name}:{n}"
+        for p in files
+        for n, doc in enumerate(_decoded(p))
+        if map_strings(doc, scrub_urls) != doc
+    ]
     assert leaks == []
 
 
@@ -224,6 +275,17 @@ def test_write_recording_scrubs_the_json_and_the_log(
     assert out.with_suffix(".log").read_text(encoding="utf-8") == (
         f"loaded {HOME_TOKEN}/m.gguf on {HOST_TOKEN}\n"
     )
+
+
+def test_write_recording_scrubs_a_url_with_a_non_ascii_character(tmp_path: Path) -> None:
+    out = tmp_path / "x.json"
+    record_presets.write_recording(
+        out, {"a": "https://u:pw@h/é?a=1", "b": ["https://usér:pw@h/p?a=1"]}, "log\n"
+    )
+    assert json.loads(out.read_text(encoding="utf-8")) == {
+        "a": f"https://{USERINFO_TOKEN}@h/é?{QUERY_TOKEN}",
+        "b": [f"https://{USERINFO_TOKEN}@h/p?{QUERY_TOKEN}"],
+    }
 
 
 def test_main_writes_no_home_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
