@@ -32,6 +32,7 @@ from lilbee.providers.fleet.placement_spec import (
     TargetRefusedError,
 )
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._stated_sizes import state_size
 
 GIB = 1024**3
@@ -59,6 +60,7 @@ def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
         cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
         nvidia=nvidia,
     )
+    pick_cuda_on_gpu_hosts(monkeypatch)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
 
 

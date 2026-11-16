@@ -34,6 +34,7 @@ from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import ROLE_FIELDS, Role, cards_of, prepare_host
+from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._published import publish
 from tests.providers.fleet.test_mistral_adapter import caps
 
@@ -133,6 +134,7 @@ def _install_host(
     """*session* with the bundled llama-server and every store engine installed."""
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
+    pick_cuda_on_gpu_hosts(monkeypatch)
     # The engine rule holds its own reference to the host read, so it needs the patch too.
     monkeypatch.setattr(engine_choice, "session_host", lambda: session)
     # The real read builds the process-wide services, and those start a warm-up thread.

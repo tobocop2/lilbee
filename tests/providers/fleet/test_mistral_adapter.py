@@ -42,6 +42,7 @@ from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
+from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._published import publish
 from tests._stated_sizes import state_size
 
@@ -272,18 +273,6 @@ def test_a_gguf_goes_by_its_file_name_with_the_folder_as_the_model(tmp_path: Pat
     assert argv[-4:] == ["-m", str(model.parent), "-f", "m-Q4_K_M.gguf"]
 
 
-def _pick_cuda_on_gpu_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let a Linux host with a GPU pick a CUDA build, as the launch rules below describe it."""
-    real = mistral_module.MistralAdapter.pick_build
-
-    def pick(self: mistral_module.MistralAdapter, host: host_caps.HostCaps) -> Any:
-        if host.os is host_caps.HostOS.LINUX and host.gpus:
-            return mistral_module.BuildPick("cuda128-sm89", "")
-        return real(self, host)
-
-    monkeypatch.setattr(mistral_module.MistralAdapter, "pick_build", pick)
-
-
 @pytest.mark.parametrize(
     "host",
     [
@@ -299,7 +288,7 @@ def test_a_gpu_build_turns_paged_attention_off_and_never_forces_the_cpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     system, machine, gpus = host
-    _pick_cuda_on_gpu_hosts(monkeypatch)
+    pick_cuda_on_gpu_hosts(monkeypatch)
     monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
     spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path, devices=devices))
@@ -527,7 +516,7 @@ def test_a_cuda_build_reads_the_cards_from_the_driver(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     card = NvidiaCard(0, "GPU-a", "NVIDIA L4", 24 << 30, 20 << 30)
-    _pick_cuda_on_gpu_hosts(monkeypatch)
+    pick_cuda_on_gpu_hosts(monkeypatch)
     monkeypatch.setattr(
         runnable, "session_host", lambda: caps("Linux", "x86_64", gpus=[("NVIDIA L4", (8, 9))])
     )
@@ -798,7 +787,7 @@ def test_a_cpu_target_runs_on_the_cpu_even_with_a_cuda_build(
 def _cuda_host(monkeypatch: pytest.MonkeyPatch, system: str = "Linux", *, cards: int = 2) -> None:
     gpus = [L4] * cards if system != "Darwin" else None
     machine = "arm64" if system == "Darwin" else "x86_64"
-    _pick_cuda_on_gpu_hosts(monkeypatch)
+    pick_cuda_on_gpu_hosts(monkeypatch)
     monkeypatch.setattr(runnable, "session_host", lambda: caps(system, machine, gpus=gpus))
 
 
