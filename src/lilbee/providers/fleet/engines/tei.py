@@ -63,6 +63,8 @@ _PROFILE = RequestProfile(
     batch_count_refusal=re.compile(r"maximum allowed batch size"),
     rerank_fields={"truncate": False},
     context_overflow_status=422,
+    token_count_path="/tokenize",
+    input_limit_path="/info",
 )
 _TOOL = "text-embeddings-router"
 _PIN_LAUNCH = ["{binary}", "--model-id", "{model}", "--hostname", "127.0.0.1", "--port", "{port}"]
