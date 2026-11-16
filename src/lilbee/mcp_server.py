@@ -118,6 +118,7 @@ from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
@@ -1252,7 +1253,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
         return _error(provider_reset_refused_message("Switching"))
     try:
         result = apply_settings_update(updates)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, ConfigReadError) as exc:
         return _error(str(exc))
     except OSError as exc:
         return _error(config_write_failure_message(exc))
