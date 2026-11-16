@@ -1895,6 +1895,40 @@ class TestResolveFilename:
         assert catalog.resolve_filename(entry, engine=LLAMA, can_load=can_load) == "exact.gguf"
         assert asked == []
 
+    def test_named_file_header_is_read_from_the_entry_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The header that vets a named file comes from the repo the pull fetches it from."""
+        probed: list[tuple[str, str]] = []
+
+        def header(repo: str, name: str) -> GgufHeader:
+            probed.append((repo, name))
+            return GgufHeader(architecture="llama", file_type="model")
+
+        monkeypatch.setattr(catalog.download, "file_header", header)
+        entry = replace(PICKS_CHAT[0], gguf_filename="exact.gguf")
+        assert catalog.resolve_filename(entry, engine=LLAMA) == "exact.gguf"
+        assert probed == [(entry.hf_repo, "exact.gguf")]
+
+    def test_listed_file_headers_are_read_from_the_entry_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each candidate is vetted by its own header, read from the repo it is listed in."""
+        probed: list[tuple[str, str]] = []
+
+        def header(repo: str, name: str) -> GgufHeader:
+            probed.append((repo, name))
+            return _bonsai_header(name)
+
+        monkeypatch.setattr(catalog.download, "file_header", header)
+        self._siblings(monkeypatch, "Bonsai-27B-mmproj-Q8_0.gguf", "Bonsai-27B-Q2_0.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert chosen == "Bonsai-27B-Q2_0.gguf"
+        repo = PICKS_CHAT[0].hf_repo
+        assert probed
+        assert {r for r, _ in probed} == {repo}
+        assert {n for _, n in probed} == {"Bonsai-27B-mmproj-Q8_0.gguf", "Bonsai-27B-Q2_0.gguf"}
+
     def test_named_wildcard_is_never_probed_as_a_file(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
