@@ -18,8 +18,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from tools.qa.engine_demo.scrub import map_strings, scrub_urls
-
 from lilbee.app import presets
 from lilbee.app.status import chat_engine, serving_roles
 from lilbee.core.config import Config, cfg
@@ -386,32 +384,6 @@ def _scrubbed(value: Any) -> Any:
     if isinstance(value, str) and len(value) > 2000:
         return value[:40] + f"...[{len(value)} chars]"
     return value
-
-
-HOME_TOKEN = "<home>"
-_HOME_DIR = re.compile(r"(?<![^\s\"'=])/(?:home|Users)/[^/\s\"'\\]+")
-
-
-def scrub_home(text: str) -> str:
-    """The text with each home directory, such as /home/alice, replaced by the home token."""
-    return _HOME_DIR.sub(HOME_TOKEN, text)
-
-
-HOST_TOKEN = "<host>"
-
-
-def scrub_host(text: str, hostname: str) -> str:
-    """The text with the hostname and its short form replaced by the host token."""
-    names = {hostname, hostname.split(".")[0]} - {""}
-    if not names:
-        return text
-    pattern = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
-    return re.sub(rf"(?<![\w-])(?:{pattern})(?![\w-])", HOST_TOKEN, text, flags=re.IGNORECASE)
-
-
-def scrub_recording(value: Any, hostname: str) -> Any:
-    """The value with each home directory, the hostname and each URL secret replaced by tokens."""
-    return map_strings(value, lambda s: scrub_urls(scrub_host(scrub_home(s), hostname)))
 
 
 def _origin(url: str) -> tuple[str, str]:

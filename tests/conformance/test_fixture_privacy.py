@@ -11,24 +11,20 @@ from pathlib import Path
 
 import pytest
 from tools.qa.engine_demo.scrub import (
+    HOME_TOKEN,
+    HOST_TOKEN,
     QUERY_TOKEN,
     UNPARSED_TOKEN,
     USERINFO_TOKEN,
     map_strings,
+    scrub_home,
+    scrub_host,
+    scrub_recording,
     scrub_urls,
 )
 
 from tests.conformance import record_presets
-from tests.conformance.preset_check import (
-    HOME_TOKEN,
-    HOST_TOKEN,
-    Exchange,
-    Outcome,
-    _Tape,
-    scrub_home,
-    scrub_host,
-    scrub_recording,
-)
+from tests.conformance.preset_check import Exchange, Outcome, _Tape
 
 TESTS = Path(__file__).resolve().parents[1]
 RECORDINGS = TESTS / "conformance" / "fixtures"
