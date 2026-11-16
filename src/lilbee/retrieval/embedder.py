@@ -111,7 +111,10 @@ class Embedder:
         if len(vector) != self._config.embedding_dim:
             raise ValueError(
                 f"Embedding dimension mismatch: expected {self._config.embedding_dim}, "
-                f"got {len(vector)}"
+                f"got {len(vector)}. The embedding model changed width, so re-embed the "
+                "index under it: run `lilbee rebuild` (CLI), `/rebuild` (TUI), "
+                "POST /api/sync with force_rebuild true (REST), or the sync tool "
+                "with force_rebuild true (MCP)."
             )
         arr = np.asarray(vector, dtype=np.float64)
         bad = np.where(~np.isfinite(arr))[0]
