@@ -199,7 +199,26 @@ def test_auto_names_the_installed_engine_that_loads_a_format_the_default_skips()
     assert got.name is None
     assert got.notice == (
         "No engine is chosen by default for the safetensors format. "
-        "Choose mlx with lilbee engine use or lilbee engine prefer."
+        "Choose mlx with lilbee engine prefer. "
+        "It applies to every model without its own choice."
+    )
+
+
+def test_a_choice_for_no_role_names_prefer_and_never_use() -> None:
+    both = {L: {ST}, M: {ST}}
+    got = _ask(fmt=ST, installed=both, model="org/m#safetensors")
+    assert got.notice is not None
+    assert "Choose llama.cpp or mlx with lilbee engine prefer." in got.notice
+    assert "engine use" not in got.notice
+
+
+def test_a_choice_for_a_role_names_use_and_prefer() -> None:
+    got = _ask(fmt=ST, installed={M: {ST}}, role=WorkerRole.EMBED, model="org/m#safetensors")
+    assert got.notice == (
+        "For embed: No engine is chosen by default "
+        "for the safetensors format of org/m#safetensors. "
+        "Choose mlx with lilbee engine use for this model, "
+        "or with lilbee engine prefer for every model without its own choice."
     )
 
 
@@ -210,7 +229,24 @@ def test_a_preference_that_skips_the_role_names_the_engine_that_serves_it() -> N
     assert got.notice == (
         "Engine llama.cpp cannot load the safetensors format. "
         "No engine is chosen by default. "
-        "Choose mlx with lilbee engine use or lilbee engine prefer."
+        "Choose mlx with lilbee engine prefer. "
+        "It applies to every model without its own choice."
+    )
+
+
+def test_a_preference_that_skips_a_role_names_use_and_prefer() -> None:
+    got = _ask(
+        fmt=ST,
+        installed={L: LOADS[L], M: {ST}},
+        preferred=L,
+        role=WorkerRole.EMBED,
+        model="org/m#safetensors",
+    )
+    assert got.notice is not None
+    assert got.notice.endswith(
+        "No engine is chosen by default. "
+        "Choose mlx with lilbee engine use for this model, "
+        "or with lilbee engine prefer for every model without its own choice."
     )
 
 

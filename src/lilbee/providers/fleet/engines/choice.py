@@ -210,8 +210,18 @@ def _candidates(
     ]
 
 
-def _choose_hint(names: list[EngineName]) -> str:
-    return f"Choose {' or '.join(names)} with lilbee engine use or lilbee engine prefer."
+def _choose_hint(names: list[EngineName], role: WorkerRole | None) -> str:
+    """The commands that fix the choice; ``use`` works only once a role holds the model."""
+    which = " or ".join(names)
+    if role is None:
+        return (
+            f"Choose {which} with lilbee engine prefer. "
+            "It applies to every model without its own choice."
+        )
+    return (
+        f"Choose {which} with lilbee engine use for this model, "
+        "or with lilbee engine prefer for every model without its own choice."
+    )
 
 
 def _by_default(
@@ -228,7 +238,7 @@ def _by_default(
     candidates = _candidates(fmt, installed, role, host)
     if candidates:
         text = f"No engine is chosen by default for the {fmt} format{of_model}. "
-        text += _choose_hint(candidates)
+        text += _choose_hint(candidates, role)
     else:
         text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
     return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
@@ -284,7 +294,7 @@ def choose_engine(
     if default is None:
         candidates = _candidates(fmt, installed, role, host)
         tail = (
-            f"No engine is chosen by default. {_choose_hint(candidates)}"
+            f"No engine is chosen by default. {_choose_hint(candidates, role)}"
             if candidates
             else f"No installed engine {left}."
         )
