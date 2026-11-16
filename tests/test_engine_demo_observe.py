@@ -530,6 +530,14 @@ def test_a_dry_run_writes_a_transcript_the_report_passes(
     assert "PASS llama.cpp cpu b6123" in capsys.readouterr().out
 
 
+def test_a_run_writes_no_signed_url_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_PULL_URL", "https://cdn.example.com/m.gguf?Signature=s3cret&Expires=9")
+    assert demo_main.main(_run_args(tmp_path)) == 0
+    written = (tmp_path / "t.json").read_text(encoding="utf-8")
+    assert "https://cdn.example.com/m.gguf?<query>" in written
+    assert "s3cret" not in written
+
+
 def test_two_dry_runs_use_two_data_folders(tmp_path: Path) -> None:
     demo_main.main(_run_args(tmp_path))
     demo_main.main(_run_args(tmp_path))

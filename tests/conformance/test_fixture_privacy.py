@@ -10,19 +10,18 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
+from tools.qa.engine_demo.scrub import QUERY_TOKEN, USERINFO_TOKEN, scrub_urls
 
 from tests.conformance import record_presets
 from tests.conformance.preset_check import (
     HOME_TOKEN,
     HOST_TOKEN,
-    QUERY_TOKEN,
     Exchange,
     Outcome,
     _Tape,
     scrub_home,
     scrub_host,
     scrub_recording,
-    scrub_url_queries,
 )
 
 TESTS = Path(__file__).resolve().parents[1]
@@ -165,18 +164,32 @@ def test_scrub_home_is_idempotent() -> None:
             "<https://cdn.example.com/m?a=1<next",
             f"<https://cdn.example.com/m?{QUERY_TOKEN}<next",
         ),
+        (
+            "https://cdn.example.com/m?Signature=abc#part-2",
+            f"https://cdn.example.com/m?{QUERY_TOKEN}#part-2",
+        ),
+        (
+            "https://alice:hunter2@cdn.example.com/m?k=v",
+            f"https://{USERINFO_TOKEN}@cdn.example.com/m?{QUERY_TOKEN}",
+        ),
+        (
+            "https://token@cdn.example.com/m",
+            f"https://{USERINFO_TOKEN}@cdn.example.com/m",
+        ),
         ("https://example.com/path/only", "https://example.com/path/only"),
+        ("https://example.com/a@b", "https://example.com/a@b"),
+        ("https://@example.com/m", "https://@example.com/m"),
         ("https://example.com/p?", "https://example.com/p?"),
         ("what? no url, a=b", "what? no url, a=b"),
     ],
 )
-def test_scrub_url_queries_keeps_scheme_host_and_path(raw: str, scrubbed: str) -> None:
-    assert scrub_url_queries(raw) == scrubbed
+def test_scrub_urls_keeps_scheme_host_path_and_fragment(raw: str, scrubbed: str) -> None:
+    assert scrub_urls(raw) == scrubbed
 
 
-def test_scrub_url_queries_is_idempotent() -> None:
-    once = scrub_url_queries("https://cdn.example.com/m?Signature=abc")
-    assert scrub_url_queries(once) == once
+def test_scrub_urls_is_idempotent() -> None:
+    once = scrub_urls("https://u:p@cdn.example.com/m?Signature=abc#f")
+    assert scrub_urls(once) == once
 
 
 def test_scrub_recording_drops_the_signed_query_of_a_url() -> None:
@@ -189,7 +202,7 @@ def test_scrub_recording_drops_the_signed_query_of_a_url() -> None:
 
 
 def test_no_committed_recording_holds_a_url_query() -> None:
-    leaks = [f"{name}:{n}" for name, n, line in _fixture_lines() if scrub_url_queries(line) != line]
+    leaks = [f"{name}:{n}" for name, n, line in _fixture_lines() if scrub_urls(line) != line]
     assert leaks == []
 
 

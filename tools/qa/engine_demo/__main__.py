@@ -19,6 +19,7 @@ from pathlib import Path
 
 from tools.qa.engine_demo.observe import DEFAULT_QUESTION, RunPlan, observe
 from tools.qa.engine_demo.oracles import Transcript, judge
+from tools.qa.engine_demo.scrub import scrub_urls
 
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
@@ -143,7 +144,8 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     run_dir = Path(tempfile.mkdtemp(prefix="engine-demo-", dir=args.work_dir))
     transcript = observe(plan, run_dir)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(transcript.to_json(), indent=2) + "\n", encoding="utf-8")
+    text = json.dumps(transcript.to_json(), indent=2) + "\n"
+    args.out.write_text(scrub_urls(text), encoding="utf-8")
     print(f"run folder: {run_dir}")
     print(f"transcript: {args.out}")
     return 0
