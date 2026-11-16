@@ -1,4 +1,4 @@
-"""A request for a model that no installed engine loads answers a readable 400."""
+"""A bad-request provider failure answers a readable 400 on every route."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from lilbee.server.routes import search as search_routes
 
 _TEXT = "For chat: No installed engine loads the mlx format. Run lilbee engine list."
 _NO_ENGINE = NoEngineError(_TEXT, kind=ProviderErrorKind.BAD_REQUEST)
+_REFUSAL = "The configured model refuses this request."
 
 
 def _app_status(error: Exception) -> tuple[int, str]:
@@ -32,9 +33,33 @@ def test_a_route_with_no_handler_of_its_own_answers_400_with_the_text() -> None:
     assert _app_status(_NO_ENGINE) == (400, _TEXT)
 
 
-def test_another_bad_request_provider_failure_stays_a_500() -> None:
-    status, _ = _app_status(ProviderError("boom", kind=ProviderErrorKind.BAD_REQUEST))
+def test_any_bad_request_provider_failure_answers_400_with_its_text() -> None:
+    error = ProviderError(_REFUSAL, kind=ProviderErrorKind.BAD_REQUEST)
+    assert _app_status(error) == (400, _REFUSAL)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        ProviderErrorKind.AUTH,
+        ProviderErrorKind.RATE_LIMIT,
+        ProviderErrorKind.CONTEXT_OVERFLOW,
+        ProviderErrorKind.NOT_FOUND,
+        ProviderErrorKind.CONNECTION,
+        ProviderErrorKind.SERVER,
+        ProviderErrorKind.UNKNOWN,
+    ],
+)
+def test_the_other_provider_kinds_keep_the_500_on_a_route_with_no_handler(
+    kind: ProviderErrorKind,
+) -> None:
+    status, _ = _app_status(ProviderError("boom", kind=kind))
     assert status == 500
+
+
+def test_engines_still_starting_keep_the_503() -> None:
+    status, _ = _app_status(ProviderError("warming", kind=ProviderErrorKind.STARTING))
+    assert status == 503
 
 
 def test_another_provider_failure_on_the_chat_route_stays_503() -> None:
@@ -46,16 +71,16 @@ def test_another_provider_failure_on_the_chat_route_stays_503() -> None:
     [
         (ProviderErrorKind.CONTEXT_OVERFLOW, 400),
         (ProviderErrorKind.NOT_FOUND, 404),
+        (ProviderErrorKind.BAD_REQUEST, 400),
         (ProviderErrorKind.AUTH, 503),
-        (ProviderErrorKind.BAD_REQUEST, 503),
+        (ProviderErrorKind.RATE_LIMIT, 503),
+        (ProviderErrorKind.SERVER, 503),
     ],
 )
-def test_the_chat_route_keeps_the_status_of_each_other_kind(
-    kind: ProviderErrorKind, status: int
-) -> None:
+def test_the_chat_route_maps_each_provider_kind(kind: ProviderErrorKind, status: int) -> None:
     assert search_routes._api_chat_error_status(ProviderError("boom", kind=kind)) == status
 
 
-@pytest.mark.parametrize("kind", [ProviderErrorKind.BAD_REQUEST, ProviderErrorKind.UNKNOWN])
-def test_the_chat_route_maps_by_error_class_not_kind(kind: ProviderErrorKind) -> None:
-    assert search_routes._api_chat_error_status(NoEngineError(_TEXT, kind=kind)) == 400
+def test_the_chat_route_and_the_app_agree_on_a_bad_request() -> None:
+    error = ProviderError("boom", kind=ProviderErrorKind.BAD_REQUEST)
+    assert search_routes._api_chat_error_status(error) == _app_status(error)[0] == 400
