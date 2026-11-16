@@ -326,7 +326,35 @@ def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -
     assert len(bundle) == 1
     assert f"packaging/engine-wheel/{notice} vs-licence.docx" in bundle[0]
     assert f'dist-info/licenses/{notice}$" wheel-listing.txt' in workflow
-    assert "vs_distributable_terms.py --verify vs-licence.docx out/*.whl" in workflow
+
+
+def _enclosing_conditions(script: str, line_text: str) -> list[str]:
+    """Return the `if` conditions that enclose the one script line holding `line_text`."""
+    stack: list[str] = []
+    hits: list[list[str]] = []
+    for raw in script.splitlines():
+        line = raw.strip()
+        if line.startswith("if ") and line.endswith("; then"):
+            stack.append(line[len("if ") : -len("; then")])
+        elif line.startswith(("else", "elif ")):
+            stack[-1] = f"not ({stack[-1]})"
+        elif line == "fi":
+            stack.pop()
+        elif line_text in line:
+            hits.append(list(stack))
+    assert len(hits) == 1, line_text
+    return hits[0]
+
+
+def test_the_windows_cells_run_the_notice_check_under_the_windows_condition() -> None:
+    steps = _pack_cells()["jobs"]["cell"]["steps"]
+    [start] = [s for s in steps if s.get("name") == "Start llama-server from the installed wheel"]
+    windows_cells = [c for c in _pack_matrix(_pack_cells()) if c["cell"].startswith("windows-")]
+    assert windows_cells
+    assert all(c["runner"].startswith("windows-") for c in windows_cells)
+    assert "if" not in start
+    verify = "vs_distributable_terms.py --verify vs-licence.docx out/*.whl"
+    assert _enclosing_conditions(start["run"], verify) == ['[ "${RUNNER_OS}" = Windows ]']
 
 
 def test_the_pack_workflow_names_no_transient_branch() -> None:
