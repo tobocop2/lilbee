@@ -14,7 +14,7 @@ from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.fleet.engines.choice import NoEngineError, loadable_refs
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import parse_model_ref
 
 log = logging.getLogger(__name__)
@@ -447,7 +447,7 @@ def pull_model_data(
             # Hub leaves the install as it is; any other fault reaches the caller.
             try:
                 manager.pull(ref, source, cancel=cancel)
-            except (ListingOfflineError, NoEngineError) as exc:
+            except ListingOfflineError as exc:
                 log.info("Could not check %s for missing module files: %s", ref, exc)
         # A cached install may carry the main GGUF but not the projector its
         # repo lists; without it llama-server can't serve OCR, so ensure it

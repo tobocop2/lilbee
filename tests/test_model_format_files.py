@@ -631,13 +631,6 @@ class TestPullOfAnInstalledModel:
         with pytest.raises(type(error), match=str(error)[:20]):
             self._pull_offline("org/repo#safetensors", error)
 
-    def test_a_safetensors_pull_without_an_engine_stays_installed(self) -> None:
-        from lilbee.app.models import PullStatus
-        from lilbee.providers.fleet.engines.choice import NoEngineError
-
-        status, calls = self._pull_offline("org/repo#safetensors", NoEngineError("none"))
-        assert (status, calls) == (PullStatus.ALREADY_INSTALLED, 1)
-
     def test_a_bug_in_the_fetch_still_surfaces(self) -> None:
         with pytest.raises(KeyError, match="bug"):
             self._pull_offline("org/repo#safetensors", KeyError("bug"))
