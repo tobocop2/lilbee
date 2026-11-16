@@ -87,13 +87,14 @@ def test_a_readable_host_still_lists_and_installs_tei(
 
 
 @pytest.mark.parametrize(("system", "machine"), [("Linux", ""), ("", "x86_64")])
-def test_a_half_unread_host_lists_no_engine_and_install_refuses(
+def test_a_half_unread_host_lists_only_the_ungated_engine_and_install_refuses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, system: str, machine: str
 ) -> None:
     host = collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
-    assert engine_service.not_installed() == []
+    monkeypatch.setattr(engine_service, "llama_server_ready", lambda: False)
+    assert engine_service.not_installed() == ["llama.cpp"]
     refusal = _install_verdict(monkeypatch, "tei", tmp_path)
     backend = ADAPTERS[EngineName.TEI].pin_record()["backend"]
     assert refusal == f"Engine tei has no {backend} build for this computer."
@@ -118,6 +119,20 @@ def test_the_list_logs_why_it_hides_engines_on_an_unreadable_host(
     names, _, cause = messages[0].removeprefix("The engine list hides ").partition(": ")
     assert set(names.split(", ")) == set(_NAMES)
     assert cause == "the OS or CPU of this host could not be read."
+
+
+def test_the_list_logs_the_hidden_engines_when_only_the_os_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host = collect(system="", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=_UNREADABLE)
+    assert host.os is None and host.arch is not None
+    monkeypatch.setattr(engine_service, "session_host", lambda: host)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    with caplog.at_level("WARNING", logger=engine_service.log.name):
+        engine_service.not_installed()
+    messages = [r.getMessage() for r in caplog.records if r.name == engine_service.log.name]
+    assert len(messages) == 1
+    assert messages[0].endswith(": the OS or CPU of this host could not be read.")
 
 
 def test_a_readable_host_logs_nothing_about_hidden_engines(

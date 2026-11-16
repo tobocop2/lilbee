@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import stat
 import sys
 import threading
@@ -11,10 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF
 from lilbee.app import engine_service
 from lilbee.catalog import runnable
+from lilbee.cli import app as cli_app
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary as binary_mod
@@ -693,3 +696,69 @@ def test_the_install_command_clears_a_refusal_the_pack_then_outlives(
     monkeypatch.setattr(first_use, "fetch_frozen", good)
     first_use.install_pack()
     assert first_use.first_use_tool("a-tool-the-pack-lacks") is None
+
+
+def _list_json() -> dict[str, Any]:
+    result = CliRunner().invoke(cli_app, ["--json", "engine", "list"])
+    assert result.exit_code == 0
+    return json.loads(result.output)
+
+
+def test_the_list_names_llama_cpp_missing_when_no_server_can_launch() -> None:
+    result = CliRunner().invoke(cli_app, ["engine", "list"])
+    assert "llama.cpp not installed" in result.output.splitlines()
+    body = _list_json()
+    assert body["not_installed"].count("llama.cpp") == 1
+    assert body["builds"] == []
+
+
+def test_a_stored_pack_lists_llama_cpp_as_installed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "given.whl"
+    publish(monkeypatch, make_pack(wheel))
+    first_use.install_pack(wheel)
+    body = _list_json()
+    assert [b["engine"] for b in body["builds"]] == ["llama.cpp"]
+    assert "llama.cpp" not in body["not_installed"]
+    text = CliRunner().invoke(cli_app, ["engine", "list"]).output.splitlines()
+    assert "llama.cpp not installed" not in text
+    assert sum(line.startswith("llama.cpp ") for line in text) == 1
+
+
+@pytest.mark.parametrize("on_path", [False, True], ids=["configured-file", "on-path"])
+def test_a_server_that_can_launch_keeps_llama_cpp_out_of_the_missing_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_path: bool
+) -> None:
+    _own_server(monkeypatch, tmp_path, on_path=on_path)
+    if cfg.llama_server_path:
+        monkeypatch.setenv("LILBEE_LLAMA_SERVER_PATH", cfg.llama_server_path)
+    assert "llama.cpp" not in _list_json()["not_installed"]
+
+
+def test_a_helper_with_no_server_and_no_pack_installs_the_pack_on_first_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parser = tmp_path / "gguf-parser"
+    monkeypatch.setattr(binary_mod, "_first_use_tool", lambda _tool: parser)
+    assert resolve_engine_tool(EngineTool.GGUF_PARSER) == parser
+
+
+def test_the_list_and_the_launch_agree_on_the_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel_server = tmp_path / "wheel" / "llama-server"
+    wheel_server.parent.mkdir()
+    wheel_server.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: wheel_server)
+    assert "llama.cpp" not in _list_json()["not_installed"]
+    assert resolve_llama_server() == wheel_server
+
+
+def test_a_configured_path_that_is_not_a_file_leaves_llama_cpp_listed_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LILBEE_LLAMA_SERVER_PATH", str(tmp_path / "no-such-llama-server"))
+    assert "llama.cpp" in _list_json()["not_installed"]
+    with pytest.raises(ProviderError, match="is not a file"):
+        resolve_llama_server()

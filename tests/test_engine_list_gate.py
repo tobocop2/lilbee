@@ -41,6 +41,7 @@ def test_an_engine_the_gate_passes_is_listed(monkeypatch: pytest.MonkeyPatch) ->
 def test_a_host_that_could_not_be_read_lists_no_engine_to_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(engine_service, "llama_server_ready", lambda: True)
     _use_host(monkeypatch, "", "")
     assert engine_service.not_installed() == []
 
