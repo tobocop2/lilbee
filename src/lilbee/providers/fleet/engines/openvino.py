@@ -11,7 +11,7 @@ from typing import Any, Literal
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec, build_server_argv
-from lilbee.providers.fleet.devices import DeviceProbe
+from lilbee.providers.fleet.devices import DeviceProbe, require_clean_probe_exit
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engines.base import (
     EngineName,
@@ -203,12 +203,13 @@ class OpenvinoAdapter:
 
     @staticmethod
     def _listed(binary: Path) -> tuple[ListedDevice, ...]:
-        output, _code = run_bounded(
+        output, code = run_bounded(
             [str(binary), "--list-devices"],
             timeout_s=_LIST_TIMEOUT_S,
             kill_wait_s=_LIST_KILL_WAIT_S,
             merge_stderr=True,
         )
+        require_clean_probe_exit(binary, code, output)
         return parse_devices(output)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
