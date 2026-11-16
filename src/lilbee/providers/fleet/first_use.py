@@ -62,7 +62,7 @@ INSTALL_REFUSALS = (
 """The errors that stop a pack install for a reason the user can act on."""
 
 
-class _RefusedInstalls:
+class RefusedInstalls:
     """The refusal of each first-use install this process made, so a lookup does not retry it."""
 
     def __init__(self) -> None:
@@ -79,7 +79,7 @@ class _RefusedInstalls:
             raise self._by_pack[key]
 
 
-_refusals = _RefusedInstalls()
+_refusals = RefusedInstalls()
 
 
 def _store() -> EngineStore:
