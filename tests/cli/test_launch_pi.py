@@ -126,6 +126,16 @@ def test_launch_pi_loads_the_extension_and_skill_and_pins_the_model(monkeypatch)
     assert [m["contextWindow"] for m in models] == [served]
 
 
+def test_launch_pi_gives_pi_the_window_served_on_the_launch_port(monkeypatch):
+    windows = {_PORT: 40960}
+    assert cfg.chat_n_ctx_target != 40960  # a lookup on another port would fall back to it
+    monkeypatch.setattr("lilbee.cli.launchers.pi.client_chat_ctx", windows.get)
+    result, agent = _launch()
+    assert result.exit_code == 0, result.output
+    models = json.loads(agent[1]["env"]["LILBEE_PI_MODELS"])
+    assert [(m["contextWindow"], m["maxTokens"]) for m in models] == [(40960, 8192)]
+
+
 def test_launch_pi_writes_no_file_under_home(tmp_path):
     _write_server_session()
     before = _files_under(tmp_path)
