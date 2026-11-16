@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from functools import partial
 from pathlib import Path
 
 import typer
@@ -15,6 +16,7 @@ from lilbee.cli.launchers import config_file
 from lilbee.cli.launchers.hermes_mcp import ensure_hermes_http_mcp
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
+from lilbee.cli.launchers.setup_gate import confirm_first_run_setup
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -24,6 +26,7 @@ _HERMES_INSTALL_HINT = (
 _TOKEN_REF = "${" + LILBEE_TOKEN_ENV_VAR + "}"
 _MCP_CONTAINER_KEY = "mcp_servers"
 _CONFIG_LABEL = "hermes config (config.yaml)"
+_SETUP_MARKER_NAME = "hermes-setup.json"
 # hermes refuses to start against a model whose window is under this, so a smaller
 # one is worth naming here rather than leaving hermes to fail after the handoff.
 _HERMES_MIN_CTX = 64_000
@@ -57,6 +60,24 @@ def _upsert_env_token(path: Path, token: str) -> None:
     # atomic_write_text creates the file 0600 and keeps that mode across the
     # replace, so the token is never briefly readable and needs no chmod after.
     config_file.atomic_write_text(path, "\n".join([*kept, line]) + "\n")
+
+
+def _print_setup_plan(*, include_mcp: bool) -> None:
+    """Tell the user exactly what the first-run setup writes and installs."""
+    typer.secho("First-time hermes setup will write:", fg=typer.colors.CYAN)
+    typer.echo(f"  - lilbee provider entry -> {_hermes_config_path()}")
+    typer.echo(f"  - lilbee token, owner-only -> {_hermes_env_path()}")
+    typer.echo(f"  - lilbee MCP skill -> {_hermes_skill_dest()}")
+    if include_mcp:
+        typer.echo("  - lilbee MCP entry -> the same config.yaml")
+        typer.echo(
+            "  - hermes's mcp extra, installed into hermes's own environment when it is "
+            "missing and hermes allows lazy installs"
+        )
+    typer.echo(
+        "Only the `lilbee` keys and the LILBEE_TOKEN line are written; your other hermes "
+        "settings are preserved. To undo, remove those entries and the skill dir."
+    )
 
 
 def warn_hermes_ungrounded() -> None:
@@ -94,7 +115,8 @@ class HermesLauncher:
     name = "hermes"
     install_hint = _HERMES_INSTALL_HINT
 
-    def __init__(self, *, include_mcp: bool = True) -> None:
+    def __init__(self, *, assume_yes: bool = False, include_mcp: bool = True) -> None:
+        self._assume_yes = assume_yes
         self._include_mcp = include_mcp
         self._binary: str | None = None
 
@@ -105,6 +127,13 @@ class HermesLauncher:
     def prepare(
         self, *, token: str, port: int, model_refs: list[str]
     ) -> tuple[list[str], dict[str, str]]:
+        if not confirm_first_run_setup(
+            marker_name=_SETUP_MARKER_NAME,
+            client_name="hermes",
+            print_plan=partial(_print_setup_plan, include_mcp=self._include_mcp),
+            assume_yes=self._assume_yes,
+        ):
+            raise typer.Exit(0)
         config = config_file.load_config_dict(
             _hermes_config_path(),
             parse=yaml.safe_load,
@@ -145,6 +174,13 @@ class HermesLauncher:
 
 
 def hermes_cmd(
+    yes: bool = typer.Option(
+        False,
+        "--no-prompt",
+        "--yes",
+        "-y",
+        help="Proceed with first-run setup without the interactive prompt (for scripts/CI).",
+    ),
     mcp: bool | None = typer.Option(
         None,
         "--mcp/--no-mcp",
@@ -154,4 +190,4 @@ def hermes_cmd(
 ) -> None:
     """Launch hermes with lilbee registered as its model provider."""
     include_mcp = cfg.agent_mcp_enabled if mcp is None else mcp
-    run_launcher(HermesLauncher(include_mcp=include_mcp))
+    run_launcher(HermesLauncher(assume_yes=yes, include_mcp=include_mcp))

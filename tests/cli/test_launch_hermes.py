@@ -271,3 +271,76 @@ def test_launch_hermes_hands_the_lazy_install_setting_to_the_mcp_setup(
     ensure.assert_called_once()
     assert ensure.call_args.args == ("/usr/local/bin/hermes",)
     assert ensure.call_args.kwargs["allow_lazy_installs"] is expected
+
+
+def _launch_on_a_terminal(*args: str, answer: bool):
+    """Run ``lilbee launch hermes`` on a terminal; return (result, confirm, ensure)."""
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.hermes.shutil.which", return_value="/usr/local/bin/hermes"),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=answer) as confirm,
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.server.spawn_server"),
+        patch("lilbee.cli.launchers.hermes.ensure_hermes_http_mcp", return_value=True) as ensure,
+    ):
+        result = runner.invoke(app, ["launch", "hermes", *args])
+    return result, confirm, ensure
+
+
+@pytest.mark.parametrize("mode", ["--mcp", "--no-mcp"])
+def test_a_declined_hermes_setup_writes_and_installs_nothing(tmp_path, mode):
+    _write_server_session()
+    before = set(tmp_path.rglob("*"))
+    result, confirm, ensure = _launch_on_a_terminal(mode, answer=False)
+    assert result.exit_code == 0
+    confirm.assert_called_once_with("Proceed with hermes setup?", default=True)
+    ensure.assert_not_called()
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_an_accepted_hermes_setup_is_not_asked_again(tmp_path):
+    _write_server_session()
+    _launch_on_a_terminal(answer=True)
+    result, confirm, _ensure = _launch_on_a_terminal(answer=False)
+    assert result.exit_code == 0
+    confirm.assert_not_called()
+    assert (cfg.data_dir / "launchers" / "hermes-setup.json").is_file()
+    assert "First-time hermes setup" not in result.stdout
+
+
+def test_launch_hermes_yes_flag_skips_the_question_on_a_terminal(tmp_path):
+    _write_server_session()
+    result, confirm, _ensure = _launch_on_a_terminal("--yes", answer=False)
+    assert result.exit_code == 0
+    confirm.assert_not_called()
+    assert (tmp_path / ".hermes" / "config.yaml").is_file()
+    assert (cfg.data_dir / "launchers" / "hermes-setup.json").is_file()
+
+
+def test_hermes_setup_plan_with_mcp_names_every_file_and_the_extra_install(capsys):
+    from lilbee.cli.launchers.hermes import _print_setup_plan
+
+    _print_setup_plan(include_mcp=True)
+    home = Path.home() / ".hermes"
+    assert capsys.readouterr().out == (
+        "First-time hermes setup will write:\n"
+        f"  - lilbee provider entry -> {home / 'config.yaml'}\n"
+        f"  - lilbee token, owner-only -> {home / '.env'}\n"
+        f"  - lilbee MCP skill -> {home / 'skills' / 'lilbee-mcp'}\n"
+        "  - lilbee MCP entry -> the same config.yaml\n"
+        "  - hermes's mcp extra, installed into hermes's own environment when it is "
+        "missing and hermes allows lazy installs\n"
+        "Only the `lilbee` keys and the LILBEE_TOKEN line are written; your other hermes "
+        "settings are preserved. To undo, remove those entries and the skill dir.\n"
+    )
+
+
+def test_hermes_setup_plan_without_mcp_leaves_out_the_mcp_lines(capsys):
+    from lilbee.cli.launchers.hermes import _print_setup_plan
+
+    _print_setup_plan(include_mcp=False)
+    out = capsys.readouterr().out
+    assert f"lilbee MCP skill -> {Path.home() / '.hermes' / 'skills' / 'lilbee-mcp'}" in out
+    assert "MCP entry" not in out
+    assert "mcp extra" not in out
