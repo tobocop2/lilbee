@@ -15,6 +15,7 @@ from lilbee.core.config import cfg
 from lilbee.data.store.canary import CanaryState
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval import canary_probe
 from tests.test_engine_service import GGUF_ENGINE, GGUF_REF, OPENVINO_ENGINE
 
@@ -322,3 +323,28 @@ def test_the_slash_command_prefer_writes_with_the_yes_word(
     assert _stored("preferred_engine") is None
     assert run_engine_command("prefer --yes openvino").ok is True
     assert _stored("preferred_engine") == "openvino"
+
+
+def test_a_role_choice_for_the_embed_model_asks_unless_confirmed(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    with pytest.raises(engine_service.EmbedConfirmRequiredError):
+        engine_service.use_for_role(WorkerRole.EMBED, MODEL, "openvino")
+    assert _stored("engine_choices") is None
+
+
+def test_a_confirmed_role_choice_for_the_embed_model_writes(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    engine_service.use_for_role(WorkerRole.EMBED, MODEL, "openvino", confirmed=True)
+    assert json.loads(str(_stored("engine_choices"))) == {MODEL: "openvino"}
+
+
+def test_a_role_choice_for_another_model_names_the_model_of_the_role(
+    library: SimpleNamespace, with_openvino: None
+) -> None:
+    with pytest.raises(engine_service.EngineRefusedError) as caught:
+        engine_service.use_for_role(WorkerRole.EMBED, "org/other/other.gguf", "openvino")
+    assert str(caught.value) == (
+        f"The embed model is {MODEL}, not org/other/other.gguf. Choose the engine for {MODEL}."
+    )

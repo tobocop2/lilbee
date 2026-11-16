@@ -368,8 +368,52 @@ def _rule(role: WorkerRole, preferred: str = "auto", override: str | None = None
 def test_a_preferred_engine_that_does_not_serve_rerank_leaves_rerank_on_the_next_engine() -> None:
     rerank = _rule(WorkerRole.RERANK, preferred="mistral.rs")
     assert (rerank.name, rerank.notice_kind, rerank.notice) == (EngineName.LLAMA, None, None)
-    for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION):
+    for role in (WorkerRole.CHAT, WorkerRole.VISION):
         assert _rule(role, preferred="mistral.rs").name is EngineName.MISTRAL
+
+
+def test_a_gguf_embed_model_never_goes_to_mistral_by_preference() -> None:
+    embed = _rule(WorkerRole.EMBED, preferred="mistral.rs")
+    assert (embed.name, embed.notice_kind, embed.notice) == (EngineName.LLAMA, None, None)
+
+
+def test_a_stored_override_of_mistral_for_a_gguf_embed_falls_back_and_names_the_format() -> None:
+    embed = _rule(WorkerRole.EMBED, override="mistral.rs")
+    assert embed.name is EngineName.LLAMA
+    assert embed.notice == (
+        "Engine mistral.rs for embed cannot load the gguf format of org/m. Using llama.cpp."
+    )
+
+
+def test_a_gguf_embed_model_has_no_engine_when_only_mistral_is_installed() -> None:
+    only_mistral = {EngineName.MISTRAL: frozenset({GGUF})}
+    embed = choose_engine(
+        fmt=GGUF,
+        host=lambda: LINUX,
+        installed=only_mistral,
+        preferred="mistral.rs",
+        override="mistral.rs",
+        role=WorkerRole.EMBED,
+        model="org/m",
+    )
+    assert embed.name is None
+    assert embed.notice == (
+        "Engine mistral.rs for embed cannot load the gguf format of org/m. "
+        "No installed engine loads the gguf format for embed."
+    )
+
+
+def test_a_safetensors_embed_model_still_goes_to_mistral() -> None:
+    embed = choose_engine(
+        fmt=ModelFormat.SAFETENSORS,
+        host=lambda: LINUX,
+        installed={EngineName.MISTRAL: frozenset({ModelFormat.SAFETENSORS})},
+        preferred="mistral.rs",
+        override=None,
+        role=WorkerRole.EMBED,
+        model="org/m",
+    )
+    assert embed.name is EngineName.MISTRAL
 
 
 def test_a_stored_override_for_an_unserved_role_falls_back_with_a_notice() -> None:
@@ -408,6 +452,25 @@ def test_the_default_skips_an_engine_that_does_not_serve_the_role(
         "Choose mistral.rs with lilbee engine use or lilbee engine prefer."
     )
     assert _rule(WorkerRole.EMBED).name is EngineName.LLAMA
+
+
+class _ChatOnly(FakeAdapter):
+    served_roles = frozenset({WorkerRole.CHAT})
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
+
+
+def test_an_override_for_an_unserved_role_names_what_no_engine_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(ADAPTERS, EngineName.LLAMA, _ChatOnly())  # type: ignore[arg-type]
+    rerank = _rule(WorkerRole.RERANK, override="mistral.rs")
+    assert rerank.name is None
+    assert rerank.notice == (
+        "Engine mistral.rs for rerank does not serve this role. "
+        "No installed engine serves this role."
+    )
 
 
 def test_the_launch_plan_puts_rerank_on_the_next_engine_after_the_fallback(

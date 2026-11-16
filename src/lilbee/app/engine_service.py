@@ -534,14 +534,20 @@ def use_for_role(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
     if name != AUTO:
-        _require_serves(_engine_name(name), role)
+        _require_serves(_engine_name(name), role, model)
     return use(model, name, confirmed)
 
 
-def _require_serves(name: EngineName, role: WorkerRole) -> None:
+def _require_serves(name: EngineName, role: WorkerRole, model: str) -> None:
     adapter = choice.ADAPTERS.get(name)
     if adapter is not None and role not in adapter.served_roles:
         raise EngineRefusedError(unserved_role_message(name, role, adapter.served_roles))
+    fmt = model_format(model)
+    if choice.refuses_format_for_role(name, role, fmt):
+        raise EngineRefusedError(
+            f"Engine {name} cannot load the {fmt} format of {model} for {role}. "
+            f"Choose an engine that loads {fmt} for {role}."
+        )
 
 
 def use(model: str, name: str, confirmed: bool = False) -> str:
