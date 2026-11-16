@@ -601,6 +601,10 @@ class LlamaServerClient:
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
         self.in_flight = 0
+        # The server's input limit, read on the first embed that needs it.
+        self._max_input: int | None = None
+        # Set once the embed truncation warning is logged: one warning for the client's life.
+        self._warned_truncation = False
         self._in_flight_lock = threading.Lock()
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
@@ -1194,10 +1198,49 @@ class LlamaServerClient:
             # Match the in-process embedder; the server rejects an empty input.
             return []
         vectors: list[Vector] = []
+        cut = 0
         for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
+            cut += self._count_inputs_past_limit(sub_batch)
             data = self._embed_subbatch(sub_batch)
             vectors.extend(_embedding_vector(item, self._profile) for item in data)
+        if cut and not self._warned_truncation:
+            self._warned_truncation = True
+            log.warning(
+                "%d of %d embed inputs are past the embedder's %d-token limit; the server "
+                "truncates them and the cut text is not in the vectors",
+                cut,
+                len(texts),
+                self._input_limit(),
+            )
         return vectors
+
+    def _input_limit(self) -> int | None:
+        """The server's ``max_input_length`` from its limit route, asked once; None with no route."""
+        path = self._profile.input_limit_path
+        if path is None:
+            return None
+        if self._max_input is None:
+            resp = self._http.get(self._native_route(path))
+            self._raise_for_status(resp)
+            self._max_input = int(resp.json()["max_input_length"])
+        return self._max_input
+
+    def _count_inputs_past_limit(self, texts: list[str]) -> int:
+        """How many of *texts* the server's tokenizer counts past its input limit.
+
+        A token is at least one character, so only a text with more characters than
+        the limit is counted, in one request.
+        """
+        limit = self._input_limit()
+        path = self._profile.token_count_path
+        if limit is None or path is None:
+            return 0
+        long = [text for text in texts if len(text) > limit]
+        if not long:
+            return 0
+        resp = self._http.post(self._native_route(path), json={"inputs": long})
+        self._raise_for_status(resp)
+        return sum(len(tokens) > limit for tokens in resp.json())
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
