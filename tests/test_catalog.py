@@ -1868,6 +1868,17 @@ class TestResolveFilename:
         assert chosen == "Bonsai-27B-Q2_g64.gguf"
         assert asked == [(PICKS_CHAT[0].hf_repo, "Bonsai-27B-Q2_g64.gguf")]
 
+    def test_supported_file_beats_a_better_ranked_unsupported_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unsupported architecture only wins when no later file is supported."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "Bonsai-27B-Q2_0.gguf")
+        can_load, asked = self._refusing()
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Bonsai-27B-Q2_0.gguf"
+        assert asked == [(PICKS_CHAT[0].hf_repo, "Bonsai-27B-Q2_0.gguf")]
+
     def test_unsupported_architecture_outranks_an_engine_refusal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
