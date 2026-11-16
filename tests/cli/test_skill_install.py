@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 
 from lilbee.cli.launchers import skill_install
 from lilbee.cli.launchers.skill_install import install_bundled_skill
+
+
+@pytest.fixture
+def locked_folder_cleanup(monkeypatch):
+    """Make a cleanup that does not ignore errors fail, as a locked file does on Windows."""
+    real_rmtree = shutil.rmtree
+
+    def _rmtree(path, ignore_errors=False, **kwargs):
+        if not ignore_errors:
+            raise OSError("folder busy")
+        real_rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr(skill_install.shutil, "rmtree", _rmtree)
 
 
 def test_installs_into_empty_dest(tmp_path):
@@ -182,3 +196,85 @@ def test_bundled_pi_extension_names_both_locations_when_missing(tmp_path, monkey
         FileNotFoundError, match=r"extensions/lilbee\.js.*no-installed.*no-checkout"
     ):
         skill_install.bundled_pi_extension()
+
+
+def test_the_local_changes_warning_names_the_folder_and_the_fix(tmp_path, caplog):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text("user edit", encoding="utf-8")
+    with caplog.at_level("WARNING", logger=skill_install.__name__):
+        install_bundled_skill(dest)
+    assert [record.getMessage() for record in caplog.records] == [
+        f"The lilbee skill at {dest} has local changes, so it is not updated. "
+        "Delete the folder to get the bundled version."
+    ]
+
+
+def test_an_in_use_folder_warning_names_the_folder_and_the_cause(
+    tmp_path, monkeypatch, caplog, locked_folder_cleanup
+):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    _bundle(tmp_path, monkeypatch, "old text")
+    install_bundled_skill(dest)
+    _bundle(tmp_path, monkeypatch, "new text")
+
+    def _in_use(_src, _dst):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(skill_install.os, "replace", _in_use)
+    with caplog.at_level("WARNING", logger=skill_install.__name__):
+        assert install_bundled_skill(dest) is None
+    assert [record.getMessage() for record in caplog.records] == [
+        f"The lilbee skill at {dest} is in use and was not updated: file in use"
+    ]
+    assert sorted(path.name for path in dest.parent.iterdir()) == ["lilbee-mcp"]
+
+
+def test_a_refresh_leaves_no_folder_beside_the_skill(tmp_path, monkeypatch, locked_folder_cleanup):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    _bundle(tmp_path, monkeypatch, "old text")
+    install_bundled_skill(dest)
+    _bundle(tmp_path, monkeypatch, "new text")
+    assert install_bundled_skill(dest) == dest
+    assert sorted(path.name for path in dest.parent.iterdir()) == ["lilbee-mcp"]
+
+
+def test_a_lost_install_race_leaves_no_staging_folder(tmp_path, monkeypatch, locked_folder_cleanup):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+
+    def _lose_the_race(_src, _dst):
+        dest.mkdir(parents=True, exist_ok=True)
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(skill_install.os, "replace", _lose_the_race)
+    assert install_bundled_skill(dest) is None
+    assert sorted(path.name for path in dest.parent.iterdir()) == ["lilbee-mcp"]
+
+
+def test_a_failed_install_reports_its_own_error_and_leaves_no_staging_folder(
+    tmp_path, monkeypatch, locked_folder_cleanup
+):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+
+    def _fail(_src, _dst):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(skill_install.os, "replace", _fail)
+    with pytest.raises(OSError, match="rename failed"):
+        install_bundled_skill(dest)
+    assert list(dest.parent.iterdir()) == []
+
+
+def test_the_skill_is_staged_beside_its_destination_under_a_lilbee_prefix(tmp_path, monkeypatch):
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    staged: list[Path] = []
+    real_replace = skill_install.os.replace
+
+    def _record(src, dst):
+        staged.append(Path(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(skill_install.os, "replace", _record)
+    assert install_bundled_skill(dest) == dest
+    assert [path.parent for path in staged] == [dest.parent]
+    assert staged[0].name.startswith(".lilbee-mcp-")

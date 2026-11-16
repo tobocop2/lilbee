@@ -239,3 +239,35 @@ def test_upsert_env_token_writes_the_env_owner_only(tmp_path):
 
     assert "LILBEE_TOKEN=tok-xyz" in env.read_text()
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    ("security", "expected"),
+    [
+        (None, True),
+        ({}, True),
+        ({"allow_lazy_installs": True}, True),
+        ({"allow_lazy_installs": False}, False),
+    ],
+    ids=["no-security-section", "empty-section", "allowed", "refused"],
+)
+def test_launch_hermes_hands_the_lazy_install_setting_to_the_mcp_setup(
+    tmp_path, security, expected
+):
+    _write_server_session()
+    if security is not None:
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(yaml.safe_dump({"security": security}), encoding="utf-8")
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.hermes.shutil.which", return_value="/usr/local/bin/hermes"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.server.spawn_server"),
+        patch("lilbee.cli.launchers.hermes.ensure_hermes_http_mcp", return_value=True) as ensure,
+    ):
+        result = runner.invoke(app, ["launch", "hermes"])
+    assert result.exit_code == 0
+    ensure.assert_called_once()
+    assert ensure.call_args.args == ("/usr/local/bin/hermes",)
+    assert ensure.call_args.kwargs["allow_lazy_installs"] is expected

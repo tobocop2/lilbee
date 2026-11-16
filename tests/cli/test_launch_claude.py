@@ -215,3 +215,90 @@ def test_launch_claude_propagates_exit_code(tmp_path):
     ):
         result = runner.invoke(app, ["launch", "claude"])
     assert result.exit_code == 42
+
+
+def test_setup_plan_without_mcp_names_only_the_skill(capsys):
+    from lilbee.cli.launchers.claude import _claude_skill_dest, _print_setup_plan
+
+    _print_setup_plan(include_mcp=False)
+    assert capsys.readouterr().out == (
+        "First-time Claude Code setup will write:\n"
+        f"  - lilbee MCP skill -> {_claude_skill_dest()}\n"
+        "Claude Code's own settings are not touched. To undo, remove the path above.\n"
+    )
+
+
+def test_setup_plan_with_mcp_names_the_config_and_the_skill(capsys):
+    from lilbee.cli.launchers.claude import _claude_skill_dest, _mcp_config_path, _print_setup_plan
+
+    _print_setup_plan(include_mcp=True)
+    assert capsys.readouterr().out == (
+        "First-time Claude Code setup will write:\n"
+        f"  - lilbee MCP config -> {_mcp_config_path()}\n"
+        f"  - lilbee MCP skill -> {_claude_skill_dest()}\n"
+        "Claude Code's own settings are not touched; the MCP config is passed "
+        "per launch via --mcp-config. The token is referenced by env, never "
+        "written as a literal. To undo, remove the two paths above.\n"
+    )
+
+
+def test_launch_claude_plan_lists_the_mcp_config_when_it_is_written(tmp_path):
+    _write_server_session()
+    result, _run = _launch()
+    assert result.exit_code == 0
+    assert "lilbee MCP config ->" in result.stdout
+    assert "remove the two paths above" in result.stdout
+
+
+def test_launch_claude_asks_to_proceed_with_the_client_name(tmp_path):
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.claude.shutil.which", return_value="/usr/local/bin/claude"),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm", return_value=True) as confirm,
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "claude"])
+    assert result.exit_code == 0
+    confirm.assert_called_once_with("Proceed with Claude Code setup?", default=True)
+
+
+def test_launch_claude_yes_flag_skips_the_question_on_a_terminal(tmp_path):
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.claude.shutil.which", return_value="/usr/local/bin/claude"),
+        patch("lilbee.cli.launchers.setup_gate._is_interactive", return_value=True),
+        patch("lilbee.cli.launchers.setup_gate.typer.confirm") as confirm,
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        result = runner.invoke(app, ["launch", "claude", "--yes"])
+    assert result.exit_code == 0
+    confirm.assert_not_called()
+    assert (cfg.data_dir / "launchers" / "claude-setup.json").exists()
+
+
+def test_launch_claude_limits_settings_to_the_project(tmp_path):
+    _write_server_session()
+    _result, run = _launch()
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--setting-sources") + 1] == "project,local"
+
+
+def test_launch_claude_reads_the_served_window_from_the_launch_port(tmp_path, monkeypatch):
+    _write_server_session()
+    ports: list[int] = []
+    monkeypatch.setattr(
+        "lilbee.cli.launchers.claude.client_chat_ctx", lambda port: ports.append(port)
+    )
+    result, _run = _launch()
+    assert result.exit_code == 0
+    assert ports == [_PORT]
+
+
+def test_launch_claude_writes_the_mcp_config_indented_by_two(tmp_path):
+    _write_server_session()
+    _launch()
+    text = (cfg.data_dir / "launchers" / "claude-mcp.json").read_text(encoding="utf-8")
+    assert text == json.dumps(json.loads(text), indent=2)
