@@ -184,12 +184,53 @@ def test_cgroup_path_missing_under_the_mount_reads_the_mount(tmp_path) -> None:
 
 
 def test_cgroup_path_with_parent_reference_reads_the_mount(tmp_path) -> None:
-    # "x" sits beside the mount, so a walk that followed ".." would find it.
+    # "x" sits beside the mount with a tighter quota; a walk that followed ".." would take it.
     root = tmp_path / "mount"
-    _write_cgroup(root, {"cpu.max": "100000 100000\n"})
-    _write_cgroup(tmp_path, {"x/cpu.max": "900000 100000\n"})
+    _write_cgroup(root, {"cpu.max": "300000 100000\n"})
+    _write_cgroup(tmp_path, {"x/cpu.max": "100000 100000\n"})
     proc = _proc_cgroup(tmp_path, "0::/../x\n")
-    assert _cgroup_cpu_quota(root, proc) == 1
+    assert _cgroup_cpu_quota(root, proc) == 3
+
+
+def test_cgroup_path_may_start_with_an_x_and_contain_a_colon(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"Xray:1.slice/job.scope/cpu.max": "200000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/Xray:1.slice/job.scope\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+def test_cgroup_v2_zero_period_is_none(tmp_path) -> None:
+    _write_cgroup(tmp_path, {"cpu.max": "100000 0\n"})
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def test_cgroup_v2_one_microsecond_period_is_a_limit(tmp_path) -> None:
+    _write_cgroup(tmp_path, {"cpu.max": "5 1\n"})
+    assert _cgroup_cpu_quota(tmp_path) == 5
+
+
+def test_cgroup_v1_zero_period_is_none(tmp_path) -> None:
+    _write_cgroup(
+        tmp_path,
+        {"cpu/cpu.cfs_quota_us": "100000\n", "cpu/cpu.cfs_period_us": "0\n"},
+    )
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def test_cgroup_v1_zero_quota_is_none(tmp_path) -> None:
+    _write_cgroup(
+        tmp_path,
+        {"cpu/cpu.cfs_quota_us": "0\n", "cpu/cpu.cfs_period_us": "100000\n"},
+    )
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def test_cgroup_v1_smallest_quota_and_period_are_limits(tmp_path) -> None:
+    _write_cgroup(
+        tmp_path,
+        {"cpu/cpu.cfs_quota_us": "1\n", "cpu/cpu.cfs_period_us": "1\n"},
+    )
+    assert _cgroup_cpu_quota(tmp_path) == 1
 
 
 def test_cgroup_unreadable_proc_file_reads_the_mount(tmp_path) -> None:
