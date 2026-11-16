@@ -123,9 +123,18 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         _NO_RECORD,
     ),
     _deferred(EngineName.TEI, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
-    _deferred(
-        EngineName.TEI, "linux-x86_64-cuda-sm89", Device.CUDA, Route.PACK, _CUDA_HOST, _NO_RECORD
+    *(
+        _deferred(
+            EngineName.TEI,
+            f"linux-x86_64-cuda-sm{cc}",
+            Device.CUDA,
+            Route.PACK,
+            _CUDA_HOST,
+            _NO_RECORD,
+        )
+        for cc in (75, 80, 86, 89, 90, 100, 120)
     ),
+    _deferred(EngineName.TEI, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST),
     _deferred(
         EngineName.MLX,
         "macos-arm64-metal",

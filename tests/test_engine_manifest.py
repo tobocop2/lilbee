@@ -112,6 +112,87 @@ def test_tei_digest_follows_the_host_cell(monkeypatch: pytest.MonkeyPatch) -> No
     assert _pin(monkeypatch, EngineName.TEI, "Windows", "AMD64")["sha256"] is None
 
 
+_TEI_RELEASE = "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei/"
+SHIPPED_TEI = {
+    "cpu": (
+        "linux-x86_64-cpu",
+        "c96420e257a65ef874f3141d441b88e2bf3392c2121e55785ccb53dee49cc975",
+    ),
+    "metal": (
+        "macos-arm64-metal",
+        "7abc80ae1b3c964f2c093a1fb620ffc010df7ba1d7572e3525ea9c719476ff7c",
+    ),
+    "sm75": (
+        "linux-x86_64-cuda-sm75",
+        "538f3e098272ad50cb70796e0d529e51f16eb94089beed28b7e1d8397adb595d",
+    ),
+    "sm80": (
+        "linux-x86_64-cuda-sm80",
+        "c01b576a492fdfdf095a0f34d3f2ae338307a704ad37054b28e233f35e5e6f3c",
+    ),
+    "sm86": (
+        "linux-x86_64-cuda-sm86",
+        "a9d02124104f06d072c435ab7456a3824e677a678f36ca78df00804acd499d09",
+    ),
+    "sm89": (
+        "linux-x86_64-cuda-sm89",
+        "d10b2f9ab2337eff71907144e98643693ad54bcf5eb30d1dd8a5e15763aa12c8",
+    ),
+    "sm90": (
+        "linux-x86_64-cuda-sm90",
+        "53182c951e255fc23835d53ab86674a5dc1ecef0943394394e33568c31228aac",
+    ),
+    "sm100": (
+        "linux-x86_64-cuda-sm100",
+        "593835778f3b792556b29a7fe03f0cbb40a0c02691e26d213061cbf33d7ffd1e",
+    ),
+    "sm120": (
+        "linux-x86_64-cuda-sm120",
+        "000efa36bf89969ca7aafe29b7cea5a4db2ec5e8e2ac80ea14f58d982fab1512",
+    ),
+}
+_TEI_HOSTS = {
+    "cpu": ("Linux", "x86_64", None),
+    "metal": ("Darwin", "arm64", None),
+    "sm75": ("Linux", "x86_64", [7, 5]),
+    "sm80": ("Linux", "x86_64", [8, 0]),
+    "sm86": ("Linux", "x86_64", [8, 6]),
+    "sm89": ("Linux", "x86_64", [8, 9]),
+    "sm90": ("Linux", "x86_64", [9, 0]),
+    "sm100": ("Linux", "x86_64", [10, 0]),
+    "sm120": ("Linux", "x86_64", [12, 0]),
+}
+
+
+@pytest.mark.parametrize("build", SHIPPED_TEI)
+def test_each_host_resolves_its_own_tei_pack_from_the_shipped_table(
+    build: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cell, digest = SHIPPED_TEI[build]
+    system, machine, compute = _TEI_HOSTS[build]
+    facts = (
+        {"driver": "570.00", "cuda_driver": 12080, "gpus": [{"name": "gpu", "cc": compute}]}
+        if compute
+        else None
+    )
+    host = host_caps.collect(
+        system=system,
+        machine=machine,
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvidia=facts,
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
+    pin = tei.TeiAdapter().pin_record()
+    backend = cell.split("-", 2)[2]
+    assert pin["backend"] == backend
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    url = pin["platforms"][cell]["url"]
+    assert url.startswith(_TEI_RELEASE)
+    assert f"-1.{backend.replace('-', '_')}-py3-none-" in url
+
+
 def test_a_cell_with_no_digest_keeps_the_no_pack_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
