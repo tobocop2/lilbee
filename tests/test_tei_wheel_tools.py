@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -614,14 +615,6 @@ def test_the_metal_build_enables_the_candle_backend() -> None:
     assert "--features candle,metal,http" in lines[0]
 
 
-def test_the_wheel_script_writes_the_mpl_source_file_into_the_project() -> None:
-    script = (_TOOLS / "tei_wheel.sh").read_text(encoding="utf-8")
-    assert (
-        'mpl_notice.py" "${out}/terms.json" "${src}/Cargo.lock" "${project}/SOURCE-MPL-2.0"'
-        in script
-    )
-
-
 _PYTHON_STUB = """#!/bin/sh
 # Runs the .py tools; records where the wheel build starts and its --outdir.
 case "$1" in
@@ -640,7 +633,16 @@ fi
 """
 
 
-def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Path) -> None:
+_MPL_CARGO_STUB = _CARGO_STUB.replace(
+    '{"licenses":[{"id":"MIT"},{"id":"Apache-2.0"}]}',
+    '{"licenses":[{"id":"MIT"},{"id":"MPL-2.0","used_by":'
+    '[{"crate":{"name":"option-ext","version":"0.2.0"}}]}]}',
+)
+_CHECKSUM = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+
+def _run_wheel_script(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """Run tei_wheel.sh against stub tools; return the result, the wheel project and the record."""
     tools = tmp_path / "tools/wheel-build"
     shutil.copytree(_TOOLS, tools)
     project = tmp_path / "packaging/engine-wheel-tei"
@@ -649,16 +651,21 @@ def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Pat
     source = tmp_path / "tei"
     source.mkdir()
     (source / "LICENSE").write_text("Apache licence", encoding="utf-8")
-    (source / "Cargo.lock").write_text("", encoding="utf-8")
+    (source / "Cargo.lock").write_text(
+        f'[[package]]\nname = "option-ext"\nversion = "0.2.0"\nchecksum = "{_CHECKSUM}"\n',
+        encoding="utf-8",
+    )
     router = tmp_path / "router"
     router.write_bytes(b"\x7fELF")
-    (tmp_path / "cargo/registry/src/index-1/kernels-0.1.0").mkdir(parents=True)
+    crate = tmp_path / "cargo/registry/src/index-1/kernels-0.1.0"
+    crate.mkdir(parents=True)
+    (crate / "NOTICE").write_text("kernels notice", encoding="utf-8")
     record = tmp_path / "record"
     record.mkdir()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     cargo = bin_dir / "cargo"
-    cargo.write_text(_CARGO_STUB, encoding="utf-8")
+    cargo.write_text(_MPL_CARGO_STUB, encoding="utf-8")
     python = bin_dir / "python-stub"
     python.write_text(_PYTHON_STUB.format(python=sys.executable, record=record), encoding="utf-8")
     cargo.chmod(0o755)
@@ -680,29 +687,112 @@ def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Pat
             "WHEEL_VERSION": "1.9.4",
         },
     )
+    return result, project, record
+
+
+def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Path) -> None:
+    result, _, record = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
     outdir = Path((record / "build-outdir").read_text(encoding="utf-8").strip())
     assert outdir.is_absolute()
     assert outdir.resolve() == (tmp_path / "out/dist").resolve()
 
 
-def _code_lines(path: Path) -> list[str]:
-    """The lines of a shell script that are not comments."""
-    return [
-        line
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if not line.lstrip().startswith("#")
+def test_the_wheel_script_writes_the_mpl_source_file_into_the_project(tmp_path: Path) -> None:
+    result, project, _ = _run_wheel_script(tmp_path)
+    assert result.returncode == 0, result.stderr
+    lines = (project / "SOURCE-MPL-2.0").read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        f"https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate  {_CHECKSUM}"
     ]
 
 
-def test_the_cuda_build_compiles_kernels_position_independent() -> None:
-    lines = _code_lines(_TOOLS / "tei_manylinux.sh")
-    export = lines.index('  export NVCC_APPEND_FLAGS="-Xcompiler -fPIC"')
-    start = max(
-        i for i, line in enumerate(lines[:export]) if line == 'if [ -n "${CUDA_CC}" ]; then'
+def test_the_wheel_script_copies_the_vendored_notices_into_the_project(tmp_path: Path) -> None:
+    result, project, _ = _run_wheel_script(tmp_path)
+    assert result.returncode == 0, result.stderr
+    copied = project / "THIRD-PARTY/tei-notices/kernels-0.1.0/NOTICE"
+    assert copied.read_text(encoding="utf-8") == "kernels notice"
+
+
+_MANYLINUX_STUB = """#!/bin/sh
+# Stands in for a tool of the manylinux image; the build call records its environment.
+name="$(basename "$0")"
+case "${name}" in
+  nproc) echo 1 ;;
+  rustc) echo "rustc 1.0.0" ;;
+  git) shift "$(($# - 1))"; mkdir -p "$1" ;;
+  nvprune) while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && : > "$2"; shift; done ;;
+  cargo)
+    mkdir -p target/release
+    : > target/release/text-embeddings-router
+    chmod 755 target/release/text-embeddings-router
+    echo "${NVCC_APPEND_FLAGS-unset}" > "{record}/nvcc-flags"
+    ;;
+esac
+exit 0
+"""
+_IMAGE_TOOLS = ("dnf", "curl", "sh", "nproc", "rustc", "git", "nvcc", "nvprune", "cargo")
+_IMAGE_TOOLS += ("auditwheel", "chown")
+_IMAGE_ROOTS = re.compile(r"/(?:etc|usr/local|tmp|opt)(?=/)")
+
+
+def _build_flags(tmp_path: Path, cuda_cc: str) -> str:
+    """Run tei_manylinux.sh on stub tools; return NVCC_APPEND_FLAGS as the cargo build sees it."""
+    script = (_TOOLS / "tei_manylinux.sh").read_text(encoding="utf-8")
+    script = re.sub(_IMAGE_ROOTS, lambda m: f"{tmp_path}{m.group(0)}", script)
+    work = tmp_path / "work"
+    (work / "tools/wheel-build").mkdir(parents=True)
+    for name in ("install_cargo_about.sh", "tei_wheel.sh", "write_cuda_notice.py"):
+        (work / "tools/wheel-build" / name).write_text("", encoding="utf-8")
+    record = tmp_path / "record"
+    record.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in _IMAGE_TOOLS:
+        stub = bin_dir / name
+        stub.write_text(_MANYLINUX_STUB.replace("{record}", str(record)), encoding="utf-8")
+        stub.chmod(0o755)
+    py = tmp_path / "opt/python/cp312-cp312/bin"
+    py.mkdir(parents=True)
+    (py / "python").symlink_to(bin_dir / "dnf")
+    cuda = tmp_path / "usr/local/cuda-12.9"
+    (cuda / "lib64/stubs").mkdir(parents=True)
+    (cuda / "lib64/stubs/libcuda.so").write_text("", encoding="utf-8")
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "etc").mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "NVCC_APPEND_FLAGS"}
+    env |= {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "TEI_REPO": "repo",
+        "TEI_TAG": "tag",
+        "RUSTC_VERSION": "1.0.0",
+        "WHEEL_VERSION": "1.9.4",
+        "BACKEND": "cuda",
+        "WORK": str(work),
+        "OUT": str(tmp_path / "out"),
+        "OWNER": "1:1",
+        "CUDA_CC": cuda_cc,
+        "CUDA_PACKAGE_SUFFIX": "12-9",
+        "CUDA_VERSION": "12.9.1",
+    }
+    rooted = tmp_path / "tei_manylinux_rooted.sh"
+    rooted.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(rooted)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env=env,
     )
-    end = lines.index("fi", export)
-    build = next(
-        i for i, line in enumerate(lines) if line.startswith("(cd") and "cargo build" in line
-    )
-    assert start < export < end < build
+    assert result.returncode == 0, result.stderr
+    return (record / "nvcc-flags").read_text(encoding="utf-8").strip()
+
+
+def test_the_cuda_build_compiles_kernels_position_independent(tmp_path: Path) -> None:
+    assert _build_flags(tmp_path, "89") == "-Xcompiler -fPIC"
+
+
+def test_the_cpu_build_leaves_the_nvcc_flags_alone(tmp_path: Path) -> None:
+    assert _build_flags(tmp_path, "") == "unset"
