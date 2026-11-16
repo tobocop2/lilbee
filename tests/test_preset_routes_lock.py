@@ -80,6 +80,28 @@ def test_the_write_cases_cover_every_write_verb() -> None:
     assert {case.values[0] for case in _WRITES} == {"post", "put", "delete"}
 
 
+def _deny_the_write(*_args: Any, **_kwargs: Any) -> None:
+    raise PermissionError("denied")
+
+
+@pytest.mark.parametrize(("verb", "path", "body"), _WRITES)
+def test_another_write_error_stays_422_with_its_own_text(
+    client: TestClient[Any],
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+    path: str,
+    body: dict[str, Any] | None,
+) -> None:
+    monkeypatch.setattr(settings, "mutate_value", _deny_the_write)
+
+    res = _send(client, verb, path, body)
+
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail.startswith("Could not write config.toml: denied")
+    assert "held the lock" not in detail
+
+
 def test_a_refused_url_stays_422_while_the_lock_is_held(
     client: TestClient[Any], held_lock: None
 ) -> None:
