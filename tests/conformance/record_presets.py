@@ -95,7 +95,8 @@ def write_recording(out: Path, doc: dict[str, Any], log: str) -> str:
     """Write the recording and its log with each home directory and the hostname scrubbed."""
     hostname = socket.gethostname()
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(scrub_recording(json.dumps(doc, indent=1), hostname) + "\n", encoding="utf-8")
+    scrubbed = scrub_recording(doc, hostname)
+    out.write_text(json.dumps(scrubbed, indent=1) + "\n", encoding="utf-8")
     log = scrub_recording(log, hostname)
     out.with_suffix(".log").write_text(log, encoding="utf-8")
     return log

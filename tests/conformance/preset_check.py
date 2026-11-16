@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from tools.qa.engine_demo.scrub import scrub_urls
+from tools.qa.engine_demo.scrub import map_strings, scrub_urls
 
 from lilbee.app import presets
 from lilbee.app.status import chat_engine, serving_roles
@@ -409,9 +409,9 @@ def scrub_host(text: str, hostname: str) -> str:
     return re.sub(rf"(?<![\w-])(?:{pattern})(?![\w-])", HOST_TOKEN, text, flags=re.IGNORECASE)
 
 
-def scrub_recording(text: str, hostname: str) -> str:
-    """The text with each home directory, the hostname and each URL secret replaced by tokens."""
-    return scrub_urls(scrub_host(scrub_home(text), hostname))
+def scrub_recording(value: Any, hostname: str) -> Any:
+    """The value with each home directory, the hostname and each URL secret replaced by tokens."""
+    return map_strings(value, lambda s: scrub_urls(scrub_host(scrub_home(s), hostname)))
 
 
 def _origin(url: str) -> tuple[str, str]:
