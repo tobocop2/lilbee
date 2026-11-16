@@ -12,6 +12,12 @@ from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
 
 
+@pytest.fixture(autouse=True)
+def _pin_ingest_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the config tests off the fleet probe that the real ingest pool size runs."""
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: 8)
+
+
 def _mid(role: WorkerRole, replica: int = 0) -> str:
     """The llama-swap model id for a role's replica (matches InstanceLaunch.model_id)."""
     return f"{role.value}-{replica}"

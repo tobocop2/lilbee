@@ -25,15 +25,12 @@ def _pin_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     ``max_workers`` floors its CPU-derived result at ``ingest_max_inflight``, or at the
     probed embed-replica count when that is zero, so leaving either ambient makes these
-    assertions depend on what ran earlier. The cache is cleared around each test so the
-    pinned inputs are what the cached value reflects.
+    assertions depend on what ran earlier.
     """
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
     monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
     monkeypatch.setattr(replicas, "resolve_replica_count", lambda *_a, **_k: 1)
-    offload.max_workers.cache_clear()
     yield
-    offload.max_workers.cache_clear()
 
 
 def test_default_caps_at_32_on_a_big_box(monkeypatch: pytest.MonkeyPatch) -> None:

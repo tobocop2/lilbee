@@ -334,6 +334,16 @@ def _fresh_session_host():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_ingest_pool_size():
+    """Size the ingest pool afresh per test; a cached count would fix it for later tests."""
+    from lilbee.data.offload import max_workers
+
+    max_workers.cache_clear()
+    yield
+    max_workers.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
     from lilbee.providers.fleet.adapters import _warn_once
