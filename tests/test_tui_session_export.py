@@ -19,6 +19,7 @@ from lilbee.core.config import cfg
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
+from tests._toasts import posted_toasts
 from tests.conftest import make_mock_services
 
 
@@ -114,7 +115,7 @@ async def test_the_notice_shows_a_bracketed_path_as_written(sessions, workdir, f
         screen.resume_session(source)
         await _submit(pilot, f"/export-chat {folder}/")
         target = (workdir / folder / f"torque-{source[:8]}.md").resolve()
-        notification = list(app._notifications)[-1]
+        notification = list(posted_toasts())[-1]
         assert notification.message == msg.EXPORT_CHAT_DONE.format(path=target)
         assert notification.markup is False
         assert app.is_running
@@ -129,7 +130,7 @@ async def test_the_failure_notice_is_not_markup(sessions, workdir):
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
         await _submit(pilot, "/export-chat [draft]/out.md")
-        notification = list(app._notifications)[-1]
+        notification = list(posted_toasts())[-1]
         assert notification.markup is False
         assert notification.severity == "error"
 

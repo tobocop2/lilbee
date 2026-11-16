@@ -91,6 +91,7 @@ from tests._profiles_e2e import (
     sse_events,
     until,
 )
+from tests._toasts import posted_toasts
 
 
 class Scenario(StrEnum):
@@ -707,11 +708,11 @@ async def _drive_mcp(scenario: Scenario, world: World) -> Outcome:
 
 
 def _seen(app: LilbeeApp) -> set[str]:
-    return {notification.identity for notification in app._notifications}
+    return {notification.identity for notification in posted_toasts()}
 
 
 def _new_notices(app: LilbeeApp, seen: set[str]) -> list[Notification]:
-    return [n for n in app._notifications if n.identity not in seen]
+    return [n for n in posted_toasts() if n.identity not in seen]
 
 
 def _warnings(app: LilbeeApp, seen: set[str]) -> list[str]:

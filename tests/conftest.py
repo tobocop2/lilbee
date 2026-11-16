@@ -256,6 +256,17 @@ def _seal_provider_sdk_distribution(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _record_toasts(monkeypatch):
+    """Record every toast Textual shows; tests read it with ``tests._toasts.posted_toasts``."""
+    from textual.notifications import Notifications
+
+    from tests._toasts import recording_add, reset_posted_toasts
+
+    reset_posted_toasts()
+    monkeypatch.setattr(Notifications, "add", recording_add(Notifications.add))
+
+
+@pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
     from lilbee.providers.fleet.binary import engine_help

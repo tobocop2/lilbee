@@ -22,6 +22,7 @@ from lilbee.core.config import cfg
 from lilbee.data.types import OcrReport, SyncResult
 from lilbee.runtime.progress import OcrBackendUsed
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._toasts import posted_toasts
 
 
 @pytest.fixture(autouse=True)
@@ -2594,7 +2595,7 @@ class TestAppNotifyForcesMarkupOff:
         async with app.run_test() as pilot:
             app.notify("plain [bold]call[/bold]")
             await pilot.pause()
-            notification = list(app._notifications)[-1]
+            notification = list(posted_toasts())[-1]
             assert notification.message == "plain [bold]call[/bold]"
             assert notification.markup is False
 
@@ -2606,7 +2607,7 @@ class TestAppNotifyForcesMarkupOff:
         async with app.run_test() as pilot:
             app.notify("note[draft]", markup=True)
             await pilot.pause()
-            notification = list(app._notifications)[-1]
+            notification = list(posted_toasts())[-1]
             assert notification.message == "note[draft]"
             assert notification.markup is False
 
@@ -2622,7 +2623,7 @@ class TestAppNotifyForcesMarkupOff:
             await pilot.pause()
             screen.notify("source [red]x[/red]", severity="warning")
             await pilot.pause()
-            notification = list(app._notifications)[-1]
+            notification = list(posted_toasts())[-1]
             assert notification.message == "source [red]x[/red]"
             assert notification.markup is False
 

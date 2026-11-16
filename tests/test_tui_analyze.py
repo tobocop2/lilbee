@@ -50,6 +50,7 @@ from tests._profile_fixtures import (
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
     sources_totaling,
 )
+from tests._toasts import posted_toasts
 
 _PAUSES = 300
 _TIP_SHOWS = "lilbee.cli.tui.widgets.arg_hint.tip_shows"
@@ -312,7 +313,7 @@ async def test_apply_toasts_the_ocr_warning_it_leaves_behind(sources) -> None:
         dialog = await _dialog(app, pilot)
         await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
         assert await _until(pilot, lambda: not isinstance(app.screen, AnalyzeReportScreen))
-    warnings = [n for n in app._notifications if n.severity == "warning"]
+    warnings = [n for n in posted_toasts() if n.severity == "warning"]
     assert len(warnings) == 1
     assert "ocr" in warnings[0].message
 
@@ -358,7 +359,7 @@ async def test_save_only_saves_without_switching() -> None:
         screen = await _report_open(app, pilot)
         await _press(pilot, screen.query_one("#analyze-save", ConfirmPill))
         assert await _until(
-            pilot, lambda: any(f"Saved {name}" in n.message for n in app._notifications)
+            pilot, lambda: any(f"Saved {name}" in n.message for n in posted_toasts())
         )
         assert app.screen is screen
     entry = ProfileStore().scan().find(name)
@@ -402,7 +403,7 @@ async def test_a_refused_save_toasts_its_reason() -> None:
             screen = await _report_open(app, pilot)
             await _press(pilot, screen.query_one("#analyze-save", ConfirmPill))
             assert await _until(
-                pilot, lambda: any("already exists" in n.message for n in app._notifications)
+                pilot, lambda: any("already exists" in n.message for n in posted_toasts())
             )
 
 
@@ -433,7 +434,7 @@ async def test_apply_default_toasts_the_ocr_warning_it_leaves_behind(sources) ->
         await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
         assert await _until(pilot, lambda: not isinstance(app.screen, AnalyzeReportScreen))
     assert profiles.active(ProfileStore()).name == "Default"
-    warnings = [n for n in app._notifications if n.severity == "warning"]
+    warnings = [n for n in posted_toasts() if n.severity == "warning"]
     assert len(warnings) == 1
     assert "ocr" in warnings[0].message
 
@@ -504,9 +505,7 @@ def _write_notes(folder: Path) -> Path:
 async def _finished_report(app: LilbeeApp, pilot: Pilot, chat: Any) -> AnalyzeReportScreen:
     """Wait for the finished toast, check nothing opened unasked, then open the report."""
     assert await _until(pilot, lambda: app.last_analysis is not None)
-    assert await _until(
-        pilot, lambda: any("/analyze report" in n.message for n in app._notifications)
-    )
+    assert await _until(pilot, lambda: any("/analyze report" in n.message for n in posted_toasts()))
     assert app.screen is chat
     chat.run_command("/analyze report")
     return await _report_open(app, pilot)
@@ -595,7 +594,7 @@ async def test_analyze_report_before_any_run_says_there_is_none(chat_app) -> Non
         chat = await await_chat(chat_app, pilot)
         chat.run_command("/analyze report")
         assert await _until(
-            pilot, lambda: any(msg.ANALYZE_NO_REPORT in n.message for n in chat_app._notifications)
+            pilot, lambda: any(msg.ANALYZE_NO_REPORT in n.message for n in posted_toasts())
         )
         assert chat_app.screen is chat
         assert _analyze_tasks(chat_app) == []
@@ -608,7 +607,7 @@ async def test_slash_analyze_on_a_missing_folder_toasts_and_starts_nothing(
         chat = await await_chat(chat_app, pilot)
         chat.run_command(f"/analyze {tmp_path / 'nope'}")
         assert await _until(
-            pilot, lambda: any("is not a folder" in n.message for n in chat_app._notifications)
+            pilot, lambda: any("is not a folder" in n.message for n in posted_toasts())
         )
         assert _analyze_tasks(chat_app) == []
 
@@ -624,10 +623,10 @@ async def test_slash_analyze_on_a_folder_the_user_cannot_open_toasts_the_failure
             lambda: any(
                 msg.ANALYZE_FAILED.format(error=f"Path '{unreadable_folder}' is not readable.")
                 in n.message
-                for n in chat_app._notifications
+                for n in posted_toasts()
             ),
         )
-        assert not any("finished" in n.message for n in chat_app._notifications)
+        assert not any("finished" in n.message for n in posted_toasts())
 
 
 def _stalled_collect(started: list[bool]):
@@ -672,7 +671,7 @@ async def test_a_failed_analyze_toasts_and_fails_the_task(chat_app, tmp_path) ->
             chat.run_command(f"/analyze {folder}")
             assert await _until(
                 pilot,
-                lambda: any("Analyze failed" in n.message for n in chat_app._notifications),
+                lambda: any("Analyze failed" in n.message for n in posted_toasts()),
             )
             assert await _until(
                 pilot, lambda: _analyze_tasks(chat_app)[0].status is TaskStatus.FAILED
@@ -690,7 +689,7 @@ async def test_a_refused_analyze_names_the_reason(chat_app, tmp_path) -> None:
                 pilot,
                 lambda: any(
                     "Analyze failed: The built-in profile x is missing" in n.message
-                    for n in chat_app._notifications
+                    for n in posted_toasts()
                 ),
             )
 
@@ -703,7 +702,7 @@ async def test_slash_analyze_off_hides_the_tip(chat_app) -> None:
         chat = await await_chat(chat_app, pilot)
         chat.run_command("/analyze off")
         assert await _until(
-            pilot, lambda: any(msg.ANALYZE_TIP_HIDDEN in n.message for n in chat_app._notifications)
+            pilot, lambda: any(msg.ANALYZE_TIP_HIDDEN in n.message for n in posted_toasts())
         )
     assert read_state(cfg.data_root).tip_dismissed is True
     assert _analyze_tasks(chat_app) == []
