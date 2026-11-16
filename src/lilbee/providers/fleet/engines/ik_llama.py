@@ -15,7 +15,12 @@ from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
-from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest, RequestProfile
+from lilbee.providers.fleet.engines.base import (
+    EngineName,
+    LaunchRequest,
+    RequestProfile,
+    ServerProcess,
+)
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps
@@ -48,6 +53,7 @@ class IkLlamaAdapter:
     memory_kind = MemoryKind.SIZED
     takes_device_names = True
     bundled = False
+    server_process = ServerProcess(name="llama-server")
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures

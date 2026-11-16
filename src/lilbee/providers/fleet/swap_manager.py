@@ -49,7 +49,7 @@ from lilbee.providers.fleet.swap_config import (
 from lilbee.runtime.engine_lock import clear_keep_warm, reaper_running
 
 if TYPE_CHECKING:
-    from lilbee.providers.fleet.engines.base import EngineAdapter
+    from lilbee.providers.fleet.engines.base import EngineAdapter, ServerProcess
     from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
@@ -96,8 +96,9 @@ _STATE_TMP_SUFFIX = ".tmp"
 # from the recorded one by more than this is a different process.
 _CREATE_TIME_TOLERANCE_S = 1.0
 _LLAMA_SWAP_PROCESS_NAME = "llama-swap"
-_LLAMA_SERVER_PROCESS_NAME = "llama-server"
-_LEMONADE_PROCESS_NAME = "lemond"
+_EXE_SUFFIX = ".exe"
+# A script server shows the interpreter's name; this prefix finds python and python3.12.
+_INTERPRETER_PREFIX = "python"
 _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
@@ -1346,60 +1347,99 @@ def _kill_recorded_engine(state: SwapState) -> bool:
 
 
 def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
-    """Live servers that outlived their swap: those on a member port, and Lemonade ones.
+    """Live servers of any engine that outlived their swap.
 
-    A port match needs the binary name and the ``--port`` value, so an unrelated
-    process on a recycled port is never killed; a server whose parent is a
-    live llama-swap belongs to a current run on a reused port and is spared.
+    Each engine adapter declares its server's executable name and, for an engine
+    whose command line points into a folder of its own, that folder. A process
+    matches on the name plus a member ``--port`` value or that folder, so an
+    unrelated process of the same name on another port is never killed. A server
+    below a live llama-swap belongs to a current run and is spared.
     """
     if not ports:
         return []
-    return [*_port_orphans(ports), *_lemonade_orphans()]
+    targets = {str(port) for port in ports}
+    return [proc for server in _server_processes() for proc in _orphans_of(server, targets)]
 
 
-def _lemonade_orphans() -> list[psutil.Process]:
-    """Live ``lemond`` processes that run from a Lemonade role folder.
+def _server_processes() -> tuple[ServerProcess, ...]:
+    """The distinct server identities that the shipped engine adapters declare."""
+    from lilbee.providers.fleet.engines.choice import ADAPTERS
 
-    ``lemond`` listens on a port that lilbee never chose, so the member ports
-    do not find it. The role folder in its command line does. A process below a
-    live llama-swap belongs to a current run and is spared.
-    """
-    from lilbee.providers.fleet.engines.lemonade import data_root
+    return tuple(dict.fromkeys(adapter.server_process for adapter in ADAPTERS.values()))
 
-    root = str(data_root())
+
+def _orphans_of(server: ServerProcess, targets: set[str]) -> list[psutil.Process]:
+    """Live *server* processes on a *targets* port or in its folder, with no swap above."""
+    root = None if server.folder is None else Path(server.folder())
     orphans: list[psutil.Process] = []
-    for proc in _processes_named(_LEMONADE_PROCESS_NAME):
+    for proc in _server_candidates(server):
         try:
             cmdline = proc.cmdline()
+            name = proc.name()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        if any(arg.startswith(root) for arg in cmdline) and not _has_live_swap_ancestor(proc):
+        if not _runs_server(name, cmdline, server):
+            continue
+        on_port = _port_argument(cmdline) in targets
+        in_folder = root is not None and any(_is_under(arg, root) for arg in cmdline)
+        if (on_port or in_folder) and not _has_live_swap_ancestor(proc):
             orphans.append(proc)
     return orphans
+
+
+def _server_candidates(server: ServerProcess) -> Iterator[psutil.Process]:
+    """Live processes whose name is *server*'s, or an interpreter's for a script server."""
+    for proc in psutil.process_iter(["name"]):
+        name = proc.info["name"] or ""
+        if _is_server_name(name, server) or (server.interpreted and _is_interpreter(name)):
+            yield proc
+
+
+def _is_server_name(name: str, server: ServerProcess) -> bool:
+    """True when *name* is the executable name of *server*, whole."""
+    return name in (server.name, f"{server.name}{_EXE_SUFFIX}")
+
+
+def _is_interpreter(name: str) -> bool:
+    return name.lower().startswith(_INTERPRETER_PREFIX)
+
+
+def _runs_server(name: str, cmdline: list[str], server: ServerProcess) -> bool:
+    """True when a candidate of *server* called *name* with *cmdline* runs it.
+
+    A candidate is named for the server or, for a script server, an interpreter.
+    """
+    if _is_server_name(name, server):
+        return True
+    script = next((arg for arg in cmdline[1:] if not arg.startswith("-")), "")
+    return _is_server_name(Path(script).name, server)
+
+
+def _is_under(arg: str, root: Path) -> bool:
+    """True when *arg* is the folder *root* or a path below it."""
+    path = Path(arg)
+    return path == root or root in path.parents
 
 
 def _has_live_swap_ancestor(proc: psutil.Process) -> bool:
-    """True when any parent of *proc* is a live llama-swap."""
-    try:
-        return any(_LLAMA_SWAP_PROCESS_NAME in parent.name() for parent in proc.parents())
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
+    """True when a parent above *proc* is a live llama-swap.
 
-
-def _port_orphans(ports: tuple[int, ...]) -> list[psutil.Process]:
-    """Live llama-server processes whose ``--port`` is one of *ports*."""
-    targets = {str(port) for port in ports}
-    orphans: list[psutil.Process] = []
-    for proc in _processes_named(_LLAMA_SERVER_PROCESS_NAME):
+    The walk goes one parent at a time and stops at the first llama-swap, so an
+    ancestor that vanishes or cannot be read above it never hides it. A hop that
+    cannot be read before any llama-swap ends the walk as not spared: a server
+    reparented to init is the orphan this sweep exists for.
+    """
+    current = proc
+    while True:
         try:
-            cmdline = proc.cmdline()
+            parent = current.parent()
+            if parent is None:
+                return False
+            if _LLAMA_SWAP_PROCESS_NAME in parent.name():
+                return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        # Identity is the --port value plus the absence of a live swap parent;
-        # _processes_named already gated on the executable name (comm).
-        if _port_argument(cmdline) in targets and not _has_live_swap_parent(proc):
-            orphans.append(proc)
-    return orphans
+            return False
+        current = parent
 
 
 def _state_owner_pid(name: str) -> int | None:
@@ -1440,17 +1480,6 @@ def _config_owner_pid(name: str) -> int | None:
         return int(stem.rsplit(".", 1)[-1])
     except ValueError:
         return None
-
-
-def _has_live_swap_parent(proc: psutil.Process) -> bool:
-    """True when *proc*'s parent is a live llama-swap (the server is not orphaned)."""
-    try:
-        parent = proc.parent()
-        if parent is None:
-            return False
-        return _LLAMA_SWAP_PROCESS_NAME in parent.name()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
 
 
 def _port_argument(cmdline: list[str]) -> str | None:

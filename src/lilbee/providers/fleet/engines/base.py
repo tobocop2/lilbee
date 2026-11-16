@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -35,6 +35,21 @@ class EngineName(StrEnum):
     MLX = "mlx"
     OPENVINO = "openvino"
     LEMONADE = "lemonade"
+
+
+@dataclass(frozen=True)
+class ServerProcess:
+    """How a running server of an engine shows in the process table.
+
+    ``name`` is the executable name, matched whole. ``folder`` returns a directory that the
+    server's command line points into, or is ``None`` when the server is found by its
+    ``--port`` only. ``interpreted`` is true for a script server: its process name is the
+    interpreter's, and ``name`` is the script's file name, the first argument that is no flag.
+    """
+
+    name: str
+    folder: Callable[[], Path] | None = None
+    interpreted: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,6 +147,8 @@ class EngineAdapter(Protocol, Hashable):
     """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
     """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
+    server_process: ServerProcess
+    """How the orphan sweep recognises this engine's server after its llama-swap is gone."""
 
     def supports_architecture(self, architecture: str) -> bool: ...
 

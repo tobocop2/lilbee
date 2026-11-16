@@ -23,6 +23,7 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -121,6 +122,7 @@ class TeiAdapter:
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     bundled = False
+    server_process = ServerProcess(name=_TOOL)
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
