@@ -253,6 +253,11 @@ class BuildView:
         return f"{self.engine} {self.version} ({self.backend}){not_run_clause(self.not_run_on)}"
 
 
+def engines_folder(config: Config = cfg) -> Path:
+    """The machine-wide folder that holds the installed engine builds."""
+    return engines_root(config.models_dir)
+
+
 def builds(config: Config = cfg) -> list[BuildView]:
     """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))

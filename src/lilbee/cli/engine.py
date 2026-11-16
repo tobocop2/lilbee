@@ -55,6 +55,15 @@ def stop() -> None:
     console.print(_STOPPED if stopped else _NOTHING_RUNNING)
 
 
+def _print_engines_folder() -> None:
+    """Name the engines folder and the variable that moves it."""
+    folder = engine_service.engines_folder()
+    console.print(
+        f"Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)",
+        soft_wrap=True,
+    )
+
+
 @engine_app.command("list")
 def list_builds() -> None:
     """List the engine builds installed beside the models."""
@@ -79,6 +88,7 @@ def list_builds() -> None:
             )
         else:
             console.print(f"{name} not installed{clause}")
+    _print_engines_folder()
 
 
 @engine_app.command("install")
@@ -129,6 +139,7 @@ def install(
         )
         return
     console.print(f"Installed engine {label}.")
+    _print_engines_folder()
     if built.note:
         console.print(built.note)
 
