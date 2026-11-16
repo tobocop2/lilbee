@@ -138,14 +138,14 @@ def test_the_kernel_gfx_version_becomes_the_gfx_name(version: int, name: str) ->
 def test_the_gfx_targets_come_from_each_gpu_node_of_the_compute_driver(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for node, version in (("0", 0), ("1", 110000), ("2", 90010)):
+    for node, version in (("0", 0), ("1", 110000), ("2", 90010), ("3", 1)):
         folder = tmp_path / node
         folder.mkdir()
         (folder / "properties").write_text(
             f"cpu_cores_count 8\ngfx_target_version {version}\nsimd_count 0\n", encoding="utf-8"
         )
     monkeypatch.setattr(host_caps, "_SYSFS_KFD_NODES", tmp_path)
-    assert host_caps._amd_gfx_targets() == ["gfx1100", "gfx90a"]
+    assert host_caps._amd_gfx_targets() == ["gfx1100", "gfx90a", "gfx001"]
 
 
 def test_a_host_with_no_compute_driver_reports_no_gfx_target(
@@ -199,6 +199,8 @@ def test_the_live_windows_host_asks_for_the_windows_loader_and_not_for_numa(
     monkeypatch.setattr(host_caps, "host_facts", lambda: None)
     monkeypatch.setattr(host_caps, "_cpu_info", lambda: {})
     monkeypatch.setattr(host_caps, "installed_gpu_vendor_ids", lambda: frozenset({INTEL}))
+    # A Windows host has no compute-driver topology to read.
+    monkeypatch.setattr(host_caps, "_amd_gfx_targets", lambda: ["gfx1100"])
     asked: list[str] = []
     monkeypatch.setattr(host_caps, "find_library", lambda name: asked.append(name) or "x.dll")
     host = host_caps.detect()
@@ -206,6 +208,35 @@ def test_the_live_windows_host_asks_for_the_windows_loader_and_not_for_numa(
     assert host.amd_gfx == ()
     assert not host.libnuma
     assert pack_backend(host) == "vulkan"
+
+
+def test_a_host_read_with_no_loader_and_no_numa_library_installs_the_cpu_pack() -> None:
+    host = collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx2"]},
+        nvidia=None,
+        display_vendors=(AMD,),
+        amd_gfx=("gfx1100",),
+    )
+    assert not host.vulkan_loader
+    assert not host.libnuma
+    assert pack_backend(host) == "cpu"
+
+
+@pytest.mark.parametrize(
+    ("field", "unread"),
+    [
+        ("amd_gfx", ()),
+        ("vulkan_loader", False),
+        ("libnuma", False),
+        ("display_vendors", frozenset()),
+    ],
+)
+def test_a_host_field_that_nothing_read_reports_no_gpu_support(field: str, unread: object) -> None:
+    default = HostCaps.__dataclass_fields__[field].default
+    assert default == unread
+    assert type(default) is type(unread)
 
 
 def test_a_missing_library_is_reported_absent(monkeypatch: pytest.MonkeyPatch) -> None:

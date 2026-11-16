@@ -228,7 +228,8 @@ def test_the_first_use_warning_names_an_nvidia_card_the_pack_cannot_use(
     monkeypatch.setattr(first_use, "session_host", lambda: host)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
-    assert "compute capability 3.7" in caplog.text
+    assert caplog.messages == [cuda_pack_gap(host)]
+    assert "compute capability 3.7" in caplog.messages[0]
 
 
 def test_the_first_use_warning_is_silent_for_a_card_the_pack_serves(
