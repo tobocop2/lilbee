@@ -420,7 +420,7 @@ def test_two_hundred_texts_embed_in_requests_the_managed_server_accepts() -> Non
         vectors = [[float(text)] for text in texts]
         return httpx.Response(200, json=_base64_vectors(vectors))
 
-    client = _tei_client(handler, WorkerRole.EMBED)
+    client = _tei_client(handler, WorkerRole.EMBED, input_limit_path=None)
     out = client.embed([str(i) for i in range(200)])
     assert [float(vec[0]) for vec in out] == [float(i) for i in range(200)]
     assert sizes == [64, 64, 64, 8]
@@ -434,7 +434,7 @@ def test_a_batch_size_refusal_is_a_bad_request_sent_once_not_a_context_overflow(
         assert refused is not None
         return refused
 
-    client = _tei_client(handler, WorkerRole.EMBED, batch_limit=None)
+    client = _tei_client(handler, WorkerRole.EMBED, batch_limit=None, input_limit_path=None)
     with pytest.raises(ProviderError, match=r"too many inputs\. Send fewer inputs") as raised:
         client.embed(["x"] * 33)
     assert raised.value.kind is ProviderErrorKind.BAD_REQUEST
@@ -706,3 +706,95 @@ def test_the_400_status_is_not_the_over_limit_answer_of_this_engine() -> None:
     with pytest.raises(ProviderError) as raised:
         client._raise_for_status(client._http.post("/v1/embeddings", json={}))
     assert raised.value.kind is not ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+_ROUTER_LIMIT = 8
+
+
+class _Embedder:
+    """A fake router as measured: it embeds any input, cuts it silently, counts a word a token."""
+
+    def __init__(self, limit: int = _ROUTER_LIMIT) -> None:
+        self.limit = limit
+        self.paths: list[str] = []
+        self.tokenized: list[list[str]] = []
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        self.paths.append(req.url.path)
+        body = json.loads(req.content) if req.content else {}
+        if req.url.path.endswith("/info"):
+            return httpx.Response(200, json={"max_input_length": self.limit})
+        if req.url.path.endswith("/tokenize"):
+            self.tokenized.append(body["inputs"])
+            return httpx.Response(
+                200, json=[[{"id": i} for i, _ in enumerate(t.split())] for t in body["inputs"]]
+            )
+        vector = base64.b64encode(np.array([0.5, 0.5], dtype="<f4").tobytes()).decode()
+        data = [{"index": i, "embedding": vector} for i, _ in enumerate(body["input"])]
+        return httpx.Response(200, json={"data": data})
+
+
+def _words(count: int) -> str:
+    return " ".join(["w"] * count)
+
+
+def test_embed_inputs_past_the_router_limit_give_one_warning_for_the_call(caplog) -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        vectors = client.embed([_words(30), _words(3), _words(20)])
+    assert len(vectors) == 3
+    [record] = caplog.records
+    assert "2 of 3" in record.getMessage()
+    assert "8-token limit" in record.getMessage()
+    assert "truncates" in record.getMessage()
+
+
+def test_embed_inputs_within_the_router_limit_give_no_warning_and_no_count(caplog) -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(3), _words(4)])
+    assert caplog.records == []
+    assert router.tokenized == []
+
+
+def test_embed_counts_only_the_inputs_that_could_be_past_the_limit() -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    short, long = "a b", _words(30)
+    client.embed([short, long])
+    assert router.tokenized == [[long]]
+
+
+def test_embed_asks_the_router_for_its_limit_once() -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    client.embed([_words(30)])
+    assert sum(p.endswith("/info") for p in router.paths) == 1
+
+
+def test_embed_warns_once_for_the_life_of_the_client(caplog) -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+        client.embed([_words(40)])
+    assert len(caplog.records) == 1
+
+
+def test_embed_of_a_dense_text_the_count_finds_within_the_limit_gives_no_warning(caplog) -> None:
+    """Thirty-nine characters could be thirty-nine tokens; the router count says twenty."""
+    router = _Embedder(limit=38)
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(20)])
+    assert router.tokenized == [[_words(20)]]
+    assert caplog.records == []
+
+
+def test_an_engine_with_no_count_route_sends_one_request_per_batch() -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED, token_count_path=None, input_limit_path=None)
+    client.embed([_words(30)])
+    assert router.paths == ["/v1/embeddings"]
