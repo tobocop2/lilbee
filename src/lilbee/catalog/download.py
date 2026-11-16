@@ -356,7 +356,7 @@ _NEVER_CANCELLED = _NeverCancelled()
 
 def download_model(
     entry: CatalogModel,
-    engine: "EngineAdapter",
+    engine: "EngineAdapter | None",
     *,
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
@@ -410,7 +410,7 @@ def fetch_model_files(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
-    engine: "EngineAdapter",
+    engine: "EngineAdapter | None",
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
@@ -427,6 +427,8 @@ def fetch_model_files(
         return fetch_format_files(
             entry, models_dir, token, on_progress=on_progress, on_probe=on_probe
         )
+    if engine is None:
+        raise RuntimeError(f"A GGUF download needs an engine to pick the file: {entry.hf_repo}")
     filename = resolve_filename(entry, engine)
     shards = split_shard_filenames(filename)
     paths = _cached_shards(entry, models_dir, shards, on_probe)

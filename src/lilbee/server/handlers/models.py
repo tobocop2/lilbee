@@ -24,9 +24,16 @@ from lilbee.catalog import (
     page_window,
     picks_for,
 )
-from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
+from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo, model_format
 from lilbee.catalog.runnable import hidden_summary
-from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
+from lilbee.catalog.types import (
+    CatalogSize,
+    CatalogSort,
+    KeyStatus,
+    ModelFormat,
+    ModelSource,
+    ModelTask,
+)
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
@@ -522,7 +529,9 @@ async def models_installed(task: ModelTask | None = None) -> ModelsInstalledResp
 async def enforce_pull_arch_compat(
     model: str, *, source: str = "native", allow_unsupported: bool = False
 ) -> None:
-    """Raise HTTP 409 for an unsupported architecture before the pull stream opens.
+    """Raise HTTP 409 for a GGUF with no engine or an unsupported architecture, before the stream.
+
+    A model of another format needs no engine to download, so it passes.
 
     The route must await this BEFORE returning ``Stream(models_pull(...))``: a raise
     inside the ``models_pull`` async generator fires only on first iteration, after
@@ -534,6 +543,8 @@ async def enforce_pull_arch_compat(
     from lilbee.catalog.compat import UnsupportedArchError
 
     if _parse_source(source) is not ModelSource.NATIVE:
+        return
+    if model_format(model) is not ModelFormat.GGUF:
         return
     manager = get_services().model_manager
     try:

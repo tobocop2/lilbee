@@ -214,7 +214,7 @@ class ModelManager:
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
             )
-        engine = self.require_engine(model)
+        engine = self.pull_engine(model)
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
@@ -234,6 +234,21 @@ class ModelManager:
         from lilbee.app.engine_choice import engine_for_ref
 
         return engine_for_ref(ref, self._config)
+
+    def pull_engine(self, ref: str) -> "EngineAdapter | None":
+        """The engine a pull of *ref* reads: required for a GGUF, else the one chosen or ``None``.
+
+        A GGUF pull reads the engine to pick the file. Other formats download
+        without one; an engine is needed only to load the model.
+        """
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        try:
+            return self.require_engine(ref)
+        except NoEngineError:
+            if model_format(ref) is ModelFormat.GGUF:
+                raise
+            return None
 
     def enforce_arch_compat(self, ref: str) -> None:
         """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set.
@@ -259,7 +274,7 @@ class ModelManager:
     def _pull_native(
         self,
         model: str,
-        engine: "EngineAdapter",
+        engine: "EngineAdapter | None",
         *,
         on_bytes: Callable[[int, int], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
@@ -292,12 +307,13 @@ class ModelManager:
         return path
 
     @staticmethod
-    def _log_memory_need(entry: CatalogModel, engine: "EngineAdapter") -> str | None:
+    def _log_memory_need(entry: CatalogModel, engine: "EngineAdapter | None") -> str | None:
         """Log the memory a safetensors chat model needs, before its weights download.
 
         Returns the sentence that says the size is unknown, or ``None`` when it is known.
+        With no engine the launch context is unknown, so no figure is worked out.
         """
-        if entry.format not in (ModelFormat.SAFETENSORS, ModelFormat.MLX):
+        if engine is None or entry.format not in (ModelFormat.SAFETENSORS, ModelFormat.MLX):
             return None
         if entry.task is not ModelTask.CHAT:
             return None
@@ -310,7 +326,7 @@ class ModelManager:
         return None if fit.size_known else fit.text()
 
     def _resolved_entry(
-        self, entry: CatalogModel, engine: "EngineAdapter", *, verify: bool
+        self, entry: CatalogModel, engine: "EngineAdapter | None", *, verify: bool
     ) -> CatalogModel:
         """*entry* carrying the file the pull will fetch.
 
@@ -324,7 +340,7 @@ class ModelManager:
         download reports the gated repo or the missing file properly, so a
         resolution failure here is left to it.
         """
-        if entry.format is not ModelFormat.GGUF:
+        if entry.format is not ModelFormat.GGUF or engine is None:
             return entry
         # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
         from lilbee.catalog.download import resolve_filename
