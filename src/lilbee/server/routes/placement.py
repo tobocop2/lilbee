@@ -122,13 +122,13 @@ async def gpus_route() -> GpusResponse:
 @get("/api/gpus/stream", media_type=SSE_MEDIA_TYPE)
 async def gpu_stats_stream_route() -> Stream:
     """Live per-GPU utilization + free memory as SSE for the placement view."""
-    from lilbee.app.placement import get_placement
+    from lilbee.app.placement import get_planned_placement
 
     try:
-        # get_placement runs resolve_placement_plan, which spawns subprocess
+        # get_planned_placement runs resolve_placement_plan, which spawns subprocess
         # device probes that can wedge for the probe timeout on a broken driver;
         # offload so the probe never blocks the event loop.
-        view = await asyncio.to_thread(get_placement)
+        view = await asyncio.to_thread(get_planned_placement)
     except PLACEMENT_READ_ERRORS as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
     return Stream(handlers.gpu_stats_stream(view.gpus), media_type=SSE_MEDIA_TYPE)

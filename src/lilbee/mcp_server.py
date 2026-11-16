@@ -48,6 +48,7 @@ from lilbee.app.placement import (
     PLACEMENT_READ_ERRORS,
     PlacementView,
     get_placement,
+    get_planned_placement,
     placement_refused_message,
     preview_placement,
     set_placement,
@@ -2114,7 +2115,7 @@ def get_gpus_tool() -> dict[str, Any]:
         from lilbee.cli.tui import messages as msg
         from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
 
-        view = get_placement()
+        view = get_planned_placement()
         hint = probe_intel_util_hint(view.gpus)
         return {
             "gpus": _placement_dict(view)["gpus"],

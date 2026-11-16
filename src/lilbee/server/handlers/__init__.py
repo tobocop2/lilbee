@@ -300,10 +300,10 @@ def _intel_notice_text(devices: Sequence[GpuInfo]) -> str | None:
 
 async def gpus() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
-    from lilbee.app.placement import get_placement
+    from lilbee.app.placement import get_planned_placement
 
     def _body() -> GpusResponse:
-        view = get_placement()
+        view = get_planned_placement()
         return GpusResponse(
             gpus=PlacementResponse.from_view(view).gpus,
             notice=_intel_notice_text(view.gpus),

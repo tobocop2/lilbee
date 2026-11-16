@@ -111,7 +111,7 @@ class TestGpuStatsStreamRoute:
 
         view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
         with (
-            mock.patch("lilbee.app.placement.get_placement", return_value=view),
+            mock.patch("lilbee.app.placement.get_planned_placement", return_value=view),
             mock.patch("lilbee.server.handlers.gpu_stats_stream", side_effect=_fake_stats),
         ):
             resp = client.get("/api/gpus/stream")
