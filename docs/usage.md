@@ -531,12 +531,18 @@ choice was not saved.
 
 #### Pull a model with no engine
 
-If no installed engine loads the format of a model, `lilbee model pull` stops
-before it downloads a file. For the reference `org/repo#openvino`, it prints:
+A pull of a model in a format other than GGUF needs no engine. The download
+finishes and lilbee records the model as installed. The engine is needed when
+the model loads or when you assign it to a role. If no installed engine loads
+the format, the model does not appear in the chat model pickers, and a request to
+load it prints, for the reference `org/repo#openvino`:
 
 ```
 Error: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
 ```
+
+A GGUF pull still needs an engine, because the engine decides which file in the
+repository to download.
 
 To pull a model in a format other than GGUF, add the format name to the
 reference as `org/repo#format`. Here `openvino` and `mlx` are names of weight
