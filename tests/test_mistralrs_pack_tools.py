@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import os
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -354,6 +356,83 @@ def test_the_built_wheel_holds_every_licence_file_the_job_writes(tmp_path: Path)
         "THIRD-PARTY/mistral.rs/MIT.txt",
         "THIRD-PARTY/vendored/mistral.rs__sub__NOTICE",
     } <= held
+
+
+def _wrap_archive(tmp_path: Path, run: str, archive: Path, checkout_time: int) -> str:
+    """Wrap *archive* into a copy of the wheel project, the way the job does, and hash the wheel."""
+    tree = tmp_path / run / "project"
+    shutil.copytree(
+        PACKAGING, tree, ignore=shutil.ignore_patterns("bin", "__pycache__", "*.egg-info")
+    )
+    packed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(TOOLS / "repack_mistralrs.py"),
+            str(archive),
+            str(tree / "lilbee_engine_mistral_rs" / "bin"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    for path in (tree, *tree.rglob("*")):
+        os.utime(path, (checkout_time, checkout_time))
+    env = dict(line.split("=", 1) for line in packed.stdout.splitlines())
+    uv = shutil.which("uv")
+    assert uv is not None
+    subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(tmp_path / run / "dist")],
+        cwd=tree,
+        env={**os.environ, **env},
+        check=True,
+        capture_output=True,
+    )
+    (wheel,) = (tmp_path / run / "dist").glob("*.whl")
+    return hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+
+def test_wrapping_one_archive_twice_gives_one_wheel(tmp_path: Path) -> None:
+    archive = tmp_path / "a.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("mistralrs")
+        info.size = 3
+        info.mtime = 1_700_000_000
+        tar.addfile(info, io.BytesIO(b"bin"))
+    first = _wrap_archive(tmp_path, "first", archive, 1_750_000_000)
+    second = _wrap_archive(tmp_path, "second", archive, 1_760_000_000)
+    assert first == second
+
+
+@pytest.mark.parametrize(
+    ("archive_name", "member_time"),
+    [("a.tar.gz", 1_700_000_000), ("a.zip", 1_700_000_000)],
+)
+def test_repack_reports_the_time_of_the_tool_in_the_archive(
+    tmp_path: Path, archive_name: str, member_time: int
+) -> None:
+    archive = tmp_path / archive_name
+    if archive_name.endswith(".zip"):
+        stamp = time.gmtime(member_time)
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr(zipfile.ZipInfo("mistralrs.exe", stamp[:6]), b"exe")
+    else:
+        with tarfile.open(archive, "w:gz") as tar:
+            info = tarfile.TarInfo("./mistralrs")
+            info.size = 3
+            info.mtime = member_time
+            tar.addfile(info, io.BytesIO(b"bin"))
+    assert repack.repack(archive, tmp_path / "bin") == member_time
+
+
+def test_the_pack_job_hands_the_archive_time_to_the_wheel_build() -> None:
+    step = next(
+        step["run"]
+        for step in _mistralrs_job()["steps"]
+        if step.get("name") == "Repack the upstream archive into the wheel tree"
+    )
+    assert '>> "$GITHUB_ENV"' in step
 
 
 def test_the_pack_job_has_no_cuda_step() -> None:
