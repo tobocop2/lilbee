@@ -31,6 +31,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
 )
 from lilbee.cli.tui.widgets.message import _answer_markdown_parser
 from lilbee.core.config import cfg
+from lilbee.data.types import CODE_CONTENT_TYPE
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
 from tests.conftest import make_mock_services
@@ -355,7 +356,7 @@ class TestProgramsAndFoldersAreNotOpened:
             "run.",
             "a.md.",
             "a.md ",
-            "a․md",  # noqa: RUF001 - the look-alike dot is the input under test
+            f"a{chr(0x2024)}md",  # ONE DOT LEADER, a look-alike dot
         ],
     )
     def test_an_executable_file_without_a_document_suffix_is_refused(self, run, mode, name):
@@ -365,6 +366,36 @@ class TestProgramsAndFoldersAreNotOpened:
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text("#!/bin/sh\n", encoding="utf-8")
         script.chmod(mode)
+        assert open_local_file(script.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            ".bashrc",
+            ".profile",
+            ".zshrc",
+            "run.",
+            "Makefile",
+            "Dockerfile",
+            "Rakefile",
+            "Gemfile",
+            "Jenkinsfile",
+            "Vagrantfile",
+            "justfile",
+            "BUILD",
+        ],
+    )
+    def test_a_name_without_a_suffix_is_refused_even_when_classified_as_code(
+        self, run, monkeypatch, name
+    ):
+        # A suffix-less file has no handler that shows it: macOS runs it in Terminal.
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.chat_helpers.classify_file", lambda _path: CODE_CONTENT_TYPE
+        )
+        script = cfg.documents_dir / "sub" / name
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
         assert open_local_file(script.as_uri()) is LinkOpenResult.NOT_A_DOCUMENT
         run.assert_not_called()
 
@@ -587,18 +618,17 @@ class TestMacosAliases:
         _patch_libc(monkeypatch, {_FORK: _ENOATTR})
         assert open_local_file(_write_doc("nofork.md").as_uri()) is LinkOpenResult.OPENED
 
-    @pytest.mark.parametrize("err", [errno.ENOTSUP, errno.EPERM], ids=["ENOTSUP", "EPERM"])
     @pytest.mark.parametrize("attr", [_FINDER, _FORK], ids=["finder-info", "resource-fork"])
-    def test_a_file_that_cannot_carry_the_attribute_opens(self, run, monkeypatch, attr, err):
-        # getxattr(2): the volume has no extended attributes, or the file cannot carry this one.
-        _patch_libc(monkeypatch, {attr: err})
+    def test_a_volume_without_extended_attributes_opens(self, run, monkeypatch, attr):
+        # getxattr(2) ENOTSUP: the volume has no extended attributes.
+        _patch_libc(monkeypatch, {attr: errno.ENOTSUP})
         assert open_local_file(_write_doc("volume.md").as_uri()) is LinkOpenResult.OPENED
         run.assert_called_once()
 
     @pytest.mark.parametrize(
         "err",
-        [errno.EACCES, errno.EIO, errno.EINVAL, errno.ENOTDIR, errno.ELOOP],
-        ids=["EACCES", "EIO", "EINVAL", "ENOTDIR", "ELOOP"],
+        [errno.EPERM, errno.EACCES, errno.EIO, errno.EINVAL, errno.ENOTDIR, errno.ELOOP],
+        ids=["EPERM", "EACCES", "EIO", "EINVAL", "ENOTDIR", "ELOOP"],
     )
     @pytest.mark.parametrize("attr", [_FINDER, _FORK], ids=["finder-info", "resource-fork"])
     def test_any_other_read_error_refuses_the_document(self, run, monkeypatch, attr, err):

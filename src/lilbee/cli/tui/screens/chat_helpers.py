@@ -111,8 +111,8 @@ _FINDER_FLAGS_OFFSET = 8
 _IS_ALIAS_FLAG = 0x8000
 _RESOURCE_FORK = b"com.apple.ResourceFork"
 _ENOATTR_DARWIN = 93
-# getxattr(2) errors that mean the file has no such attribute or cannot carry one.
-_ABSENT_XATTR_ERRNOS = frozenset({_ENOATTR_DARWIN, errno.ENOTSUP, errno.EPERM})
+# getxattr(2) errors that mean the file has no such attribute or the volume has none.
+_ABSENT_XATTR_ERRNOS = frozenset({_ENOATTR_DARWIN, errno.ENOTSUP})
 
 
 def _xattr_size(path: Path, name: bytes, buf: ctypes.Array[ctypes.c_char] | None = None) -> int:
@@ -175,7 +175,8 @@ def _is_openable_document(path: Path) -> bool:
         return False
     if content_type != CODE_CONTENT_TYPE:
         return True
-    return sys.platform != "win32" and path.suffix.lower() not in _LAUNCHING_CODE_SUFFIXES
+    suffix = path.suffix.lower()
+    return sys.platform != "win32" and len(suffix) > 1 and suffix not in _LAUNCHING_CODE_SUFFIXES
 
 
 def _document_refusal(path: Path) -> LinkOpenResult | None:
