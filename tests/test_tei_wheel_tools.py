@@ -5,8 +5,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
+import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -20,6 +21,7 @@ _CPU_NAME = "lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl"
 _MAC_NAME = "lilbee_engine_tei-1.9.4-1.metal-py3-none-macosx_14_0_arm64.whl"
 _EXECUTABLE = 0o100755 << 16
 _PLAIN = 0o100644 << 16
+_CUTLASS = "THIRD-PARTY/tei-notices/git-candle-1/candle-flash-attn/cutlass/LICENSE.txt"
 
 
 def _load(name: str) -> ModuleType:
@@ -104,8 +106,30 @@ def test_a_complete_cpu_wheel_passes(tmp_path: Path) -> None:
 
 def test_a_complete_cuda_wheel_passes(tmp_path: Path) -> None:
     expression = "Apache-2.0 AND MIT AND LicenseRef-NVIDIA-CUDA-EULA"
-    wheel = _wheel(tmp_path, expression=expression, extra=("NOTICE-NVIDIA-CUDA",))
+    wheel = _wheel(tmp_path, expression=expression, extra=("NOTICE-NVIDIA-CUDA", _CUTLASS))
     assert _problems(wheel, "cuda-sm89", expression) == []
+
+
+def test_a_cuda_wheel_without_the_cutlass_licence_is_named(tmp_path: Path) -> None:
+    expression = "Apache-2.0 AND LicenseRef-NVIDIA-CUDA-EULA"
+    wheel = _wheel(tmp_path, expression=expression, extra=("NOTICE-NVIDIA-CUDA",))
+    assert _problems(wheel, "cuda-sm89", expression) == [
+        "no cutlass licence file under licenses/THIRD-PARTY/tei-notices/"
+    ]
+
+
+def test_a_cuda_wheel_with_an_empty_cutlass_licence_is_named(tmp_path: Path) -> None:
+    expression = "Apache-2.0 AND LicenseRef-NVIDIA-CUDA-EULA"
+    wheel = _wheel(tmp_path, expression=expression, extra=("NOTICE-NVIDIA-CUDA", _CUTLASS))
+    rewritten = tmp_path / "empty" / wheel.name
+    rewritten.parent.mkdir()
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(rewritten, "w") as target:
+        for info in source.infolist():
+            data = b"" if info.filename.endswith("cutlass/LICENSE.txt") else source.read(info)
+            target.writestr(info, data)
+    assert _problems(rewritten, "cuda-sm89", expression) == [
+        "no cutlass licence file under licenses/THIRD-PARTY/tei-notices/"
+    ]
 
 
 def test_a_router_without_the_execute_bit_is_named(tmp_path: Path) -> None:
@@ -138,9 +162,8 @@ def test_a_macos_wheel_needs_no_openssl_licence(tmp_path: Path) -> None:
 
 def test_a_cuda_wheel_without_the_notice_is_named(tmp_path: Path) -> None:
     expression = "Apache-2.0 AND LicenseRef-NVIDIA-CUDA-EULA"
-    assert _problems(_wheel(tmp_path, expression=expression), "cuda-sm80", expression) == [
-        "no non-empty licenses/NOTICE-NVIDIA-CUDA"
-    ]
+    wheel = _wheel(tmp_path, expression=expression, extra=(_CUTLASS,))
+    assert _problems(wheel, "cuda-sm80", expression) == ["no non-empty licenses/NOTICE-NVIDIA-CUDA"]
 
 
 def test_a_cpu_wheel_with_the_notice_is_named(tmp_path: Path) -> None:
@@ -163,7 +186,7 @@ def test_an_expression_without_apache_is_named(tmp_path: Path) -> None:
 
 
 def test_a_cuda_backend_without_the_nvidia_term_is_named(tmp_path: Path) -> None:
-    wheel = _wheel(tmp_path, extra=("NOTICE-NVIDIA-CUDA",))
+    wheel = _wheel(tmp_path, extra=("NOTICE-NVIDIA-CUDA", _CUTLASS))
     assert _problems(wheel, "cuda-sm90", "Apache-2.0 AND MIT") == [
         "License-Expression and backend cuda-sm90 disagree on LicenseRef-NVIDIA-CUDA-EULA"
     ]
@@ -299,9 +322,15 @@ def _tree(root: Path, files: dict[str, str]) -> None:
         path.write_text(text, encoding="utf-8")
 
 
-def _scan(tmp_path: Path, cargo_files: dict[str, str], source_files: dict[str, str]) -> Path:
+def _scan(
+    tmp_path: Path,
+    cargo_files: dict[str, str],
+    source_files: dict[str, str],
+    git_files: dict[str, str] | None = None,
+) -> Path:
     registry = tmp_path / "cargo/registry/src/index-1"
     _tree(registry, cargo_files)
+    _tree(tmp_path / "cargo/git/checkouts/candle-0a1b2c/6381023", git_files or {})
     source = tmp_path / "source"
     _tree(source, source_files)
     out = tmp_path / "out"
@@ -335,6 +364,44 @@ def test_vendored_scan_copies_notices_and_third_party_licences(tmp_path: Path) -
         "kernels-0.1.0/third_party/cutlass/LICENSE.txt",
         "text-embeddings-inference/NOTICE.md",
     ]
+
+
+def test_vendored_scan_copies_the_licence_of_a_git_submodule(tmp_path: Path) -> None:
+    out = _scan(
+        tmp_path,
+        {"plain-1.0.0/LICENSE-MIT": "declared licence only"},
+        {},
+        {
+            "candle-flash-attn/cutlass/LICENSE.txt": "BSD-3-Clause NVIDIA",
+            "candle-flash-attn/cutlass/include/cutlass.h": "code",
+            "candle-flash-attn/src/lib.rs": "code",
+            "NOTICE": "candle notice",
+            ".git/LICENSE": "repository metadata",
+        },
+    )
+    prefix = "git-candle-0a1b2c-6381023"
+    assert _copied(out) == [
+        f"{prefix}/NOTICE",
+        f"{prefix}/candle-flash-attn/cutlass/LICENSE.txt",
+    ]
+    cutlass = out / prefix / "candle-flash-attn/cutlass/LICENSE.txt"
+    assert cutlass.read_text(encoding="utf-8") == "BSD-3-Clause NVIDIA"
+
+
+def test_vendored_scan_runs_without_a_git_checkout(tmp_path: Path) -> None:
+    registry = tmp_path / "cargo/registry/src/index-1"
+    _tree(registry, {"kernels-0.1.0/NOTICE": "Apache notice"})
+    (tmp_path / "source").mkdir()
+    out = tmp_path / "out"
+    result = subprocess.run(
+        ["bash", str(_TOOLS / "vendored_notices.sh"), str(tmp_path / "source"), str(out)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "CARGO_HOME": str(tmp_path / "cargo")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _copied(out) == ["kernels-0.1.0/NOTICE"]
 
 
 _CARGO_STUB = """#!/bin/sh
@@ -429,18 +496,51 @@ def test_mpl_notice_names_each_crate_file_and_checksum() -> None:
         in text
     )
     assert "serde" not in text
-    assert text.endswith("Mozilla text\n")
+    assert [line.split()[0].rsplit("/", 1)[-1] for line in text.splitlines()] == [
+        "option-ext-0.2.0.crate",
+        "webpki-roots-1.0.2.crate",
+    ]
 
 
-def test_each_mpl_line_meets_the_pack_check_rule() -> None:
-    text = mpl_tool.notice(_ABOUT, _LOCK)
+def _pack_check_accepts(name: str, text: str) -> bool:
+    """True when the install check of the engine packs verifies the notice file *name*."""
+    from lilbee.providers.fleet import engine_store
+
+    return name in engine_store._verified_notices([(name, text)])
+
+
+def _real_mpl_notice() -> str:
+    """The SOURCE-MPL-2.0 text for the locked crate that the install check lists."""
+    from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS
+
+    about = {
+        "licenses": [
+            {
+                "id": "MPL-2.0",
+                "text": "Mozilla text\n",
+                "used_by": [{"crate": {"name": "option-ext", "version": "0.2.0"}}],
+            }
+        ]
+    }
+    checksum = MPL_CRATE_CHECKSUMS[("option-ext", "0.2.0")]
+    lock = {"package": [{"name": "option-ext", "version": "0.2.0", "checksum": checksum}]}
+    text = mpl_tool.notice(about, lock)
     assert text is not None
-    # The rule that the pack check applies to SOURCE-MPL-2.0 text, from the licence plan.
-    rule = re.compile(
-        r"https://static\.crates\.io/crates/(?P<crate>[\w-]+)/(?P=crate)-\d[\w.+-]*\.crate"
-        r"[ \t]+[0-9a-f]{64}\b"
-    )
-    assert [match["crate"] for match in rule.finditer(text)] == ["option-ext", "webpki-roots"]
+    return text
+
+
+def test_the_install_check_accepts_the_mpl_notice_that_the_build_writes() -> None:
+    assert _pack_check_accepts("SOURCE-MPL-2.0", _real_mpl_notice())
+
+
+def test_the_install_check_refuses_the_mpl_text_beside_the_crate_lines() -> None:
+    text = _real_mpl_notice() + "\nMozilla Public License Version 2.0\n"
+    assert not _pack_check_accepts("SOURCE-MPL-2.0", text)
+
+
+def test_the_install_check_refuses_a_crate_line_with_a_wrong_checksum() -> None:
+    url = _real_mpl_notice().split()[0]
+    assert not _pack_check_accepts("SOURCE-MPL-2.0", f"{url}  {'0' * 64}\n")
 
 
 def test_mpl_notice_is_absent_without_an_mpl_crate() -> None:
@@ -522,14 +622,87 @@ def test_the_wheel_script_writes_the_mpl_source_file_into_the_project() -> None:
     )
 
 
-def test_the_wheel_script_builds_into_an_absolute_output_directory() -> None:
-    script = (_TOOLS / "tei_wheel.sh").read_text(encoding="utf-8")
-    resolve = script.index('out="$(cd "${out}" && pwd)"')
-    assert resolve < script.index("-m build --wheel")
-    assert resolve < script.index('--outdir "${out}/dist"')
+_PYTHON_STUB = """#!/bin/sh
+# Runs the .py tools; records where the wheel build starts and its --outdir.
+case "$1" in
+  *.py) exec {python} "$@" ;;
+esac
+if [ "$1 $2" = "-m build" ]; then
+  pwd > "{record}/build-cwd"
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--outdir" ]; then
+      echo "$2" > "{record}/build-outdir"
+      mkdir -p "$2"
+    fi
+    shift
+  done
+fi
+"""
+
+
+def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Path) -> None:
+    tools = tmp_path / "tools/wheel-build"
+    shutil.copytree(_TOOLS, tools)
+    project = tmp_path / "packaging/engine-wheel-tei"
+    project.mkdir(parents=True)
+    shutil.copy(_PROJECT, project / "pyproject.toml")
+    source = tmp_path / "tei"
+    source.mkdir()
+    (source / "LICENSE").write_text("Apache licence", encoding="utf-8")
+    (source / "Cargo.lock").write_text("", encoding="utf-8")
+    router = tmp_path / "router"
+    router.write_bytes(b"\x7fELF")
+    (tmp_path / "cargo/registry/src/index-1/kernels-0.1.0").mkdir(parents=True)
+    record = tmp_path / "record"
+    record.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cargo = bin_dir / "cargo"
+    cargo.write_text(_CARGO_STUB, encoding="utf-8")
+    python = bin_dir / "python-stub"
+    python.write_text(_PYTHON_STUB.format(python=sys.executable, record=record), encoding="utf-8")
+    cargo.chmod(0o755)
+    python.chmod(0o755)
+    result = subprocess.run(
+        [
+            *("bash", str(tools / "tei_wheel.sh"), str(source), str(router), "candle", "triple"),
+            *("cpu", "linux_x86_64", "out"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "CARGO_HOME": str(tmp_path / "cargo"),
+            "PYTHON": str(python),
+            "WHEEL_VERSION": "1.9.4",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    outdir = Path((record / "build-outdir").read_text(encoding="utf-8").strip())
+    assert outdir.is_absolute()
+    assert outdir.resolve() == (tmp_path / "out/dist").resolve()
+
+
+def _code_lines(path: Path) -> list[str]:
+    """The lines of a shell script that are not comments."""
+    return [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
 
 
 def test_the_cuda_build_compiles_kernels_position_independent() -> None:
-    script = (_TOOLS / "tei_manylinux.sh").read_text(encoding="utf-8")
-    export = script.index('export NVCC_APPEND_FLAGS="-Xcompiler -fPIC"')
-    assert export < script.index("cargo build -vv")
+    lines = _code_lines(_TOOLS / "tei_manylinux.sh")
+    export = lines.index('  export NVCC_APPEND_FLAGS="-Xcompiler -fPIC"')
+    start = max(
+        i for i, line in enumerate(lines[:export]) if line == 'if [ -n "${CUDA_CC}" ]; then'
+    )
+    end = lines.index("fi", export)
+    build = next(
+        i for i, line in enumerate(lines) if line.startswith("(cd") and "cargo build" in line
+    )
+    assert start < export < end < build

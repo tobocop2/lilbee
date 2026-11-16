@@ -4,7 +4,8 @@ Usage: check_tei_wheel.py <wheel> <backend> <licence-expression-file>
 
 The wheel must hold an executable router, LICENSE-tei, a non-empty THIRD-PARTY/tei folder and the
 licence expression that the build wrote. A CUDA backend also needs a non-empty NOTICE-NVIDIA-CUDA
-and the NVIDIA licence term; no other backend may carry either. A Linux wheel also holds LICENSE-openssl.
+and the NVIDIA licence term, and the cutlass licence under THIRD-PARTY/tei-notices; no other backend
+may carry the NVIDIA notice. A Linux wheel also holds LICENSE-openssl.
 An expression with MPL-2.0 needs a non-empty SOURCE-MPL-2.0. A router that holds ONNX Runtime is refused.
 Prints one line for each problem and exits 1, or prints OK.
 """
@@ -61,6 +62,16 @@ def problems(wheel: Path, backend: str, expected: str) -> list[str]:
     cuda = backend.startswith("cuda")
     if cuda and (notice is None or notice.file_size == 0):
         found.append(f"no non-empty licenses/{NVIDIA_NOTICE}")
+    cutlass = [
+        n
+        for n, i in infos.items()
+        if i.file_size
+        and n.startswith(f"{dist}/licenses/THIRD-PARTY/tei-notices/")
+        and "/cutlass/" in n
+        and n.rsplit("/", 1)[-1].upper().startswith("LICENSE")
+    ]
+    if cuda and not cutlass:
+        found.append("no cutlass licence file under licenses/THIRD-PARTY/tei-notices/")
     if not cuda and notice is not None:
         found.append(f"licenses/{NVIDIA_NOTICE} in a build with no NVIDIA files")
     if declared != expected:

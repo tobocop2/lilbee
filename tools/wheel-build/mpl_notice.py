@@ -1,10 +1,11 @@
-"""Write SOURCE-MPL-2.0 with the MPL-2.0 text and the source of each MPL-2.0 crate.
+"""Write SOURCE-MPL-2.0: one line for each MPL-2.0 crate, with its .crate URL and sha256.
 
 Usage: mpl_notice.py <cargo-about-json> <Cargo.lock> <output>
 
 MPL-2.0 section 3.2 needs a way to get the source of each file under the licence. A crate on
 crates.io keeps every published version, so the notice names the exact .crate file and its sha256
-from Cargo.lock. Writes nothing when no crate uses MPL-2.0.
+from Cargo.lock. The pack licence check accepts only crate lines in the file; the MPL-2.0 text ships
+in THIRD-PARTY/tei/LICENSES.txt. Writes nothing when no crate uses MPL-2.0.
 """
 
 from __future__ import annotations
@@ -43,18 +44,13 @@ def notice(about: dict, lock: dict) -> str | None:
     if not crates:
         return None
     sums = checksums(lock)
-    text = next(entry["text"] for entry in about["licenses"] if entry["id"] == "MPL-2.0")
-    lines = [
-        "These crates are under the Mozilla Public License 2.0. The wheel holds them unmodified,",
-        "compiled into the router. Each line below gives the .crate file of one crate, then its sha256.",
-        "",
-    ]
+    lines = []
     for name, version in crates:
         checksum = sums.get((name, version))
         if checksum is None:
             raise SystemExit(f"Cargo.lock has no checksum for {name} {version}")
         lines.append(f"{CRATE_URL.format(name=name, version=version)}  {checksum}")
-    return "\n".join(lines) + "\n\n" + text.strip() + "\n"
+    return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str]) -> None:
