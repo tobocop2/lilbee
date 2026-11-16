@@ -184,6 +184,9 @@ _UPSTREAM_LOG_MAX_CHUNKS = 8
 
 log = logging.getLogger(__name__)
 
+# What a bad answer from the limit or count route raises; the embed itself already succeeded.
+_TRUNCATION_CHECK_FAILURES = (httpx.HTTPError, ProviderError, KeyError, TypeError, ValueError)
+
 
 def _estimate_tokens(text: str) -> int:
     """Conservative (over-counting) token estimate from character length."""
@@ -602,8 +605,9 @@ class LlamaServerClient:
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
         self.in_flight = 0
-        # The server's input limit, read on the first embed that needs it.
+        # The server's input limit; None until read, and after a failed read.
         self._max_input: int | None = None
+        self._limit_read = False
         self._in_flight_lock = threading.Lock()
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
@@ -1197,41 +1201,52 @@ class LlamaServerClient:
             # Match the in-process embedder; the server rejects an empty input.
             return []
         vectors: list[Vector] = []
-        cut = 0
-        for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
-            cut += self._count_inputs_past_limit(sub_batch)
+        sub_batches = self._truncate_and_subbatch(texts, estimate=True)
+        for sub_batch in sub_batches:
             data = self._embed_subbatch(sub_batch)
             vectors.extend(_embedding_vector(item, self._profile) for item in data)
-        note_truncated(cut, len(texts), self._input_limit())
+        self._note_cut_inputs(sub_batches, len(texts))
         return vectors
 
+    def _note_cut_inputs(self, sub_batches: list[list[str]], total: int) -> None:
+        """Record how many inputs the server cut; a failed check is skipped, never raised."""
+        try:
+            limit = self._input_limit()
+            path = self._profile.input_count_path
+            if limit is None or path is None:
+                return
+            cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
+        except _TRUNCATION_CHECK_FAILURES as exc:
+            log.debug("Embed truncation check skipped: %s", exc)
+            return
+        note_truncated(cut, total, limit)
+
     def _input_limit(self) -> int | None:
-        """The server's ``max_input_length`` from its limit route, read once; None with no route."""
+        """The server's ``max_input_length``, read once per client even when the read fails."""
         path = self._profile.input_limit_path
-        if path is None:
-            return None
-        if self._max_input is None:
-            resp = self._http.get(self._native_route(path))
-            self._raise_for_status(resp)
-            self._max_input = int(resp.json()["max_input_length"])
+        if path is None or self._limit_read:
+            return self._max_input
+        self._limit_read = True
+        resp = self._http.get(self._native_route(path))
+        self._raise_for_status(resp)
+        self._max_input = int(resp.json()["max_input_length"])
         return self._max_input
 
-    def _count_inputs_past_limit(self, texts: list[str]) -> int:
-        """How many of *texts* the server's tokenizer counts past its input limit.
+    def _count_inputs_past_limit(self, texts: list[str], limit: int, path: str) -> int:
+        """How many of *texts* the tokenizer route *path* counts past *limit*.
 
         A token is at least one character, so only a text with more characters than
         the limit is counted, in one request.
         """
-        limit = self._input_limit()
-        path = self._profile.input_count_path
-        if limit is None or path is None:
-            return 0
         long = [text for text in texts if len(text) > limit]
         if not long:
             return 0
         resp = self._http.post(self._native_route(path), json={"inputs": long})
         self._raise_for_status(resp)
-        return sum(len(tokens) > limit for tokens in resp.json())
+        counts = resp.json()
+        if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
+            raise ValueError("the count route answered with an unexpected body")
+        return sum(len(tokens) > limit for tokens in counts)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.

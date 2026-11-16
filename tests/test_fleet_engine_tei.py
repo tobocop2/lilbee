@@ -30,7 +30,7 @@ from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
-from lilbee.providers.truncation import truncation_scope
+from lilbee.providers.truncation import note_truncated, truncation_scope
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -748,7 +748,7 @@ def test_embed_inputs_past_the_router_limit_give_one_warning_for_the_call(caplog
     [record] = caplog.records
     assert "2 of 3" in record.getMessage()
     assert "8-token limit" in record.getMessage()
-    assert "truncates" in record.getMessage()
+    assert "the cut text is not in the vectors" in record.getMessage()
 
 
 def test_embed_inputs_within_the_router_limit_give_no_warning_and_no_count(caplog) -> None:
@@ -861,3 +861,96 @@ def test_an_engine_with_no_count_route_gives_no_warning(routes, caplog) -> None:
         client.embed([_words(30)])
     assert router.tokenized == []
     assert caplog.records == []
+
+
+class _BrokenSideRoute(_Embedder):
+    """A router whose embeddings work while one side route answers as the test sets."""
+
+    def __init__(self, route: str, answer: httpx.Response | Exception) -> None:
+        super().__init__()
+        self.route = route
+        self.answer = answer
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith(self.route):
+            self.paths.append(req.url.path)
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+        return super().__call__(req)
+
+
+_BROKEN_ANSWERS = {
+    "404": httpx.Response(404, json={"error": "no route"}),
+    "500": httpx.Response(500, text="boom"),
+    "not-json": httpx.Response(200, text="<html>"),
+    "connection": httpx.ConnectError("refused"),
+}
+_BROKEN_INFO = {
+    **_BROKEN_ANSWERS,
+    "no-limit-key": httpx.Response(200, json={"model_id": "x"}),
+    "limit-not-a-number": httpx.Response(200, json={"max_input_length": "many"}),
+    "limit-null": httpx.Response(200, json={"max_input_length": None}),
+    "body-a-list": httpx.Response(200, json=[1, 2]),
+}
+_BROKEN_TOKENIZE = {
+    **_BROKEN_ANSWERS,
+    "body-an-object": httpx.Response(200, json={"tokens": 1}),
+    "entries-not-lists": httpx.Response(200, json=[1]),
+}
+
+
+@pytest.mark.parametrize("kind", list(_BROKEN_INFO))
+def test_embed_returns_its_vectors_when_the_limit_route_fails(kind, caplog) -> None:
+    router = _BrokenSideRoute("/info", _BROKEN_INFO[kind])
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        vectors = client.embed([_words(30), _words(3)])
+    assert len(vectors) == 2
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("kind", list(_BROKEN_TOKENIZE))
+def test_embed_returns_its_vectors_when_the_count_route_fails(kind, caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", _BROKEN_TOKENIZE[kind])
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        vectors = client.embed([_words(30), _words(3)])
+    assert len(vectors) == 2
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_a_failed_limit_read_is_not_tried_again_by_the_same_client() -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(404, json={}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    client.embed([_words(30)])
+    assert sum(p.endswith("/info") for p in router.paths) == 1
+
+
+def test_a_later_embed_with_no_limit_keeps_the_limit_the_scope_has(caplog) -> None:
+    with caplog.at_level("WARNING"), truncation_scope():
+        note_truncated(2, 8, 512)
+        note_truncated(0, 5, None)
+    [record] = caplog.records
+    assert "2 of 13" in record.getMessage()
+    assert "512-token limit" in record.getMessage()
+
+
+def test_a_cut_with_no_known_limit_never_prints_none(caplog) -> None:
+    with caplog.at_level("WARNING"), truncation_scope():
+        note_truncated(1, 4, None)
+    [record] = caplog.records
+    assert "None" not in record.getMessage()
+    assert "1 of 4" in record.getMessage()
+
+
+def test_the_warning_names_the_chunk_size_setting_and_a_larger_limit_model(caplog) -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    message = caplog.records[0].getMessage()
+    assert "chunk_size" in message
+    assert "larger input limit" in message
