@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import errno
 import logging
 import os
 import subprocess
@@ -108,11 +109,17 @@ _FINDER_INFO = b"com.apple.FinderInfo"
 _FINDER_INFO_SIZE = 32
 _FINDER_FLAGS_OFFSET = 8
 _IS_ALIAS_FLAG = 0x8000
+_RESOURCE_FORK = b"com.apple.ResourceFork"
 _ENOATTR_DARWIN = 93
+# getxattr(2) errors that mean the file has no such attribute or cannot carry one.
+_ABSENT_XATTR_ERRNOS = frozenset({_ENOATTR_DARWIN, errno.ENOTSUP, errno.EPERM})
 
 
-def _has_alias_flag(path: Path) -> bool:
-    """Whether the Finder flags of *path* mark it as an alias; raises OSError on a read error."""
+def _xattr_size(path: Path, name: bytes, buf: ctypes.Array[ctypes.c_char] | None = None) -> int:
+    """Size of the extended attribute *name* of *path*, read into *buf* when given.
+
+    0 when the file has no such attribute; raises OSError on any other read error.
+    """
     libc = ctypes.CDLL(None, use_errno=True)  # os.getxattr does not exist on macOS
     libc.getxattr.argtypes = [
         ctypes.c_char_p,
@@ -123,23 +130,26 @@ def _has_alias_flag(path: Path) -> bool:
         ctypes.c_int,
     ]
     libc.getxattr.restype = ctypes.c_ssize_t
+    size = libc.getxattr(os.fsencode(path), name, buf, 0 if buf is None else len(buf), 0, 0)
+    if size >= 0:
+        return int(size)
+    err = ctypes.get_errno()
+    if err in _ABSENT_XATTR_ERRNOS:
+        return 0
+    raise OSError(err, os.strerror(err), str(path))
+
+
+def _has_alias_flag(path: Path) -> bool:
+    """Whether the Finder flags of *path* mark it as an alias; raises OSError on a read error."""
     buf = ctypes.create_string_buffer(_FINDER_INFO_SIZE)
-    size = libc.getxattr(os.fsencode(path), _FINDER_INFO, buf, _FINDER_INFO_SIZE, 0, 0)
-    if size < 0:
-        err = ctypes.get_errno()
-        if err == _ENOATTR_DARWIN:
-            return False
-        raise OSError(err, os.strerror(err), str(path))
+    _xattr_size(path, _FINDER_INFO, buf)
     flags = int.from_bytes(buf.raw[_FINDER_FLAGS_OFFSET : _FINDER_FLAGS_OFFSET + 2], "big")
     return bool(flags & _IS_ALIAS_FLAG)
 
 
 def _has_resource_fork(path: Path) -> bool:
     """Whether *path* has a non-empty macOS resource fork; raises OSError on a read error."""
-    try:
-        return os.stat(f"{path}/..namedfork/rsrc").st_size > 0
-    except FileNotFoundError:
-        return False
+    return _xattr_size(path, _RESOURCE_FORK) > 0
 
 
 def _is_plain_file(path: Path) -> bool:
