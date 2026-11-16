@@ -69,13 +69,15 @@ class IkLlamaAdapter:
 
     def binary(self) -> Path:
         """The server of the installed build of the pin; raises when the pack is not installed."""
+        from lilbee.providers.fleet.engines.choice import install_advice
+
         store = EngineStore(engines_root(cfg.models_dir))
         for build in store.installed():
             of_pin = (build.engine, build.version, build.backend) == (self.name, VERSION, BACKEND)
             if of_pin and build.binary is not None:
                 return build.binary
         raise ProviderError(
-            f"Engine {self.name} is not installed. Run lilbee engine install {self.name}.",
+            f"Engine {self.name} is not installed. {install_advice(self)}",
             kind=ProviderErrorKind.NOT_FOUND,
         )
 

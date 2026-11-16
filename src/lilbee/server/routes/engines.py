@@ -14,6 +14,7 @@ from litestar.params import FromPath
 
 import lilbee.app.engine_service as service
 from lilbee.core.config import cfg
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server.models import (
     EngineBuildsResponse,
     EngineChosenResponse,
@@ -37,6 +38,12 @@ async def _call(action: Callable[[], _T]) -> _T:
     """Run a service call off the loop; a refusal is a 422, a failed save or apply a 503."""
     try:
         return await asyncio.to_thread(action)
+    except service.EngineInstallRefusedError as exc:
+        raise HTTPException(
+            status_code=_HTTP_UNPROCESSABLE,
+            detail=str(exc),
+            extra={"code": SseErrorCode.ENGINE_INSTALL_REFUSED},
+        ) from exc
     except service.EngineRefusedError as exc:
         raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
     except service.EmbedConfirmRequiredError as exc:

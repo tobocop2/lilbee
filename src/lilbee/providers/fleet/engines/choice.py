@@ -355,6 +355,17 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
 
 
+def install_advice(adapter: EngineAdapter) -> str:
+    """The advice to get *adapter*: the install command, or the reason install refuses."""
+    try:
+        pin_lock(adapter.pin_record())
+    except NoPublishedPackError:
+        return f"No pack of {adapter.name} is published yet, so there is nothing to install."
+    except PinError as exc:
+        return f"Engine {adapter.name} cannot be installed: {exc}."
+    return f"Run lilbee engine install {adapter.name}."
+
+
 BUILD_UNREADABLE = (
     OSError,
     EngineConflictError,

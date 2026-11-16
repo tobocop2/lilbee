@@ -35,18 +35,21 @@ def test_an_unread_platform_is_unknown_not_refused(adapter) -> None:
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS, ids=lambda a: a.name.value)
-def test_binary_comes_from_the_store_or_says_how_to_install(
+def test_binary_comes_from_the_store_or_says_what_to_do_about_the_pack(
     adapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(choice, "store_tool", lambda *_a: BINARY)
     assert adapter.binary() == BINARY
     monkeypatch.setattr(choice, "store_tool", lambda *_a: None)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
-    expected = (
-        "lemonade-server.ai"
-        if hasattr(adapter, "user_binary")
-        else f"lilbee engine install {adapter.name.value}"
-    )
+    published = bool(adapter.pin_record()["platforms"])
+    name = adapter.name.value
+    if hasattr(adapter, "user_binary"):
+        expected = "lemonade-server.ai"
+    elif published:
+        expected = f"Run lilbee engine install {name}"
+    else:
+        expected = f"No pack of {name} is published yet, so there is nothing to install"
     with pytest.raises(ProviderError, match=expected):
         adapter.binary()
 

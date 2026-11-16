@@ -595,6 +595,11 @@ use, when a model needs it. Every other engine needs this command. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
 REST route `POST /api/engines/install`.
 
+When the install refuses an engine it knows, for example because no pack of the
+engine is published, the REST route answers 422 with the code `engine_install_refused`.
+The MCP tool returns the same `code`, and `lilbee --json engine install` prints it.
+An unknown engine name has no code.
+
 Every engine starts behind the llama-swap router. `lilbee engine install` also installs
 the router from its pinned release (MIT licence, digest checked) into the `router` folder of
 the engines folder, so an install without llama.cpp can start its engine. To install the

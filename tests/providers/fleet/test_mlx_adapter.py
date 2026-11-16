@@ -284,12 +284,16 @@ def test_install_on_macos_13_is_refused_by_the_gate(
         engine_service.install("mlx")
 
 
-def test_binary_of_an_engine_with_no_install_names_the_install_command(
+def test_binary_of_an_engine_with_no_published_pack_says_there_is_nothing_to_install(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: host("Darwin", "arm64", "15.2"))
-    with pytest.raises(ProviderError, match=r"lilbee engine install mlx"):
+    with pytest.raises(
+        ProviderError,
+        match=r"The mlx engine is not installed\. No pack of mlx is published yet, so there is "
+        r"nothing to install\.",
+    ):
         MLX.binary()
 
 

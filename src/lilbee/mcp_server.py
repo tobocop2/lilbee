@@ -2277,6 +2277,8 @@ def _engine_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
     """Run an engine call and serialize its result; a failure returns the service's text."""
     try:
         return action().model_dump(mode="json")
+    except engine_service.EngineInstallRefusedError as exc:
+        return {**_error(str(exc)), "code": SseErrorCode.ENGINE_INSTALL_REFUSED}
     except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
         return _error(str(exc))
     except engine_service.EngineNotAppliedError as exc:
