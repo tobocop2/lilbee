@@ -1014,8 +1014,9 @@ def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
         Path(__file__).parents[3] / ".github" / "workflows" / "llama-pack-cells.yml"
     ).read_text(encoding="utf-8")
     name = engine_store.NOTICE_RULES["LicenseRef-Microsoft-VC-Runtime"].file
-    assert workflow.count(name) == 2
-    assert workflow.lower().count(name.lower()) == 2
+    # The llama.cpp job and the mistral.rs job each write the notice and each check the listing.
+    assert workflow.count(name) == 4
+    assert workflow.lower().count(name.lower()) == 4
 
 
 def test_a_staged_cuda_tree_without_its_notice_is_refused(tmp_path: Path) -> None:
