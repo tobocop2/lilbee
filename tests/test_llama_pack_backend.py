@@ -306,6 +306,19 @@ def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow()
     assert shipped - built == set()
 
 
+def test_every_shipped_llama_url_names_the_wheel_that_its_cell_builds() -> None:
+    cells = {cell["cell"]: cell for cell in _pack_matrix(_pack_cells())}
+    shipped = MANIFESTS["llama.cpp"][_WHEEL_VERSION]
+    assert shipped
+    for key, row in shipped.items():
+        cell = cells[key]
+        built = (
+            f"lilbee_engine_llama_cpp-{_WHEEL_VERSION}-{cell['build_number']}.{cell['backend']}"
+            f"-py3-none-{cell['platform']}.whl"
+        )
+        assert row["url"].rsplit("/", 1)[1] == built, key
+
+
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
     workflow = _uncommented(_PACK_CELLS.read_text(encoding="utf-8"))
     notice = "NOTICE-MICROSOFT-VC-RUNTIME"

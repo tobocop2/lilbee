@@ -210,14 +210,20 @@ SHIPPED_LLAMA = {
     ("Darwin", "arm64"): (
         "macos-arm64-metal",
         "07d954f73523abfe72c10ed61fa21d3e1877610be0991b7901e400841db7d8ce",
+        "engine-packs-20261115",
+        1,
     ),
     ("Linux", "x86_64"): (
         "linux-x86_64-cpu",
         "7955bb3f571422fbe4789e7f50a4b56b6a05f723b65babad8c3e1d4426b8be80",
+        "engine-packs-20261115",
+        1,
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cpu",
-        "a6d2ba079930ad9ea10bb156f2d0ef2ede89855492d1eacd55db2a0e790959d9",
+        "da9133af67820251f669e53d44e8adf0f2d59ce9a11107127348cbf5a68e15f9",
+        "engine-packs-20261116-llama-win",
+        2,
     ),
 }
 
@@ -226,7 +232,7 @@ SHIPPED_LLAMA = {
 def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_LLAMA[(system, machine)]
+    cell, digest, release, build = SHIPPED_LLAMA[(system, machine)]
     host = _host(system, machine)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(first_use, "session_host", lambda: host)
@@ -234,17 +240,21 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
-    assert f"-1.{cell.rsplit('-', 1)[1]}-py3-none-" in pin["platforms"][cell]["url"]
+    url = pin["platforms"][cell]["url"]
+    assert f"/{release}/" in url
+    assert f"-{build}.{cell.rsplit('-', 1)[1]}-py3-none-" in url
 
 
 SHIPPED_LLAMA_CUDA = {
     ("Linux", "x86_64"): (
         "linux-x86_64-cuda",
         "12ea17e67f6931d3bb95ee529d729baadcbe0a0726ebd86501a3d1477fcab785",
+        "engine-packs-20261115",
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cuda",
-        "48e07547030d3794119584efe0d889ccdf864cb3665fc80314db74051b0ef453",
+        "f535f6d7a796c957df2bc9799c9a82c86457202d229985bd633a0cd32cc84d69",
+        "engine-packs-20261116-llama-win",
     ),
 }
 
@@ -253,7 +263,7 @@ SHIPPED_LLAMA_CUDA = {
 def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_LLAMA_CUDA[(system, machine)]
+    cell, digest, release = SHIPPED_LLAMA_CUDA[(system, machine)]
     facts = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
     host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvidia=facts)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
@@ -264,7 +274,7 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     assert pin["platforms"][cell]["url"].startswith(
-        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115/"
+        f"https://github.com/tobocop2/lilbee/releases/download/{release}/"
     )
 
 
