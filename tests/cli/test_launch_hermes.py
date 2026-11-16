@@ -310,8 +310,39 @@ def test_hermes_prepare_warns_with_the_served_window_below_the_minimum(monkeypat
     _serve_ctx_on_port(monkeypatch, 8_192)
     HermesLauncher(include_mcp=False).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
 
-    err = capsys.readouterr().err
-    assert "hermes requires at least a 64,000-token context and lilbee serves 8,192" in err
+    assert capsys.readouterr().err == (
+        "Warning: hermes requires at least a 64,000-token context and lilbee serves 8,192, "
+        "so hermes will refuse to start. Chat with a longer-context model, a smaller "
+        "quantization, or a higher gpu_memory_fraction.\n"
+    )
+
+
+def test_hermes_prepare_accepts_a_served_window_of_exactly_the_minimum(
+    tmp_path, monkeypatch, capsys
+):
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    _serve_ctx_on_port(monkeypatch, 64_000)
+    HermesLauncher(include_mcp=False).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
+
+    assert capsys.readouterr().err == ""
+    assert _hermes_config(tmp_path)["providers"]["lilbee"]["context_length"] == 64_000
+
+
+def test_hermes_prepare_pins_the_first_model_ref_when_chat_model_is_unset(tmp_path, monkeypatch):
+    from lilbee.catalog import agent_model_id
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    monkeypatch.setattr(cfg, "chat_model", "")
+
+    HermesLauncher(include_mcp=False).prepare(
+        token=_TOKEN, port=_PORT, model_refs=[_PINNED_REF, _CHAT_REF]
+    )
+
+    written = _hermes_config(tmp_path)
+    pinned_id = agent_model_id(_PINNED_REF)
+    assert written["providers"]["lilbee"]["default_model"] == pinned_id
+    assert written["model"] == {"default": pinned_id, "provider": "lilbee", "max_tokens": 8192}
 
 
 def test_hermes_prepare_names_the_config_in_the_parse_error(tmp_path, capsys):
@@ -327,4 +358,7 @@ def test_hermes_prepare_names_the_config_in_the_parse_error(tmp_path, capsys):
         HermesLauncher(include_mcp=True).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
 
     assert exit_info.value.exit_code == 1
-    assert "Your hermes config (config.yaml) did not parse" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "Your hermes config (config.yaml) did not parse, so lilbee will not overwrite it. "
+        "Fix or remove it, then retry.\n"
+    )

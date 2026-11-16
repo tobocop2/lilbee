@@ -1174,4 +1174,7 @@ def test_opencode_prepare_names_the_config_in_the_parse_error(tmp_path, capsys):
         OpencodeLauncher(assume_yes=True).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
 
     assert exit_info.value.exit_code == 1
-    assert "Your opencode config (opencode.json) did not parse" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "Your opencode config (opencode.json) did not parse, so lilbee will not overwrite it. "
+        "Fix or remove it, then retry.\n"
+    )
