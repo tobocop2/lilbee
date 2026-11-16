@@ -301,7 +301,7 @@ def _check_licences(lock: PinLock) -> None:
             )
 
 
-def _copy_with_digest(source: Path, target: Path) -> str:
+def copy_with_digest(source: Path, target: Path) -> str:
     """Copy *source* to *target* in chunks; return the sha256 of the bytes copied."""
     digest = hashlib.sha256()
     with source.open("rb") as reader, target.open("wb") as writer:
@@ -311,7 +311,7 @@ def _copy_with_digest(source: Path, target: Path) -> str:
     return digest.hexdigest()
 
 
-def _file_digest(path: Path) -> str:
+def file_digest(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
@@ -637,7 +637,7 @@ class EngineStore:
                     f"and cannot be downloaded. Copy {pack.name} into {pack.parent} "
                     f"and run the install again."
                 ) from exc
-            return self._install_private(lock, wheel, _file_digest(wheel))
+            return self._install_private(lock, wheel, file_digest(wheel))
 
     @contextmanager
     def _scratch(self) -> Iterator[Path]:
@@ -661,7 +661,7 @@ class EngineStore:
         with self._scratch() as scratch:
             scratch.mkdir(parents=True, exist_ok=True)
             copy = scratch / wheel.name
-            return self._install_private(lock, copy, _copy_with_digest(wheel, copy))
+            return self._install_private(lock, copy, copy_with_digest(wheel, copy))
 
     def _install_private(self, lock: PinLock, wheel: Path, digest: str) -> Path:
         """Install the private file *wheel* once *digest* and the wheel checks match the pin."""
