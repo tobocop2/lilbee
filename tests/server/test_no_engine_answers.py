@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from litestar import get
 from litestar.testing import create_test_client
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.server import app as app_module
 from lilbee.server.app import create_app
 from lilbee.server.routes import search as search_routes
 
@@ -55,6 +58,14 @@ def test_the_other_provider_kinds_keep_the_500_on_a_route_with_no_handler(
 ) -> None:
     status, _ = _app_status(ProviderError("boom", kind=kind))
     assert status == 500
+
+
+def test_an_unmapped_provider_kind_logs_its_traceback() -> None:
+    error = ProviderError("boom", kind=ProviderErrorKind.UNKNOWN)
+    with patch.object(app_module.log, "error") as logged:
+        _app_status(error)
+    logged.assert_called_once()
+    assert logged.call_args.kwargs["exc_info"] is error
 
 
 def test_engines_still_starting_keep_the_503() -> None:
