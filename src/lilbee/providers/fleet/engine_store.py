@@ -127,9 +127,9 @@ _COPYLEFT_LIBRARIES = re.compile(
 )
 _LIBRARY_SUFFIXES = (".so", ".dylib", ".dll")
 _STATIC_ARCHIVE_SUFFIX = ".a"
-_LOCK_DIR = ".locks"
+LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
-_STAGE_PREFIX = ".stage-"
+STAGE_PREFIX = ".stage-"
 _DOWNLOAD_PREFIX = ".download-"
 _TRASH_PREFIX = ".trash-"
 _BUNDLED = "bundled"
@@ -138,7 +138,7 @@ _INSTALL_TIMEOUT_S = 1800.0
 _ENGINES_DIRNAME = "engines"
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
-_PACK_DIR = "packs"
+PACK_DIR = "packs"
 _PACKAGE_INDEX = "https://lilbee.sh"
 _PACKAGE_PREFIX = "lilbee-engine-"
 
@@ -558,7 +558,7 @@ class EngineStore:
 
     def pack_path(self, lock: PinLock) -> Path:
         """Where a hand-copied wheel of *lock* is looked up."""
-        return self.root / _PACK_DIR / f"{lock.engine}-{lock.version}-{lock.backend}.whl"
+        return self.root / PACK_DIR / f"{lock.engine}-{lock.version}-{lock.backend}.whl"
 
     def complete_build(self, lock: PinLock) -> Path | None:
         """The directory of the complete build of *lock*, None when absent or damaged."""
@@ -583,7 +583,7 @@ class EngineStore:
             return self.install_from_wheel(lock, pack)
         name = f"{_DOWNLOAD_PREFIX}{uuid.uuid4().hex}"
         scratch = self.root / name
-        scratch_lock = self.root / _LOCK_DIR / name
+        scratch_lock = self.root / LOCK_DIR / name
         try:
             with file_lock(scratch_lock, _LOCK_TIMEOUT_S):
                 try:
@@ -604,10 +604,10 @@ class EngineStore:
         _check_licences(lock)
         _check_wheel(lock, wheel)
         final = self.build_dir(lock)
-        with file_lock(self.root / _LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):
+        with file_lock(self.root / LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):
             if self.complete_build(lock) is not None:
                 return final
-            stage = final.parent / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
+            stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
             try:
                 _unpack(wheel, stage)
@@ -624,10 +624,10 @@ class EngineStore:
         """Install *lock* with the package installer, then run the wheel checks on the stage."""
         _check_licences(lock)
         final = self.build_dir(lock)
-        with file_lock(self.root / _LOCK_DIR / lock.engine, _INSTALL_TIMEOUT_S):
+        with file_lock(self.root / LOCK_DIR / lock.engine, _INSTALL_TIMEOUT_S):
             if self.complete_build(lock) is not None:
                 return final
-            stage = final.parent / f"{_STAGE_PREFIX}{uuid.uuid4().hex}"
+            stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
             try:
                 stage.mkdir()
@@ -674,7 +674,7 @@ class EngineStore:
             if not _NAME_PATTERN.fullmatch(part):
                 raise StorePathError(f"{part!r} cannot name an engine build.")
         build = self.root / engine / f"{version}-{backend}"
-        with file_lock(self.root / _LOCK_DIR / engine, wait_s):
+        with file_lock(self.root / LOCK_DIR / engine, wait_s):
             if not build.is_dir():
                 raise EngineNotInstalledError(
                     f"Engine {engine} {version} ({backend}) is not installed."
@@ -738,7 +738,7 @@ class EngineStore:
             return []
         found = []
         for engine in sorted(self.root.iterdir()):
-            if engine.name.startswith(".") or engine.name == _PACK_DIR or not engine.is_dir():
+            if engine.name.startswith(".") or engine.name == PACK_DIR or not engine.is_dir():
                 continue
             for build in sorted(engine.iterdir()):
                 if build.name.startswith(".") or not build.is_dir():
@@ -764,9 +764,9 @@ class EngineStore:
         removed: list[Path] = []
         try:
             for engine in sorted(self.root.iterdir()) if self.root.is_dir() else []:
-                if engine.name == _PACK_DIR or not engine.is_dir():
+                if engine.name == PACK_DIR or not engine.is_dir():
                     continue
-                if engine.name == _LOCK_DIR:
+                if engine.name == LOCK_DIR:
                     continue
                 if engine.name.startswith(_DOWNLOAD_PREFIX):
                     removed.extend(self._sweep_download(engine))
@@ -777,7 +777,7 @@ class EngineStore:
         return removed
 
     def _sweep_download(self, scratch: Path) -> list[Path]:
-        lock_path = self.root / _LOCK_DIR / scratch.name
+        lock_path = self.root / LOCK_DIR / scratch.name
         try:
             with file_lock(lock_path, _NO_WAIT_S):
                 self._inside_root(scratch)
@@ -789,11 +789,11 @@ class EngineStore:
 
     def _sweep_engine(self, engine: Path) -> list[Path]:
         try:
-            with file_lock(self.root / _LOCK_DIR / engine.name, _NO_WAIT_S):
+            with file_lock(self.root / LOCK_DIR / engine.name, _NO_WAIT_S):
                 leftovers = [
                     child
                     for child in sorted(engine.iterdir())
-                    if child.name.startswith((_STAGE_PREFIX, _TRASH_PREFIX))
+                    if child.name.startswith((STAGE_PREFIX, _TRASH_PREFIX))
                 ]
                 removed = [child for child in leftovers if self._remove_leftover(child)]
         except FileLockUnavailableError:

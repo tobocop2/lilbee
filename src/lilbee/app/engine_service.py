@@ -53,6 +53,7 @@ from lilbee.providers.fleet.engines.choice import (
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
+from lilbee.providers.fleet.router_install import ROUTER_REFUSALS, install_router
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
 from lilbee.runtime.cancellation import CancelSignal
@@ -462,9 +463,29 @@ def install(
         raise EngineRefusedError(str(exc)) from exc
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
+    _install_router(name, on_update, on_retry, cancel)
     return InstalledBuild(
         lock.engine, lock.version, lock.backend, gate.reason, not_run_on(lock.engine)
     )
+
+
+def _install_router(
+    name: str,
+    on_update: Callable[[DownloadProgress], None] | None,
+    on_retry: Callable[[str], None] | None,
+    cancel: CancelSignal | None,
+) -> None:
+    """Install the router that starts every engine; a router already installed is kept."""
+    try:
+        install_router(
+            on_progress=make_download_callback(on_update) if on_update is not None else None,
+            on_retry=_retry_reporter(on_retry),
+            cancel=cancel,
+        )
+    except ROUTER_REFUSALS as exc:
+        raise EngineRefusedError(
+            f"Engine {name} is installed, but the router that starts it is not. {exc}"
+        ) from exc
 
 
 def _pack_installable() -> bool:

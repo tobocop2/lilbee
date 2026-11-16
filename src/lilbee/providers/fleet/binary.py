@@ -167,13 +167,14 @@ def engine_binary_identity(binary: Path) -> str:
 def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
     """Resolve *tool*: configured llama-server path, then bundled wheel, then PATH, then the pack.
 
-    A helper (llama-swap, gguf-parser) reads the installed pack before PATH, so the lookup
-    does not depend on which llama-server the host has. When none of those has the tool,
-    the llama.cpp pack installs on first use (unless *install* is false). A user who has a
-    llama-server (a configured path, the bundled wheel or one on PATH) never gets a pack
-    installed: a missing helper raises an error that names the helper and the command that
-    installs it. Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH`` (an explicit setting
-    beats the bundled wheel).
+    A helper (llama-swap, gguf-parser) reads the installed router (llama-swap) and the
+    installed pack before PATH, so the lookup does not depend on which llama-server the host
+    has. When none of those has the tool, the router (llama-swap) or the llama.cpp pack
+    installs on first use (unless *install* is false). A user who has a llama-server (a
+    configured path, the bundled wheel or one on PATH) never gets a pack or router installed:
+    a missing helper raises an error that names the helper and the command that installs it.
+    Only llama-server honors ``LILBEE_LLAMA_SERVER_PATH`` (an explicit setting beats the
+    bundled wheel).
     """
     if tool is EngineTool.LLAMA_SERVER:
         from lilbee.core.config import cfg
@@ -189,7 +190,7 @@ def resolve_engine_tool(tool: EngineTool, *, install: bool = True) -> Path:
         return bundled
 
     if tool is not EngineTool.LLAMA_SERVER:
-        packed = _installed_pack_tool(tool)
+        packed = _installed_helper(tool)
         if packed is not None:
             return packed
 
@@ -232,18 +233,40 @@ def _has_server() -> bool:
     )
 
 
-def _first_use_tool(tool: EngineTool) -> Path | None:
-    """The tool from the llama.cpp pack, installed on first use; raises when it cannot be.
+def _installed_helper(tool: EngineTool) -> Path | None:
+    """*tool* from the installed router or the installed pack, the router first."""
+    if tool is EngineTool.LLAMA_SWAP:
+        router = _installed_router()
+        if router is not None:
+            return router
+    return _installed_pack_tool(tool)
 
-    Nothing is installed when the pack is not published, or when the install fails: the
-    error names the pack and the fix, and carries the kind of a missing engine.
-    """
-    # circular: first_use -> engines.llama -> binary
-    from lilbee.providers.fleet import first_use
+
+def _installed_router() -> Path | None:
+    """The installed router, or ``None``; total, as the pin runs on each state write."""
+    # circular: router_install -> first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import router_install
 
     try:
+        return router_install.installed_router()
+    except (OSError, ValueError):
+        return None
+
+
+def _first_use_tool(tool: EngineTool) -> Path | None:
+    """The router, or the tool from the llama.cpp pack, installed on first use; raises if not.
+
+    Nothing is installed when the release is not published, or when the install fails: the
+    error names the fix, and carries the kind of a missing engine.
+    """
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use, router_install
+
+    try:
+        if tool is EngineTool.LLAMA_SWAP:
+            return router_install.router_on_first_use()
         return first_use.first_use_tool(tool.value)
-    except first_use.INSTALL_REFUSALS as exc:
+    except (*first_use.INSTALL_REFUSALS, *router_install.ROUTER_REFUSALS) as exc:
         kind = (
             ProviderErrorKind.NOT_FOUND
             if tool is EngineTool.LLAMA_SERVER

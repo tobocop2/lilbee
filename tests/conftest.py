@@ -286,6 +286,14 @@ def _no_engine_model_lists(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_router_download(monkeypatch, tmp_path):
+    """Keep an engine install from downloading the router; a test of that step patches it back."""
+    monkeypatch.setattr(
+        "lilbee.app.engine_service.install_router", lambda **_signals: tmp_path / "llama-swap"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _assume_provider_sdk_available(request, monkeypatch):
     """Assume the SDK extra is installed for unit tests.
 
