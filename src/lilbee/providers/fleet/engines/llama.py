@@ -114,9 +114,23 @@ def _has_usable_cuda(host: HostCaps) -> bool:
     return max(gpu.compute for gpu in host.gpus) >= _CUDA_MIN_COMPUTE
 
 
+def _has_rocm_gpu(host: HostCaps) -> bool:
+    """Whether *host* has an AMD GPU that the ROCm pack carries device code for."""
+    return any(g in _ROCM_GFX for g in host.amd_gfx)
+
+
 def _has_usable_rocm(host: HostCaps) -> bool:
     """Whether *host* is Linux with the NUMA library and an AMD GPU that the ROCm pack serves."""
-    return host.os is HostOS.LINUX and host.libnuma and any(g in _ROCM_GFX for g in host.amd_gfx)
+    return host.os is HostOS.LINUX and host.libnuma and _has_rocm_gpu(host)
+
+
+def rocm_needs_libnuma(host: HostCaps) -> bool:
+    """Whether the ROCm pack would serve *host* if it had the NUMA library."""
+    return (
+        (host.os, host.arch) == (HostOS.LINUX, HostArch.X86_64)
+        and not host.libnuma
+        and _has_rocm_gpu(host)
+    )
 
 
 def cuda_pack_gap(host: HostCaps) -> str:

@@ -27,8 +27,12 @@ from lilbee.providers.fleet.engine_store import (
     fetch_frozen,
 )
 from lilbee.providers.fleet.engines.choice import pin_lock
-from lilbee.providers.fleet.engines.llama import LLAMA, cuda_pack_gap, pack_backend
-from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
+from lilbee.providers.fleet.engines.llama import (
+    LLAMA,
+    cuda_pack_gap,
+    pack_backend,
+    rocm_needs_libnuma,
+)
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.gguf_meta import forget_unanswered_reads
@@ -43,6 +47,7 @@ _VULKAN_LOADER_ADVICE = {
     HostOS.LINUX: "install the Vulkan loader (libvulkan1 or vulkan-loader)",
     HostOS.WINDOWS: "install or update the GPU driver, which provides the Vulkan loader",
 }
+_ROCM_LIBRARY_ADVICE = "install the NUMA library (libnuma1 or numactl-libs)"
 
 
 class PackNotPublishedError(Exception):
@@ -133,24 +138,26 @@ def warn_if_gpu_unserved() -> None:
     if gap := cuda_pack_gap(host):
         log.warning("%s", gap)
         return
-    present = installed_gpu_vendor_ids()
     for vendor, name in _UNSERVED_GPU_VENDORS.items():
-        if vendor in present:
+        if vendor in host.display_vendors:
             log.warning(
                 "This computer has an %s GPU, and no llama.cpp pack can use it here. "
                 "lilbee installs the CPU build. %sTo use your own build, set "
                 "LILBEE_LLAMA_SERVER_PATH to your llama-server.",
                 name,
-                _vulkan_advice(host),
+                _pack_advice(host),
             )
             return
 
 
-def _vulkan_advice(host: HostCaps) -> str:
-    """The sentence that tells *host* how to get the Vulkan pack; empty when none exists."""
-    if host.arch != HostArch.X86_64 or host.os not in _VULKAN_LOADER_ADVICE:
-        return ""
-    return f"For the Vulkan build, {_VULKAN_LOADER_ADVICE[host.os]}. "
+def _pack_advice(host: HostCaps) -> str:
+    """The sentences that tell *host* how to get a GPU pack; empty when none exists."""
+    advice = ""
+    if rocm_needs_libnuma(host):
+        advice = f"For the ROCm build, {_ROCM_LIBRARY_ADVICE}. "
+    if host.arch == HostArch.X86_64 and host.os in _VULKAN_LOADER_ADVICE:
+        advice += f"For the Vulkan build, {_VULKAN_LOADER_ADVICE[host.os]}. "
+    return advice
 
 
 def install_pack(

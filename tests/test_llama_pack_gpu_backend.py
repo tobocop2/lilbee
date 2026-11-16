@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from lilbee.catalog import runnable
-from lilbee.providers.fleet import engine_manifest, first_use, host_caps
+from lilbee.providers.fleet import engine_manifest, first_use, gpu_hardware, host_caps
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import _ROCM_GFX, LlamaCppAdapter, pack_backend
 from lilbee.providers.fleet.host_caps import HostCaps, collect, gfx_target
@@ -270,7 +271,6 @@ def test_the_warning_for_an_unserved_gpu_matches_the_host_platform(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(first_use, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({INTEL}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.messages == [
@@ -285,10 +285,62 @@ def test_a_host_that_gets_the_vulkan_pack_is_not_warned(
 ) -> None:
     host = _host(vendors=(INTEL,), loader=True)
     monkeypatch.setattr(first_use, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({INTEL}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.records == []
+
+
+def test_the_warning_reads_the_vendors_of_the_session_host_not_a_second_reading(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host = _host(vendors=(INTEL,))
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", lambda: Counter({AMD: 1}))
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    assert "an Intel GPU" in caplog.text
+    assert "AMD" not in caplog.text
+
+
+_NUMA_ADVICE = "For the ROCm build, install the NUMA library (libnuma1 or numactl-libs). "
+_LOADER_ADVICE = "For the Vulkan build, install the Vulkan loader (libvulkan1 or vulkan-loader). "
+
+
+@pytest.mark.parametrize(
+    ("host", "advice"),
+    [
+        pytest.param(
+            _host(vendors=(AMD,), gfx=("gfx1100",)),
+            _NUMA_ADVICE + _LOADER_ADVICE,
+            id="rocm-card-without-libnuma-or-loader",
+        ),
+        pytest.param(_host(vendors=(AMD,), gfx=("gfx1010",)), _LOADER_ADVICE, id="gfx-not-served"),
+        pytest.param(_host(vendors=(AMD,)), _LOADER_ADVICE, id="gfx-unread"),
+        pytest.param(
+            _host("Linux", "aarch64", vendors=(AMD,), gfx=("gfx1100",)), "", id="arm64-rocm-card"
+        ),
+        pytest.param(
+            _host("Windows", "AMD64", vendors=(AMD,), gfx=("gfx1100",)),
+            "For the Vulkan build, install or update the GPU driver, "
+            "which provides the Vulkan loader. ",
+            id="windows-rocm-card",
+        ),
+    ],
+)
+def test_the_warning_for_an_amd_gpu_names_the_library_each_pack_needs(
+    host: HostCaps,
+    advice: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(first_use, "session_host", lambda: host)
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    assert caplog.messages == [
+        "This computer has an AMD GPU, and no llama.cpp pack can use it here. "
+        f"lilbee installs the CPU build. {advice}To use your own build, set "
+        "LILBEE_LLAMA_SERVER_PATH to your llama-server."
+    ]
 
 
 def test_the_rocm_gfx_set_is_the_target_list_of_the_pack_build_less_gfx906() -> None:

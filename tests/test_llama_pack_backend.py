@@ -245,9 +245,18 @@ def test_the_first_use_warning_is_silent_for_a_card_the_pack_serves(
 def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    host = _nvidia("Linux", "x86_64", cards=((3, 7),))
+    host = collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx2"]},
+        nvidia={
+            "driver": "550.135",
+            "cuda_driver": 12040,
+            "gpus": [{"name": "card0", "cc": [3, 7]}],
+        },
+        display_vendors=(0x1002, 0x10DE),
+    )
     monkeypatch.setattr(first_use, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert len(caplog.records) == 1
