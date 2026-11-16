@@ -12,10 +12,16 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.catalog.query import reclassify_by_name
+from lilbee.catalog.refs import model_format
+from lilbee.catalog.runnable import session_host
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.fleet.engines.choice import loadable_refs
+from lilbee.providers.fleet.engines.choice import (
+    choose_engine,
+    installed_engines,
+    loadable_refs,
+)
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
@@ -267,6 +273,7 @@ def ensure_chat_model() -> str | None:
     if list_installed_models():
         return None
 
+    _refuse_a_model_with_no_engine()
     if not sys.stdin.isatty():
         raise RuntimeError(NO_CHAT_MODEL_GUIDANCE)
 
@@ -305,11 +312,32 @@ def list_installed_models() -> list[str]:
     tree never reads as "no chat model is installed". An unusable remote
     server only drops its own names.
     """
-    registry = ModelRegistry(cfg.models_dir)
-    names = loadable_refs(
-        manifest.ref
-        for manifest in registry.list_installed()
-        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT
-    )
+    names = loadable_refs(_registry_chat_refs())
     names.extend(_remote_chat_model_names())
     return sorted(set(names))
+
+
+def _registry_chat_refs() -> list[str]:
+    """Chat-task refs in the native registry, whether or not an engine loads them."""
+    return [
+        manifest.ref
+        for manifest in ModelRegistry(cfg.models_dir).list_installed()
+        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT
+    ]
+
+
+def _refuse_a_model_with_no_engine() -> None:
+    """Raise the engine notice when a chat model is installed but no engine loads it."""
+    refs = _registry_chat_refs()
+    if not refs:
+        return
+    choice = choose_engine(
+        fmt=model_format(refs[0]),
+        host=session_host,
+        installed=installed_engines(),
+        preferred=str(cfg.preferred_engine),
+        override=None,
+        model=refs[0],
+    )
+    if choice.name is None:
+        raise RuntimeError(choice.notice)

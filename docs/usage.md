@@ -541,6 +541,9 @@ load it prints, for the reference `org/repo#openvino`:
 Error: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
 ```
 
+`lilbee ask` prints the same message when the only chat models installed have no
+engine. `lilbee model use` assigns such a model and prints the message as a warning.
+
 A GGUF pull still needs an engine, because the engine decides which file in the
 repository to download.
 
