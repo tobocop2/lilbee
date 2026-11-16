@@ -80,7 +80,7 @@ def test_the_precondition_is_the_crash_the_user_sees(switched):
     _, _, provider = switched
     embedder = Embedder(cfg.model_copy(update={"embedding_dim": STORED_WIDTH}), provider)
 
-    with pytest.raises(ValueError, match="Embedding dimension mismatch: expected 768, got 1024"):
+    with pytest.raises(ValueError, match=r"expected 768, got 1024.*lilbee rebuild"):
         embedder.embed_query("what do bees eat")
 
 
