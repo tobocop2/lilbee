@@ -116,3 +116,22 @@ def test_memory_recall_needs_a_positive_limit_and_an_embedder(top_k, available, 
     searcher._memory_facts("bees")
 
     assert store.search_memories.called is recalled
+
+
+def test_a_search_warns_once_for_the_embed_inputs_cut_across_its_embeds(caplog):
+    from lilbee.providers.truncation import note_truncated
+
+    searcher, _ = _wired()
+
+    def candidates(question, top_k, chunk_type):
+        note_truncated(1, 1, 8)
+        note_truncated(1, 1, 8)
+        return []
+
+    searcher._candidates = candidates
+    with caplog.at_level("WARNING", logger="lilbee.providers.truncation"):
+        searcher.search("bees")
+        searcher.search("bees")
+
+    assert len(caplog.records) == 2
+    assert "2 of 2" in caplog.records[0].getMessage()

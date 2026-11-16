@@ -43,6 +43,7 @@ from lilbee.providers.fleet.engines.base import RequestProfile
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
+from lilbee.providers.truncation import note_truncated
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 # Shown when a stream breaks after its first frame. The client cannot know why.
@@ -603,8 +604,6 @@ class LlamaServerClient:
         self.in_flight = 0
         # The server's input limit, read on the first embed that needs it.
         self._max_input: int | None = None
-        # Set once the embed truncation warning is logged: one warning for the client's life.
-        self._warned_truncation = False
         self._in_flight_lock = threading.Lock()
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
@@ -1203,19 +1202,11 @@ class LlamaServerClient:
             cut += self._count_inputs_past_limit(sub_batch)
             data = self._embed_subbatch(sub_batch)
             vectors.extend(_embedding_vector(item, self._profile) for item in data)
-        if cut and not self._warned_truncation:
-            self._warned_truncation = True
-            log.warning(
-                "%d of %d embed inputs are past the embedder's %d-token limit; the server "
-                "truncates them and the cut text is not in the vectors",
-                cut,
-                len(texts),
-                self._input_limit(),
-            )
+        note_truncated(cut, len(texts), self._input_limit())
         return vectors
 
     def _input_limit(self) -> int | None:
-        """The server's ``max_input_length`` from its limit route, asked once; None with no route."""
+        """The server's ``max_input_length`` from its limit route, read once; None with no route."""
         path = self._profile.input_limit_path
         if path is None:
             return None
@@ -1232,7 +1223,7 @@ class LlamaServerClient:
         the limit is counted, in one request.
         """
         limit = self._input_limit()
-        path = self._profile.token_count_path
+        path = self._profile.input_count_path
         if limit is None or path is None:
             return 0
         long = [text for text in texts if len(text) > limit]

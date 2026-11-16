@@ -440,6 +440,28 @@ class TestSync:
         mock_svc.store.drop_all.assert_not_called()
         mock_svc.embedder.embed_batch.assert_not_called()
 
+    async def test_two_syncs_in_one_process_each_warn_once_about_cut_embed_inputs(
+        self, mock_extract_file, isolated_env, mock_svc, caplog
+    ):
+        """Every embed of a sync reports to the sync's scope, which warns at its end."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.truncation import note_truncated
+
+        def embed_and_cut(texts, **kw):
+            note_truncated(1, len(texts), 8)
+            return [[0.1] * 768 for _ in texts]
+
+        mock_svc.embedder.embed_batch.side_effect = embed_and_cut
+        with caplog.at_level("WARNING", logger="lilbee.providers.truncation"):
+            for names in (("a1.txt", "a2.txt"), ("b1.txt", "b2.txt")):
+                for name in names:
+                    (isolated_env / name).write_text(
+                        f"Hello world. The document {name}.", encoding="utf-8"
+                    )
+                await sync()
+        assert mock_svc.embedder.embed_batch.call_count == 4
+        assert len(caplog.records) == 2
+
     async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")
         from lilbee.data.ingest import sync

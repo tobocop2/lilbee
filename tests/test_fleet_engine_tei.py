@@ -30,6 +30,7 @@ from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from lilbee.providers.truncation import truncation_scope
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -775,12 +776,64 @@ def test_embed_asks_the_router_for_its_limit_once() -> None:
     assert sum(p.endswith("/info") for p in router.paths) == 1
 
 
-def test_embed_warns_once_for_the_life_of_the_client(caplog) -> None:
+def test_embeds_in_one_scope_give_one_warning_that_adds_their_counts(caplog) -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"), truncation_scope():
+        client.embed([_words(30), _words(2)])
+        client.embed([_words(40)])
+    [record] = caplog.records
+    assert record.getMessage().startswith("2 of 3")
+    assert "8-token limit" in record.getMessage()
+
+
+def test_the_count_of_a_call_with_several_batches_adds_the_cut_inputs_of_each(caplog) -> None:
+    """The cut input is in the first batch and the last batch holds none."""
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)] + [_words(2)] * 70)
+    [record] = caplog.records
+    assert record.getMessage().startswith("1 of 71")
+
+
+def test_an_input_of_exactly_the_limit_in_characters_is_not_counted() -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed(["a" * _ROUTER_LIMIT])
+    assert router.tokenized == []
+
+
+def test_an_input_of_exactly_the_limit_in_tokens_gives_no_warning(caplog) -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(_ROUTER_LIMIT)])
+    assert router.tokenized == [[_words(_ROUTER_LIMIT)]]
+    assert caplog.records == []
+
+
+def test_two_scopes_on_one_client_each_give_one_warning(caplog) -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        for _ in range(2):
+            with truncation_scope():
+                client.embed([_words(30)])
+                client.embed([_words(40)])
+    assert len(caplog.records) == 2
+
+
+def test_embeds_outside_a_scope_each_warn(caplog) -> None:
     client = _tei_client(_Embedder(), WorkerRole.EMBED)
     with caplog.at_level("WARNING"):
         client.embed([_words(30)])
         client.embed([_words(40)])
-    assert len(caplog.records) == 1
+    assert len(caplog.records) == 2
+
+
+def test_a_scope_with_nothing_cut_logs_nothing(caplog) -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"), truncation_scope():
+        client.embed([_words(3)])
+    assert caplog.records == []
 
 
 def test_embed_of_a_dense_text_the_count_finds_within_the_limit_gives_no_warning(caplog) -> None:
@@ -793,8 +846,18 @@ def test_embed_of_a_dense_text_the_count_finds_within_the_limit_gives_no_warning
     assert caplog.records == []
 
 
-def test_an_engine_with_no_count_route_sends_one_request_per_batch() -> None:
+@pytest.mark.parametrize(
+    "routes",
+    [
+        {"input_count_path": None, "input_limit_path": None},
+        {"input_count_path": None},
+    ],
+    ids=["no-routes", "limit-route-only"],
+)
+def test_an_engine_with_no_count_route_gives_no_warning(routes, caplog) -> None:
     router = _Embedder()
-    client = _tei_client(router, WorkerRole.EMBED, token_count_path=None, input_limit_path=None)
-    client.embed([_words(30)])
-    assert router.paths == ["/v1/embeddings"]
+    client = _tei_client(router, WorkerRole.EMBED, **routes)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    assert router.tokenized == []
+    assert caplog.records == []
