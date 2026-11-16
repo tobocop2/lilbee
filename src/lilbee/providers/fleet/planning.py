@@ -527,7 +527,7 @@ def _fit_slots(
         except (ProviderError, OSError):
             # An unsizable model runs a single slot; the load decides the rest.
             return 1
-        if est.footprint(unified=unified) <= budget:
+        if est.resident_footprint(unified=unified) <= budget:
             return slots
     return 1
 
@@ -1002,7 +1002,10 @@ def _estimate_role(
         )
     )
     one_pool = unified_budget is not None or gpu_layers == 0
-    fp = est.footprint(unified=one_pool)
+    if unified_budget is not None:
+        fp = est.resident_footprint(unified=True)
+    else:
+        fp = est.footprint(unified=one_pool)
     if role is WorkerRole.CHAT and not one_pool and est.kind is MemoryKind.SIZED:
         fp = _chat_serve_budget_footprint(fp)
     return ModelPlacementInput(

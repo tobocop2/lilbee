@@ -85,7 +85,7 @@ def fit_single_ctx(
                 expert_offload=expert_offload,
             )
         )
-        return est.footprint(unified=unified) <= available_bytes
+        return est.resident_footprint(unified=unified) <= available_bytes
 
     return _largest_fitting_ctx(upper, _fits)
 
