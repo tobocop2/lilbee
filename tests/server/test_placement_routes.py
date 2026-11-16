@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
+import pytest
+
 import lilbee.server.handlers as handlers
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -455,3 +459,40 @@ class TestThePayloadReportsTheEngineBackend:
         response = PlacementResponse.from_view(view)
 
         assert response.engine_backend is EngineBackend.UNKNOWN
+
+
+class TestPlacementWriteOnAHeldConfigLock:
+    """A placement write that cannot take the config lock answers the lock error."""
+
+    @staticmethod
+    def _client(route, monkeypatch, tmp_path):
+        from lilbee.app import placement as app_placement
+        from lilbee.core import settings
+        from lilbee.core.security import FileLockUnavailableError
+        from lilbee.server.app import _config_locked_response
+
+        _enable_http_placement(monkeypatch)
+        monkeypatch.setattr(app_placement.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(settings, "_CONFIG_LOCK_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(app_placement, "_planning_engines", lambda: mock.MagicMock())
+        monkeypatch.setattr(app_placement, "_resolve", lambda *a, **k: mock.MagicMock())
+        return create_test_client(
+            [route], exception_handlers={FileLockUnavailableError: _config_locked_response}
+        )
+
+    @pytest.mark.parametrize("method", ["put", "delete"])
+    def test_the_route_answers_the_lock_error(self, method, monkeypatch, tmp_path):
+        from lilbee.core.security import file_lock
+
+        route = placement_set_route if method == "put" else placement_clear_route
+        kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+        with (
+            self._client(route, monkeypatch, tmp_path) as client,
+            file_lock(tmp_path / "config.toml", 1),
+        ):
+            r = getattr(client, method)("/api/placement", **kwargs)
+        assert r.status_code == 503
+        detail = r.json()["detail"]
+        assert detail.startswith("Could not write config.toml: another lilbee process")
+        assert "Nothing was changed." in detail
+        assert "probe" not in detail.lower()
