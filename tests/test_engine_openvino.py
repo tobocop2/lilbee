@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import host_caps
 from lilbee.providers.fleet.engines import choice, proof
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
@@ -257,3 +257,70 @@ def test_one_plain_gpu_still_launches_as_gpu(monkeypatch: pytest.MonkeyPatch) ->
     _with_list(monkeypatch, ONE_GPU_LIST)
     assert _argv(RoleTarget.GPU)[1] == "GGML_OPENVINO_DEVICE=GPU"
     assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU, RoleTarget.GPU}
+
+
+_PARTIAL_LIST = "Available devices:\n  OPENVINO0: GGML_OPENVINO_DEVICE=CPU (selected) - x\n"
+
+
+def _probe_exits(
+    monkeypatch: pytest.MonkeyPatch, output: str, code: int
+) -> list[dict[str, object]]:
+    """Fake the probe run; the returned list collects the keyword arguments of each run."""
+    seen: list[dict[str, object]] = []
+
+    def fake(_argv: list[str], **kw: object) -> tuple[str, int]:
+        seen.append(kw)
+        return output, code
+
+    monkeypatch.setattr("lilbee.providers.fleet.engines.openvino.run_bounded", fake)
+    return seen
+
+
+def _expected(how: str) -> str:
+    return (
+        f"The device probe ({BINARY.name} --list-devices) {how}, so its device list "
+        "may be incomplete and the engine cannot be planned from it. A GPU driver fault, "
+        "the out-of-memory killer or a service manager can end the probe.\n"
+        f"The probe reported: {_PARTIAL_LIST.strip()}"
+    )
+
+
+def test_a_listing_that_exits_non_zero_raises_with_the_exit_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _probe_exits(monkeypatch, _PARTIAL_LIST, 3)
+    with pytest.raises(ProviderError) as raised:
+        OPENVINO.device_targets(BINARY)
+    assert str(raised.value) == _expected("exited with status 3")
+    assert raised.value.kind is ProviderErrorKind.SERVER
+    assert raised.value.provider == "llama-server"
+
+
+def test_a_listing_killed_by_a_signal_raises_with_the_signal_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _probe_exits(monkeypatch, _PARTIAL_LIST, -9)
+    with pytest.raises(ProviderError) as raised:
+        OPENVINO.device_targets(BINARY)
+    assert str(raised.value) == _expected("was stopped by signal 9 (SIGKILL)")
+
+
+def test_a_listing_names_an_unknown_signal_as_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    _probe_exits(monkeypatch, "", -250)
+    with pytest.raises(ProviderError, match=r"signal 250 \(unknown signal\)") as raised:
+        OPENVINO.device_targets(BINARY)
+    assert str(raised.value).endswith("The probe reported: (nothing)")
+
+
+def test_the_listing_probe_is_bounded_and_merges_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _probe_exits(monkeypatch, _PARTIAL_LIST, 0)
+    OPENVINO.device_targets(BINARY)
+    assert seen == [{"timeout_s": 60.0, "kill_wait_s": 5.0, "merge_stderr": True}]
+
+
+def test_a_gpu_launch_does_not_plan_from_a_listing_that_crashed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _probe_exits(monkeypatch, _PARTIAL_LIST, 139)
+    with pytest.raises(ProviderError, match=r"exited with status 139"):
+        _argv(RoleTarget.GPU)
