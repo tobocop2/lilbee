@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from lilbee.app import placement as app_placement
 from lilbee.cli.placement import placement_app
+from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.placement import InstancePlan
@@ -47,8 +49,15 @@ def _auto_plan() -> ResolvedPlacement:
 
 
 @pytest.fixture
-def saved_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+def saved_spec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Save the spec as a user does, in the data root's config.toml; return that data root.
+
+    The CLI reloads the config from the data root before it reads, so a value set only on
+    the live config never reaches it.
+    """
+    settings.update_values(tmp_path, {"placement": SAVED_RAW})
     monkeypatch.setattr(cfg, "placement", SAVED_RAW)
+    return tmp_path
 
 
 def _stub_planner(monkeypatch: pytest.MonkeyPatch, planned) -> None:
@@ -86,9 +95,7 @@ def test_a_spec_the_planner_raises_on_reports_the_message_and_the_saved_text(
     assert [r.role for r in view.roles] == [WorkerRole.EMBED]
 
 
-def test_a_spec_that_did_not_apply_reports_the_parsed_spec_and_no_refusal(
-    monkeypatch, saved_spec
-):
+def test_a_spec_that_did_not_apply_reports_the_parsed_spec_and_no_refusal(monkeypatch, saved_spec):
     _stub_planner(monkeypatch, _spec_did_not_apply)
 
     view = app_placement.get_placement()
@@ -112,9 +119,7 @@ def test_refused_roles_report_every_reason_in_one_sentence_run(monkeypatch, save
     assert [r.role for r in view.roles] == [WorkerRole.EMBED]
 
 
-def test_a_spec_that_fits_reports_manual_with_no_rejection_and_no_refusal(
-    monkeypatch, saved_spec
-):
+def test_a_spec_that_fits_reports_manual_with_no_rejection_and_no_refusal(monkeypatch, saved_spec):
     _stub_planner(monkeypatch, lambda spec, **_kw: _auto_plan())
 
     view = app_placement.get_placement()
@@ -165,8 +170,8 @@ def test_a_rejected_spec_falls_back_to_the_auto_plan_without_the_spec(monkeypatc
     assert [s is None for s in specs] == [False, True]
 
 
-def _shown(args: list[str]) -> str:
-    result = CLI.invoke(placement_app, args)
+def _shown(data_root: Path) -> str:
+    result = CLI.invoke(placement_app, ["show", "--data-dir", str(data_root)])
     assert result.exit_code == 0
     return " ".join(result.stdout.split())
 
@@ -176,7 +181,7 @@ def test_cli_show_prints_the_refusal_and_the_ignored_note_for_a_raising_spec(
 ):
     _stub_planner(monkeypatch, _spec_is_unplannable)
 
-    shown = _shown(["show"])
+    shown = _shown(saved_spec)
 
     assert PIN_MESSAGE in shown
     assert "a saved placement does not fit this hardware and is being ignored" in shown
@@ -185,7 +190,7 @@ def test_cli_show_prints_the_refusal_and_the_ignored_note_for_a_raising_spec(
 def test_cli_show_prints_every_refused_role_reason(monkeypatch, saved_spec):
     _stub_planner(monkeypatch, _spec_drops_two_roles)
 
-    shown = _shown(["show"])
+    shown = _shown(saved_spec)
 
     assert f"{EMBED_REASON} {VISION_REASON}" in shown
     assert "a saved placement does not fit this hardware and is being ignored" in shown
@@ -196,7 +201,7 @@ def test_cli_show_prints_the_ignored_note_and_no_refusal_for_a_spec_that_did_not
 ):
     _stub_planner(monkeypatch, _spec_did_not_apply)
 
-    shown = _shown(["show"])
+    shown = _shown(saved_spec)
 
     assert "a saved placement does not fit this hardware and is being ignored" in shown
     assert PIN_MESSAGE not in shown
@@ -207,7 +212,7 @@ def test_cli_show_json_carries_the_rejected_spec_and_the_refusal(monkeypatch, sa
     _stub_planner(monkeypatch, _spec_drops_two_roles)
     monkeypatch.setattr(cfg, "json_mode", True)
 
-    result = CLI.invoke(placement_app, ["show"])
+    result = CLI.invoke(placement_app, ["show", "--data-dir", str(saved_spec)])
 
     assert result.exit_code == 0
     body = json.loads(result.stdout)
@@ -231,9 +236,7 @@ def test_the_placement_route_returns_the_refusal_and_the_rejected_spec(monkeypat
     assert body["manual"] is False
 
 
-def test_the_placement_route_returns_the_raised_message_and_the_saved_text(
-    monkeypatch, saved_spec
-):
+def test_the_placement_route_returns_the_raised_message_and_the_saved_text(monkeypatch, saved_spec):
     _stub_planner(monkeypatch, _spec_is_unplannable)
 
     with create_test_client([placement_route]) as client:
