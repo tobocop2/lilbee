@@ -219,5 +219,4 @@ def test_launcher_installs_the_reference_files_with_the_skill(tmp_path):
     assert installed is not None
     expected = sorted(p.name for p in skill_dir.iterdir())
     assert "reference-tuning.md" in expected
-    shipped = [p.name for p in installed.iterdir() if p.name != skill_install._MARKER]
-    assert sorted(shipped) == expected
+    assert sorted(p.name for p in installed.iterdir()) == expected

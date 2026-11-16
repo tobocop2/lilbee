@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
-import os
-import shutil
-import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
+
+from lilbee.core.security import write_text_atomically
 
 log = logging.getLogger(__name__)
-
-_MARKER = ".lilbee-skill-sha256"
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGED_SKILL = _PACKAGE_ROOT / "skills" / "lilbee_mcp"
@@ -19,6 +19,36 @@ _CHECKOUT_SKILL = _PACKAGE_ROOT.parents[1] / "plugins" / "lilbee" / "skills" / "
 _PACKAGED_AGENT_PLUGIN = _PACKAGE_ROOT / "agent_plugin"
 _CHECKOUT_AGENT_PLUGIN = _PACKAGE_ROOT.parents[1] / "packages" / "lilbee" / "plugin"
 _PI_EXTENSION = Path("extensions") / "lilbee.js"
+
+# sha256 of every released or bundled version of each file lilbee owns in the skill folder.
+_KNOWN_SKILL_FILES: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "SKILL.md": frozenset(
+            {
+                "92bddb8e9d3b92c18c71747ba323d15d35a072ea3f04ef557b2b9a24cbe646a7",  # v0.6.90b692
+                "eceed74a30d320e55506464fc8d800a1189647d336b4de0e5f99aa289646c5eb",
+            }
+        ),
+        "reference-settings.md": frozenset(
+            {"9aa05001c478c43da0189b89da456784b3fb1eebb3b6896a771835896281305c"}
+        ),
+        "reference-tuning.md": frozenset(
+            {"105f78bf4cc87d90a0056208fe7f8642c57666d95ae312656b734d1dd6e298a5"}
+        ),
+    }
+)
+_PERMISSION_DENIED = "is not writable (permission denied)"
+_SKIP_REASONS: Mapping[int | None, str] = MappingProxyType(
+    {
+        errno.EEXIST: "is not a folder",
+        errno.ENOTDIR: "is not a folder",
+        errno.EACCES: _PERMISSION_DENIED,
+        errno.EPERM: _PERMISSION_DENIED,
+        errno.EROFS: _PERMISSION_DENIED,
+        errno.EBUSY: "is in use",
+    }
+)
+_DEFAULT_SKIP_REASON = "could not be written"
 
 
 def _installed_or_checkout(packaged: Path, checkout: Path, marker: Path) -> Path:
@@ -40,87 +70,51 @@ def bundled_pi_extension() -> Path:
     return plugin / _PI_EXTENSION
 
 
-def _digest(directory: Path) -> str:
-    """Return a sha256 over the names and bytes of the files directly in *directory*."""
-    total = hashlib.sha256()
-    for entry in sorted(directory.iterdir()):
-        if entry.is_file() and entry.name != _MARKER:
-            total.update(
-                f"{entry.name}\0{hashlib.sha256(entry.read_bytes()).hexdigest()}\0".encode()
-            )
-    return total.hexdigest()
+def _bundled_skill_files() -> dict[str, bytes]:
+    """Return the name and bytes of each file in the bundled skill."""
+    return {
+        entry.name: entry.read_bytes() for entry in bundled_skill_dir().iterdir() if entry.is_file()
+    }
 
 
-def _recorded_digest(dest: Path) -> str | None:
-    """Return the digest recorded when lilbee installed *dest*, or None if there is none."""
-    marker = dest / _MARKER
-    return marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
-
-
-def _needs_refresh(dest: Path, bundled: str) -> bool:
-    """Return True when *dest* is an unedited copy of an older bundled skill."""
-    installed = _digest(dest)
-    if installed == bundled:
+def _is_edited(path: Path) -> bool:
+    """Return True when *path* holds bytes that no released or bundled skill shipped."""
+    if not path.is_file():
         return False
-    if _recorded_digest(dest) != installed:
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digest not in _KNOWN_SKILL_FILES.get(path.name, frozenset())
+
+
+def _refresh(bundled: dict[str, bytes], dest: Path) -> Path | None:
+    """Write each bundled file that *dest* lacks or holds in an older version."""
+    dest.mkdir(parents=True, exist_ok=True)
+    if any(_is_edited(dest / name) for name in bundled):
         log.warning(
             "The lilbee skill at %s has local changes, so it is not updated. "
             "Delete the folder to get the bundled version.",
             dest,
         )
-        return False
-    return True
-
-
-def _swap_in(staging: Path, dest: Path) -> bool:
-    """Replace the existing *dest* with *staging*; return False if *dest* is in use.
-
-    A failure after the old copy moved aside restores it and raises.
-    """
-    previous = dest.with_name(f".lilbee-mcp-old-{os.getpid()}")
-    try:
-        os.replace(dest, previous)
-    except OSError as exc:
-        log.warning("The lilbee skill at %s is in use and was not updated: %s", dest, exc)
-        shutil.rmtree(staging, ignore_errors=True)
-        return False
-    try:
-        os.replace(staging, dest)
-    except BaseException:
-        os.replace(previous, dest)
-        raise
-    shutil.rmtree(previous, ignore_errors=True)
-    return True
+        return None
+    stale = [
+        name
+        for name, data in bundled.items()
+        if not (dest / name).is_file() or (dest / name).read_bytes() != data
+    ]
+    for name in stale:
+        write_text_atomically(dest / name, bundled[name].decode("utf-8"))
+    return dest if stale else None
 
 
 def install_bundled_skill(dest: Path) -> Path | None:
-    """Install the bundled lilbee-mcp skill at *dest*, or refresh it if unedited and older."""
-    source = bundled_skill_dir()
-    bundled = _digest(source)
-    replacing = dest.exists()
-    if replacing and not _needs_refresh(dest, bundled):
-        return None
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Stage in a sibling temp dir and rename it into place so a partial copy never
-    # leaves a half-written skill dir.
-    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".lilbee-mcp-"))
+    """Install the bundled skill at *dest*, or refresh its files if lilbee's copies are unedited.
+
+    Files the user added to *dest* are never touched. A folder that cannot be
+    written is skipped with a warning, so the launch goes on.
+    """
+    bundled = _bundled_skill_files()
     try:
-        for entry in source.iterdir():
-            if entry.is_file():
-                (staging / entry.name).write_bytes(entry.read_bytes())
-        (staging / _MARKER).write_text(bundled, encoding="utf-8")
-        if replacing:
-            return dest if _swap_in(staging, dest) else None
-        try:
-            os.replace(staging, dest)
-        except OSError:
-            # On Windows, os.replace into an existing dest can race with another
-            # installer. If dest now exists, the skill is already installed.
-            shutil.rmtree(staging, ignore_errors=True)
-            if dest.exists():
-                return None
-            raise
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    return dest
+        return _refresh(bundled, dest)
+    except OSError as exc:
+        reason = _SKIP_REASONS.get(exc.errno, _DEFAULT_SKIP_REASON)
+        log.warning("The lilbee skill at %s %s, so it is not updated: %s", dest, reason, exc)
+        return None

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
+import errno
+import hashlib
+import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,136 +14,268 @@ import pytest
 from lilbee.cli.launchers import skill_install
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 
+_OLD = "old text\n"
+_NEW = "new text\n"
+# The SKILL.md that v0.6.90b692, the first release with the skill, installed.
+_RELEASED_SKILL = Path(__file__).parents[1] / "fixtures" / "skill" / "SKILL-v0.6.90b692.md"
+
 
 @pytest.fixture
-def locked_folder_cleanup(monkeypatch):
-    """Make a cleanup that does not ignore errors fail, as a locked file does on Windows."""
-    real_rmtree = shutil.rmtree
-
-    def _rmtree(path, ignore_errors=False, **kwargs):
-        if not ignore_errors:
-            raise OSError("folder busy")
-        real_rmtree(path, ignore_errors=True)
-
-    monkeypatch.setattr(skill_install.shutil, "rmtree", _rmtree)
-
-
-def test_installs_into_empty_dest(tmp_path):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    result = install_bundled_skill(dest)
-    assert result == dest
-    assert dest.is_dir()
-    assert (dest / "SKILL.md").exists()
-
-
-def _bundle(tmp_path, monkeypatch, text):
+def bundle(tmp_path, monkeypatch):
+    """Point the installer at a temp bundle whose old and new SKILL.md are both known."""
     packaged = tmp_path / "packaged"
-    packaged.mkdir(exist_ok=True)
-    (packaged / "SKILL.md").write_text(text, encoding="utf-8")
+    packaged.mkdir()
+    known = {
+        "SKILL.md": frozenset(hashlib.sha256(t.encode()).hexdigest() for t in (_OLD, _NEW)),
+        "reference.md": frozenset({hashlib.sha256(b"reference\n").hexdigest()}),
+    }
     monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", packaged)
+    monkeypatch.setattr(skill_install, "_KNOWN_SKILL_FILES", known)
+
+    def _ship(text: str) -> Path:
+        (packaged / "SKILL.md").write_text(text, encoding="utf-8")
+        (packaged / "reference.md").write_text("reference\n", encoding="utf-8")
+        return packaged
+
+    return _ship
 
 
-def test_keeps_a_copy_with_no_install_record_and_says_so(tmp_path, caplog):
-    dest = tmp_path / "skills" / "lilbee-mcp"
+@pytest.fixture
+def dest(tmp_path) -> Path:
+    return tmp_path / "skills" / "lilbee-mcp"
+
+
+def _files(folder: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*") if p.is_file()
+    }
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == skill_install.__name__]
+
+
+def test_installs_into_empty_dest(dest):
+    assert install_bundled_skill(dest) == dest
+    assert _files(dest) == _files(skill_install.bundled_skill_dir())
+
+
+def test_install_copies_the_packaged_skill_files_and_nothing_else(bundle, dest):
+    bundle(_OLD)
+    assert install_bundled_skill(dest) == dest
+    assert _files(dest) == {"SKILL.md": _OLD.encode(), "reference.md": b"reference\n"}
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["lilbee-mcp"]
+
+
+def test_a_current_install_is_left_alone_without_a_warning(bundle, dest, caplog):
+    bundle(_NEW)
+    install_bundled_skill(dest)
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    assert _warnings(caplog) == []
+
+
+def test_refreshes_an_unedited_copy_when_the_bundled_skill_changes(bundle, dest, caplog):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    bundle(_NEW)
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) == dest
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == _NEW
+    assert _warnings(caplog) == []
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["lilbee-mcp"]
+
+
+def test_refreshes_only_the_files_that_changed(bundle, dest, monkeypatch):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    bundle(_NEW)
+    written: list[str] = []
+    real_write = skill_install.write_text_atomically
+
+    def _record(path: Path, text: str) -> None:
+        written.append(path.name)
+        real_write(path, text)
+
+    monkeypatch.setattr(skill_install, "write_text_atomically", _record)
+    install_bundled_skill(dest)
+    assert written == ["SKILL.md"]
+
+
+def test_a_copy_from_the_last_release_is_refreshed_without_a_warning(dest, caplog):
+    released = _RELEASED_SKILL.read_bytes()
+    assert released != (skill_install.bundled_skill_dir() / "SKILL.md").read_bytes()
     dest.mkdir(parents=True)
-    (dest / "SKILL.md").write_text("user edit")
-    with caplog.at_level("WARNING", logger=skill_install.__name__):
-        assert install_bundled_skill(dest) is None
-    assert (dest / "SKILL.md").read_text() == "user edit"
-    assert "has local changes" in caplog.text
-
-
-def test_refreshes_an_unedited_copy_when_the_bundled_skill_changes(tmp_path, monkeypatch):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "old text")
+    (dest / "SKILL.md").write_bytes(released)
+    caplog.set_level("WARNING")
     assert install_bundled_skill(dest) == dest
-    _bundle(tmp_path, monkeypatch, "new text")
+    assert _files(dest) == _files(skill_install.bundled_skill_dir())
+    assert _warnings(caplog) == []
+
+
+def test_keeps_an_edited_copy_and_names_the_folder_and_the_fix(bundle, dest, caplog):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    (dest / "SKILL.md").write_text("my edit\n", encoding="utf-8")
+    bundle(_NEW)
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "my edit\n"
+    assert _warnings(caplog) == [
+        f"The lilbee skill at {dest} has local changes, so it is not updated. "
+        "Delete the folder to get the bundled version."
+    ]
+
+
+def test_an_edit_to_any_owned_file_blocks_the_whole_refresh(bundle, dest):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    (dest / "reference.md").write_text("my notes\n", encoding="utf-8")
+    bundle(_NEW)
+    assert install_bundled_skill(dest) is None
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == _OLD
+
+
+@pytest.mark.parametrize("added", ["mine.md", "notes/mine.md"])
+def test_files_the_user_added_are_kept_through_a_refresh(bundle, dest, added):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    (dest / added).parent.mkdir(parents=True, exist_ok=True)
+    (dest / added).write_text("mine\n", encoding="utf-8")
+    bundle(_NEW)
     assert install_bundled_skill(dest) == dest
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "new text"
-    assert install_bundled_skill(dest) is None  # now current, nothing to do
-    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
+    assert (dest / added).read_text(encoding="utf-8") == "mine\n"
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == _NEW
 
 
-def test_keeps_a_user_edit_when_the_bundled_skill_changes(tmp_path, monkeypatch, caplog):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "old text")
-    install_bundled_skill(dest)
-    (dest / "SKILL.md").write_text("my edit", encoding="utf-8")
-    _bundle(tmp_path, monkeypatch, "new text")
-    with caplog.at_level("WARNING", logger=skill_install.__name__):
-        assert install_bundled_skill(dest) is None
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "my edit"
-    assert "has local changes" in caplog.text
+def test_a_symlinked_skill_folder_is_refreshed_through_the_link(bundle, dest, tmp_path):
+    bundle(_OLD)
+    target = tmp_path / "dotfiles" / "lilbee-mcp"
+    install_bundled_skill(target)
+    dest.parent.mkdir(parents=True)
+    dest.symlink_to(target, target_is_directory=True)
+    bundle(_NEW)
+    assert install_bundled_skill(dest) == dest
+    assert dest.is_symlink()
+    assert dest.resolve() == target.resolve()
+    assert (target / "SKILL.md").read_text(encoding="utf-8") == _NEW
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["lilbee-mcp"]
 
 
-def test_a_skill_folder_in_use_is_kept_and_the_launch_goes_on(tmp_path, monkeypatch, caplog):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "old text")
-    install_bundled_skill(dest)
-    _bundle(tmp_path, monkeypatch, "new text")
+@pytest.mark.parametrize(
+    ("make", "reason"),
+    [
+        ("file", "is not a folder"),
+        ("dangling", "is not a folder"),
+        ("parent_file", "is not a folder"),
+    ],
+)
+def test_a_destination_that_is_not_a_folder_is_skipped_with_a_warning(
+    dest, tmp_path, caplog, make, reason
+):
+    if make == "parent_file":
+        dest.parent.parent.mkdir(parents=True, exist_ok=True)
+        dest.parent.write_text("not a folder\n", encoding="utf-8")
+    else:
+        dest.parent.mkdir(parents=True)
+    if make == "file":
+        dest.write_text("a user file\n", encoding="utf-8")
+    if make == "dangling":
+        dest.symlink_to(tmp_path / "gone")
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    [message] = _warnings(caplog)
+    assert message.startswith(f"The lilbee skill at {dest} {reason}, so it is not updated: ")
+    assert not (tmp_path / "gone").exists()
 
-    def _in_use(_src, _dst):
-        raise PermissionError("file in use")
 
-    monkeypatch.setattr(skill_install.os, "replace", _in_use)
-    with caplog.at_level("WARNING", logger=skill_install.__name__):
-        assert install_bundled_skill(dest) is None
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "old text"
-    assert "is in use" in caplog.text
-    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
-
-
-def test_a_failed_refresh_restores_the_old_copy(tmp_path, monkeypatch):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "old text")
-    install_bundled_skill(dest)
-    _bundle(tmp_path, monkeypatch, "new text")
-    real_replace = skill_install.os.replace
-
-    def _fail_install_step(src, dst):
-        if Path(dst) == dest and "-old-" not in Path(src).name:
-            raise OSError("rename failed")
-        real_replace(src, dst)
-
-    monkeypatch.setattr(skill_install.os, "replace", _fail_install_step)
-    with pytest.raises(OSError, match="rename failed"):
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="POSIX mode bits, not root"
+)
+@pytest.mark.parametrize("locked", ["skill_folder", "skills_folder"])
+def test_a_folder_without_write_permission_is_skipped_and_says_so(bundle, dest, caplog, locked):
+    bundle(_OLD)
+    if locked == "skill_folder":
         install_bundled_skill(dest)
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "old text"
-    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
+        bundle(_NEW)
+        folder = dest
+    else:
+        dest.parent.mkdir(parents=True)
+        folder = dest.parent
+    before = _files(dest.parent)
+    folder.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    caplog.set_level("WARNING")
+    try:
+        assert install_bundled_skill(dest) is None
+    finally:
+        folder.chmod(0o755)
+    [message] = _warnings(caplog)
+    assert message.startswith(
+        f"The lilbee skill at {dest} is not writable (permission denied), so it is not updated: "
+    )
+    assert "in use" not in message
+    assert _files(dest.parent) == before
+    assert sorted(p.name for p in dest.parent.iterdir()) == (["lilbee-mcp"] if before else [])
 
 
-def test_atomic_on_failure(tmp_path, monkeypatch):
-    """A failed copy must not leave a half-written skill dir or staging litter."""
-    dest = tmp_path / "skills" / "lilbee-mcp"
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        (errno.EBUSY, "is in use"),
+        (errno.EPERM, "is not writable (permission denied)"),
+        (errno.EROFS, "is not writable (permission denied)"),
+        (errno.ENOSPC, "could not be written"),
+    ],
+)
+def test_a_failed_write_names_its_cause_and_leaves_the_old_copy(
+    bundle, dest, monkeypatch, caplog, code, reason
+):
+    bundle(_OLD)
+    install_bundled_skill(dest)
+    bundle(_NEW)
 
-    def _boom(*_a, **_k):
-        raise OSError("rename failed")
+    def _fail(path: Path, _text: str) -> None:
+        raise OSError(code, os.strerror(code), str(path))
 
-    monkeypatch.setattr(skill_install.os, "replace", _boom)
-    with pytest.raises(OSError):
+    monkeypatch.setattr(skill_install, "write_text_atomically", _fail)
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    assert _warnings(caplog) == [
+        f"The lilbee skill at {dest} {reason}, so it is not updated: "
+        f"{OSError(code, os.strerror(code), str(dest / 'SKILL.md'))}"
+    ]
+    assert (dest / "SKILL.md").read_text(encoding="utf-8") == _OLD
+
+
+def test_an_error_without_an_errno_gets_the_general_reason(bundle, dest, monkeypatch, caplog):
+    bundle(_OLD)
+
+    def _fail(_path: Path, _text: str) -> None:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(skill_install, "write_text_atomically", _fail)
+    caplog.set_level("WARNING")
+    assert install_bundled_skill(dest) is None
+    assert _warnings(caplog) == [
+        f"The lilbee skill at {dest} could not be written, so it is not updated: disk went away"
+    ]
+
+
+def test_a_missing_bundled_skill_still_raises(dest, tmp_path, monkeypatch):
+    monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", tmp_path / "no-installed")
+    monkeypatch.setattr(skill_install, "_CHECKOUT_SKILL", tmp_path / "no-checkout")
+    with pytest.raises(FileNotFoundError, match=r"no-installed.*no-checkout"):
         install_bundled_skill(dest)
     assert not dest.exists()
-    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
 
 
-def test_race_collision_dest_created_concurrently(tmp_path, monkeypatch):
-    """If os.replace raises OSError and dest now exists, treat it as already installed.
-
-    On Windows this can happen when two processes race to install the same skill
-    (finding #7: PermissionError from a concurrent writer).
-    """
-    dest = tmp_path / "skills" / "lilbee-mcp"
-
-    def _boom_then_dest_exists(*_a, **_k):
-        # Simulate the concurrent writer: dest appears while we were staging.
-        dest.mkdir(parents=True, exist_ok=True)
-        raise PermissionError("file in use")
-
-    monkeypatch.setattr(skill_install.os, "replace", _boom_then_dest_exists)
-    result = install_bundled_skill(dest)
-    # Concurrent install: returns None (already exists), no exception.
-    assert result is None
-    assert dest.exists()
+def test_every_bundled_skill_file_is_in_the_known_versions():
+    bundled = _files(skill_install.bundled_skill_dir())
+    assert bundled
+    for name, data in bundled.items():
+        assert hashlib.sha256(data).hexdigest() in skill_install._KNOWN_SKILL_FILES[name], (
+            f"add the sha256 of the bundled {name} to the known skill versions"
+        )
 
 
 def test_bundled_skill_dir_prefers_installed_copy(tmp_path, monkeypatch):
@@ -164,16 +300,6 @@ def test_bundled_skill_dir_names_both_locations_when_missing(tmp_path, monkeypat
         skill_install.bundled_skill_dir()
 
 
-def test_install_copies_the_packaged_skill_files(tmp_path, monkeypatch):
-    packaged = tmp_path / "packaged"
-    packaged.mkdir()
-    (packaged / "SKILL.md").write_text("packaged text", encoding="utf-8")
-    monkeypatch.setattr(skill_install, "_PACKAGED_SKILL", packaged)
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    assert install_bundled_skill(dest) == dest
-    assert (dest / "SKILL.md").read_text(encoding="utf-8") == "packaged text"
-
-
 def test_bundled_pi_extension_prefers_installed_copy(tmp_path, monkeypatch):
     extension = tmp_path / "agent_plugin" / "extensions" / "lilbee.js"
     extension.parent.mkdir(parents=True)
@@ -196,94 +322,3 @@ def test_bundled_pi_extension_names_both_locations_when_missing(tmp_path, monkey
         FileNotFoundError, match=r"extensions/lilbee\.js.*no-installed.*no-checkout"
     ):
         skill_install.bundled_pi_extension()
-
-
-def test_the_local_changes_warning_names_the_folder_and_the_fix(tmp_path, caplog):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    dest.mkdir(parents=True)
-    (dest / "SKILL.md").write_text("user edit", encoding="utf-8")
-    with caplog.at_level("WARNING", logger=skill_install.__name__):
-        install_bundled_skill(dest)
-    assert [record.getMessage() for record in caplog.records] == [
-        f"The lilbee skill at {dest} has local changes, so it is not updated. "
-        "Delete the folder to get the bundled version."
-    ]
-
-
-def test_an_in_use_folder_warning_names_the_folder_and_the_cause(
-    tmp_path, monkeypatch, caplog, locked_folder_cleanup
-):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "old text")
-    install_bundled_skill(dest)
-    _bundle(tmp_path, monkeypatch, "new text")
-
-    def _in_use(_src, _dst):
-        raise PermissionError("file in use")
-
-    monkeypatch.setattr(skill_install.os, "replace", _in_use)
-    with caplog.at_level("WARNING", logger=skill_install.__name__):
-        assert install_bundled_skill(dest) is None
-    assert [record.getMessage() for record in caplog.records] == [
-        f"The lilbee skill at {dest} is in use and was not updated: file in use"
-    ]
-    assert sorted(path.name for path in dest.parent.iterdir()) == ["lilbee-mcp"]
-
-
-def test_a_refresh_leaves_no_folder_beside_the_skill(tmp_path, monkeypatch, locked_folder_cleanup):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "old text")
-    install_bundled_skill(dest)
-    _bundle(tmp_path, monkeypatch, "new text")
-    assert install_bundled_skill(dest) == dest
-    assert sorted(path.name for path in dest.parent.iterdir()) == ["lilbee-mcp"]
-
-
-def test_a_lost_install_race_leaves_no_staging_folder(tmp_path, monkeypatch, locked_folder_cleanup):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-
-    def _lose_the_race(_src, _dst):
-        dest.mkdir(parents=True, exist_ok=True)
-        raise PermissionError("file in use")
-
-    monkeypatch.setattr(skill_install.os, "replace", _lose_the_race)
-    assert install_bundled_skill(dest) is None
-    assert sorted(path.name for path in dest.parent.iterdir()) == ["lilbee-mcp"]
-
-
-def test_a_failed_install_reports_its_own_error_and_leaves_no_staging_folder(
-    tmp_path, monkeypatch, locked_folder_cleanup
-):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-
-    def _fail(_src, _dst):
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(skill_install.os, "replace", _fail)
-    with pytest.raises(OSError, match="rename failed"):
-        install_bundled_skill(dest)
-    assert list(dest.parent.iterdir()) == []
-
-
-def test_an_install_records_the_bundled_digest_in_a_named_file(tmp_path, monkeypatch):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    _bundle(tmp_path, monkeypatch, "text")
-    install_bundled_skill(dest)
-    recorded = (dest / ".lilbee-skill-sha256").read_text(encoding="utf-8")
-    assert recorded == skill_install._digest(tmp_path / "packaged")
-    assert len(recorded) == 64
-
-
-def test_the_skill_is_staged_beside_its_destination_under_a_lilbee_prefix(tmp_path, monkeypatch):
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    staged: list[Path] = []
-    real_replace = skill_install.os.replace
-
-    def _record(src, dst):
-        staged.append(Path(src))
-        real_replace(src, dst)
-
-    monkeypatch.setattr(skill_install.os, "replace", _record)
-    assert install_bundled_skill(dest) == dest
-    assert [path.parent for path in staged] == [dest.parent]
-    assert staged[0].name.startswith(".lilbee-mcp-")
