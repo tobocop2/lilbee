@@ -9,7 +9,7 @@ name: Llama pack cells (trial)
 # to one branch instead.
 on:
   push:
-    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences, "feat/packs-*", fix/llama-pack-licences]
+    branches: [ci/llama-pack-cells, ci/pack-licences, land/pack-cells-licences, "feat/packs-*"]
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ jobs:
             feat/packs-c) engine=ik ;;
             feat/packs-d) engine=mlx ;;
             feat/packs-e) engine=openvino ;;
-            feat/packs-llama | fix/llama-pack-licences) engine=llama ;;
+            feat/packs-llama) engine=llama ;;
             feat/packs-*) echo "::error::No engine is named for $BRANCH"; exit 1 ;;
             *) engine=all ;;
           esac
@@ -59,6 +59,7 @@ jobs:
       matrix:
         include:
           - cell: windows-x86_64-cpu
+            build_number: 2
             backend: cpu
             runner: windows-2022
             asset: llama-b12032-bin-win-cpu-x64.zip
@@ -66,6 +67,7 @@ jobs:
             license: MIT AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime
             timeout: 45
           - cell: windows-x86_64-cuda
+            build_number: 2
             backend: cuda
             runner: windows-2022
             asset: llama-b12032-bin-win-cuda-12.4-x64.zip
@@ -74,6 +76,7 @@ jobs:
             license: MIT AND LicenseRef-NVIDIA-CUDA-EULA AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime
             timeout: 60
           - cell: macos-arm64-metal
+            build_number: 1
             backend: metal
             runner: macos-15
             asset: llama-b12032-bin-macos-arm64.tar.gz
@@ -81,6 +84,7 @@ jobs:
             license: MIT
             timeout: 45
           - cell: linux-x86_64-cuda
+            build_number: 1
             backend: cuda
             runner: ubuntu-22.04
             build: source
@@ -88,6 +92,7 @@ jobs:
             license: MIT AND LicenseRef-NVIDIA-CUDA-EULA
             timeout: 350
           - cell: linux-x86_64-cpu
+            build_number: 1
             backend: cpu
             runner: ubuntu-22.04
             build: source
@@ -95,6 +100,7 @@ jobs:
             license: MIT
             timeout: 120
           - cell: windows-x86_64-vulkan
+            build_number: 2
             backend: vulkan
             runner: windows-2022
             asset: llama-b12032-bin-win-vulkan-x64.zip
@@ -102,6 +108,7 @@ jobs:
             license: MIT AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime
             timeout: 45
           - cell: linux-x86_64-vulkan
+            build_number: 1
             backend: vulkan
             runner: ubuntu-22.04
             build: source
@@ -109,6 +116,7 @@ jobs:
             license: MIT
             timeout: 120
           - cell: linux-x86_64-rocm
+            build_number: 1
             backend: rocm
             runner: ubuntu-22.04
             build: source
@@ -123,6 +131,7 @@ jobs:
       ASSET: ${{ matrix.asset }}
       EXTRA_ASSET: ${{ matrix.extra_asset }}
       LICENSE_TERMS: ${{ matrix.license }}
+      BUILD_NUMBER: ${{ matrix.build_number }}
       BUILD: ${{ matrix.build }}
       PLATFORM: ${{ matrix.platform }}
       BACKEND: ${{ matrix.backend }}
@@ -377,7 +386,7 @@ jobs:
 
       - name: Add the Visual C++ runtime beside the exe
         if: runner.os == 'Windows'
-        run: bash tools/wheel-build/bundle_windows_runtime.sh packaging/engine-wheel/lilbee_engine_llama_cpp/bin packaging/engine-wheel/NOTICE-MICROSOFT-VC-RUNTIME
+        run: bash tools/wheel-build/bundle_windows_runtime.sh packaging/engine-wheel/lilbee_engine_llama_cpp/bin packaging/engine-wheel/NOTICE-MICROSOFT-VC-RUNTIME vs-licence.docx
 
       - name: Drop vcomp140 when nothing imports it
         if: runner.os == 'Windows'
@@ -411,7 +420,7 @@ jobs:
           python -m pip install build wheel
           grep -E '^(license|license-files|requires)' pyproject.toml
           cat lilbee_engine_llama_cpp/pins.py
-          python -m build --wheel -C--build-option="--build-number=1.${BACKEND}"
+          python -m build --wheel -C--build-option="--build-number=${BUILD_NUMBER}.${BACKEND}"
           python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
           ls dist
 
@@ -492,6 +501,7 @@ jobs:
           grep -q "dist-info/licenses/LICENSE-Go$" wheel-listing.txt || { echo "wheel lacks the Go library licence"; exit 1; }
           if [ "${RUNNER_OS}" = Windows ]; then
             grep -q "dist-info/licenses/NOTICE-MICROSOFT-VC-RUNTIME$" wheel-listing.txt || { echo "wheel lacks the Visual C++ runtime notice"; exit 1; }
+            python -I tools/wheel-build/vs_distributable_terms.py --verify vs-licence.docx out/*.whl
           fi
           if [ -f "${bindir}/libomp.dll" ]; then
             grep -q "dist-info/licenses/LICENSE-LLVM-OpenMP$" wheel-listing.txt || { echo "wheel lacks the LLVM OpenMP licence"; exit 1; }

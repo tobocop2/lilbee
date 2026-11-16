@@ -183,11 +183,31 @@ def test_a_missing_redist_file_fails(tree) -> None:
     assert "vcomp140.dll" in result.stderr
 
 
+# The real terms hold curly quotes (U+2018, U+2019, U+201C, U+201D): Windows-1252 encodes
+# each as one byte that is not valid UTF-8.
+_LSQ, _RSQ, _LDQ, _RDQ = (chr(code) for code in (0x2018, 0x2019, 0x201C, 0x201D))
 _TERMS = (
     "DISTRIBUTABLE CODE. The software contains code that you may distribute.",
-    "Distribution Requirements. You must add significant primary functionality.",
-    "Distribution Restrictions. You may not use Microsoft trademarks.",
+    f"Distribution Requirements. You must add {_LDQ}significant primary functionality{_RDQ}.",
+    f"Distribution Restrictions. You may not use Microsoft{_RSQ}s {_LSQ}trademarks{_RSQ}.",
 )
+_SENTENCE = "They are distributable code"
+_VERIFY = _SCRIPT.parent / "vs_distributable_terms.py"
+
+
+def _runner_python(tree: pathlib.Path) -> str:
+    """A launcher for a Python whose stdout encodes as Windows-1252, like the Windows runner's."""
+    shim = tree / "fake/cp1252_stdout.py"
+    shim.write_text(
+        "import runpy, sys\n"
+        "sys.stdout.reconfigure(encoding='cp1252')\n"
+        "sys.argv = sys.argv[1:]\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    launcher = tree / "fake/python-cp1252"
+    _executable(launcher, f'shift\nexec "{sys.executable}" -I "{shim}" "$@"\n')
+    return str(launcher)
 
 
 def _licence_docx(path: pathlib.Path, paragraphs: tuple[str, ...]) -> str:
@@ -218,10 +238,10 @@ def _run_with_notice(
     env["VSWHERE"] = str(vswhere)
     env["VS_LICENSE_URL"] = docx.as_uri()
     env["VS_LICENSE_SHA256"] = sha256 or digest
-    env["PYTHON"] = sys.executable
+    env["PYTHON"] = _runner_python(tree)
     env["PATH"] = f"{tree / 'fake'}:{env['PATH']}"
     return subprocess.run(
-        ["bash", str(_SCRIPT), str(tree / "bin"), str(tree / "NOTICE-VC")],
+        ["bash", str(_SCRIPT), str(tree / "bin"), str(tree / "NOTICE-VC"), str(tree / "kept.docx")],
         env=env,
         capture_output=True,
         encoding="utf-8",
@@ -253,6 +273,7 @@ def test_the_notice_names_every_runtime_file_and_holds_the_distributable_code_te
     notice = (tree / "NOTICE-VC").read_text(encoding="utf-8")
     for name in (*_CRT, "vcomp140.dll"):
         assert name in notice
+    assert _SENTENCE in notice
     for paragraph in _TERMS:
         assert paragraph in notice
     assert "UNRELATED" not in notice
@@ -277,6 +298,120 @@ def test_a_licence_without_the_distributable_code_section_writes_no_notice(tree)
     assert result.returncode != 0
     assert "no DISTRIBUTABLE CODE section" in result.stderr
     assert not (tree / "NOTICE-VC").exists()
+
+
+def test_the_notice_is_valid_utf8_when_the_runner_writes_stdout_as_windows_1252(tree) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe")
+    assert result.returncode == 0, result.stderr
+    notice = (tree / "NOTICE-VC").read_bytes().decode("utf-8")
+    assert f"{_LDQ}significant primary functionality{_RDQ}" in notice
+    assert f"Microsoft{_RSQ}s {_LSQ}trademarks{_RSQ}" in notice
+
+
+def test_keeps_a_copy_of_the_verified_licence_for_the_wheel_check(tree) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe")
+    assert result.returncode == 0, result.stderr
+    assert (tree / "kept.docx").read_bytes() == (tree / "licence.docx").read_bytes()
+
+
+@pytest.mark.parametrize("phrase", ["Distribution Requirements", "Distribution Restrictions"])
+def test_a_section_without_a_required_phrase_writes_no_notice(tree, phrase: str) -> None:
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    kept = tuple(line for line in _TERMS if not line.startswith(phrase))
+    assert len(kept) == len(_TERMS) - 1
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe", paragraphs=kept)
+    assert result.returncode != 0
+    assert f"the DISTRIBUTABLE CODE section has no '{phrase}'" in result.stderr
+    assert not (tree / "NOTICE-VC").exists()
+
+
+def _wheel_with_notice(
+    path: pathlib.Path, notice: bytes, name: str = "NOTICE-MICROSOFT-VC-RUNTIME"
+) -> str:
+    """A wheel that holds *notice* in its licence folder."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"lilbee_engine_llama_cpp-1.12032.1.dist-info/licenses/{name}", notice)
+    return str(path)
+
+
+def _verify(docx: pathlib.Path, wheel: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-I", str(_VERIFY), "--verify", str(docx), wheel],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+
+
+@pytest.fixture
+def built(tree) -> pathlib.Path:
+    """A notice that the bundler wrote, and the licence copy it kept."""
+    install = _vs_install(tree, ("14.44.35112",))
+    (install / "VC").joinpath("REDIST.TXT").write_bytes(b"the list")
+    result = _run_with_notice(tree, tree / "fake/vswhere.exe")
+    assert result.returncode == 0, result.stderr
+    return tree
+
+
+def test_the_notice_in_a_built_wheel_decodes_as_utf8_and_holds_the_terms_line_for_line(
+    built,
+) -> None:
+    wheel = _wheel_with_notice(built / "ok.whl", (built / "NOTICE-VC").read_bytes())
+    result = _verify(built / "kept.docx", wheel)
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_notice_in_windows_1252_fails_the_wheel_check(built) -> None:
+    text = (built / "NOTICE-VC").read_text(encoding="utf-8")
+    wheel = _wheel_with_notice(built / "cp.whl", text.encode("cp1252"))
+    result = _verify(built / "kept.docx", wheel)
+    assert result.returncode == 1
+    assert "the notice is not valid UTF-8" in result.stderr
+
+
+def test_a_notice_that_changes_a_line_of_the_terms_fails_the_wheel_check(built) -> None:
+    text = (built / "NOTICE-VC").read_text(encoding="utf-8")
+    changed = text.replace(f"{_LDQ}significant", "significant")
+    assert changed != text
+    wheel = _wheel_with_notice(built / "line.whl", changed.encode("utf-8"))
+    result = _verify(built / "kept.docx", wheel)
+    assert result.returncode == 1
+    assert "does not hold the licence terms line for line" in result.stderr
+
+
+def test_a_notice_without_the_distributable_code_sentence_fails_the_wheel_check(built) -> None:
+    text = (built / "NOTICE-VC").read_text(encoding="utf-8")
+    changed = text.replace(_SENTENCE, "They are code")
+    assert changed != text
+    wheel = _wheel_with_notice(built / "sentence.whl", changed.encode("utf-8"))
+    result = _verify(built / "kept.docx", wheel)
+    assert result.returncode == 1
+    assert f"the notice lacks the sentence '{_SENTENCE}'" in result.stderr
+
+
+def test_a_wheel_without_the_notice_fails_the_wheel_check(built) -> None:
+    wheel = _wheel_with_notice(built / "none.whl", b"x", name="NOTICE-OTHER")
+    result = _verify(built / "kept.docx", wheel)
+    assert result.returncode == 1
+    assert "the wheel has 0 Visual C++ runtime notices, not one" in result.stderr
+
+
+def test_the_terms_tool_refuses_a_call_with_the_wrong_arguments() -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", str(_VERIFY), "licence.docx"],
+        capture_output=True,
+        encoding="utf-8",
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 2
+    assert "Usage:" in result.stderr
 
 
 def test_fails_when_the_install_has_no_redistribution_terms(tree) -> None:
