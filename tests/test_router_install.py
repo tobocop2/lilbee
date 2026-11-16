@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import shutil
 import stat
 import tarfile
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -167,7 +169,10 @@ class TestPinTable:
         self, system: str, machine: str
     ) -> None:
         host = collect(system=system, machine=machine, cpu_info={}, nvidia=None)
-        with pytest.raises(RouterNotPublishedError, match="has no build for this computer"):
+        with pytest.raises(
+            RouterNotPublishedError,
+            match=r"has no build for this computer\. Put a llama-swap binary on PATH\.",
+        ):
             router_asset(host)
 
 
@@ -193,10 +198,68 @@ class TestInstall:
         assert first == second
         assert len(release) == 1
 
-    def test_a_failed_install_leaves_no_stage_folder(self, release: list[str]) -> None:
-        install_router()
+    def test_a_failed_install_leaves_no_stage_folder(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = router_install.ROUTER_ASSETS["linux-x86_64"]
+        bad = RouterAsset(good.filename, "0" * 64, good.size, good.archive, good.binary)
+        monkeypatch.setattr(router_install, "ROUTER_ASSETS", {"linux-x86_64": bad})
+        with pytest.raises(ChecksumError):
+            install_router()
         parent = engines_root(cfg.models_dir) / "router"
-        assert [p.name for p in parent.iterdir()] == [ROUTER_VERSION]
+        assert list(parent.iterdir()) == []
+
+    def test_a_folder_left_by_an_earlier_install_is_replaced(self, release: list[str]) -> None:
+        stale = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
+        stale.mkdir(parents=True)
+        (stale / "stale.txt").write_text("old", encoding="utf-8")
+        install_router()
+        assert sorted(p.name for p in stale.iterdir()) == [LICENCE_FILE, "llama-swap"]
+
+    def test_the_install_holds_the_router_lock_for_the_whole_install(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        held: list[tuple[Path, float]] = []
+        real_lock = router_install.file_lock
+
+        def record(path: Path, wait_s: float) -> Any:
+            held.append((path, wait_s))
+            return real_lock(path, wait_s)
+
+        monkeypatch.setattr(router_install, "file_lock", record)
+        install_router()
+        assert held == [(engines_root(cfg.models_dir) / ".locks" / "router", 1800.0)]
+
+    def test_the_download_gets_the_size_the_name_and_the_caller_signals(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asset = router_install.ROUTER_ASSETS["linux-x86_64"]
+        sizing: list[tuple[Path, str, int]] = []
+        fetching: list[tuple[int, dict[str, Any]]] = []
+        fixture_download = router_install.download_url
+
+        def shortfall(stage: Path, name: str, size: int) -> None:
+            sizing.append((stage, name, size))
+
+        def download(url: str, dest: Path, size: int, **signals: Any) -> Path:
+            fetching.append((size, signals))
+            return fixture_download(url, dest, size)
+
+        monkeypatch.setattr(router_install, "disk_shortfall", shortfall)
+        monkeypatch.setattr(router_install, "download_url", download)
+
+        def progress(_done: int, _total: int) -> None:
+            return None
+
+        def retry(_attempt: int, _limit: int, _reason: str) -> None:
+            return None
+
+        cancel = threading.Event()
+        install_router(on_progress=progress, on_retry=retry, cancel=cancel)
+        assert [(name, size) for _stage, name, size in sizing] == [(asset.filename, asset.size)]
+        assert fetching == [
+            (asset.size, {"on_progress": progress, "on_retry": retry, "cancel": cancel})
+        ]
 
     def test_an_archive_with_the_wrong_digest_is_refused_and_installs_nothing(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
@@ -204,7 +267,11 @@ class TestInstall:
         good = router_install.ROUTER_ASSETS["linux-x86_64"]
         bad = RouterAsset(good.filename, "0" * 64, good.size, good.archive, good.binary)
         monkeypatch.setattr(router_install, "ROUTER_ASSETS", {"linux-x86_64": bad})
-        with pytest.raises(ChecksumError, match="does not match its pin"):
+        with pytest.raises(
+            ChecksumError,
+            match=r"does not match its pin, so lilbee did not install it\. "
+            r"Run the install again\. If this happens again, report it\.",
+        ):
             install_router()
         assert installed_router() is None
         assert not (engines_root(cfg.models_dir) / "router" / ROUTER_VERSION).exists()
@@ -216,8 +283,9 @@ class TestInstall:
             ({"llama-swap": BINARY_BODY}, f"holds no file {LICENCE_FILE!r}"),
             ({"llama-swap": None, LICENCE_FILE: MIT_TEXT.encode()}, "is not a file"),
             ({"llama-swap": BINARY_BODY, LICENCE_FILE: b"GPL"}, "holds no MIT License notice"),
+            ({"llama-swap": BINARY_BODY, LICENCE_FILE: b"\xff\xfe"}, "holds no MIT License notice"),
         ],
-        ids=["no-binary", "no-licence", "directory-binary", "wrong-licence"],
+        ids=["no-binary", "no-licence", "directory-binary", "wrong-licence", "unreadable-licence"],
     )
     def test_a_tar_that_lacks_the_router_or_its_notice_is_refused(
         self,
@@ -357,6 +425,52 @@ class TestFirstUse:
         monkeypatch.setattr(router_install, "download_url", real)
         installed = install_router()
         assert router_on_first_use() == installed
+
+    def test_a_refusal_in_one_models_folder_does_not_stop_an_install_in_another(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = router_install.download_url
+
+        def offline(*_a: object, **_k: object) -> Path:
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(router_install, "download_url", offline)
+        with pytest.raises(RouterDownloadError):
+            router_on_first_use()
+        monkeypatch.setattr(router_install, "download_url", real)
+        cfg.models_dir = Path(cfg.data_root) / "elsewhere" / "models"
+        assert router_on_first_use().is_file()
+
+    def test_an_explicit_install_clears_the_refusal_for_a_later_missing_router(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = router_install.download_url
+
+        def offline(*_a: object, **_k: object) -> Path:
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(router_install, "download_url", offline)
+        with pytest.raises(RouterDownloadError):
+            router_on_first_use()
+        monkeypatch.setattr(router_install, "download_url", real)
+        install_router()
+        shutil.rmtree(router_install.router_dir())
+        assert router_on_first_use().is_file()
+        assert len(release) == 2
+
+    def test_a_router_placed_after_a_refusal_is_used(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def offline(*_a: object, **_k: object) -> Path:
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(router_install, "download_url", offline)
+        with pytest.raises(RouterDownloadError):
+            router_on_first_use()
+        placed = router_install.router_dir() / "llama-swap"
+        placed.parent.mkdir(parents=True)
+        placed.write_bytes(BINARY_BODY)
+        assert router_on_first_use() == placed
 
     def test_the_refusals_are_the_errors_a_caller_can_act_on(self) -> None:
         assert RouterDownloadError in ROUTER_REFUSALS
