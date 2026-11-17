@@ -155,3 +155,64 @@ class TestAChatPastItsCard:
         assert launch.refused_roles[WorkerRole.CHAT].startswith("The chat model")
         assert view.refusal == launch.refused_roles[WorkerRole.CHAT]
         assert view.roles == ()
+
+
+class TestTheRefusalText:
+    """The view line is the launch reason, joined with a spec refusal when there is one."""
+
+    def test_the_line_is_the_launch_reason_alone(self, host: CardEngine) -> None:
+        launch = planning.plan_all_launches(engines=engines_for_all_roles(host))
+        view = app_placement.get_placement()
+        assert view.refusal == launch.refused_roles[WorkerRole.CHAT]
+
+    def test_a_spec_refusal_and_the_launch_reason_share_one_line(self, host: CardEngine) -> None:
+        reading = app_placement._planning_engines()
+        resolved = app_placement._resolve(None, reading)
+        launch = planning.plan_all_launches(engines=engines_for_all_roles(host))
+        view = app_placement._view(
+            resolved, reading.adapters, manual=False, spec_json=None, refusal="The spec is off."
+        )
+        assert view.refusal == f"The spec is off. {launch.refused_roles[WorkerRole.CHAT]}"
+
+    def test_a_spec_refusal_stands_alone_without_a_launch_refusal(
+        self, host: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning, "_role_ctx", lambda *_args, **_kwargs: 8192)
+        reading = app_placement._planning_engines()
+        resolved = app_placement._resolve(None, reading)
+        view = app_placement._view(
+            resolved, reading.adapters, manual=False, spec_json=None, refusal="The spec is off."
+        )
+        assert view.refusal == "The spec is off."
+
+
+class TestTheResolvedPlan:
+    def test_the_refused_role_leaves_the_instances_and_is_reported(self, host: CardEngine) -> None:
+        resolved = planning.resolve_placement_plan(None, engines=engines_for_all_roles(host))
+        assert [inst.role for inst in resolved.instances] == [WorkerRole.EMBED]
+        assert list(resolved.unlaunched_roles) == [WorkerRole.CHAT]
+        assert FLOOR_TEXT in resolved.unlaunched_roles[WorkerRole.CHAT]
+
+    def test_a_window_that_holds_the_floor_reports_nothing(
+        self, host: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning, "_role_ctx", lambda *_args, **_kwargs: 8192)
+        resolved = planning.resolve_placement_plan(None, engines=engines_for_all_roles(host))
+        assert resolved.unlaunched_roles == {}
+        assert {inst.role for inst in resolved.instances} == {WorkerRole.CHAT, WorkerRole.EMBED}
+
+    def test_the_plan_that_launches_and_the_plan_that_shows_agree(self, host: CardEngine) -> None:
+        engines = engines_for_all_roles(host)
+        launch = planning.plan_all_launches(engines=engines)
+        resolved = planning.resolve_placement_plan(None, engines=engines)
+        assert resolved.unlaunched_roles == launch.refused_roles
+        assert {inst.role for inst in resolved.instances} == {ln.role for ln in launch.launches}
+
+
+class TestNamedCards:
+    def test_no_spec_names_no_card(self) -> None:
+        assert planning._named_cards(None) == set()
+
+    def test_the_cards_a_spec_pins_a_role_to(self) -> None:
+        spec = PlacementSpec.from_json('{"chat": {"devices": [1]}, "embed": {"devices": [0, 2]}}')
+        assert planning._named_cards(spec) == {0, 1, 2}
