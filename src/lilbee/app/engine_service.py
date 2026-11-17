@@ -142,6 +142,7 @@ _STORE_REFUSALS = (
     ChecksumError,
     EngineConflictError,
     EngineDiskError,
+    EngineInUseError,
     LicenceRefusedError,
     MissingPackError,
     PackageInstallError,

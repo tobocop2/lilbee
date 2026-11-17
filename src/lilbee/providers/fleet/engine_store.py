@@ -664,6 +664,16 @@ class EngineStore:
             copy = scratch / wheel.name
             return self._install_private(lock, copy, copy_with_digest(wheel, copy))
 
+    def _refuse_held_replace(self, lock: PinLock) -> None:
+        """Refuse to replace a damaged build while a launch uses it, as remove does."""
+        if self.build_dir(lock).exists() and launch_uses_engine(
+            lock.engine, lock.version, lock.backend
+        ):
+            raise EngineInUseError(
+                f"Engine {lock.engine} {lock.version} ({lock.backend}) is in use. Stop the "
+                f"engine with 'lilbee engine stop' and install it again."
+            )
+
     def _install_private(self, lock: PinLock, wheel: Path, digest: str) -> Path:
         """Install the private file *wheel* once *digest* and the wheel checks match the pin."""
         _require_pinned(lock, digest)
@@ -672,6 +682,7 @@ class EngineStore:
         with file_lock(self.root / LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):
             if self.complete_build(lock) is not None:
                 return final
+            self._refuse_held_replace(lock)
             stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -692,6 +703,7 @@ class EngineStore:
         with file_lock(self.root / LOCK_DIR / lock.engine, _INSTALL_TIMEOUT_S):
             if self.complete_build(lock) is not None:
                 return final
+            self._refuse_held_replace(lock)
             stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
             final.parent.mkdir(parents=True, exist_ok=True)
             try:

@@ -1395,8 +1395,6 @@ def test_rest_asks_for_the_confirmation_of_an_embed_change_with_a_409_and_the_te
     }
 
 
-# ------------------------------------------------------------------ a damaged build that a launch holds
-
 HELD_REFUSAL = (
     f"Engine {ENGINE.value} {VERSION} (cpu) is in use. "
     "Stop the engine with 'lilbee engine stop' and install it again."
