@@ -254,6 +254,12 @@ def _log_size_unknown(notices: Iterable[str]) -> None:
         log.warning("%s", notice)
 
 
+SAVED_PLACEMENT_WAITS_FOR_ENGINE = (
+    "The saved placement is kept but not used: no installed engine can run the models. "
+    "It applies once an engine is installed."
+)
+
+
 def get_placement() -> PlacementView:
     """The current effective placement (manual if a spec is set, else auto).
 
@@ -262,7 +268,8 @@ def get_placement() -> PlacementView:
     nothing is using. A spec that drops a role (a target its engine cannot run, a
     card the machine lacks) reports the roles that run and the reason for the rest.
     Each model of unknown size is logged once per read. With no engine installed
-    nothing can be planned: this reports the saved spec and each missing engine.
+    nothing can be planned: this reports each missing engine, and a saved spec as
+    kept but not in use.
     """
     reading = _planning_engines()
     if not reading.adapters:
@@ -438,7 +445,6 @@ def _no_engine_view(
     *running* maps each role whose server is up to its notice; the engine book's notice wins.
     """
     notices = {**(running or {}), **reading.notices}
-    spec_json: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
     try:
@@ -446,13 +452,14 @@ def _no_engine_view(
     except PlacementError as exc:
         rejected_spec_json, refusal = cfg.placement, str(exc)
     else:
-        spec_json = None if spec is None else spec.to_json()
+        if spec is not None:
+            rejected_spec_json, refusal = spec.to_json(), SAVED_PLACEMENT_WAITS_FOR_ENGINE
     return PlacementView(
         gpus=(),
         roles=(),
         unplaceable=(),
-        manual=spec_json is not None,
-        spec_json=spec_json,
+        manual=False,
+        spec_json=None,
         rejected_spec_json=rejected_spec_json,
         refusal=refusal,
         skipped_no_engine=tuple(
