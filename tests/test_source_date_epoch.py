@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+
+from tests._workflow_steps import commands, steps
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "wheel-build" / "source_date_epoch.sh"
@@ -187,23 +188,19 @@ def test_wrapping_one_tei_source_twice_gives_one_wheel(tmp_path: Path) -> None:
 
 
 def test_the_llama_cpp_cell_hands_the_epoch_to_the_wheel_build() -> None:
-    workflow = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "llama-pack-cells.yml").read_text(encoding="utf-8")
-    )
-    steps = [step.get("run", "") for step in workflow["jobs"]["cell"]["steps"]]
-    (clone,) = (i for i, run in enumerate(steps) if "source_date_epoch.sh" in run)
-    (build,) = (i for i, run in enumerate(steps) if "python -m build --wheel" in run)
+    runs = [commands(step.get("run", "")) for step in steps("llama-pack-cells.yml", "cell")]
+    (clone,) = (i for i, run in enumerate(runs) if "source_date_epoch.sh" in run)
+    (build,) = (i for i, run in enumerate(runs) if "python -m build --wheel" in run)
     assert clone < build
-    assert '>> "$GITHUB_ENV"' in steps[clone]
+    piped = "bash tools/wheel-build/source_date_epoch.sh ${work}/llama.cpp >> $GITHUB_ENV"
+    assert piped in runs[clone]
 
 
 def test_the_multigpu_wheel_build_reads_the_epoch_before_it_builds() -> None:
-    workflow = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "build-multigpu.yml").read_text(encoding="utf-8")
-    )
-    run = next(
-        step["run"]
-        for step in workflow["jobs"]["build-multigpu"]["steps"]
+    (run,) = (
+        commands(step["run"])
+        for step in steps("build-multigpu.yml", "build-multigpu")
         if step.get("name") == "Build the lilbee-engine-llama-cpp wheel"
     )
-    assert run.index("source_date_epoch.sh") < run.index("python -m build --wheel")
+    epoch = "export $(bash ${GITHUB_WORKSPACE}/tools/wheel-build/source_date_epoch.sh"
+    assert run.index(epoch) < run.index("python -m build --wheel")
