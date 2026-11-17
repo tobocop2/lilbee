@@ -18,6 +18,7 @@ from lilbee.app.services import (
     exit_if_opens_remain,
     report_library_upgrade,
     set_server_exit_hook,
+    stop_on_interrupt,
     wait_for_hard_exit_teardown,
 )
 from lilbee.cli.app import (
@@ -246,8 +247,9 @@ def serve(
             timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_S,
         )
         server = uvicorn.Server(config)
-        # asyncio takes over Ctrl-C only from this handler; a launch may have set an ignore.
-        signal.signal(signal.SIGINT, signal.default_int_handler)
+        # Replaces an ignore that a launch may have set, and keeps asyncio from installing
+        # its own handler, which only cancels the main task through a loop callback.
+        stop_on_interrupt()
         status = asyncio.run(_run_server(server, config, cfg.server_host))
     except Exception:
         # The exit in the finally can end the process before the traceback prints.

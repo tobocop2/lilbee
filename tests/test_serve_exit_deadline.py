@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -24,6 +25,7 @@ from lilbee.runtime.daemon_call import DaemonCall
 
 _FAILURE_CEILING_S = 30.0
 _WAKE_LIMIT_S = 5.0
+_BLOCKED_LOOP_BOUND_S = 15.0
 _FIXED_PATH = "/usr/bin:/bin"
 _DEADLINE_EXIT_STATUS = 1
 _SIGINT_EXIT_STATUS = 130
@@ -38,6 +40,7 @@ import os, sys, threading
 import lilbee.app.services as services
 import lilbee.cli.commands.servers as servers
 import lilbee.core.security as security
+import lilbee.server as server_pkg
 import lilbee.server.app as app_mod
 import lilbee.server.handlers.rag as rag
 from lilbee.retrieval.query.searcher import SearchReport
@@ -91,6 +94,33 @@ if os.environ.get("X_HOLD_REPLACE"):
         never.wait()
     security.os.replace = held_in_the_write
 
+if os.environ.get("X_BLOCK_LOOP"):
+    woke = threading.Event()
+    real_answer = services.answer_provider_waiters
+
+    def answering():
+        woke.set()
+        real_answer()
+
+    services.answer_provider_waiters = answering
+    servers.answer_provider_waiters = answering
+    real_create_app = server_pkg.create_app
+
+    def create_blocking_app():
+        inner = real_create_app()
+
+        async def blocking(scope, receive, send):
+            if scope["type"] == "http" and scope["path"] == "/block":
+                say("BLOCKED")
+                woke.wait(float(os.environ["X_BLOCK_LOOP"]))
+                say("WOKE" if woke.is_set() else "TIMEOUT")
+                return
+            await inner(scope, receive, send)
+
+        return blocking
+
+    server_pkg.create_app = create_blocking_app
+
 sys.argv = ["lilbee", "serve", "--host", "127.0.0.1", "--port", "0"]
 app()
 """
@@ -135,6 +165,7 @@ class _Serve:
         self.ceiling.start()
         self.port = int(self.read_until("Listening on").rsplit(":", 1)[1])
         self.client: socket.socket | None = None
+        self.output = ""
 
     def read_until(self, needle: str) -> str:
         """Block until the server prints a line holding *needle*; EOF is a failure."""
@@ -145,6 +176,14 @@ class _Serve:
                 return line.strip()
             seen.append(line)
         raise AssertionError(f"the server ended before it printed {needle!r}: {seen[-12:]}")
+
+    def read_until_any(self, needles: tuple[str, ...]) -> str:
+        """Block until the server prints a line that is one of *needles*; EOF is a failure."""
+        assert self.process.stdout is not None
+        for line in self.process.stdout:
+            if line.strip() in needles:
+                return line.strip()
+        raise AssertionError(f"the server ended before it printed one of {needles!r}")
 
     def request(self, method: str, path: str, body: str = "") -> socket.socket:
         """Send a request with the server's token and return the open connection."""
@@ -165,7 +204,7 @@ class _Serve:
 
     def wait(self) -> int:
         """Read the rest of the output and return the exit status, under a failure ceiling."""
-        self.process.communicate(timeout=_FAILURE_CEILING_S)
+        self.output, _ = self.process.communicate(timeout=_FAILURE_CEILING_S)
         return self.process.returncode
 
     def fault_log(self) -> str:
@@ -225,6 +264,26 @@ def test_a_hard_exit_signal_ends_a_blocked_read_without_the_full_grace(
     assert b" 500 " in server.client.recv(200)
 
 
+@posix_only
+@pytest.mark.parametrize(
+    "signum",
+    [signal.SIGINT, signal.SIGTERM, signal.SIGHUP],
+    ids=["sigint", "sigterm", "sighup"],
+)
+def test_a_stop_signal_wakes_a_wait_on_a_blocked_loop_at_once(
+    start: Callable[..., _Serve], signum: signal.Signals
+) -> None:
+    server = start(X_DEADLINE="25", X_BLOCK_LOOP=str(_BLOCKED_LOOP_BOUND_S))
+    server.client = server.request("GET", "/block")
+    server.read_until("BLOCKED")
+    started = time.monotonic()
+    server.process.send_signal(signum)
+    outcome = server.read_until_any(("WOKE", "TIMEOUT"))
+    assert outcome == "WOKE"
+    assert time.monotonic() - started < _WAKE_LIMIT_S
+    assert server.wait() == 128 + signum
+
+
 def test_the_shutdown_route_with_a_read_blocked_ends_at_the_deadline(
     start: Callable[..., _Serve],
 ) -> None:
@@ -258,7 +317,7 @@ def test_a_second_ctrl_c_leaves_a_stuck_teardown_before_the_deadline(
     server.process.send_signal(signal.SIGINT)
     server.read_until("HELD")
     server.process.send_signal(signal.SIGINT)
-    assert server.wait() == _SIGINT_EXIT_STATUS
+    assert server.wait() == _SIGINT_EXIT_STATUS, server.output + server.fault_log()
     assert "Timeout (" not in server.fault_log()
 
 

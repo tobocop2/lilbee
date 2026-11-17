@@ -554,6 +554,7 @@ class _EngineLifecycle:
 
     def __init__(self) -> None:
         self._installed = False
+        self._interrupts = 0
 
     @staticmethod
     def _hard_exit_signals() -> tuple[signal.Signals, ...]:  # pragma: no cover - platform split
@@ -572,6 +573,18 @@ class _EngineLifecycle:
         except ValueError:
             return
         self._installed = True
+
+    def route_interrupt(self) -> None:
+        """Send Ctrl-C through the hard-exit path; a second press ends the process at once."""
+        self._interrupts = 0
+        signal.signal(signal.SIGINT, self._on_interrupt)
+
+    def _on_interrupt(self, signum: int, frame: object) -> None:
+        self._interrupts += 1
+        if self._interrupts > 1:
+            _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+        else:
+            self._on_hard_exit(signum, frame)
 
     def route_in_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Deliver Ctrl-C and the hard-exit signals as loop callbacks.
@@ -753,6 +766,11 @@ def exit_if_opens_remain(status: int) -> None:
 def exit_on_signals_in_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Make Ctrl-C and terminate signals end a process whose loop has no UI to catch them."""
     _lifecycle.route_in_loop(loop)
+
+
+def stop_on_interrupt() -> None:
+    """Make Ctrl-C stop a serving process as SIGTERM does; a second press ends it at once."""
+    _lifecycle.route_interrupt()
 
 
 def exit_after_signal(status: int) -> None:

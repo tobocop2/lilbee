@@ -21,6 +21,7 @@ from lilbee.app.services import (
     reset_services_on_exit,
     set_server_exit_hook,
     set_services,
+    stop_on_interrupt,
     wait_for_hard_exit_teardown,
 )
 
@@ -144,6 +145,29 @@ def test_a_serving_loop_takes_the_hard_exit_and_its_status(sig):
     finally:
         set_server_exit_hook(None)
     assert statuses == [128 + sig]
+    provider.shutdown.assert_called_once()
+
+
+def test_the_first_ctrl_c_stops_the_server_and_the_second_forces_the_exit(monkeypatch):
+    """One press takes the hard-exit path; the next press ends the process with status 130."""
+    provider = _install_stub_services()
+    statuses: list[int] = []
+    exits: list[int] = []
+    monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+    set_server_exit_hook(statuses.append)
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        stop_on_interrupt()
+        handler = signal.getsignal(signal.SIGINT)
+        handler(signal.SIGINT, None)
+        _join_teardown()
+        assert exits == []
+        handler(signal.SIGINT, None)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        set_server_exit_hook(None)
+    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+    assert statuses == [128 + signal.SIGINT]
     provider.shutdown.assert_called_once()
 
 

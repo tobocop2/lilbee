@@ -258,7 +258,7 @@ def _assert_ended_by_the_signal(
     if open_still_running:
         assert _OPEN_EXIT_NOTE in server.lines, "\n".join(server.lines)
     else:
-        assert "interrupted" in server.lines
+        assert f"exit {_INTERRUPTED_STATUS}" in server.lines
     assert server.lines.count("teardown") == 1, "\n".join(server.lines)
 
 
