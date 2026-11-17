@@ -180,6 +180,8 @@ def _render_rejected(view: PlacementView) -> None:
                 ),
             )
         )
+        if view.pins_dropped:
+            console.print(Text(f"  {view.pins_dropped}", style=theme.WARNING), soft_wrap=True)
 
 
 @placement_app.command("show")

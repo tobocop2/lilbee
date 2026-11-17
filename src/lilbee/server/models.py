@@ -1004,6 +1004,8 @@ class PlacementResponse(BaseModel):
     notice: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
+    # Where each pinned role runs after the auto plan replaced the saved spec; empty otherwise.
+    pins_dropped: str = ""
     # The backend the engine selected, reported rather than inferred. ``gpus``
     # being empty does not mean ``cpu``: a host whose device probe never answered
     # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
@@ -1047,6 +1049,7 @@ class PlacementResponse(BaseModel):
             co_tenants=[r.value for r in view.co_tenants],
             rejected_spec_json=view.rejected_spec_json,
             refusal=view.refusal,
+            pins_dropped=view.pins_dropped,
             engine_backend=view.engine_backend,
             hidden_gpus=list(view.hidden_gpus),
             size_unknown=[

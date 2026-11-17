@@ -145,6 +145,9 @@ class PlacementView:
     # the planner, or waiting for an engine or a model. The spec itself is in
     # ``rejected_spec_json`` so it can be corrected.
     refusal: str | None = None
+    # Where each pinned role runs once the auto plan replaced the saved spec; empty
+    # when the spec applies or none of its roles is pinned to a card.
+    pins_dropped: str = ""
     # Vendors whose hardware is in this machine but hidden from the engine by the
     # launch, so no row in ``gpus`` is a pin target for them, and the line that
     # says how to get them back.
@@ -178,6 +181,7 @@ def _view(
     spec_json: str | None,
     rejected_spec_json: str | None = None,
     refusal: str | None = None,
+    pins_dropped: str = "",
 ) -> PlacementView:
     gpus = tuple(
         GpuInfo(
@@ -229,6 +233,7 @@ def _view(
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
         refusal=" ".join(filter(None, (refusal, *resolved.unlaunched_roles.values()))) or None,
+        pins_dropped=pins_dropped,
         hidden_gpus=tuple(v.label for v in resolved.hidden.hidden) if resolved.hidden else (),
         hidden_note=resolved.hidden.note() if resolved.hidden else None,
         size_unknown=tuple(
@@ -329,7 +334,12 @@ def _read_placement(reading: BookReading) -> PlacementView:
         return _view(resolved, engines, manual=False, spec_json=None)
     if not resolved.spec_applied:
         return _view(
-            resolved, engines, manual=False, spec_json=None, rejected_spec_json=spec.to_json()
+            resolved,
+            engines,
+            manual=False,
+            spec_json=None,
+            rejected_spec_json=spec.to_json(),
+            pins_dropped=resolved.pins_dropped,
         )
     if resolved.refused_roles:
         return _view(

@@ -16,7 +16,7 @@ from __future__ import annotations
 import functools
 import itertools
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
 from math import ceil, gcd
@@ -1059,6 +1059,30 @@ def _device_phrase(indices: Sequence[int]) -> str:
     if len(labels) == 1:
         return f"device {labels[0]}"
     return f"devices {', '.join(labels[:-1])} and {labels[-1]}"
+
+
+def dropped_pins_sentence(
+    spec: PlacementSpec, placed: Placement, roles: Collection[WorkerRole]
+) -> str:
+    """The sentence that says where each role of *spec* on a card runs in *placed*.
+
+    Empty when the spec pins none of *roles* to a card.
+    """
+    parts: list[str] = []
+    for role in roles:
+        entry = spec.roles.get(role)
+        if entry is None or entry.device_target is not RoleTarget.GPU:
+            continue
+        pinned = _device_phrase(entry.devices)
+        now = {idx for inst in placed.instances if inst.role is role for idx in inst.devices}
+        if not now:
+            parts.append(f"{role.value} was pinned to {pinned} and does not run")
+        elif now == set(entry.devices):
+            parts.append(f"{role.value} was pinned to {pinned} and still runs on {pinned}")
+        else:
+            moved = _device_phrase(sorted(now))
+            parts.append(f"{role.value} was pinned to {pinned} and now runs on {moved}")
+    return f"The pins are dropped: {'; '.join(parts)}." if parts else ""
 
 
 def lost_card_reason(

@@ -69,6 +69,7 @@ from lilbee.providers.fleet.placement import (
     RoomHolder,
     SplitCtxFitter,
     card_refusal,
+    dropped_pins_sentence,
     lost_card_reason,
     placement_from_spec,
     plan_placement,
@@ -3995,12 +3996,8 @@ def _placement_or_auto(
     except TargetRefusedError:
         raise
     except PlacementError as exc:
-        log.warning(
-            "The saved GPU placement does not fit this hardware (%s); using automatic "
-            "placement instead. Set a new placement to replace it.",
-            str(exc).rstrip("."),
-        )
-    return _resolve_placement(
+        reason = str(exc).rstrip(".")
+    auto = _resolve_placement(
         None,
         inputs,
         model_refs,
@@ -4009,7 +4006,21 @@ def _placement_or_auto(
         unified_budget=unified_budget,
         host_cards=host_cards,
         charge_against_free=charge_against_free,
-    ), False
+    )
+    log.warning(
+        "The saved GPU placement does not fit this hardware (%s); using automatic "
+        "placement instead. %s",
+        reason,
+        " ".join(
+            part
+            for part in (
+                dropped_pins_sentence(placement, auto, tuple(model_refs)),
+                "Set a new placement to replace it.",
+            )
+            if part
+        ),
+    )
+    return auto, False
 
 
 def _placement_that_runs(
@@ -4099,6 +4110,8 @@ class ResolvedPlacement:
     # What the planner charged one instance of each role, in bytes: its card memory, or its
     # system memory for a CPU role. The figure the launch and fit checks read.
     charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
+    # Where each pinned role runs once the auto plan replaced a spec that did not fit.
+    pins_dropped: str = ""
 
 
 @_one_warning_per_plan()
@@ -4153,6 +4166,11 @@ def resolve_placement_plan(
             host_cards=host_cards,
         )
         spec_applied = placement is not None
+    pins_dropped = (
+        dropped_pins_sentence(placement, resolved, tuple(model_refs))
+        if placement is not None and not spec_applied
+        else ""
+    )
     _, unlaunched = _launches_and_refusals(
         resolved,
         inputs,
@@ -4165,6 +4183,7 @@ def resolve_placement_plan(
         clean_box=False,
     )
     return ResolvedPlacement(
+        pins_dropped=pins_dropped,
         devices=tuple(devices),
         instances=tuple(inst for inst in resolved.instances if inst.role not in unlaunched),
         unlaunched_roles=unlaunched,
