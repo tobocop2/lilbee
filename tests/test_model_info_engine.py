@@ -154,6 +154,65 @@ def test_a_file_without_the_gguf_magic_is_not_parsed_and_reports_the_engine(
     assert (info.chat_arch, info.active_handler) == ("unknown", "llama-server")
 
 
+_WRONG_FILE_CONTENT = {
+    "empty file": b"",
+    "short file": b"GGU",
+    "other magic": b"GGML" + b"\x00" * 64,
+    "lower-case magic": b"gguf" + b"\x00" * 64,
+}
+_NOT_A_MODEL = ["missing path", "directory", *_WRONG_FILE_CONTENT]
+
+
+def _not_a_model(tmp_path: Path, kind: str) -> Path:
+    """A path that a user could point the chat model at by mistake."""
+    path = tmp_path / "chat"
+    if kind == "directory":
+        path.mkdir()
+    elif kind in _WRONG_FILE_CONTENT:
+        path.write_bytes(_WRONG_FILE_CONTENT[kind])
+    return path
+
+
+@pytest.mark.parametrize("kind", _NOT_A_MODEL)
+def test_a_chat_path_that_is_not_a_gguf_reports_no_architecture_and_the_engine(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _not_a_model(tmp_path, kind)
+    monkeypatch.setattr(llama_engine, "read_gguf_metadata", lambda _path: pytest.fail("parsed"))
+    _serve_chat_with(monkeypatch, LLAMA, model)
+    info = model_info.get_model_architecture()
+    assert (info.chat_arch, info.active_handler) == ("unknown", "llama-server")
+
+
+@pytest.mark.parametrize("kind", _NOT_A_MODEL)
+def test_the_engine_reads_no_metadata_from_a_path_that_is_not_a_gguf(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(llama_engine, "read_gguf_metadata", lambda _path: pytest.fail("parsed"))
+    assert LLAMA.model_meta(_not_a_model(tmp_path, kind)) is None
+
+
+def test_the_engine_reads_metadata_from_a_file_with_the_gguf_magic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = _gguf_file(tmp_path)
+    monkeypatch.setattr(llama_engine, "read_gguf_metadata", lambda _path: {"architecture": "x"})
+    assert LLAMA.model_meta(model) == {"architecture": "x"}
+
+
+@pytest.mark.parametrize("kind", _NOT_A_MODEL)
+def test_the_magic_check_answers_false_for_a_path_that_is_not_a_gguf(
+    kind: str, tmp_path: Path
+) -> None:
+    assert llama_engine._starts_with_gguf_magic(_not_a_model(tmp_path, kind)) is False
+
+
+def test_the_magic_check_answers_true_for_a_file_that_opens_with_the_magic(
+    tmp_path: Path,
+) -> None:
+    assert llama_engine._starts_with_gguf_magic(_gguf_file(tmp_path)) is True
+
+
 def test_the_handler_follows_an_engine_change_with_no_model_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
