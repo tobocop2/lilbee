@@ -6,9 +6,11 @@ container. A missing session id surfaces as a 404.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.status_codes import HTTP_409_CONFLICT, HTTP_422_UNPROCESSABLE_ENTITY
@@ -110,20 +112,23 @@ def _detail(session: Session) -> SessionDetailResponse:
 async def list_sessions() -> SessionListResponse:
     """Return every session's metadata, newest first."""
     return SessionListResponse(
-        sessions=[_meta_item(meta) for meta in _store().list(origins=HUMAN_ORIGINS)]
+        sessions=[
+            _meta_item(meta)
+            for meta in await asyncio.to_thread(_store().list, origins=HUMAN_ORIGINS)
+        ]
     )
 
 
 async def get_session(session_id: str) -> SessionDetailResponse:
     """Return a session's metadata and transcript, or 404 if unknown."""
     with _session_errors():
-        return _detail(_store().get(session_id))
+        return _detail(await asyncio.to_thread(_store().get, session_id))
 
 
 async def get_session_markdown(session_id: str) -> SessionMarkdown:
     """Return a session as a markdown document with its file name, or 404 if unknown."""
     with _session_errors():
-        session = _store().get(session_id)
+        session = await asyncio.to_thread(_store().get, session_id)
         return SessionMarkdown(
             filename=default_export_name(session.meta), markdown=session_markdown(session)
         )
@@ -133,10 +138,12 @@ async def create_session(data: SessionCreateRequest) -> SessionDetailResponse:
     """Start a new conversation and return it (empty transcript, no summary)."""
     store = _store()
     with _session_errors():
-        session_id = store.create(
-            model_ref=data.model_ref, scope=data.scope, origin=SessionOrigin.HTTP
+        session_id = await asyncio.to_thread(
+            partial(
+                store.create, model_ref=data.model_ref, scope=data.scope, origin=SessionOrigin.HTTP
+            )
         )
-        return _detail(store.get(session_id))
+        return _detail(await asyncio.to_thread(store.get, session_id))
 
 
 async def add_session_message(
@@ -158,8 +165,10 @@ async def add_session_message(
         raise ClientException(detail=str(exc), status_code=HTTP_422_UNPROCESSABLE_ENTITY) from exc
     store = _store()
     with _session_errors():
-        store.add_message(session_id, message, surface=SessionOrigin.HTTP)
-        return _detail(store.get(session_id))
+        await asyncio.to_thread(
+            partial(store.add_message, session_id, message, surface=SessionOrigin.HTTP)
+        )
+        return _detail(await asyncio.to_thread(store.get, session_id))
 
 
 async def fork_session(session_id: str, data: SessionForkRequest | None) -> SessionDetailResponse:
@@ -167,16 +176,18 @@ async def fork_session(session_id: str, data: SessionForkRequest | None) -> Sess
     message_count = data.message_count if data is not None else None
     store = _store()
     with _session_errors():
-        fork_id = store.fork(session_id, message_count=message_count, origin=SessionOrigin.HTTP)
-        return _detail(store.get(fork_id))
+        fork_id = await asyncio.to_thread(
+            partial(store.fork, session_id, message_count=message_count, origin=SessionOrigin.HTTP)
+        )
+        return _detail(await asyncio.to_thread(store.get, fork_id))
 
 
 async def claim_session(session_id: str) -> SessionDetailResponse:
     """Claim a conversation for the HTTP surface, or 404 if unknown."""
     store = _store()
     with _session_errors():
-        store.transfer(session_id, SessionOrigin.HTTP)
-        return _detail(store.get(session_id))
+        await asyncio.to_thread(store.transfer, session_id, SessionOrigin.HTTP)
+        return _detail(await asyncio.to_thread(store.get, session_id))
 
 
 async def set_session_summary(
@@ -185,19 +196,19 @@ async def set_session_summary(
     """Replace a conversation's compaction summary, or 404 if unknown."""
     store = _store()
     with _session_errors():
-        store.set_summary(session_id, data.summary)
-        return _detail(store.get(session_id))
+        await asyncio.to_thread(store.set_summary, session_id, data.summary)
+        return _detail(await asyncio.to_thread(store.get, session_id))
 
 
 async def rename_session(session_id: str, title: str) -> SessionRenameResponse:
     """Rename a session, or 404 if unknown."""
     with _session_errors():
-        _store().set_title(session_id, title, TitleSource.CUSTOM)
+        await asyncio.to_thread(_store().set_title, session_id, title, TitleSource.CUSTOM)
     return SessionRenameResponse(id=session_id, title=title)
 
 
 async def delete_session(session_id: str) -> SessionDeleteResponse:
     """Delete a session, or 404 if unknown."""
     with _session_errors():
-        _store().delete(session_id)
+        await asyncio.to_thread(_store().delete, session_id)
     return SessionDeleteResponse(id=session_id, deleted=True)

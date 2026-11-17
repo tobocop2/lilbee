@@ -646,7 +646,7 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
     try:
         # Delegate to the shared remove path so REST reports the same freed size
         # (full multi-shard total) as the CLI and MCP, not a hardcoded 0.
-        result = remove_model_data(model, src)
+        result = await asyncio.to_thread(remove_model_data, model, src)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ModelsDeleteResponse(
