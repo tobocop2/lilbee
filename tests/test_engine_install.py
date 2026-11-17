@@ -1251,11 +1251,13 @@ def test_the_router_install_hears_the_progress_the_retries_and_the_cancel(
     monkeypatch.setattr(engine_service, "install_router", router)
     cancel = threading.Event()
     retries: list[str] = []
+    updates: list[DownloadProgress] = []
     engine_service.install(
-        ENGINE.value, good, on_update=lambda _progress: None, on_retry=retries.append, cancel=cancel
+        ENGINE.value, good, on_update=updates.append, on_retry=retries.append, cancel=cancel
     )
     assert heard["cancel"] is cancel
-    assert heard["on_progress"] is not None
+    heard["on_progress"](50, 100)
+    assert [update.percent for update in updates] == [50.0]
     heard["on_retry"](2, 3, "the link dropped")
     assert len(retries) == 1
     assert "the link dropped" in retries[0]
@@ -1322,8 +1324,8 @@ def test_rest_answers_a_failed_save_with_a_503_and_the_text(
     assert body["detail"] == "the settings file is read-only"
 
 
-def test_a_refusal_in_plain_mode_goes_to_stderr_whole_and_in_the_error_style(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+def test_the_cli_exits_1_and_prints_a_refusal_whole_to_stderr_in_the_error_style(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     printed: list[Text] = []
 
@@ -1334,9 +1336,27 @@ def test_a_refusal_in_plain_mode_goes_to_stderr_whole_and_in_the_error_style(
 
     monkeypatch.setattr(cli_engine, "PlainConsole", Recorder)
     monkeypatch.setattr(cfg, "json_mode", False)
-    message = " ".join(["word"] * 80)
-    cli_engine._refuse("engine install", engine_service.EngineRefusedError(message))
-    seen = capsys.readouterr()
-    assert seen.out == ""
-    assert seen.err == message + "\n"
+    missing = tmp_path / ("a-long-name-" * 12 + "missing.whl")
+    message = f"{missing} is not a file. Name a wheel file."
+    result = CliRunner().invoke(
+        cli_app, ["engine", "install", ENGINE.value, "--wheel", str(missing)]
+    )
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == message + "\n"
     assert [(text.plain, text.style) for text in printed] == [(message, theme.ERROR)]
+
+
+def test_rest_asks_for_the_confirmation_of_an_embed_change_with_a_409_and_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EmbedConfirmRequiredError("docs", 3)
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    code, body = _rest({"engine": ENGINE.value})
+    assert code == 409
+    assert body["detail"] == f"{error} Send confirm_embed_change: true to confirm."
+    assert body["extra"] == {
+        "code": engine_service.CONFIRM_CODE,
+        "library": "docs",
+        "documents": 3,
+    }
