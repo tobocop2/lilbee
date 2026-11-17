@@ -612,6 +612,8 @@ class LlamaServerClient:
         # Set by the first failed truncation check; the check is off for the client's life.
         self._check_off = False
         self._in_flight_lock = threading.Lock()
+        # Signalled under the count lock each time a request takes in_flight to zero.
+        self._idle = threading.Condition(self._in_flight_lock)
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
         # Live SSE responses, so a cancel can sever the transport from another
@@ -748,11 +750,19 @@ class LlamaServerClient:
         with self._in_flight_lock:
             self._on_idle = callback
 
+    def wait_idle(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for ``in_flight`` to reach zero; whether it did."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self.in_flight == 0, timeout)
+
     def _leave(self) -> None:
         """End one request; call the idle callback when it was the last one."""
         with self._in_flight_lock:
             self.in_flight -= 1
-            callback = self._on_idle if self.in_flight == 0 else None
+            callback = None
+            if self.in_flight == 0:
+                self._idle.notify_all()
+                callback = self._on_idle
         if callback is not None:
             callback()
 

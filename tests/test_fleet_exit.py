@@ -389,7 +389,7 @@ def test_a_server_with_a_queued_memory_write_ends_after_sigint(
 def test_a_queued_memory_write_answers_at_once_on_a_stop_signal(
     server_with_the_real_write_wait: _Server, tmp_path: Path, signal_name: str, status: int
 ) -> None:
-    """The write waits 60 s on the engines; the client waits 20 s, so a late answer fails."""
+    """The write waits the full bound on the engines; the client waits 20 s, so it fails late."""
     server = server_with_the_real_write_wait
     _, answer = _signal_with_a_request_open(
         server, tmp_path, "POST", "/api/memories", {"text": "a note"}, signal.Signals[signal_name]

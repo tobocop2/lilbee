@@ -17,11 +17,14 @@ from lilbee.core.config import cfg
 from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.client import LlamaServerClient, StreamInterruptedError
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.roles import WorkerRole
+from tests._async_wait import poll_until
+from tests._fake_engine_server import FakeEngine
 from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _fake_client, _FakeSwap
 from tests.test_fleet_reload_gap import _SignalCondition
@@ -30,6 +33,9 @@ _JOIN_S = 10.0
 _GB = 1024**3
 _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+_OTHER_CHAT_REF = "Qwen/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf"
+_DRAIN_LIMIT_S = 0.3
+_QUESTION = [{"role": "user", "content": "hi"}]
 _NOTES_CHUNK_SIZE = 384
 _NOTES_CHUNK_OVERLAP = 64
 _EMBED_WINDOW_AT_512 = 2048
@@ -39,7 +45,11 @@ _EMBED_WINDOW_AT_384 = 1544
 @pytest.fixture
 def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """The real planner, with fakes only at the engine binary, device probe and GGUF read."""
-    files = {_EMBED_REF: tmp_path / "embed.gguf", _CHAT_REF: tmp_path / "chat.gguf"}
+    files = {
+        _EMBED_REF: tmp_path / "embed.gguf",
+        _CHAT_REF: tmp_path / "chat.gguf",
+        _OTHER_CHAT_REF: tmp_path / "other-chat.gguf",
+    }
     for path in files.values():
         path.write_bytes(b"weights")
     meta = {
@@ -48,6 +58,7 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
             "nomic-bert.context_length": "2048",
         },
         files[_CHAT_REF]: {"general.architecture": "qwen3", "qwen3.context_length": "32768"},
+        files[_OTHER_CHAT_REF]: {"general.architecture": "qwen3", "qwen3.context_length": "32768"},
     }
     device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
     monkeypatch.setattr(llama_mod, "resolve_llama_server", lambda: Path("/no/llama-server"))
@@ -286,3 +297,252 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
     assert ("Other processes hold" in reason) is names_other_processes
     if names_other_processes:
         assert f"Other processes hold {8 - free_gb} GiB of the card's 8 GiB." in reason
+
+
+class _EngineSwap(_FakeSwap):
+    """A swap fronting a fake engine; it records how many answers the engine had at its stop."""
+
+    def __init__(self, *, answers_at_once: bool) -> None:
+        super().__init__()
+        self.engine = FakeEngine()
+        if answers_at_once:
+            self.engine.release.set()
+        self.answers_at_stop: int | None = None
+
+    def endpoint(self) -> str:
+        return self.engine.url
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        return True
+
+    def shutdown(self) -> None:
+        self.answers_at_stop = self.engine.completed
+        self.engine.stop()
+        super().shutdown()
+
+
+@pytest.fixture
+def engine_fleet(
+    real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
+    """A provider serving the real plan from fake engines, with every engine it starts listed.
+
+    The engines of the first fleet hold each chat request until the test releases it. The
+    engines a reload starts answer at once.
+    """
+    swaps: list[_EngineSwap] = []
+    fleet_up = threading.Event()
+
+    def make_swap(_dir: Path, _group: object) -> _EngineSwap:
+        swap = _EngineSwap(answers_at_once=fleet_up.is_set())
+        swaps.append(swap)
+        return swap
+
+    monkeypatch.setattr(prov_mod, "SwapManager", make_swap)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _dir, **_kw: None)
+    provider = FleetProvider()
+    monkeypatch.setattr(provider, "_preload_roles", lambda roles=None: None)
+    with provider._lock:
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+        ).items():
+            provider._adopt_group(group, make_swap(tmp_path, group), list(launches))
+            provider._group_dirs[group] = tmp_path
+    fleet_up.set()
+    yield provider, swaps
+    for swap in swaps:
+        swap.engine.stop()
+
+
+def _reload_chat_model(provider: FleetProvider) -> None:
+    """Change the chat model and start the reload; return once the old chat client is retired."""
+    old_client = provider._clients[WorkerRole.CHAT][0]
+    cfg.chat_model = _OTHER_CHAT_REF
+    provider.reload_role(WorkerRole.CHAT)
+    assert poll_until(lambda: old_client not in provider._clients.get(WorkerRole.CHAT, []))
+
+
+def test_a_reload_stops_the_old_engine_after_a_running_chat_is_answered(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
+) -> None:
+    provider, swaps = engine_fleet
+    old = provider._swap_for(WorkerRole.CHAT)
+    answers: list[object] = []
+    caller = threading.Thread(target=lambda: answers.append(provider.chat(_QUESTION)), daemon=True)
+    caller.start()
+    assert old.engine.started.wait(_JOIN_S)
+
+    _reload_chat_model(provider)
+    old.engine.release.set()
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert [answer.text for answer in answers] == ["the answer"]
+    assert old.answers_at_stop == 1
+    assert old.engine.requests == 1
+    assert swaps[-1].engine.requests == 0
+
+
+def test_a_reload_with_no_time_left_asks_each_client_for_no_wait(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", 0.0)
+    waits: list[float] = []
+    wait_idle = LlamaServerClient.wait_idle
+
+    def _record(client: LlamaServerClient, timeout: float) -> bool:
+        waits.append(timeout)
+        return wait_idle(client, timeout)
+
+    monkeypatch.setattr(LlamaServerClient, "wait_idle", _record)
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    assert old.engine.started.wait(_JOIN_S)
+
+    _reload_chat_model(provider)
+    assert poll_until(lambda: old.engine.stopped.is_set())
+    with pytest.raises(StreamInterruptedError, match="answer is cut"):
+        list(stream)
+    _join_fleet_threads()
+
+    assert waits
+    assert set(waits) == {0.0}
+
+
+def test_a_chat_cut_by_the_drain_limit_is_sent_again_and_ends_on_the_new_engine_only(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    answers: list[object] = []
+    caller = threading.Thread(target=lambda: answers.append(provider.chat(_QUESTION)), daemon=True)
+    caller.start()
+    assert old.engine.started.wait(_JOIN_S)
+
+    _reload_chat_model(provider)
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert [answer.text for answer in answers] == ["the answer"]
+    assert old.engine.requests == 1
+    assert old.answers_at_stop == 0
+    assert swaps[-1].engine.requests == 1
+    assert swaps[-1].engine.completed == 1
+
+
+def test_a_reload_lets_a_started_stream_finish_before_it_stops_the_old_engine(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
+) -> None:
+    provider, _swaps = engine_fleet
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    assert old.engine.started.wait(_JOIN_S)
+
+    _reload_chat_model(provider)
+    old.engine.release.set()
+    frames = list(stream)
+    _join_fleet_threads()
+
+    assert "first" in frames
+    assert old.answers_at_stop == 1
+
+
+def test_a_stream_cut_by_the_drain_limit_ends_with_a_message_for_the_user(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    assert old.engine.started.wait(_JOIN_S)
+
+    _reload_chat_model(provider)
+    assert poll_until(lambda: old.engine.stopped.is_set())
+    with pytest.raises(StreamInterruptedError, match="answer is cut"):
+        list(stream)
+    _join_fleet_threads()
+
+    assert old.answers_at_stop == 0
+
+
+def test_a_shutdown_during_the_drain_stops_the_old_engine_and_starts_no_new_one(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
+) -> None:
+    provider, swaps = engine_fleet
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    assert old.engine.started.wait(_JOIN_S)
+    started_before = len(swaps)
+
+    _reload_chat_model(provider)
+    with provider._lock:
+        provider._shut_down = True
+
+    assert poll_until(lambda: old.engine.stopped.is_set())
+    _join_fleet_threads()
+    assert len(swaps) == started_before
+    assert provider._reload_owed == frozenset()
+    stream.close()
+
+
+def test_a_reload_waits_for_a_running_request_on_every_replica(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
+) -> None:
+    provider, _swaps = engine_fleet
+    old = provider._swap_for(WorkerRole.CHAT)
+    replica = LlamaServerClient(old.engine.url, "m", profile=LLAMA.request_profile(WorkerRole.CHAT))
+    replica.reserve()
+    with provider._lock:
+        provider._clients[WorkerRole.CHAT].append(replica)
+
+    _reload_chat_model(provider)
+    assert not old.engine.stopped.wait(_DRAIN_LIMIT_S)
+    replica.release()
+
+    assert old.engine.stopped.wait(_JOIN_S)
+    _join_fleet_threads()
+
+
+class _WaitSeen(Exception):
+    """Raised by the recorded wait, so the request stops where it would have waited."""
+
+
+class _RecordedWait(threading.Condition):
+    """A condition that records the timeout of a wait and ends the request there."""
+
+    def __init__(self, lock: threading.RLock, timeouts: list[float | None]) -> None:
+        super().__init__(lock)
+        self._timeouts = timeouts
+
+    def wait_for(self, predicate, timeout=None):  # type: ignore[no-untyped-def]
+        self._timeouts.append(timeout)
+        raise _WaitSeen
+
+
+def test_a_request_waits_for_a_reload_as_long_as_the_drain_and_the_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = FleetProvider()
+    timeouts: list[float | None] = []
+    provider._reload_done = _RecordedWait(provider._lock, timeouts)
+    monkeypatch.setattr(provider, "_ensure_fleet", lambda: True)
+
+    with pytest.raises(_WaitSeen):
+        provider._require_clients(WorkerRole.CHAT)
+
+    assert timeouts == [prov_mod._SHUTDOWN_WORK_WAIT_S + prov_mod._RELOAD_START_WAIT_S]
+
+
+def test_a_caller_that_waits_for_a_reload_waits_as_long_as_the_drain_and_the_start() -> None:
+    provider = FleetProvider()
+    work = MagicMock()
+    work.wait_unless_woken.return_value = True
+    provider._fleet_work = work
+
+    provider.reload_role(WorkerRole.CHAT, wait=True)
+
+    work.wait_unless_woken.assert_called_once_with(
+        prov_mod._SHUTDOWN_WORK_WAIT_S + prov_mod._RELOAD_START_WAIT_S
+    )

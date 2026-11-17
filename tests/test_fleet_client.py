@@ -615,6 +615,20 @@ def test_the_idle_callback_runs_when_the_last_request_ends_with_the_count_lock_f
     assert seen == [(0, False), (0, False)]
 
 
+def test_wait_idle_returns_when_the_last_request_ends_and_not_before() -> None:
+    client = _client()
+    assert client.wait_idle(0.0) is True
+    client.reserve()
+    client.reserve()
+    client.release()
+    assert client.wait_idle(0.05) is False
+    ender = threading.Timer(0.05, client.release)
+    ender.start()
+    assert client.wait_idle(10.0) is True
+    ender.join()
+    assert client.in_flight == 0
+
+
 def test_chat_stream_yields_deltas() -> None:
     chunks = list(_client().chat([{"role": "user", "content": "hi"}], stream=True))
     assert chunks == ["He", "llo"]

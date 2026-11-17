@@ -110,16 +110,20 @@ from lilbee.runtime.engine_lock import (
 
 log = logging.getLogger(__name__)
 
-# How long a shutdown waits for fleet work to finish before tearing down regardless.
+# How long a shutdown or a reload waits for running requests to finish before it stops the engine.
 _SHUTDOWN_WORK_WAIT_S = 45.0
-# Longest a read or a write waits on fleet work, so no thread that exit joins waits longer.
-_FLEET_WAIT_S = 60.0
+# How long a reload may take to start the new servers after it stopped the old ones.
+_RELOAD_START_WAIT_S = 60.0
+# Longest a read, a write or a request waits on fleet work, so no thread that exit joins waits
+# longer. A reload takes the drain of the old server, then the start of the new one.
+_FLEET_WAIT_S = _SHUTDOWN_WORK_WAIT_S + _RELOAD_START_WAIT_S
+# How long a request waits for a reload that is restarting its role's server.
+_RELOAD_GAP_WAIT_S = _FLEET_WAIT_S
 
 # The thread that releases the engine holds no group uses once a retired client is idle.
 _HOLD_SWEEP_THREAD = "fleet-hold-sweep"
-
-# How long a request waits for a reload that is restarting its role's server.
-_RELOAD_GAP_WAIT_S = 60.0
+# How often a reload drain looks at the shutdown latch.
+_DRAIN_POLL_S = 0.25
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -1774,6 +1778,15 @@ class FleetProvider:
             return ()
         return tuple(launch for launch in self._launches.get(group, ()) if launch.role is role)
 
+    def _group_clients(self, group: SwapGroup) -> list[LlamaServerClient]:
+        """Every client of *group*'s member roles. Caller holds ``self._lock``."""
+        return [
+            client
+            for role, member in self._role_group.items()
+            if member is group
+            for client in self._clients.get(role, [])
+        ]
+
     def _drop_group(self, group: SwapGroup) -> SwapManager | None:
         """Forget *group*'s swap/launches and every member role's clients.
 
@@ -3116,14 +3129,22 @@ class FleetProvider:
                 self._reload_done.notify_all()
             self._log_dropped_groups(changed, old, new)
             # Stop phase: free the changed groups' VRAM before their replacements
-            # (or another group's grown plan) spawn against it.
+            # (or another group's grown plan) spawn against it. A group's engine
+            # stops once its running requests end, or at the drain limit.
+            drain_until = time.monotonic() + _SHUTDOWN_WORK_WAIT_S
             for group in sorted(changed, key=lambda g: g.value):
                 with self._lock:
+                    clients = self._group_clients(group)
                     swap = self._drop_group(group)
+                self._drain_clients(clients, drain_until)
                 if swap is not None:
                     swap.shutdown()
             # Start phase: spawn the changed groups present in the new plan.
             for group in sorted(changed & set(new), key=lambda g: g.value):
+                with self._lock:
+                    if self._shut_down:
+                        # A shutdown during the drain: a server started now has no owner.
+                        return
                 group_launches = list(new[group])
                 swap = SwapManager(reload_dir, group)
                 lifetime = _engine_lifetime(reload_dir)
@@ -3144,6 +3165,17 @@ class FleetProvider:
                 restarted.extend(_by_role(group_launches))
             self._restamp_kept(running - changed, origin)
         self._preload_restarted(restarted)
+
+    def _drain_clients(self, clients: list[LlamaServerClient], until: float) -> None:
+        """Wait until *clients* run no request, the time *until* passes, or a shutdown starts."""
+        for client in clients:
+            while True:
+                with self._lock:
+                    if self._shut_down:
+                        return
+                remaining = max(0.0, until - time.monotonic())
+                if client.wait_idle(min(remaining, _DRAIN_POLL_S)) or remaining == 0.0:
+                    break
 
     def _restamp_kept(self, kept: set[SwapGroup], origin: PlanOrigin) -> None:
         """Record *origin* on the *kept* groups: their plan matches the file, so no peer waits."""
