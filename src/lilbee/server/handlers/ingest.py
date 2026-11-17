@@ -355,13 +355,10 @@ async def _run_upload(
 
     try:
         await asyncio.to_thread(refuse_where_a_sync_cannot_lock, cfg.data_root)
-        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(cfg.documents_dir.mkdir, parents=True, exist_ok=True)
         written: list[str] = []
         for name, content in files:
-            dest = cfg.documents_dir / name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if not await asyncio.to_thread(_move_same_content, name, content, dest):
-                dest.write_bytes(content)
+            await asyncio.to_thread(_place_upload, name, content, cfg.documents_dir / name)
             written.append(name)
         with temporary_ocr_config(ocr, ocr_timeout):
             sync_result = await sync(
@@ -392,6 +389,13 @@ def _move_same_content(name: str, content: bytes, dest: Path) -> bool:
     os.replace(old_path, dest)
     log.info("Moved %s to %s: the same content arrived under a new name", matches[0], name)
     return True
+
+
+def _place_upload(name: str, content: bytes, dest: Path) -> None:
+    """Put an uploaded file at *dest*: a move of the same indexed content, else a write."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not _move_same_content(name, content, dest):
+        dest.write_bytes(content)
 
 
 async def add_uploads_stream(

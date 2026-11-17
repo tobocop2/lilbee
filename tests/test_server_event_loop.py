@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from lilbee.app import services as svc_mod
 from lilbee.app.models import RemoveResult
+from lilbee.catalog import CatalogResult
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
 from lilbee.runtime.progress.types import LibraryUpgradeEvent, UpgradePhase
 from lilbee.server import handlers
+from lilbee.server import wiki as server_wiki
 from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 from lilbee.server.handlers import documents as document_handlers
 from lilbee.server.handlers import ingest as ingest_handlers
@@ -30,6 +33,8 @@ from lilbee.server.models import (
 )
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin
 from lilbee.sessions.store import TitleSource
+from lilbee.wiki import lint as lint_mod
+from lilbee.wiki.shared import WikiSubdir
 from tests.conftest import make_mock_services
 
 
@@ -108,6 +113,72 @@ class TestStoreCallsStayOffTheLoop:
         _assert_off_the_loop(threads, 1)
 
 
+class TestFileWalksStayOffTheLoop:
+    """Directory walks and file writes in async handlers run on a worker thread."""
+
+    @staticmethod
+    def _assert_all_off_the_loop(threads: list[int]) -> None:
+        assert threads
+        assert threading.get_ident() not in threads
+
+    async def test_models_catalog_lists_installed_models_off_the_loop(self, services):
+        threads: list[int] = []
+        services.registry.list_installed.side_effect = _recording(threads, returns=[])
+        with (
+            patch.object(model_handlers, "get_families", return_value=[]),
+            patch.object(
+                model_handlers,
+                "get_catalog",
+                return_value=CatalogResult(total=0, limit=20, offset=0, models=[]),
+            ),
+        ):
+            await model_handlers.models_catalog(task="chat", source="native")
+        _assert_off_the_loop(threads, 1)
+
+    async def test_an_upload_creates_and_writes_files_off_the_loop(self, services):
+        mkdir_threads: list[int] = []
+        write_threads: list[int] = []
+        services.store.get_sources.return_value = []
+        with (
+            patch.object(Path, "mkdir", _recording(mkdir_threads, Path.mkdir)),
+            patch.object(Path, "write_bytes", _recording(write_threads, Path.write_bytes)),
+            patch("lilbee.data.ingest.sync", new=AsyncMock(return_value=SyncResult())),
+        ):
+            await ingest_handlers._run_upload([("sub/note.md", b"# note\n")], SseStream())
+        self._assert_all_off_the_loop(mkdir_threads)
+        self._assert_all_off_the_loop(write_threads)
+        assert (cfg.documents_dir / "sub" / "note.md").read_bytes() == b"# note\n"
+
+    async def test_an_upload_creates_a_missing_documents_directory(self, services):
+        cfg.documents_dir = cfg.data_root / "missing" / "documents"
+        services.store.get_sources.return_value = []
+        with patch("lilbee.data.ingest.sync", new=AsyncMock(return_value=SyncResult())):
+            await ingest_handlers._run_upload([("note.md", b"# note\n")], SseStream())
+        assert (cfg.documents_dir / "note.md").read_bytes() == b"# note\n"
+
+    async def test_wiki_status_walks_the_tree_off_the_loop(self, services):
+        threads: list[int] = []
+        cfg.wiki = True
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        for subdir, names in (
+            (WikiSubdir.SUMMARIES, ["a.md"]),
+            (WikiSubdir.DRAFTS, ["b.md", "nested/c.md"]),
+            (WikiSubdir.CONCEPTS, ["d.md"]),
+        ):
+            for name in names:
+                page = wiki_root / subdir / name
+                page.parent.mkdir(parents=True, exist_ok=True)
+                page.write_text("# page\n", encoding="utf-8")
+        report = MagicMock(error_count=0, warning_count=0)
+        with (
+            patch.object(Path, "rglob", _recording(threads, Path.rglob)),
+            patch.object(lint_mod, "lint_all", return_value=report),
+        ):
+            result = await server_wiki.wiki_status_route.fn()
+        self._assert_all_off_the_loop(threads)
+        assert (result.summaries, result.drafts, result.pages) == (1, 2, 2)
+
+
 class TestOffLoopCallsKeepTheirArguments:
     """Each call moved onto a worker thread still hands the real store its arguments."""
 
@@ -166,6 +237,24 @@ class TestChatSummaryPersistStaysOffTheLoop:
             frames = [f async for f in rag_handlers._context_management_frames([], "", "s1")]
         assert any(isinstance(f, str) and "event: compaction" in f for f in frames)
         _assert_off_the_loop(threads, 1)
+
+    async def test_chat_hands_its_session_id_to_the_store(self, services):
+        services.session_store.set_summary = MagicMock()
+        with (
+            patch.object(rag_handlers, "_manage_history", return_value=([], self._INFO)),
+            pytest.raises(ModelNotFoundError, match="is not installed"),
+        ):
+            await rag_handlers.chat("q", [], top_k=0, session_id="s1")
+        services.session_store.set_summary.assert_called_once_with("s1", "notes")
+
+    async def test_the_stream_hands_its_session_id_to_the_store(self, services):
+        services.session_store.set_summary = MagicMock()
+        with (
+            patch.object(rag_handlers, "_compaction_pending", return_value=True),
+            patch.object(rag_handlers, "_manage_history", return_value=([], self._INFO)),
+        ):
+            [f async for f in rag_handlers._context_management_frames([], "", "s1")]
+        services.session_store.set_summary.assert_called_once_with("s1", "notes")
 
 
 class TestSessionCallsStayOffTheLoop:
@@ -259,6 +348,11 @@ class TestSessionCallsStayOffTheLoop:
             SessionCreateRequest(model_ref="model", scope="all")
         )
         assert store.get(created.meta.id).meta.origin == SessionOrigin.HTTP
+
+    async def test_claim_hands_the_session_to_the_http_origin(self, store, session_id):
+        store.transfer = MagicMock(wraps=store.transfer)
+        await session_handlers.claim_session(session_id)
+        store.transfer.assert_called_once_with(session_id, SessionOrigin.HTTP)
 
     async def test_rename_marks_the_title_as_custom(self, store, session_id):
         store.set_title = MagicMock(wraps=store.set_title)
