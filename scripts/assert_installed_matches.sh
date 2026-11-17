@@ -9,7 +9,7 @@ smoked="${2:-}"
 [ -f "${installed}" ] && [ -f "${smoked}" ] || { echo "usage: $0 <installed file> <smoked asset>" >&2; exit 1; }
 
 sha256_of() {
-  if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  if command -v sha256sum >/dev/null; then sha256sum < "$1" | cut -d' ' -f1; else shasum -a 256 < "$1" | cut -d' ' -f1; fi
 }
 
 installed_sum="$(sha256_of "${installed}")"

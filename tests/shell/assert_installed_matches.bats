@@ -13,6 +13,15 @@ setup() {
   [[ "$output" == *"equals"* ]]
 }
 
+@test "identical files pass when the installed path contains a backslash" {
+  mkdir "${BATS_TEST_TMPDIR}/a\\b"
+  printf 'same' > "${BATS_TEST_TMPDIR}/a\\b/installed"
+  printf 'same' > "${BATS_TEST_TMPDIR}/smoked"
+  run bash "${SCRIPT}" "${BATS_TEST_TMPDIR}/a\\b/installed" "${BATS_TEST_TMPDIR}/smoked"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"equals"* ]]
+}
+
 @test "files that differ by one byte fail" {
   printf 'same' > "${BATS_TEST_TMPDIR}/a"
   printf 'sama' > "${BATS_TEST_TMPDIR}/b"
