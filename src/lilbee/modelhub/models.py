@@ -22,6 +22,7 @@ from lilbee.providers.fleet.engines.choice import (
     installed_engines,
     loadable_refs,
 )
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
@@ -312,7 +313,7 @@ def list_installed_models() -> list[str]:
     tree never reads as "no chat model is installed". An unusable remote
     server only drops its own names.
     """
-    names = loadable_refs(_registry_chat_refs())
+    names = loadable_refs(_registry_chat_refs(), WorkerRole.CHAT)
     names.extend(_remote_chat_model_names())
     return sorted(set(names))
 

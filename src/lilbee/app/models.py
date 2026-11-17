@@ -16,6 +16,7 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -233,9 +234,8 @@ def adopt_embedder(ref: str) -> AdoptResult:
 def installed_chat_model_refs() -> list[str]:
     """Return sorted refs for every chat model whose format an installed engine loads."""
     registry = get_services().registry
-    return sorted(
-        loadable_refs(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
-    )
+    chat_refs = (m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+    return sorted(loadable_refs(chat_refs, WorkerRole.CHAT))
 
 
 def with_configured_chat(refs: list[str], configured: str) -> list[str]:
