@@ -130,3 +130,58 @@ def test_a_planted_host_engine_reaches_no_child(
     result = pytester.runpytest_subprocess("-p", "tests.conftest", "-p", "no:cacheprovider")
 
     result.assert_outcomes(passed=3)
+
+
+_OWN_PYTHONPATH_TESTS = """
+import os
+import subprocess
+import sys
+
+from tests.conftest import child_pythonpath
+
+_CHILD = (
+    "from lilbee.providers.base import ProviderError\\n"
+    "from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool\\n"
+    "try:\\n"
+    "    print(resolve_engine_tool(EngineTool.LLAMA_SERVER, install=False))\\n"
+    "except ProviderError:\\n"
+    "    print('NOT_FOUND')\\n"
+)
+
+
+def _resolved_by_a_child(pythonpath):
+    env = {**os.environ, "PYTHONPATH": pythonpath}
+    done = subprocess.run(
+        [sys.executable, "-c", _CHILD], env=env, capture_output=True, encoding="utf-8", check=True
+    )
+    return done.stdout.strip()
+
+
+def test_a_child_with_the_unsealed_path_of_this_process_finds_the_wheel():
+    assert os.environ["PLANTED_HOST_ENGINE"] in _resolved_by_a_child(os.pathsep.join(sys.path))
+
+
+def test_a_child_with_its_own_pythonpath_finds_no_wheel_engine():
+    resolved = _resolved_by_a_child(child_pythonpath(*sys.path))
+    assert resolved == "NOT_FOUND"
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the planted engine is a shell script")
+def test_a_child_that_gets_its_own_pythonpath_finds_no_wheel_engine(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = pytester.mkdir("host-wheel") / "lilbee_engine_llama_cpp"
+    (wheel / "bin").mkdir(parents=True)
+    engine = wheel / "bin" / "llama-server"
+    engine.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    engine.chmod(0o755)
+    wheel.joinpath("__init__.py").write_text(_WHEEL_INIT, encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(wheel.parent), str(_REPO_ROOT)]))
+    monkeypatch.setenv(_PLANTED, str(engine))
+    pytester.makeini("[pytest]\nmarkers =\n    real_engine_resolution: unseal engine resolution\n")
+    pytester.makepyfile(test_inner=_OWN_PYTHONPATH_TESTS)
+
+    result = pytester.runpytest_subprocess("-p", "tests.conftest", "-p", "no:cacheprovider")
+
+    result.assert_outcomes(passed=2)

@@ -31,6 +31,7 @@ from lilbee.runtime.progress import (
     ProgressEvent,
     SyncWaitEvent,
 )
+from tests.conftest import child_pythonpath
 
 # Ends a test that hangs; no wait in these tests is a sleep.
 _HANG_LIMIT_S = 10.0
@@ -487,7 +488,7 @@ async def test_a_waiter_takes_the_turn_when_its_holder_is_killed_with_sigkill() 
         _HOLDER_CHILD,
         str(cfg.data_root),
         stdout=asyncio.subprocess.PIPE,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        env={**os.environ, "PYTHONPATH": child_pythonpath(*sys.path)},
     )
     try:
         assert child.stdout is not None

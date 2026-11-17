@@ -1247,6 +1247,16 @@ def _default_known_models_mock():
     return cache
 
 
+def child_pythonpath(*folders: str | Path) -> str:
+    """PYTHONPATH for a child process: the sealed value, then *folders*.
+
+    The sealing fixture puts a wheel without an engine first on PYTHONPATH. A child
+    that gets its own PYTHONPATH from a test must start from it, or it imports the
+    host's engine wheel.
+    """
+    return os.pathsep.join(filter(None, [os.environ.get("PYTHONPATH"), *map(str, folders)]))
+
+
 def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
     """Return os.environ with all LILBEE_* vars removed.
 

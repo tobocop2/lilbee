@@ -16,6 +16,7 @@ from lilbee.providers.fleet import model_memory as mm
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import GgufVramEstimate
+from tests.conftest import child_pythonpath
 
 RESERVE = mm.UNKNOWN_SIZE_RESERVE_BYTES
 
@@ -578,7 +579,7 @@ class TestColdImport:
             check=False,
             timeout=120,
             env={
-                "PYTHONPATH": str(Path(mm.__file__).parents[3]),
+                "PYTHONPATH": child_pythonpath(Path(mm.__file__).parents[3]),
                 # A Windows child needs its system root for the network stack, and its
                 # profile variables for the home folder that the data directory names.
                 **{k: v for k, v in os.environ.items() if k in _WINDOWS_CHILD_VARIABLES},
