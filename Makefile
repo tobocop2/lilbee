@@ -13,14 +13,20 @@ lint: lint-shell
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
 	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tests/shell/*.bash tests/shell/stubs/*; \
+	  shellcheck -x -s sh site/install.sh tests/installer/select_asset.sh tests/installer/probe_hardware.sh; \
 	else echo "lint-shell: shellcheck is not installed, skipping"; fi
 	# actionlint also shellchecks every inline `run:` block.
 	@if command -v actionlint >/dev/null; then actionlint; \
 	else echo "lint-shell: actionlint is not installed, skipping"; fi
+	@if command -v pwsh >/dev/null; then pwsh -NoProfile -File tests/installer/lint.ps1; \
+	else echo "lint-shell: pwsh is not installed, skipping PSScriptAnalyzer"; fi
 
-test-shell:  ## Run the bats tests for the release scripts
+test-shell:  ## Run the bats and Pester tests for the release scripts
 	@command -v bats >/dev/null || { echo "test-shell: bats-core is missing (brew install bats-core)"; exit 1; }
 	bats tests/shell/
+	@if command -v pwsh >/dev/null; then \
+	  pwsh -NoProfile -Command "Import-Module Pester -MinimumVersion 5.0; Invoke-Pester -Path tests/installer/install.Tests.ps1 -Output Detailed -CI"; \
+	else echo "test-shell: pwsh is not installed, skipping Pester"; fi
 
 format:
 	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py hatch_build.py
@@ -113,6 +119,7 @@ release-promote:  ## Manual promote: rewrite notes as headings and mark a releas
 	  echo "  gh workflow run verify-release.yml -f tag=$$tag"; \
 	  exit 1; \
 	fi; \
+	bash scripts/write_release_sums.sh "$$tag" tobocop2/lilbee; \
 	if gh release view "$$tag" --repo tobocop2/lilbee --json body -q .body | head -1 | grep -q '^Promoted from'; then \
 	  echo "release-promote: $$tag (verified; promoted release, keeping its copied notes)"; \
 	  gh release edit "$$tag" --repo tobocop2/lilbee --prerelease=false --latest; \
