@@ -11,6 +11,7 @@ from lilbee.catalog.refs import hf_repo_from_ref, is_gguf_filename
 from lilbee.core.config import META_TABLE
 from lilbee.runtime.lock import write_lock
 
+from .schema import _meta_schema
 from .types import LOCAL_OWNER, ChunkType
 
 if TYPE_CHECKING:
@@ -272,21 +273,37 @@ def newest_meta_row(table: LanceTable) -> dict[str, Any] | None:
     return max(rows, key=lambda r: r["updated_at"]) if rows else None
 
 
+_WIDTH_COLUMNS = ("embedding_model", "embedding_dim", "updated_at")
+
+
+def _width_readable(meta: LanceTable) -> bool:
+    """Whether *meta* holds the width columns with the writer's types, each row dated."""
+    written = _meta_schema()
+    names = meta.schema.names
+    if any(
+        name not in names or meta.schema.field(name).type != written.field(name).type
+        for name in _WIDTH_COLUMNS
+    ):
+        return False
+    return meta.count_rows("updated_at IS NULL") == 0
+
+
 def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
     """The width the index at *lancedb_dir* was written at, when it was built by *model*.
 
     Reads the ``_meta`` row without opening a store, so no upgrade runs. ``None`` when the
-    library, the row, or a match on *model* is absent.
+    library, a readable row, or a match on *model* is absent.
     """
     if not lancedb_dir.is_dir():
         return None
     from lancedb.db import LanceDBConnection
 
     meta = open_committed(LanceDBConnection(str(lancedb_dir)), META_TABLE)
-    row = None if meta is None else newest_meta_row(meta)
+    row = newest_meta_row(meta) if meta is not None and _width_readable(meta) else None
     if row is None or row["embedding_model"] != model:
         return None
-    return int(row["embedding_dim"])
+    width: int | None = row["embedding_dim"]
+    return width
 
 
 def refs_compatible(

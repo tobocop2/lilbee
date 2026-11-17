@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import lancedb
+import pyarrow as pa
 import pytest
 
 from lilbee.app.services import set_services
-from lilbee.core.config import cfg
+from lilbee.core.config import META_TABLE, cfg
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
+from lilbee.data.store.schema import _meta_schema
 from lilbee.retrieval.embedder import Embedder
 from tests.conftest import make_mock_services
 
@@ -198,8 +201,76 @@ async def test_startup_leaves_the_width_when_the_store_holds_another_model():
     store, _ = await _index_then_swap_to_a_wider_model()
     meta = store.get_meta()
     assert meta is not None
-    assert meta["embedding_model"] == OLD_MODEL
+    assert (meta["embedding_model"], meta["embedding_dim"]) == (OLD_MODEL, OLD_WIDTH)
     assert cfg.embedding_model == NEW_MODEL
+    cfg.embedding_dim = NEW_WIDTH  # differs from the stored width, so an adoption shows
+
+    reconcile_embedding_dim()
+
+    assert cfg.embedding_dim == NEW_WIDTH
+
+
+def _write_meta(schema: pa.Schema, rows: list[dict[str, object]]) -> None:
+    cfg.lancedb_dir.mkdir(parents=True)
+    db = lancedb.connect(str(cfg.lancedb_dir))
+    db.create_table(META_TABLE, pa.Table.from_pylist(rows, schema=schema))
+
+
+def _meta_fields(*names: str) -> list[pa.Field]:
+    return [_meta_schema().field(name) for name in names]
+
+
+_ROW = {"embedding_model": OLD_MODEL, "embedding_dim": NEW_WIDTH, "updated_at": "2026-01-01"}
+_WIDTH_FIELDS = ("embedding_model", "embedding_dim", "updated_at")
+_TEXT_WIDTH = pa.field("embedding_dim", pa.utf8())
+
+
+def test_startup_takes_the_width_of_a_meta_row_it_can_read():
+    from lilbee.app.settings import reconcile_embedding_dim
+
+    _write_meta(pa.schema(_meta_fields(*_WIDTH_FIELDS)), [_ROW])
+
+    reconcile_embedding_dim()
+
+    assert cfg.embedding_dim == NEW_WIDTH
+
+
+@pytest.mark.parametrize(
+    ("schema", "rows"),
+    [
+        pytest.param(pa.schema([pa.field("foo", pa.int64())]), [{"foo": 1}], id="other-columns"),
+        pytest.param(
+            pa.schema(_meta_fields("embedding_model", "embedding_dim")),
+            [_ROW],
+            id="no-updated_at",
+        ),
+        pytest.param(
+            pa.schema(_meta_fields("embedding_dim", "updated_at")), [_ROW], id="no-embedding_model"
+        ),
+        pytest.param(
+            pa.schema(_meta_fields("embedding_model", "updated_at")), [_ROW], id="no-embedding_dim"
+        ),
+        pytest.param(
+            pa.schema(_meta_fields(*_WIDTH_FIELDS)),
+            [{**_ROW, "embedding_dim": None}],
+            id="embedding_dim-null",
+        ),
+        pytest.param(
+            pa.schema([*_meta_fields("embedding_model", "updated_at"), _TEXT_WIDTH]),
+            [{**_ROW, "embedding_dim": "wide"}],
+            id="embedding_dim-text",
+        ),
+        pytest.param(
+            pa.schema(_meta_fields(*_WIDTH_FIELDS)),
+            [_ROW, {**_ROW, "updated_at": None}],
+            id="updated_at-null-on-one-of-two-rows",
+        ),
+    ],
+)
+def test_startup_leaves_the_width_when_it_cannot_read_the_meta_row(schema, rows):
+    from lilbee.app.settings import reconcile_embedding_dim
+
+    _write_meta(schema, rows)
 
     reconcile_embedding_dim()
 
