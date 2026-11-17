@@ -362,6 +362,23 @@ def test_cards_are_unknown_when_a_row_does_not_parse(
     assert nvidia_mod.cards() == []
 
 
+@pytest.mark.parametrize(
+    ("csv", "rows"),
+    [
+        (_NA_FIRST_CSV, 2),
+        ("0, GPU-a, 24576, 23552, n0\n1, GPU-b, [N/A], [N/A], n1\n", 2),
+        (_LOST_CARD0_CSV, 2),
+        ("", 0),
+    ],
+    ids=["unread-first", "unread-second", "unparsed-row-is-a-card", "cannot-run"],
+)
+def test_card_rows_count_every_row_the_driver_prints(
+    monkeypatch: pytest.MonkeyPatch, csv: str, rows: int
+) -> None:
+    _Smi(monkeypatch, cards=csv)
+    assert nvidia_mod.card_rows() == rows
+
+
 def test_card_totals_keep_a_row_that_does_not_parse_as_an_unread_card(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -216,6 +216,11 @@ def cards() -> list[NvidiaCard]:
     return readable if len(readable) == len(listed) else []
 
 
+def card_rows() -> int:
+    """Rows the driver prints, one per card even when it does not parse; 0 when it cannot run."""
+    return len(_listed(_cards_probe.read().out))
+
+
 def card_totals() -> list[CardTotal]:
     """Each row by printed index; a total that does not read is ``None``.
 

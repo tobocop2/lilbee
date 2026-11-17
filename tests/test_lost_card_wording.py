@@ -75,6 +75,7 @@ def test_three_listed_devices_are_joined_with_commas_and_an_and() -> None:
 def test_the_shared_wording_counts_the_host_cards() -> None:
     host_cards = planning.HostCards([CARD_ZERO])
     host_cards.__dict__["total"] = 3
+    host_cards.__dict__["floor"] = False
     wording = planning._lost_card_wording([CARD_ZERO], host_cards)
     assert wording(WorkerRole.CHAT, [1]) == (
         "chat is pinned to device 1, but this machine lists only device 0 "
@@ -83,11 +84,25 @@ def test_the_shared_wording_counts_the_host_cards() -> None:
     )
 
 
+def test_the_shared_wording_says_when_the_host_count_is_a_floor() -> None:
+    host_cards = planning.HostCards([CARD_ZERO])
+    host_cards.__dict__["total"] = 3
+    host_cards.__dict__["floor"] = True
+    wording = planning._lost_card_wording([CARD_ZERO], host_cards)
+    assert "(at least 3 cards on this host)" in wording(WorkerRole.CHAT, [1])
+
+
+def test_a_floor_count_that_adds_no_card_is_not_stated() -> None:
+    sentence = lost_card_reason(WorkerRole.CHAT, [1], [0], on_host=1, floor=True)
+    assert "on this host" not in sentence
+
+
 def test_a_role_without_an_entry_in_the_spec_is_not_refused() -> None:
     spec = PlacementSpec.from_json('{"chat": {"devices": [1], "target": "gpu"}}')
     roles = {WorkerRole.CHAT: "chat-ref", WorkerRole.EMBED: "embed-ref"}
     host_cards = planning.HostCards([CARD_ZERO])
     host_cards.__dict__["total"] = 1
+    host_cards.__dict__["floor"] = False
     refused = planning._roles_on_missing_cards(spec, roles, [CARD_ZERO], host_cards)
     assert list(refused) == [WorkerRole.CHAT]
 

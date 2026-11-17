@@ -32,10 +32,6 @@ def _card(index: int, name: str, backend: str = _VULKAN) -> FleetDevice:
     return FleetDevice(backend, index, name, 8 * GIB, 8 * GIB)
 
 
-def _driver_cards(count: int) -> list[nvidia_mod.NvidiaCard]:
-    return [nvidia_mod.NvidiaCard(i, f"GPU-{i}", "n", 8 * GIB, 8 * GIB) for i in range(count)]
-
-
 class _Host:
     """The host's two tables, with a count of how often each was read."""
 
@@ -44,15 +40,13 @@ class _Host:
         self.tree = Counter[int]()
         self.driver_reads = 0
         self.tree_reads = 0
-        monkeypatch.setattr(planning, "nvidia_cards", self._driver)
+        monkeypatch.setattr(planning, "nvidia_card_rows", self._driver)
         monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", self._tree)
 
-    def _driver(self) -> list[nvidia_mod.NvidiaCard]:
-        """The next scripted card count; the driver fails once the script is spent."""
+    def _driver(self) -> int:
+        """The next scripted card count; the driver lists none once the script is spent."""
         self.driver_reads += 1
-        if not self.driver_answers:
-            return []
-        return _driver_cards(self.driver_answers.pop(0))
+        return self.driver_answers.pop(0) if self.driver_answers else 0
 
     def _tree(self) -> Counter[int]:
         self.tree_reads += 1
@@ -78,6 +72,7 @@ class TestHostCardsTotal:
                 id="hidden-nvidia-beside-visible-amd",
             ),
             pytest.param([_NV_NAME], [1], {_AMD_ID: 1}, 2, id="hidden-amd-counts"),
+            pytest.param([_NV_NAME], [1], {_NVIDIA_ID: 2}, 2, id="tree-above-a-short-driver-list"),
             pytest.param([_AMD_NAME], [], {}, 1, id="no-table-keeps-the-visible-count"),
             pytest.param(
                 [_NV_NAME, _NV_NAME, _NV_NAME], [2], {_NVIDIA_ID: 2}, 3, id="visible-above-tables"
@@ -124,13 +119,41 @@ class TestHostCardsTotal:
     @pytest.mark.parametrize(
         "memory", ["[N/A], [N/A]", "8192, [N/A]"], ids=["total-unread", "free-unread"]
     )
-    def test_a_card_whose_memory_does_not_read_leaves_the_gate_count_at_zero(
+    def test_a_card_whose_memory_does_not_read_still_counts(
         self, monkeypatch: pytest.MonkeyPatch, memory: str
     ) -> None:
-        """The driver's card list is unknown, so the gate falls back as for no answer."""
+        """The driver printed a row for the card, so the host holds it."""
         csv = f"0, GPU-a, 8192, 8000, {_NV_NAME}\n1, GPU-b, {memory}, {_NV_NAME}\n"
         monkeypatch.setattr(nvidia_mod, "run_tool", prints(lambda *_a, **_k: csv))
-        assert planning.HostCards([]).nvidia_driver == 0
+        assert planning.HostCards([]).nvidia_driver == 2
+
+    def test_a_failed_second_read_counts_the_hidden_card_in_the_total(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        csv = f"0, GPU-a, 8192, 8000, {_NV_NAME}\n1, GPU-b, [N/A], [N/A], {_NV_NAME}\n"
+        monkeypatch.setattr(nvidia_mod, "run_tool", prints(lambda *_a, **_k: csv))
+        monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", Counter)
+        on_host = planning.HostCards([_card(0, _NV_NAME, "CUDA")])
+        assert (on_host.total, on_host.said) == (2, "2")
+
+    @pytest.mark.parametrize(
+        ("visible", "driver", "tree", "said"),
+        [
+            pytest.param([_NV_NAME, _NV_NAME], [], {}, "at least 2", id="no-table-at-all"),
+            pytest.param([_NV_NAME], [], {_NVIDIA_ID: 2}, "2", id="tree-reads-for-the-driver"),
+            pytest.param([_NV_NAME], [2], {}, "2", id="driver-reads"),
+            pytest.param([_NV_NAME, _AMD_NAME], [2], {}, "at least 3", id="amd-has-no-table"),
+            pytest.param([_NV_NAME, _AMD_NAME], [2], {_AMD_ID: 1}, "3", id="both-vendors-read"),
+            pytest.param(["Tesla T4"], [], {}, "1", id="unnamed-card-claims-no-vendor"),
+        ],
+    )
+    def test_the_count_says_when_a_vendor_with_a_visible_card_has_no_table(
+        self, host: _Host, visible: list[str], driver: list[int], tree: dict[int, int], said: str
+    ) -> None:
+        host.driver_answers = list(driver)
+        host.tree = Counter(tree)
+        devices = [_card(i, name) for i, name in enumerate(visible)]
+        assert planning.HostCards(devices).said == said
 
     def test_the_gate_counts_every_card_of_a_readable_list(
         self, monkeypatch: pytest.MonkeyPatch
@@ -155,7 +178,7 @@ class TestHostCardsTotal:
         assert (host.driver_reads, host.tree_reads) == (0, 0)
 
 
-def _refusal(model: str, gpus: int, engine: str) -> str:
+def _refusal(model: str, gpus: int | str, engine: str) -> str:
     return (
         f"{model} will not be served: this host has {gpus} GPUs and {engine} cannot be "
         "told which one to use. Use another engine for this role."
@@ -189,6 +212,15 @@ class TestMixedPlanWarning:
         assert _refusal(model, 2, "engine-b") in text
         assert (host.driver_reads, host.tree_reads) == (1, 1)
 
+    def test_the_refusal_is_one_sentence_with_nothing_around_it(
+        self, host: _Host, monkeypatch, tmp_path, caplog
+    ) -> None:
+        host.driver_answers = [2]
+        self._text(monkeypatch, tmp_path, caplog, [_card(0, _NV_NAME)])
+        model = f"embed model org/repo/{model_file(E)} (engine-b)"
+        refusals = [r.getMessage() for r in caplog.records if "cannot be told" in r.getMessage()]
+        assert refusals == [_refusal(model, 2, "engine-b")]
+
     def test_a_card_of_another_vendor_the_driver_cannot_see_counts(
         self, host: _Host, monkeypatch, tmp_path, caplog
     ) -> None:
@@ -198,13 +230,13 @@ class TestMixedPlanWarning:
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
         assert _refusal(model, 3, "engine-b") in text
 
-    def test_a_host_with_no_readable_table_states_the_visible_count(
+    def test_a_host_with_no_readable_table_says_the_visible_count_is_a_floor(
         self, host: _Host, monkeypatch, tmp_path, caplog
     ) -> None:
         devices = [_card(0, _NV_NAME), _card(1, _NV_NAME)]
         text = self._text(monkeypatch, tmp_path, caplog, devices)
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
-        assert _refusal(model, 2, "engine-b") in text
+        assert _refusal(model, "at least 2", "engine-b") in text
 
     def test_a_hidden_card_of_another_vendor_does_not_open_the_gate(
         self, host: _Host, monkeypatch, tmp_path, caplog
@@ -254,6 +286,13 @@ class TestPinRefusal:
         host.tree = Counter({_NVIDIA_ID: 1, _AMD_ID: 1})
         refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
         assert refusal == self._text(" (2 cards on this host)")
+
+    def test_a_count_with_an_unread_vendor_table_is_stated_as_a_floor(
+        self, host: _Host, monkeypatch, tmp_path
+    ) -> None:
+        host.tree = Counter({_AMD_ID: 2})
+        refusal = self._refusals(monkeypatch, tmp_path, [_card(0, _NV_NAME, "CUDA")])
+        assert refusal == self._text(" (at least 3 cards on this host)")
 
     def test_a_host_with_no_readable_table_keeps_the_visible_count(
         self, host: _Host, monkeypatch, tmp_path

@@ -40,7 +40,7 @@ from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.base import SplitChecked
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
-from lilbee.providers.fleet.gpu_backends.nvidia import cards as nvidia_cards
+from lilbee.providers.fleet.gpu_backends.nvidia import card_rows as nvidia_card_rows
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -3388,6 +3388,7 @@ def _lost_card_wording(devices: Sequence[FleetDevice], host_cards: HostCards) ->
             lost,
             [d.index for d in devices],
             on_host=host_cards.total,
+            floor=host_cards.floor,
             hint=_hidden_device_hint(devices),
         )
 
@@ -3618,8 +3619,17 @@ class HostCards:
 
     @functools.cached_property
     def nvidia_driver(self) -> int:
-        """The NVIDIA driver's own card count, zero when its card list does not read."""
-        return len(nvidia_cards())
+        """The NVIDIA driver's own card count, zero when it lists none."""
+        return nvidia_card_rows()
+
+    @functools.cached_property
+    def _counts(self) -> tuple[Counter[PCIVendorID | None], dict[PCIVendorID, int]]:
+        """The visible cards and the tabled cards, each by vendor."""
+        visible = Counter(self._vendor_of(device) for device in self._devices)
+        in_tree = gpu_hardware.installed_gpu_counts()
+        table = {vendor: in_tree[vendor] for vendor in PCIVendorID}
+        table[PCIVendorID.NVIDIA] = max(in_tree[PCIVendorID.NVIDIA], self.nvidia_driver)
+        return visible, table
 
     @functools.cached_property
     def total(self) -> int:
@@ -3630,14 +3640,21 @@ class HostCards:
         A visible card whose name gives no vendor fills a card the tables list and no
         visible card of a known vendor accounts for.
         """
-        visible = Counter(self._vendor_of(device) for device in self._devices)
-        in_tree = gpu_hardware.installed_gpu_counts()
-        table = {vendor: in_tree[vendor] for vendor in PCIVendorID}
-        if self.nvidia_driver:
-            table[PCIVendorID.NVIDIA] = self.nvidia_driver
+        visible, table = self._counts
         counted = sum(max(visible[vendor], table[vendor]) for vendor in PCIVendorID)
         unseen = counted - sum(visible[vendor] for vendor in PCIVendorID)
         return counted + max(visible[None] - unseen, 0)
+
+    @functools.cached_property
+    def floor(self) -> bool:
+        """Whether the total is a lower bound: a visible card's vendor has no table."""
+        visible, table = self._counts
+        return any(visible[vendor] and not table[vendor] for vendor in PCIVendorID)
+
+    @functools.cached_property
+    def said(self) -> str:
+        """The total as a refusal states it, "at least N" when it is a lower bound."""
+        return f"at least {self.total}" if self.floor else str(self.total)
 
     @staticmethod
     def _vendor_of(device: FleetDevice) -> PCIVendorID | None:
@@ -3977,11 +3994,11 @@ def _log_refused_roles(
             )
         elif role in unpinnable:
             log.warning(
-                "%s model %s will not be served: this host has %d GPUs and %s cannot be "
+                "%s model %s will not be served: this host has %s GPUs and %s cannot be "
                 "told which one to use. Use another engine for this role.",
                 role.value,
                 model,
-                host_cards.total,
+                host_cards.said,
                 engine,
             )
         elif role not in fits_alone:

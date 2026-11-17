@@ -6,6 +6,7 @@ import itertools
 import json
 import logging
 import random
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
 from lilbee.providers.fleet import devices as devices_module
-from lilbee.providers.fleet import planning
+from lilbee.providers.fleet import gpu_hardware, planning
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.llama import LLAMA
@@ -161,7 +162,28 @@ def _m2(model: str, need: float, usable: float) -> str:
     )
 
 
-def _m3(model: str, gpus: int, engine: str) -> str:
+_NVIDIA_PCI_ID = 0x10DE
+_TABLES = pytest.mark.parametrize("listed", [False, True], ids=["no-table", "listed-table"])
+
+
+def _nvidia_tables(monkeypatch, cards: int, *, listed: bool) -> None:
+    """Fix both NVIDIA card tables, so the host count never reads the machine running the test.
+
+    ``listed`` gives each table *cards* NVIDIA cards; otherwise the host lists none.
+    """
+    rows = cards if listed else 0
+    monkeypatch.setattr(
+        gpu_hardware, "installed_gpu_counts", lambda: Counter({_NVIDIA_PCI_ID: rows})
+    )
+    monkeypatch.setattr(planning, "nvidia_card_rows", lambda: rows)
+
+
+def _said(cards: int, *, listed: bool) -> int | str:
+    """The count a refusal states for *cards* NVIDIA cards: exact when a table lists them."""
+    return cards if listed else f"at least {cards}"
+
+
+def _m3(model: str, gpus: int | str, engine: str) -> str:
     return (
         f"{model} will not be served: this host has {gpus} GPUs and {engine} cannot be "
         "told which one to use. Use another engine for this role."
@@ -592,10 +614,14 @@ def _pin_engines(tmp_path: Path, row: PinRow):
 class TestMixedPlanPins:
     """A pin that reaches its process, or a refusal, through plan_all_launches."""
 
+    @_TABLES
     @pytest.mark.parametrize("row_id", sorted(_P_ROWS))
-    def test_table_row(self, monkeypatch, tmp_path, caplog, row_id) -> None:
+    def test_table_row(self, monkeypatch, tmp_path, caplog, row_id, listed) -> None:
         row = _P_ROWS[row_id]
         prepare_host(monkeypatch, tmp_path, row.roles, 64 * _GIB)
+        # Only a CUDA row has NVIDIA cards to list; every other row sees no NVIDIA card.
+        listed_cards = len(row.cards) if listed and row.backend == "CUDA" else 0
+        _nvidia_tables(monkeypatch, listed_cards, listed=bool(listed_cards))
         monkeypatch.setattr(devices_module, "amd_visible_var", lambda _env: _ROCM_VAR)
         engines = _pin_engines(tmp_path, row)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
@@ -607,7 +633,9 @@ class TestMixedPlanPins:
         for role in row.refused:
             name = engines[role].name
             model = f"{role.value} model org/repo/{model_file(role)} ({name})"
-            assert _m3(model, len(row.cards), name) in _warnings(caplog)
+            # A CUDA card is an NVIDIA card: exact when a table lists it, a floor when none does.
+            said = _said(len(row.cards), listed=listed) if row.backend == "CUDA" else len(row.cards)
+            assert _m3(model, said, name) in _warnings(caplog)
         assert _warnings(caplog).count("will not be served") == len(row.refused)
 
     def test_a_role_too_big_for_any_card_that_no_pin_reaches_reads_as_the_pin(
@@ -655,11 +683,13 @@ class TestMixedPlanPins:
         assert {launch.role for launch in plan.launches} == {C, E}
         assert "will not be served" not in _warnings(caplog)
 
+    @_TABLES
     def test_an_engine_whose_devices_cannot_be_read_is_refused(
-        self, monkeypatch, tmp_path, caplog
+        self, monkeypatch, tmp_path, caplog, listed
     ) -> None:
         cards = cards_of((8, 8))
         prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
+        _nvidia_tables(monkeypatch, 2, listed=listed)
         chat = CardEngine("engine-a", tmp_path / "a", _PAIR, cards)
         embed = CardEngine("engine-b", tmp_path / "b", _PAIR, cards)
         real_get = planning._read_device_cache.get
@@ -674,19 +704,21 @@ class TestMixedPlanPins:
             plan = planning.plan_all_launches(engines={C: chat, E: embed})
         assert {launch.role for launch in plan.launches} == {C}
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
-        assert _m3(model, 2, "engine-b") in _warnings(caplog)
+        assert _m3(model, _said(2, listed=listed), "engine-b") in _warnings(caplog)
 
+    @_TABLES
     def test_a_charged_engine_that_reports_no_device_is_refused(
-        self, monkeypatch, tmp_path, caplog
+        self, monkeypatch, tmp_path, caplog, listed
     ) -> None:
         prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
+        _nvidia_tables(monkeypatch, 2, listed=listed)
         chat = CardEngine("engine-a", tmp_path / "a", _PAIR, cards_of((8, 8)))
         embed = CardEngine("engine-b", tmp_path / "b", _PAIR, [])
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(engines={C: chat, E: embed})
         assert {launch.role for launch in plan.launches} == {C}
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
-        assert _m3(model, 2, "engine-b") in _warnings(caplog)
+        assert _m3(model, _said(2, listed=listed), "engine-b") in _warnings(caplog)
 
     def test_a_saved_placement_with_a_role_the_pin_cannot_reach_falls_back_with_a_warning(
         self, monkeypatch, tmp_path, caplog
