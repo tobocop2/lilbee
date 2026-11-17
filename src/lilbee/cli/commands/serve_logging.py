@@ -5,6 +5,7 @@ from __future__ import annotations
 import faulthandler
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ _SERVER_LOG_FILE_NAME = "server.log"
 _FAULT_LOG_FILE_NAME = "server-fault.log"
 
 _DEADLINE_EXIT_STATUS = 1
+_BACKSTOP_GRACE_S = 5.0
 _MAX_BYTES = 2_097_152  # 2 MiB
 _BACKUP_COUNT = 3
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -106,10 +108,15 @@ def _exit_at_the_deadline(seconds: float) -> None:
 
 
 def arm_exit_deadline(seconds: float) -> None:
-    """End the process with status 1 after *seconds*; the fault log names what held it."""
+    """End the process with status 1 after *seconds*; the fault log names what held it.
+
+    A kernel timer kills the process shortly after, for a hang in finalization.
+    """
     threading.Thread(
         target=_exit_at_the_deadline, args=(seconds,), name="exit-deadline", daemon=True
     ).start()
+    if sys.platform != "win32":  # pragma: no cover - Windows has no interval timer
+        signal.setitimer(signal.ITIMER_REAL, seconds + _BACKSTOP_GRACE_S)
 
 
 class _ExceptHook:

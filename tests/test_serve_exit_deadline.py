@@ -332,6 +332,53 @@ def test_the_deadline_ends_a_process_whose_threads_are_running(
     assert _run_probe(tmp_path, _BUSY_THREADS_PROBE).returncode == _DEADLINE_EXIT_STATUS
 
 
+_FINALIZATION_WEDGE_PROBE = """\
+import threading
+from lilbee.cli.commands import serve_logging
+
+class Wedge:
+    def __del__(self):
+        threading.Event().wait()
+
+wedge = Wedge()
+serve_logging._BACKSTOP_GRACE_S = 1.0
+serve_logging.arm_exit_deadline(1.0)
+"""
+
+_CLEAN_EXIT_PROBE = """\
+import atexit
+from lilbee.cli.commands.serve_logging import arm_exit_deadline
+
+atexit.register(print, "flushed", flush=True)
+arm_exit_deadline(%r)
+"""
+
+
+@posix_only
+def test_the_deadline_ends_a_process_that_hangs_in_finalization(tmp_path: Path) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", _FINALIZATION_WEDGE_PROBE],
+        env=_child_env(tmp_path),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        status = process.wait(timeout=_WAKE_LIMIT_S * 3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        pytest.fail("a destructor that hangs in finalization held the process past its deadline")
+    assert status == -signal.SIGALRM
+
+
+@posix_only
+def test_a_clean_exit_before_the_deadline_runs_its_exit_handlers(tmp_path: Path) -> None:
+    result = _run_probe(tmp_path, _CLEAN_EXIT_PROBE % _FAILURE_CEILING_S)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "flushed"
+
+
 def test_the_deadline_leaves_the_interpreter_timer_and_the_fault_target_alone(
     tmp_path: Path,
 ) -> None:
