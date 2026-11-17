@@ -1,0 +1,18 @@
+name: Check out the engine packs workflow
+description: >-
+  Check out the public engine-packs repository at its pinned tag and set
+  ENGINE_PACKS_WORKFLOW to its build workflow, for the tests that read it.
+  Run it after the checkout of this repository.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: tobocop2/lilbee-engine-packs
+        ref: refs/tags/workflow-pin-1
+        path: engine-packs
+
+    - name: Name the workflow for the tests
+      shell: bash
+      run: echo "ENGINE_PACKS_WORKFLOW=${GITHUB_WORKSPACE}/engine-packs/.github/workflows/build-packs.yml" >> "$GITHUB_ENV"

@@ -261,6 +261,8 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - uses: ./.github/actions/checkout-engine-packs
+
       - name: Install make (Windows)
         if: runner.os == 'Windows'
         shell: bash
