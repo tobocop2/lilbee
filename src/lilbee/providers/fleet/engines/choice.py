@@ -195,10 +195,18 @@ def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
     return [name for name, formats in installed.items() if fmt in formats]
 
 
-def loadable_refs(refs: Iterable[str]) -> list[str]:
-    """The refs in *refs* whose format an installed engine loads, in order."""
+def loadable_refs(refs: Iterable[str], role: WorkerRole | None = None) -> list[str]:
+    """The refs in *refs* whose format an installed engine loads for *role*, in order.
+
+    With no *role*, an engine that loads the format counts whatever it serves.
+    """
     installed = installed_engines()
-    return [ref for ref in refs if engines_loading(model_format(ref), installed)]
+
+    def loadable(ref: str) -> bool:
+        fmt = model_format(ref)
+        return any(_accepts(name, role, fmt) for name in engines_loading(fmt, installed))
+
+    return [ref for ref in refs if loadable(ref)]
 
 
 def _candidates(
