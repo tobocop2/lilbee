@@ -200,6 +200,8 @@ class GpuFleetPanel(Static):
         self._roles = dict(roles) if roles is not None else {}
         self._probed = True
         self._probe_error = None
+        if not self._devices:
+            self.update(_render_stats({}, {}, {}, self._resolve_theme(), probed=True))
 
     def set_probe_failed(self, reason: str) -> None:
         """Render the device probe's failure instead of the probing placeholder."""

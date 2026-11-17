@@ -511,6 +511,25 @@ def test_the_placement_route_returns_the_notice_with_status_200(
     )
 
 
+@pytest.mark.parametrize("reader", ["get_placement", "get_planned_placement"])
+def test_a_placement_read_looks_at_the_engines_once(
+    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    from lilbee.app import placement
+
+    readings = []
+    real = placement._planning_engines
+
+    def _counted() -> Any:
+        readings.append(1)
+        return real()
+
+    monkeypatch.setattr(placement, "_planning_engines", _counted)
+    monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    getattr(placement, reader)()
+    assert len(readings) == 1
+
+
 def test_the_gpu_stream_route_starts_while_one_role_has_no_engine(
     chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -534,6 +553,9 @@ _NO_ENGINE_ANYWHERE = (
 )
 
 
+_SAVED_SPEC = '{"chat": {"devices": [0]}}'
+
+
 @pytest.fixture
 def no_role_has_an_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     """The same container, with every configured role on a format no installed engine loads."""
@@ -542,20 +564,25 @@ def no_role_has_an_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
     monkeypatch.setattr(cfg, "vision_model", MLX_REF)
     monkeypatch.setattr(cfg, "reranker_model", MLX_REF)
+    monkeypatch.setattr(cfg, "placement", _SAVED_SPEC)
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
     return chat_without_engine
 
 
 def test_the_placement_command_shows_each_missing_engine_when_no_role_has_an_engine(
-    no_role_has_an_engine: Any,
+    no_role_has_an_engine: Any, tmp_path: Path
 ) -> None:
     from typer.testing import CliRunner
 
     from lilbee.cli.placement import placement_app
+    from lilbee.core import settings
 
-    result = CliRunner().invoke(placement_app, ["show"])
+    settings.update_values(tmp_path, {"placement": _SAVED_SPEC})
+    result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
     assert result.exit_code == 0
-    assert "No installed engine loads" in " ".join(result.output.split())
+    output = " ".join(result.output.split())
+    assert "Placement (manual)" in output
+    assert "No installed engine loads" in output
     assert "Traceback" not in result.output
 
 
@@ -566,6 +593,7 @@ def test_the_mcp_placement_tool_shows_each_missing_engine_when_no_role_has_an_en
 
     out = get_placement_tool()
     assert "error" not in out
+    assert out["spec_json"] == '{"chat": {"devices": [0]}}'
     assert out["roles"] == []
     assert out["skipped_no_engine"]
 
@@ -579,6 +607,7 @@ def test_the_placement_route_shows_each_missing_engine_when_no_role_has_an_engin
     with create_test_client([placement_route]) as client:
         response = client.get("/api/placement")
     assert response.status_code == 200
+    assert response.json()["spec_json"] == '{"chat": {"devices": [0]}}'
     assert response.json()["roles"] == []
     assert response.json()["skipped_no_engine"]
 

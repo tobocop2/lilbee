@@ -1561,3 +1561,35 @@ async def test_a_card_pressed_on_a_role_drops_the_card_the_machine_lost(monkeypa
         await pilot.pause()
         await _toggle_device(pilot, "#dev-chat-0")
         assert '"chat": {"devices": [0], "target": "gpu"}' in _generated(app)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(120, 40), (60, 30)])
+async def test_the_screen_shows_the_saved_placement_and_each_missing_engine(
+    monkeypatch, tmp_path, size
+):
+    """With no engine installed, the real read feeds the screen: no patched placement."""
+    from textual.widgets import Static
+
+    from lilbee.app import placement as app_placement
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    monkeypatch.setattr(cfg, "placement", '{"chat": {"devices": [0]}}')
+    monkeypatch.setattr("lilbee.app.engine_choice.installed_engines", dict)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        skipped = app.screen.query_one("#placement-skipped", Static)
+        await wait_until(pilot, lambda: skipped.display is True)
+        notes = str(skipped.render())
+        assert "No installed engine loads" in notes
+        assert notes.startswith("chat:")
+        state = str(app.screen.query_one("#placement-state", Static).render())
+        assert state == msg.FLEET_STATE_MANUAL
+        gpus = str(app.screen.query_one("#gpu-fleet-panel", Static).render())
+        assert msg.FLEET_NO_GPUS in gpus
+        assert msg.FLEET_GPU_PROBING not in gpus

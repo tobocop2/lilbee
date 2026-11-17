@@ -630,7 +630,7 @@ def test_size_unknown_notices_keeps_the_notices_of_the_asked_role(monkeypatch):
             app_placement.SizeUnknownRole(WorkerRole.EMBED, "b", "embed notice"),
         ),
     )
-    monkeypatch.setattr(app_placement, "_read_placement", lambda: view)
+    monkeypatch.setattr(app_placement, "_read_placement", lambda _reading: view)
     assert app_placement.size_unknown_notices(WorkerRole.CHAT) == ["chat notice"]
     assert app_placement.size_unknown_notices(WorkerRole.VISION) == []
 
@@ -645,7 +645,7 @@ def test_size_unknown_notices_keeps_the_notices_of_the_asked_role(monkeypatch):
     ids=["provider", "placement", "os"],
 )
 def test_size_unknown_notices_is_empty_when_the_placement_cannot_be_read(monkeypatch, failure):
-    def unreadable():
+    def unreadable(_reading):
         raise failure
 
     monkeypatch.setattr(app_placement, "_read_placement", unreadable)
@@ -653,7 +653,7 @@ def test_size_unknown_notices_is_empty_when_the_placement_cannot_be_read(monkeyp
 
 
 def test_size_unknown_notices_lets_a_programming_error_through(monkeypatch):
-    def broken():
+    def broken(_reading):
         raise RuntimeError("bug")
 
     monkeypatch.setattr(app_placement, "_read_placement", broken)

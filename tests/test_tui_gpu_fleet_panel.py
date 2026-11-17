@@ -133,6 +133,28 @@ async def test_panel_holds_probing_until_devices_probed(
 
 
 @pytest.mark.asyncio
+async def test_panel_settles_on_the_empty_text_when_set_with_no_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty device list paints the empty text at once, with no stat tick between."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        assert msg.FLEET_GPU_PROBING in str(panel.render())
+        panel.set_devices([], labels={})
+        rendered = str(panel.render())
+        assert msg.FLEET_NO_GPUS in rendered
+        assert msg.FLEET_GPU_PROBING not in rendered
+
+
+@pytest.mark.asyncio
 async def test_panel_renders_probe_failure_and_pauses_ticks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
