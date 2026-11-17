@@ -13,7 +13,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.base import EngineAdapter
-from lilbee.providers.fleet.model_memory import unknown_size_text
+from lilbee.providers.fleet.model_memory import tight_memory_text, unknown_size_text
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -97,7 +97,9 @@ class TightRole:
     """A placed role whose estimate exceeds the memory on the card it landed on."""
 
     role: WorkerRole
+    model: str
     shortfall_bytes: int
+    notice: str
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,17 @@ def _active_spec() -> PlacementSpec | None:
     return PlacementSpec.from_json(raw) if raw else None
 
 
+def _tight_role(role: WorkerRole, model: str, shortfall_bytes: int) -> TightRole:
+    """A tight role with the sentence that says how much memory it lacks and what to do."""
+    subject = f"the {role.value} model {model}" if model else f"the {role.value} model"
+    return TightRole(
+        role=role,
+        model=model,
+        shortfall_bytes=shortfall_bytes,
+        notice=tight_memory_text(subject, shortfall_bytes),
+    )
+
+
 def _view(
     resolved: ResolvedPlacement,
     engines: Mapping[WorkerRole, EngineAdapter],
@@ -190,7 +203,7 @@ def _view(
         manual=manual,
         spec_json=spec_json,
         tight=tuple(
-            TightRole(role=role, shortfall_bytes=shortfall)
+            _tight_role(role, resolved.model_refs.get(role, ""), shortfall)
             for role, shortfall in sorted(resolved.tight_roles.items(), key=lambda kv: kv[0].value)
         ),
         skipped_not_installed=tuple(

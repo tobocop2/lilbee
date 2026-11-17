@@ -151,6 +151,9 @@ def _render_model_notices(view: PlacementView) -> None:
     for unknown in view.size_unknown:
         console.print(Text(f"  {unknown.notice}", style=theme.WARNING), soft_wrap=True)
 
+    for tight in view.tight:
+        console.print(Text(f"  {tight.notice}", style=theme.WARNING), soft_wrap=True)
+
 
 def _render_rejected(view: PlacementView) -> None:
     """Print why a saved placement is not in use, when it is not."""

@@ -45,7 +45,11 @@ from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import installed_safetensors_bytes, unknown_size_text
+from lilbee.providers.fleet.model_memory import (
+    installed_safetensors_bytes,
+    tight_memory_text,
+    unknown_size_text,
+)
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     LostCardWording,
@@ -4116,14 +4120,7 @@ def _log_placement_findings(
     """
     for role, shortfall in placement.tight_roles.items():
         log.warning(
-            "Memory is tight for the %s model %s: it is estimated to need %.1f GiB more "
-            "GPU memory than is available. It will still load on demand, keeping the "
-            "layers that fit on the GPU and the rest in system memory; if it runs "
-            "slowly, free up GPU memory or use a smaller model.",
-            role.value,
-            model_refs[role],
-            # A sub-0.05 GiB shortfall would render as "0.0 GiB more".
-            max(shortfall / 1024**3, 0.1),
+            "%s", tight_memory_text(f"the {role.value} model {model_refs[role]}", shortfall)
         )
     if placement.co_tenants:
         log.info(

@@ -334,3 +334,31 @@ def test_a_tight_role_reaches_the_placement_view(monkeypatch, tmp_path) -> None:
     )
     view = _view(resolved, engines_for_all_roles(LLAMA), manual=False, spec_json=None)
     assert [(t.role, t.shortfall_bytes) for t in view.tight] == [(WorkerRole.CHAT, 3 * 1024**3)]
+
+
+def test_the_tight_sentence_scales_by_a_binary_gib_and_never_shows_zero():
+    from lilbee.providers.fleet.model_memory import tight_memory_text
+
+    assert "estimated to need 1000.0 GiB more GPU memory" in tight_memory_text(
+        "the chat model", 1000 * 1024**3
+    )
+    assert "estimated to need 0.1 GiB more GPU memory" in tight_memory_text("the chat model", 1)
+
+
+def test_the_planner_logs_the_tight_sentence_and_the_co_tenant_line_as_written(caplog):
+    from lilbee.providers.fleet.model_memory import tight_memory_text
+
+    placement = Placement(
+        instances=(),
+        unplaceable_roles=(),
+        co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.CHAT}),
+        tight_roles={WorkerRole.CHAT: 2 * 1024**3},
+    )
+
+    with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
+        planning._log_placement_findings(placement, {WorkerRole.CHAT: "org/chat.gguf"})
+
+    assert [r.getMessage() for r in caplog.records] == [
+        tight_memory_text("the chat model org/chat.gguf", 2 * 1024**3),
+        "chat, embed share GPU memory and load on demand; only one is resident at a time.",
+    ]

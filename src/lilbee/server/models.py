@@ -973,6 +973,15 @@ class SizeUnknownResponse(BaseModel):
     notice: str
 
 
+class TightRoleResponse(BaseModel):
+    """A placed role whose estimate exceeds the memory on its card, and what to do about it."""
+
+    role: WorkerRole
+    model: str
+    shortfall_bytes: int
+    notice: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -996,6 +1005,8 @@ class PlacementResponse(BaseModel):
     hidden_gpus: list[str] = []
     # Roles placed on the unknown-size reserve; empty when every size is known.
     size_unknown: list[SizeUnknownResponse] = []
+    # Roles placed on a card that cannot hold them; empty when every role fits.
+    tight: list[TightRoleResponse] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -1032,6 +1043,12 @@ class PlacementResponse(BaseModel):
             size_unknown=[
                 SizeUnknownResponse(role=s.role, model=s.model, notice=s.notice)
                 for s in view.size_unknown
+            ],
+            tight=[
+                TightRoleResponse(
+                    role=t.role, model=t.model, shortfall_bytes=t.shortfall_bytes, notice=t.notice
+                )
+                for t in view.tight
             ],
         )
 

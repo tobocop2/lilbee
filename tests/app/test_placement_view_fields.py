@@ -185,3 +185,96 @@ def test_a_machine_without_a_probe_answer_reports_an_unknown_backend(monkeypatch
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: bare)
 
     assert app_placement.get_placement().engine_backend is EngineBackend.UNKNOWN
+
+
+def _tight_sentence(model: str, gib: str) -> str:
+    return (
+        f"Memory is tight for the {model}: it is estimated to need {gib} GiB more GPU memory "
+        "than is available. It will still load on demand, keeping the layers that fit on the "
+        "GPU and the rest in system memory; if it runs slowly, free up GPU memory or use a "
+        "smaller model."
+    )
+
+
+def test_the_view_gives_each_tight_role_its_model_and_the_sentence_with_the_remedy(busy_machine):
+    tight = {t.role: t for t in app_placement.get_placement().tight}
+
+    assert tight[WorkerRole.CHAT].model == "org/chat.gguf"
+    assert tight[WorkerRole.CHAT].notice == _tight_sentence("chat model org/chat.gguf", "9.0")
+    assert tight[WorkerRole.RERANK].model == ""
+    assert tight[WorkerRole.RERANK].notice == _tight_sentence("rerank model", "5.0")
+
+
+def test_cli_show_prints_a_tight_notice_for_each_tight_role(busy_machine, tmp_path):
+    shown = _shown(tmp_path)
+
+    assert _tight_sentence("chat model org/chat.gguf", "9.0") in shown
+    assert _tight_sentence("embed model org/embed.gguf", "1.0") in shown
+    assert _tight_sentence("rerank model", "5.0") in shown
+
+
+def test_cli_show_prints_each_notice_on_one_unwrapped_warning_line(
+    busy_machine, tmp_path, monkeypatch
+):
+    import io
+
+    from rich.console import Console
+
+    from lilbee.cli import placement as cli_placement
+
+    out = io.StringIO()
+    narrow = Console(file=out, force_terminal=True, color_system="standard", width=80)
+    monkeypatch.setattr(cli_placement, "console", narrow)
+
+    result = CLI.invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
+
+    assert result.exit_code == 0
+    shown = out.getvalue()
+    warning = "\x1b[33m"
+    assert f"{warning}  {_tight_sentence('chat model org/chat.gguf', '9.0')}\x1b[0m" in shown
+    assert f"{warning}  The size of the chat model org/chat.gguf is unknown" in shown
+
+
+def test_a_plan_with_no_tight_role_returns_an_empty_tight_list(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "placement", None)
+    comfortable = replace(_busy_plan(), tight_roles={})
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: comfortable)
+
+    with create_test_client([placement_route]) as client:
+        body = client.get("/api/placement").json()
+
+    assert body["tight"] == []
+    assert app_placement.get_placement().tight == ()
+
+
+def test_cli_show_json_carries_the_tight_roles(busy_machine, tmp_path, monkeypatch):
+    monkeypatch.setattr(cfg, "json_mode", True)
+
+    result = CLI.invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
+
+    assert result.exit_code == 0
+    tight = {t["role"]: t for t in json.loads(result.stdout)["tight"]}
+    assert sorted(tight) == ["chat", "embed", "rerank"]
+    assert tight["chat"]["shortfall_bytes"] == 9 * GIB
+    assert tight["chat"]["model"] == "org/chat.gguf"
+    assert tight["chat"]["notice"] == _tight_sentence("chat model org/chat.gguf", "9.0")
+
+
+def test_the_placement_route_returns_the_tight_roles(busy_machine):
+    with create_test_client([placement_route]) as client:
+        body = client.get("/api/placement").json()
+
+    tight = {t["role"]: t for t in body["tight"]}
+    assert sorted(tight) == ["chat", "embed", "rerank"]
+    assert tight["embed"]["shortfall_bytes"] == 1 * GIB
+    assert tight["embed"]["notice"] == _tight_sentence("embed model org/embed.gguf", "1.0")
+
+
+def test_the_mcp_placement_tool_returns_the_tight_roles(busy_machine):
+    from lilbee.mcp_server import get_placement_tool
+
+    tight = {t["role"]: t for t in get_placement_tool()["tight"]}
+
+    assert sorted(tight) == ["chat", "embed", "rerank"]
+    assert tight["rerank"]["shortfall_bytes"] == 5 * GIB
+    assert tight["rerank"]["notice"] == _tight_sentence("rerank model", "5.0")

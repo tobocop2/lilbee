@@ -72,6 +72,17 @@ def unknown_size_text(subject: str, reserve_bytes: int = UNKNOWN_SIZE_RESERVE_BY
     return f"The size of {subject} is unknown, so {gib:.1f} GiB is reserved for it."
 
 
+def tight_memory_text(subject: str, shortfall_bytes: int) -> str:
+    """The sentence that says *subject* needs more GPU memory than is free, and what to do."""
+    return (
+        f"Memory is tight for {subject}: it is estimated to need "
+        # A sub-0.05 GiB shortfall would render as "0.0 GiB more".
+        f"{max(shortfall_bytes / 1024**3, 0.1):.1f} GiB more GPU memory than is available. "
+        "It will still load on demand, keeping the layers that fit on the GPU and the rest "
+        "in system memory; if it runs slowly, free up GPU memory or use a smaller model."
+    )
+
+
 @dataclass(frozen=True)
 class KvPerToken:
     """The cache bytes one token holds, and whether the figure is a ceiling."""
