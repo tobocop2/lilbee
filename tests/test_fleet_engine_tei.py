@@ -747,7 +747,6 @@ class _Embedder:
         self.paths: list[str] = []
         self.timeouts: dict[str, float | None] = {}
         self.tokenized: list[list[str]] = []
-        self.probed: list[list[str]] = []
 
     def _tokens(self, text: str) -> list[dict[str, Any]]:
         pieces = list(text) if self.by_char else text.split()
@@ -762,10 +761,7 @@ class _Embedder:
         if req.url.path.endswith("/info"):
             return httpx.Response(200, json={"max_input_length": self.limit})
         if req.url.path.endswith("/tokenize"):
-            if body["inputs"] == ["a"]:
-                self.probed.append(body["inputs"])
-            else:
-                self.tokenized.append(body["inputs"])
+            self.tokenized.append(body["inputs"])
             return httpx.Response(200, json=[self._tokens(t) for t in body["inputs"]])
         vector = base64.b64encode(np.array([0.5, 0.5], dtype="<f4").tobytes()).decode()
         data = [{"index": i, "embedding": vector} for i, _ in enumerate(body["input"])]
@@ -788,21 +784,44 @@ def test_embed_inputs_past_the_router_limit_give_one_warning_for_the_call(caplog
     assert "the cut text is not in the vectors" in record.getMessage()
 
 
-def test_embed_inputs_within_the_router_limit_give_no_warning_and_no_count(caplog) -> None:
+def test_embed_inputs_within_the_router_limit_give_no_warning(caplog) -> None:
     router = _Embedder()
     client = _tei_client(router, WorkerRole.EMBED)
     with caplog.at_level("WARNING"):
         client.embed([_words(3), _words(4)])
     assert caplog.records == []
-    assert router.tokenized == []
+    assert router.tokenized == [[_words(3), _words(4)]]
 
 
-def test_embed_counts_only_the_inputs_that_could_be_past_the_limit() -> None:
+def test_embed_counts_every_input_in_one_request() -> None:
     router = _Embedder()
     client = _tei_client(router, WorkerRole.EMBED)
     short, long = "a b", _words(30)
     client.embed([short, long])
-    assert router.tokenized == [[long]]
+    assert router.tokenized == [[short, long]]
+
+
+class _ByteLevelEmbedder(_Embedder):
+    """A router whose tokenizer makes one token per UTF-8 byte, so a character can be many."""
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/tokenize"):
+            body = json.loads(req.content)
+            return httpx.Response(
+                200, json=[[{"id": b} for b in t.encode("utf-8")] for t in body["inputs"]]
+            )
+        return super().__call__(req)
+
+
+def test_embed_warns_for_a_text_with_few_characters_and_many_tokens(caplog) -> None:
+    """Six characters are twelve bytes: past the limit of eight, though not in characters."""
+    client = _tei_client(_ByteLevelEmbedder(), WorkerRole.EMBED)
+    text = "é" * 6
+    assert len(text) < _ROUTER_LIMIT
+    with caplog.at_level("WARNING"):
+        client.embed([text])
+    [record] = caplog.records
+    assert record.getMessage().startswith("1 of 1")
 
 
 def test_embed_asks_the_router_for_its_limit_once() -> None:
@@ -851,16 +870,8 @@ def test_an_input_that_fits_with_the_special_tokens_is_not_counted(special, capl
     client = _tei_client(router, WorkerRole.EMBED)
     with caplog.at_level("WARNING"):
         client.embed(["x" * (_ROUTER_LIMIT - special)])
-    assert router.tokenized == []
+    assert router.tokenized == [["x" * (_ROUTER_LIMIT - special)]]
     assert caplog.records == []
-
-
-def test_the_router_is_asked_for_its_special_tokens_once() -> None:
-    router = _Embedder(special=2, by_char=True)
-    client = _tei_client(router, WorkerRole.EMBED)
-    client.embed(["x" * 7])
-    client.embed(["x" * 7])
-    assert router.probed == [["a"]]
 
 
 @pytest.mark.parametrize("route", ["/info", "/tokenize"])
@@ -983,11 +994,13 @@ def test_a_route_the_router_does_not_have_stops_the_check_for_the_client_after_a
     assert sum(p.endswith("/info") for p in router.paths) == 1
 
 
-def test_an_input_of_exactly_the_limit_in_characters_is_not_counted() -> None:
+def test_an_input_of_exactly_the_limit_in_characters_is_counted_and_not_cut(caplog) -> None:
     router = _Embedder()
     client = _tei_client(router, WorkerRole.EMBED)
-    client.embed(["a" * _ROUTER_LIMIT])
-    assert router.tokenized == []
+    with caplog.at_level("WARNING"):
+        client.embed(["a" * _ROUTER_LIMIT])
+    assert router.tokenized == [["a" * _ROUTER_LIMIT]]
+    assert caplog.records == []
 
 
 def test_an_input_of_exactly_the_limit_in_tokens_gives_no_warning(caplog) -> None:
@@ -1087,7 +1100,6 @@ _BROKEN_TOKENIZE = {
     **_BROKEN_ANSWERS,
     "body-an-object": httpx.Response(200, json={"tokens": 1}),
     "entries-not-lists": httpx.Response(200, json=[1]),
-    "token-without-special-flag": httpx.Response(200, json=[[{"id": 1}]]),
 }
 
 
