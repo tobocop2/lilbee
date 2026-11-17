@@ -236,6 +236,9 @@ _EXPANSION_REMEDY = (
 _BOOST_REMEDY = (
     "Search again, or turn off the concept_graph setting. Run lilbee status to check it."
 )
+_RERANK_REMEDY = (
+    "Search again, or clear the reranker_model setting. Run lilbee status to check the reranker."
+)
 _CONCEPT_EXPANSION_REMEDY = (
     "Search again, or turn off the concept_graph setting. Check the embedding model with "
     "lilbee status."
@@ -243,7 +246,7 @@ _CONCEPT_EXPANSION_REMEDY = (
 
 
 class _DegradedStep(NamedTuple):
-    """How a failed widening step is logged and what the user is told."""
+    """How a failed search step is logged and what the user is told."""
 
     label: str
     warning: HealthWarning
@@ -282,6 +285,14 @@ _DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
             remedy=_CONCEPT_EXPANSION_REMEDY,
         ),
     ),
+    WarningCode.RERANK_FAILED: _DegradedStep(
+        "Reranking",
+        HealthWarning(
+            code=WarningCode.RERANK_FAILED,
+            message="Reranking failed: results are in retrieval order.",
+            remedy=_RERANK_REMEDY,
+        ),
+    ),
 }
 
 
@@ -302,8 +313,8 @@ class AskResult(BaseModel):
     when the question as typed was searched.
     ``dropped_sources`` names the chunks the budget fit shed, so a caller can say
     what went in and what was trimmed.
-    ``degraded`` names the widening steps that failed, so a caller can say the
-    search ran without them.
+    ``degraded`` names the search steps that failed (a widening step or the
+    rerank), so a caller can say the search ran without them.
     """
 
     answer: str
@@ -334,7 +345,7 @@ class RagContext(NamedTuple):
     ``dropped`` names the chunks the budget fit shed, so a caller can say what
     went in and what was trimmed. ``None`` when no fit ran.
 
-    ``degraded`` names the widening steps that failed during retrieval.
+    ``degraded`` names the search steps (widening or rerank) that failed during retrieval.
     ``refused`` is set when retrieval found nothing to ground an answer on.
     """
 
@@ -348,14 +359,14 @@ class RagContext(NamedTuple):
 
 
 class SearchReport(NamedTuple):
-    """The rows of one search and the widening steps that failed while finding them."""
+    """The rows of one search and the search steps that failed while finding them."""
 
     rows: list[SearchChunk]
     degraded: tuple[HealthWarning, ...] = ()
 
 
 def _degrade(degraded: list[HealthWarning], code: WarningCode, exc: Exception) -> None:
-    """Log a failed widening step with its cause and record it once for the user."""
+    """Log a failed search step with its cause and record it once for the user."""
     step = _DEGRADED_STEPS[code]
     log.warning("%s disabled for this call: %s", step.label, exc)
     log.debug("%s exception", step.label, exc_info=True)
@@ -861,7 +872,10 @@ class Searcher:
         # MCP, CLI, ask) gets reranked order, not just the ask/chat path. A
         # mode: prefix returned earlier and stays unreranked by design.
         if self._config.reranker_model:
-            results = self._reranker.rerank(question, results)
+            try:
+                results = self._reranker.rerank(question, results)
+            except Exception as exc:
+                _degrade(degraded, WarningCode.RERANK_FAILED, exc)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:

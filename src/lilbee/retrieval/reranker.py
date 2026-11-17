@@ -88,7 +88,10 @@ class Reranker:
         results: list[SearchChunk],
         candidates: int | None = None,
     ) -> list[SearchChunk]:
-        """Rerank search results through the provider's ``rerank`` method."""
+        """Rerank search results through the provider's ``rerank`` method.
+
+        Raises when the provider fails or returns the wrong number of scores.
+        """
         if not self._config.reranker_model:
             return results
         if candidates is None:
@@ -100,8 +103,6 @@ class Reranker:
             return results
 
         scores = _score_candidates(query, to_rerank)
-        if scores is None:
-            return results
 
         floor = self._config.rerank_min_score
         if floor is not None:
@@ -137,32 +138,22 @@ class Reranker:
         return reranked + remainder
 
 
-def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] | None:
-    """Call the active provider's rerank; return None on error after logging.
+def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float]:
+    """Call the active provider's rerank and return one score for each candidate.
 
-    A provider that returns the wrong number of scores is contained here
-    like any other failure: the scores cannot be paired with the candidates,
-    so the pass is skipped and retrieval order stands.
+    A provider that returns the wrong number of scores raises: the scores
+    cannot be paired with the candidates.
     """
     # circular: services -> reranker via Searcher; deferred so test-time
     # monkeypatching of ``lilbee.app.services.get_services`` stays effective.
     from lilbee.app.services import get_services
 
-    try:
-        provider = get_services().provider
-        # Title-prefixed passages: a cross-encoder cannot judge a chunk whose
-        # relevance depends on its parent document from the bare text.
-        scores = provider.rerank(
-            query, [f"{c.title}\n{c.chunk}" if c.title else c.chunk for c in to_rerank]
-        )
-    except Exception as exc:
-        log.warning("Reranker failed; skipping rerank pass: %s", exc, exc_info=True)
-        return None
+    provider = get_services().provider
+    # Title-prefixed passages: a cross-encoder cannot judge a chunk whose
+    # relevance depends on its parent document from the bare text.
+    scores = provider.rerank(
+        query, [f"{c.title}\n{c.chunk}" if c.title else c.chunk for c in to_rerank]
+    )
     if len(scores) != len(to_rerank):
-        log.warning(
-            "Reranker returned %d scores for %d candidates; skipping rerank pass",
-            len(scores),
-            len(to_rerank),
-        )
-        return None
+        raise ValueError(f"Reranker returned {len(scores)} scores for {len(to_rerank)} candidates")
     return scores

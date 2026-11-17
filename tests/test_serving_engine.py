@@ -45,18 +45,18 @@ def _served_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 def test_a_native_ref_is_served_by_the_pinned_engine() -> None:
-    served = serving_engine(WorkerRole.CHAT, NATIVE, LLAMA)
+    served = serving_engine(NATIVE, LLAMA)
     assert (served.engine, served.version, served.build) == ("llama.cpp", PIN, BUILD)
     assert BUILD != PIN
 
 
 def test_a_preset_ref_is_served_by_the_preset(preset_cfg: None) -> None:
-    served = serving_engine(WorkerRole.CHAT, "box/model-a", LLAMA)
+    served = serving_engine("box/model-a", LLAMA)
     assert (served.engine, served.version, served.build) == ("box", PRESET_VERSION, NO_BUILD)
 
 
 def test_a_hosted_prefix_is_served_by_its_provider() -> None:
-    served = serving_engine(WorkerRole.CHAT, "openai/gpt-4o", LLAMA)
+    served = serving_engine("openai/gpt-4o", LLAMA)
     assert (served.engine, served.version) == ("openai", REMOTE_VERSION)
 
 
@@ -226,11 +226,8 @@ def test_a_hosted_rerank_ref_with_an_unknown_prefix_gets_one_answer(
     "model",
     ["nosuchengine", HOSTED_RERANK, "ollama/x", "/abs/dir/m.gguf", NATIVE, "//"],
 )
-@pytest.mark.parametrize("role", list(WorkerRole))
-def test_the_engine_of_a_ref_is_defined_for_every_ref(
-    role: WorkerRole, model: str, preset_cfg: None
-) -> None:
-    served = serving_engine(role, model, LLAMA)
+def test_the_engine_of_a_ref_is_defined_for_every_ref(model: str, preset_cfg: None) -> None:
+    served = serving_engine(model, LLAMA)
     assert served.engine
     assert served.version
 

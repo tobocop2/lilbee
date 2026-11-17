@@ -515,9 +515,7 @@ def test_the_first_rerank_request_shows_the_notice_once(
 
     cfg.preferred_engine = EngineSetting.MLX
     cfg.reranker_model = GGUF_REF
-    monkeypatch.setattr(routing_provider, "role_engine", lambda role: GGUF_ENGINE)
-    monkeypatch.setattr(routing_provider, "is_native_rerank_ref", lambda model, engine: True)
-    monkeypatch.setattr(routing_provider, "served_by", lambda *a, **k: _SERVED)
+    monkeypatch.setattr(routing_provider, "role_serving", lambda role, ref: _SERVED)
     provider = _provider()
     local = mock.Mock()
     local.rerank.return_value = [0.5]

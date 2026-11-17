@@ -20,7 +20,6 @@ from lilbee.modelhub.role_validator import _is_registry_ref
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.config import _route_model, rerank_route
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
@@ -41,7 +40,7 @@ from lilbee.providers.server_registry import (
     decode_entries,
     route_for,
 )
-from lilbee.providers.serving import is_native_rerank_ref
+from lilbee.providers.serving import routes_native
 from lilbee.server.handlers.models import (
     _require_model_available,
     _resolve_via_parse,
@@ -337,13 +336,11 @@ class TestRegistryRef:
         _store(_preset())
         assert _is_registry_ref("wired") is True
 
-    def test_a_bare_repo_under_a_preset_name_is_not_a_native_rerank_ref(self) -> None:
-        services = mock.MagicMock()
-        services.registry.installed_ref_for_repo.return_value = "org/repo/q.gguf"
-        with mock.patch("lilbee.providers.serving.get_services", return_value=services):
-            assert is_native_rerank_ref("wired/repo", LLAMA) is True
-            _store(_preset())
-            assert is_native_rerank_ref("wired/repo", LLAMA) is False
+    @pytest.mark.parametrize("ref", ["wired/repo", "wired/repo#safetensors"])
+    def test_a_ref_under_a_preset_name_is_not_a_native_rerank_ref(self, ref: str) -> None:
+        assert routes_native(ref) is True
+        _store(_preset())
+        assert routes_native(ref) is False
 
 
 class TestSdkProviderRouting:

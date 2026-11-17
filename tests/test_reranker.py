@@ -7,6 +7,7 @@ import pytest
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import WarningCode
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
@@ -183,38 +184,35 @@ class TestRerank:
         chunks = {r.chunk for r in reranked}
         assert chunks == {"A", "B"}
 
-    def test_provider_error_preserves_results(self, reranker):
+    def test_provider_error_propagates(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
-        results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
 
         def explode(query: str, cands: list[str]) -> list[float]:
             raise RuntimeError("backend down")
 
-        with _patch_provider(explode):
-            out = reranker.rerank("test", results)
-        assert [c.chunk for c in out] == ["A", "B"]
-        assert all(r.rerank_score is None for r in out)
+        with _patch_provider(explode), pytest.raises(RuntimeError, match="backend down"):
+            reranker.rerank("test", [_chunk("a.md", "A"), _chunk("b.md", "B")])
 
     @pytest.mark.parametrize("returned", [[0.9], [0.9, 0.5, 0.1], []])
-    def test_score_count_mismatch_skips_the_pass(self, reranker, returned, caplog):
-        """A provider returning the wrong number of scores is provider
-        misbehavior, which the pass is meant to contain: skip reranking and
-        keep the retrieval order rather than killing the whole turn."""
+    def test_score_count_mismatch_raises(self, reranker, returned):
+        """Scores that cannot be paired with the candidates are a failed pass."""
         cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
-        with _patch_provider(lambda query, cands: returned), caplog.at_level("WARNING"):
-            out = reranker.rerank("test", results)
-        assert [c.chunk for c in out] == ["A", "B"]
-        assert all(r.rerank_score is None for r in out)
-        assert any("score" in rec.message for rec in caplog.records)
+        with (
+            _patch_provider(lambda query, cands: returned),
+            pytest.raises(ValueError, match=f"{len(returned)} scores for 2 candidates"),
+        ):
+            reranker.rerank("test", results)
 
-    def test_score_count_mismatch_skips_the_pass_without_blending(self, reranker):
+    def test_score_count_mismatch_raises_without_blending(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         cfg.rerank_blend = False
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
-        with _patch_provider(lambda query, cands: [0.9]):
-            out = reranker.rerank("test", results)
-        assert [c.chunk for c in out] == ["A", "B"]
+        with (
+            _patch_provider(lambda query, cands: [0.9]),
+            pytest.raises(ValueError, match="1 scores for 2 candidates"),
+        ):
+            reranker.rerank("test", results)
 
     def test_stamps_rerank_score_on_candidates_only(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
@@ -280,6 +278,40 @@ class TestSearchAppliesReranker:
         monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
         monkeypatch.setattr(searcher, "_apply_temporal_filter", lambda r, q: r)
         monkeypatch.setattr(searcher, "_apply_concept_boost", lambda r, q, degraded: r)
+
+    @staticmethod
+    def _report(searcher, scores):
+        with _patch_provider(scores):
+            return searcher.search_report("plain multi word query", top_k=5)
+
+    def test_a_failed_rerank_keeps_the_rows_and_reports_a_warning(self, monkeypatch):
+        cfg.reranker_model = _RERANKER_MODEL
+        searcher, _ = self._searcher(Reranker(cfg))
+        self._isolate(monkeypatch, searcher)
+
+        def explode(query: str, cands: list[str]) -> list[float]:
+            raise RuntimeError("backend down")
+
+        report = self._report(searcher, explode)
+        assert [w.code for w in report.degraded] == [WarningCode.RERANK_FAILED]
+        assert [r.chunk for r in report.rows] == ["A", "B"]
+        assert all(r.rerank_score is None for r in report.rows)
+
+    def test_a_score_count_mismatch_reports_a_rerank_warning(self, monkeypatch):
+        cfg.reranker_model = _RERANKER_MODEL
+        searcher, _ = self._searcher(Reranker(cfg))
+        self._isolate(monkeypatch, searcher)
+        report = self._report(searcher, lambda query, cands: [0.9])
+        assert [w.code for w in report.degraded] == [WarningCode.RERANK_FAILED]
+        assert [r.chunk for r in report.rows] == ["A", "B"]
+
+    def test_a_working_rerank_reports_no_warning(self, monkeypatch):
+        cfg.reranker_model = _RERANKER_MODEL
+        searcher, _ = self._searcher(Reranker(cfg))
+        self._isolate(monkeypatch, searcher)
+        report = self._report(searcher, lambda query, cands: [0.2, 0.9])
+        assert report.degraded == ()
+        assert all(r.rerank_score is not None for r in report.rows)
 
     def test_search_reranks_and_bumps_depth_when_loaded(self, monkeypatch):
         cfg.reranker_model = _RERANKER_MODEL

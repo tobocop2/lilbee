@@ -27,11 +27,8 @@ from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.serving import (
     ServingEngine,
-    is_native_rerank_ref,
     log_name,
-    role_engine,
     role_serving,
-    served_by,
 )
 from lilbee.runtime.cancellation import CancelSignal
 
@@ -297,18 +294,17 @@ class RoutingProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
 
-        Native GGUF refs go to the local engine; hosted refs go through the SDK
-        provider. Raises ``ProviderError`` when ``cfg.reranker_model`` is
-        empty or the selected backend does not support reranking.
+        The ref routes by the rule embed uses: a local ref goes to the local
+        engine, which raises when no engine serves rerank; a remote ref goes
+        through the SDK provider. Raises ``ProviderError`` when
+        ``cfg.reranker_model`` is empty or the selected backend does not
+        support reranking.
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
-        model = cfg.reranker_model
-        engine = role_engine(WorkerRole.RERANK)
-        native = is_native_rerank_ref(model, engine)
-        self._warn_once(WorkerRole.RERANK)
-        self._log_served(WorkerRole.RERANK, model, served_by(model, engine, native=native))
-        if native:
+        ref = parse_model_ref(cfg.reranker_model)
+        self._announce(WorkerRole.RERANK, ref)
+        if not ref.is_remote:
             return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
@@ -332,7 +328,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         if not model:
             return True
-        if is_native_rerank_ref(model, role_engine(WorkerRole.RERANK)):
+        if not parse_model_ref(model).is_remote:
             return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 
