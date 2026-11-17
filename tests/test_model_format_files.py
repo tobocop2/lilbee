@@ -615,8 +615,21 @@ class TestPullOfAnInstalledModel:
     def test_every_ref_kind_stays_installed_offline(self, ref: str, calls: int) -> None:
         from lilbee.app.models import PullStatus
 
-        error = RuntimeError("Cannot query files for org/repo: offline")
+        error = download.ListingOfflineError("Cannot reach HuggingFace to list org/repo")
         assert self._pull_offline(ref, error) == (PullStatus.ALREADY_INSTALLED, calls)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            download.ListingFailedError("Cannot query files for org/repo: HTTP 503"),
+            RuntimeError("No safetensors model files found in org/repo"),
+            PermissionError("org/repo requires HuggingFace authentication."),
+        ],
+        ids=["failed-fetch", "empty-repo", "gated"],
+    )
+    def test_a_real_fault_on_a_repeat_pull_reaches_the_caller(self, error: Exception) -> None:
+        with pytest.raises(type(error), match=str(error)[:20]):
+            self._pull_offline("org/repo#safetensors", error)
 
     def test_a_safetensors_pull_without_an_engine_stays_installed(self) -> None:
         from lilbee.app.models import PullStatus

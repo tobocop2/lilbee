@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from lilbee.catalog import download_process as dp
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.providers.fleet.engines import LLAMA
@@ -129,7 +130,12 @@ def test_progress_without_a_callback_is_dropped(
 
 @pytest.mark.parametrize(
     ("error_type", "expected"),
-    [("PermissionError", PermissionError), ("SomethingElse", RuntimeError)],
+    [
+        ("PermissionError", PermissionError),
+        ("ListingOfflineError", ListingOfflineError),
+        ("ListingFailedError", ListingFailedError),
+        ("SomethingElse", RuntimeError),
+    ],
 )
 def test_a_child_failure_is_rebuilt_as_its_translated_type(
     monkeypatch: pytest.MonkeyPatch,
