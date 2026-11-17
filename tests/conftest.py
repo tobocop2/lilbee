@@ -325,11 +325,20 @@ def _seal_provider_sdk_distribution(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_session_host():
-    """Read the host afresh per test; an engine install replaces the cached host."""
-    from lilbee.catalog.runnable import session_host
+def _fresh_session_host(request, monkeypatch):
+    """Give each test a fixed Linux x86-64 host with no GPU; ``real_host_read`` reads the live one.
 
+    The live read starts a child process for the CPU probe, so a read per test is slow. The cache
+    is cleared around each test, so an engine install that refreshes the host reads it afresh.
+    """
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet.host_caps import collect
+
+    session_host = runnable.session_host
     session_host.cache_clear()
+    if "real_host_read" not in {m.name for m in request.node.iter_markers()}:
+        fixed = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
+        monkeypatch.setattr(runnable, "detect", lambda: fixed)
     yield
     session_host.cache_clear()
 
