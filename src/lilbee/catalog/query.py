@@ -22,7 +22,6 @@ from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
     installed_keys,
-    is_native_gguf_shape,
     parse_model_ref,
 )
 from lilbee.catalog.runnable import (
@@ -373,16 +372,17 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
         return None
     if parsed.format is not ModelFormat.GGUF:
         return _format_pull_target(parsed.hf_repo, parsed.format)
-    if is_native_gguf_shape(model):
+    if parsed.filename:
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:
             return None
         task = ModelTask(reclassify_by_name(model, ModelTask.CHAT))
         return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
-    if not _is_hf_repo_id(model):
+    if not _is_hf_repo_id(parsed.hf_repo):
         return None
-    return build_adhoc_entry(model, task=ModelTask(reclassify_by_name(model, ModelTask.CHAT)))
+    task = ModelTask(reclassify_by_name(parsed.hf_repo, ModelTask.CHAT))
+    return build_adhoc_entry(parsed.hf_repo, task=task)
 
 
 # Embedding detection by name, for servers (LM Studio) that report ids but no

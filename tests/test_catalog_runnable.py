@@ -11,7 +11,7 @@ from lilbee.catalog import query as _query
 from lilbee.catalog import runnable
 from lilbee.catalog.formatting import enrich_catalog
 from lilbee.catalog.models import CatalogModel, CatalogResult
-from lilbee.catalog.query import get_catalog
+from lilbee.catalog.query import get_catalog, resolve_pull_target
 from lilbee.catalog.runnable import (
     EngineOffer,
     EngineState,
@@ -451,3 +451,35 @@ def test_ref_with_a_format_resolves_to_an_entry_of_that_format() -> None:
     assert resolve_pull_target("acme/two#nonsense") is None
     assert resolve_pull_target("two#mlx") is None
     assert resolve_pull_target("ac me/two#mlx") is None
+
+
+@pytest.mark.parametrize(
+    ("ref", "repo", "filename", "task"),
+    [
+        ("acme/Repo-GGUF#gguf", "acme/Repo-GGUF", "*.gguf", ModelTask.CHAT),
+        ("acme/Repo-GGUF", "acme/Repo-GGUF", "*.gguf", ModelTask.CHAT),
+        ("acme/Repo-GGUF/m-Q4_K_M.gguf#gguf", "acme/Repo-GGUF", "m-Q4_K_M.gguf", ModelTask.CHAT),
+        ("acme/Repo-GGUF/m-Q4_K_M.gguf", "acme/Repo-GGUF", "m-Q4_K_M.gguf", ModelTask.CHAT),
+        ("BAAI/bge-reranker-GGUF#gguf", "BAAI/bge-reranker-GGUF", "*.gguf", ModelTask.RERANK),
+        ("acme/embed-GGUF/e.gguf#gguf", "acme/embed-GGUF", "e.gguf", ModelTask.EMBEDDING),
+    ],
+)
+def test_the_gguf_qualifier_resolves_like_no_qualifier(
+    ref: str, repo: str, filename: str, task: ModelTask
+) -> None:
+    entry = resolve_pull_target(ref)
+    assert entry is not None
+    assert (entry.hf_repo, entry.gguf_filename, entry.task, entry.format, entry.featured) == (
+        repo,
+        filename,
+        task,
+        ModelFormat.GGUF,
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "ref", ["two#gguf", "ac me/two#gguf", "owner/repo/../escape/m.gguf#gguf", "acme/Repo#GGUF"]
+)
+def test_the_gguf_qualifier_on_a_bad_ref_has_no_target(ref: str) -> None:
+    assert resolve_pull_target(ref) is None
