@@ -64,6 +64,8 @@ scripts/*
 !scripts/strip_own_version.sh
 !scripts/assert_launcher_boots.sh
 !scripts/assert_required_binaries.sh
+!scripts/assert_installed_matches.sh
+!scripts/write_release_sums.sh
 !scripts/release_required_assets.sh
 !scripts/release_plan_cells.sh
 !scripts/release_dropped_cells.sh
