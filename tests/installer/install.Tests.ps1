@@ -369,6 +369,86 @@ Describe 'the user PATH write' {
     }
 }
 
+Describe 'the PATH scope' {
+    # No mock here: the tests read the parsed script, and each list below is the whole set of what the script may reach.
+    # A machine-wide write needs a cmdlet, a .NET member, a native import or a registry path outside these lists.
+    BeforeAll {
+        $tokens = $null
+        $errors = $null
+        $script:Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:InstallScript, [ref]$tokens, [ref]$errors)
+        $script:ParseErrors = @($errors)
+        function Find-Node([type]$Kind) { return @($script:Ast.FindAll({ param($n) $n -is $Kind }, $true)) }
+        function Compare-Set($Allowed, $Found) {
+            @(Compare-Object @($Allowed | Sort-Object -Unique) @($Found | Sort-Object -Unique) |
+                ForEach-Object { if ($_.SideIndicator -eq '=>') { "not allowed: $($_.InputObject)" } else { "allowed, not used: $($_.InputObject)" } })
+        }
+    }
+
+    It 'parses without errors' {
+        $script:ParseErrors | Should -BeNullOrEmpty
+    }
+
+    It 'opens the Environment key of the current user hive' {
+        $body = (Get-Command Open-UserEnvironmentKey -CommandType Function).Definition
+        $body | Should -Match ([regex]::Escape("[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', `$true)"))
+    }
+
+    It 'calls only its own functions and the listed cmdlets' {
+        $own = @(Find-Node ([System.Management.Automation.Language.FunctionDefinitionAst]) | ForEach-Object { $_.Name })
+        $calls = @(foreach ($c in (Find-Node ([System.Management.Automation.Language.CommandAst]))) {
+                $name = $c.GetCommandName()
+                if (-not $name) {
+                    $fn = $c.Parent
+                    while ($fn -and -not ($fn -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $fn = $fn.Parent }
+                    "& <variable> in $($fn.Name)"
+                } elseif ($own -notcontains $name) {
+                    if ($name -eq 'New-Object') { "New-Object $($c.CommandElements[1].Extent.Text)" } else { $name }
+                }
+            })
+        $allowed = @(
+            '& <variable> in Get-NvidiaBanner', 'Add-Content', 'Add-Type', 'Get-Command', 'Get-Content', 'Get-FileHash',
+            'Invoke-WebRequest', 'Join-Path', 'Move-Item', 'New-Item', 'New-Object System.IO.DriveInfo', 'Out-Null',
+            'Remove-Item', 'Resolve-Path', 'Select-Object', 'Set-StrictMode', 'Split-Path', 'Test-Path', 'Where-Object',
+            'Write-Host', 'Write-Warning'
+        )
+        $own.Count | Should -BeGreaterThan 10
+        $calls.Count | Should -BeGreaterThan 10
+        Compare-Set $allowed $calls | Should -BeNullOrEmpty
+    }
+
+    It 'uses only the listed .NET static members, and CurrentUser is the only registry hive' {
+        $statics = @(Find-Node ([System.Management.Automation.Language.MemberExpressionAst]) |
+            Where-Object { $_.Static -and $_.Expression -is [System.Management.Automation.Language.TypeExpressionAst] } |
+            ForEach-Object { "$($_.Expression.TypeName.FullName)::$($_.Member.Extent.Text)" })
+        $allowed = @(
+            'guid::NewGuid', 'IntPtr::Zero', 'IO.Path::GetPathRoot', 'IO.Path::GetTempPath', 'Lilbee.Broadcast::SendMessageTimeout',
+            'Lilbee.Cpu::IsProcessorFeaturePresent', 'Microsoft.Win32.Registry::CurrentUser',
+            'Microsoft.Win32.RegistryValueKind::ExpandString', 'Microsoft.Win32.RegistryValueOptions::DoNotExpandEnvironmentNames',
+            'Net.SecurityProtocolType::Tls12', 'Net.ServicePointManager::SecurityProtocol', 'UIntPtr::Zero'
+        )
+        $statics.Count | Should -BeGreaterThan 10
+        Compare-Set $allowed $statics | Should -BeNullOrEmpty
+    }
+
+    It 'imports only the two listed native functions, and loads no other code' {
+        $addType = @(Find-Node ([System.Management.Automation.Language.CommandAst]) | Where-Object { $_.GetCommandName() -eq 'Add-Type' })
+        $text = ($addType | ForEach-Object { $_.Extent.Text }) -join "`n"
+        $imports = @([regex]::Matches($text, 'DllImport\("([^"]+)"[^\]]*\)\]\s*public static extern \S+ (\w+)\(') |
+            ForEach-Object { "$($_.Groups[1].Value) $($_.Groups[2].Value)" })
+        $addType.Count | Should -Be 2
+        @($addType | Where-Object { $_.Extent.Text -notmatch "^Add-Type -Namespace Lilbee -Name \w+ -MemberDefinition '[^']*'$" }) | Should -BeNullOrEmpty
+        [regex]::Matches($text, 'extern').Count | Should -Be $imports.Count
+        Compare-Set @('kernel32.dll IsProcessorFeaturePresent', 'user32.dll SendMessageTimeout') $imports | Should -BeNullOrEmpty
+    }
+
+    It 'names no registry drive or registry provider path' {
+        $strings = @((Find-Node ([System.Management.Automation.Language.StringConstantExpressionAst])) +
+            (Find-Node ([System.Management.Automation.Language.ExpandableStringExpressionAst])) | ForEach-Object { $_.Value })
+        $strings.Count | Should -BeGreaterThan 50
+        @($strings | Where-Object { $_ -match '(^|[\s''"])(HK[A-Z_]+:|HKEY_|(Microsoft\.PowerShell\.Core\\)?Registry::)' }) | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'the script file' {
     It 'is ASCII so Windows PowerShell 5.1 reads it without a byte order mark' {
         $bytes = [IO.File]::ReadAllBytes($script:InstallScript)
