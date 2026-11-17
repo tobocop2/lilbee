@@ -2,25 +2,16 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any, NotRequired
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 from typing_extensions import TypedDict
 
 from lilbee.app.titles import stored_web_titles
-from lilbee.core import settings
-from lilbee.core.config import active_config
-from lilbee.data.store import is_memory_source
 from lilbee.retrieval.query.formatting import (
-    FILE_LINK_RE,
     SourceRef,
     is_locator,
     source_label,
-    split_sources_list,
 )
 from lilbee.sessions import MessageRole, SessionMessage, StoredSourceRef, message_with_refs
 
@@ -39,8 +30,6 @@ LOCATOR_ERROR = (
     "locator {locator!r} is not a page or line span: "
     "use 'page N', 'pages A-B', 'line N' or 'lines A-B', or leave it out"
 )
-# One numbered line of a stored Sources list; a hard-broken line ends in a backslash.
-_LIST_LINE_RE = re.compile(r"^(?P<number>\d+)\\?\. (?P<item>.*?)\\?$")
 
 
 class LocatorError(ValueError):
@@ -48,21 +37,14 @@ class LocatorError(ValueError):
 
 
 def message_sources(message: SessionMessage) -> tuple[str, list[SourceRef]]:
-    """*message*'s content without lilbee's Sources list, and that list as refs.
+    """*message*'s content and its Sources list as refs.
 
-    A turn saved with ``source_refs`` gives its content whole and them, each
-    labelled from the current stored title. An older turn whose content ends in
-    lilbee's Sources list gives the refs read from that list: its numbers and its
-    labels as written. Any other older turn gives its ``sources`` with no number,
-    as their positions are not the answer's citation numbers.
+    A turn saved with ``source_refs`` gives them, each labelled from the current
+    stored title. A turn saved without them gives its content as saved and no refs.
     """
-    if message.source_refs is not None:
-        return message.content, labelled(message.source_refs)
-    text, listed = split_sources_list(message.content)
-    refs = _listed_refs(listed)
-    if refs:
-        return text, refs
-    return message.content, labelled(tuple(StoredSourceRef(s) for s in message.sources))
+    if message.source_refs is None:
+        return message.content, []
+    return message.content, labelled(message.source_refs)
 
 
 def message_payload(message: SessionMessage) -> dict[str, Any]:
@@ -91,13 +73,13 @@ def posted_message(
     sources: Sequence[str],
     refs: Sequence[StoredSourceRef] | None,
 ) -> SessionMessage:
-    """The turn a client appends: with its Sources list *refs* when given, ``sources``
-    then derived from it; else *sources* alone.
+    """The turn a client appends, with its Sources list *refs*, or else built from
+    *sources* with no citation numbers; ``sources`` is derived from it.
 
     Raises LocatorError when a ref's locator is not one lilbee writes.
     """
     if refs is None:
-        return SessionMessage(role=role, content=content, sources=tuple(sources))
+        return message_with_refs(role, content, tuple(StoredSourceRef(s) for s in sources))
     for ref in refs:
         if not is_locator(ref.locator):
             raise LocatorError(LOCATOR_ERROR.format(locator=ref.locator))
@@ -113,39 +95,3 @@ def labelled(refs: tuple[StoredSourceRef, ...]) -> list[SourceRef]:
         )
         for r in refs
     ]
-
-
-def _listed_refs(listed: str) -> list[SourceRef]:
-    """The refs of a stored Sources list, one per numbered line."""
-    refs = []
-    for line in listed.split("\n"):
-        match = _LIST_LINE_RE.match(line)
-        if match is None:
-            continue
-        item = match["item"]
-        link = FILE_LINK_RE.search(item)
-        locator = ""
-        if link is not None:
-            label, source = link["label"], _source_of(link["url"])
-            # A linked line's locator follows its link: "[label](url), page 3".
-            locator = item[link.end() :].removeprefix(", ")
-        else:
-            label, source = item, item if is_memory_source(item) else ""
-        refs.append(SourceRef(source, label, int(match["number"]), locator))
-    return refs
-
-
-def _source_of(url: str) -> str:
-    """The source key of the file *url* names, or '' when no known root holds it."""
-    path = Path(url2pathname(urlparse(url).path))
-    config = active_config()
-    settings.refresh_registry(config)
-    # The reverse of ``resolve_source_path``: registered roots own their label's keys.
-    roots: list[tuple[str, str | Path]] = [*config.linked_roots.items(), ("", config.documents_dir)]
-    for label, root in roots:
-        try:
-            relative = path.relative_to(Path(root).resolve()).as_posix()
-        except (OSError, ValueError):
-            continue
-        return "/".join(part for part in (label, relative) if part and part != ".")
-    return ""

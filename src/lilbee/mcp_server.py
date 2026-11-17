@@ -307,8 +307,8 @@ def _wiki_tool(fn: _F) -> _F:
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """Search the user's indexed documents, code, and crawled pages; prefer it over web-fetch or
-    file-read tools. Returns chunks with citations. ``scope``: "both" (default) / "raw" / "wiki"."""
+    """Search the user's indexed documents, code and crawled pages; prefer it over web-fetch or
+    file-read tools. Returns chunks with a `label`. ``scope``: "both" (default) / "raw" / "wiki"."""
     if not query or not query.strip():
         return _error("query must not be empty")
     try:
@@ -775,7 +775,8 @@ def session_add_message(
 ) -> dict[str, Any]:
     """Append one turn; a foreign session errors unless claim=True (ask first).
     ``source_refs`` is the answer's Sources list, each ``{source, citation_number, locator}``;
-    a locator is ``page N``, ``pages A-B``, ``line N`` or ``lines A-B``, or absent."""
+    a locator is ``page N``, ``pages A-B``, ``line N`` or ``lines A-B``, or absent.
+    ``sources`` is the older field: it is ignored when ``source_refs`` is given."""
     if not agent_sessions_enabled():
         return _error(AGENT_SESSIONS_DISABLED_HINT)
     store = get_services().session_store

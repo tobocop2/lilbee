@@ -778,8 +778,7 @@ async def test_a_live_answer_that_keeps_a_sources_heading_shows_its_sources_list
 
 
 async def test_a_restored_legacy_turn_keeps_the_prose_after_its_own_sources_heading(sessions):
-    """A turn saved with no refs, whose text has a model-written "Sources:" heading and
-    no lilbee list after it, restores whole."""
+    """A turn with no refs and a model-written "Sources:" heading restores whole."""
     prose = "Answer [1].\n\nSources:\nI used the documents provided."
     session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
     sessions.add_message(session_id, SessionMessage(role=MessageRole.USER, content="q"))
@@ -790,6 +789,25 @@ async def test_a_restored_legacy_turn_keeps_the_prose_after_its_own_sources_head
         screen.resume_session(session_id)
         await pilot.pause()
         assert _bubble_text(screen.query(AssistantMessage).first()) == prose
+
+
+async def test_a_restored_legacy_turn_with_a_saved_list_shows_it_once(sessions):
+    """A turn saved with its Sources list in the text and no refs resumes as saved."""
+    saved = "Oil [1].\n\nSources:\n\n1. a.md"
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    sessions.add_message(session_id, SessionMessage(role=MessageRole.USER, content="q"))
+    sessions.add_message(
+        session_id,
+        SessionMessage(role=MessageRole.ASSISTANT, content=saved, sources=("a.md",)),
+    )
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        await pilot.pause()
+        shown = _bubble_text(screen.query(AssistantMessage).first())
+        assert shown == saved
+        assert shown.count("Sources:") == 1
 
 
 async def test_a_restored_cited_subset_shows_its_true_numbers(sessions):
