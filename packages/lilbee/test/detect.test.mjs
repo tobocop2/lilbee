@@ -108,6 +108,9 @@ test("without KFD topology, ROCm needs /dev/kfd plus a userland; bare /dev/kfd i
 test("no-AVX2 CPUs get the compat family, composed with the GPU", async () => {
   assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2" }), "compat");
   assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2", smi: "CUDA Version: 12.6" }), "compat-cu124");
+  assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2", smi: "CUDA Version: 12.4" }), "compat-cu124");
+  assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2", smi: "CUDA Version: 12.3" }), "compat");
+  assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2", smi: "CUDA Version: 12.1" }), "compat");
   assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2", files: ["/dev/kfd", "/opt/rocm"] }), "compat-rocm");
   assert.equal(await variant("linux", "x64", { cpuflags: "fpu sse4_2", files: ["/dev/kfd"], kfdNodes: { 1: 90402 } }), "compat-rocm");
 });
