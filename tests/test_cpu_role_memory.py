@@ -324,7 +324,9 @@ class TestARoleThatDoesNotLaunchChargesNothing:
             fall_back_to_auto=True,
         )
         assert sorted(role.value for role in view.refused_roles) == ["rerank", "vision"]
-        assert {inst.role for inst in view.instances} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert {inst.role for inst in view.instances} == {WorkerRole.EMBED}
+        assert list(view.unlaunched_roles) == [WorkerRole.CHAT]
+        assert FLOOR_REASON in view.unlaunched_roles[WorkerRole.CHAT]
 
     def test_an_interactive_set_refuses_the_same_roles(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

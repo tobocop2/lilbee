@@ -3244,6 +3244,11 @@ def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> d
     return {d.index: min(d.total_bytes, d.free_bytes) for d in devices}
 
 
+def _named_cards(spec: PlacementSpec | None) -> set[int]:
+    """The card indexes *spec* pins a role to."""
+    return {index for entry in (spec.roles.values() if spec else ()) for index in entry.devices}
+
+
 def _auto_capacity(
     devices: list[FleetDevice], charge_against_free: bool, named: Collection[int] = ()
 ) -> dict[int, int]:
@@ -3841,6 +3846,9 @@ class ResolvedPlacement:
     spec_applied: bool = True
     # Roles the spec drops from the plan, each with its reason: the rest still run.
     refused_roles: dict[WorkerRole, str] = field(default_factory=dict)
+    # Roles the plan places and the launch refuses, each with its reason; ``instances``
+    # leaves them out, as the launch starts no server for them.
+    unlaunched_roles: dict[WorkerRole, str] = field(default_factory=dict)
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
@@ -3880,7 +3888,7 @@ def resolve_placement_plan(
     reading = _read_device_cache.get(binary, engine)
     devices = reading.devices
     unified_budget = _unified_memory_budget(devices, engine)
-    inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
+    inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         None,
         engines=engines,
         unified_budget=unified_budget,
@@ -3911,9 +3919,21 @@ def resolve_placement_plan(
             host_cards=host_cards,
         )
         spec_applied = placement is not None
+    _, unlaunched = _launches_and_refusals(
+        resolved,
+        inputs,
+        model_refs,
+        {d.index: d for d in devices},
+        engines=engines,
+        unified_budget=unified_budget,
+        chat_reservation=reservation,
+        capacity=_auto_capacity(devices, False, _named_cards(placement)),
+        clean_box=False,
+    )
     return ResolvedPlacement(
         devices=tuple(devices),
-        instances=resolved.instances,
+        instances=tuple(inst for inst in resolved.instances if inst.role not in unlaunched),
+        unlaunched_roles=unlaunched,
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
         co_tenants=resolved.co_tenants,
@@ -4225,8 +4245,7 @@ def _planned_launches(
         cpu_roles=_cpu_roles(spec),
     )
     admission_budget = _unified_admission_budget(devices, snapshot_engine)
-    named = {index for entry in (spec.roles.values() if spec else ()) for index in entry.devices}
-    capacity = _auto_capacity(devices, clean_box, named)
+    capacity = _auto_capacity(devices, clean_box, _named_cards(spec))
     host_cards = HostCards(devices)
     placement, _spec_applied, refused_roles = _placement_that_runs(
         spec,
@@ -4254,6 +4273,44 @@ def _planned_launches(
             log.warning(
                 "%s", unknown_size_text(f"the {inp.role.value} model {model_refs[inp.role]}")
             )
+    launches, unlaunched = _launches_and_refusals(
+        placement,
+        inputs,
+        model_refs,
+        by_index,
+        engines=engines,
+        unified_budget=unified_budget,
+        chat_reservation=reservation,
+        capacity=capacity,
+        clean_box=clean_box,
+    )
+    for reason in unlaunched.values():
+        log.warning(reason)
+    return FleetPlan(
+        launches=tuple(launches),
+        co_tenants=placement.co_tenants,
+        skipped_not_installed=skipped_not_installed,
+        refused_roles={**refused_roles, **unlaunched},
+    )
+
+
+def _launches_and_refusals(
+    placement: Placement,
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    by_index: dict[int, FleetDevice],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    unified_budget: int | None,
+    chat_reservation: int,
+    capacity: dict[int, int],
+    clean_box: bool,
+) -> tuple[list[InstanceLaunch], dict[WorkerRole, str]]:
+    """The launches *placement* starts, and each role the launch refuses with its reason.
+
+    The launch and the placement view both read this, so a chat below the prompt
+    floor or past its card is refused in the view for the reason the launch gives.
+    """
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved_after_chat = _reservation_past_the_card(
@@ -4275,13 +4332,14 @@ def _planned_launches(
         and inp.role in placement.tight_roles
     }
     launches: list[InstanceLaunch] = []
+    refused: dict[WorkerRole, str] = {}
     for plan in placement.instances:
         launch = _launch_for(
             plan,
             model_refs[plan.role],
             by_index,
             unified_budget=unified_budget,
-            chat_reservation=reservation,
+            chat_reservation=chat_reservation,
             reserved_by_device=reserved_by_device,
             reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
@@ -4302,16 +4360,10 @@ def _planned_launches(
                 or reason
             )
         if reason is not None:
-            refused_roles[launch.role] = reason
-            log.warning(reason)
+            refused[launch.role] = reason
             continue
         launches.append(launch)
-    return FleetPlan(
-        launches=tuple(launches),
-        co_tenants=placement.co_tenants,
-        skipped_not_installed=skipped_not_installed,
-        refused_roles=refused_roles,
-    )
+    return launches, refused
 
 
 class _VisionRequestGrant:
