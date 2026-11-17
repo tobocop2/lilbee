@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,8 +10,10 @@ import pytest
 
 from lilbee.app import services as svc_mod
 from lilbee.app.models import RemoveResult
+from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
+from lilbee.runtime.progress.types import LibraryUpgradeEvent, UpgradePhase
 from lilbee.server import handlers
 from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 from lilbee.server.handlers import documents as document_handlers
@@ -26,6 +29,7 @@ from lilbee.server.models import (
     SessionSummaryRequest,
 )
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin
+from lilbee.sessions.store import TitleSource
 from tests.conftest import make_mock_services
 
 
@@ -102,6 +106,38 @@ class TestStoreCallsStayOffTheLoop:
         with patch("lilbee.data.ingest.sync", new=AsyncMock(return_value=SyncResult())):
             await ingest_handlers._run_upload([("note.md", b"# note\n")], sse)
         _assert_off_the_loop(threads, 1)
+
+
+class TestOffLoopCallsKeepTheirArguments:
+    """Each call moved onto a worker thread still hands the real store its arguments."""
+
+    async def test_health_carries_the_upgrade_progress(self, services):
+        event = LibraryUpgradeEvent(
+            phase=UpgradePhase.TABLE, table="chunks", tables_done=1, tables_total=3
+        )
+        services.store.health_warnings.return_value = []
+        services.store.upgrade_progress.return_value = event
+        response = await handlers.health()
+        assert response.upgrade == event
+
+    async def test_models_delete_hands_the_model_and_source_to_the_manager(self, services):
+        services.model_manager.remove.return_value = True
+        await model_handlers.models_delete("org/repo/m.gguf", source="ollama")
+        services.model_manager.remove.assert_called_once_with(
+            "org/repo/m.gguf", source=ModelSource.OLLAMA
+        )
+
+    async def test_an_upload_keeps_a_file_whose_name_the_index_already_holds(self, services):
+        content = b"# note\n"
+        cfg.documents_dir.mkdir(parents=True)
+        (cfg.documents_dir / "note.md").write_bytes(b"# stale\n")
+        services.store.get_sources.return_value = [
+            {"filename": "note.md", "file_hash": hashlib.sha256(content).hexdigest()}
+        ]
+        with patch("lilbee.data.ingest.sync", new=AsyncMock(return_value=SyncResult())):
+            await ingest_handlers._run_upload([("note.md", content)], SseStream())
+        # The same name is not a move: the upload overwrites the stale bytes.
+        assert (cfg.documents_dir / "note.md").read_bytes() == content
 
 
 class TestChatSummaryPersistStaysOffTheLoop:
@@ -217,6 +253,17 @@ class TestSessionCallsStayOffTheLoop:
         self._spy(store, threads)
         await session_handlers.rename_session(session_id, "a title")
         _assert_off_the_loop(threads, 1)
+
+    async def test_create_records_the_http_origin(self, store):
+        created = await session_handlers.create_session(
+            SessionCreateRequest(model_ref="model", scope="all")
+        )
+        assert store.get(created.meta.id).meta.origin == SessionOrigin.HTTP
+
+    async def test_rename_marks_the_title_as_custom(self, store, session_id):
+        store.set_title = MagicMock(wraps=store.set_title)
+        await session_handlers.rename_session(session_id, "a title")
+        store.set_title.assert_called_once_with(session_id, "a title", TitleSource.CUSTOM)
 
     async def test_delete(self, store, session_id):
         threads: list[int] = []
