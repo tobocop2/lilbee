@@ -1,0 +1,60 @@
+name: repeat-1333
+
+# Temporary: repeats the macOS test run to measure the screen-wait stalls.
+on:
+  push:
+    branches: [fix/macos-catalog-stall]
+  workflow_dispatch:
+
+jobs:
+  repeat:
+    runs-on: macos-latest
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [single, split]
+        python-version: ["3.12", "3.13"]
+        rep: [1, 2, 3]
+        exclude:
+          - variant: single
+            python-version: "3.12"
+            rep: 2
+          - variant: single
+            python-version: "3.12"
+            rep: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --locked
+      - name: Start the sampler
+        shell: bash
+        run: |
+          nohup uv run python tools/ci/sample_1333.py > "$RUNNER_TEMP/sample.log" 2>&1 &
+          echo "sampler started"
+      - name: Run the unit tests
+        shell: bash
+        run: |
+          if [ "${{ matrix.variant }}" = "single" ]; then
+            make test-ci
+          else
+            make test-ci-split
+          fi
+        env:
+          LILBEE_DATA: ${{ runner.temp }}/lilbee
+          LILBEE_TEST_HANG_DUMP_S: "90"
+          LILBEE_TEST_HANG_DUMP_DIR: ${{ runner.temp }}/hang-dumps
+      - name: Show the sampler
+        if: always()
+        shell: bash
+        run: |
+          echo "REPEAT-RESULT variant=${{ matrix.variant }} py=${{ matrix.python-version }} rep=${{ matrix.rep }}"
+          echo "samples: $(grep -c '^SAMPLE' "$RUNNER_TEMP/sample.log")"
+          echo "late samples: $(grep -c '^SAMPLE LATE' "$RUNNER_TEMP/sample.log" || true)"
+          grep '^SAMPLE LATE' "$RUNNER_TEMP/sample.log" | head -40 || true
+          echo "--- memory over the run, every 60th sample"
+          awk 'NR % 12 == 1' "$RUNNER_TEMP/sample.log" | head -80
