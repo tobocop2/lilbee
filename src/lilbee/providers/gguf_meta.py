@@ -317,7 +317,7 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None | _U
     return result or None
 
 
-def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
+def _hf_snapshots_dir_of(model_dir: Path) -> Path | None:
     """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree.
 
     The blob sits in ``blobs/`` directly, or in a two-character shard dir under
@@ -330,13 +330,33 @@ def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
     else:
         return None
     snapshots_dir = cache_dir / _HF_SNAPSHOTS_DIR_NAME
-    if not snapshots_dir.is_dir():
+    return snapshots_dir if snapshots_dir.is_dir() else None
+
+
+def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
+    """The projector file in the ``snapshots/`` tree beside an HF-cache ``blobs/`` dir."""
+    snapshots_dir = _hf_snapshots_dir_of(model_dir)
+    if snapshots_dir is None:
         return None
     for snapshot in snapshots_dir.iterdir():
         candidates = sorted(snapshot.glob("*mmproj*.gguf"))
         if candidates:
             return candidates[0]
     return None
+
+
+def snapshot_entry_of_blob(model_path: Path) -> Path:
+    """The snapshot file named after the cached blob *model_path*; any other path as is."""
+    snapshots_dir = _hf_snapshots_dir_of(model_path.parent)
+    if snapshots_dir is None:
+        return model_path
+    for snapshot in sorted(snapshots_dir.iterdir()):
+        for entry in sorted(snapshot.glob("*.gguf")):
+            # The blob name is its content hash; the link chain may end in a shared store
+            # beside the repo folders, so the folder cannot be compared.
+            if entry.resolve().name == model_path.name:
+                return entry
+    return model_path
 
 
 def _find_mmproj_in_flat_dir(model_dir: Path) -> Path | None:

@@ -28,7 +28,7 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
-from lilbee.providers.gguf_meta import read_gguf_metadata
+from lilbee.providers.gguf_meta import read_gguf_metadata, snapshot_entry_of_blob
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _MIN_SPLIT_CARDS = 2
@@ -314,15 +314,15 @@ class MistralAdapter:
         belongs to ``serve``, so it sits before the model subcommand. The device flags
         belong to the subcommand: before it the engine ignores ``--cpu`` and takes the
         whole card (20536 MiB measured), so every role names its subcommand. A GGUF file
-        goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
-        several quantizations is open for slice 8.
+        goes by ``-f`` with its folder as ``-m``. The cache stores the file as a blob
+        that has no name, so the launch names the snapshot file that points at it.
         """
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
         subcommand = _SUBCOMMAND.get(spec.role, _TEXT)
         argv.append(subcommand)
         argv += self._device_flags(request.target)
         self._check_split(request)
-        path = request.model_path
+        path = snapshot_entry_of_blob(request.model_path)
         context = request.ctx_per_slot
         if subcommand == _MULTIMODAL:
             context = _vision_context(path, context)

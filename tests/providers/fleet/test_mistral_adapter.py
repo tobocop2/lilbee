@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import stat
 import subprocess
@@ -39,6 +40,7 @@ from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaCard
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.fleet.placement import InstancePlan
+from lilbee.providers.gguf_meta import snapshot_entry_of_blob
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
@@ -274,6 +276,63 @@ def test_a_gguf_goes_by_its_file_name_with_the_folder_as_the_model(tmp_path: Pat
     spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
     argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=model))
     assert argv[-4:] == ["-m", str(model.parent), "-f", "m-Q4_K_M.gguf"]
+
+
+@pytest.mark.parametrize("blob_dir", ["blobs", "blobs/93"])
+def test_a_cached_gguf_goes_by_its_snapshot_folder_and_file_name(
+    tmp_path: Path, blob_dir: str
+) -> None:
+    repo = tmp_path / "models" / "models--Qwen--Qwen3-4B-GGUF"
+    blob = repo / blob_dir / "9375c1fd"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"gguf")
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    (snapshot / "Qwen3-4B-Q4_K_M.gguf").symlink_to(blob)
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=blob))
+    assert argv[-4:] == ["-m", str(snapshot), "-f", "Qwen3-4B-Q4_K_M.gguf"]
+
+
+def test_a_snapshot_that_links_into_the_shared_blob_store_still_names_its_blob(
+    tmp_path: Path,
+) -> None:
+    models = tmp_path / "models"
+    shared = models / "blobs" / "93" / "9375c1fd"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"gguf")
+    repo = models / "models--Qwen--Qwen3-4B-GGUF"
+    blob = repo / "blobs" / "93" / "9375c1fd"
+    blob.parent.mkdir(parents=True)
+    os.link(shared, blob)
+    alias = repo / "blobs" / "7485fe6f"
+    alias.symlink_to(Path("..") / ".." / "blobs" / "93" / "9375c1fd")
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    (snapshot / "Qwen3-4B-Q4_K_M.gguf").symlink_to(Path("..") / ".." / "blobs" / "7485fe6f")
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=blob))
+    assert argv[-4:] == ["-m", str(snapshot), "-f", "Qwen3-4B-Q4_K_M.gguf"]
+
+
+def test_a_blob_that_no_snapshot_names_stays_as_given(tmp_path: Path) -> None:
+    repo = tmp_path / "models--org--repo"
+    blob = repo / "blobs" / "abc"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"gguf")
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    other = repo / "blobs" / "def"
+    other.write_bytes(b"other")
+    (snapshot / "other.gguf").symlink_to(other)
+    assert snapshot_entry_of_blob(blob) == blob
+
+
+def test_a_blob_without_a_snapshot_folder_stays_as_given(tmp_path: Path) -> None:
+    blob = tmp_path / "models--org--repo" / "blobs" / "abc"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"gguf")
+    assert snapshot_entry_of_blob(blob) == blob
 
 
 @pytest.mark.parametrize(
