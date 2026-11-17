@@ -109,3 +109,34 @@ def test_pi_extension_reads_the_env_vars_the_pi_launcher_sets(name):
         encoding="utf-8"
     )
     assert f'"{name}"' in extension
+
+
+_INSTALL_DOC = ROOT / "docs" / "usage.md"
+
+
+def _install_commands(doc: Path) -> list[str]:
+    """Every backticked command in the per-agent install table of one document."""
+    text = doc.read_text(encoding="utf-8")
+    table = text.split("| Agent | Install |", 1)[1].split("\n\n", 1)[0]
+    return re.findall(r"`([^`]+)`", table)
+
+
+def _manifest_names() -> tuple[str, str, str, str]:
+    marketplace_file = ROOT / ".claude-plugin" / "marketplace.json"
+    marketplace = json.loads(marketplace_file.read_text(encoding="utf-8"))
+    package = json.loads((NPM_PACKAGE / "package.json").read_text(encoding="utf-8"))
+    slug = re.search(r"github\.com/(.+?)\.git$", package["repository"]["url"]).group(1)
+    return marketplace["name"], marketplace["plugins"][0]["name"], slug, package["name"]
+
+
+def test_install_table_commands_use_the_manifest_names():
+    marketplace, plugin, slug, npm_name = _manifest_names()
+    commands = _install_commands(_INSTALL_DOC)
+    assert f"claude plugin marketplace add {slug}" in commands
+    assert f"claude plugin install {plugin}@{marketplace}" in commands
+    assert f"opencode plugin add {npm_name}" in commands
+    assert f"opencode plugin {npm_name} --global" in commands
+    assert f"pi install npm:{npm_name}" in commands
+    assert f"npx skills add {slug} -g -a hermes-agent" in commands
+    assert f"npx skills add {slug} -g" in commands
+    assert "lilbee mcp" in commands
