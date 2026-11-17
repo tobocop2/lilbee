@@ -83,10 +83,69 @@ test("opencode 2.x setup keeps a server and a skill the user already defined", a
   assert.ok(skills.skills.has("lilbee-mcp-wiki"))
 })
 
-test("the pi extension registers the lilbee server", () => {
-  const calls = []
-  lilbeeExtension({ registerMcpServer: (...args) => calls.push(args) })
-  assert.deepEqual(calls, [["lilbee", { command: "lilbee", args: ["mcp"] }]])
+function stubPi(registered = []) {
+  const providers = []
+  const servers = [...registered]
+  return {
+    providers,
+    servers,
+    registerProvider: (name, config) => providers.push([name, config]),
+    registerMcpServer: (name, config) => servers.push({ name, config }),
+    getMcpServers: () => servers.map((server) => ({ ...server })),
+  }
+}
+
+const MODELS = [{ id: "Qwen3-0.6B", name: "Qwen3 0.6B", contextWindow: 65536, maxTokens: 8192 }]
+const LAUNCH_ENV = {
+  LILBEE_OPENAI_URL: "http://127.0.0.1:7433/v1",
+  LILBEE_PI_MODELS: JSON.stringify(MODELS),
+}
+
+test("the pi extension starts lilbee mcp over stdio outside the launcher", () => {
+  const pi = stubPi()
+  lilbeeExtension(pi, {})
+  assert.deepEqual(pi.providers, [])
+  assert.deepEqual(pi.servers, [{ name: "lilbee", config: { command: "lilbee", args: ["mcp"] } }])
+})
+
+test("under the launcher the pi extension registers the provider and the running server", () => {
+  const pi = stubPi()
+  lilbeeExtension(pi, { ...LAUNCH_ENV, LILBEE_MCP_URL: "http://127.0.0.1:7433/mcp" })
+  assert.deepEqual(pi.providers, [
+    [
+      "lilbee",
+      {
+        baseUrl: "http://127.0.0.1:7433/v1",
+        api: "openai-completions",
+        apiKey: "$LILBEE_TOKEN",
+        models: MODELS,
+      },
+    ],
+  ])
+  assert.deepEqual(pi.servers, [
+    {
+      name: "lilbee",
+      config: {
+        url: "http://127.0.0.1:7433/mcp",
+        headers: { Authorization: "Bearer ${LILBEE_TOKEN}" },
+        exposure: "direct",
+      },
+    },
+  ])
+})
+
+test("under the launcher with no MCP the pi extension registers only the provider", () => {
+  const pi = stubPi()
+  lilbeeExtension(pi, LAUNCH_ENV)
+  assert.equal(pi.providers.length, 1)
+  assert.deepEqual(pi.servers, [])
+})
+
+test("a second copy of the pi extension keeps the first copy's lilbee server", () => {
+  const first = { name: "lilbee", config: { url: "http://127.0.0.1:7433/mcp" } }
+  const pi = stubPi([first])
+  lilbeeExtension(pi, {})
+  assert.deepEqual(pi.servers, [first])
 })
 
 test("package.json points opencode and pi at existing plugin paths", () => {
