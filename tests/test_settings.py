@@ -2,7 +2,11 @@
 
 import os
 import re
+import subprocess
+import sys
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import fields as dataclass_fields
 from unittest import mock
 
@@ -12,7 +16,10 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 from lilbee.core.config.enums import SettingSource
-from lilbee.core.config.resolve import builtin_value, read_layers, resolve
+from lilbee.core.config.model import toml_value as _toml_value
+from lilbee.core.config.model import toml_values as _toml_values
+from lilbee.core.config.resolve import _read_toml, builtin_value, read_layers, resolve
+from lilbee.core.config.resolve import toml_is_readable as _toml_is_readable
 from lilbee.core.project_state import ProjectState
 from tests._private_mode import posix_only
 
@@ -1951,6 +1958,170 @@ class TestConcurrentConfigWrites:
             held.release()
         assert config.linked_roots == {"notes": "/n"}
         assert "proceeding without it" in caplog.text
+
+
+_HOLD_LOCK = (
+    "import sys\n"
+    "from filelock import FileLock\n"
+    "lock = FileLock(sys.argv[1])\n"
+    "lock.acquire()\n"
+    "print('held', flush=True)\n"
+    "sys.stdin.read()\n"
+)
+_READ_BOUND_S = 5.0
+
+
+@contextmanager
+def _lock_held_by_another_process(data_root, monkeypatch):
+    """Hold config.toml's lock in a second process; a reader waits 0.2 s for it."""
+    from lilbee.core import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.2)
+    lock_path = str(data_root / "config.toml") + ".lock"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD_LOCK, lock_path],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    assert holder.stdin is not None
+    assert holder.stdout is not None
+    try:
+        assert holder.stdout.readline() == "held\n"
+        yield
+    finally:
+        holder.stdin.close()
+        holder.stdout.close()
+        holder.wait(timeout=10)
+
+
+def _read_in_a_worker(read):
+    """Run *read* in a thread; return ``(finished within the bound, outcome, seconds)``.
+
+    A read that waits for the lock for good leaves its thread blocked until the holder
+    exits, so the test still ends and the thread does not outlive it.
+    """
+    outcome: dict[str, object] = {}
+
+    def run():
+        try:
+            outcome["value"] = read()
+        except Exception as exc:
+            outcome["raised"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    start = time.monotonic()
+    worker.start()
+    worker.join(_READ_BOUND_S)
+    return not worker.is_alive(), outcome, time.monotonic() - start
+
+
+class TestAReadProceedsWhileAnotherProcessHoldsTheLock:
+    """A busy writer never blocks or fails a read; the read logs one warning."""
+
+    def test_the_persisted_settings_read_returns_the_file(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"top_k": 7})
+        with (
+            _lock_held_by_another_process(tmp_path, monkeypatch),
+            caplog.at_level("WARNING"),
+        ):
+            finished, outcome, seconds = _read_in_a_worker(
+                lambda: settings.read_persisted(tmp_path)
+            )
+        assert finished, f"the read still waited for the lock after {_READ_BOUND_S} s"
+        assert "raised" not in outcome, outcome
+        stamp, values = outcome["value"]
+        assert stamp is not None
+        assert values is not None
+        assert values["top_k"] == 7
+        assert seconds < _READ_BOUND_S
+        warnings = [r for r in caplog.records if "proceeding without it" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "config.toml" in warnings[0].getMessage()
+
+    def test_the_source_registry_read_returns_the_file(self, tmp_path, monkeypatch, caplog):
+        from lilbee.core.config import Config
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"linked_roots": {"notes": "/n"}})
+        config = Config(data_root=tmp_path)
+        with (
+            _lock_held_by_another_process(tmp_path, monkeypatch),
+            caplog.at_level("WARNING"),
+        ):
+            finished, outcome, _seconds = _read_in_a_worker(
+                lambda: settings.overlay_persisted_roots(config)
+            )
+        assert finished, f"the read still waited for the lock after {_READ_BOUND_S} s"
+        assert "raised" not in outcome, outcome
+        assert config.linked_roots == {"notes": "/n"}
+        warnings = [r for r in caplog.records if "proceeding without it" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @pytest.mark.parametrize("reader", ["read_persisted", "overlay_persisted_roots"])
+    def test_the_default_wait_for_the_lock_is_finite(self, tmp_path, monkeypatch, reader):
+        """A reader waits for a busy lock, then goes ahead: the wait it asks for must end."""
+        import math
+
+        from lilbee.core import settings as settings_mod
+        from lilbee.core.config import Config
+        from lilbee.core.security import file_lock_or_warn
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"top_k": 7, "linked_roots": {"notes": "/n"}})
+        waits: list[float] = []
+
+        @contextmanager
+        def recording_lock(path, timeout_s):
+            waits.append(timeout_s)
+            with file_lock_or_warn(path, timeout_s):
+                yield
+
+        monkeypatch.setattr(settings_mod, "file_lock_or_warn", recording_lock)
+        if reader == "read_persisted":
+            settings.read_persisted(tmp_path)
+        else:
+            settings.overlay_persisted_roots(Config(data_root=tmp_path))
+        assert len(waits) == 1
+        assert math.isfinite(waits[0])
+        assert 0 < waits[0] <= 30
+
+
+_LOCK_FREE_READERS = {
+    "load": lambda root: settings.load(root),
+    "persisted_values": lambda root: settings.persisted_values(root),
+    "toml_values": lambda root: _toml_values(root / "config.toml"),
+    "toml_value": lambda root: _toml_value(root / "config.toml", "top_k"),
+    "read_toml": lambda root: _read_toml(root / "config.toml"),
+    "toml_is_readable": lambda root: _toml_is_readable(root / "config.toml"),
+}
+
+
+class TestALockFreeReaderNeverTakesTheLock:
+    """These readers neither wait for the settings lock nor warn about it."""
+
+    @pytest.mark.parametrize("name", sorted(_LOCK_FREE_READERS))
+    def test_the_reader_runs_while_both_locks_are_held(self, tmp_path, monkeypatch, caplog, name):
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        settings.save(tmp_path, {"top_k": 7})
+        read = _LOCK_FREE_READERS[name]
+        expected = read(tmp_path)
+        assert expected
+        settings._settings_lock.acquire()
+        try:
+            with (
+                _lock_held_by_another_process(tmp_path, monkeypatch),
+                caplog.at_level("WARNING"),
+            ):
+                finished, outcome, _seconds = _read_in_a_worker(lambda: read(tmp_path))
+        finally:
+            settings._settings_lock.release()
+        assert finished, f"{name} waited for the settings lock for {_READ_BOUND_S} s"
+        assert "raised" not in outcome, outcome
+        assert outcome["value"] == expected
+        assert not [r for r in caplog.records if "proceeding without it" in r.getMessage()]
 
 
 class TestCredentialsAreMaskable:
