@@ -239,6 +239,8 @@ jobs:
           goroot="${goroot//\\//}"
           cp "${goroot}/LICENSE" "${lic}/LICENSE-Go"
           git clone -q --depth 1 --branch "${UPSTREAM_TAG}" "https://github.com/${UPSTREAM_REPO}.git" "${work}/llama.cpp"
+          # The wheel build and the retag stamp every entry with the commit time of the llama.cpp tag.
+          bash tools/wheel-build/source_date_epoch.sh "${work}/llama.cpp" >> "$GITHUB_ENV"
           # A release-asset cell configures the tag with the BoringSSL flag that the four release jobs
           # share, and no compile; the collector reads the licence files of what that fetched.
           # A source cell sets LLAMA_OPENSSL=OFF and LLAMA_BUILD_UI=OFF, so it links no fetched TLS code and no web UI.
