@@ -622,6 +622,7 @@ case "$1" in
 esac
 if [ "$1 $2" = "-m build" ]; then
   pwd > "{record}/build-cwd"
+  echo "$SOURCE_DATE_EPOCH" > "{record}/build-epoch"
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "--outdir" ]; then
       echo "$2" > "{record}/build-outdir"
@@ -641,6 +642,28 @@ _MPL_CARGO_STUB = _CARGO_STUB.replace(
 _CHECKSUM = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 
+_COMMIT_TIME = 1_700_000_000
+
+
+def _commit(source: Path) -> None:
+    """Commit the files of *source* at a fixed time, as the checkout of a tag is."""
+    identity = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        "GIT_AUTHOR_DATE": f"{_COMMIT_TIME} +0000",
+        "GIT_COMMITTER_DATE": f"{_COMMIT_TIME} +0000",
+    }
+    for args in (("init", "-q"), ("add", "."), ("commit", "-q", "-m", "source")):
+        subprocess.run(
+            ["git", "-C", str(source), *args],
+            check=True,
+            capture_output=True,
+            env={**os.environ, **identity},
+        )
+
+
 def _run_wheel_script(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     """Run tei_wheel.sh against stub tools; return the result, the wheel project and the record."""
     tools = tmp_path / "tools/wheel-build"
@@ -655,6 +678,7 @@ def _run_wheel_script(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str],
         f'[[package]]\nname = "option-ext"\nversion = "0.2.0"\nchecksum = "{_CHECKSUM}"\n',
         encoding="utf-8",
     )
+    _commit(source)
     router = tmp_path / "router"
     router.write_bytes(b"\x7fELF")
     crate = tmp_path / "cargo/registry/src/index-1/kernels-0.1.0"
@@ -696,6 +720,12 @@ def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Pat
     outdir = Path((record / "build-outdir").read_text(encoding="utf-8").strip())
     assert outdir.is_absolute()
     assert outdir.resolve() == (tmp_path / "out/dist").resolve()
+
+
+def test_the_wheel_build_runs_with_the_commit_time_of_the_source(tmp_path: Path) -> None:
+    result, _, record = _run_wheel_script(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (record / "build-epoch").read_text(encoding="utf-8").strip() == str(_COMMIT_TIME)
 
 
 def test_the_wheel_script_writes_the_mpl_source_file_into_the_project(tmp_path: Path) -> None:
