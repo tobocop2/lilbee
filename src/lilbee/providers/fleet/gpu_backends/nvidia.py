@@ -6,6 +6,7 @@ wedged driver costs one bounded wait and never blocks a caller on a library call
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import threading
@@ -18,6 +19,8 @@ from typing import Any, NamedTuple
 from lilbee.providers.fleet.devices import MIB
 from lilbee.providers.fleet.gpu_backends.base import UtilSample, run_tool
 from lilbee.providers.fleet.gpu_select import PCIVendorID
+
+log = logging.getLogger(__name__)
 
 _TOOL = "nvidia-smi"
 _QUERY = "index,utilization.gpu,temperature.gpu,memory.used,memory.total"
@@ -57,8 +60,20 @@ class _SmiExit(IntEnum):
 _NO_DRIVER_EXITS = frozenset({None, *_SmiExit})
 
 
+class _CardStateExit(IntEnum):
+    """The exit codes that report a card in a bad state while the rows it printed still stand."""
+
+    POWER_CABLE = 8
+    KERNEL_INTERRUPT = 10
+    INFOROM_CORRUPTED = 14
+    INTERNAL_ERROR = 255
+
+
+_CARD_STATE_EXITS = frozenset(_CardStateExit)
+
+
 class Reading(NamedTuple):
-    """What one probe printed on exit 0, whether it hit the time limit, and its exit code."""
+    """What one probe printed (rows only after a non-zero exit), its time limit and exit code."""
 
     out: str
     timed_out: bool
@@ -74,9 +89,11 @@ class _Probe:
     subprocesses (measured). ``test_concurrent_threads_probe_once`` pins it.
     """
 
-    def __init__(self, args: Sequence[str], ttl_s: float) -> None:
+    def __init__(self, args: Sequence[str], ttl_s: float, row_fields: int | None = None) -> None:
         self._args = list(args)
         self._ttl_s = ttl_s
+        self._row_fields = row_fields
+        self._warned_code: int | None = None
         self._lock = threading.Lock()
         self._at = 0.0
         self._reading = Reading("", False, None)
@@ -88,7 +105,7 @@ class _Probe:
                 return self._reading
             started = time.monotonic()
             printed, code = run_tool(_TOOL, self._args, _TIMEOUT_S)
-            out = printed if code == 0 else ""
+            out = printed if code == 0 else self._rows_of_failed_run(printed, code)
             # No exit code at the limit; a tool that fails at once returns quickly.
             timed_out = code is None and time.monotonic() - started >= _TIMEOUT_S
             self._reading = Reading(out, timed_out, code)
@@ -97,15 +114,37 @@ class _Probe:
             self._primed = True
             return self._reading
 
+    def _rows_of_failed_run(self, printed: str, code: int | None) -> str:
+        """The rows a card-state exit printed when they have no gap and one is a card, else ``""``.
+
+        A gap in the printed indices is a card the driver lost: a child numbers the cards it can
+        still see from 0, so a kept row after the gap would name the wrong card. Warns of the exit.
+        """
+        if code not in _CARD_STATE_EXITS or self._row_fields is None:
+            return ""
+        numbered = list(_numbered(printed, self._row_fields))
+        if not any(parts is not None for _, parts in numbered):
+            return ""
+        if any(index != position for position, (index, _) in enumerate(numbered)):
+            return ""
+        if code != self._warned_code:
+            log.warning(
+                "nvidia-smi exit code %d after it printed card rows; keeping the rows", code
+            )
+            self._warned_code = code
+        return printed
+
     def _ttl(self) -> float:
-        """How long the last reading stays valid; only an answer lives for the full TTL."""
+        """How long the last reading stays valid; only an exit 0 answer lives for the full TTL."""
         if self._reading.timed_out:
             return _WEDGED_TTL_S
-        return self._ttl_s if self._reading.out else min(self._ttl_s, _CACHE_TTL_S)
+        answered = bool(self._reading.out) and self._reading.returncode == 0
+        return self._ttl_s if answered else min(self._ttl_s, _CACHE_TTL_S)
 
     def reset(self) -> None:
         with self._lock:
             self._primed = False
+            self._warned_code = None
             self._reading = Reading("", False, None)
 
 
@@ -114,7 +153,7 @@ class SmiCache:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._probe = _Probe(_STATS_ARGS, _CACHE_TTL_S)
+        self._probe = _Probe(_STATS_ARGS, _CACHE_TTL_S, _FIELDS)
         self._parsed_from: Reading | None = None
         self._value: dict[int, UtilSample] = {}
         self._cards = 0
@@ -145,7 +184,7 @@ class SmiCache:
 
 
 _cache = SmiCache()
-_cards_probe = _Probe(_CARD_ARGS, _CACHE_TTL_S)
+_cards_probe = _Probe(_CARD_ARGS, _CACHE_TTL_S, len(_CARD_COLUMNS))
 # The compute capability and the driver CUDA version do not change while the process runs;
 # an answer stays for the process and a failure is read again.
 _compute_probe = _Probe(_COMPUTE_ARGS, math.inf)
