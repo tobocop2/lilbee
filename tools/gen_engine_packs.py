@@ -7,7 +7,7 @@ OUTPUT is src/lilbee/providers/fleet/engine_packs.json.
 Each TAG is a release of the repository. Each engine version and cell keeps the wheel with
 the highest build number; a later TAG wins for the same file name. Every
 ``lilbee_engine_*.whl`` asset of those releases becomes one row: ``file``, ``url``,
-``sha256`` and ``size``. A mistral.rs CUDA wheel gets no row.
+``sha256`` and ``size``. The CUDA wheel of an engine that has no CUDA pack gets no row.
 The tool reads the ``name``, ``digest`` and ``size`` fields of
 the asset. The url is the release base, the tag and the name: a draft release gives an
 ``untagged-`` download url that is not the final one. Nothing is downloaded.
@@ -62,7 +62,7 @@ def _row(tag: str, asset: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_no_pack(engine: str, key: str) -> bool:
-    """True for a wheel that never gets a row: the mistral.rs CUDA wheel, of any version."""
+    """True for a wheel that never gets a row: the CUDA wheel of an engine without a CUDA pack."""
     return engine == EngineName.MISTRAL and key.split("-", 2)[2].startswith("cuda")
 
 
@@ -71,8 +71,8 @@ def build_record(releases: list[dict[str, Any]], tags: list[str]) -> list[dict[s
 
     Each engine version and cell keeps one wheel: the one with the highest build number.
     A wheel of a later tag replaces the wheel of the same name in an earlier tag. Two
-    different wheels of one cell, version and build are refused. A mistral.rs CUDA wheel
-    gets no row, whatever its version or build.
+    different wheels of one cell, version and build are refused. The CUDA wheel of an engine
+    without a CUDA pack gets no row, whatever its version or build.
     """
     by_tag = {release["tag_name"]: release for release in releases}
     rows: dict[tuple[str, str, str], tuple[int, dict[str, Any]]] = {}

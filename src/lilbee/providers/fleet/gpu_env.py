@@ -51,8 +51,8 @@ ENGINE_TRACE_EXPORT_VARS: tuple[str, ...] = ("OTLP_ENDPOINT",)
 
 # Every engine lilbee starts opts out of telemetry. huggingface_hub (mlx-lm, TEI's
 # Python backend) reads the first two; DO_NOT_TRACK is the cross-tool convention.
-# llama.cpp, ik_llama.cpp, mistral.rs and the Rust hf-hub crate carry no telemetry
-# and read none of these; the values cost nothing there.
+# The native engines and the Rust hf-hub crate carry no telemetry and read none of
+# these; the values cost nothing there.
 ENGINE_TELEMETRY_OPT_OUT: Mapping[str, str] = MappingProxyType(
     {"HF_HUB_DISABLE_TELEMETRY": "1", "DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"}
 )
