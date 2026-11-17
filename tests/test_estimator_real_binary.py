@@ -117,6 +117,7 @@ def test_the_single_device_fit_lands_on_the_last_window_that_fits(tiny_gguf) -> 
         flash_attn=False,
         kv_cache_type=KvCacheType.F16,
         unified=False,
+        on_cpu=False,
         ctx_ceiling=4096,
         expert_offload=(),
         engine=LLAMA,

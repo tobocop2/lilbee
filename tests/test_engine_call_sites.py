@@ -379,6 +379,7 @@ class TestMemoryEstimates:
             flash_attn=False,
             kv_cache_type=cfg.kv_cache_type,
             unified=False,
+            on_cpu=False,
             ctx_ceiling=4096,
             expert_offload=(),
         )

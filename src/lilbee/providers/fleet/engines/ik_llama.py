@@ -127,7 +127,7 @@ class IkLlamaAdapter:
         return LLAMA.target_env(target, cards)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        return LLAMA.estimate_memory(request)
+        return LLAMA.estimate_memory(dataclasses.replace(request, on_cpu=False))
 
     def check_readback(self, binary: Path) -> bool:
         return LLAMA.check_readback(binary)

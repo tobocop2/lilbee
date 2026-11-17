@@ -30,6 +30,8 @@ class MemoryRequest:
     tensor_split: tuple[int, ...] = ()
     batch_size: int | None = None
     expert_offload: tuple[str, ...] = ()
+    on_cpu: bool = False
+    """True when the weights load into the CPU backend, not onto a card."""
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,9 @@ class MemoryEstimate:
     shared_bytes: int
     """Unified-memory model: the footprint without the mapped weights."""
     mapped_weights_bytes: int = 0
-    """Unified-memory model: the weight bytes that ``shared_bytes`` leaves out."""
+    """Unified-memory model: the weight bytes that ``shared_bytes`` leaves out.
+
+    The mapped file, plus the repacked copy of it that a CPU load keeps."""
     per_device: tuple[int, ...] = ()
     """Discrete-GPU model: bytes on each device."""
     per_device_shared: tuple[int, ...] = ()
