@@ -8,6 +8,7 @@ import json
 import re
 import socket
 import stat
+import threading
 import time
 import zipfile
 from collections.abc import Iterator, Mapping
@@ -478,6 +479,12 @@ def _rest(body: dict[str, Any]) -> tuple[int, Any]:
         return res.status_code, res.json()
 
 
+class _PairState(threading.local):
+    """Whether the current thread is inside a socket pair."""
+
+    active = False
+
+
 def _spy_connects(monkeypatch: pytest.MonkeyPatch, allow: tuple[str, ...] = ()) -> list[Any]:
     """Record every socket connect to a host the test does not allow by name.
 
@@ -488,21 +495,20 @@ def _spy_connects(monkeypatch: pytest.MonkeyPatch, allow: tuple[str, ...] = ()) 
     seen: list[Any] = []
     real_connect = socket.socket.connect
     real_pair = socket.socketpair
-    pairing = False
+    pairing = _PairState()
 
     def connect_spy(sock: socket.socket, address: Any, *args: object) -> None:
-        if pairing or (isinstance(address, tuple) and address[0] in allow):
+        if pairing.active or (isinstance(address, tuple) and address[0] in allow):
             real_connect(sock, address, *args)
         else:
             seen.append(address)
 
     def pair_spy() -> tuple[socket.socket, socket.socket]:
-        nonlocal pairing
-        pairing = True
+        pairing.active = True
         try:
             return real_pair()
         finally:
-            pairing = False
+            pairing.active = False
 
     monkeypatch.setattr(socket.socket, "connect", connect_spy)
     monkeypatch.setattr(socket, "socketpair", pair_spy)
@@ -753,6 +759,36 @@ def test_the_connect_spy_ignores_the_connect_a_socket_pair_makes_inside_itself(
     left.close()
     right.close()
     assert connects == []
+
+
+def test_the_connect_spy_records_a_connect_from_another_thread_during_a_socket_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inside_pair, leave_pair = threading.Event(), threading.Event()
+
+    def held_pair() -> tuple[socket.socket, socket.socket]:
+        inside_pair.set()
+        assert leave_pair.wait(timeout=5)
+        return socket.socket(), socket.socket()
+
+    monkeypatch.setattr(socket, "socketpair", held_pair)
+    connects = _spy_connects(monkeypatch)
+    pairs: list[tuple[socket.socket, socket.socket]] = []
+    maker = threading.Thread(target=lambda: pairs.append(socket.socketpair()))
+    maker.start()
+    try:
+        assert inside_pair.wait(timeout=5)
+        with socket.socket() as server, socket.socket() as client:
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            address = server.getsockname()
+            client.connect(address)
+        assert connects == [address]
+    finally:
+        leave_pair.set()
+        maker.join(timeout=5)
+    for sock in pairs[0]:
+        sock.close()
 
 
 def test_an_engine_with_no_published_pack_is_not_installed_and_logs_no_warning(
