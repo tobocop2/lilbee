@@ -517,7 +517,7 @@ async def _context_management_frames(
         yield (prompt_history(history, summary, max_tokens=budget), None)
         return
     if compaction is not None:
-        _persist_summary(session_id, compaction)
+        await asyncio.to_thread(_persist_summary, session_id, compaction)
         yield sse_event(SseEvent.COMPACTION, compaction.model_dump())
     yield (managed_history, compaction)
 
@@ -547,7 +547,7 @@ async def chat(
         # explicit top_k 0 runs no search, so it needs no embedder.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
     history, compaction = await asyncio.to_thread(_manage_history, history, summary)
-    _persist_summary(session_id, compaction)
+    await asyncio.to_thread(_persist_summary, session_id, compaction)
     retrieval_query: str | None = None
     dropped: list[SearchChunk] = []
     degraded: list[HealthWarning] = []

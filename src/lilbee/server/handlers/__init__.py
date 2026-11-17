@@ -95,7 +95,10 @@ from lilbee.server.models import (
 
 if TYPE_CHECKING:
     from lilbee.app.placement import GpuInfo, PlacementView
+    from lilbee.core.health_warnings import HealthWarning
+    from lilbee.data.store import Store
     from lilbee.providers.base import LLMProvider
+    from lilbee.runtime.progress import LibraryUpgradeEvent
 
 log = logging.getLogger(__name__)
 
@@ -128,12 +131,18 @@ def _chat_status(
     return "not_started", None
 
 
+def _store_health(store: Store) -> tuple[list[HealthWarning], LibraryUpgradeEvent | None]:
+    """The store's health warnings and upgrade progress, read together."""
+    return store.health_warnings(), store.upgrade_progress()
+
+
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
     services = get_services()
     provider = services.provider
     chat_status, chat_error = _chat_status(provider)
     prefill = provider.chat_prefill_progress()
+    store_warnings, upgrade = await asyncio.to_thread(_store_health, services.store)
     return HealthResponse(
         status="ok",
         version=get_version(),
@@ -146,8 +155,8 @@ async def health() -> HealthResponse:
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
         embed_token_cap=provider.embed_token_cap(),
-        warnings=[*services.store.health_warnings(), *provider.health_warnings()],
-        upgrade=services.store.upgrade_progress(),
+        warnings=[*store_warnings, *provider.health_warnings()],
+        upgrade=upgrade,
     )
 
 
@@ -237,7 +246,7 @@ async def gpu_stats_stream(
 
 async def status() -> StatusResponse:
     """Return config, sources, and chunk counts."""
-    raw = gather_status()
+    raw = await asyncio.to_thread(gather_status)
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 

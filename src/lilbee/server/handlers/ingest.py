@@ -360,7 +360,7 @@ async def _run_upload(
         for name, content in files:
             dest = cfg.documents_dir / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if not _move_same_content(name, content, dest):
+            if not await asyncio.to_thread(_move_same_content, name, content, dest):
                 dest.write_bytes(content)
             written.append(name)
         with temporary_ocr_config(ocr, ocr_timeout):
