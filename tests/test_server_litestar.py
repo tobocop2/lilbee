@@ -1774,6 +1774,42 @@ class TestOpenAPISchema:
         }
         assert marked == greedy
 
+    def test_profile_routes_publish_their_error_statuses(self, client):
+        """A client reads each profile route's errors from the schema: 404 for a
+        missing name, 409 for a name clash, 413 for an upload over the cap, 400 for
+        a refusal and 503 for an unreadable or unwritable file."""
+        ok_503 = {"200", "503"}
+        refusal = {"200", "400", "503"}
+        named = {"200", "400", "404", "503"}
+        write = {"200", "400", "409", "503"}
+        named_write = {"200", "400", "404", "409", "503"}
+        upload = {"413"}
+        expected = {
+            ("get", "/api/profiles"): ok_503,
+            ("get", "/api/profiles/active"): ok_503,
+            ("post", "/api/profiles"): write,
+            ("post", "/api/profiles/discard"): refusal,
+            ("post", "/api/profiles/new"): named_write,
+            ("post", "/api/profiles/import"): write | upload,
+            ("post", "/api/profiles/validate"): refusal | upload,
+            ("get", "/api/profiles/{name}"): named,
+            ("get", "/api/profiles/{name}/diff"): named,
+            ("post", "/api/profiles/{name}/apply"): named,
+            ("put", "/api/profiles/{name}"): named_write,
+            ("post", "/api/profiles/{name}/duplicate"): named_write,
+            ("patch", "/api/profiles/{name}"): named_write,
+            ("delete", "/api/profiles/{name}"): named,
+            ("get", "/api/profiles/{name}/export"): named,
+        }
+        paths = client.get("/schema/openapi.json").json()["paths"]
+        published = {
+            (method, path): set(operation["responses"])
+            for path, operations in paths.items()
+            if path.startswith("/api/profiles")
+            for method, operation in operations.items()
+        }
+        assert published == expected
+
     def test_export_publishes_the_octet_stream_media_type(self, client):
         """/api/export answers with a parquet or jsonl body. It set its media
         type on the returned Response only, so the schema promised JSON and a
