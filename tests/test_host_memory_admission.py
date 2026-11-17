@@ -220,6 +220,7 @@ class TestTheSpillWarningFollowsAdmission:
             _, admitted = self._admit()
         assert admitted is None
         assert "cannot load" in caplog.text
+        assert _REF in caplog.text
         assert "It will run" not in caplog.text
 
     def test_an_admitted_spilling_role_is_told_it_will_run_slower(
@@ -230,3 +231,33 @@ class TestTheSpillWarningFollowsAdmission:
             estimate, admitted = self._admit()
         assert admitted is estimate
         assert "It will run" in caplog.text
+        assert _REF in caplog.text
+
+    @pytest.mark.parametrize(
+        ("total_vram", "weights", "warned"),
+        [
+            pytest.param(0, 40 * _GB, False, id="no-gpu-reported"),
+            pytest.param(40 * _GB, 40 * _GB, False, id="weights-equal-vram"),
+            pytest.param(1, 2, True, id="one-byte-over-the-smallest-gpu"),
+        ],
+    )
+    def test_the_spill_warning_needs_weights_past_a_nonzero_vram(
+        self, monkeypatch, offload_configured, caplog, total_vram, weights, warned
+    ) -> None:
+        from lilbee.providers.fleet import planning
+
+        monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: weights)
+        monkeypatch.setattr(planning, "_weights_exceed_hardware", lambda *_a, **_k: False)
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 64 * _GB)
+        monkeypatch.setattr(planning, "free_system_memory", lambda: 64 * _GB)
+        with caplog.at_level(logging.WARNING):
+            admitted = planning._admit_estimate(
+                _estimate(),
+                WorkerRole.CHAT,
+                _REF,
+                total_vram=total_vram,
+                ram_bytes=1,
+                engine=LLAMA,
+            )
+        assert admitted is not None
+        assert ("It will run" in caplog.text) is warned
