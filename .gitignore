@@ -55,6 +55,7 @@ scripts/*
 !scripts/release.sh
 !scripts/release_notes.sh
 !scripts/promote_release.sh
+!scripts/release_version.sh
 !scripts/release_watch.sh
 !scripts/release_selfheal.sh
 !scripts/compute_version_tag.sh
@@ -73,6 +74,8 @@ scripts/*
 !scripts/ci_result.sh
 !scripts/release_ci_passed.sh
 !scripts/flake_pin_pr.sh
+!scripts/publish_mcp_registry.sh
+!scripts/publish_npm.sh
 !scripts/check_flake_pins.sh
 !scripts/qa/
 scripts/qa/*

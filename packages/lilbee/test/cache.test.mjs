@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { cacheDir, cachedBinaryPath, installedBinary, pruneOtherReleases } from "../lib/cache.mjs";
+import { cacheDir, cachedBinaryPath, installedBinary, pruneOtherReleases, releaseBinary } from "../lib/cache.mjs";
 import { compareReleaseTags } from "../lib/releases.mjs";
 
 const LINUX = { platform: "linux", arch: "x64", variant: "cu125", amdGfxTargets: [] };
@@ -78,5 +78,12 @@ test("installedBinary without a host uses the running platform and takes any bui
   const dir = cacheWith([`v1/${plain}`, ...(cuda ? [`v2/${cuda}`] : [])]);
   const found = installedBinary({ cacheDir: dir });
   assert.equal(found.release, cuda ? "v2" : "v1");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("releaseBinary finds the named release only, the host's variant first", () => {
+  const dir = cacheWith(["v1/lilbee-linux-x86_64", "v1/lilbee-linux-x86_64-cu125", "v2/lilbee-linux-x86_64"]);
+  assert.equal(releaseBinary({ cacheDir: dir, release: "v1", host: LINUX }).path, path.join(dir, "v1", "lilbee-linux-x86_64-cu125"));
+  assert.equal(releaseBinary({ cacheDir: dir, release: "v3", host: LINUX }), null);
   fs.rmSync(dir, { recursive: true, force: true });
 });

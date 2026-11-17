@@ -47,72 +47,61 @@ test("LILBEE_BIN wins, and a missing LILBEE_BIN is an error not a fallthrough", 
   fs.rmSync(cache, { recursive: true, force: true });
 });
 
-test("a run with any cached release uses the newest one, no network", async () => {
+test("with no override the pinned release runs: a cached newer release is not reused", async () => {
+  const cache = tmpCache();
+  seed(cache, "v0.6.90b425");
+  const gh = github(["v0.6.90b426", "v0.6.90b425", "v0.6.90b423"]);
+  const r = await resolve(cache, gh, { pinned: "v0.6.90b423" });
+  assert.equal(r.source, "download");
+  assert.equal(r.release, "v0.6.90b423");
+  assert.equal(r.path, path.join(cache, "v0.6.90b423", ASSET));
+  assert.equal(r.download.url, "https://dl/v0.6.90b423");
+  assert.equal(gh.calls.some((u) => /\/releases\?/.test(u)), false, "the default path never lists releases");
+  assert.match(gh.calls.at(-1), /releases\/tags\/v0\.6\.90b423$/);
+  fs.rmSync(cache, { recursive: true, force: true });
+});
+
+test("the pinned release, once cached, runs with no network", async () => {
   const cache = tmpCache();
   seed(cache, "v0.6.90b423");
   seed(cache, "v0.6.90b425");
   const gh = github(["v0.6.90b426"]);
-  const r = await resolve(cache, gh);
-  assert.deepEqual(r, { path: path.join(cache, "v0.6.90b425", ASSET), source: "cache", release: "v0.6.90b425", download: null });
+  const r = await resolve(cache, gh, { pinned: "v0.6.90b423" });
+  assert.deepEqual(r, { path: path.join(cache, "v0.6.90b423", ASSET), source: "cache", release: "v0.6.90b423", download: null });
   assert.equal(gh.calls.length, 0);
   fs.rmSync(cache, { recursive: true, force: true });
 });
 
-test("a fresh install plans a download of the latest release", async () => {
+test("an unreachable GitHub fails the first run; no other release is substituted", async () => {
   const cache = tmpCache();
-  const r = await resolve(cache, github(["v0.6.90b425", "v0.6.90b423"]));
-  assert.equal(r.source, "download");
-  assert.equal(r.release, "v0.6.90b425");
-  assert.equal(r.path, path.join(cache, "v0.6.90b425", ASSET));
-  assert.equal(r.download.url, "https://dl/v0.6.90b425");
+  await assert.rejects(resolve(cache, github(["v0.6.90b423"], { down: true }), { pinned: "v0.6.90b423" }), /network down/);
   fs.rmSync(cache, { recursive: true, force: true });
 });
 
-test("when the latest lookup fails, the pinned release is the fallback", async () => {
-  const cache = tmpCache();
-  const logs = [];
-  const gh = github(["v0.6.90b423"]);
-  const flaky = { fetch: (url, init) => (/\/releases\?/.test(url) ? Promise.reject(new Error("network down")) : gh.fetch(url, init)) };
-  const r = await resolve(cache, flaky, { pinned: "v0.6.90b423", log: (m) => logs.push(m) });
-  assert.equal(r.release, "v0.6.90b423");
-  assert.equal(r.source, "download");
-  assert.ok(logs.includes("lilbee: could not look up the latest release; using the tested v0.6.90b423."));
-  fs.rmSync(cache, { recursive: true, force: true });
-});
-
-test("refresh re-resolves latest past a cached binary, and cache satisfies it without a download", async () => {
+test("refresh skips the cache lookup, and a cached build of the pinned release still needs no download", async () => {
   const cache = tmpCache();
   seed(cache, "v0.6.90b425");
-  const same = await resolve(cache, github(["v0.6.90b425"]), { refresh: true });
+  const gh = github(["v0.6.90b425"]);
+  const same = await resolve(cache, gh, { pinned: "v0.6.90b425", refresh: true });
   assert.deepEqual(same, { path: path.join(cache, "v0.6.90b425", ASSET), source: "cache", release: "v0.6.90b425", download: null });
-
-  const upgraded = await resolve(cache, github(["v0.6.90b426", "v0.6.90b425"]), { refresh: true });
-  assert.equal(upgraded.source, "download");
-  assert.equal(upgraded.release, "v0.6.90b426");
+  assert.equal(gh.calls.length, 1, "refresh asked GitHub about the release");
   fs.rmSync(cache, { recursive: true, force: true });
 });
 
-test("LILBEE_RELEASE and the prepare tag pin one release; the tag wins over the variable", async () => {
+test("LILBEE_RELEASE and the prepare tag beat the pin; the tag wins over the variable", async () => {
   const cache = tmpCache();
   seed(cache, "v0.6.90b425");
   const gh = github(["v0.6.90b426", "v0.6.90b425", "v0.6.90b410", "v0.6.90b400"]);
-  const fromEnv = await resolve(cache, gh, { env: { LILBEE_RELEASE: "v0.6.90b410" } });
+  const fromEnv = await resolve(cache, gh, { env: { LILBEE_RELEASE: "v0.6.90b410" }, pinned: "v0.6.90b426" });
   assert.equal(fromEnv.release, "v0.6.90b410");
   assert.equal(fromEnv.source, "download");
   assert.match(gh.calls.at(-1), /releases\/tags\/v0\.6\.90b410$/);
 
-  const fromArg = await resolve(cache, gh, { env: { LILBEE_RELEASE: "v0.6.90b410" }, tag: "v0.6.90b400" });
+  const fromArg = await resolve(cache, gh, { env: { LILBEE_RELEASE: "v0.6.90b410" }, tag: "v0.6.90b400", pinned: "v0.6.90b426" });
   assert.equal(fromArg.release, "v0.6.90b400");
 
-  const cached = await resolve(cache, gh, { tag: "v0.6.90b425" });
+  const cached = await resolve(cache, gh, { tag: "v0.6.90b425", pinned: "v0.6.90b426" });
   assert.equal(cached.source, "cache");
-  fs.rmSync(cache, { recursive: true, force: true });
-});
-
-test("the dev channel makes the newest dev build the latest", async () => {
-  const cache = tmpCache();
-  const gh = github(["v0.6.90b426.dev3", "v0.6.90b425"]);
-  assert.equal((await resolve(cache, gh)).release, "v0.6.90b425");
-  assert.equal((await resolve(cache, gh, { includeDev: true })).release, "v0.6.90b426.dev3");
+  assert.equal(cached.release, "v0.6.90b425");
   fs.rmSync(cache, { recursive: true, force: true });
 });

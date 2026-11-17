@@ -8,14 +8,43 @@ is attested automatically.
 
 ## Versions
 
-CI publishes `packages/lilbee/package.json` exactly as committed. The launcher
-downloads the latest GitHub release at run time, so npm needs a new version
-only when the launcher itself changes.
+The npm version is the lilbee version. `scripts/release.sh` and
+`scripts/promote_release.sh` set `version` in `package.json` and
+`package-lock.json`, and `lilbee.release` in `package.json`, in the same commit
+that sets the lilbee version. Nobody edits them by hand.
 
-To ship a new npm version, bump `version` in a PR. In the same PR, move
-`lilbee.release` to a recent tested release. The launcher uses that release
-when it cannot look up the latest one. If the version is already on npm, the
-job skips the publish.
+The launcher runs exactly `lilbee.release`. It downloads that release on first
+use and never looks up a newer one.
+
+`scripts/release_version.sh npm-version` maps the lilbee version to semver:
+
+| lilbee version | npm version | `lilbee.release` |
+| --- | --- | --- |
+| `0.6.90b691` | `0.6.90-beta.691` | `v0.6.90b691` |
+| `0.6.90` | `0.6.90` | `v0.6.90` |
+
+The beta number is a separate identifier (`beta.691`), so semver sorts it as a
+number: `beta.1000` is newer than `beta.691`. Dev builds (`.devN`) are never
+published to npm. A version with no mapping (`a`, `rc`, `post`) stops the release.
+
+The release also sets both `version` fields of `server.json`, the MCP Registry
+listing, to the npm version.
+
+The `npm` job checks out the tag and runs `scripts/publish_npm.sh`. The script
+skips a dev build. It stops when `package.json` or `server.json`
+does not carry the npm version of that tag, or when the `server.json` name is
+not the `mcpName` of `package.json`. It publishes with `--tag latest`,
+because npm 11 refuses a prerelease publish without a dist-tag. If the version
+is already on npm, the script skips the publish.
+
+After the npm publish, the script lists the version in the MCP Registry. The
+registry checks the published package for `mcpName`, and the login uses the
+job's OIDC token. The job asks the registry first, so a re-run after a failed
+listing lists the version. The job asks npm for the published version three
+times, waiting ten seconds between attempts, if npm does not show it yet. A
+published version whose `mcpName` is missing is refused by the registry, which
+fails the job: cut a new release so npm publishes a package that carries it.
+The job also fails if npm still lacks the version after the attempts.
 
 ## One-time setup
 
@@ -58,6 +87,6 @@ publishing, and passes. Releases do not break.
   and prints the version.
 - OIDC needs `id-token: write` on the job. The `npm` job sets it.
 - To run the job by hand, dispatch the workflow with only this channel:
-  `gh workflow run publish-packages.yml -f tag=v0.6.90b423 -f channels=npm`.
-  It publishes the committed version, and only if that version is not on npm
-  yet.
+  `gh workflow run publish-packages.yml -f tag=<tag> -f channels=npm`.
+  It publishes the version the tag carries, and only if that version is not on
+  npm yet.
