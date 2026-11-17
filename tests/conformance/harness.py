@@ -23,6 +23,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from lilbee.providers.fleet.client import _EMBED_N_SEQ_MAX as EMBED_REQUEST_LIMIT
 from lilbee.retrieval.reasoning import split_reasoning
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -38,7 +39,14 @@ NEAR_COPY_COSINE = 0.99999
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 BLUE = (0, 0, 255)
-_ORDER_BATCHES = (3, 9, 33)
+_ORDER_BATCHES = (
+    3,
+    9,
+    33,
+    EMBED_REQUEST_LIMIT,
+    EMBED_REQUEST_LIMIT + 1,
+    2 * EMBED_REQUEST_LIMIT + 1,
+)
 _CLIENT_ERROR = range(400, 500)
 _ABSENT_STATUSES = frozenset({400, 404, 405, _NOT_IMPLEMENTED})
 _SHA256 = re.compile(r"[0-9a-f]{64}")

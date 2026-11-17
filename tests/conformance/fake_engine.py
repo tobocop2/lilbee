@@ -263,6 +263,12 @@ class _Handler(BaseHTTPRequestHandler):
             message["reasoning_content"] = thought
         return "length" if budget_ended else "stop"
 
+    def _finish_reason(self, message: dict[str, Any], req: dict[str, Any], finish: str) -> str:
+        """The finish reason of a reply; truncated ends a plain call at length."""
+        finish = self._exhaust_budget(message, req) or finish
+        plain = not req.get("stream") and not req.get("tools")
+        return "length" if self.cfg.chat == "truncated" and plain else finish
+
     def _chat(self, req: dict[str, Any]) -> None:
         prompt = json.dumps(req["messages"])
         if self.cfg.chat == "503":
@@ -297,7 +303,7 @@ class _Handler(BaseHTTPRequestHandler):
         if req.get("tools"):
             message, finish = self._tool_message(req, message)
         self._with_reasoning(message)
-        finish = self._exhaust_budget(message, req) or finish
+        finish = self._finish_reason(message, req, finish)
         if req.get("stream"):
             self._stream(message, finish)
         elif self.cfg.chat == "nochoices":
