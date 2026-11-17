@@ -1185,6 +1185,16 @@ def filesystem_without_locking() -> Generator[None, None, None]:
         yield
 
 
+@pytest.fixture
+def counting_provider():
+    """Services whose provider counts tokens, for tests that chunk text through the real chunker."""
+    import lilbee.app.services as svc_mod
+
+    svc_mod.set_services(make_mock_services())
+    yield
+    svc_mod.set_services(None)
+
+
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs.
 
