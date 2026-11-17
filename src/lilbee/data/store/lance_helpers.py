@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lilbee.catalog.refs import hf_repo_from_ref, is_gguf_filename
+from lilbee.core.config import META_TABLE
 from lilbee.runtime.lock import write_lock
 
 from .types import LOCAL_OWNER, ChunkType
@@ -259,6 +260,33 @@ def _vector_index_dangling(
 ) -> bool:
     """True when the ANN index on the vector column is registered but its files are gone."""
     return any(_is_vector_index(idx) for idx in _dangling_indices(table, indices, lancedb_dir))
+
+
+def newest_meta_row(table: LanceTable) -> dict[str, Any] | None:
+    """The newest row of the ``_meta`` table, or ``None`` when it holds none.
+
+    The table is meant to hold one row; a swallowed delete on rewrite can leave a stale one,
+    so identity reads take the newest to stay deterministic.
+    """
+    rows = table.search().limit(None).to_list()
+    return max(rows, key=lambda r: r["updated_at"]) if rows else None
+
+
+def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
+    """The width the index at *lancedb_dir* was written at, when it was built by *model*.
+
+    Reads the ``_meta`` row without opening a store, so no upgrade runs. ``None`` when the
+    library, the row, or a match on *model* is absent.
+    """
+    if not lancedb_dir.is_dir():
+        return None
+    from lancedb.db import LanceDBConnection
+
+    meta = open_committed(LanceDBConnection(str(lancedb_dir)), META_TABLE)
+    row = None if meta is None else newest_meta_row(meta)
+    if row is None or row["embedding_model"] != model:
+        return None
+    return int(row["embedding_dim"])
 
 
 def refs_compatible(

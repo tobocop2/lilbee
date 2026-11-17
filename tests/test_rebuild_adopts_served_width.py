@@ -15,8 +15,8 @@ from tests.conftest import make_mock_services
 
 OLD_WIDTH = 8
 NEW_WIDTH = 16
-OLD_MODEL = "ollama/old-embed"
-NEW_MODEL = "ollama/new-embed"
+OLD_MODEL = "ollama/old-embed:latest"
+NEW_MODEL = "ollama/new-embed:latest"
 TEXT = "alpha beta gamma delta " * 150
 
 
@@ -139,5 +139,78 @@ def test_an_embedder_that_answers_with_no_vector_is_refused():
 
     with pytest.raises(ValueError, match="no vector"):
         Embedder(cfg, _Silent()).adopt_served_width("probe")
+
+    assert cfg.embedding_dim == OLD_WIDTH
+
+
+async def test_a_same_name_rebuild_drops_the_store_and_writes_it_at_the_wider_width():
+    for name in ("a.txt", "b.txt"):
+        (cfg.documents_dir / name).write_text(f"{name} {TEXT}", encoding="utf-8")
+    engine = _Engine(OLD_WIDTH)
+    store = Store(cfg)
+    _use(store, engine)
+    await sync(quiet=True)
+    engine.width = NEW_WIDTH
+
+    result = await sync(force_rebuild=True, quiet=True)
+
+    assert result.failed == []
+    assert cfg.embedding_model == OLD_MODEL
+    meta = store.get_meta()
+    assert meta is not None
+    assert (meta["embedding_model"], meta["embedding_dim"]) == (OLD_MODEL, NEW_WIDTH)
+    assert len(store.open_table("chunks").to_arrow()["vector"][0].as_py()) == NEW_WIDTH
+
+
+async def test_a_rebuild_stopped_at_the_memory_step_puts_the_width_back(monkeypatch):
+    store, _ = await _index_then_swap_to_a_wider_model()
+    monkeypatch.setattr(
+        store, "rebuild_memory_embeddings", MagicMock(side_effect=RuntimeError("down"))
+    )
+
+    with pytest.raises(RuntimeError, match="Rebuild stopped and the index is unchanged"):
+        await sync(force_rebuild=True, quiet=True)
+
+    assert cfg.embedding_dim == OLD_WIDTH
+    meta = store.get_meta()
+    assert meta is not None
+    assert meta["embedding_dim"] == OLD_WIDTH
+
+
+async def test_a_new_process_reads_the_width_the_rebuild_wrote():
+    from lilbee.app.settings import reconcile_embedding_dim
+
+    store, _ = await _index_then_swap_to_a_wider_model()
+    await sync(force_rebuild=True, quiet=True)
+    meta = store.get_meta()
+    assert meta is not None
+    assert meta["embedding_dim"] == NEW_WIDTH
+    cfg.embedding_dim = OLD_WIDTH  # a new process starts at the config default
+
+    reconcile_embedding_dim()
+
+    assert cfg.embedding_dim == NEW_WIDTH
+
+
+async def test_startup_leaves_the_width_when_the_store_holds_another_model():
+    from lilbee.app.settings import reconcile_embedding_dim
+
+    store, _ = await _index_then_swap_to_a_wider_model()
+    meta = store.get_meta()
+    assert meta is not None
+    assert meta["embedding_model"] == OLD_MODEL
+    assert cfg.embedding_model == NEW_MODEL
+
+    reconcile_embedding_dim()
+
+    assert cfg.embedding_dim == OLD_WIDTH
+
+
+def test_startup_with_no_library_leaves_the_width():
+    from lilbee.app.settings import reconcile_embedding_dim
+
+    assert not cfg.lancedb_dir.exists()
+
+    reconcile_embedding_dim()
 
     assert cfg.embedding_dim == OLD_WIDTH

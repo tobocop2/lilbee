@@ -74,6 +74,7 @@ from .lance_helpers import (
     _vector_index_dangling,
     ensure_table,
     escape_sql_string,
+    newest_meta_row,
     open_committed,
     refs_compatible,
     table_names,
@@ -1263,13 +1264,9 @@ class Store:
         table = self.open_table(META_TABLE)
         if table is None:
             return None
-        rows = table.search().limit(None).to_list()
-        if not rows:
+        row = newest_meta_row(table)
+        if row is None:
             return None
-        # _meta is meant to hold one row, but a swallowed delete on rewrite could
-        # leave a stale one behind; take the newest so identity reads stay
-        # deterministic rather than returning an arbitrary row.
-        row = max(rows, key=lambda r: r["updated_at"])
         return StoreMeta(
             embedding_model=row["embedding_model"],
             embedding_dim=int(row["embedding_dim"]),
@@ -1280,10 +1277,9 @@ class Store:
     def canary_state(self) -> CanaryState | None:
         """The canary baseline in the ``_meta`` row, or ``None`` when the row holds none."""
         table = self.open_table(META_TABLE)
-        rows = table.search().limit(None).to_list() if table is not None else []
-        if not rows:
+        row = None if table is None else newest_meta_row(table)
+        if row is None:
             return None
-        row = max(rows, key=lambda r: r["updated_at"])
         vectors = row.get(CANARY_VECTORS_COLUMN)
         if not vectors or len(vectors) != len(CANARY_TEXTS):
             return None
