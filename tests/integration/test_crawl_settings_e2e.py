@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import nullcontext
 from itertools import pairwise
 from pathlib import Path
 
@@ -187,15 +188,27 @@ class TestConcurrentCrawls:
             cfg.crawl_max_delay_range = 0.0
             reset_services()
             started = time.monotonic()
-            await asyncio.gather(
-                *(
-                    crawl_and_save(crawl_site.url(prefix), depth=CONFIG_MAX_DEPTH)
-                    for prefix in CONCURRENT_PREFIXES
-                )
+            # With no limit the first crawl waits at the site for the second to arrive, so the
+            # overlap holds however long the second crawl takes to start.
+            hold = (
+                crawl_site.holding(CONCURRENT_PREFIXES[0], until_requested=CONCURRENT_PREFIXES[1])
+                if expect_overlap
+                else nullcontext()
             )
+            with hold:
+                await asyncio.gather(
+                    *(
+                        crawl_and_save(crawl_site.url(prefix), depth=CONFIG_MAX_DEPTH)
+                        for prefix in CONCURRENT_PREFIXES
+                    )
+                )
         first, second = (crawl_site.requests_under(p, since=started) for p in CONCURRENT_PREFIXES)
         assert first and second, (first, second)
         overlap = min(r.at for r in second) < max(r.end for r in first) and min(
             r.at for r in first
         ) < max(r.end for r in second)
-        assert overlap is expect_overlap
+        spans = [
+            (min(r.at for r in rs) - started, max(r.end for r in rs) - started)
+            for rs in (first, second)
+        ]
+        assert overlap is expect_overlap, spans

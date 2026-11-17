@@ -45,6 +45,8 @@ SLOW_PAGE_DELAY_S = 0.4
 POOL_PAGE_COUNT = 12
 POOL_PAGE_DELAY_S = 0.3
 PACED_PAGE_COUNT = 5
+# The longest the site keeps a held request unanswered.
+HOLD_BOUND_S = 30.0
 STALL_DELAY_S = 6.0
 RATE_LIMITED_ATTEMPTS = 2
 FULL_CRAWL_ENV = "LILBEE_TEST_FULL_CRAWL"
@@ -301,6 +303,8 @@ class CrawlSite:
     port: int
     requests: list[SiteRequest] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    arrivals: threading.Condition = field(default_factory=threading.Condition)
+    holds: dict[str, tuple[str, float]] = field(default_factory=dict)
 
     def url(self, path: str = "/", host: str = LOOPBACK) -> str:
         """Absolute URL of *path* on *host* at this site's port."""
@@ -312,7 +316,30 @@ class CrawlSite:
             request = SiteRequest(time.monotonic(), host, path)
             self.requests.append(request)
             attempt = sum(1 for r in self.requests if (r.host, r.path) == (host, path))
-            return request, attempt
+        with self.arrivals:
+            self.arrivals.notify_all()
+        return request, attempt
+
+    @contextmanager
+    def holding(self, prefix: str, until_requested: str) -> Iterator[None]:
+        """Keep each request under *prefix* unanswered until one under *until_requested* arrives."""
+        self.holds[prefix] = (until_requested, time.monotonic())
+        try:
+            yield
+        finally:
+            self.holds.pop(prefix, None)
+
+    def hold(self, path: str) -> None:
+        """Block a request to a held prefix until its awaited request arrives, or the bound ends."""
+        for prefix, (awaited, since) in list(self.holds.items()):
+            if path.startswith(prefix):
+                self._wait_for_arrival(awaited, since)
+
+    def _wait_for_arrival(self, prefix: str, since: float) -> None:
+        with self.arrivals:
+            self.arrivals.wait_for(
+                lambda: bool(self.requests_under(prefix, since)), timeout=HOLD_BOUND_S
+            )
 
     def finish(self, request: SiteRequest) -> None:
         """Mark *request* as answered."""
@@ -352,6 +379,7 @@ def _handler_for(site: CrawlSite) -> type[BaseHTTPRequestHandler]:
             parts = urlsplit(self.path)
             request, attempt = site.record(host, self.path)
             try:
+                site.hold(self.path)
                 self._answer(route(host, parts.path, parts.query, site.port, attempt))
             finally:
                 site.finish(request)
