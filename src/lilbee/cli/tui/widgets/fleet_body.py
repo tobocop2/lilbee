@@ -185,7 +185,7 @@ def _edits_from_view(view: PlacementView) -> dict[WorkerRole, _RoleEdit]:
             edits[r.role] = _RoleEdit(
                 r.role, r.model, set(r.devices), r.replicas, r.tensor_split, entry.target
             )
-    if view.rejected_spec_json:
+    if view.rejected_spec_json and view.roles:
         for role, entry in named.items():
             if role not in edits:
                 edits[role] = _edit_from_entry(role, "", entry)
