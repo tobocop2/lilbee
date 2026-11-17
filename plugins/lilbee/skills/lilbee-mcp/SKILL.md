@@ -26,16 +26,10 @@ because they block the shared embedder.
 
 ## Install
 
-Drop this folder under one of:
+Install the skills and the MCP server for your agent with the commands in the
+[install table](https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#install-in-your-agent) in the lilbee usage guide.
 
-```
-.opencode/skills/lilbee-mcp/      # opencode (project)
-.claude/skills/lilbee-mcp/        # Claude (project)
-~/.config/opencode/skills/lilbee-mcp/   # opencode (global)
-~/.claude/skills/lilbee-mcp/      # Claude (global)
-```
-
-Register lilbee as an MCP server (opencode example):
+To register lilbee as an MCP server by hand (opencode example):
 
 ```json
 {
