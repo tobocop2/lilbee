@@ -698,6 +698,7 @@ def _count_processes(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     return started
 
 
+@pytest.mark.real_host_read
 def test_a_cold_list_with_nothing_installed_starts_no_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
