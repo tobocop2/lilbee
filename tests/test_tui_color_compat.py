@@ -614,11 +614,13 @@ class TestNoEmoji:
                 assert [icon.icon for icon in icons] == [msg.COMMAND_PALETTE_ICON]
 
 
+@pytest.mark.xdist_group("block_bar_leak")
 class TestBlockBarAnswerDoesNotLeak:
     """The block bar answer is cached for the process; a fake terminal must not outlive its test.
 
-    The two tests depend on running in this order inside one process: the first
-    caches the answer of a fake terminal, the second reads it back.
+    The two tests run in this order in one worker: the first caches the answer
+    of a fake terminal, the second reads it back. The group mark keeps both in
+    one xdist worker.
     """
 
     def test_first_test_fakes_a_terminal(self):
