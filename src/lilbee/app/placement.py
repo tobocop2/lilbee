@@ -253,7 +253,7 @@ def get_placement() -> PlacementView:
     reading = _planning_engines()
     if not reading.adapters:
         return _no_engine_view(reading)
-    return get_planned_placement()
+    return _logged_placement(reading)
 
 
 def get_planned_placement() -> PlacementView:
@@ -261,14 +261,18 @@ def get_planned_placement() -> PlacementView:
 
     Raises the planner's no-engine error when no engine is installed.
     """
-    view = _read_placement()
+    return _logged_placement(_planning_engines())
+
+
+def _logged_placement(reading: BookReading) -> PlacementView:
+    """The placement planned with *reading*, with each unknown size logged."""
+    view = _read_placement(reading)
     _log_size_unknown(unknown.notice for unknown in view.size_unknown)
     return view
 
 
-def _read_placement() -> PlacementView:
-    """The placement of :func:`get_planned_placement`, without the size log."""
-    reading = _planning_engines()
+def _read_placement(reading: BookReading) -> PlacementView:
+    """The placement planned with *reading*, without the size log."""
     try:
         spec = _active_spec()
         resolved = _resolve(spec, reading, fall_back_to_auto=True)
@@ -307,7 +311,7 @@ def size_unknown_notices(role: WorkerRole) -> list[str]:
     just started logs the fact once.
     """
     try:
-        view = _read_placement()
+        view = _read_placement(_planning_engines())
     except PLACEMENT_READ_ERRORS as exc:
         log.debug("No size notice for the %s model: the placement could not be read: %s", role, exc)
         return []
