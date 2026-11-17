@@ -60,6 +60,57 @@ def _recorded_digest(engine: str, cell: str) -> str:
     return str(next(iter(versions.values()))[cell]["sha256"])
 
 
+_SUMS_FIXTURE = Path(__file__).parent / "fixtures" / "engine_pack_sums" / "SHA256SUMS"
+
+
+def _release_sums() -> dict[tuple[str, str], str]:
+    """The kept SHA256SUMS of each pack release, by (release tag, file name)."""
+    sums: dict[tuple[str, str], str] = {}
+    release = ""
+    for line in _SUMS_FIXTURE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("# release "):
+            release = line.removeprefix("# release ")
+        elif not line.startswith("#"):
+            digest, name = line.split(maxsplit=1)
+            sums[(release, name)] = digest
+    return sums
+
+
+def _shipped_rows() -> list[Any]:
+    return [row for v in MANIFESTS.values() for cells in v.values() for row in cells.values()]
+
+
+def _disagreements(rows: list[Any], sums: dict[tuple[str, str], str]) -> list[str]:
+    """The files whose row digest is not the SHA256SUMS line of the release the url names."""
+    found = []
+    for row in rows:
+        release, name = row["url"].split("/")[-2:]
+        if sums.get((release, name)) != row["sha256"]:
+            found.append(name)
+    return found
+
+
+def test_every_shipped_digest_is_the_line_of_its_release_sums() -> None:
+    rows = _shipped_rows()
+    assert rows
+    assert len(_release_sums()) >= len(rows)
+    assert _disagreements(rows, _release_sums()) == []
+
+
+def test_a_changed_shipped_digest_is_named_against_the_release_sums() -> None:
+    rows = _shipped_rows()
+    changed = [{**rows[0], "sha256": "0" * 64}, *rows[1:]]
+    name = rows[0]["url"].rsplit("/", 1)[-1]
+    assert _disagreements(changed, _release_sums()) == [name]
+
+
+def test_a_row_whose_release_has_no_sums_line_is_named() -> None:
+    rows = _shipped_rows()
+    moved = [{**rows[0], "url": rows[0]["url"].replace("/engine-packs-", "/other-")}, *rows[1:]]
+    name = rows[0]["url"].rsplit("/", 1)[-1]
+    assert _disagreements(moved, _release_sums()) == [name]
+
+
 def test_every_shipped_row_lives_under_the_pack_index_and_matches_its_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
