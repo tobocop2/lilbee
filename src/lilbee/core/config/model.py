@@ -392,11 +392,6 @@ class Config(BaseSettings):
     topic_threshold: float = ConfigField(
         default=0.75, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST, reindex=True
     )
-    # Size chunks in real tokens via the embedder's tokenizer backend, not the
-    # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
-    token_sizing: bool = ConfigField(
-        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
-    )
     # Index each recognized table as its own markdown-serialized chunk.
     table_extraction: bool = ConfigField(
         default=False, writable=True, profile=ProfileScope.INGEST, reindex=True

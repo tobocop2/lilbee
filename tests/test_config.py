@@ -760,6 +760,13 @@ class TestOcrFromConfigToml:
         assert (loaded.ocr, loaded.top_k) == (OcrMode.AUTO, 7)
         assert caplog.records == []
 
+    def test_a_removed_token_sizing_key_takes_the_unknown_key_path(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            loaded = self._load(tmp_path, "token_sizing = true\ntop_k = 7\n")
+        assert loaded.top_k == 7
+        assert not hasattr(loaded, "token_sizing")
+        assert caplog.records == []
+
 
 class TestFlashAttentionConfig:
     def test_default_is_none(self, tmp_path) -> None:

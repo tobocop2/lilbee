@@ -3619,6 +3619,46 @@ def test_count_tokens_without_tokenize_route_estimates_by_characters() -> None:
     assert client.count_tokens("x" * 10) == 4
 
 
+def _tei_client(handler) -> LlamaServerClient:
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://cpu0")
+    return LlamaServerClient(
+        "http://cpu0", "m", http=http, profile=TEI.request_profile(WorkerRole.EMBED)
+    )
+
+
+def test_tei_count_is_the_length_of_the_batch_route_token_list() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"path": request.url.path, "body": json.loads(request.content)})
+        return httpx.Response(200, json=[[{"id": i} for i in range(7)]])
+
+    assert _tei_client(handler).count_tokens("hello world") == 7
+    assert sent == [{"path": "/upstream/m/tokenize", "body": {"inputs": ["hello world"]}}]
+
+
+def test_tei_count_retries_a_gateway_error(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json=[[{"id": 1}, {"id": 2}]])
+
+    assert _tei_client(handler).count_text_tokens("hi") == 2
+    assert calls["n"] == 2
+
+
+def test_tei_count_refuses_an_unexpected_body() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"tokens": [1]})
+
+    with pytest.raises(ValueError, match="unexpected body"):
+        _tei_client(handler).count_text_tokens("hi")
+
+
 def test_count_chat_prompt_tokens_without_tokenize_route_asks_for_an_estimate() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"no request expected, got {request.url.path}")

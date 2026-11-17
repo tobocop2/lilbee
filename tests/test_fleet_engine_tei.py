@@ -269,7 +269,7 @@ def test_launch_raises_the_server_batch_limit_to_the_client_batch(tmp_path: Path
         "--max-client-batch-size",
         "64",
         "--max-batch-tokens",
-        "2176",
+        "640",
     ]
 
 
@@ -499,16 +499,16 @@ def _batch_tokens(tmp_path: Path, ctx: int, target: RoleTarget = RoleTarget.GPU)
 def test_the_default_chunk_size_bounds_the_warm_up_batch(
     tmp_path: Path, target: RoleTarget
 ) -> None:
-    """The default chunk size of 512 gives 512 * 4 chunk tokens plus 128 for a rerank query."""
+    """The default chunk size of 512 gives 512 chunk tokens plus 128 for a rerank query."""
     assert cfg.chunk_size == 512
-    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX, target) == 2176
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX, target) == 640
 
 
 def test_a_larger_chunk_size_raises_the_warm_up_batch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(cfg, "chunk_size", 1024)
-    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX) == 4224
+    assert _batch_tokens(tmp_path, EMBED_FALLBACK_CTX) == 1152
 
 
 @pytest.mark.parametrize("ctx", [512, EMBED_FALLBACK_CTX, 8192, 32768])
