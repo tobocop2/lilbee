@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from lilbee.runtime.cpu import (
     _cgroup_cpu_quota,
@@ -99,6 +104,232 @@ def test_cgroup_v1_unlimited_is_none(tmp_path) -> None:
 
 def test_cgroup_absent_is_none(tmp_path) -> None:
     assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def _proc_cgroup(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "proc-self-cgroup"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_cgroup_v2_reads_the_process_own_cgroup(tmp_path) -> None:
+    # A systemd scope without a cgroup namespace: the mount is the host root,
+    # which has no cpu.max, and the limit sits at the process's own path.
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"system.slice/job.scope/cpu.max": "200000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/system.slice/job.scope\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+def test_cgroup_v2_parent_quota_caps_an_unlimited_child(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {"a/cpu.max": "100000 100000\n", "a/b/cpu.max": "max 100000\n"},
+    )
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+def test_cgroup_v2_child_quota_wins_when_tighter_than_parent(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu.max": "800000 100000\n",
+            "a/cpu.max": "400000 100000\n",
+            "a/b/cpu.max": "150000 100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1.5
+
+
+def test_cgroup_v2_ancestor_quota_caps_a_looser_leaf(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {"a/cpu.max": "100000 100000\n", "a/b/cpu.max": "400000 100000\n"},
+    )
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+def test_cgroup_v1_ancestor_quota_caps_a_looser_leaf(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu/a/cpu.cfs_quota_us": "100000\n",
+            "cpu/a/cpu.cfs_period_us": "100000\n",
+            "cpu/a/b/cpu.cfs_quota_us": "400000\n",
+            "cpu/a/b/cpu.cfs_period_us": "100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="/proc/self/cgroup is POSIX only")
+def test_cgroup_proc_path_that_is_not_utf8_reads_the_mount(tmp_path) -> None:
+    # The kernel prints a cgroup name as raw bytes; no such directory exists here.
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "200000 100000\n"})
+    proc = tmp_path / "proc-self-cgroup"
+    proc.write_bytes(b"0::/a\xff\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="/proc/self/cgroup is POSIX only")
+def test_cgroup_proc_path_with_utf8_name_reads_its_limit_under_a_c_locale(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "200000 100000\n", "café/cpu.max": "100000 100000\n"})
+    proc = tmp_path / "proc-self-cgroup"
+    proc.write_bytes("0::/café\n".encode())
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from lilbee.runtime.cpu import _cgroup_cpu_quota\n"
+        "print(_cgroup_cpu_quota(Path(sys.argv[1]), Path(sys.argv[2])))\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), str(proc)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    assert result.stdout.strip() == "1.0"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs a POSIX permission check that root and Windows skip",
+)
+def test_cgroup_unsearchable_parent_directory_reads_the_other_levels(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "200000 100000\n", "a/b/cpu.max": "100000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/a/b\n")
+    (root / "a").chmod(0)
+    try:
+        assert _cgroup_cpu_quota(root, proc) == 2
+    finally:
+        (root / "a").chmod(0o755)
+
+
+def test_cgroup_v1_reads_the_process_own_cpu_cgroup(tmp_path) -> None:
+    # A v1 host also lists a unified "0::" line; the cpu line names the path.
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu/cpu.cfs_quota_us": "-1\n",
+            "cpu/cpu.cfs_period_us": "100000\n",
+            "cpu/job/cpu.cfs_quota_us": "300000\n",
+            "cpu/job/cpu.cfs_period_us": "100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/job\n4:memory:/job\n0::/job\n")
+    assert _cgroup_cpu_quota(root, proc) == 3
+
+
+def test_cgroup_v1_parent_quota_caps_the_child(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {
+            "cpu/a/cpu.cfs_quota_us": "200000\n",
+            "cpu/a/cpu.cfs_period_us": "100000\n",
+            "cpu/a/b/cpu.cfs_quota_us": "-1\n",
+            "cpu/a/b/cpu.cfs_period_us": "100000\n",
+        },
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/a/b\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+def test_cgroup_path_missing_under_the_mount_reads_the_mount(tmp_path) -> None:
+    # Docker on v1 mounts the container's own cgroup at the controller root
+    # while /proc/self/cgroup still shows the host path.
+    root = tmp_path / "mount"
+    _write_cgroup(
+        root,
+        {"cpu/cpu.cfs_quota_us": "250000\n", "cpu/cpu.cfs_period_us": "100000\n"},
+    )
+    proc = _proc_cgroup(tmp_path, "6:cpu,cpuacct:/docker/abc\n0::/docker/abc\n")
+    assert _cgroup_cpu_quota(root, proc) == 2.5
+
+
+def test_cgroup_path_with_parent_reference_reads_the_mount(tmp_path) -> None:
+    # "x" sits beside the mount with a tighter quota; a walk that followed ".." would take it.
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "300000 100000\n"})
+    _write_cgroup(tmp_path, {"x/cpu.max": "100000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/../x\n")
+    assert _cgroup_cpu_quota(root, proc) == 3
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows file name cannot hold a colon")
+def test_cgroup_path_may_start_with_an_x_and_contain_a_colon(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"Xray:1.slice/job.scope/cpu.max": "200000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/Xray:1.slice/job.scope\n")
+    assert _cgroup_cpu_quota(root, proc) == 2
+
+
+def test_cgroup_v2_zero_period_is_none(tmp_path) -> None:
+    _write_cgroup(tmp_path, {"cpu.max": "100000 0\n"})
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def test_cgroup_v2_one_microsecond_period_is_a_limit(tmp_path) -> None:
+    _write_cgroup(tmp_path, {"cpu.max": "5 1\n"})
+    assert _cgroup_cpu_quota(tmp_path) == 5
+
+
+def test_cgroup_v1_zero_period_is_none(tmp_path) -> None:
+    _write_cgroup(
+        tmp_path,
+        {"cpu/cpu.cfs_quota_us": "100000\n", "cpu/cpu.cfs_period_us": "0\n"},
+    )
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def test_cgroup_v1_zero_quota_is_none(tmp_path) -> None:
+    _write_cgroup(
+        tmp_path,
+        {"cpu/cpu.cfs_quota_us": "0\n", "cpu/cpu.cfs_period_us": "100000\n"},
+    )
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
+def test_cgroup_v1_smallest_quota_and_period_are_limits(tmp_path) -> None:
+    _write_cgroup(
+        tmp_path,
+        {"cpu/cpu.cfs_quota_us": "1\n", "cpu/cpu.cfs_period_us": "1\n"},
+    )
+    assert _cgroup_cpu_quota(tmp_path) == 1
+
+
+def test_cgroup_unreadable_proc_file_reads_the_mount(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"cpu.max": "300000 100000\n"})
+    assert _cgroup_cpu_quota(root, tmp_path / "absent") == 3
+
+
+def test_engine_thread_count_honours_the_process_own_cgroup(tmp_path) -> None:
+    root = tmp_path / "mount"
+    _write_cgroup(root, {"system.slice/job.scope/cpu.max": "200000 100000\n"})
+    proc = _proc_cgroup(tmp_path, "0::/system.slice/job.scope\n")
+    with (
+        mock.patch("lilbee.runtime.cpu._CGROUP_ROOT", root),
+        mock.patch("lilbee.runtime.cpu._PROC_CGROUP", proc),
+        mock.patch("lilbee.runtime.cpu.os.cpu_count", return_value=96),
+        _affinity(96),
+    ):
+        assert engine_thread_count() == 2
 
 
 def test_available_cpu_count_rounds_a_fractional_quota_up() -> None:
