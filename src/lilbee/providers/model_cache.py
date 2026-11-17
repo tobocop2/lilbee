@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal, card_totals
-from lilbee.providers.fleet.gpu_env import gpu_environ
+from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, gpu_environ
 
 log = logging.getLogger(__name__)
 
@@ -249,7 +249,7 @@ def _apply_cuda_visible_mask(devices: list[CardTotal]) -> list[CardTotal]:
     rule for a repeated entry, so a mask that names one card twice exposes
     nothing here: the budget is unknown.
     """
-    raw = gpu_environ().get("CUDA_VISIBLE_DEVICES")
+    raw = gpu_environ().get(CUDA_VISIBLE_VAR)
     if raw is None:
         return [card for card in devices if card.total_bytes is not None]
     visible: list[CardTotal] = []
