@@ -491,8 +491,6 @@ _GATEWAY_BACKOFF_MAX_S = 8.0
 _UNHEALTHY_RETRY_S = 30.0
 # A truncation check that failed on a dead or busy router waits this long before it asks again.
 _TRUNCATION_CHECK_RETRY_S = _UNHEALTHY_RETRY_S
-# The text the router tokenizes once to learn how many special tokens it adds to an input.
-_SPECIAL_PROBE_TEXT = "a"
 _T = TypeVar("_T")
 
 
@@ -613,8 +611,6 @@ class LlamaServerClient:
         self.in_flight = 0
         # The server's input limit; None until read.
         self._max_input: int | None = None
-        # The special tokens the router adds to each input; None until read.
-        self._special_tokens: int | None = None
         # Monotonic time before which the truncation check does not run: a failure sets a
         # cool-down, a route that is absent sets infinity.
         self._check_resume_at = 0.0
@@ -1241,10 +1237,7 @@ class LlamaServerClient:
             if limit is None or path is None:
                 return
             route = path
-            added = self._special_token_count(path)
-            cut = sum(
-                self._count_inputs_past_limit(batch, limit, added, path) for batch in sub_batches
-            )
+            cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
         except _TRUNCATION_CHECK_FAILURES as exc:
             self._pause_truncation_check(exc, route)
             return
@@ -1302,28 +1295,14 @@ class LlamaServerClient:
             raise ValueError(f"the body is not a list of token lists: {resp.text.strip()[:200]}")
         return counts
 
-    def _special_token_count(self, path: str) -> int:
-        """The special tokens the router adds to an input, read once per client.
-
-        The route flags each token it returns, so the count is the flagged tokens of
-        one short input.
-        """
-        if self._special_tokens is None:
-            [tokens] = self._count_route_tokens(path, [_SPECIAL_PROBE_TEXT])
-            self._special_tokens = sum(bool(token["special"]) for token in tokens)
-        return self._special_tokens
-
-    def _count_inputs_past_limit(self, texts: list[str], limit: int, added: int, path: str) -> int:
+    def _count_inputs_past_limit(self, texts: list[str], limit: int, path: str) -> int:
         """How many of *texts* the tokenizer route *path* counts past *limit*.
 
-        A token is at least one character and the router adds *added* special tokens
-        to each input, so only a text with more than ``limit - added`` characters can
-        pass the limit. The router counts those in one request.
+        Every text is counted, in one request: the route counts the special tokens, and
+        a byte-level tokenizer makes more than one token from a character, so no
+        character count bounds the tokens.
         """
-        long = [text for text in texts if len(text) + added > limit]
-        if not long:
-            return 0
-        return sum(len(tokens) > limit for tokens in self._count_route_tokens(path, long))
+        return sum(len(tokens) > limit for tokens in self._count_route_tokens(path, texts))
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
