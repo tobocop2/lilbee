@@ -260,25 +260,35 @@ def resolve_source_root(filename: str) -> tuple[Path, Path] | None:
     return base, base / rest
 
 
+def _within_roots(resolved: Path) -> bool:
+    """Whether the resolved path is a document root or lies inside one."""
+    config = active_config()
+    roots = [
+        config.documents_dir.resolve(),
+        *(Path(root).resolve() for root in config.linked_roots.values()),
+    ]
+    return any(resolved.is_relative_to(root) for root in roots)
+
+
+def path_within_roots(resolved: Path) -> bool:
+    """Whether the resolved path lies inside ``documents_dir`` or a registered root."""
+    with settings.fresh_registry_pinned(active_config()):
+        return _within_roots(resolved)
+
+
 def resolve_source_path_checked(filename: str) -> Path | None:
     """Resolve *filename*, returning None if it escapes its owning root.
 
     Guards a surface that resolves a caller-supplied source key (the HTTP
-    document-serving endpoint): a key with ``..`` that would climb out of
-    ``documents_dir`` or a registered root is rejected. Keys produced by
-    discovery never contain ``..``; this defends against a crafted request, not
-    stored data.
+    document-serving endpoint, the Sources link): a key with ``..`` that would
+    climb out of ``documents_dir`` or a registered root is rejected. Keys
+    produced by discovery never contain ``..``; this defends against a crafted
+    request, not stored data.
     """
-    config = active_config()
-    with settings.fresh_registry_pinned(config):
+    with settings.fresh_registry_pinned(active_config()):
         resolved = resolve_source_path(filename).resolve(strict=False)
-        roots = [
-            config.documents_dir.resolve(),
-            *(Path(root).resolve() for root in config.linked_roots.values()),
-        ]
-    if any(resolved == root or root in resolved.parents for root in roots):
-        return resolved
-    return None
+        inside = _within_roots(resolved)
+    return resolved if inside else None
 
 
 class ScannedFile(NamedTuple):

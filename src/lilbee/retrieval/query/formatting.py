@@ -96,13 +96,14 @@ def markdown_text(text: str) -> str:
 
 def _source_file_url(source: str) -> str | None:
     """A ``file://`` URL to the source on disk, so a reader can click it open, or
-    None when the path can't be resolved to an absolute location."""
-    from lilbee.data.ingest.discovery import resolve_source_path
+    None when the path is unresolvable or lies outside every document root."""
+    from lilbee.data.ingest.discovery import resolve_source_path_checked
 
     try:
-        return resolve_source_path(source).resolve(strict=False).as_uri()
+        resolved = resolve_source_path_checked(source)
     except (OSError, ValueError):
         return None
+    return None if resolved is None else resolved.as_uri()
 
 
 def _location_suffix(result: SearchChunk) -> str:
