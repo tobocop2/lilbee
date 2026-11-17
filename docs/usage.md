@@ -494,9 +494,9 @@ lilbee is also the retrieval backend for AI coding agents. Wire it into any
 agent that speaks MCP (Claude Code, opencode, Cursor, anything else) and the
 agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can
 quote back. Your files, the embeddings, and the index stay on your computer.
-See the [`lilbee-mcp` skill](../plugins/lilbee/skills/lilbee-mcp/SKILL.md) for the full MCP
-tool list and workflows. Non-MCP agents can use the [JSON CLI
-fallback](#json-cli-fallback) below.
+See the [`lilbee-mcp` skill](../plugins/lilbee/skills/lilbee-mcp/SKILL.md) for the search
+and citation workflow. It teaches an agent to use the MCP tools when connected and the
+[JSON CLI fallback](#json-cli-fallback) below when not.
 
 ### Install in your agent
 
@@ -636,11 +636,11 @@ MCP. The shape mirrors the MCP tools: one JSON object per stdout line, errors
 return non-zero exit with `{"error": "..."}`, and `distance` scores are
 lower-is-more-relevant. Vectors are stripped from output.
 
-**Read (inline, no LLM):**
+**Read (inline):**
 
 ```bash
 lilbee --json status                           # indexed sources, models, totals
-lilbee --json search "query" --top-k 12        # cited chunks (no LLM at query time)
+lilbee --json search "query" --top-k 12        # cited chunks (may ask the chat model for query variants)
 lilbee --json chunks manual.pdf                # inspect how one source was chunked
 lilbee --json topics "auth"                    # concept-graph view of a query
 lilbee --json model list                       # installed models
@@ -693,7 +693,8 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 
 **Two patterns worth knowing:**
 
-- **`search` vs `ask`.** `search` returns raw chunks without an LLM call. Use it
+- **`search` vs `ask`.** `search` returns raw chunks and generates no answer. By default it
+  may ask the chat model for query variants. Use it
   when your agent has its own LLM and just needs context from your files. `ask` runs
   lilbee's local RAG end-to-end and returns an answer with sources. Most
   non-MCP agents want `search`.
