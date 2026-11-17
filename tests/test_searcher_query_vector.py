@@ -71,7 +71,7 @@ def test_a_scoped_query_searches_with_its_vector_and_text():
 def test_a_plain_query_searches_with_its_vector_and_text():
     searcher, store = _wired()
 
-    searcher._candidates("bees", 5, None)
+    searcher._candidates("bees", 5, None, [])
 
     searcher._embedder.embed_query.assert_called_once_with("bees")
     assert store.search.call_args.args == (QUERY_VECTOR,)
