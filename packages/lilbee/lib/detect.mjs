@@ -226,8 +226,9 @@ async function rocmBuild(amd, platform, cuda, exists, tryExec, log) {
 function linuxVariant(cuda, rocm, noAvx2, log) {
   if (noAvx2) {
     log(COMPAT_FAMILY_LOG);
-    // compat ships cu124 and rocm flavors only
-    if (cuda) return "compat-cu124";
+    // compat ships cu124 and rocm flavors only; a driver below CUDA 12.4 runs neither CUDA build
+    if (cuda === "cu124" || cuda === "cu125") return "compat-cu124";
+    if (cuda) return "compat";
     return rocm ? "compat-rocm" : "compat";
   }
   if (cuda) return cuda;
