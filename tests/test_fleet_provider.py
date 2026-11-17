@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import gc
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ import socket
 import struct
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -2106,7 +2107,7 @@ def test_dispatch_vision_model_error_on_the_retry_replica_surfaces_unchanged() -
 
 def test_chat_streams_from_server() -> None:
     client = _fake_client(0)
-    client.chat_stream_items.return_value = iter(["a", "b"])
+    client.chat_stream_items.return_value = _frames_of("a", "b")
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a", "b"]
     client.chat_stream_items.assert_called_once()
@@ -2115,7 +2116,7 @@ def test_chat_streams_from_server() -> None:
 def test_chat_stream_with_no_frames_yields_nothing() -> None:
     # Priming must pass an immediately-exhausted stream through, not error on it.
     client = _fake_client(0)
-    client.chat_stream_items.return_value = iter([])
+    client.chat_stream_items.return_value = _frames_of()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == []
 
@@ -2136,6 +2137,165 @@ def test_chat_stream_close_before_iteration_releases_the_request() -> None:
     stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
     stream.close()  # truncated before consuming anything
     assert closed == [True]  # the source stream (and its request slot) was released
+
+
+def _frames_of(*frames: str) -> Generator[str]:
+    """A closable frame stream, as the real client's chat_stream_items returns."""
+    yield from frames
+
+
+def _counting_client() -> MagicMock:
+    """A fake client whose reserve and release move ``in_flight`` like the real one."""
+    client = _fake_client(0)
+
+    def _reserve() -> None:
+        client.in_flight += 1
+
+    def _release() -> None:
+        client.in_flight -= 1
+
+    client.reserve.side_effect = _reserve
+    client.release.side_effect = _release
+    return client
+
+
+def _reload_twice_away_from(p: FleetProvider, old: MagicMock) -> None:
+    """Two reloads in a row: the first retires *old*, the second closes idle retired clients."""
+    p._clients = {WorkerRole.CHAT: [_counting_client()]}
+    with p._lock:
+        p._retire_clients([old])
+        p._retire_clients([])
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_chat_client_is_not_closed_by_reloads_during_its_request(streaming: bool) -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+
+    def _request(*_args: object, **_kwargs: object) -> object:
+        # The reloads land after the pick and before the call counts itself.
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        if streaming:
+            return _frames_of("a")
+        return ChatResult(text="a", tool_calls=(), finish_reason=FinishReason.STOP)
+
+    client.chat_stream_items.side_effect = _request
+    client.chat_result.side_effect = _request
+    if streaming:
+        assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a"]
+    else:
+        result = p.chat([{"role": "user", "content": "hi"}])
+        assert result.text == "a"
+    assert client.in_flight == 0  # the reservation is given back
+
+
+def test_chat_with_tools_client_is_not_closed_by_reloads_during_its_request() -> None:
+    from lilbee.providers.base import ChatToolResult
+
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+
+    def _request(*_args: object, **_kwargs: object) -> object:
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        return ChatToolResult(content="a", tool_calls=[])
+
+    client.chat_tools.side_effect = _request
+    p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    assert client.in_flight == 0
+
+
+def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
+    client = _counting_client()
+    seen: list[int] = []
+
+    def _text_tokens(_text: str) -> int:
+        seen.append(client.in_flight)
+        return 3
+
+    def _prompt_tokens(*_args: object, **_kwargs: object) -> int:
+        seen.append(client.in_flight)
+        return 7
+
+    client.count_text_tokens.side_effect = _text_tokens
+    client.count_chat_prompt_tokens.side_effect = _prompt_tokens
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert p.count_chat_text_tokens("hi") == 3
+    assert p.count_chat_prompt_tokens([{"role": "user", "content": "hi"}]) == 7
+    assert seen == [1, 1]  # reserved during each call
+    assert client.in_flight == 0
+
+
+def test_chat_call_gives_the_reservation_back_when_it_fails() -> None:
+    client = _counting_client()
+    client.chat_result.side_effect = ProviderError("bad", kind=ProviderErrorKind.BAD_REQUEST)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    with pytest.raises(ProviderError, match="bad"):
+        p.chat([{"role": "user", "content": "hi"}])
+    assert client.in_flight == 0
+
+
+def test_chat_stream_holds_the_reservation_until_it_is_exhausted() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1  # held while the caller reads
+    assert next(stream) == "a"
+    assert client.in_flight == 1
+    assert list(stream) == ["b"]
+    assert client.in_flight == 0
+    stream.close()  # a second close gives nothing back twice
+    assert client.in_flight == 0
+
+
+def test_chat_stream_closed_early_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    stream.close()
+    assert client.in_flight == 0
+
+
+def test_chat_stream_that_fails_midway_gives_the_reservation_back() -> None:
+    def _frames():
+        yield "a"
+        raise ProviderError("died", kind=ProviderErrorKind.BAD_REQUEST)
+
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert next(stream) == "a"
+    assert client.in_flight == 1
+    with pytest.raises(ProviderError, match="died"):
+        next(stream)
+    assert client.in_flight == 0
+
+
+def test_chat_stream_that_fails_to_open_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.side_effect = ProviderError("no", kind=ProviderErrorKind.BAD_REQUEST)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    with pytest.raises(ProviderError, match="no"):
+        p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 0
+
+
+def test_chat_stream_dropped_unread_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    del stream
+    gc.collect()
+    assert client.in_flight == 0
 
 
 def _book_of(monkeypatch: pytest.MonkeyPatch, engine: object) -> None:
@@ -7066,7 +7226,7 @@ def test_chat_stream_open_failure_rediscovers_once_and_streams(monkeypatch, tmp_
         if not clients:
             client.chat_stream_items.return_value = _dead_stream()
         else:
-            client.chat_stream_items.return_value = iter(["a", "b"])
+            client.chat_stream_items.return_value = _frames_of("a", "b")
         clients.append(client)
         return client
 

@@ -21,6 +21,7 @@ import re
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeVar, overload
@@ -133,7 +134,7 @@ _HOLD_SWEEP_THREAD = "fleet-hold-sweep"
 _DRAIN_POLL_S = 0.25
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from lilbee.providers.base import (
         ChatMessage,
@@ -383,7 +384,7 @@ def _log_adopted_launches(
         planning.log_role_launches(launches, engines=engines, owner_pid=state.pid)
 
 
-class _PrimedStream:
+class _PrimedStream(Iterator["ChatStreamItem"]):
     """A stream re-fronted with its eagerly-pulled first frame.
 
     close() always reaches the source stream, even before any iteration, so a
@@ -394,9 +395,6 @@ class _PrimedStream:
     def __init__(self, first: ChatStreamItem, source: ClosableIterator[ChatStreamItem]) -> None:
         self._first: list[ChatStreamItem] = [first]
         self._source = source
-
-    def __iter__(self) -> _PrimedStream:
-        return self
 
     def __next__(self) -> ChatStreamItem:
         if self._first:
@@ -418,6 +416,61 @@ def _primed_stream(items: ClosableIterator[ChatStreamItem]) -> ClosableIterator[
     except StopIteration:
         return items  # already exhausted; still closable
     return _PrimedStream(first, items)
+
+
+class _ReservedStream:
+    """A stream that holds its client's reservation until it ends, fails or closes."""
+
+    def __init__(self, client: LlamaServerClient, source: ClosableIterator[ChatStreamItem]) -> None:
+        self._client = client
+        self._source = source
+        self._held = True
+
+    def __iter__(self) -> _ReservedStream:
+        return self
+
+    def __next__(self) -> ChatStreamItem:
+        try:
+            return next(self._source)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        try:
+            self._source.close()
+        finally:
+            self._give_back()
+
+    def __del__(self) -> None:
+        self._give_back()
+
+    def _give_back(self) -> None:
+        if self._held:
+            self._held = False
+            self._client.release()
+
+
+def _stream_reserved(
+    clients: list[LlamaServerClient],
+    open_stream: Callable[[LlamaServerClient], ClosableIterator[ChatStreamItem]],
+) -> ClosableIterator[ChatStreamItem]:
+    """Open a stream on the least-busy client; its reservation lasts until the stream ends."""
+    client = _reserve_least_in_flight(clients)
+    try:
+        return _ReservedStream(client, _primed_stream(open_stream(client)))
+    except BaseException:
+        client.release()
+        raise
+
+
+def _call_reserved(clients: list[LlamaServerClient], call: Callable[[LlamaServerClient], _T]) -> _T:
+    """Run *call* on the least-busy client, holding its reservation for the whole call."""
+    client = _reserve_least_in_flight(clients)
+    try:
+        return call(client)
+    finally:
+        client.release()
 
 
 def _call_with_failover(
@@ -2318,16 +2371,20 @@ class FleetProvider:
                 # _with_rediscover; a failure past the first frame surfaces to the
                 # caller as a retry error, and rediscovery covers the next call.
                 return self._with_rediscover(
-                    lambda: _primed_stream(
-                        _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_stream_items(
+                    lambda: _stream_reserved(
+                        self._require_clients(WorkerRole.CHAT),
+                        lambda client: client.chat_stream_items(
                             messages, tools=tools, tool_choice=tool_choice, options=server_options
-                        )
+                        ),
                     ),
                     role=WorkerRole.CHAT,
                 )
             return self._with_rediscover(
-                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_result(
-                    messages, tools=tools, tool_choice=tool_choice, options=server_options
+                lambda: _call_reserved(
+                    self._require_clients(WorkerRole.CHAT),
+                    lambda client: client.chat_result(
+                        messages, tools=tools, tool_choice=tool_choice, options=server_options
+                    ),
                 ),
                 role=WorkerRole.CHAT,
             )
@@ -2352,8 +2409,11 @@ class FleetProvider:
             )
             server_options = chat_options_to_kwargs(options) or None
             return self._with_rediscover(
-                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_tools(
-                    messages, tools=tools, tool_choice=tool_choice, options=server_options
+                lambda: _call_reserved(
+                    self._require_clients(WorkerRole.CHAT),
+                    lambda client: client.chat_tools(
+                        messages, tools=tools, tool_choice=tool_choice, options=server_options
+                    ),
                 ),
                 role=WorkerRole.CHAT,
             )
@@ -2429,8 +2489,9 @@ class FleetProvider:
         """
         with self._lazy_warm_scope():
             return self._with_rediscover(
-                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).count_text_tokens(
-                    text
+                lambda: _call_reserved(
+                    self._require_clients(WorkerRole.CHAT),
+                    lambda client: client.count_text_tokens(text),
                 ),
                 role=WorkerRole.CHAT,
             )
@@ -2456,10 +2517,11 @@ class FleetProvider:
         server_options = chat_options_to_kwargs(options) or None
         with self._lazy_warm_scope():
             return self._with_rediscover(
-                lambda: _least_in_flight(
-                    self._require_clients(WorkerRole.CHAT)
-                ).count_chat_prompt_tokens(
-                    messages, tools=tools, tool_choice=tool_choice, options=server_options
+                lambda: _call_reserved(
+                    self._require_clients(WorkerRole.CHAT),
+                    lambda client: client.count_chat_prompt_tokens(
+                        messages, tools=tools, tool_choice=tool_choice, options=server_options
+                    ),
                 ),
                 role=WorkerRole.CHAT,
             )
