@@ -286,9 +286,24 @@ def resolve_source_path_checked(filename: str) -> Path | None:
     request, not stored data.
     """
     with settings.fresh_registry_pinned(active_config()):
-        resolved = resolve_source_path(filename).resolve(strict=False)
-        inside = _within_roots(resolved)
+        resolved = _resolve_unless_looped(resolve_source_path(filename))
+        inside = resolved is not None and _within_roots(resolved)
     return resolved if inside else None
+
+
+def _resolve_unless_looped(path: Path) -> Path | None:
+    """Resolve *path*, or return None when a symlink loop keeps it from resolving.
+
+    Earlier Python versions raise on a loop. Python 3.13 returns a path that still holds
+    the looped link, and a fully resolved path holds no link.
+    """
+    try:
+        resolved = path.resolve(strict=False)
+    except RuntimeError:
+        return None
+    if any(part.is_symlink() for part in (resolved, *resolved.parents)):
+        return None
+    return resolved
 
 
 class ScannedFile(NamedTuple):
