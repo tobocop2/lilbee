@@ -195,3 +195,15 @@ def test_the_llama_cpp_cell_hands_the_epoch_to_the_wheel_build() -> None:
     (build,) = (i for i, run in enumerate(steps) if "python -m build --wheel" in run)
     assert clone < build
     assert '>> "$GITHUB_ENV"' in steps[clone]
+
+
+def test_the_multigpu_wheel_build_reads_the_epoch_before_it_builds() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-multigpu.yml").read_text(encoding="utf-8")
+    )
+    run = next(
+        step["run"]
+        for step in workflow["jobs"]["build-multigpu"]["steps"]
+        if step.get("name") == "Build the lilbee-engine-llama-cpp wheel"
+    )
+    assert run.index("source_date_epoch.sh") < run.index("python -m build --wheel")
