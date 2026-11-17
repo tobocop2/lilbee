@@ -27,6 +27,7 @@ from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.lemonade import LemonadeAdapter
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
 
@@ -448,7 +449,17 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     IK_LLAMA.assert_loadable("repo", "file", None)
     IK_LLAMA.runtime_env()
     IK_LLAMA.target_env(RoleTarget.CPU, 0)
-    IK_LLAMA.estimate_memory(None)  # type: ignore[arg-type]
+    IK_LLAMA.estimate_memory(
+        MemoryRequest(
+            model_path=path,
+            ctx=16,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=False,
+            kv_cache_type=cfg.kv_cache_type,
+            on_cpu=True,
+        )
+    )
     IK_LLAMA.check_readback(path)
     IK_LLAMA.supports_fit_target(path)
     IK_LLAMA.supports_shared_kv(path)

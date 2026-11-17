@@ -224,6 +224,7 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
         "flash_attn": True,
         "kv_cache_type": KvCacheType.F16,
         "unified": False,
+        "on_cpu": False,
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),
         "engine": LLAMA,

@@ -6,6 +6,7 @@ See docs/architecture.md (VRAM estimation).
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -33,6 +34,17 @@ _SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
 _FLAG_OVERRIDE_TENSOR = "--override-tensor"
 _BUFFER_TYPE_CPU = "CPU"
+_FLAG_RAW = "--raw"
+
+# The raw header lists each tensor with its ggml type id and shape. The llama.cpp CPU
+# build repacks two-dimensional Q4_0, Q4_K and IQ4_NL tensors into an anonymous copy
+# (measured on an AVX2 host; other quant types stay in the mapped file).
+_KEY_TENSOR_INFOS = "tensorInfos"
+_KEY_TENSOR_TYPE = "type"
+_KEY_TENSOR_DIMS = "nDimensions"
+_KEY_TENSOR_SHAPE = "dimensions"
+_REPACKED_TYPES = frozenset({2, 12, 20})
+_MATRIX_DIMS = 2
 
 # gguf-parser JSON keys: the per-instance footprint lives under estimate.items
 # (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
@@ -322,6 +334,39 @@ def _run_parser(argv: list[str], path_str: str) -> str:
     if returncode != 0:
         raise failed
     return stdout
+
+
+def repacked_weight_bytes(model_path: Path) -> int:
+    """Bytes of the weights the llama.cpp CPU build copies into its repacked layout."""
+    return _cached_repacked_bytes(
+        engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
+    )
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> int:
+    """Memoised sum of the matrix tensors that have a repacked CPU layout."""
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
+    try:
+        tensors = json.loads(_run_parser(argv, path_str))[_KEY_TENSOR_INFOS]
+        total = 0
+        for tensor in tensors:
+            if (
+                tensor[_KEY_TENSOR_TYPE] not in _REPACKED_TYPES
+                or tensor[_KEY_TENSOR_DIMS] != _MATRIX_DIMS
+            ):
+                continue
+            block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType(tensor[_KEY_TENSOR_TYPE])]
+            total += math.prod(tensor[_KEY_TENSOR_SHAPE]) // block * type_size
+        return total
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError(
+            f"Could not size the model {path_str!r}: the estimator returned unreadable output.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        ) from exc
 
 
 def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
