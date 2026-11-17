@@ -6,14 +6,18 @@ caller receives, then the same content as the CLI and the HTTP route show it.
 
 from __future__ import annotations
 
+import io
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from lilbee.app import placement as app_placement
+from lilbee.cli import placement as cli_placement
 from lilbee.cli.placement import placement_app
 from lilbee.core import settings
 from lilbee.core.config import cfg
@@ -35,6 +39,8 @@ SAVED_CANONICAL = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))}).
 PIN_MESSAGE = "chat is pinned to device 3, but this machine lists 1 device."
 EMBED_REASON = "embed cannot run on the NPU with this engine."
 VISION_REASON = "vision is pinned to a card this machine lacks."
+
+CLEAR_INSTRUCTION = "run 'lilbee placement clear' or set a new one"
 
 CLI = CliRunner()
 
@@ -148,23 +154,25 @@ def _shown(data_root: Path) -> str:
     return " ".join(result.stdout.split())
 
 
-def test_cli_show_prints_the_refusal_and_the_ignored_note_for_a_raising_spec(
+def test_cli_show_prints_the_refusal_and_the_clear_instruction_for_a_raising_spec(
     monkeypatch, saved_spec
 ):
     _stub_planner(monkeypatch, _spec_is_unplannable)
 
     shown = _shown(saved_spec)
 
-    assert PIN_MESSAGE in shown
+    assert shown.endswith(f"{PIN_MESSAGE} {CLEAR_INSTRUCTION}")
     assert "is being ignored" not in shown
 
 
-def test_cli_show_prints_every_refused_role_reason(monkeypatch, saved_spec):
+def test_cli_show_prints_every_refused_role_reason_and_the_clear_instruction(
+    monkeypatch, saved_spec
+):
     _stub_planner(monkeypatch, _spec_drops_two_roles)
 
     shown = _shown(saved_spec)
 
-    assert f"{EMBED_REASON} {VISION_REASON}" in shown
+    assert shown.endswith(f"{EMBED_REASON} {VISION_REASON} {CLEAR_INSTRUCTION}")
     assert "is being ignored" not in shown
 
 
@@ -175,7 +183,9 @@ def test_cli_show_prints_the_ignored_note_and_no_refusal_for_a_spec_that_did_not
 
     shown = _shown(saved_spec)
 
-    assert "a saved placement does not fit this hardware and is being ignored" in shown
+    assert shown.endswith(
+        f" a saved placement does not fit this hardware and is being ignored; {CLEAR_INSTRUCTION}"
+    )
     assert PIN_MESSAGE not in shown
     assert EMBED_REASON not in shown
 
@@ -228,3 +238,47 @@ def test_the_placement_route_returns_no_refusal_for_a_spec_that_did_not_apply(
 
     assert body["refusal"] is None
     assert body["rejected_spec_json"] == SAVED_CANONICAL
+
+
+LONG_REFUSAL = "The saved placement is refused: " + "word " * 30
+
+
+@pytest.fixture
+def terminal(monkeypatch):
+    """Capture the CLI console at a narrow width with styling on."""
+    buffer = io.StringIO()
+    monkeypatch.setattr(
+        cli_placement,
+        "console",
+        Console(file=buffer, force_terminal=True, width=40, color_system="truecolor"),
+    )
+    return buffer
+
+
+def test_a_refusal_prints_unwrapped_and_styled_then_the_clear_instruction(terminal):
+    cli_placement._render_rejected(SimpleNamespace(refusal=LONG_REFUSAL, rejected_spec_json="{}"))
+
+    lines = terminal.getvalue().splitlines()
+    assert len(lines) == 2
+    assert LONG_REFUSAL.strip() in lines[0]
+    assert CLEAR_INSTRUCTION in lines[1]
+    assert all("\x1b[" in line for line in lines)
+
+
+def test_the_waiting_refusal_prints_without_the_clear_instruction(terminal):
+    cli_placement._render_rejected(
+        SimpleNamespace(
+            refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE, rejected_spec_json="{}"
+        )
+    )
+
+    assert "placement clear" not in terminal.getvalue()
+
+
+def test_the_does_not_fit_note_is_indented_two_spaces(terminal):
+    cli_placement._render_rejected(SimpleNamespace(refusal=None, rejected_spec_json="{}"))
+
+    out = terminal.getvalue()
+    assert "a saved placement does not fit" in out
+    assert out.startswith("  ")
+    assert not out.startswith("  XX")
