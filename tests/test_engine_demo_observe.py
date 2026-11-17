@@ -623,25 +623,37 @@ def test_a_run_writes_no_home_path_and_no_hostname(
 
 
 @pytest.mark.parametrize(
-    ("url", "kept"),
+    ("url", "kept", "secrets"),
     [
-        ("https://u:pw@h/é?a=1", "https://<userinfo>@h/é?<query>"),
-        ("https://usér:pw@h/p?a=1", "https://<userinfo>@h/p?<query>"),
-        ("https://u:p@ss@h/p", "https://<userinfo>@h/p"),
+        (
+            "https://u:PW-SECRET@h/é?Q=ONE",
+            "https://<userinfo>@h/é?<query>",
+            ("PW-SECRET", "Q=ONE"),
+        ),
+        (
+            "https://usér:PW-SECRET@h/p?Q=ONE",
+            "https://<userinfo>@h/p?<query>",
+            ("PW-SECRET", "Q=ONE"),
+        ),
+        ("https://u:P@SS-SECRET@h/p", "https://<userinfo>@h/p", ("SS-SECRET", "P@SS")),
     ],
 )
 def test_a_run_scrubs_a_url_that_json_would_escape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str, kept: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    kept: str,
+    secrets: tuple[str, ...],
 ) -> None:
+    # The secrets are upper case: the random run folder name is lower case and cannot hold them.
     monkeypatch.setenv("FAKE_PULL_URL", url)
     assert demo_main.main(_run_args(tmp_path)) == 0
     written = json.dumps(
         json.loads((tmp_path / "t.json").read_text(encoding="utf-8")), ensure_ascii=False
     )
     assert kept in written
-    assert "pw" not in written
-    assert "a=1" not in written
-    assert "ss@" not in written
+    for secret in secrets:
+        assert secret not in written
 
 
 def test_two_dry_runs_use_two_data_folders(tmp_path: Path) -> None:

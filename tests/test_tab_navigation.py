@@ -152,6 +152,23 @@ def _focusing(widget: Any) -> Callable[[], bool]:
     return holds_focus
 
 
+async def _await_profile_snapshot(pilot: Any, screen: Any) -> None:
+    """Wait for the Profile pane's snapshot, so the focus stops are final.
+
+    The snapshot loads on a thread and then enables the Select and shows or hides the pane's
+    buttons. The pane has 8 focus stops before it lands and 4 after.
+    """
+    from textual.widgets import Select
+
+    from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID
+
+    def landed() -> bool:
+        selects = screen.query(f"#{PROFILE_SELECT_ID}").results(Select)
+        return any(bool(s.value) or s.disabled for s in selects)
+
+    assert await _wait(pilot, landed), "the profile snapshot never landed"
+
+
 async def _show_view(app: LilbeeApp, pilot: Any, view: str, screen_type: type) -> None:
     """Switch to *view* and wait until its screen is current and holds focus."""
     app.switch_view(view)
@@ -238,6 +255,7 @@ async def test_settings_tab_rolls_over_to_next_pane() -> None:
         def _focusables() -> list[Any]:
             return [w for w in screen.focus_chain if body in w.ancestors]
 
+        await _await_profile_snapshot(pilot, screen)
         assert await _wait(pilot, lambda: bool(_focusables())), (
             "active pane should expose at least one focusable"
         )
@@ -278,6 +296,7 @@ async def test_settings_tab_advances_within_pane() -> None:
         def _focusables() -> list[Any]:
             return [w for w in screen.focus_chain if body in w.ancestors]
 
+        await _await_profile_snapshot(pilot, screen)
         assert await _wait(pilot, lambda: len(_focusables()) >= 2), (
             "pane needs at least two focusables to test mid-pane move"
         )
