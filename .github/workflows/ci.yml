@@ -133,10 +133,15 @@ jobs:
             | sudo tar xz -C /usr/local/bin actionlint
           npm install -g "bats@${BATS_VERSION}"
 
+      # The runner image ships pwsh; the installer tests need Pester 5 and the linter.
+      - name: Install Pester and PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser -Force -SkipPublisherCheck; Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
       # make lint-shell skips a missing tool. Assert them here so a runner image
       # that drops one fails loudly.
       - name: Every tool the shell gate needs is present
-        run: shellcheck --version && actionlint --version && bats --version && yq --version
+        run: shellcheck --version && actionlint --version && bats --version && yq --version && pwsh --version
 
       - run: make lint-shell
       - run: make test-shell

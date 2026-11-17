@@ -39,6 +39,8 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -46,6 +48,13 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
         run: echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+      # The installers on lilbee.sh refuse a download that SHA256SUMS does not list.
+      - uses: actions/checkout@v7
+      - name: Publish SHA256SUMS on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/write_release_sums.sh "$TAG" "$GITHUB_REPOSITORY"
 
   # The CUDA artifacts can't be exercised here: a driverless runner has no
   # libcuda/nvcuda, so the engine never loads its CUDA backend and a run proves
@@ -252,6 +261,28 @@ jobs:
       - name: Core-functionality sweep
         shell: bash
         run: LILBEE_EXE="dist/${{ matrix.asset }}" bash tools/qa/artifact_smoke.sh
+      - name: The installer fetches the file this job smoked
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          LILBEE_RELEASE: ${{ needs.resolve.outputs.tag }}
+          LILBEE_INSTALL_DIR: ${{ runner.temp }}/installed
+          LILBEE_NO_MODIFY_PATH: "1"
+        run: |
+          sh site/install.sh
+          bash scripts/assert_installed_matches.sh "$LILBEE_INSTALL_DIR/lilbee" "dist/${{ matrix.asset }}"
+      - name: The Windows installer fetches the file this job smoked
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          LILBEE_RELEASE: ${{ needs.resolve.outputs.tag }}
+          LILBEE_INSTALL_DIR: ${{ runner.temp }}\installed
+        run: |
+          .\site\install.ps1
+          bash scripts/assert_installed_matches.sh "$env:LILBEE_INSTALL_DIR\lilbee.exe" "dist/${{ matrix.asset }}"
+          if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains $env:LILBEE_INSTALL_DIR) {
+            throw "the installer did not add $env:LILBEE_INSTALL_DIR to the user PATH"
+          }
 
   verify-wheels:
     needs: [resolve]
