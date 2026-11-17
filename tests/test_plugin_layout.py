@@ -6,9 +6,11 @@ import json
 import re
 import tomllib
 from pathlib import Path
+from urllib.parse import urldefrag
 
 import pytest
 import yaml
+from markdown_it import MarkdownIt
 
 from lilbee.cli.launchers import pi as pi_launcher
 from lilbee.cli.launchers import skill_install
@@ -142,12 +144,17 @@ def test_install_table_commands_use_the_manifest_names():
     assert "lilbee mcp" in commands
 
 
-SKILL_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
-
-
 def _local_links(skill_md: Path) -> list[str]:
-    text = skill_md.read_text(encoding="utf-8")
-    return [link for link in SKILL_LINK.findall(text) if "://" not in link]
+    """Return the file part of every link in *skill_md* that points at a local file."""
+    tokens = MarkdownIt().parse(skill_md.read_text(encoding="utf-8"))
+    hrefs = [
+        str(child.attrGet("href"))
+        for token in tokens
+        for child in token.children or []
+        if child.type == "link_open"
+    ]
+    files = [urldefrag(href).url for href in hrefs]
+    return [file for file in files if file and "://" not in file]
 
 
 @pytest.mark.parametrize("skill_dir", SKILL_DIRS, ids=lambda p: p.name)
@@ -164,6 +171,12 @@ def test_a_link_with_a_fragment_yields_its_file(tmp_path):
         "[a](a.md) [b](b.md#part) [c](#local) [d](https://x.dev/e.md#f)\n", encoding="utf-8"
     )
     assert _local_links(skill_md) == ["a.md", "b.md"]
+
+
+def test_a_link_with_a_title_yields_its_file(tmp_path):
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("[guide](missing.md \"Guide\") [g2](g2.md#part 'T')\n", encoding="utf-8")
+    assert _local_links(skill_md) == ["missing.md", "g2.md"]
 
 
 def test_the_main_skill_links_its_reference_files():

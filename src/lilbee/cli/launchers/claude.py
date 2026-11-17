@@ -13,7 +13,7 @@ from lilbee.app.agent_configs.claude import claude_http_config
 from lilbee.cli.launchers import config_file
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
-from lilbee.cli.launchers.setup_gate import confirm_first_run_setup
+from lilbee.cli.launchers.setup_gate import confirm_mcp_mode_setup
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -21,6 +21,8 @@ _CLAUDE_INSTALL_HINT = (
     "claude binary not found on PATH. Install Claude Code from https://claude.com/claude-code."
 )
 _SETUP_MARKER_NAME = "claude-setup.json"
+# Consent to the skill-only plan (--no-mcp); consent to the MCP plan covers it too.
+_SKILL_SETUP_MARKER_NAME = "claude-skill-setup.json"
 _MCP_CONFIG_NAME = "claude-mcp.json"
 # The written MCP config references the token by env var (Claude Code expands
 # ${...} at load), so the file never holds the literal.
@@ -54,9 +56,13 @@ def _find_claude_binary() -> str | None:
     return None
 
 
-def _print_setup_plan() -> None:
+def _print_setup_plan(*, include_mcp: bool) -> None:
     """Tell the user exactly which files the first-run setup writes."""
     typer.secho("First-time Claude Code setup will write:", fg=typer.colors.CYAN)
+    if not include_mcp:
+        typer.echo(f"  - lilbee MCP skill -> {_claude_skill_dest()}")
+        typer.echo("Claude Code's own settings are not touched. To undo, remove the path above.")
+        return
     typer.echo(f"  - lilbee MCP config -> {_mcp_config_path()}")
     typer.echo(f"  - lilbee MCP skill -> {_claude_skill_dest()}")
     typer.echo(
@@ -78,6 +84,17 @@ class ClaudeLauncher:
 
     def find_binary(self) -> str | None:
         return _find_claude_binary()
+
+    def _confirm_setup(self) -> bool:
+        """Ask before the first launch of this MCP mode's plan."""
+        return confirm_mcp_mode_setup(
+            mcp_marker_name=_SETUP_MARKER_NAME,
+            no_mcp_marker_name=_SKILL_SETUP_MARKER_NAME,
+            client_name="Claude Code",
+            print_plan=_print_setup_plan,
+            include_mcp=self._include_mcp,
+            assume_yes=self._assume_yes,
+        )
 
     def prepare(
         self, *, token: str, port: int, model_refs: list[str]
@@ -116,14 +133,9 @@ class ClaudeLauncher:
         # with a populated ~/.claude), which no local model's window absorbs.
         # Project-level CLAUDE.md and .claude/ still load.
         extra_args = ["--model", model_id, "--setting-sources", "project,local"]
+        if not self._confirm_setup():
+            raise typer.Exit(0)
         if self._include_mcp:
-            if not confirm_first_run_setup(
-                marker_name=_SETUP_MARKER_NAME,
-                client_name="Claude Code",
-                print_plan=_print_setup_plan,
-                assume_yes=self._assume_yes,
-            ):
-                raise typer.Exit(0)
             block = claude_http_config(base_url=base_url, api_key=_TOKEN_REF)
             config_file.atomic_write_text(_mcp_config_path(), json.dumps(block, indent=2))
             # --strict-mcp-config keeps the session to lilbee's one MCP server.
@@ -131,7 +143,7 @@ class ClaudeLauncher:
             # loads too, and their tool schemas alone can overflow a local
             # model's context before the first turn.
             extra_args.extend(["--mcp-config", str(_mcp_config_path()), "--strict-mcp-config"])
-            install_bundled_skill(_claude_skill_dest())
+        install_bundled_skill(_claude_skill_dest())
         return (extra_args, env)
 
 

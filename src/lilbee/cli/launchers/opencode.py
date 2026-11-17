@@ -109,10 +109,7 @@ class OpencodeLauncher:
         if not self._include_mcp:
             prune_lilbee(config, _MCP_CONTAINER_KEY)
         config_file.atomic_write_text(_opencode_config_path(), json.dumps(config, indent=2))
-        # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
-        # skip it when MCP is disabled (a previously-installed skill is left alone).
-        if self._include_mcp:
-            install_bundled_skill(_opencode_skill_dest())
+        install_bundled_skill(_opencode_skill_dest())
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 
