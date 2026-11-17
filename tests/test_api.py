@@ -36,6 +36,8 @@ def _mock_embedder():
             shutdown=mock.MagicMock(),
             # No managed embedder window: the chunker keeps the configured budget.
             embed_token_cap=mock.MagicMock(return_value=None),
+            # The chunker counts tokens through the provider, four characters to a token.
+            count_tokens=mock.MagicMock(side_effect=lambda text: max(1, len(text) // 4)),
         ),
     ):
         yield

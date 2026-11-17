@@ -706,7 +706,9 @@ class Greeter:
 
         from lilbee.data.extract.code_chunker import chunk_code
 
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            suffix=".py", mode="w", encoding="utf-8", delete=False
+        ) as f:
             f.write("x = 1\n")
             path = Path(f.name)
         try:
