@@ -779,3 +779,44 @@ def test_a_configured_path_that_is_not_a_file_leaves_llama_cpp_listed_as_missing
     assert "llama.cpp" in _list_json()["not_installed"]
     with pytest.raises(ProviderError, match="is not a file"):
         resolve_llama_server()
+
+
+def test_an_unreadable_computer_is_named_this_computer_in_the_unpublished_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unreadable = collect(system="Plan9", machine="x86_64", cpu_info={}, nvidia=None)
+    monkeypatch.setattr(runnable, "session_host", lambda: unreadable)
+    monkeypatch.setattr(first_use, "session_host", lambda: unreadable)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_llama_server()
+    assert "The llama.cpp pack 1.12032.1 for this computer is not published yet." in str(
+        excinfo.value
+    )
+
+
+def test_the_install_checks_the_wheel_against_the_digest_of_the_host_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "pack" / "llama.whl"
+    wheel.parent.mkdir()
+    cell_sha = make_pack(wheel)
+    publish(monkeypatch, cell_sha)
+    real_pin = type(LLAMA).pack_pin
+
+    def pin_with_other_top_digest(self: Any) -> dict[str, Any]:
+        return {**real_pin(self), "sha256": "cd" * 32}
+
+    monkeypatch.setattr(type(LLAMA), "pack_pin", pin_with_other_top_digest)
+    fetched_digests: list[str] = []
+
+    def fake(lock: Any, cell: str, *, dest: Path, **_signals: Any) -> Path:
+        fetched_digests.append(lock.sha256)
+        dest.mkdir(parents=True, exist_ok=True)
+        copy = dest / wheel.name
+        copy.write_bytes(wheel.read_bytes())
+        return copy
+
+    monkeypatch.setattr(first_use, "fetch_frozen", fake)
+    installed = first_use.install_pack()
+    assert installed.sha256 == cell_sha
+    assert fetched_digests == [cell_sha]
