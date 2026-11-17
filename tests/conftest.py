@@ -834,22 +834,6 @@ def _no_leaked_task_workers():
         )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _shutdown_ingest_pool():
-    """Join the shared ingest pool before coverage stops, so the total is stable.
-
-    ``offload._ingest_executor`` is a cached pool of daemon ``lilbee-ingest``
-    workers. Left running, they are still tracing when ``coverage.stop()`` combines
-    thread data at process exit, and a worker mid-line during that combine
-    intermittently loses its lines -- the flake that reads the 100% gate as 99% on
-    an unlucky run. A session finalizer runs before coverage's atexit, so joining
-    the pool here removes those threads from the combine and makes coverage
-    deterministic. No-op when ingest never ran.
-    """
-    yield
-    _join_shared_ingest_pool()
-
-
 @pytest.fixture(scope="session")
 def tessdata_ready(tmp_path_factory):
     """Have xberg fetch Tesseract's language data once, under a lock every worker shares.
@@ -868,19 +852,20 @@ def tessdata_ready(tmp_path_factory):
         _PRISTINE_EXTRACT_DOCUMENT(png.getvalue(), "image/png", filename="ready.png", config=config)
 
 
-@pytest.fixture
-def joined_ingest_pool():
-    """Join the shared ingest pool after a test that drives ingest outside a sync."""
-    yield
-    _join_shared_ingest_pool()
-
-
-def _join_shared_ingest_pool() -> None:
+def shutdown_ingest_pool() -> None:
+    """Shut down and clear the shared ingest pool, if one is cached."""
     from lilbee.data import offload
 
     if offload._ingest_executor.cache_info().currsize:
         offload._ingest_executor().shutdown(wait=True)
         offload._ingest_executor.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_ingest_pool():
+    """Shut down and clear the shared ingest pool after every test, so none carries over."""
+    yield
+    shutdown_ingest_pool()
 
 
 @pytest.fixture(autouse=True)

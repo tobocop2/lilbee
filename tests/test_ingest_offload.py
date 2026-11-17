@@ -70,14 +70,9 @@ def test_the_ceiling_matches_the_pool_that_actually_exists(
     is already running. Re-reading the env per call would report a ceiling the
     live pool does not have -- promising threads that are not there."""
     monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
-    offload._ingest_executor.cache_clear()
-    try:
-        pool = offload._ingest_executor()
-        monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
-        assert offload.max_workers() == pool._max_workers
-    finally:
-        pool.shutdown(wait=False)
-        offload._ingest_executor.cache_clear()
+    pool = offload._ingest_executor()
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
+    assert offload.max_workers() == pool._max_workers
 
 
 def test_embed_inflight_target_is_zero_when_the_device_probe_fails(

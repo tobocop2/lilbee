@@ -4364,7 +4364,6 @@ class TestLogLevel:
 
 
 class TestIngestShutdownError:
-    @pytest.mark.usefixtures("joined_ingest_pool")
     def test_process_one_converts_shutdown_error(self):
         """RuntimeError from executor shutdown is converted to CancelledError."""
         import asyncio
