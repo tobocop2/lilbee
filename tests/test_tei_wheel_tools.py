@@ -15,6 +15,7 @@ from types import ModuleType
 
 import pytest
 
+from tests._pack_workflow import pack_workflow
 from tests._workflow_steps import commands, steps
 
 _TOOLS = Path(__file__).resolve().parents[1] / "tools/wheel-build"
@@ -604,13 +605,10 @@ def test_an_mpl_expression_with_its_notice_passes(tmp_path: Path) -> None:
     assert _problems(wheel, "cpu", "Apache-2.0 AND MPL-2.0") == []
 
 
-_WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/llama-pack-cells.yml"
-
-
 def test_the_metal_build_enables_the_candle_backend() -> None:
     lines = [
         line
-        for line in _WORKFLOW.read_text(encoding="utf-8").splitlines()
+        for line in pack_workflow().read_text(encoding="utf-8").splitlines()
         if "text-embeddings-router" in line and "--features" in line
     ]
     assert len(lines) == 1
@@ -861,7 +859,7 @@ def test_the_linux_build_targets_the_portable_x86_64_baseline(tmp_path: Path, cu
 
 
 def test_the_metal_build_targets_the_first_apple_silicon_cpu() -> None:
-    text = _WORKFLOW.read_text(encoding="utf-8")
+    text = pack_workflow().read_text(encoding="utf-8")
     tei = text[text.index("\n  tei:\n") :]
     build = tei[tei.index("- name: Build the router for Metal") :]
     build = build[: build.index("- name: Collect the wheel")]
@@ -874,7 +872,7 @@ def test_the_metal_build_targets_the_first_apple_silicon_cpu() -> None:
 def test_the_metal_repair_runs_with_the_commit_time_of_the_source() -> None:
     (build,) = (
         step["run"]
-        for step in steps("llama-pack-cells.yml", "tei")
+        for step in steps(pack_workflow(), "tei")
         if step.get("name") == "Build the router for Metal"
     )
     run = commands(build)
@@ -1002,7 +1000,7 @@ def test_the_emulated_smoke_fails_when_the_router_dies_on_the_cpu(tmp_path: Path
 
 
 def test_the_linux_pack_cells_run_the_smoke_on_an_emulated_cpu() -> None:
-    text = _WORKFLOW.read_text(encoding="utf-8")
+    text = pack_workflow().read_text(encoding="utf-8")
     tei = text[text.index("\n  tei:\n") :]
     install = tei.index("- name: Install the CPU emulator")
     smoke = tei.index("- name: Start the router on an emulated CPU without AVX")

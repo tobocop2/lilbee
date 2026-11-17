@@ -25,6 +25,7 @@ from lilbee.providers.fleet.engines.llama import (
     pack_backend,
 )
 from lilbee.providers.fleet.host_caps import HostCaps, collect
+from tests._pack_workflow import pack_workflow
 from tests._published import render_table, wheel_name
 
 VERSION = "1.12032.1"
@@ -264,7 +265,6 @@ def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PACK_CELLS = _ROOT / ".github/workflows/llama-pack-cells.yml"
 _PACK_LINUX_CUDA_BUILD = _ROOT / "tools/wheel-build/llama_cuda_manylinux.sh"
 _PACK_CUDA_VERSION = re.compile(r"cuda(?:-|_dash=)(\d+)[.-](\d+)")
 # At this tag, ggml-cuda's CMakeLists.txt defaults CUDA 12 without GGML_NATIVE to 50-virtual up.
@@ -273,7 +273,7 @@ _CUDA_ARCHITECTURE_OVERRIDES = ("CUDA_ARCHITECTURES", "CUDAARCHS", "GGML_NATIVE=
 
 
 def _pack_cells() -> dict[str, Any]:
-    return cast(dict[str, Any], yaml.safe_load(_PACK_CELLS.read_text(encoding="utf-8")))
+    return cast(dict[str, Any], yaml.safe_load(pack_workflow().read_text(encoding="utf-8")))
 
 
 def _pack_matrix(cells: dict[str, Any]) -> list[dict[str, Any]]:
@@ -299,7 +299,7 @@ def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032()
     cells = _pack_cells()
     assets = [cell["asset"] for cell in _pack_matrix(cells) if "asset" in cell]
     linux_build = _uncommented(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
-    workflow = _uncommented(_PACK_CELLS.read_text(encoding="utf-8"))
+    workflow = _uncommented(pack_workflow().read_text(encoding="utf-8"))
     assert cells["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR
     assert assets
     assert all(f"llama-{_UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR}-" in asset for asset in assets)
@@ -452,4 +452,4 @@ def test_the_notice_check_failure_fails_the_step_and_the_job() -> None:
 
 
 def test_the_pack_workflow_names_no_transient_branch() -> None:
-    assert "fix/llama-pack-licences" not in _PACK_CELLS.read_text(encoding="utf-8")
+    assert "fix/llama-pack-licences" not in pack_workflow().read_text(encoding="utf-8")

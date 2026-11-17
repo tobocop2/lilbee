@@ -18,6 +18,8 @@ from types import ModuleType
 import pytest
 import yaml
 
+from tests._pack_workflow import pack_workflow
+
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
 PACKAGING = Path(__file__).resolve().parents[1] / "packaging" / "engine-wheel-mistral-rs"
 
@@ -222,10 +224,7 @@ def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
 
 
 def _mistralrs_job() -> dict:
-    workflow = (
-        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "llama-pack-cells.yml"
-    )
-    return yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]["mistralrs"]
+    return yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))["jobs"]["mistralrs"]
 
 
 def test_the_pack_job_writes_the_notices_before_it_builds_the_wheel() -> None:

@@ -22,7 +22,7 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   of them). Called by `build_llama_server.sh` for the rocm backend; tested on its
   own.
 - `llama_gpu_manylinux.sh` — builds the Linux CPU, Vulkan or ROCm engine pack in the
-  manylinux_2_34 image for `llama-pack-cells.yml`.
+  manylinux_2_34 image for the build workflow of the engine-packs repository.
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone

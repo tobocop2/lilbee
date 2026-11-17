@@ -11,8 +11,8 @@ import yaml
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
-def steps(workflow: str, job: str) -> list[dict[str, Any]]:
-    """Return the parsed steps of *job* in the workflow file *workflow*."""
+def steps(workflow: str | Path, job: str) -> list[dict[str, Any]]:
+    """Return the parsed steps of *job* in *workflow*: a file name here, or an absolute path."""
     parsed = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))
     return list(parsed["jobs"][job]["steps"])
 

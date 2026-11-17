@@ -176,6 +176,12 @@ def test_the_releases_come_from_the_github_api_one_object_per_line(
     assert "repos/tobocop2/lilbee/releases" in seen[0]
 
 
+def test_the_tool_reads_the_repository_that_the_pack_url_names(tool: ModuleType) -> None:
+    from lilbee.providers.fleet.engine_record import PACKAGES_URL
+
+    assert f"https://github.com/{tool.REPOSITORY}/releases/download/" == PACKAGES_URL
+
+
 def test_the_command_writes_the_record_to_standard_output(
     tool: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -32,6 +32,7 @@ from lilbee.providers.fleet.engine_store import (
     licence_permitted,
 )
 from lilbee.providers.fleet.engines.choice import PinError, pin_lock
+from tests._pack_workflow import pack_workflow
 
 
 def make_wheel(path: Path, licence: str | None = "MIT", body: str = "#!/bin/sh\n") -> str:
@@ -1020,9 +1021,7 @@ def test_a_pin_names_a_notice_term_and_the_archive_is_the_gate(
 
 
 def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
-    workflow = (
-        Path(__file__).parents[3] / ".github" / "workflows" / "llama-pack-cells.yml"
-    ).read_text(encoding="utf-8")
+    workflow = pack_workflow().read_text(encoding="utf-8")
     name = engine_store.NOTICE_RULES["LicenseRef-Microsoft-VC-Runtime"].file
     # The llama.cpp job and the mistral.rs job each write the notice and each check the listing.
     assert workflow.count(name) == 4

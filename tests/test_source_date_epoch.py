@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._pack_workflow import pack_workflow
 from tests._workflow_steps import commands, steps
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -188,7 +189,7 @@ def test_wrapping_one_tei_source_twice_gives_one_wheel(tmp_path: Path) -> None:
 
 
 def test_the_llama_cpp_cell_hands_the_epoch_to_the_wheel_build() -> None:
-    runs = [commands(step.get("run", "")) for step in steps("llama-pack-cells.yml", "cell")]
+    runs = [commands(step.get("run", "")) for step in steps(pack_workflow(), "cell")]
     (clone,) = (i for i, run in enumerate(runs) if "source_date_epoch.sh" in run)
     (build,) = (i for i, run in enumerate(runs) if "python -m build --wheel" in run)
     assert clone < build
