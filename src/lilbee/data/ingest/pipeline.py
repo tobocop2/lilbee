@@ -1088,16 +1088,23 @@ def _prepare_forced_rebuild(store: Any) -> bool:
 
     A store with chunks and no embedder mismatch (name or engine), with or without a stamp,
     is rebuilt in place and a file that fails keeps its chunks. An empty store, or one built
-    by another embedder or engine, is dropped after its memories are re-embedded, or after
-    one probe request when it holds none. Nothing is dropped when the embedder cannot embed
-    the memories. Run off the event loop.
+    by another embedder or engine, is dropped after its memories are re-embedded. Nothing is
+    dropped when the embedder cannot embed the memories. One embed call first measures the
+    width the embedder serves and sets ``embedding_dim`` to it, so a rebuild after a width
+    change is judged and written at that width, and a silent embedder stops the rebuild
+    before it changes the index. Run off the event loop.
     """
+    embedder = get_services().embedder
+    if embedder.embedding_available():
+        try:
+            embedder.adopt_served_width(_REBUILD_PROBE)
+        except Exception as error:
+            raise _rebuild_stopped(error) from error
     in_place = store.embedding_mismatch() is None and (
         store.get_meta() is not None or store.count_chunks() > 0
     )
     if not in_place:
         _require_embedding_model()
-    embedder = get_services().embedder
 
     def embed(texts: list[str]) -> list[Vector]:
         if not embedder.embedding_available():
@@ -1108,19 +1115,19 @@ def _prepare_forced_rebuild(store: Any) -> bool:
         return embedder.embed_batch(texts)
 
     try:
-        refreshed = 0
         if not in_place or embedder.embedding_available():
-            refreshed = store.rebuild_memory_embeddings(embed)
-        if not (in_place or refreshed):
-            embedder.embed_batch([_REBUILD_PROBE])
+            store.rebuild_memory_embeddings(embed)
     except Exception as error:
-        raise RuntimeError(
-            "Rebuild stopped and the index is unchanged: "
-            f"the embedding model did not answer ({error})."
-        ) from error
+        raise _rebuild_stopped(error) from error
     if not in_place:
         store.drop_all()
     return in_place
+
+
+def _rebuild_stopped(error: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"Rebuild stopped and the index is unchanged: the embedding model did not answer ({error})."
+    )
 
 
 def _reconcile_missing(

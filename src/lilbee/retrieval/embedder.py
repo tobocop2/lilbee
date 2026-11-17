@@ -122,6 +122,13 @@ class Embedder:
             i = int(bad[0])
             raise ValueError(f"Embedding contains invalid value at index {i}: {vector[i]}")
 
+    def adopt_served_width(self, probe: str) -> None:
+        """Set ``embedding_dim`` to the width of the vector one embed call of *probe* returns."""
+        vectors = self._provider.embed([self._profile().doc_prefix + probe])
+        if not vectors or not len(vectors[0]):
+            raise ValueError("The embedding model returned no vector for the width probe.")
+        self._config.embedding_dim = len(vectors[0])
+
     def validate_model(self) -> bool:
         """Availability gate for the startup and ingest paths: warns when it fails.
 
