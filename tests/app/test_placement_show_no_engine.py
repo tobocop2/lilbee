@@ -20,6 +20,7 @@ from tests._litestar_test_client import create_test_client
 
 _SPEC = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
 _NO_ENGINE = "No engine is assigned to any role"
+_WAITS = app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE
 
 
 def _unreadable_spec():
@@ -44,12 +45,15 @@ def saved_spec(no_engine_host):
     assert cfg.placement == _SPEC.to_json()
 
 
-def test_show_with_a_saved_spec_reports_it_and_the_missing_engines(saved_spec):
+def test_show_with_a_saved_spec_keeps_it_but_places_nothing(saved_spec):
     view = app_placement.get_placement()
-    assert view.spec_json == _SPEC.to_json()
-    assert view.manual is True
-    assert view.rejected_spec_json is None
-    assert view.refusal is None
+    assert view.manual is False
+    assert view.spec_json is None
+    assert view.rejected_spec_json == _SPEC.to_json()
+    assert view.refusal == (
+        "The saved placement is kept but not used: no installed engine can run the models. "
+        "It applies once an engine is installed."
+    )
     assert view.roles == ()
     assert view.gpus == ()
     skipped = {skip.role: skip for skip in view.skipped_no_engine}
@@ -86,14 +90,21 @@ def test_preview_with_no_engine_refuses_with_the_no_engine_message(no_engine_hos
 def test_the_cli_shows_the_saved_spec(saved_spec, tmp_path):
     result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert "Placement (manual)" in result.output
+    text = " ".join(result.output.split())
+    assert "Placement (auto)" in text
+    assert "(manual)" not in text
+    assert _WAITS in text
+    assert "does not fit this hardware" not in text
 
 
 def test_the_cli_json_show_parses(saved_spec, tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "json_mode", True)
     result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["spec_json"] == _SPEC.to_json()
+    body = json.loads(result.output)
+    assert body["manual"] is False
+    assert body["spec_json"] is None
+    assert body["rejected_spec_json"] == _SPEC.to_json()
 
 
 def test_the_cli_preview_refuses_without_a_traceback(no_engine_host):
@@ -107,7 +118,10 @@ def test_the_rest_route_shows_the_saved_spec(saved_spec):
     with create_test_client(route_handlers=[placement_route]) as client:
         response = client.get("/api/placement")
     assert response.status_code == 200
-    assert response.json()["spec_json"] == _SPEC.to_json()
+    body = response.json()
+    assert body["manual"] is False
+    assert body["spec_json"] is None
+    assert body["rejected_spec_json"] == _SPEC.to_json()
 
 
 def test_the_rest_preview_refuses_with_the_no_engine_message(no_engine_host):
@@ -118,7 +132,10 @@ def test_the_rest_preview_refuses_with_the_no_engine_message(no_engine_host):
 
 
 def test_the_mcp_tool_shows_the_saved_spec(saved_spec):
-    assert get_placement_tool()["spec_json"] == _SPEC.to_json()
+    body = get_placement_tool()
+    assert body["manual"] is False
+    assert body["spec_json"] is None
+    assert body["rejected_spec_json"] == _SPEC.to_json()
 
 
 def test_the_mcp_preview_refuses_with_the_no_engine_message(no_engine_host):

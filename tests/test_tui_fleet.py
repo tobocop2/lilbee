@@ -1642,6 +1642,7 @@ async def test_the_screen_shows_the_saved_placement_and_each_missing_engine(
 
     from lilbee.app import placement as app_placement
     from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
     from lilbee.core.config import cfg
     from tests._async_wait import wait_until
 
@@ -1649,16 +1650,20 @@ async def test_the_screen_shows_the_saved_placement_and_each_missing_engine(
     monkeypatch.setattr(cfg, "placement", '{"chat": {"devices": [0]}}')
     monkeypatch.setattr("lilbee.app.engine_choice.installed_engines", dict)
     monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    # The stats tick would also settle the panel after a second; stop it so that
+    # only the repaint on an empty device list can show the text.
+    monkeypatch.setattr(GpuFleetPanel, "_request_stats", lambda self: None)
 
     app = FleetTestApp()
     async with app.run_test(size=size) as pilot:
+        panel = app.screen.query_one("#gpu-fleet-panel", Static)
+        assert await wait_until(pilot, lambda: msg.FLEET_NO_GPUS in str(panel.render()))
+        assert msg.FLEET_GPU_PROBING not in str(panel.render())
         skipped = app.screen.query_one("#placement-skipped", Static)
         await wait_until(pilot, lambda: skipped.display is True)
         notes = str(skipped.render())
         assert "No installed engine loads" in notes
         assert notes.startswith("chat:")
+        assert app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE in notes
         state = str(app.screen.query_one("#placement-state", Static).render())
-        assert state == msg.FLEET_STATE_MANUAL
-        gpus = str(app.screen.query_one("#gpu-fleet-panel", Static).render())
-        assert msg.FLEET_NO_GPUS in gpus
-        assert msg.FLEET_GPU_PROBING not in gpus
+        assert state == msg.FLEET_STATE_AUTO
