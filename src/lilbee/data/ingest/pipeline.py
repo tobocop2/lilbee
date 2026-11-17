@@ -1094,6 +1094,17 @@ def _prepare_forced_rebuild(store: Any) -> bool:
     change is judged and written at that width, and a silent embedder stops the rebuild
     before it changes the index. Run off the event loop.
     """
+    config = active_config()
+    width_before = config.embedding_dim
+    try:
+        return _forced_rebuild_at_served_width(store)
+    except Exception:
+        config.embedding_dim = width_before
+        raise
+
+
+def _forced_rebuild_at_served_width(store: Any) -> bool:
+    """Adopt the width the embedder serves, then drop or keep the index (see the caller)."""
     embedder = get_services().embedder
     if embedder.embedding_available():
         try:

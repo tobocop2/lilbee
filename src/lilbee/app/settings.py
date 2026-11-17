@@ -906,10 +906,17 @@ def _embedder_dim(ref: str, registry: ModelRegistry | None = None) -> int | None
 def reconcile_embedding_dim(
     registry: ModelRegistry | None = None, config: Config | None = None
 ) -> None:
-    """Pin the embedding dim of *config* (default cfg) to the native embedder's GGUF width;
-    no-op for non-native embedders or an already-matching dim."""
+    """Pin the embedding dim of *config* (default cfg) to the width of its embedder.
+
+    The width comes from the model itself; a model that gives none (a non-native ref) takes
+    the width of an index that the same model built. No-op when neither names a width.
+    """
+    from lilbee.data.store.lance_helpers import persisted_embedding_width
+
     target = cfg if config is None else config
     dim = _embedder_dim(target.embedding_model, registry)
+    if dim is None:
+        dim = persisted_embedding_width(target.lancedb_dir, target.embedding_model)
     if dim is not None and dim != target.embedding_dim:
         target.embedding_dim = dim
 
