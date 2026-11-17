@@ -1,5 +1,6 @@
 """Shared test helpers."""
 
+import importlib.util
 import io
 import os
 import shutil
@@ -375,21 +376,50 @@ def _engine_free_path(tmp_path_factory: pytest.TempPathFactory) -> str:
         shadow.mkdir()
         for entry in Path(folder).resolve().iterdir():
             if entry.stem not in sealed:
-                shadow.joinpath(entry.name).symlink_to(entry)
+                _link_or_copy(entry, shadow / entry.name)
         folders.append(str(shadow))
     return os.pathsep.join(folders)
 
 
+def _link_or_copy(entry: Path, link: Path) -> None:
+    """Link *link* to *entry*; copy a file when the host grants no symlink right (Windows)."""
+    try:
+        os.symlink(entry, link, target_is_directory=entry.is_dir())
+    except OSError:
+        if entry.is_file():
+            shutil.copy2(entry, link)
+
+
+@pytest.fixture(scope="session")
+def _engine_free_pythonpath(tmp_path_factory: pytest.TempPathFactory) -> str | None:
+    """A folder with the engine wheel package minus its ``bin/``, or ``None`` with no wheel.
+
+    A child that finds this folder first on ``PYTHONPATH`` imports a wheel that holds no
+    engine, as the wheel is outside a release build.
+    """
+    spec = importlib.util.find_spec("lilbee_engine_llama_cpp")
+    if spec is None or spec.origin is None:
+        return None
+    shadow = tmp_path_factory.mktemp("engine-free-pythonpath")
+    shutil.copytree(
+        Path(spec.origin).parent,
+        shadow / spec.name,
+        ignore=shutil.ignore_patterns("bin", "__pycache__"),
+    )
+    return str(shadow)
+
+
 @pytest.fixture(autouse=True)
-def _sealed_engine_resolution(request, monkeypatch, _engine_free_path):
+def _sealed_engine_resolution(request, monkeypatch, _engine_free_path, _engine_free_pythonpath):
     """Seal engine-binary resolution so every machine behaves like CI.
 
     resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
     empty (always, outside a release build), so a developer with llama-server
     installed resolves a real binary where CI raises ProviderError. Resolution
-    reads the LILBEE_LLAMA_SERVER_PATH override and the engine names on PATH.
-    Both are sealed in the environment, which a child process a test spawns
-    inherits, and in shutil.which for this process. A test that needs a binary
+    reads the LILBEE_LLAMA_SERVER_PATH override, the bundled wheel and the engine
+    names on PATH. All three are sealed in the environment, which a child process
+    a test spawns inherits (the wheel through a copy without bin/ that comes first
+    on PYTHONPATH), and in shutil.which for this process. A test that needs a binary
     plants its own (a tmp-file ``cfg.llama_server_path``, a fake
     ``lilbee_engine_llama_cpp``, or a ``shutil.which`` patch) or uses
     ``@pytest.mark.real_engine_resolution``.
@@ -399,6 +429,11 @@ def _sealed_engine_resolution(request, monkeypatch, _engine_free_path):
     monkeypatch.setattr(cfg, "llama_server_path", "")
     monkeypatch.delenv("LILBEE_LLAMA_SERVER_PATH", raising=False)
     monkeypatch.setenv("PATH", _engine_free_path)
+    if _engine_free_pythonpath is not None:
+        inherited = os.environ.get("PYTHONPATH")
+        monkeypatch.setenv(
+            "PYTHONPATH", os.pathsep.join(filter(None, [_engine_free_pythonpath, inherited]))
+        )
     sealed = {tool.value for tool in EngineTool}
     real_which = shutil.which
 
