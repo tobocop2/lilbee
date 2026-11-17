@@ -26,6 +26,7 @@ from lilbee.providers.fleet.engines.base import (
     ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
+from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -34,7 +35,6 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "1.9.4"
 _CPU = "cpu"
-_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
 _METAL = "metal"
 _CUDA_PREFIX = "cuda-sm"
 _MIN_COMPUTE = (7, 5)
@@ -256,7 +256,7 @@ class TeiAdapter:
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         """A CPU role hides every card: the CUDA build of TEI has no CPU flag."""
-        return {_CUDA_VISIBLE_VAR: ""} if target is RoleTarget.CPU else {}
+        return {CUDA_VISIBLE_VAR: ""} if target is RoleTarget.CPU else {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"checkEndpoint": "/health"}

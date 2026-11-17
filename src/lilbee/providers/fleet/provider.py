@@ -59,6 +59,7 @@ from lilbee.providers.fleet.contract import (
     vision_slots_cover,
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -495,7 +496,7 @@ def _final_attempt(call: Callable[[], _T]) -> _T:
 
 # Env vars a launch pins its devices with, one per backend (Metal has none).
 _VISIBLE_DEVICE_ENV_VARS = (
-    "CUDA_VISIBLE_DEVICES",
+    CUDA_VISIBLE_VAR,
     "ROCR_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
     "GGML_VK_VISIBLE_DEVICES",

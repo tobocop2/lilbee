@@ -20,20 +20,20 @@ from lilbee.runtime.shard_process import shard_process
 
 log = logging.getLogger(__name__)
 
+CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
 # Backend env vars set from ``cfg.gpu_devices``. Vulkan, CUDA, and ROCm each read
 # their own; a user-set ``cfg.gpu_devices`` is applied to all four because the
 # user is specifying their own indexes and opting in to all wheel flavors.
 _GPU_VISIBLE_ENV_VARS = (
     "GGML_VK_VISIBLE_DEVICES",
-    "CUDA_VISIBLE_DEVICES",
+    CUDA_VISIBLE_VAR,
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
 )
 # The AMD pair is deliberately absent: ROCr filters before HIP re-indexes within
 # the survivors, so a pin may only ever be written to one of them. Which one is
 # devices.amd_visible_var's decision.
-_NON_AMD_VISIBLE_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
-_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
+_NON_AMD_VISIBLE_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES", CUDA_VISIBLE_VAR)
 # What the NVIDIA container runtime sets to say which GPUs it gave this
 # container. Its own words for "none" are below.
 _NVIDIA_RUNTIME_VISIBLE_VAR = "NVIDIA_VISIBLE_DEVICES"
@@ -169,12 +169,12 @@ def _clear_empty_visible_device_vars(env: MutableMapping[str, str]) -> None:
     """
     if not _container_runtime_exposes_a_gpu(env):
         return
-    if _CUDA_VISIBLE_VAR in env and not env[_CUDA_VISIBLE_VAR].strip():
-        del env[_CUDA_VISIBLE_VAR]
+    if CUDA_VISIBLE_VAR in env and not env[CUDA_VISIBLE_VAR].strip():
+        del env[CUDA_VISIBLE_VAR]
         log.debug(
             "%s was empty while %s exposes a GPU; clearing the empty mask so the engine "
             "can see the card the container runtime provided.",
-            _CUDA_VISIBLE_VAR,
+            CUDA_VISIBLE_VAR,
             _NVIDIA_RUNTIME_VISIBLE_VAR,
         )
 

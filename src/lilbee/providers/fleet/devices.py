@@ -54,7 +54,6 @@ _TOPO_MIN_GPUS = 2
 MIB = 1024 * 1024
 # Per-backend visible-devices env vars (the probe inherits them; the children
 # re-emit them, composed through any parent restriction).
-_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
 _CUDA_ORDER_VAR = "CUDA_DEVICE_ORDER"
 _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
 _ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
@@ -676,10 +675,10 @@ def visible_nvidia_cards() -> list[FleetDevice]:
     """
     # circular: nvidia -> devices via MIB
     from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
-    from lilbee.providers.fleet.gpu_env import gpu_environ
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, gpu_environ
 
     cards = read_cards()
-    mask = gpu_environ().get(_CUDA_VISIBLE_VAR)
+    mask = gpu_environ().get(CUDA_VISIBLE_VAR)
     if mask is not None:
         named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}
         wanted = [token.strip() for token in mask.split(",")]
@@ -701,14 +700,14 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     """
     if not devices:
         return {}
-    from lilbee.providers.fleet.gpu_env import gpu_environ
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, gpu_environ
 
     env = gpu_environ()
     backend = devices[0].backend
     indices = [d.index for d in devices]
     if backend == "CUDA":
         return {
-            _CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(_CUDA_VISIBLE_VAR)),
+            CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(CUDA_VISIBLE_VAR)),
             _CUDA_ORDER_VAR: _bus_order(env),
         }
     if backend in ("ROCm", "HIP"):
