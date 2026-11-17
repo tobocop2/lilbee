@@ -53,10 +53,11 @@ def _read_embed_arch(info: ModelArchInfo) -> ModelArchInfo:
     """Read embedding model architecture from GGUF metadata."""
     try:
         from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.fleet.engines.llama import starts_with_gguf_magic
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         path = resolve_model_path(cfg.embedding_model)
-        meta = read_gguf_metadata(path)
+        meta = read_gguf_metadata(path) if starts_with_gguf_magic(path) else None
         if meta:
             info.embed_arch = meta.get("architecture", "unknown")
     except Exception:
@@ -77,12 +78,15 @@ def _read_vision_arch(info: ModelArchInfo) -> ModelArchInfo:
         return info
     try:
         from lilbee.providers.engine_params import resolve_model_path
+        from lilbee.providers.fleet.engines.llama import starts_with_gguf_magic
         from lilbee.providers.gguf_meta import (
             find_mmproj_for_model,
             read_mmproj_projector_type,
         )
 
         path = resolve_model_path(cfg.vision_model)
+        if not starts_with_gguf_magic(path):
+            return info
         mmproj = find_mmproj_for_model(path)
         proj_type = read_mmproj_projector_type(mmproj)
         info.vision_projector = proj_type or "unknown"

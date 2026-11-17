@@ -143,7 +143,7 @@ def test_planned_chat_ctx_sizes_a_local_model_the_way_the_fleet_does(monkeypatch
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta)
     monkeypatch.setattr(
-        "lilbee.providers.fleet.engines.llama._starts_with_gguf_magic", lambda _p: True
+        "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic", lambda _p: True
     )
 
     # A 40,960-token trained window caps the 65,536 target.
@@ -182,7 +182,7 @@ def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta)
     monkeypatch.setattr(
-        "lilbee.providers.fleet.engines.llama._starts_with_gguf_magic", lambda _p: True
+        "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic", lambda _p: True
     )
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")

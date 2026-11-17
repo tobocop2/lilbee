@@ -204,13 +204,13 @@ def test_the_engine_reads_metadata_from_a_file_with_the_gguf_magic(
 def test_the_magic_check_answers_false_for_a_path_that_is_not_a_gguf(
     kind: str, tmp_path: Path
 ) -> None:
-    assert llama_engine._starts_with_gguf_magic(_not_a_model(tmp_path, kind)) is False
+    assert llama_engine.starts_with_gguf_magic(_not_a_model(tmp_path, kind)) is False
 
 
 def test_the_magic_check_answers_true_for_a_file_that_opens_with_the_magic(
     tmp_path: Path,
 ) -> None:
-    assert llama_engine._starts_with_gguf_magic(_gguf_file(tmp_path)) is True
+    assert llama_engine.starts_with_gguf_magic(_gguf_file(tmp_path)) is True
 
 
 def test_the_handler_follows_an_engine_change_with_no_model_change(

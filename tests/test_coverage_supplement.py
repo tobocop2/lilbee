@@ -2669,6 +2669,10 @@ class TestModelInfoExceptionBranches:
                 "lilbee.providers.gguf_meta.read_gguf_metadata",
                 side_effect=OSError("disk read failed"),
             ),
+            mock.patch(
+                "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+                return_value=True,
+            ),
         ):
             result = _read_embed_arch(info)
         assert result is info

@@ -3000,7 +3000,7 @@ def test_status_read_chat_arch_success():
             return_value={"architecture": "llama"},
         ),
         patch(
-            "lilbee.providers.fleet.engines.llama._starts_with_gguf_magic",
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
             return_value=True,
         ),
     ):
@@ -3021,6 +3021,10 @@ def test_status_read_embed_arch_success():
         patch(
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_embed_arch(info)
@@ -3044,6 +3048,10 @@ def test_status_read_vision_arch_success():
         patch(
             "lilbee.providers.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_vision_arch(info)

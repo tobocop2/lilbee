@@ -172,7 +172,7 @@ def pack_backend(host: HostCaps) -> str:
     return _CPU_PACK
 
 
-def _starts_with_gguf_magic(path: Path) -> bool:
+def starts_with_gguf_magic(path: Path) -> bool:
     """Whether the file opens with the GGUF magic; the registry stores blobs with no suffix."""
     try:
         with path.open("rb") as handle:
@@ -286,7 +286,7 @@ class LlamaCppAdapter:
         return frozenset({RoleTarget.GPU})
 
     def model_meta(self, path: Path) -> dict[str, str] | None:
-        if not _starts_with_gguf_magic(path):
+        if not starts_with_gguf_magic(path):
             return None
         return read_gguf_metadata(path)
 
