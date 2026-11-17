@@ -1107,7 +1107,13 @@ def _estimate_role(
         est_ram_bytes=est.host_bytes,
         kind=est.kind,
         size_known=est.size_known,
+        equal_split_only=_equal_split_only(engine),
     )
+
+
+def _equal_split_only(engine: EngineAdapter) -> bool:
+    """Whether *engine* launches a tensor split only as an equal share on each card."""
+    return isinstance(engine, SplitChecked) and engine.equal_split_only
 
 
 def _chat_serve_budget_footprint(footprint: int) -> int:
@@ -1628,7 +1634,10 @@ def _sizing_failure_fallback(
     ):
         return None
     return ModelPlacementInput(
-        role=role, est_vram_bytes=floor, replicas=_replica_count(role, device_count)
+        role=role,
+        est_vram_bytes=floor,
+        replicas=_replica_count(role, device_count),
+        equal_split_only=_equal_split_only(engine),
     )
 
 
@@ -3502,6 +3511,7 @@ def _resolve_placement(
             plan_auto=plan_auto,
             model_refs=model_refs,
             lost_card=_lost_card_wording(devices, host_cards),
+            equal_split_roles=frozenset(m.role for m in inputs if m.equal_split_only),
         )
         cpu_present = _cpu_roles(placement).intersection(model_refs)
         if not cpu_present:
@@ -4207,6 +4217,8 @@ def _log_refused_roles(
                 host_cards.said,
                 engine,
             )
+        elif role not in fits_alone and (equal := _equal_split_refusal(role, inputs, capacity)):
+            log.warning("%s model %s %s", role.value, model, equal)
         elif role not in fits_alone:
             log.warning(
                 "%s model %s needs %.1f GiB, more than any one GPU can hold (%.1f GiB "
@@ -4231,6 +4243,29 @@ def _log_refused_roles(
                 max(charges[role] - room, 0) / 1024**3,
                 role.value,
             )
+
+
+def _equal_split_refusal(
+    role: WorkerRole, inputs: list[ModelPlacementInput], capacity: dict[int, int]
+) -> str | None:
+    """Why an equal split of *role* does not fit the smallest card; None when it does.
+
+    Only an engine that launches equal shares and only more than one card apply.
+    """
+    model = next(m for m in inputs if m.role is role)
+    if not model.equal_split_only or len(capacity) < _MIN_SPLIT_GPUS:
+        return None
+    smallest = min(capacity, key=lambda idx: capacity[idx])
+    usable = capacity[smallest] * usable_vram_fraction()
+    share = model.est_vram_bytes / len(capacity)
+    if share <= usable:
+        return None
+    return (
+        f"needs {model.est_vram_bytes / 1024**3:.1f} GiB, and the engine splits it only "
+        f"evenly: each of the {len(capacity)} GPUs would hold {share / 1024**3:.1f} GiB, "
+        f"but device {smallest}, the smallest, has {usable / 1024**3:.1f} GiB usable. "
+        "It will not be served. Use a smaller model, or another engine for this role."
+    )
 
 
 def _roles_that_fit_alone(

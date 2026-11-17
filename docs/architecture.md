@@ -895,7 +895,9 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   (`--parallel`) steps down the same way before refusing.
 
 - **A role that a tensor-parallel engine splits over several cards**: the launch runs as equal tensor-parallel
-  shards and carries no layer flag. The card order is the order of
+  shards and carries no layer flag. Placement offers such an engine only equal
+  shares, so on cards of different sizes the smallest card must hold its equal share
+  or the role is refused. The card order is the order of
   `CUDA_VISIBLE_DEVICES`. A launch that is not a split turns the card collectives off: one
   card, no card pinned, or the CPU target. A split sets `NCCL_P2P_LEVEL=NVL`, so
   peer-to-peer runs only over NVLink and a PCIe pair does not stall at start. To

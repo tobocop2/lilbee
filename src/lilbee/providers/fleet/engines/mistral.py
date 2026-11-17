@@ -234,6 +234,7 @@ class MistralAdapter:
         WorkerRole.EMBED: frozenset({ModelFormat.GGUF})
     }
     memory_kind = MemoryKind.FIXED_RESERVE
+    equal_split_only = True
     takes_device_names = False
     concatenates_pooling = True
     bundled = False

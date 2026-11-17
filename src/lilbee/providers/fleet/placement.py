@@ -72,6 +72,8 @@ class ModelPlacementInput:
     kind: MemoryKind = MemoryKind.SIZED
     size_known: bool = True
     """False when the figures are the unknown-size reserve, not a measured size."""
+    equal_split_only: bool = False
+    """True when the engine launches a split only as an equal share on each card."""
 
 
 @dataclass(frozen=True)
@@ -514,7 +516,12 @@ def _place_elastic(
 
 def _persistent_single(model: ModelPlacementInput) -> ModelPlacementInput:
     """The replica-0 persistent instance of a replicated role, sized as one server."""
-    return ModelPlacementInput(role=model.role, est_vram_bytes=model.est_vram_bytes, replicas=1)
+    return ModelPlacementInput(
+        role=model.role,
+        est_vram_bytes=model.est_vram_bytes,
+        replicas=1,
+        equal_split_only=model.equal_split_only,
+    )
 
 
 @dataclass(frozen=True)
@@ -583,7 +590,7 @@ def _place_split(
     refusals: set[str] = set()
     for count in range(2, len(by_free) + 1):
         chosen = by_free[:count]
-        for ratio in _split_ratio_candidates(chosen, remaining):
+        for ratio in _split_ratio_candidates(chosen, remaining, equal_only=model.equal_split_only):
             if spent >= _MAX_SPLIT_ESTIMATES:
                 log.info(
                     "Stopped looking for a tensor split for %s after %d estimates; "
@@ -792,8 +799,12 @@ def placement_from_spec(
     plan_auto: AutoPlanner | None = None,
     model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
     lost_card: LostCardWording | None = None,
+    equal_split_roles: frozenset[WorkerRole] = frozenset(),
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
+
+    A card role of *equal_split_roles* with no explicit ``tensor_split`` takes the
+    first ratio of the equal-only ladder (:func:`_split_ratio_candidates`).
 
     ``device_capacity`` is each card's total VRAM (not instantaneous free): the
     plan defines the fleet's full intended residency, so charging it against live
@@ -832,7 +843,12 @@ def placement_from_spec(
             )
             continue
         card_roles.append(role)
-        ratio = rp.tensor_split or _vram_proportional_split(rp.devices, remaining)
+        ratio = (
+            rp.tensor_split
+            or _split_ratio_candidates(rp.devices, remaining, equal_only=role in equal_split_roles)[
+                0
+            ]
+        )
         try:
             per_device = estimate_peak(role, ratio)
         except SplitRefusedError as exc:
@@ -904,7 +920,7 @@ _RATIO_QUANTUM_DIVISOR = 4
 
 
 def _split_ratio_candidates(
-    devices: Sequence[int], remaining: dict[int, float]
+    devices: Sequence[int], remaining: dict[int, float], *, equal_only: bool = False
 ) -> tuple[tuple[int, ...], ...]:
     """Proportions worth trying for a split across *devices*, best-first.
 
@@ -918,6 +934,11 @@ def _split_ratio_candidates(
     Deduplicated by proportion rather than by tuple, so equal cards cost one
     estimate rather than three: (24, 24) and (96, 96) are the same split asked
     twice, and each ask is a subprocess.
+
+    An engine that launches only equal shares (*equal_only*) gets the proportions
+    above that are already equal, then the equal ratio itself. On cards of different
+    sizes the equal ratio is the one split it accepts, and each card then holds an
+    equal share of the footprint, so the smallest card gates it.
     """
     quantum = _vram_proportional_split(devices, remaining, divisor=_RATIO_QUANTUM_DIVISOR)
     candidates = [
@@ -925,6 +946,9 @@ def _split_ratio_candidates(
         quantum,
         _shifted_toward_roomiest(devices, remaining, quantum),
     ]
+    if equal_only:
+        candidates = [c for c in candidates if len(set(c)) == 1]
+        candidates.append((1,) * len(devices))
     seen: dict[tuple[int, ...], tuple[int, ...]] = {}
     for candidate in candidates:
         seen.setdefault(_normalized(candidate), candidate)
