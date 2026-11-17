@@ -12,6 +12,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import httpx
 import numpy as np
@@ -733,23 +734,39 @@ _ROUTER_LIMIT = 8
 
 
 class _Embedder:
-    """A fake router as measured: it embeds any input, cuts it silently, counts a word a token."""
+    """A fake router as measured: it embeds any input, cuts it silently, counts a word a token.
 
-    def __init__(self, limit: int = _ROUTER_LIMIT) -> None:
+    ``special`` tokens flank each input, flagged as the router flags them. With ``by_char``
+    a character is a token.
+    """
+
+    def __init__(self, limit: int = _ROUTER_LIMIT, special: int = 0, by_char: bool = False) -> None:
         self.limit = limit
+        self.special = special
+        self.by_char = by_char
         self.paths: list[str] = []
+        self.timeouts: dict[str, float | None] = {}
         self.tokenized: list[list[str]] = []
+        self.probed: list[list[str]] = []
+
+    def _tokens(self, text: str) -> list[dict[str, Any]]:
+        pieces = list(text) if self.by_char else text.split()
+        tokens = [{"id": i, "special": False} for i, _ in enumerate(pieces)]
+        specials = [{"id": 0, "special": True} for _ in range(self.special)]
+        return specials[:1] + tokens + specials[1:]
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         self.paths.append(req.url.path)
+        self.timeouts[req.url.path] = req.extensions["timeout"]["read"]
         body = json.loads(req.content) if req.content else {}
         if req.url.path.endswith("/info"):
             return httpx.Response(200, json={"max_input_length": self.limit})
         if req.url.path.endswith("/tokenize"):
-            self.tokenized.append(body["inputs"])
-            return httpx.Response(
-                200, json=[[{"id": i} for i, _ in enumerate(t.split())] for t in body["inputs"]]
-            )
+            if body["inputs"] == ["a"]:
+                self.probed.append(body["inputs"])
+            else:
+                self.tokenized.append(body["inputs"])
+            return httpx.Response(200, json=[self._tokens(t) for t in body["inputs"]])
         vector = base64.b64encode(np.array([0.5, 0.5], dtype="<f4").tobytes()).decode()
         data = [{"index": i, "embedding": vector} for i, _ in enumerate(body["input"])]
         return httpx.Response(200, json={"data": data})
@@ -813,6 +830,157 @@ def test_the_count_of_a_call_with_several_batches_adds_the_cut_inputs_of_each(ca
         client.embed([_words(30)] + [_words(2)] * 70)
     [record] = caplog.records
     assert record.getMessage().startswith("1 of 71")
+
+
+@pytest.mark.parametrize("special", [0, 1, 2, 3])
+def test_an_input_the_router_cuts_only_with_its_special_tokens_gives_a_warning(
+    special, caplog
+) -> None:
+    """The router adds *special* tokens, so one character a token is cut at limit - special + 1."""
+    router = _Embedder(special=special, by_char=True)
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed(["x" * (_ROUTER_LIMIT - special + 1)])
+    [record] = caplog.records
+    assert record.getMessage().startswith("1 of 1")
+
+
+@pytest.mark.parametrize("special", [0, 1, 2, 3])
+def test_an_input_that_fits_with_the_special_tokens_is_not_counted(special, caplog) -> None:
+    router = _Embedder(special=special, by_char=True)
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed(["x" * (_ROUTER_LIMIT - special)])
+    assert router.tokenized == []
+    assert caplog.records == []
+
+
+def test_the_router_is_asked_for_its_special_tokens_once() -> None:
+    router = _Embedder(special=2, by_char=True)
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed(["x" * 7])
+    client.embed(["x" * 7])
+    assert router.probed == [["a"]]
+
+
+@pytest.mark.parametrize("route", ["/info", "/tokenize"])
+def test_a_side_route_request_asks_for_an_answer_within_five_seconds(route) -> None:
+    router = _Embedder(special=2, by_char=True)
+    http = httpx.Client(transport=httpx.MockTransport(router), base_url="http://gpu0", timeout=60.0)
+    client = LlamaServerClient(
+        "http://gpu0", "m", http=http, profile=TEI.request_profile(WorkerRole.EMBED)
+    )
+    client.embed(["x" * 7])
+    assert [t for path, t in router.timeouts.items() if path.endswith(route)] == [5.0]
+
+
+class _RecoveringRouter(_Embedder):
+    """A router whose /info answers with the status in ``info_status`` until the test changes it."""
+
+    def __init__(self, info_status: int) -> None:
+        super().__init__()
+        self.info_status = info_status
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/info") and self.info_status != 200:
+            self.paths.append(req.url.path)
+            return httpx.Response(self.info_status, json={"error": "down"})
+        return super().__call__(req)
+
+
+def test_a_busy_router_pauses_the_check_for_a_cool_down(caplog) -> None:
+    router = _RecoveringRouter(503)
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    router.info_status = 200
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    assert sum(p.endswith("/info") for p in router.paths) == 1
+    assert caplog.records == []
+
+
+def test_the_check_runs_again_when_the_cool_down_is_over(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_RETRY_S", 0.0)
+    router = _RecoveringRouter(503)
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    router.info_status = 200
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    [record] = caplog.records
+    assert record.getMessage().startswith("1 of 1")
+
+
+class _FrozenClock:
+    """Stands in for the ``time`` module of the client with a clock that never moves."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+        self.sleep = time.sleep
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def test_a_client_checks_on_its_first_embed_whatever_the_clock_reads(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(fleet_client, "time", _FrozenClock(0.5))
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    [record] = caplog.records
+    assert record.getMessage().startswith("1 of 1")
+
+
+def test_a_cool_down_of_no_time_ends_at_once(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(fleet_client, "time", _FrozenClock(100.0))
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_RETRY_S", 0.0)
+    router = _RecoveringRouter(503)
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    router.info_status = 200
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    [record] = caplog.records
+    assert record.getMessage().startswith("1 of 1")
+
+
+def test_a_count_route_answer_with_entries_that_are_not_lists_is_named_as_unexpected(
+    caplog,
+) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json=[1]))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.getMessage() == (
+        "Embed truncation check skipped: the router's /tokenize route gave an unexpected "
+        "answer (the body is not a list of token lists: [1]). "
+        "Embed inputs the router cuts are not reported."
+    )
+
+
+def test_a_router_that_cannot_be_reached_is_asked_again_after_the_cool_down(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_RETRY_S", 0.0)
+    router = _BrokenSideRoute("/tokenize", httpx.ConnectError("refused"))
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    router.answer = httpx.Response(200, json=[[{"id": 0, "special": False}] * 30])
+    with caplog.at_level("WARNING"):
+        client.embed([_words(30)])
+    assert [r.getMessage()[:6] for r in caplog.records] == ["1 of 1"]
+
+
+def test_a_route_the_router_does_not_have_stops_the_check_for_the_client_after_a_cool_down(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_RETRY_S", 0.0)
+    router = _BrokenSideRoute("/info", httpx.Response(404, json={}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    client.embed([_words(30)])
+    assert sum(p.endswith("/info") for p in router.paths) == 1
 
 
 def test_an_input_of_exactly_the_limit_in_characters_is_not_counted() -> None:
@@ -904,6 +1072,7 @@ class _BrokenSideRoute(_Embedder):
 _BROKEN_ANSWERS = {
     "404": httpx.Response(404, json={"error": "no route"}),
     "500": httpx.Response(500, text="boom"),
+    "503": httpx.Response(503, text="restarting"),
     "not-json": httpx.Response(200, text="<html>"),
     "connection": httpx.ConnectError("refused"),
 }
@@ -918,7 +1087,16 @@ _BROKEN_TOKENIZE = {
     **_BROKEN_ANSWERS,
     "body-an-object": httpx.Response(200, json={"tokens": 1}),
     "entries-not-lists": httpx.Response(200, json=[1]),
+    "token-without-special-flag": httpx.Response(200, json=[[{"id": 1}]]),
 }
+
+
+_DEAD_ROUTER_KINDS = {"503", "connection"}
+
+
+def _skipped_level(kind: str) -> str:
+    """A router that is down costs a debug line; an answer the check cannot use is a warning."""
+    return "DEBUG" if kind in _DEAD_ROUTER_KINDS else "WARNING"
 
 
 @pytest.mark.parametrize("kind", list(_BROKEN_INFO))
@@ -928,8 +1106,8 @@ def test_embed_returns_its_vectors_when_the_limit_route_fails(kind, caplog) -> N
     with caplog.at_level("DEBUG"):
         vectors = client.embed([_words(30), _words(3)])
     assert len(vectors) == 2
-    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
-    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == _skipped_level(kind)
 
 
 @pytest.mark.parametrize("kind", list(_BROKEN_TOKENIZE))
@@ -939,8 +1117,8 @@ def test_embed_returns_its_vectors_when_the_count_route_fails(kind, caplog) -> N
     with caplog.at_level("DEBUG"):
         vectors = client.embed([_words(30), _words(3)])
     assert len(vectors) == 2
-    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
-    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == _skipped_level(kind)
 
 
 def test_a_tokenize_body_of_an_empty_object_is_a_failed_check(caplog) -> None:
@@ -951,25 +1129,116 @@ def test_a_tokenize_body_of_an_empty_object_is_a_failed_check(caplog) -> None:
     assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
 
 
-def test_the_skipped_check_logs_why_at_debug(caplog) -> None:
-    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json={"tokens": 1}))
+def test_an_unexpected_count_route_answer_is_a_warning_naming_the_route_and_the_body(
+    caplog,
+) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, text='{"tokens": 1}'))
     client = _tei_client(router, WorkerRole.EMBED)
     with caplog.at_level("DEBUG"):
         client.embed([_words(30)])
     [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
-    assert record.levelname == "DEBUG"
+    assert record.levelname == "WARNING"
     assert record.getMessage() == (
-        "Embed truncation check skipped: the count route answered with an unexpected body"
+        "Embed truncation check skipped: the router's /tokenize route gave an unexpected "
+        'answer (the body is not a list of token lists: {"tokens": 1}). '
+        "Embed inputs the router cuts are not reported."
     )
 
 
-def test_a_missing_limit_key_is_named_in_the_skipped_check_line(caplog) -> None:
+def test_a_missing_limit_key_is_a_warning_naming_the_limit_route(caplog) -> None:
     router = _BrokenSideRoute("/info", httpx.Response(200, json={"model_id": "x"}))
     client = _tei_client(router, WorkerRole.EMBED)
     with caplog.at_level("DEBUG"):
         client.embed([_words(30)])
     [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
-    assert record.getMessage() == "Embed truncation check skipped: 'max_input_length'"
+    assert record.levelname == "WARNING"
+    assert record.getMessage() == (
+        "Embed truncation check skipped: the router's /info route gave an unexpected "
+        "answer ('max_input_length'). Embed inputs the router cuts are not reported."
+    )
+
+
+def test_a_router_that_is_down_costs_a_debug_line_and_no_warning(caplog) -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(503, text="restarting"))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_an_absent_route_is_one_warning_that_names_the_404(caplog) -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(404, text="no route"))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == "WARNING"
+    assert "/info route" in record.getMessage()
+    assert "(HTTP 404): no route" in record.getMessage()
+
+
+def test_a_dead_router_debug_line_carries_the_reason(caplog) -> None:
+    router = _BrokenSideRoute("/info", httpx.ConnectError("refused"))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == "DEBUG"
+    assert record.getMessage().startswith("Embed truncation check skipped: ")
+    assert "refused" in record.getMessage()
+
+
+def test_an_absent_route_warning_quotes_at_most_200_characters_of_the_body(caplog) -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(404, text="x" * 300))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert "(HTTP 404): " + "x" * 200 + ")" in record.getMessage()
+
+
+def test_a_bad_token_list_warning_quotes_at_most_200_characters_of_the_body(caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json="y" * 300))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert '"' + "y" * 199 + ")" in record.getMessage()
+
+
+def test_a_404_on_a_side_route_is_a_not_found_error_that_names_the_router() -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    with pytest.raises(ProviderError) as raised:
+        client._raise_for_side_route(httpx.Response(404, text="gone"))
+    assert raised.value.kind is ProviderErrorKind.NOT_FOUND
+    assert raised.value.provider == client._profile.label
+    assert raised.value.provider != ""
+
+
+def test_an_unexpected_answer_is_asked_again_after_the_cool_down_and_warns_once(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_RETRY_S", 0.0)
+    router = _BrokenSideRoute("/info", httpx.Response(200, json={"model_id": "x"}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        client.embed([_words(30)])
+        client.embed([_words(30)])
+        router.answer = httpx.Response(200, json={"max_input_length": _ROUTER_LIMIT})
+        client.embed([_words(30)])
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert sum(p.endswith("/info") for p in router.paths) == 3
+    assert len(warnings) == 2
+    assert warnings[0].getMessage().startswith("Embed truncation check skipped")
+    assert warnings[1].getMessage().startswith("1 of 1")
+
+
+def test_an_unexpected_answer_is_not_asked_again_inside_the_cool_down() -> None:
+    router = _BrokenSideRoute("/info", httpx.Response(200, json={"model_id": "x"}))
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    client.embed([_words(30)])
+    assert sum(p.endswith("/info") for p in router.paths) == 1
 
 
 def test_a_second_embed_after_a_failed_limit_read_logs_no_second_skip(caplog) -> None:
@@ -1036,7 +1305,10 @@ def hung_side_route(monkeypatch: pytest.MonkeyPatch):
                 return Response(json.dumps({"max_input_length": _ROUTER_LIMIT}))
             inputs = json.loads(request.data)
             if request.path.endswith("/tokenize"):
-                tokens = [[{"id": i} for i, _ in enumerate(t.split())] for t in inputs["inputs"]]
+                tokens = [
+                    [{"id": i, "special": False} for i, _ in enumerate(t.split())]
+                    for t in inputs["inputs"]
+                ]
                 return Response(json.dumps(tokens))
             return Response(json.dumps(_base64_vectors([[0.5, 0.5]] * len(inputs["input"]))))
 

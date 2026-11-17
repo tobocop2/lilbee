@@ -489,6 +489,10 @@ _GATEWAY_BACKOFF_MAX_S = 8.0
 # caller sees it routable once cooled down (a success restores it, another
 # connection failure re-stamps the cool-down).
 _UNHEALTHY_RETRY_S = 30.0
+# A truncation check that failed on a dead or busy router waits this long before it asks again.
+_TRUNCATION_CHECK_RETRY_S = _UNHEALTHY_RETRY_S
+# The text the router tokenizes once to learn how many special tokens it adds to an input.
+_SPECIAL_PROBE_TEXT = "a"
 _T = TypeVar("_T")
 
 
@@ -609,8 +613,13 @@ class LlamaServerClient:
         self.in_flight = 0
         # The server's input limit; None until read.
         self._max_input: int | None = None
-        # Set by the first failed truncation check; the check is off for the client's life.
-        self._check_off = False
+        # The special tokens the router adds to each input; None until read.
+        self._special_tokens: int | None = None
+        # Monotonic time before which the truncation check does not run: a failure sets a
+        # cool-down, a route that is absent sets infinity.
+        self._check_resume_at = 0.0
+        # Whether the check has warned of an unexpected answer; it warns once per client.
+        self._check_warned = False
         self._in_flight_lock = threading.Lock()
         # Signalled under the count lock each time a request takes in_flight to zero.
         self._idle = threading.Condition(self._in_flight_lock)
@@ -1222,20 +1231,55 @@ class LlamaServerClient:
         return vectors
 
     def _note_cut_inputs(self, sub_batches: list[list[str]], total: int) -> None:
-        """Record how many inputs the server cut; a failure turns the check off, never raises."""
-        if self._check_off:
+        """Record how many inputs the server cut; a failure pauses the check, never raises."""
+        if time.monotonic() < self._check_resume_at:
             return
+        route = self._profile.input_limit_path
         try:
             limit = self._input_limit()
             path = self._profile.input_count_path
             if limit is None or path is None:
                 return
-            cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
+            route = path
+            added = self._special_token_count(path)
+            cut = sum(
+                self._count_inputs_past_limit(batch, limit, added, path) for batch in sub_batches
+            )
         except _TRUNCATION_CHECK_FAILURES as exc:
-            self._check_off = True
-            log.debug("Embed truncation check skipped: %s", exc)
+            self._pause_truncation_check(exc, route)
             return
         note_truncated(cut, total, limit)
+
+    def _pause_truncation_check(self, exc: Exception, route: str | None) -> None:
+        """Pause the check after *exc* from *route*, and warn once of an unexpected answer.
+
+        A dead or busy router costs one debug line. An answer the check cannot use is
+        a warning, because the inputs the router cuts go unreported. Both pause the
+        check for a cool-down; a route the router does not have pauses it for good.
+        """
+        absent = isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND
+        pause = math.inf if absent else _TRUNCATION_CHECK_RETRY_S
+        self._check_resume_at = time.monotonic() + pause
+        if _is_transient_probe_failure(exc):
+            log.debug("Embed truncation check skipped: %s", exc)
+        elif not self._check_warned:
+            self._check_warned = True
+            log.warning(
+                "Embed truncation check skipped: the router's %s route gave an unexpected "
+                "answer (%s). Embed inputs the router cuts are not reported.",
+                route,
+                exc,
+            )
+
+    def _raise_for_side_route(self, resp: httpx.Response) -> None:
+        """Raise for a failed side-route answer; a 404 says the router has no such route."""
+        if resp.status_code == httpx.codes.NOT_FOUND:
+            raise ProviderError(
+                f"{self._profile.label} has no such route (HTTP 404): {resp.text.strip()[:200]}",
+                provider=self._profile.label,
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        self._raise_for_status(resp)
 
     def _input_limit(self) -> int | None:
         """The server's ``max_input_length``, read once per client."""
@@ -1243,27 +1287,43 @@ class LlamaServerClient:
         if path is None or self._max_input is not None:
             return self._max_input
         resp = self._http.get(self._native_route(path), timeout=_TRUNCATION_CHECK_TIMEOUT_S)
-        self._raise_for_status(resp)
+        self._raise_for_side_route(resp)
         self._max_input = int(resp.json()["max_input_length"])
         return self._max_input
 
-    def _count_inputs_past_limit(self, texts: list[str], limit: int, path: str) -> int:
-        """How many of *texts* the tokenizer route *path* counts past *limit*.
-
-        A token is at least one character, so only a text with more characters than
-        the limit is counted, in one request.
-        """
-        long = [text for text in texts if len(text) > limit]
-        if not long:
-            return 0
+    def _count_route_tokens(self, path: str, inputs: list[str]) -> list[list[dict[str, Any]]]:
+        """The token lists the route *path* answers for *inputs*, one list for each input."""
         resp = self._http.post(
-            self._native_route(path), json={"inputs": long}, timeout=_TRUNCATION_CHECK_TIMEOUT_S
+            self._native_route(path), json={"inputs": inputs}, timeout=_TRUNCATION_CHECK_TIMEOUT_S
         )
-        self._raise_for_status(resp)
+        self._raise_for_side_route(resp)
         counts = resp.json()
         if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
-            raise ValueError("the count route answered with an unexpected body")
-        return sum(len(tokens) > limit for tokens in counts)
+            raise ValueError(f"the body is not a list of token lists: {resp.text.strip()[:200]}")
+        return counts
+
+    def _special_token_count(self, path: str) -> int:
+        """The special tokens the router adds to an input, read once per client.
+
+        The route flags each token it returns, so the count is the flagged tokens of
+        one short input.
+        """
+        if self._special_tokens is None:
+            [tokens] = self._count_route_tokens(path, [_SPECIAL_PROBE_TEXT])
+            self._special_tokens = sum(bool(token["special"]) for token in tokens)
+        return self._special_tokens
+
+    def _count_inputs_past_limit(self, texts: list[str], limit: int, added: int, path: str) -> int:
+        """How many of *texts* the tokenizer route *path* counts past *limit*.
+
+        A token is at least one character and the router adds *added* special tokens
+        to each input, so only a text with more than ``limit - added`` characters can
+        pass the limit. The router counts those in one request.
+        """
+        long = [text for text in texts if len(text) + added > limit]
+        if not long:
+            return 0
+        return sum(len(tokens) > limit for tokens in self._count_route_tokens(path, long))
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
