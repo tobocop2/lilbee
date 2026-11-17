@@ -31,7 +31,7 @@ from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
-from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engine_store import LOCK_DIR, EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import installed_engines
@@ -188,7 +188,7 @@ def test_a_wrong_sha256_is_refused_with_the_store_text_and_leaves_nothing(
         engine_service.install(ENGINE.value, other)
     assert str(exc.value) == BAD_PACK
     assert _builds() == []
-    assert not root.exists()
+    assert [p.name for p in root.glob("*") if p.name != LOCK_DIR] == []
 
 
 def test_no_pack_and_no_network_gives_the_missing_pack_text(good: Path, root: Path) -> None:

@@ -13,7 +13,8 @@ import subprocess
 import sys
 import uuid
 import zipfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email import message_from_string
@@ -130,6 +131,7 @@ _LIBRARY_SUFFIXES = (".so", ".dylib", ".dll")
 _STATIC_ARCHIVE_SUFFIX = ".a"
 LOCK_DIR = ".locks"
 _LOCK_TIMEOUT_S = 300.0
+_COPY_CHUNK_BYTES = 1024 * 1024
 STAGE_PREFIX = ".stage-"
 _DOWNLOAD_PREFIX = ".download-"
 _TRASH_PREFIX = ".trash-"
@@ -299,15 +301,31 @@ def _check_licences(lock: PinLock) -> None:
             )
 
 
-def _check_wheel(lock: PinLock, wheel: Path) -> None:
-    with wheel.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+def copy_with_digest(source: Path, target: Path) -> str:
+    """Copy *source* to *target* in chunks; return the sha256 of the bytes copied."""
+    digest = hashlib.sha256()
+    with source.open("rb") as reader, target.open("wb") as writer:
+        while chunk := reader.read(_COPY_CHUNK_BYTES):
+            digest.update(chunk)
+            writer.write(chunk)
+    return digest.hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _require_pinned(lock: PinLock, digest: str) -> None:
     if digest != lock.sha256.lower():
         raise ChecksumError(
             f"The file for engine {lock.engine} {lock.version} ({lock.backend}) does not "
             f"match its pin, so lilbee did not install it. Run the install again. "
             f"If this happens again, report it."
         )
+
+
+def _check_wheel(lock: PinLock, wheel: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         _refuse_escaping_entries(lock, archive)
         _refuse_linked_binary(lock, archive)
@@ -610,27 +628,44 @@ class EngineStore:
         pack = self.pack_path(lock)
         if pack.is_file():
             return self.install_from_wheel(lock, pack)
+        with self._scratch() as scratch:
+            try:
+                wheel = fetch(lock, scratch)
+            except (OSError, RuntimeError) as exc:
+                raise MissingPackError(
+                    f"Engine {lock.engine} {lock.version} ({lock.backend}) is not installed "
+                    f"and cannot be downloaded. Copy {pack.name} into {pack.parent} "
+                    f"and run the install again."
+                ) from exc
+            return self._install_private(lock, wheel, file_digest(wheel))
+
+    @contextmanager
+    def _scratch(self) -> Iterator[Path]:
+        """A private download folder under the root, locked while in use, removed on exit."""
         name = f"{_DOWNLOAD_PREFIX}{uuid.uuid4().hex}"
         scratch = self.root / name
         scratch_lock = self.root / LOCK_DIR / name
         try:
             with file_lock(scratch_lock, _LOCK_TIMEOUT_S):
-                try:
-                    wheel = fetch(lock, scratch)
-                except (OSError, RuntimeError) as exc:
-                    raise MissingPackError(
-                        f"Engine {lock.engine} {lock.version} ({lock.backend}) is not installed "
-                        f"and cannot be downloaded. Copy {pack.name} into {pack.parent} "
-                        f"and run the install again."
-                    ) from exc
-                return self.install_from_wheel(lock, wheel)
+                yield scratch
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
             _unlink_lock_file(scratch_lock)
 
     def install_from_wheel(self, lock: PinLock, wheel: Path) -> Path:
-        """Install *wheel* as the build of *lock*; return the build directory."""
+        """Install a private copy of *wheel* as the build of *lock*; return the build directory.
+
+        A rewrite of *wheel* after the copy cannot reach the install.
+        """
         _check_licences(lock)
+        with self._scratch() as scratch:
+            scratch.mkdir(parents=True, exist_ok=True)
+            copy = scratch / wheel.name
+            return self._install_private(lock, copy, copy_with_digest(wheel, copy))
+
+    def _install_private(self, lock: PinLock, wheel: Path, digest: str) -> Path:
+        """Install the private file *wheel* once *digest* and the wheel checks match the pin."""
+        _require_pinned(lock, digest)
         _check_wheel(lock, wheel)
         final = self.build_dir(lock)
         with file_lock(self.root / LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):

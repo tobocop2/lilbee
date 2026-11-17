@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import stat
 import tarfile
@@ -25,7 +24,9 @@ from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineDiskError,
     PackUrlError,
+    copy_with_digest,
     engines_root,
+    file_digest,
 )
 from lilbee.providers.fleet.first_use import RefusedInstalls
 from lilbee.providers.fleet.host_caps import HostCaps
@@ -185,9 +186,7 @@ _UNPACKERS: Mapping[ArchiveKind, Callable[[Path, tuple[str, ...], Path], None]] 
 }
 
 
-def _check_digest(asset: RouterAsset, archive: Path) -> None:
-    with archive.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+def _check_digest(asset: RouterAsset, digest: str) -> None:
     if digest != asset.sha256:
         raise ChecksumError(
             f"The file for the llama-swap router {ROUTER_VERSION} does not match its pin, "
@@ -211,17 +210,18 @@ def _fetch(
     on_progress: ProgressCallback | None,
     on_retry: RetryCallback | None,
     cancel: CancelSignal | None,
-) -> Path:
-    """The archive of *asset*: a copy in the packs folder, else the download."""
+) -> tuple[Path, str]:
+    """A private archive of *asset* in *stage* and its sha256: the packs copy, else the download."""
     pack = _root() / PACK_DIR / asset.filename
     if pack.is_file():
-        return pack
+        private = stage / pack.name
+        return private, copy_with_digest(pack, private)
     url = f"{_RELEASE_URL}{ROUTER_VERSION}/{asset.filename}"
     shortfall = disk_shortfall(stage, url_filename(url), asset.size)
     if shortfall is not None:
         raise EngineDiskError(shortfall)
     try:
-        return download_url(
+        downloaded = download_url(
             url, stage, asset.size, on_progress=on_progress, on_retry=on_retry, cancel=cancel
         )
     except (OSError, RuntimeError) as exc:
@@ -229,6 +229,7 @@ def _fetch(
             f"The llama-swap router {ROUTER_VERSION} is not installed and cannot be downloaded. "
             f"Copy {asset.filename} into {pack.parent} and run the install again."
         ) from exc
+    return downloaded, file_digest(downloaded)
 
 
 def install_router(
@@ -239,8 +240,8 @@ def install_router(
 ) -> Path:
     """Install the pinned router once and return its binary; a second caller finds it installed.
 
-    The archive is checked against its sha256 before any file is read from it. A copy of the
-    archive in the packs folder is used with no download.
+    A copy of the archive in the packs folder is used with no download. The archive is copied
+    into the stage folder, hashed as it is copied, and read only from that copy.
     """
     _, asset = router_asset(session_host())
     root = _root()
@@ -252,11 +253,10 @@ def install_router(
         stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
         stage.mkdir(parents=True)
         try:
-            archive = _fetch(asset, stage, on_progress, on_retry, cancel)
-            _check_digest(asset, archive)
+            archive, digest = _fetch(asset, stage, on_progress, on_retry, cancel)
+            _check_digest(asset, digest)
             _unpack(asset, archive, stage)
-            if archive.parent == stage:
-                archive.unlink()
+            archive.unlink()
             shutil.rmtree(final, ignore_errors=True)
             stage.rename(final)
         finally:

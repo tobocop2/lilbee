@@ -23,6 +23,7 @@ from lilbee.providers.fleet import first_use, router_install
 from lilbee.providers.fleet.binary import EngineTool, resolve_llama_swap
 from lilbee.providers.fleet.engine_store import (
     PACK_DIR,
+    STAGE_PREFIX,
     ChecksumError,
     EngineDiskError,
     EngineStore,
@@ -384,6 +385,54 @@ class TestInstall:
         assert install_router().is_file()
         assert release == []
         assert (engines_root(cfg.models_dir) / "packs" / asset.filename).is_file()
+
+    def test_an_archive_rewritten_after_the_check_installs_the_checked_bytes(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asset = router_install.ROUTER_ASSETS["linux-x86_64"]
+        source = next((Path(cfg.data_root) / "release").iterdir())
+        pack = _packs_copy(asset.filename, source.read_bytes())
+        real_check = router_install._check_digest
+
+        def check_then_rewrite(checked: RouterAsset, digest: str) -> None:
+            real_check(checked, digest)
+            _tar(pack, {"llama-swap": b"#!/bin/sh\nexit 9\n", LICENCE_FILE: MIT_TEXT.encode()})
+
+        monkeypatch.setattr(router_install, "_check_digest", check_then_rewrite)
+        assert install_router().read_bytes() == BINARY_BODY
+
+    def test_every_archive_open_reads_the_copy_in_the_stage_folder(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asset = router_install.ROUTER_ASSETS["linux-x86_64"]
+        source = next((Path(cfg.data_root) / "release").iterdir())
+        pack = _packs_copy(asset.filename, source.read_bytes())
+        opened: list[Path] = []
+        real_open = tarfile.open
+
+        def spy(name: Path, *args: Any, **kwargs: Any) -> tarfile.TarFile:
+            opened.append(Path(name))
+            return real_open(name, *args, **kwargs)
+
+        monkeypatch.setattr(router_install.tarfile, "open", spy)
+        install_router()
+        assert len(opened) == 1
+        assert opened[0] != pack
+        assert opened[0].parent.parent == engines_root(cfg.models_dir) / "router"
+        assert opened[0].parent.name.startswith(STAGE_PREFIX)
+
+    def test_the_copy_is_gone_after_a_refused_packs_archive(
+        self, release: list[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = router_install.ROUTER_ASSETS["linux-x86_64"]
+        bad = RouterAsset(good.filename, "0" * 64, good.size, good.archive, good.binary)
+        monkeypatch.setattr(router_install, "ROUTER_ASSETS", {"linux-x86_64": bad})
+        source = next((Path(cfg.data_root) / "release").iterdir())
+        pack = _packs_copy(good.filename, source.read_bytes())
+        with pytest.raises(ChecksumError):
+            install_router()
+        assert list((engines_root(cfg.models_dir) / "router").iterdir()) == []
+        assert pack.is_file()
 
     def test_a_download_that_fails_names_the_file_to_copy(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
