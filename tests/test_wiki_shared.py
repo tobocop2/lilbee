@@ -629,6 +629,7 @@ class TestWikiBuildMutex:
         assert held == [True]
         assert not _wiki_lock_held()
 
+    @pytest.mark.usefixtures("counting_provider")
     def test_accept_draft_holds_the_lock_while_publishing(self, monkeypatch, tmp_path):
         from lilbee.wiki.drafts import accept_draft
 
