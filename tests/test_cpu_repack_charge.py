@@ -323,6 +323,38 @@ class TestTheRepackFlagReachesTheEstimate:
         )
         assert [request.on_cpu for request in self.engine.requests] == [True]
 
+    def _only_for(self, role: WorkerRole, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Offload no layer for *role* and every layer for any other role."""
+        monkeypatch.setattr(
+            planning_mod, "_role_gpu_layers", lambda asked: 0 if asked is role else -1
+        )
+
+    def test_the_slot_fit_asks_for_the_layers_of_its_own_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._only_for(WorkerRole.CHAT, monkeypatch)
+        self._fit_slots(unified=True)
+        assert self.engine.requests
+        assert all(request.gpu_layers == 0 for request in self.engine.requests)
+        assert all(request.on_cpu is True for request in self.engine.requests)
+
+    def test_the_chat_ctx_fit_asks_for_the_chat_layers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._only_for(WorkerRole.CHAT, monkeypatch)
+        self._fit_chat()
+        assert self.engine.requests
+        assert all(request.on_cpu is True for request in self.engine.requests)
+
+    def test_the_role_estimate_asks_for_the_layers_of_its_own_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._only_for(WorkerRole.EMBED, monkeypatch)
+        planning_mod._estimate_role(
+            WorkerRole.EMBED, "ref", slots=1, engine=self.engine, unified_budget=10**9
+        )
+        assert [request.on_cpu for request in self.engine.requests] == [True]
+
 
 class TestTheRepackedBytesMemo:
     def test_the_parser_is_asked_about_the_model_file(
