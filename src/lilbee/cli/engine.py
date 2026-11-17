@@ -132,6 +132,7 @@ def install(
                 "installed": label,
                 "note": built.note,
                 "not_run_on": list(built.not_run_on),
+                "engines_folder": str(engine_service.engines_folder()),
             }
         )
         return

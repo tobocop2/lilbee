@@ -1151,6 +1151,7 @@ class EngineInstalledResponse(BaseModel):
     backend: str
     note: str = ""
     not_run_on: list[str] = []
+    engines_folder: str
 
 
 class PresetAddBody(BaseModel):

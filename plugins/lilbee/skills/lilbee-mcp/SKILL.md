@@ -159,7 +159,7 @@ These tools register only when the user turns on `mcp_engines_enabled` (off by d
 | `lilbee_engine_roles()` | The engine of each role: model, format, engine and the notice when the role fell back or has no engine. |
 | `lilbee_engine_use(role, model, engine)` | Choose the engine for the model of a role. `engine` `auto` removes the choice. |
 | `lilbee_engine_prefer(engine)` | Set the engine for every model with no choice of its own. `auto` picks by model format. |
-| `lilbee_engine_install(engine)` | Install an engine that is not bundled, from its pack in the packs folder. The host must pass the engine's gate. |
+| `lilbee_engine_install(engine)` | Install an engine that is not bundled, from its pack in the packs folder. The host must pass the engine's gate. The result carries `engines_folder`, the folder that holds the builds. |
 
 On the shared HTTP daemon, `remove`/`use`/`prefer`/`install` are refused unless the host enables
 `allow_http_engines`; `list` and `roles` always work. Change the engine only when the user asks.

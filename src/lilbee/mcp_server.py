@@ -2402,6 +2402,7 @@ def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]
             backend=built.backend,
             note=built.note,
             not_run_on=list(built.not_run_on),
+            engines_folder=str(engine_service.engines_folder()),
         )
 
     return _engine_result(install)

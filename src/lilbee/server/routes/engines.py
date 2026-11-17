@@ -126,6 +126,7 @@ async def engine_install_route(data: EngineInstallBody) -> EngineInstalledRespon
         backend=built.backend,
         note=built.note,
         not_run_on=list(built.not_run_on),
+        engines_folder=str(service.engines_folder()),
     )
 
 

@@ -486,6 +486,7 @@ def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
             "installed": f"{ENGINE} {VERSION} (cpu)",
             "note": "",
             "not_run_on": [],
+            "engines_folder": str(cfg.models_dir.parent / "engines"),
         },
     )
     listing = CliRunner().invoke(cli_app, ["engine", "list"])
@@ -558,6 +559,7 @@ def test_rest_installs_a_pack_from_the_packs_folder(good: Path, root: Path) -> N
             "backend": "cpu",
             "note": "",
             "not_run_on": [],
+            "engines_folder": str(cfg.models_dir.parent / "engines"),
         },
     )
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
@@ -589,8 +591,22 @@ def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
         "backend": "cpu",
         "note": "",
         "not_run_on": [],
+        "engines_folder": str(cfg.models_dir.parent / "engines"),
     }
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_every_install_surface_names_the_folder_the_list_names(good: Path, root: Path) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    expected = str(cfg.models_dir.parent / "engines")
+    folders = {
+        "cli": _cli("install", ENGINE.value, "--wheel", str(good))[1]["engines_folder"],
+        "rest": _rest({"engine": ENGINE.value})[1]["engines_folder"],
+        "mcp": mcp_server.engine_install_tool(ENGINE.value)["engines_folder"],
+        "list": mcp_server.engine_list_tool()["engines_folder"],
+    }
+    assert folders == dict.fromkeys(("cli", "rest", "mcp", "list"), expected)
 
 
 def test_the_mcp_tool_is_off_the_wire_and_refuses_while_the_setting_is_off(good: Path) -> None:

@@ -596,7 +596,8 @@ the licence of the wheel. If the host fails the check, the command names the
 feature it lacks and installs nothing. Only the llama.cpp pack installs on first
 use, when a model needs it. Every other engine needs this command. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
-REST route `POST /api/engines/install`.
+REST route `POST /api/engines/install`. The JSON answer of `lilbee --json engine install`, the
+REST route and the MCP tool carry `engines_folder`, the same field as the list.
 
 Every engine starts behind the llama-swap router. `lilbee engine install` also installs
 the router from its pinned release (MIT licence, digest checked) into the `router` folder of
