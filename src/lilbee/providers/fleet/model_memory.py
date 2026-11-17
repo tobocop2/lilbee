@@ -11,7 +11,7 @@ from typing import Any
 
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.vram import estimate_instance_footprint
+from lilbee.providers.fleet.vram import estimate_instance_footprint, repacked_weight_bytes
 from lilbee.providers.model_cache import kv_bytes_per_token
 
 _SAFETENSORS_SUFFIX = ".safetensors"
@@ -352,7 +352,8 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
         device_bytes=parsed.vram_bytes,
         host_bytes=parsed.ram_bytes,
         shared_bytes=parsed.unified_bytes,
-        mapped_weights_bytes=parsed.mapped_weights_bytes,
+        mapped_weights_bytes=parsed.mapped_weights_bytes
+        + (repacked_weight_bytes(request.model_path) if request.on_cpu else 0),
         per_device=parsed.per_device_vram,
         per_device_shared=parsed.per_device_unified,
     )

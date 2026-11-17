@@ -1,0 +1,357 @@
+"""A one-pool charge counts the CPU build's repacked weight copy, and a shared file once."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet import model_memory as model_memory_mod
+from lilbee.providers.fleet import planning as planning_mod
+from lilbee.providers.fleet import vram as vram_mod
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryRequest
+from lilbee.providers.fleet.placement import ModelPlacementInput
+from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._fleet_engines import engines_for_all_roles
+
+Q4_0, Q6_K, Q4_K, IQ4_NL = 2, 14, 12, 20
+FILE_SIZE = 5000
+UNIFIED = 700
+# 2-D Q4_K [256, 4]: 4 blocks of 144 bytes. Q4_0 [64, 2]: 4 blocks of 18. IQ4_NL [32, 3]: 3 of 18.
+REPACKED = 4 * 144 + 4 * 18 + 3 * 18
+
+
+def _tensor(kind: int, dims: list[int]) -> dict[str, object]:
+    return {"name": "t", "nDimensions": len(dims), "dimensions": dims, "type": kind}
+
+
+RAW = {
+    "tensorInfos": [
+        _tensor(Q4_K, [256, 4]),
+        _tensor(Q4_0, [64, 2]),
+        _tensor(IQ4_NL, [32, 3]),
+        _tensor(Q6_K, [256, 8]),
+        _tensor(Q4_K, [256]),
+    ]
+}
+
+
+@pytest.fixture
+def model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "m.gguf"
+    path.write_bytes(b"GGUF")
+    vram_mod._cached_footprint.cache_clear()
+    vram_mod._cached_repacked_bytes.cache_clear()
+    monkeypatch.setattr(
+        model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
+    )
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+
+    def _parser(argv: list[str], _path: str) -> str:
+        if "--raw" in argv:
+            return json.dumps(RAW)
+        return json.dumps(
+            {
+                "metadata": {"fileSize": FILE_SIZE},
+                "estimate": {
+                    "items": [
+                        {
+                            "ram": {"uma": 0, "nonuma": 0},
+                            "vrams": [{"uma": UNIFIED, "nonuma": UNIFIED}],
+                        }
+                    ]
+                },
+            }
+        )
+
+    monkeypatch.setattr(vram_mod, "_run_parser", _parser)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: path)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+    return path
+
+
+def _request(path: Path, *, on_cpu: bool) -> MemoryRequest:
+    return MemoryRequest(
+        model_path=path,
+        ctx=16,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=cfg.kv_cache_type,
+        on_cpu=on_cpu,
+    )
+
+
+class TestTheRepackedCopy:
+    def test_it_is_the_two_dimensional_tensors_of_the_repacked_types(self, model: Path) -> None:
+        assert vram_mod.repacked_weight_bytes(model) == REPACKED
+
+    def test_unreadable_tensor_output_is_refused(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps({"header": {}}))
+        with pytest.raises(ProviderError, match="unreadable output"):
+            vram_mod.repacked_weight_bytes(model)
+
+    def test_a_cpu_load_backs_the_file_and_the_copy(self, model: Path) -> None:
+        cpu = LLAMA.estimate_memory(_request(model, on_cpu=True))
+        card = LLAMA.estimate_memory(_request(model, on_cpu=False))
+        assert cpu.resident_footprint(unified=True) == UNIFIED + FILE_SIZE + REPACKED
+        assert card.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
+
+    def test_the_alternate_build_is_charged_no_copy(self, model: Path) -> None:
+        from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+
+        estimate = IK_LLAMA.estimate_memory(_request(model, on_cpu=True))
+        assert estimate.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
+
+
+class TestTheOnePoolCharge:
+    @staticmethod
+    def _charge(**kwargs: object) -> int:
+        return planning_mod._estimate_role(
+            WorkerRole.EMBED, "ref", slots=1, engine=LLAMA, **kwargs
+        ).est_vram_bytes
+
+    def test_a_cpu_host_charges_the_copy(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CPU)
+        assert self._charge(unified_budget=10**9) == UNIFIED + FILE_SIZE + REPACKED
+
+    def test_a_unified_gpu_host_charges_no_copy(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.METAL)
+        assert self._charge(unified_budget=10**9) == UNIFIED + FILE_SIZE
+
+    def test_no_layer_on_a_card_and_no_budget_is_one_pool(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CUDA)
+        assert self._charge(gpu_layers=0) == UNIFIED + FILE_SIZE + REPACKED
+
+    def test_a_card_charges_its_own_figure(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CUDA)
+        assert self._charge() == UNIFIED
+
+    def test_the_slot_fit_counts_the_copy_on_a_cpu_host(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CPU)
+
+        def fit(budget: int) -> int:
+            return planning_mod._fit_slots(
+                4,
+                WorkerRole.CHAT,
+                model,
+                16,
+                mmproj_path=None,
+                unified=True,
+                budget=budget,
+                engine=LLAMA,
+            )
+
+        # The parser prices every slot count alike, so only the copy moves the fit.
+        assert fit(UNIFIED + FILE_SIZE + REPACKED) == 4
+        assert fit(UNIFIED + FILE_SIZE + REPACKED - 1) == 1
+
+
+class TestASharedFile:
+    def test_two_roles_on_one_file_charge_it_once(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embedding_model", "org/shared.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "org/shared.gguf")
+        monkeypatch.setattr(
+            planning_mod,
+            "_estimate_role",
+            lambda role, _ref, **_kw: ModelPlacementInput(role, 9000),
+        )
+        inputs, _refs, _reservation, _skipped = planning_mod._server_model_inputs(
+            unified_budget=10**9, engines=engines_for_all_roles(LLAMA)
+        )
+        by_role = {item.role: item.est_vram_bytes for item in inputs}
+        assert by_role == {WorkerRole.EMBED: 9000, WorkerRole.RERANK: 9000 - 4}
+
+    def test_two_cpu_roles_on_one_file_charge_it_once_to_system_memory(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embedding_model", "org/shared.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "org/shared.gguf")
+        monkeypatch.setattr(
+            planning_mod,
+            "_estimate_cpu_role",
+            lambda role, _ref, **_kw: ModelPlacementInput(role, 0, est_ram_bytes=9000),
+        )
+        inputs, _refs, _reservation, _skipped = planning_mod._server_model_inputs(
+            cpu_roles=frozenset({WorkerRole.EMBED, WorkerRole.RERANK}),
+            engines=engines_for_all_roles(LLAMA),
+        )
+        assert {item.role: item.est_ram_bytes for item in inputs} == {
+            WorkerRole.EMBED: 9000,
+            WorkerRole.RERANK: 9000 - 4,
+        }
+
+    def test_a_file_that_cannot_be_resolved_is_charged_as_estimated(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _missing(_ref: str) -> Path:
+            raise ProviderError("not installed")
+
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _missing)
+        estimate = ModelPlacementInput(WorkerRole.EMBED, 9000)
+        assert planning_mod._without_shared_file(estimate, "ref", set()) is estimate
+
+    def test_a_card_charges_each_role_its_file(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embedding_model", "org/shared.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "org/shared.gguf")
+        monkeypatch.setattr(
+            planning_mod,
+            "_estimate_role",
+            lambda role, _ref, **_kw: ModelPlacementInput(role, 9000),
+        )
+        inputs, _refs, _reservation, _skipped = planning_mod._server_model_inputs(
+            unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        )
+        assert [item.est_vram_bytes for item in inputs] == [9000, 9000]
+
+    @pytest.mark.parametrize(
+        ("estimate", "field"),
+        [
+            (ModelPlacementInput(WorkerRole.EMBED, 3), "est_vram_bytes"),
+            (ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=3), "est_ram_bytes"),
+        ],
+    )
+    def test_the_second_role_never_charges_below_zero(
+        self, model: Path, estimate: ModelPlacementInput, field: str
+    ) -> None:
+        charged: set[Path] = {model}
+        # The 4-byte file is larger than the 3-byte estimate.
+        assert getattr(planning_mod._without_shared_file(estimate, "ref", charged), field) == 0
+
+
+class _RecordingEngine:
+    """The llama engine, noting every memory request the planner sends it."""
+
+    def __init__(self) -> None:
+        self.requests: list[MemoryRequest] = []
+
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        self.requests.append(request)
+        return LLAMA.estimate_memory(request)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(LLAMA, name)
+
+
+class TestTheRepackFlagReachesTheEstimate:
+    @pytest.fixture(autouse=True)
+    def _setup(self, model: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda _e: True)
+        monkeypatch.setattr(planning_mod, "_role_gpu_layers", lambda _r: 0)
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.METAL)
+        self.model = model
+        self.engine = _RecordingEngine()
+
+    def _fit_chat(self) -> None:
+        planning_mod.fit_chat_ctx(
+            self.model,
+            {},
+            available_bytes=10**9,
+            ctx_ceiling=64,
+            engine=self.engine,
+        )
+
+    def _fit_slots(self, *, unified: bool) -> None:
+        planning_mod._fit_slots(
+            2,
+            WorkerRole.CHAT,
+            self.model,
+            16,
+            mmproj_path=None,
+            unified=unified,
+            budget=10**9,
+            engine=self.engine,
+        )
+
+    def test_the_chat_ctx_fit_flags_no_layer_on_a_card_as_cpu(self) -> None:
+        self._fit_chat()
+        assert self.engine.requests
+        assert all(request.on_cpu is True for request in self.engine.requests)
+
+    def test_the_chat_ctx_fit_flags_no_cpu_when_the_pool_is_not_shared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda _e: False)
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CPU)
+        self._fit_chat()
+        assert self.engine.requests
+        assert all(request.on_cpu is False for request in self.engine.requests)
+
+    def test_the_slot_fit_flags_no_layer_on_a_card_as_cpu(self) -> None:
+        self._fit_slots(unified=True)
+        assert self.engine.requests
+        assert all(request.on_cpu is True for request in self.engine.requests)
+
+    def test_the_slot_fit_flags_no_cpu_when_the_pool_is_not_shared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CPU)
+        self._fit_slots(unified=False)
+        assert self.engine.requests
+        assert all(request.on_cpu is False for request in self.engine.requests)
+
+    def test_the_role_estimate_reads_the_role_layers_when_none_is_given(self) -> None:
+        planning_mod._estimate_role(
+            WorkerRole.EMBED, "ref", slots=1, engine=self.engine, unified_budget=10**9
+        )
+        assert [request.on_cpu for request in self.engine.requests] == [True]
+
+
+class TestTheRepackedBytesMemo:
+    def test_the_parser_is_asked_about_the_model_file(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        argvs: list[list[str]] = []
+
+        def _parser(argv: list[str], _path: str) -> str:
+            argvs.append(argv)
+            return json.dumps(RAW)
+
+        monkeypatch.setattr(vram_mod, "_run_parser", _parser)
+        vram_mod.repacked_weight_bytes(model)
+        assert argvs == [["/fake/gguf-parser", "--path", str(model), "--raw"]]
+
+    def test_a_rewritten_file_is_sized_again(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert vram_mod.repacked_weight_bytes(model) == REPACKED
+        monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps({"tensorInfos": []}))
+        model.write_bytes(b"GGUF2")
+        assert vram_mod.repacked_weight_bytes(model) == 0
+
+    def test_another_engine_build_is_sized_again(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(vram_mod, "engine_build_identity", lambda: "build-a")
+        assert vram_mod.repacked_weight_bytes(model) == REPACKED
+        monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps({"tensorInfos": []}))
+        assert vram_mod.repacked_weight_bytes(model) == REPACKED
+        monkeypatch.setattr(vram_mod, "engine_build_identity", lambda: "build-b")
+        assert vram_mod.repacked_weight_bytes(model) == 0

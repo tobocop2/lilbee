@@ -512,6 +512,7 @@ def _fit_slots(
     1 when none larger fit."""
     from lilbee.providers.base import ProviderError
 
+    layers = _role_gpu_layers(role)
     for slots in range(ceiling, 1, -1):
         try:
             est = engine.estimate_memory(
@@ -519,7 +520,8 @@ def _fit_slots(
                     model_path=model_path,
                     ctx=ctx,
                     slots=slots,
-                    gpu_layers=_role_gpu_layers(role),
+                    gpu_layers=layers,
+                    on_cpu=unified and _weights_on_cpu(engine, layers),
                     flash_attn=_role_flash(role, rerank_mode, engine=engine),
                     kv_cache_type=_role_kv_cache_type(role, engine=engine),
                     mmproj_path=mmproj_path,
@@ -551,16 +553,19 @@ def fit_chat_ctx(
     cannot answer, which sends :func:`engine_params.resolve_chat_ctx` to its
     header-math fallback.
     """
+    layers = _role_gpu_layers(WorkerRole.CHAT)
+    unified = plan_sizing_is_unified(engine)
     ctx = fleet_ctx.fit_single_ctx(
         model_path,
         engine=engine,
         meta=meta,
         slots=1,
         available_bytes=available_bytes,
-        gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+        gpu_layers=layers,
         flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
         kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
-        unified=plan_sizing_is_unified(engine),
+        unified=unified,
+        on_cpu=unified and _weights_on_cpu(engine, layers),
         ctx_ceiling=ctx_ceiling,
         expert_offload=_role_expert_offload(model_path, engine=engine),
     )
@@ -813,6 +818,11 @@ def engine_backend(engine: EngineAdapter) -> EngineBackend:
         return EngineBackend.UNKNOWN
 
 
+def _weights_on_cpu(engine: EngineAdapter, gpu_layers: int) -> bool:
+    """Whether the weights load into the CPU backend: no layer on a card, or no card at all."""
+    return gpu_layers == 0 or engine_backend(engine) is EngineBackend.CPU
+
+
 def _fleet_backend(engine: EngineAdapter) -> str | None:
     """The engine backend this host plans onto, or ``None`` when unknown."""
     return next((device.backend for device in probed_devices(engine)), None)
@@ -967,8 +977,8 @@ def _estimate_role(
     ``slots`` defaults to the role's resolved batching slots (chat and vision are
     memory-aware); ``chat_reservation`` shrinks chat to leave room for the search
     roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
-    Charges the unified footprint with no discrete GPU or no layer on one, else the
-    VRAM one.
+    One pool (no discrete GPU, or no layer on one) charges the unified footprint plus
+    the weights it backs; a card charges its VRAM figure.
     """
     path = engine_params.resolve_model_path(model_ref)
     mmproj = vision_mmproj(model_ref) if role is WorkerRole.VISION else None
@@ -990,24 +1000,23 @@ def _estimate_role(
             chat_reservation=chat_reservation,
             rerank_mode=rerank_mode,
         )
+    layers = _role_gpu_layers(role) if gpu_layers is None else gpu_layers
+    one_pool = unified_budget is not None or gpu_layers == 0
     est = engine.estimate_memory(
         MemoryRequest(
             model_path=path,
             ctx=ctx,
             slots=slots,
-            gpu_layers=_role_gpu_layers(role) if gpu_layers is None else gpu_layers,
+            gpu_layers=layers,
             flash_attn=_role_flash(role, rerank_mode, engine=engine),
             kv_cache_type=_role_kv_cache_type(role, engine=engine),
             mmproj_path=mmproj,
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
             expert_offload=_role_expert_offload(path, engine=engine),
+            on_cpu=one_pool and _weights_on_cpu(engine, layers),
         )
     )
-    one_pool = unified_budget is not None or gpu_layers == 0
-    if unified_budget is not None:
-        fp = est.resident_footprint(unified=True)
-    else:
-        fp = est.footprint(unified=one_pool)
+    fp = est.resident_footprint(unified=one_pool)
     if role is WorkerRole.CHAT and not one_pool and est.kind is MemoryKind.SIZED:
         fp = _chat_serve_budget_footprint(fp)
     return ModelPlacementInput(
@@ -1374,13 +1383,9 @@ def _estimate_cpu_role(
 ) -> ModelPlacementInput | None:
     """Size a role that runs on the CPU: nothing on a card, its one pool in system memory.
 
-    The charge is the estimate's unified footprint: a figure read from the model
-    header, not a measure of the process. It runs over the real memory for chat and
-    under it for embedding. It holds no mapped weights, which
-    page in and out, so two roles on one file do not charge the file. A load with no
-    map must hold the weights, so they are added. A model that is not installed is
-    skipped and recorded. A sizing failure on an installed model charges the weight
-    bytes, the least the host must hold.
+    The charge is the one-pool charge of :func:`_estimate_role`. A model that is not
+    installed is skipped and recorded. A sizing failure on an installed model charges
+    the weight bytes, the least the host must hold.
     """
     from lilbee.providers.base import ProviderErrorKind
 
@@ -1394,8 +1399,7 @@ def _estimate_cpu_role(
         return ModelPlacementInput(
             role=role, est_vram_bytes=0, est_ram_bytes=_role_weights_bytes(role, ref)
         )
-    weights = _role_weights_bytes(role, ref) if _host_bytes_must_be_resident(role, ref) else 0
-    return replace(sized, est_vram_bytes=0, est_ram_bytes=sized.est_vram_bytes + weights)
+    return replace(sized, est_vram_bytes=0, est_ram_bytes=sized.est_vram_bytes)
 
 
 def _admit_estimate(
@@ -1743,6 +1747,23 @@ def role_model_placeable(
     return not _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine))
 
 
+def _without_shared_file(
+    estimate: ModelPlacementInput, ref: str, charged_files: set[Path]
+) -> ModelPlacementInput:
+    """*estimate* less its file when an earlier role on the same shared pool maps that file."""
+    try:
+        path = engine_params.resolve_model_path(ref)
+    except (ProviderError, OSError):
+        return estimate
+    if path not in charged_files:
+        charged_files.add(path)
+        return estimate
+    file_bytes = _weights_bytes(path)
+    if estimate.est_vram_bytes:
+        return replace(estimate, est_vram_bytes=max(0, estimate.est_vram_bytes - file_bytes))
+    return replace(estimate, est_ram_bytes=max(0, estimate.est_ram_bytes - file_bytes))
+
+
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
@@ -1772,6 +1793,7 @@ def _server_model_inputs(
     inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
     skipped_not_installed: dict[WorkerRole, str] = {}
+    charged_files: set[Path] = set()
 
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if (roles is not None and role not in roles) or role not in engines:
@@ -1801,6 +1823,8 @@ def _server_model_inputs(
         )
         if estimate is None:
             return
+        if unified_budget is not None or role in cpu_roles:
+            estimate = _without_shared_file(estimate, ref, charged_files)
         inputs[role] = estimate
         model_refs[role] = ref
 
