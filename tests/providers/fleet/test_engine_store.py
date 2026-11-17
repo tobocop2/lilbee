@@ -1448,6 +1448,46 @@ def test_remove_refuses_a_build_in_use_and_keeps_it(store: EngineStore, tmp_path
     assert (store.root / "fx" / "1-cpu" / RECORD_NAME).is_file()
 
 
+def _damage_build(store: EngineStore, tmp_path: Path) -> Path:
+    installed_store(store, tmp_path)
+    build = store.root / "fx" / "1-cpu"
+    (build / RECORD_NAME).unlink()
+    (build / "survivor.txt").write_text("held", encoding="utf-8")
+    return build
+
+
+@pytest.mark.parametrize("route", ["wheel", "fetch", "package"])
+def test_install_refuses_to_replace_a_damaged_build_while_a_launch_holds_it(
+    route: str, store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = _damage_build(store, tmp_path)
+    path = tmp_path / "fx.whl"
+    lock = pin(hashlib.sha256(path.read_bytes()).hexdigest())
+    seen: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        engine_store, "launch_uses_engine", lambda *build_name: seen.append(build_name) or True
+    )
+    install = {
+        "wheel": lambda: store.install_from_wheel(lock, path),
+        "fetch": lambda: store.ensure(lock, lambda _pin, _scratch: path),
+        "package": lambda: store.install_via_package(lock, run=lambda _argv, _req: None),
+    }[route]
+    with pytest.raises(engine_store.EngineInUseError, match="lilbee engine stop"):
+        install()
+    assert seen == [("fx", "1", "cpu")]
+    assert (build / "survivor.txt").is_file()
+
+
+def test_install_reads_no_hold_when_the_build_is_absent(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "fx.whl"
+    sha = make_wheel(path)
+    monkeypatch.setattr(engine_store, "launch_uses_engine", lambda *_: True)
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
 def test_remove_deletes_an_idle_build_with_a_canary_warning(
     store: EngineStore, tmp_path: Path
 ) -> None:

@@ -723,6 +723,29 @@ def test_the_install_command_retries_after_a_failed_first_use(
     assert first_use.first_use_tool("llama-server").is_file()
 
 
+def test_the_pack_install_refuses_a_damaged_pack_that_a_launch_holds(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engine_store import RECORD_NAME, EngineInUseError
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    lock = first_use.install_pack()
+    build = EngineStore(engines_root(cfg.models_dir)).build_dir(lock)
+    (build / RECORD_NAME).unlink()
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        with pytest.raises(EngineInUseError, match="is in use"):
+            first_use.install_pack()
+        with pytest.raises(engine_service.EngineRefusedError, match="lilbee engine stop"):
+            engine_service.install(EngineName.LLAMA.value)
+    finally:
+        hold.release_and_check_last()
+    assert not (build / RECORD_NAME).exists()
+    first_use.install_pack()
+    assert (build / RECORD_NAME).is_file()
+
+
 def test_the_install_command_clears_a_refusal_the_pack_then_outlives(
     fetched, monkeypatch: pytest.MonkeyPatch
 ) -> None:
