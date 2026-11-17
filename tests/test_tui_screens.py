@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import io
 import logging
@@ -3888,6 +3889,8 @@ async def test_chat_slash_reset_confirm_executes():
 
 # A bound that only stops a broken test from hanging; release is always set first.
 _HANG_GUARD_S = 60
+# Half the 60 s test timeout: a loaded Windows runner needs more than the 5 s default.
+_SYNC_ENTRY_WAIT_S = 30
 
 
 def _reset_decided(notify: MagicMock, clear: MagicMock) -> bool:
@@ -3920,13 +3923,17 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
             patch("lilbee.app.reset._clear_dir") as mock_clear,
             patch.object(app.screen, "notify") as mock_notify,
         ):
-            app.screen.run_sync()
-            assert await pump_until(_pilot, started.is_set)
-            app.screen._handle_slash("/reset")
-            await _pilot.pause()
-            await _pilot.press("y")
-            decided = await pump_until(_pilot, lambda: _reset_decided(mock_notify, mock_clear))
-            release.set()
+            try:
+                app.screen.run_sync()
+                # The sync reaches its body through a worker thread, the sync mark and the
+                # sync turn, each a file lock taken off the loop; only the hang guard bounds it.
+                assert await pump_until(_pilot, started.is_set, timeout_s=_SYNC_ENTRY_WAIT_S)
+                app.screen._handle_slash("/reset")
+                await _pilot.pause()
+                await _pilot.press("y")
+                decided = await pump_until(_pilot, lambda: _reset_decided(mock_notify, mock_clear))
+            finally:
+                release.set()
             assert decided
             await _wait_for_dataset_task(app, TaskType.SYNC)
         mock_clear.assert_not_called()
@@ -9698,12 +9705,63 @@ async def test_enter_runs_a_typed_add_and_the_toast_names_the_locked_folder(tmp_
         assert [note.severity for note in posted_toasts() if note.message == wanted] == ["warning"]
 
 
+# A held listing thread ends when its test releases it; this bound only frees a thread
+# that a failed test leaves behind. A loaded Windows runner needs far more than 5 s.
+_LISTING_HOLD_S = 30
+
+
 async def _wait_for(pilot, predicate, tries: int = 200) -> bool:
     for _ in range(tries):
         await pilot.pause(0.02)
         if predicate():
             return True
     return False
+
+
+class _ListingEnds:
+    """Which listing threads entered the stand-in and which reached their end.
+
+    A listing thread ends in one of two ways: it sees its worker cancelled and returns,
+    or its rows reach the app and the app has run the callback. ``settled`` is true when
+    every thread that entered has ended, so a negative assertion that follows is about a
+    result that already arrived or was dropped.
+    """
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+        self.ended: list[str] = []
+
+    def settled(self) -> bool:
+        return len(self.ended) == len(self.started)
+
+
+@contextlib.contextmanager
+def _watching_listing_ends():
+    from lilbee.cli.tui.screens import chat as chat_screen
+
+    ends = _ListingEnds()
+    real_worker = chat_screen._get_worker
+    real_call = chat_screen.call_from_thread
+
+    def get_worker():
+        worker = real_worker()
+        if worker.is_cancelled:
+            ends.ended.append("dropped")
+        return worker
+
+    def call_from_thread(node, fn, *args, **kwargs):
+        real_call(node, fn, *args, **kwargs)
+        ends.ended.append("delivered")
+
+    with (
+        patch.object(chat_screen, "_get_worker", get_worker),
+        patch.object(chat_screen, "call_from_thread", call_from_thread),
+    ):
+        yield ends
+
+
+async def _wait_for_listings_to_end(pilot, ends: _ListingEnds) -> None:
+    assert await wait_until(pilot, ends.settled, timeout=_LISTING_HOLD_S)
 
 
 async def test_the_path_list_is_read_off_the_event_loop():
@@ -9717,7 +9775,7 @@ async def test_the_path_list_is_read_off_the_event_loop():
     def blocked_listing(_text):
         seen["thread"] = threading.get_ident()
         entered.set()
-        release.wait(10)
+        release.wait(_LISTING_HOLD_S)
         return ["docs/"]
 
     app = ChatTestApp()
@@ -9744,17 +9802,21 @@ async def test_a_stale_path_listing_does_not_replace_a_newer_one():
     timed_out: list[bool] = []
 
     def listing(text):
+        ends.started.append(text)
         if text == "/add a":
             first_in.set()
             # On a blocked event loop the test never releases this wait.
-            timed_out.append(not release_first.wait(5))
+            timed_out.append(not release_first.wait(_LISTING_HOLD_S))
             return ["stale/"]
         return ["fresh/"]
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         overlay = app.screen._completion_overlay
-        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+        with (
+            _watching_listing_ends() as ends,
+            patch("lilbee.cli.tui.screens.chat.get_completions", new=listing),
+        ):
             try:
                 app.screen._chat_input.value = "/add a"
                 assert await _wait_for(pilot, first_in.is_set)
@@ -9763,7 +9825,7 @@ async def test_a_stale_path_listing_does_not_replace_a_newer_one():
                 assert overlay._options == ["fresh/"]
             finally:
                 release_first.set()
-            await pilot.pause(0.2)
+            await _wait_for_listings_to_end(pilot, ends)
             assert overlay._options == ["fresh/"]
             assert timed_out == [False]
 
@@ -9793,15 +9855,19 @@ async def test_an_input_that_stops_being_a_path_command_drops_a_pending_listing(
 
     def listing(text):
         if text.startswith("/add"):
+            ends.started.append(text)
             entered.set()
-            release.wait(10)
+            release.wait(_LISTING_HOLD_S)
             return ["late/"]
         return ["/help"]
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         overlay = app.screen._completion_overlay
-        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+        with (
+            _watching_listing_ends() as ends,
+            patch("lilbee.cli.tui.screens.chat.get_completions", new=listing),
+        ):
             try:
                 app.screen._chat_input.value = "/add x"
                 assert await _wait_for(pilot, entered.is_set)
@@ -9809,7 +9875,7 @@ async def test_an_input_that_stops_being_a_path_command_drops_a_pending_listing(
                 assert await _wait_for(pilot, lambda: overlay._options == ["/help"])
             finally:
                 release.set()
-            await pilot.pause(0.2)
+            await _wait_for_listings_to_end(pilot, ends)
             assert overlay._options == ["/help"]
 
 
@@ -9828,7 +9894,7 @@ async def test_tab_reads_the_path_list_off_the_event_loop():
         seen["thread"] = threading.get_ident()
         entered.set()
         # On a blocked event loop this wait only ends by its timeout.
-        timed_out.append(not release.wait(5))
+        timed_out.append(not release.wait(_LISTING_HOLD_S))
         return ["docs/"]
 
     app = ChatTestApp()
@@ -9877,9 +9943,10 @@ async def test_a_newer_key_cancels_a_pending_tab_listing():
     release_first = threading.Event()
 
     def listing(text):
+        ends.started.append(text)
         if text == "/add a":
             first_in.set()
-            release_first.wait(5)
+            release_first.wait(_LISTING_HOLD_S)
             return ["stale/"]
         return ["fresh/"]
 
@@ -9887,7 +9954,10 @@ async def test_a_newer_key_cancels_a_pending_tab_listing():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         overlay = screen._completion_overlay
-        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+        with (
+            _watching_listing_ends() as ends,
+            patch("lilbee.cli.tui.screens.chat.get_completions", new=listing),
+        ):
             try:
                 screen._chat_input.value = "/add a"
                 assert await _wait_for(pilot, first_in.is_set)
@@ -9896,7 +9966,7 @@ async def test_a_newer_key_cancels_a_pending_tab_listing():
                 assert await _wait_for(pilot, lambda: overlay._options == ["fresh/"])
             finally:
                 release_first.set()
-            await pilot.pause(0.2)
+            await _wait_for_listings_to_end(pilot, ends)
             assert overlay._options == ["fresh/"]
             assert screen._chat_input.value == "/add b"
 
@@ -9910,8 +9980,9 @@ async def test_a_tab_listing_that_ends_after_the_input_changed_is_dropped():
 
     def listing(text):
         if text.startswith("/add"):
+            ends.started.append(text)
             entered.set()
-            release.wait(5)
+            release.wait(_LISTING_HOLD_S)
             return ["late/"]
         return ["/help"]
 
@@ -9919,7 +9990,10 @@ async def test_a_tab_listing_that_ends_after_the_input_changed_is_dropped():
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         overlay = screen._completion_overlay
-        with patch("lilbee.cli.tui.screens.chat.get_completions", new=listing):
+        with (
+            _watching_listing_ends() as ends,
+            patch("lilbee.cli.tui.screens.chat.get_completions", new=listing),
+        ):
             try:
                 screen._chat_input.value = "/add x"
                 assert await _wait_for(pilot, entered.is_set)
@@ -9928,7 +10002,7 @@ async def test_a_tab_listing_that_ends_after_the_input_changed_is_dropped():
                 assert await _wait_for(pilot, lambda: overlay._options == ["/help"])
             finally:
                 release.set()
-            await pilot.pause(0.2)
+            await _wait_for_listings_to_end(pilot, ends)
             assert overlay._options == ["/help"]
             assert screen._chat_input.value == "/he"
 

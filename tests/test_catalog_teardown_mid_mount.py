@@ -20,6 +20,7 @@ from textual.widgets import Footer, TabbedContent
 
 from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
 from lilbee.cli.tui.screens.catalog_utils import TAB_CHAT, LocalCatalogRow
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from tests._lilbee_app_test_host import LilbeeAppHost, pump_until
 
 
@@ -120,3 +121,29 @@ async def test_deferred_section_mount_after_grid_teardown_is_clean() -> None:
             callback, args, kwargs = deferred[-1]
             callback(*args, **kwargs)
             assert not screen.query(".section-heading")
+
+
+async def test_grid_highlight_after_grid_teardown_is_ignored() -> None:
+    """A queued cursor-move message that lands after the pane is gone must not raise.
+
+    The grid posts ``Highlighted`` when it mounts; on a slow runner the message
+    is still queued when the pane is removed, and its handler used to re-query
+    '#grid-chat' and crash with NoMatches. The message is delivered after the
+    removal here so the ordering is forced, not timed.
+    """
+    app = _CatalogApp()
+    with contextlib.ExitStack() as stack:
+        for name in _CATALOG_FETCHES:
+            stack.enter_context(patch.object(CatalogScreen, name))
+        stack.enter_context(patch.object(CatalogScreen, "_active_task_has_more", return_value=True))
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = CatalogScreen()
+            await app.push_screen(screen)
+            tabs = app.screen.query_one("#catalog-tabs", TabbedContent)
+            await pump_until(pilot, lambda: tabs.active == TAB_CHAT)
+            container = screen._grid_container
+            await container.remove()
+            await pilot.pause()
+            assert not container.is_running
+            grid = ModelGrid(rows=[_row("row-one")])
+            screen._on_grid_highlighted(ModelGrid.Highlighted(grid, 0))

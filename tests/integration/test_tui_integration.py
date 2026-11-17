@@ -21,6 +21,7 @@ from textual.widgets import DataTable, Footer
 from lilbee.app.services import get_services
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 pytestmark = pytest.mark.slow
@@ -203,6 +204,11 @@ class TestAddAndSync:
             )
 
 
+def _specs_gone_from_search() -> bool:
+    results = get_services().searcher.search("Thunderbolt X500 engine")
+    return "specs.md" not in [r.source for r in results]
+
+
 class TestDelete:
     """Delete a document and verify removal from search."""
 
@@ -212,23 +218,25 @@ class TestDelete:
         sources_before = [r.source for r in results]
         assert "specs.md" in sources_before, "specs.md should be findable before delete"
 
-        app = _IntegrationChatApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await _submit_slash(pilot, app, "/delete specs.md")
-
-        results_after = get_services().searcher.search("Thunderbolt X500 engine")
-        sources_after = [r.source for r in results_after]
-        assert "specs.md" not in sources_after, "specs.md should be gone after delete"
-
-        # Durable delete holds specs.md out so sync won't resurrect it; release the
-        # record before re-syncing to restore the shared session fixture for the
-        # downstream status test, which expects specs.md present.
         from lilbee.data.ingest import sync
 
-        get_services().store.release_held(["specs.md"])
-        await sync(quiet=True)
-        get_services().store.ensure_fts_index()
+        try:
+            app = _IntegrationChatApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await _submit_slash(pilot, app, "/delete specs.md")
+                # /delete runs in a thread worker; reading the index right after the
+                # keypress races the removal, which is slow on the Windows runner.
+                await wait_until(pilot, _specs_gone_from_search, timeout=60.0)
+
+            assert _specs_gone_from_search(), "specs.md should be gone after delete"
+        finally:
+            # Durable delete holds specs.md out so sync won't resurrect it; release the
+            # record and re-sync even when the assertion fails, so the shared session
+            # fixture keeps specs.md for the downstream status test.
+            get_services().store.release_held(["specs.md"])
+            await sync(quiet=True)
+            get_services().store.ensure_fts_index()
 
 
 class TestStatusScreen:
