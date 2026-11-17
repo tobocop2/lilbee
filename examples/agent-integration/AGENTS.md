@@ -121,5 +121,5 @@ User asks "what does X say about Y?" against a file you haven't indexed yet:
 3. Answer in your own words, citing `<file>:<line>` (or `<file>:p<N>` for PDFs) for each
    fact. If the search returned nothing useful, say so plainly.
 
-The full tool surface and the quick / long split are in the `lilbee-mcp` skill. Install it
+The search workflow, the long-operation rule and the CLI fallback are in the `lilbee-mcp` skill. Install it
 with the [install table](https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#install-in-your-agent) in the lilbee usage guide.

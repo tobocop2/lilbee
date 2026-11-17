@@ -140,3 +140,70 @@ def test_install_table_commands_use_the_manifest_names():
     assert f"npx skills add {slug} -g -a hermes-agent" in commands
     assert f"npx skills add {slug} -g" in commands
     assert "lilbee mcp" in commands
+
+
+SKILL_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
+
+
+def _local_links(skill_md: Path) -> list[str]:
+    text = skill_md.read_text(encoding="utf-8")
+    return [link for link in SKILL_LINK.findall(text) if "://" not in link]
+
+
+@pytest.mark.parametrize("skill_dir", SKILL_DIRS, ids=lambda p: p.name)
+def test_skill_stays_short_and_every_linked_file_exists(skill_dir):
+    skill_md = skill_dir / "SKILL.md"
+    assert len(skill_md.read_text(encoding="utf-8").splitlines()) < 200
+    for link in _local_links(skill_md):
+        assert (skill_dir / link).is_file(), f"{skill_dir.name} links to missing {link}"
+
+
+def test_a_link_with_a_fragment_yields_its_file(tmp_path):
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text(
+        "[a](a.md) [b](b.md#part) [c](#local) [d](https://x.dev/e.md#f)\n", encoding="utf-8"
+    )
+    assert _local_links(skill_md) == ["a.md", "b.md"]
+
+
+def test_the_main_skill_links_its_reference_files():
+    links = _local_links(PLUGIN / "skills" / "lilbee-mcp" / "SKILL.md")
+    assert sorted(links) == ["reference-settings.md", "reference-tuning.md"]
+
+
+def _registered_tool_names() -> list[str]:
+    """The wire name of every tool the MCP server can register, gated ones included."""
+    from lilbee import mcp_server
+
+    return sorted(name or fn.__name__ for fn, name, _gate in mcp_server._REGISTRATIONS)
+
+
+def _skill_text(skill_dir: Path) -> str:
+    files = sorted(skill_dir.glob("*.md"))
+    return "\n".join(f.read_text(encoding="utf-8") for f in files)
+
+
+def test_the_skills_name_every_tool_the_mcp_server_registers():
+    names = _registered_tool_names()
+    assert {"search", "profile_list", "analyze", "wiki_build"} <= set(names)
+    main_text = _skill_text(PLUGIN / "skills" / "lilbee-mcp")
+    wiki_text = _skill_text(PLUGIN / "skills" / "lilbee-mcp-wiki")
+    missing = []
+    for name in names:
+        if name.startswith("wiki_"):
+            word = name.removeprefix("wiki_").replace("_", " ")
+            found = re.search(rf"`{re.escape(word)}[` ]", wiki_text)
+        else:
+            found = re.search(rf"\blilbee_{re.escape(name)}\b", main_text)
+        if not found:
+            missing.append(name)
+    assert missing == []
+
+
+def test_launcher_installs_the_reference_files_with_the_skill(tmp_path):
+    skill_dir = PLUGIN / "skills" / "lilbee-mcp"
+    installed = skill_install.install_bundled_skill(tmp_path / "skills" / "lilbee-mcp")
+    assert installed is not None
+    expected = sorted(p.name for p in skill_dir.iterdir())
+    assert "reference-tuning.md" in expected
+    assert sorted(p.name for p in installed.iterdir()) == expected
