@@ -659,7 +659,7 @@ def _role_ctx(
     if role is not WorkerRole.CHAT:
         return _aux_role_ctx(role, model_path, meta)
     if cfg.num_ctx is not None:
-        return _pinned_chat_ctx(model_path, meta)
+        return _served_pinned_ctx(model_path, meta)
     return engine_params.resolve_chat_ctx(
         model_path, meta, engine=engine, available_bytes=plan_sizing_budget(engine, device)
     )
@@ -722,15 +722,28 @@ def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     ceiling = _known_chat_ceiling(model_path, meta)
     if ceiling is None or pinned <= ceiling:
         return pinned
-    log.warning(
-        "num_ctx is set to %d but %s was trained for %d, so %d is what will be served. "
-        "Lower num_ctx to stop planning against a window this model does not have.",
-        pinned,
-        model_path.name,
-        ceiling,
-        ceiling,
-    )
     return ceiling
+
+
+def _served_pinned_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """:func:`_pinned_chat_ctx`, with one warning when the pin is past the trained window.
+
+    Only the launch sizing calls this. The placement estimate runs before it and
+    reads the same window, so it stays silent and the line prints once.
+    """
+    from lilbee.core.config import cfg
+
+    served = _pinned_chat_ctx(model_path, meta)
+    if served != cfg.num_ctx:
+        log.warning(
+            "num_ctx is set to %d but %s was trained for %d, so %d is what will be served. "
+            "Lower num_ctx to stop planning against a window this model does not have.",
+            cfg.num_ctx,
+            model_path.name,
+            served,
+            served,
+        )
+    return served
 
 
 def _known_chat_ceiling(model_path: Path, meta: dict[str, str] | None) -> int | None:
@@ -3940,7 +3953,11 @@ def resolve_placement_plan(
         skipped_not_installed=skipped_not_installed,
         spec_applied=spec_applied,
         refused_roles=refused_roles,
-        tight_roles=dict(resolved.tight_roles),
+        tight_roles={
+            role: shortfall
+            for role, shortfall in resolved.tight_roles.items()
+            if role not in unlaunched
+        },
         engine_backend=reading.backend,
         hidden=_hidden_choice(devices),
         size_unknown_roles=tuple(inp.role for inp in inputs if not inp.size_known),

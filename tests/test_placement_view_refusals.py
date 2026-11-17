@@ -280,3 +280,154 @@ class TestNamedCards:
     def test_the_cards_a_spec_pins_a_role_to(self) -> None:
         spec = PlacementSpec.from_json('{"chat": {"devices": [1]}, "embed": {"devices": [0, 2]}}')
         assert planning._named_cards(spec) == {0, 1, 2}
+
+
+@pytest.mark.usefixtures("stated_sizes")
+class TestARefusedRoleIsNotTight:
+    """A role the launch refuses is not placed, so no surface lists it with a shortfall."""
+
+    @pytest.fixture
+    def engine(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _FolderEngine:
+        return _folder_host(monkeypatch, tmp_path, cards_of((24,)))
+
+    def test_the_resolved_plan_has_the_refusal_and_no_shortfall(
+        self, engine: _FolderEngine
+    ) -> None:
+        resolved = planning.resolve_placement_plan(None, engines=engines_for_all_roles(engine))
+        assert list(resolved.unlaunched_roles) == [WorkerRole.CHAT]
+        assert resolved.tight_roles == {}
+
+    def test_the_view_has_the_refusal_and_no_tight_role(self, engine: _FolderEngine) -> None:
+        view = app_placement.get_placement()
+        assert view.refusal is not None
+        assert view.tight == ()
+
+    def test_the_cli_json_lists_no_tight_role(
+        self, engine: _FolderEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "json_mode", True)
+        result = CliRunner().invoke(placement_app, ["show"])
+        assert result.exit_code == 0
+        body = json.loads(result.output)
+        assert body["refusal"]
+        assert body.get("tight", []) == []
+
+    def test_rest_lists_no_tight_role(self, engine: _FolderEngine) -> None:
+        with create_test_client([placement_route]) as client:
+            body = client.get("/api/placement").json()
+        assert body["refusal"]
+        assert body.get("tight", []) == []
+
+    def test_rest_preview_lists_no_tight_role(self, engine: _FolderEngine) -> None:
+        with create_test_client([placement_preview_route]) as client:
+            body = client.post("/api/placement/preview", json={"spec": None}).json()
+        assert body["refusal"]
+        assert body.get("tight", []) == []
+
+    def test_mcp_lists_no_tight_role(self, engine: _FolderEngine) -> None:
+        body = mcp_server.get_placement_tool()
+        assert body["refusal"]
+        assert body.get("tight", []) == []
+
+
+class TestAPinnedWindowWarnsOnce:
+    """A num_ctx pin past the trained window is warned about once per placement read."""
+
+    TRAINED = 2048
+    WARNING = "was trained for"
+
+    @pytest.fixture
+    def pinned(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> CardEngine:
+        prepare_host(monkeypatch, tmp_path, ROLES, 64 * GIB)
+        monkeypatch.setattr(cfg, "num_ctx", 4096)
+        monkeypatch.setattr(planning, "_known_chat_ceiling", lambda *_a, **_k: self.TRAINED)
+        engine = CardEngine(
+            "engine-a", tmp_path / "engine-server", ROLES, cards_of((24,)), spans=True
+        )
+        reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
+        monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
+        caplog.set_level("WARNING")
+        return engine
+
+    def _warnings(self, caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if self.WARNING in r.getMessage()]
+
+    def test_the_view_prints_the_line_once(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        view = app_placement.get_placement()
+        assert view.refusal is None
+        assert len(self._warnings(caplog)) == 1
+
+    def test_the_line_names_the_pin_and_the_trained_window(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app_placement.get_placement()
+        assert "num_ctx is set to 4096" in self._warnings(caplog)[0]
+        assert "trained for 2048" in self._warnings(caplog)[0]
+
+    def test_the_launch_prints_the_line_once(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        planning.plan_all_launches(engines=engines_for_all_roles(pinned))
+        assert len(self._warnings(caplog)) == 1
+
+    def test_a_pin_inside_the_trained_window_prints_nothing(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", 1024)
+        app_placement.get_placement()
+        assert self._warnings(caplog) == []
+
+
+class TestASharedMemoryHostBudget:
+    """On a host whose only card is shared memory, the free-memory budget sizes the launch."""
+
+    CHAT = (Role(WorkerRole.CHAT, 10),)
+
+    def _engine(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, free: int
+    ) -> tuple[CardEngine, list[FleetDevice]]:
+        prepare_host(monkeypatch, tmp_path, self.CHAT, 64 * GIB)
+        for module in (planning, planning.model_cache):
+            monkeypatch.setattr(module, "free_system_memory", lambda: free)
+        devices = [FleetDevice("CUDA", 0, "igpu", 16 * GIB, 16 * GIB, True)]
+        return CardEngine("engine-a", tmp_path / "engine-server", self.CHAT, devices), devices
+
+    def _chat_slots(self, engine: CardEngine) -> int:
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        (chat,) = [ln for ln in plan.launches if ln.role is WorkerRole.CHAT]
+        return chat.slots
+
+    def test_a_roomy_budget_serves_every_slot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine, _ = self._engine(monkeypatch, tmp_path, 64 * GIB)
+        assert self._chat_slots(engine) == planning._CHAT_SLOTS
+
+    def test_a_budget_below_the_chat_footprint_serves_one_slot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine, _ = self._engine(monkeypatch, tmp_path, 8 * GIB)
+        assert self._chat_slots(engine) == 1
+
+    def test_the_view_check_gets_the_budget_the_launch_gets(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine, devices = self._engine(monkeypatch, tmp_path, 8 * GIB)
+        budgets: list[int | None] = []
+        real = planning._launches_and_refusals
+
+        def spy(*args: object, **kwargs: object) -> object:
+            budgets.append(kwargs["unified_budget"])  # type: ignore[arg-type]
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(planning, "_launches_and_refusals", spy)
+        engines = engines_for_all_roles(engine)
+        planning.plan_all_launches(engines=engines)
+        planning.resolve_placement_plan(None, engines=engines)
+        expected = planning._unified_memory_budget(devices, engine)
+        assert expected is not None
+        assert budgets == [expected, expected]
