@@ -431,12 +431,15 @@ def use_embedder(
                 "model": result.model,
                 "status": result.status.value,
                 "reindex_required": result.reindex_required,
+                "warning": result.warning,
             }
         )
         return
     console.print(
         Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."), soft_wrap=True
     )
+    if result.warning is not None:
+        print_prefixed(console, "Warning: ", result.warning, style=theme.WARNING)
     if result.reindex_required:
         console.print(Text(REBUILD_HINT, style=theme.WARNING), soft_wrap=True)
 

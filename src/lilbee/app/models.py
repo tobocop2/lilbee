@@ -201,6 +201,7 @@ class AdoptResult(BaseModel):
     model: str
     status: AdoptStatus
     reindex_required: bool = False
+    warning: str | None = None
 
 
 def adopt_embedder(ref: str) -> AdoptResult:
@@ -210,7 +211,8 @@ def adopt_embedder(ref: str) -> AdoptResult:
     rebuild: the persisted vectors already match *ref*, so the switch routes
     through the settings boundary, which normally reports ``reindex_required``
     false. The result carries the boundary's verdict as is: true when the index
-    still does not match *ref*, and the CLI then shows the rebuild hint.
+    still does not match *ref*, and the CLI then shows the rebuild hint. It
+    also carries the warning of the download.
     """
     from lilbee.app.settings import apply_settings_update
     from lilbee.catalog.types import ModelSource
@@ -218,13 +220,13 @@ def adopt_embedder(ref: str) -> AdoptResult:
     manager = get_services().model_manager
     installed = manager.is_installed(ref, ModelSource.NATIVE)
     already_active = cfg.embedding_model == ref and installed
-    if not installed:
-        pull_model_data(ref, ModelSource.NATIVE)
+    warning = None if installed else pull_model_data(ref, ModelSource.NATIVE).warning
     result = apply_settings_update({"embedding_model": ref})
     return AdoptResult(
         model=ref,
         status=AdoptStatus.ALREADY_ACTIVE if already_active else AdoptStatus.ADOPTED,
         reindex_required=result.reindex_required,
+        warning=warning,
     )
 
 

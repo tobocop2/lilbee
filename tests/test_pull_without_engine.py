@@ -64,6 +64,40 @@ def test_the_manager_downloads_a_model_with_no_engine_installed(
     fit.assert_not_called()
 
 
+def test_the_no_engine_notice_arrives_after_the_download(tmp_path: Path) -> None:
+    events: list[str] = []
+    entry = _entry(SAFETENSORS_REF, ModelFormat.SAFETENSORS)
+    with (
+        mock.patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+        mock.patch(
+            "lilbee.catalog.download_model",
+            side_effect=lambda *_a, **_k: events.append("download") or tmp_path,
+        ),
+    ):
+        ModelManager(tmp_path, cfg).pull(
+            SAFETENSORS_REF, ModelSource.NATIVE, on_notice=events.append
+        )
+    assert events == [
+        "download",
+        "No installed engine loads the safetensors format of acme/tiny-model#safetensors. "
+        "Run lilbee engine list to see the installed engines.",
+    ]
+
+
+def test_a_failed_download_gives_no_engine_notice(tmp_path: Path) -> None:
+    notices: list[str] = []
+    entry = _entry(SAFETENSORS_REF, ModelFormat.SAFETENSORS)
+    with (
+        mock.patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+        mock.patch("lilbee.catalog.download_model", side_effect=OSError("disk full")),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        ModelManager(tmp_path, cfg).pull(
+            SAFETENSORS_REF, ModelSource.NATIVE, on_notice=notices.append
+        )
+    assert notices == []
+
+
 def test_a_gguf_pull_with_no_engine_installed_names_the_missing_engine(tmp_path: Path) -> None:
     with (
         mock.patch("lilbee.catalog.download_model") as download,

@@ -203,7 +203,8 @@ class ModelManager:
         are refused with ``UnsupportedArchError``, and files whose tensors it
         cannot decode with ``UnsupportedQuantError``, unless *allow_unsupported*
         is True. *on_bytes* receives (downloaded_bytes, total_bytes) progress.
-        *on_notice* receives the sentence that says the model's size is unknown.
+        *on_notice* receives the sentence that says the model's size is unknown,
+        and after the download the sentence that says no engine loads the model.
         A *cancel* signal makes the download cancellable mid-transfer; see
         :func:`~lilbee.catalog.download_model`.
         """
@@ -214,11 +215,11 @@ class ModelManager:
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
             )
-        engine = self.pull_engine(model)
+        engine, no_engine = self._pull_engine(model)
         if not allow_unsupported:
             self.enforce_arch_compat(model)
         try:
-            return self._pull_native(
+            path = self._pull_native(
                 model,
                 engine,
                 on_bytes=on_bytes,
@@ -228,6 +229,9 @@ class ModelManager:
             )
         finally:
             self._invalidate_installed_cache()
+        if no_engine is not None and on_notice is not None:
+            on_notice(no_engine)
+        return path
 
     def require_engine(self, ref: str) -> "EngineAdapter":
         """The engine that loads the format of *ref*; raises ``NoEngineError`` when none does."""
@@ -235,20 +239,20 @@ class ModelManager:
 
         return engine_for_ref(ref, self._config)
 
-    def pull_engine(self, ref: str) -> "EngineAdapter | None":
-        """The engine a pull of *ref* reads: required for a GGUF, else the one chosen or ``None``.
+    def _pull_engine(self, ref: str) -> tuple["EngineAdapter | None", str | None]:
+        """The engine a pull of *ref* reads, or ``None`` and the notice that no engine loads it.
 
-        A GGUF pull reads the engine to pick the file. Other formats download
-        without one; an engine is needed only to load the model.
+        A GGUF pull reads the engine to pick the file, so it raises
+        ``NoEngineError``. Other formats download without one.
         """
         from lilbee.providers.fleet.engines.choice import NoEngineError
 
         try:
-            return self.require_engine(ref)
-        except NoEngineError:
+            return self.require_engine(ref), None
+        except NoEngineError as exc:
             if model_format(ref) is ModelFormat.GGUF:
                 raise
-            return None
+            return None, str(exc)
 
     def enforce_arch_compat(self, ref: str) -> None:
         """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set.

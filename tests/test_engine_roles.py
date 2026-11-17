@@ -668,17 +668,18 @@ def pulls(no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return started
 
 
-async def test_the_mcp_pull_of_a_format_nothing_loads_downloads_it(
+async def test_the_mcp_pull_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.mcp_server import model_pull
 
     result = await model_pull(MLX_REF, source="native")
     assert "error" not in result
+    assert _NO_MLX_TEXT in result["warning"]
     assert pulls == ["download"]
 
 
-def test_the_rest_pull_of_a_format_nothing_loads_downloads_it(
+def test_the_rest_pull_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.server.routes.models import models_pull_route
@@ -691,7 +692,8 @@ def test_the_rest_pull_of_a_format_nothing_loads_downloads_it(
         ):
             response = client.post("/api/models/pull", json=body)
             assert response.status_code == 201
-            assert _NO_MLX_TEXT not in response.text
+            done = response.text.split("event: done")[-1]
+            assert _NO_MLX_TEXT in done
     assert pulls == ["download", "download"]
 
 
@@ -710,7 +712,7 @@ def test_the_rest_pull_of_a_gguf_nothing_loads_is_refused_with_the_text(
     assert pulls == []
 
 
-def test_the_cli_pull_of_a_format_nothing_loads_downloads_it(
+def test_the_cli_pull_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from typer.testing import CliRunner
@@ -719,11 +721,11 @@ def test_the_cli_pull_of_a_format_nothing_loads_downloads_it(
 
     result = CliRunner().invoke(app, ["model", "pull", MLX_REF])
     assert result.exit_code == 0
-    assert _NO_MLX_TEXT not in result.output
+    assert f"Warning: {_NO_MLX_TEXT}" in " ".join(result.output.split())
     assert pulls == ["download"]
 
 
-def test_the_task_bar_download_of_a_format_nothing_loads_downloads_it(
+def test_the_task_bar_download_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.cli.tui.widgets.task_bar_controller import _download_target
@@ -732,7 +734,7 @@ def test_the_task_bar_download_of_a_format_nothing_loads_downloads_it(
     reporter = SimpleNamespace(update=lambda *_a: None, warn=warnings.append)
     _download_target(reporter, SimpleNamespace(pull_ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
     assert pulls == ["download"]
-    assert not any(_NO_MLX_TEXT in w for w in warnings)
+    assert any(_NO_MLX_TEXT in w for w in warnings)
 
 
 def test_the_task_bar_download_of_a_gguf_nothing_loads_fails_with_the_text(
