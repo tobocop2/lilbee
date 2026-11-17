@@ -345,6 +345,16 @@ def _fresh_ingest_pool_size():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_block_bar_answer():
+    """Probe the terminal afresh per test; a cached block bar answer would leak a fake terminal."""
+    from lilbee.cli.tui.color_compat import draws_block_bars
+
+    draws_block_bars.cache_clear()
+    yield
+    draws_block_bars.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
     from lilbee.providers.fleet.adapters import _warn_once

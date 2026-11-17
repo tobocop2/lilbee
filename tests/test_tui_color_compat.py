@@ -612,3 +612,28 @@ class TestNoEmoji:
                 icons = list(app.screen.query(SearchIcon))
                 assert icons, "the palette no longer mounts a SearchIcon"
                 assert [icon.icon for icon in icons] == [msg.COMMAND_PALETTE_ICON]
+
+
+class TestBlockBarAnswerDoesNotLeak:
+    """The block bar answer is cached for the process; a fake terminal must not outlive its test.
+
+    The two tests depend on running in this order inside one process: the first
+    caches the answer of a fake terminal, the second reads it back.
+    """
+
+    def test_first_test_fakes_a_terminal(self):
+        from lilbee.cli.tui import color_compat
+
+        real = color_compat.draws_block_bars.__wrapped__()
+        fake_system = "standard" if real else "truecolor"
+        with (
+            mock.patch("rich.console.Console") as console,
+            mock.patch.object(color_compat, "resolve_term_program", return_value=None),
+        ):
+            console.return_value.color_system = fake_system
+            assert color_compat.draws_block_bars() is (not real)
+
+    def test_second_test_sees_the_real_terminal(self):
+        from lilbee.cli.tui import color_compat
+
+        assert color_compat.draws_block_bars() is color_compat.draws_block_bars.__wrapped__()
