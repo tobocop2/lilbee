@@ -95,6 +95,20 @@ def test_the_cli_shows_the_saved_spec(saved_spec, tmp_path):
     assert "(manual)" not in text
     assert _WAITS in text
     assert "does not fit this hardware" not in text
+    assert "lilbee placement clear" not in text
+
+
+def test_the_cli_shows_the_clear_instruction_for_an_unreadable_saved_spec(
+    no_engine_host, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(cfg, "placement", '{"chat": {"devices": [0]}}')
+    monkeypatch.setattr(app_placement, "_active_spec", _unreadable_spec)
+    result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    text = " ".join(result.output.split())
+    assert text.endswith(
+        "the saved spec is unreadable run 'lilbee placement clear' or set a new one"
+    )
 
 
 def test_the_cli_json_show_parses(saved_spec, tmp_path, monkeypatch):
