@@ -5,13 +5,16 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import lancedb
+import numpy as np
 import pytest
+from typer.testing import CliRunner
 
 from lilbee.app import services as services_mod
 from lilbee.app.settings import reconcile_embedding_dim
 from lilbee.core.config import META_TABLE, cfg
 from lilbee.data.store import Store
 from lilbee.data.store.lance_helpers import persisted_embedding_width
+from lilbee.data.store.types import EmbeddingModelMismatchError
 from tests.conftest import make_mock_services
 
 MODEL = "ollama/stored-embed:latest"
@@ -21,7 +24,7 @@ STORED_WIDTH = 16
 
 @pytest.fixture(autouse=True)
 def isolated_cfg(tmp_path, monkeypatch):
-    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "global-data"))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     snapshot = cfg.model_copy()
     cfg.documents_dir = tmp_path / "docs"
@@ -39,13 +42,38 @@ def isolated_cfg(tmp_path, monkeypatch):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _store_with_stored_width(width: int) -> None:
+def _store_with_stored_width(width: int | None, chunks: bool = False) -> None:
     """Write the ``_meta`` row the way the store writer does, then set its width."""
-    Store(cfg).restamp_meta()
+    store = Store(cfg)
+    if chunks:
+        cfg.embedding_dim = CONFIGURED_WIDTH
+        store.add_chunks([_record("a.md", 0), _record("b.md", 1)])
+    else:
+        store.restamp_meta()
     table = lancedb.connect(str(cfg.lancedb_dir)).open_table(META_TABLE)
-    table.update(values={"embedding_dim": width})
+    if width is None:
+        table.update(values_sql={"embedding_dim": "NULL"})
+    else:
+        table.update(values={"embedding_dim": width})
     assert table.to_arrow()["embedding_dim"].to_pylist() == [width]
     cfg.embedding_dim = CONFIGURED_WIDTH
+
+
+def _record(source: str, axis: int) -> dict:
+    vector = np.zeros(cfg.embedding_dim, dtype=np.float32)
+    vector[axis] = 1.0
+    return {
+        "source": source,
+        "content_type": "text",
+        "chunk_type": "raw",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 0,
+        "line_end": 0,
+        "chunk": f"{source} body",
+        "chunk_index": 0,
+        "vector": vector,
+    }
 
 
 def test_startup_takes_a_positive_stored_width():
@@ -92,7 +120,7 @@ def _build_recording_width(monkeypatch) -> list[int]:
 
     def build(config, provider=None, registry=None, interactive=False):
         built.append(config.embedding_dim)
-        return make_mock_services()
+        return make_mock_services(store=Store(config))
 
     monkeypatch.setattr(services_mod, "build_services", build)
     monkeypatch.setattr(cfg, "worker_pool_eager_start", False)
@@ -100,16 +128,18 @@ def _build_recording_width(monkeypatch) -> list[int]:
     return built
 
 
-def _start_cli() -> None:
-    from lilbee.cli.helpers import print_source_listing
+def _status_on_cli() -> str:
+    from lilbee.cli import app
 
-    print_source_listing()
+    result = CliRunner().invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    return result.output
 
 
-def _start_mcp() -> None:
+def _status_on_mcp() -> dict | None:
     from lilbee import mcp_server
 
-    mcp_server.status()
+    return mcp_server.status()["index"]
 
 
 async def _start_serve() -> None:
@@ -119,20 +149,74 @@ async def _start_serve() -> None:
         pass
 
 
-@pytest.mark.parametrize("surface", ["cli", "mcp"])
-def test_a_sync_surface_starts_on_a_stored_width_of_0(monkeypatch, surface):
-    _store_with_stored_width(0)
+@pytest.mark.parametrize("stored", [0, -1, None])
+def test_cli_status_reports_no_index_width_for_a_stored_width_below_1_or_null(monkeypatch, stored):
+    _store_with_stored_width(stored, chunks=True)
     built = _build_recording_width(monkeypatch)
 
-    {"cli": _start_cli, "mcp": _start_mcp}[surface]()
+    output = _status_on_cli()
 
     assert built == [CONFIGURED_WIDTH]
+    assert "dims" not in output
+    assert "Index built with" not in output
 
 
-async def test_serve_starts_on_a_stored_width_of_0(monkeypatch):
-    _store_with_stored_width(0)
+@pytest.mark.parametrize("stored", [0, -1, None])
+def test_mcp_status_reports_no_index_width_for_a_stored_width_below_1_or_null(monkeypatch, stored):
+    _store_with_stored_width(stored, chunks=True)
+    built = _build_recording_width(monkeypatch)
+
+    index = _status_on_mcp()
+
+    assert built == [CONFIGURED_WIDTH]
+    assert index is None
+
+
+def test_cli_status_reports_the_stored_width_when_it_is_above_0(monkeypatch):
+    _store_with_stored_width(STORED_WIDTH, chunks=True)
+    built = _build_recording_width(monkeypatch)
+
+    output = _status_on_cli()
+
+    assert built == [STORED_WIDTH]
+    assert f"({STORED_WIDTH} dims)" in output
+
+
+def test_mcp_status_reports_the_stored_width_when_it_is_above_0(monkeypatch):
+    _store_with_stored_width(STORED_WIDTH, chunks=True)
+    built = _build_recording_width(monkeypatch)
+
+    index = _status_on_mcp()
+
+    assert built == [STORED_WIDTH]
+    assert index is not None
+    assert index["embedding_dim"] == STORED_WIDTH
+
+
+@pytest.mark.parametrize(
+    ("stored", "ends_with"), [(0, CONFIGURED_WIDTH), (STORED_WIDTH, STORED_WIDTH)]
+)
+async def test_serve_starts_with_the_width_that_start_up_reconciles(monkeypatch, stored, ends_with):
+    _store_with_stored_width(stored, chunks=True)
     built = _build_recording_width(monkeypatch)
 
     await _start_serve()
 
-    assert built == [CONFIGURED_WIDTH]
+    assert built == [ends_with]
+
+
+@pytest.mark.parametrize("stored", [0, -1, None])
+def test_a_search_after_a_stored_width_below_1_or_null_is_not_refused(stored):
+    _store_with_stored_width(stored, chunks=True)
+    query = _record("q.md", 0)["vector"]
+
+    hits = Store(cfg).search(query, top_k=2, max_distance=0)
+
+    assert {hit.source for hit in hits} == {"a.md", "b.md"}
+
+
+def test_a_search_after_a_stored_width_that_differs_is_still_refused():
+    _store_with_stored_width(STORED_WIDTH, chunks=True)
+
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16"):
+        Store(cfg).search(_record("q.md", 0)["vector"], top_k=2, max_distance=0)
