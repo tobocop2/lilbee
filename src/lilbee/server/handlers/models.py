@@ -489,7 +489,7 @@ async def models_catalog(
         )
 
     registry = get_services().registry
-    installed_refs = {m.ref for m in registry.list_installed()}
+    installed_refs = {m.ref for m in await asyncio.to_thread(registry.list_installed)}
     enriched = enrich_catalog(result, installed_refs)
 
     families_by_repo = _families_by_repo()
