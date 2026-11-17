@@ -123,7 +123,7 @@ def test_a_search_warns_once_for_the_embed_inputs_cut_across_its_embeds(caplog):
 
     searcher, _ = _wired()
 
-    def candidates(question, top_k, chunk_type):
+    def candidates(question, top_k, chunk_type, degraded):
         note_truncated(1, 1, 8)
         note_truncated(1, 1, 8)
         return []
