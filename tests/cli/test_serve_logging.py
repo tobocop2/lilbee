@@ -358,9 +358,66 @@ def test_the_deadline_writes_the_held_threads_and_exits_with_status_1(
     monkeypatch.setattr(
         serve_logging.threading.Thread, "start", lambda thread: started.append(thread)
     )
+    monkeypatch.setattr(serve_logging.signal, "setitimer", lambda *_args: None, raising=False)
     serve_logging.arm_exit_deadline(0)
     assert len(started) == 1
     with pytest.raises(_Exited):
         serve_logging._exit_at_the_deadline(0)
     assert statuses == [1]
     assert "Timeout (0 s)!" in (tmp_path / "logs" / "server-fault.log").read_text(encoding="utf-8")
+
+
+def test_the_deadline_starts_one_named_daemon_thread_on_the_exit_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[dict[str, object]] = []
+    started: list[int] = []
+
+    class RecordedThread:
+        """Records how the deadline builds its thread, and never runs it."""
+
+        def __init__(self, **kwargs: object) -> None:
+            built.append(kwargs)
+
+        def start(self) -> None:
+            started.append(1)
+
+    monkeypatch.setattr(serve_logging.threading, "Thread", RecordedThread)
+    monkeypatch.setattr(serve_logging.signal, "setitimer", lambda *_args: None, raising=False)
+    serve_logging.arm_exit_deadline(7.5)
+    assert built == [
+        {
+            "target": serve_logging._exit_at_the_deadline,
+            "args": (7.5,),
+            "name": "exit-deadline",
+            "daemon": True,
+        }
+    ]
+    assert started == [1]
+
+
+def test_the_deadline_sets_no_kernel_timer_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    timers: list[tuple[object, ...]] = []
+    monkeypatch.setattr(serve_logging.threading.Thread, "start", lambda thread: None)
+    monkeypatch.setattr(
+        serve_logging.signal, "setitimer", lambda *args: timers.append(args), raising=False
+    )
+    monkeypatch.setattr(serve_logging.sys, "platform", "win32")
+    serve_logging.arm_exit_deadline(60.0)
+    assert timers == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
+def test_the_deadline_sets_the_kernel_timer_after_the_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import signal
+
+    timers: list[tuple[int, float]] = []
+    monkeypatch.setattr(serve_logging.threading.Thread, "start", lambda thread: None)
+    monkeypatch.setattr(
+        serve_logging.signal, "setitimer", lambda which, seconds: timers.append((which, seconds))
+    )
+    serve_logging.arm_exit_deadline(60.0)
+    assert timers == [(signal.ITIMER_REAL, 60.0 + serve_logging._BACKSTOP_GRACE_S)]
+    assert serve_logging._BACKSTOP_GRACE_S == 5.0
