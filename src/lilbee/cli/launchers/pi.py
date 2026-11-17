@@ -50,10 +50,9 @@ class PiLauncher:
             _OPENAI_URL_ENV_VAR: f"{base_url}{OPENAI_PATH}",
             _MODELS_ENV_VAR: json.dumps(pi_models(model_refs, chat_ctx)),
         }
-        args = ["-e", str(bundled_pi_extension())]
+        args = ["-e", str(bundled_pi_extension()), "--skill", str(bundled_skill_dir())]
         if self._include_mcp:
             env[_MCP_URL_ENV_VAR] = f"{base_url}{MCP_PATH}"
-            args += ["--skill", str(bundled_skill_dir())]
         if str(cfg.chat_model) in model_refs:
             args += ["--model", f"lilbee/{agent_model_id(str(cfg.chat_model))}"]
         return (args, env)

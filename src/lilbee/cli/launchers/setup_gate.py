@@ -7,11 +7,19 @@ import os
 import sys
 import tempfile
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
+from typing import Protocol
 
 import typer
 
 from lilbee.core.config import cfg
+
+
+class PlanPrinter(Protocol):
+    """Prints the files a client's setup writes in one MCP mode."""
+
+    def __call__(self, *, include_mcp: bool) -> None: ...
 
 
 def _marker_path(marker_name: str) -> Path:
@@ -46,14 +54,16 @@ def confirm_first_run_setup(
     client_name: str,
     print_plan: Callable[[], None],
     assume_yes: bool,
+    covered_by: tuple[str, ...] = (),
 ) -> bool:
     """Prompt before a client's first setup; True means proceed.
 
-    Skipped when already recorded, when *assume_yes* is set, or when stdin is
+    Skipped when this setup or a wider one named in *covered_by* is already
+    recorded, when *assume_yes* is set, or when stdin is
     not a TTY (scripts/CI: invoking the launch is the consent there). The
     choice is remembered so later launches don't re-prompt.
     """
-    if _marker_path(marker_name).exists():
+    if any(_marker_path(name).exists() for name in (marker_name, *covered_by)):
         return True
     print_plan()
     if assume_yes or not _is_interactive():
@@ -64,3 +74,22 @@ def confirm_first_run_setup(
         return False
     _record_setup(marker_name)
     return True
+
+
+def confirm_mcp_mode_setup(
+    *,
+    mcp_marker_name: str,
+    no_mcp_marker_name: str,
+    client_name: str,
+    print_plan: PlanPrinter,
+    include_mcp: bool,
+    assume_yes: bool,
+) -> bool:
+    """Ask before the first launch of this MCP mode's plan; MCP consent covers --no-mcp."""
+    return confirm_first_run_setup(
+        marker_name=mcp_marker_name if include_mcp else no_mcp_marker_name,
+        client_name=client_name,
+        print_plan=partial(print_plan, include_mcp=include_mcp),
+        assume_yes=assume_yes,
+        covered_by=() if include_mcp else (mcp_marker_name,),
+    )
