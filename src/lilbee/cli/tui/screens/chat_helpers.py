@@ -10,12 +10,14 @@ import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+from lilbee.data.ingest.discovery import path_within_roots
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -61,20 +63,30 @@ def _opener_argv(platform: str) -> list[str] | None:
     return None
 
 
-def open_local_file(href: str) -> None:
+def open_local_file(href: str) -> bool:
     """Open a ``file:`` URL with the OS opener so it lands in the default app
     for its type (an editor for markdown, a viewer for PDF), not a browser
     rendering raw text. Platforms without a known opener fall back to the
-    webbrowser module."""
-    argv = _opener_argv(sys.platform)
-    if argv is None:
-        webbrowser.open(href)
-        return
+    webbrowser module. Only the resolved path inside the document roots is
+    opened; any other path opens nothing and returns False."""
     path = url2pathname(urlparse(href).path)
     try:
-        subprocess.run([*argv, path], check=False, timeout=10)  # noqa: S603 - fixed opener command; path comes from lilbee's own store
+        resolved = Path(path).resolve(strict=False)
+        inside = "\0" not in path and path_within_roots(resolved)
+    except (OSError, ValueError, RuntimeError):
+        inside = False
+    if not inside:
+        log.warning("Refused to open a file outside the document roots: %s", path)
+        return False
+    argv = _opener_argv(sys.platform)
+    if argv is None:
+        webbrowser.open(resolved.as_uri())
+        return True
+    try:
+        subprocess.run([*argv, str(resolved)], check=False, timeout=10)  # noqa: S603 - fixed opener command; resolved path is inside the document roots
     except (OSError, subprocess.TimeoutExpired):
-        log.warning("Could not open source file: %s", path)
+        log.warning("Could not open source file: %s", resolved)
+    return True
 
 
 def detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:

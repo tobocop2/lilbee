@@ -2585,7 +2585,8 @@ class ChatScreen(Screen[None]):
         default app for the file type; web links open in the browser."""
         event.stop()
         if event.href.startswith("file://"):
-            open_local_file(event.href)
+            if not open_local_file(event.href):
+                self.notify(msg.LINK_NOT_OPENED, severity="warning")
         else:
             self.app.open_url(event.href)
 
