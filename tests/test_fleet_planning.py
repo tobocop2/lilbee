@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode, RerankerType
+from lilbee.providers.fleet import adapters as adapters_mod
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import (
@@ -24,6 +25,12 @@ from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
 
 _GB = 1024**3
+
+
+@pytest.fixture(autouse=True)
+def _unconstrained_cpu(monkeypatch) -> None:
+    """Launch argv must not depend on the CPU limit of the host running the tests."""
+    monkeypatch.setattr(adapters_mod, "engine_thread_count", lambda: None)
 
 
 def _card(total_bytes: int, *, index: int = 0) -> FleetDevice:
@@ -2191,6 +2198,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--reasoning-format",
     "--embeddings",
     "--pooling",
+    "--threads",
 }
 # Sizing-relevant launch flag -> the gguf-parser flag that must carry the same value.
 _SIZING_FLAG_TO_ESTIMATOR_FLAG = {
@@ -2217,10 +2225,13 @@ class TestEstimateLaunchParity:
         [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION],
     )
     @pytest.mark.parametrize("backend", ["CUDA", "Vulkan"])
+    @pytest.mark.parametrize("threads", [None, 8])
     def test_launch_sizing_flags_reflected_in_estimator_argv(
-        self, role: WorkerRole, backend: str, tmp_path, monkeypatch
+        self, role: WorkerRole, backend: str, threads: int | None, tmp_path, monkeypatch
     ) -> None:
         from lilbee.providers.fleet import vram as vram_mod
+
+        monkeypatch.setattr(adapters_mod, "engine_thread_count", lambda: threads)
 
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 64)
@@ -2270,6 +2281,8 @@ class TestEstimateLaunchParity:
         )
         launch_flags = _parse_flags(launch.argv)
         estimator_flags = _parse_flags(estimator_argv)
+        assert launch_flags.get("--threads") == (None if threads is None else str(threads))
+        assert "--threads" not in estimator_flags
         for flag, value in launch_flags.items():
             if flag in _NON_SIZING_LAUNCH_FLAGS:
                 continue

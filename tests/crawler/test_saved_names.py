@@ -347,71 +347,65 @@ def _illegal_parts(segment: str) -> list[str]:
 _PROPERTY_SETTINGS = settings(max_examples=1000, deadline=None, derandomize=True, database=None)
 
 
-class TestSavedNames:
-    @_PROPERTY_SETTINGS
-    @given(one=_addresses, data=st.data())
-    def test_two_addresses_never_share_a_saved_path(self, one: _Address, data: st.DataObject):
-        other = _edited(one, data)
-        assume(one.identity != other.identity)
-        one_url, other_url = _url(one, data), _url(other, data)
-        assert _compared(url_to_filename(one_url)) != _compared(url_to_filename(other_url)), (
-            one_url,
-            other_url,
-        )
-
-    @_PROPERTY_SETTINGS
-    @given(address=_addresses, data=st.data())
-    def test_two_spellings_of_one_address_share_a_saved_path(
-        self, address: _Address, data: st.DataObject
-    ):
-        one_url, other_url = _url(address, data), _url(address, data)
-        assert url_to_filename(one_url) == url_to_filename(other_url), (one_url, other_url)
-
-    @_PROPERTY_SETTINGS
-    @given(address=_addresses, data=st.data())
-    def test_every_segment_is_a_legal_windows_name_that_prints(
-        self, address: _Address, data: st.DataObject
-    ):
-        url = _url(address, data)
-        saved = url_to_filename(url)
-        assert {
-            seg: _illegal_parts(seg) for seg in saved.split("/") if _illegal_parts(seg)
-        } == {}, url
-        assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
-
-    @_PROPERTY_SETTINGS
-    @given(address=_label_addresses, data=st.data())
-    def test_a_label_shows_no_escape_the_address_did_not_hold(
-        self, address: _Address, data: st.DataObject
-    ):
-        url = _url(address, data)
-        label = source_label(f"_web/{url_to_filename(url)}")
-        assert not _ESCAPE.search(label), (url, label)
-
-    @_PROPERTY_SETTINGS
-    @given(
-        word=st.text(
-            st.characters(categories=("Ll", "Lu", "Lo", "Nd")), min_size=1, max_size=20
-        ).map(lambda text: unicodedata.normalize("NFC", text))
+@_PROPERTY_SETTINGS
+@given(one=_addresses, data=st.data())
+def test_two_addresses_never_share_a_saved_path(one: _Address, data: st.DataObject):
+    other = _edited(one, data)
+    assume(one.identity != other.identity)
+    one_url, other_url = _url(one, data), _url(other, data)
+    assert _compared(url_to_filename(one_url)) != _compared(url_to_filename(other_url)), (
+        one_url,
+        other_url,
     )
-    def test_a_letter_and_digit_segment_reads_as_written(self, word: str):
-        assume(word.upper() not in _DEVICE_NAMES)
-        saved = url_to_filename(f"https://example.com/t/{word}")
-        assert word in saved, (word, saved)
 
-    @settings(max_examples=200, deadline=None, derandomize=True, database=None)
-    @given(address=_label_addresses)
-    def test_every_label_address_meets_the_label_precondition_by_construction(
-        self, address: _Address
-    ):
-        """The label test drops no address, so it needs no `assume` that burns its time budget.
 
-        A test that dropped two drawn addresses in three ran three times its examples. On a
-        Windows runner that passed the 60 second test timeout, and pytest-timeout kills the
-        whole worker there.
-        """
-        tokens = [t for part in (*address.segments, address.last) for t in part]
-        assert all(not t.kept_escape and t.char.isprintable() for t in tokens), address
+@_PROPERTY_SETTINGS
+@given(address=_addresses, data=st.data())
+def test_two_spellings_of_one_address_share_a_saved_path(address: _Address, data: st.DataObject):
+    one_url, other_url = _url(address, data), _url(address, data)
+    assert url_to_filename(one_url) == url_to_filename(other_url), (one_url, other_url)
+
+
+@_PROPERTY_SETTINGS
+@given(address=_addresses, data=st.data())
+def test_every_segment_is_a_legal_windows_name_that_prints(address: _Address, data: st.DataObject):
+    url = _url(address, data)
+    saved = url_to_filename(url)
+    assert {seg: _illegal_parts(seg) for seg in saved.split("/") if _illegal_parts(seg)} == {}, url
+    assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
+
+
+@_PROPERTY_SETTINGS
+@given(address=_label_addresses, data=st.data())
+def test_a_label_shows_no_escape_the_address_did_not_hold(address: _Address, data: st.DataObject):
+    url = _url(address, data)
+    label = source_label(f"_web/{url_to_filename(url)}")
+    assert not _ESCAPE.search(label), (url, label)
+
+
+@_PROPERTY_SETTINGS
+@given(
+    word=st.text(st.characters(categories=("Ll", "Lu", "Lo", "Nd")), min_size=1, max_size=20).map(
+        lambda text: unicodedata.normalize("NFC", text)
+    )
+)
+def test_a_letter_and_digit_segment_reads_as_written(word: str):
+    assume(word.upper() not in _DEVICE_NAMES)
+    saved = url_to_filename(f"https://example.com/t/{word}")
+    assert word in saved, (word, saved)
+
+
+@settings(max_examples=200, deadline=None, derandomize=True, database=None)
+@given(address=_label_addresses)
+def test_every_label_address_meets_the_label_precondition_by_construction(address: _Address):
+    """The label test drops no address, so it needs no `assume` that burns its time budget.
+
+    A test that dropped two drawn addresses in three ran three times its examples. On a
+    Windows runner that passed the 60 second test timeout, and pytest-timeout kills the
+    whole worker there.
+    """
+    tokens = [t for part in (*address.segments, address.last) for t in part]
+    assert all(not t.kept_escape and t.char.isprintable() for t in tokens), address
 
 
 # Two addresses the crawler treats as two pages: each pair must keep two saved paths.
