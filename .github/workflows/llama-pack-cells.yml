@@ -932,6 +932,8 @@ jobs:
           export RUSTFLAGS="-C target-cpu=apple-m1"
           (cd "${RUNNER_TEMP}/tei" && cargo build --release --locked --bin text-embeddings-router --no-default-features --features candle,metal,http)
           python -m pip install -q build wheel "delocate==0.13.0"
+          # The wheel build, the retag and delocate stamp every entry with the commit time of the source.
+          export "$(bash tools/wheel-build/source_date_epoch.sh "${RUNNER_TEMP}/tei")"
           bash tools/wheel-build/tei_wheel.sh "${RUNNER_TEMP}/tei" "${RUNNER_TEMP}/tei/target/release/text-embeddings-router" \
             candle,metal,http aarch64-apple-darwin "${BACKEND}" "${PLATFORM}" out
           # Fails when any Mach-O needs a newer macOS than the tag (macosx_14_0) allows.

@@ -48,6 +48,8 @@ bash "${WORK}/tools/wheel-build/install_cargo_about.sh" /usr/local/bin
 
 src=/tmp/tei
 git clone -q --depth 1 --branch "${TEI_TAG}" "${TEI_REPO}" "${src}"
+# The wheel build, the retag and auditwheel stamp every entry with the commit time of the source.
+export "$(bash "${WORK}/tools/wheel-build/source_date_epoch.sh" "${src}")"
 
 features=candle,http
 if [ -n "${CUDA_CC}" ]; then

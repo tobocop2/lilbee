@@ -426,13 +426,47 @@ def test_repack_reports_the_time_of_the_tool_in_the_archive(
     assert repack.repack(archive, tmp_path / "bin") == member_time
 
 
-def test_the_pack_job_hands_the_archive_time_to_the_wheel_build() -> None:
-    step = next(
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="the step is a POSIX shell script and the shim is a symlink",
+)
+def test_the_repack_step_writes_the_archive_time_to_the_job_environment(tmp_path: Path) -> None:
+    """Run the step as the job does: the later steps read the time from the job environment."""
+    run = next(
         step["run"]
         for step in _mistralrs_job()["steps"]
         if step.get("name") == "Repack the upstream archive into the wheel tree"
     )
-    assert '>> "$GITHUB_ENV"' in step
+    (tmp_path / "upstream").mkdir()
+    with tarfile.open(tmp_path / "upstream" / "a.tar.gz", "w:gz") as tar:
+        info = tarfile.TarInfo("mistralrs")
+        info.size = 3
+        info.mtime = 1_700_000_000
+        tar.addfile(info, io.BytesIO(b"bin"))
+    shutil.copytree(TOOLS, tmp_path / "tools" / "wheel-build")
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    (shims / "python").symlink_to(sys.executable)
+    script = tmp_path / "step.sh"
+    script.write_text(run, encoding="utf-8")
+    job_env = tmp_path / "github-env"
+    job_env.touch()
+    done = subprocess.run(
+        ["bash", str(script)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}",
+            "ASSET": "a.tar.gz",
+            "WHEEL_TREE": str(tmp_path / "tree"),
+            "GITHUB_ENV": str(job_env),
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert done.returncode == 0, done.stderr
+    assert job_env.read_text(encoding="utf-8") == "SOURCE_DATE_EPOCH=1700000000\n"
 
 
 def test_the_pack_job_has_no_cuda_step() -> None:

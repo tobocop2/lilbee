@@ -15,6 +15,8 @@ from types import ModuleType
 
 import pytest
 
+from tests._workflow_steps import commands, steps
+
 _TOOLS = Path(__file__).resolve().parents[1] / "tools/wheel-build"
 _PROJECT = Path(__file__).resolve().parents[1] / "packaging/engine-wheel-tei/pyproject.toml"
 _DIST = "lilbee_engine_tei-1.9.4.dist-info"
@@ -631,6 +633,9 @@ if [ "$1 $2" = "-m build" ]; then
     shift
   done
 fi
+if [ "$1 $2" = "-m wheel" ]; then
+  echo "$SOURCE_DATE_EPOCH $*" > "{record}/retag"
+fi
 """
 
 
@@ -728,6 +733,14 @@ def test_the_wheel_build_runs_with_the_commit_time_of_the_source(tmp_path: Path)
     assert (record / "build-epoch").read_text(encoding="utf-8").strip() == str(_COMMIT_TIME)
 
 
+def test_the_wheel_retag_runs_with_the_commit_time_of_the_source(tmp_path: Path) -> None:
+    result, _, record = _run_wheel_script(tmp_path)
+    assert result.returncode == 0, result.stderr
+    retag = (record / "retag").read_text(encoding="utf-8").strip()
+    wheels = tmp_path / "out/dist/*.whl"
+    assert retag == f"{_COMMIT_TIME} -m wheel tags --remove --platform-tag linux_x86_64 {wheels}"
+
+
 def test_the_wheel_script_writes_the_mpl_source_file_into_the_project(tmp_path: Path) -> None:
     result, project, _ = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -751,6 +764,7 @@ case "${name}" in
   nproc) echo 1 ;;
   rustc) echo "rustc 1.0.0" ;;
   git) shift "$(($# - 1))"; mkdir -p "$1" ;;
+  auditwheel) echo "${SOURCE_DATE_EPOCH-unset}" > "{record}/auditwheel-epoch" ;;
   nvprune) while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && : > "$2"; shift; done ;;
   cargo)
     mkdir -p target/release
@@ -775,6 +789,9 @@ def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
     (work / "tools/wheel-build").mkdir(parents=True)
     for name in ("install_cargo_about.sh", "tei_wheel.sh", "write_cuda_notice.py"):
         (work / "tools/wheel-build" / name).write_text("", encoding="utf-8")
+    (work / "tools/wheel-build/source_date_epoch.sh").write_text(
+        f"echo SOURCE_DATE_EPOCH={_COMMIT_TIME}\n", encoding="utf-8"
+    )
     record = tmp_path / "record"
     record.mkdir()
     bin_dir = tmp_path / "bin"
@@ -825,6 +842,13 @@ def test_the_cuda_build_compiles_kernels_position_independent(tmp_path: Path) ->
     assert _build_env(tmp_path, "89", "nvcc-flags") == "-Xcompiler -fPIC"
 
 
+@pytest.mark.parametrize("cuda_cc", ["", "89"])
+def test_auditwheel_repairs_with_the_commit_time_of_the_source(
+    tmp_path: Path, cuda_cc: str
+) -> None:
+    assert _build_env(tmp_path, cuda_cc, "auditwheel-epoch") == str(_COMMIT_TIME)
+
+
 def test_the_cpu_build_leaves_the_nvcc_flags_alone(tmp_path: Path) -> None:
     assert _build_env(tmp_path, "", "nvcc-flags") == "unset"
 
@@ -845,6 +869,19 @@ def test_the_metal_build_targets_the_first_apple_silicon_cpu() -> None:
     exports = [line for line in lines if line.startswith("export RUSTFLAGS")]
     assert exports == ['export RUSTFLAGS="-C target-cpu=apple-m1"']
     assert build.index("export RUSTFLAGS") < build.index("cargo build")
+
+
+def test_the_metal_repair_runs_with_the_commit_time_of_the_source() -> None:
+    (build,) = (
+        step["run"]
+        for step in steps("llama-pack-cells.yml", "tei")
+        if step.get("name") == "Build the router for Metal"
+    )
+    run = commands(build)
+    epoch = "export $(bash tools/wheel-build/source_date_epoch.sh ${RUNNER_TEMP}/tei)"
+    assert run.count(epoch) == 1
+    wrap = run.index("tools/wheel-build/tei_wheel.sh")
+    assert run.index(epoch) < wrap < run.index("delocate-wheel")
 
 
 _SMOKE_QEMU_STUB = """#!/bin/sh
