@@ -119,6 +119,31 @@ class TestGpuStatsStreamRoute:
         assert '"utilization_pct": 71' in resp.text
 
 
+class TestNonUtf8JsonBody:
+    @pytest.mark.parametrize("route", ["/api/chat", "/api/ask", "/api/config"])
+    def test_a_body_that_is_not_utf8_gets_400(self, route, client):
+        body = b'{"question": "\xff\xfe"}'
+        resp = client.request(
+            "PATCH" if route == "/api/config" else "POST",
+            route,
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == "The request body is not valid UTF-8"
+
+    @pytest.mark.parametrize(
+        ("route", "envelope_key"),
+        [("/v1/chat/completions", "error"), ("/v1/messages", "error")],
+    )
+    def test_a_compat_route_answers_in_its_own_envelope(self, route, envelope_key, client):
+        resp = client.post(
+            route, content=b'{"model": "\xff"}', headers={"content-type": "application/json"}
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()[envelope_key]["message"] == "The request body is not valid UTF-8"
+
+
 class TestSearchRoute:
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
     def test_empty_results(self, mock_search, client):
@@ -1778,12 +1803,12 @@ class TestOpenAPISchema:
         """A client reads each profile route's errors from the schema: 404 for a
         missing name, 409 for a name clash, 413 for an upload over the cap, 400 for
         a refusal and 503 for an unreadable or unwritable file."""
-        ok_503 = {"200", "503"}
-        refusal = {"200", "400", "503"}
-        named = {"200", "400", "404", "503"}
-        write = {"200", "400", "409", "503"}
-        named_write = {"200", "400", "404", "409", "503"}
-        upload = {"413"}
+        ok_503 = {"200", "401", "503"}
+        refusal = {"200", "400", "401", "503"}
+        named = {"200", "400", "401", "404", "503"}
+        write = {"200", "400", "401", "409", "503"}
+        named_write = {"200", "400", "401", "404", "409", "503"}
+        upload = {"401", "413"}
         expected = {
             ("get", "/api/profiles"): ok_503,
             ("get", "/api/profiles/active"): ok_503,
@@ -1809,6 +1834,42 @@ class TestOpenAPISchema:
             for method, operation in operations.items()
         }
         assert published == expected
+
+    def test_every_route_that_answers_401_publishes_it_and_the_bearer_scheme(self, client):
+        """A route that answers 401 to a caller with no token lists the 401 and
+        the bearer requirement in the schema, whoever checks the token."""
+        import re
+
+        from litestar.routes import HTTPRoute
+
+        from lilbee.server.auth import BEARER_SCHEME, session_manager
+
+        schema = client.get("/schema/openapi.json").json()
+        assert schema["components"]["securitySchemes"][BEARER_SCHEME] == {
+            "type": "http",
+            "scheme": "bearer",
+        }
+        session_manager.token = "secret"
+        answers_401, bare = set(), set()
+        for route in client.app.routes:
+            if not isinstance(route, HTTPRoute):
+                continue
+            path = re.sub(r"\{[^}]*\}", "1", route.path_format)
+            for method in route.methods:
+                if method == "OPTIONS" or route.path_format not in schema["paths"]:
+                    continue
+                operation = schema["paths"][route.path_format].get(method.lower())
+                if operation is None or client.request(method, path).status_code != 401:
+                    continue
+                key = (method, route.path_format)
+                answers_401.add(key)
+                if "401" not in operation["responses"] or {BEARER_SCHEME: []} not in operation.get(
+                    "security", []
+                ):
+                    bare.add(key)
+        assert len(answers_401) > 90, "the walk found too few routes that answer 401"
+        assert ("GET", "/v1/models") in answers_401
+        assert bare == set()
 
     def test_export_publishes_the_octet_stream_media_type(self, client):
         """/api/export answers with a parquet or jsonl body. It set its media
@@ -3297,6 +3358,49 @@ class TestUnhandledErrorsReachTheLog:
         assert "GET" in caplog.text
         assert "/api/health" in caplog.text
         assert "engine exploded" in caplog.text
+
+
+class TestOnlyADecodeErrorInTheBodyReadIsA400:
+    """Only a UnicodeDecodeError raised by the body read is a 400; any other error stays a 500."""
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("not a decode error"),
+            UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed"),
+            UnicodeError("not a decode error"),
+        ],
+        ids=["ValueError", "UnicodeEncodeError", "UnicodeError"],
+    )
+    def test_another_error_in_the_body_read_is_a_500(self, error, client):
+        from litestar import Request
+
+        with mock.patch.object(Request, "json", new_callable=AsyncMock, side_effect=error):
+            resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 500, resp.text
+
+    def test_a_decode_error_in_the_body_read_is_a_400(self, client):
+        resp = client.post(
+            "/api/chat",
+            content=b'{"question": "\xff"}',
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == "The request body is not valid UTF-8"
+
+    @mock.patch(
+        "lilbee.server.handlers.health",
+        new_callable=AsyncMock,
+        side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    )
+    def test_a_decode_error_after_the_body_is_parsed_is_a_500_and_is_logged(
+        self, mock_health, client, caplog
+    ):
+        with caplog.at_level(logging.ERROR, logger="lilbee.server.app"):
+            resp = client.get("/api/health")
+
+        assert resp.status_code == 500
+        assert "invalid start byte" in caplog.text
 
 
 class TestBodyOfTheWrongKind:
