@@ -49,6 +49,10 @@ def host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> CardEngine:
 
 
 class TestAChatBelowTheFloor:
+    def test_the_launch_still_starts_the_other_roles(self, host: CardEngine) -> None:
+        launch = planning.plan_all_launches(engines=engines_for_all_roles(host))
+        assert [ln.role for ln in launch.launches] == [WorkerRole.EMBED]
+
     def test_the_launch_refuses_it_with_the_floor_reason(self, host: CardEngine) -> None:
         plan = planning.plan_all_launches(engines=engines_for_all_roles(host))
         assert FLOOR_TEXT in plan.refused_roles[WorkerRole.CHAT]
@@ -222,22 +226,37 @@ class TestTheCapacityTheViewChecks:
     @pytest.fixture
     def engine(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> CardEngine:
         prepare_host(monkeypatch, tmp_path, ROLES, 64 * GIB)
-        devices = [*cards_of((24,)), FleetDevice("CUDA", 1, "igpu", 16 * GIB, 16 * GIB, True)]
+        devices = [
+            FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 10 * GIB),
+            FleetDevice("CUDA", 1, "igpu", 16 * GIB, 16 * GIB, True),
+        ]
         return CardEngine("engine-a", tmp_path / "engine-server", ROLES, devices, spans=True)
 
-    def _capacity_of_the_check(
+    def _the_check_call(
         self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch, spec: PlacementSpec | None
-    ) -> dict[int, int]:
-        seen: dict[int, int] = {}
+    ) -> dict[str, object]:
+        seen: dict[str, object] = {}
         real = planning._launches_and_refusals
 
         def spy(*args: object, **kwargs: object) -> object:
-            seen.update(kwargs["capacity"])  # type: ignore[arg-type]
+            seen.update(kwargs)
             return real(*args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(planning, "_launches_and_refusals", spy)
         planning.resolve_placement_plan(spec, engines=engines_for_all_roles(engine))
         return seen
+
+    def _capacity_of_the_check(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch, spec: PlacementSpec | None
+    ) -> object:
+        return self._the_check_call(engine, monkeypatch, spec)["capacity"]
+
+    def test_the_check_reads_total_memory_on_a_box_in_use(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._the_check_call(engine, monkeypatch, None)
+        assert seen["clean_box"] is False
+        assert seen["capacity"] == {0: 24 * GIB}
 
     def test_a_pinned_shared_memory_card_keeps_its_capacity(
         self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
