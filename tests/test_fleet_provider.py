@@ -3878,7 +3878,6 @@ class TestEmbedTokenCap:
         """The chunker already switches to token sizing on its own below this cap,
         so health has nothing actionable to report."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 504)
         assert FleetProvider().health_warnings() == []

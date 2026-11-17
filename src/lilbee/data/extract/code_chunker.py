@@ -21,7 +21,7 @@ from tree_sitter_language_pack import (
 
 from lilbee.core.config import cfg
 
-from .chunk import CHARS_PER_TOKEN, chunk_text
+from .chunk import CHARS_PER_TOKEN, chunk_text, count_embed_tokens, token_budget
 
 log = logging.getLogger(__name__)
 
@@ -133,20 +133,42 @@ def _chunks_from_result(result: Any, source_name: str) -> list[CodeChunk]:
     the configured budget. ``metadata.symbols_defined`` lists the symbols in the
     chunk, including methods of a class, so nested symbols are not folded away.
     """
-    chunks: list[CodeChunk] = []
-    for i, tc in enumerate(result.chunks):
+    budget = token_budget()
+    pieces: list[tuple[str, int, int]] = []
+    for tc in result.chunks:
         symbols = list(tc.metadata.symbols_defined) if tc.metadata is not None else []
-        line_start, line_end = _line_span(tc.start_line, tc.content)
-        header = _chunk_header(source_name, symbols, line_start, line_end)
-        chunks.append(
-            CodeChunk(
-                chunk=f"{header}\n\n{tc.content}",
-                line_start=line_start,
-                line_end=line_end,
-                chunk_index=i,
-            )
-        )
-    return chunks
+        pieces.extend(_fit_to_budget(source_name, symbols, tc.start_line, tc.content, budget))
+    return [
+        CodeChunk(chunk=text, line_start=line_start, line_end=line_end, chunk_index=i)
+        for i, (text, line_start, line_end) in enumerate(pieces)
+    ]
+
+
+def _fit_to_budget(
+    source_name: str, symbols: list[str], start_line: int, content: str, budget: int
+) -> list[tuple[str, int, int]]:
+    """Header-prefixed pieces of *content*, each within *budget* embedder tokens.
+
+    Tree-sitter sizes by bytes, so a piece that counts over *budget* is halved at a line
+    boundary, or at the middle of a single long line, until each half fits.
+    """
+    line_start, line_end = _line_span(start_line, content)
+    header = _chunk_header(source_name, symbols, line_start, line_end)
+    text = f"{header}\n\n{content}"
+    if count_embed_tokens(text) <= budget:
+        return [(text, line_start, line_end)]
+    lines = content.splitlines(keepends=True)
+    if len(lines) > 1:
+        mid = len(lines) // 2
+        head, tail, tail_start = "".join(lines[:mid]), "".join(lines[mid:]), start_line + mid
+    elif len(content) > 1:
+        mid = len(content) // 2
+        head, tail, tail_start = content[:mid], content[mid:], start_line
+    else:
+        return [(text, line_start, line_end)]
+    return _fit_to_budget(source_name, symbols, start_line, head, budget) + _fit_to_budget(
+        source_name, symbols, tail_start, tail, budget
+    )
 
 
 def chunk_code(file_path: Path, source_name: str | None = None) -> list[CodeChunk]:

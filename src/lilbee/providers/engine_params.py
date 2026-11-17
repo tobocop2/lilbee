@@ -46,15 +46,11 @@ _EMBED_CTX_MARGIN = 8
 def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
     """Embed/rerank context: worst-case chunk tokenization, capped by trained context.
 
-    ``chunk_size`` is token-denominated but the chunker enforces a CHARACTER
-    budget (``chunk_size * CHARS_PER_TOKEN``). A BPE token is at least one
-    character, so that char budget is also the provable token ceiling for any
-    chunk the chunker can emit: size the context to it and embed-time
-    truncation becomes impossible. Token-dense text (numeric tables, dense
-    identifiers) otherwise reaches ~2x chunk_size tokens against a 1x cap and
-    silently loses its tail at embed time. A trained context below that budget
-    caps the window instead, and the chunker then sizes chunks in the embedder's
-    own tokens at the served cap (see :func:`embed_token_cap`)."""
+    The semantic chunker sizes by characters (``chunk_size * CHARS_PER_TOKEN``), and a
+    BPE token is at least one character, so that budget is the token ceiling of any
+    chunk it emits. The window follows it so semantic chunks are never cut at embed
+    time. A trained context below that budget caps the window, and the other chunkers
+    then size chunks at the served cap (see :func:`embed_token_cap`)."""
     from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
@@ -69,10 +65,8 @@ def embed_token_cap(ctx: int) -> int:
 def embed_window_warning(cap: int) -> HealthWarning | None:
     """The embed-window warning for a real, actionable gap, else None.
 
-    Plain chunking self-corrects to token sizing when *cap* binds, so it loses
-    no text and needs no warning. Semantic chunking ignores token sizing and
-    stays character-sized, so a bound *cap* loses text there regardless of the
-    ``token_sizing`` setting.
+    Plain chunking sizes by tokens and stops at *cap*, so it loses no text and needs
+    no warning. Semantic chunking is character-sized, so a bound *cap* loses text there.
     """
     from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
@@ -89,16 +83,6 @@ def embed_window_warning(cap: int) -> HealthWarning | None:
                 f"{cap} tokens loses text at embedding time."
             ),
             remedy="Turn off semantic_chunking or lower chunk_size.",
-        )
-    if cfg.token_sizing and cap < cfg.chunk_size:
-        return HealthWarning(
-            code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
-            message=(
-                f"The embedding model accepts {cap} tokens per input, below the configured "
-                f"chunk_size {cfg.chunk_size} in tokens. Chunks are capped to {cap} tokens "
-                f"instead."
-            ),
-            remedy=f"Set chunk_size to {cap} to match the window.",
         )
     return None
 

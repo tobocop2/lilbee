@@ -1611,9 +1611,12 @@ class LlamaServerClient:
 
     def count_text_tokens(self, text: str) -> int | None:
         """Tokens in *text* under the server's tokenizer, or None when the engine has no route."""
-        if self._profile.tokenize_path is None:
+        if self._profile.tokenize_path is not None:
+            return len(self._tokenize(text))
+        path = self._profile.input_count_path
+        if path is None:
             return None
-        return len(self._tokenize(text))
+        return len(retry_on_gateway_error(lambda: self._count_route_tokens(path, [text]))[0])
 
     @staticmethod
     def _require_route(path: str | None, route: str) -> str:
