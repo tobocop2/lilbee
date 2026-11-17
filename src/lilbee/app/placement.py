@@ -20,6 +20,7 @@ from lilbee.providers.fleet.planning import (
     clear_read_device_cache,
     resolve_placement_plan,
 )
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RoleTarget, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
@@ -385,7 +386,8 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     else:
         _apply_to_running(services)
     if resolved is None:
-        return _no_engine_view(reading)
+        running = {} if services is None else _running_notices(services)
+        return _no_engine_view(reading, running)
     if cfg.placement != spec_json:
         return get_placement()  # LILBEE_PLACEMENT outranks the saved spec; report what runs
     return _view(resolved, reading.adapters, manual=spec is not None, spec_json=spec_json)
@@ -402,8 +404,27 @@ def _plan_for_write(spec: PlacementSpec | None, reading: BookReading) -> Resolve
         return None
 
 
-def _no_engine_view(reading: BookReading) -> PlacementView:
-    """The view of a host whose engine cannot plan: nothing is placed, the saved spec is kept."""
+def _running_notices(services: Services) -> dict[WorkerRole, str]:
+    """The sentence that says a local model still runs, for each role whose server is up."""
+    notices: dict[WorkerRole, str] = {}
+    for role, entry in ROLE_REGISTRY.items():
+        ref = str(getattr(cfg, entry.config_field))
+        if ref and not parse_model_ref(ref).is_remote and services.provider.role_ready(role):
+            notices[role] = (
+                f"The {role.value} model {ref} is still running: the placement could not be "
+                "read, so the clear is saved but not applied. Restart lilbee to apply it."
+            )
+    return notices
+
+
+def _no_engine_view(
+    reading: BookReading, running: dict[WorkerRole, str] | None = None
+) -> PlacementView:
+    """The view of a host whose engine cannot plan: nothing is placed, the saved spec is kept.
+
+    *running* maps each role whose server is up to its notice; the engine book's notice wins.
+    """
+    notices = {**(running or {}), **reading.notices}
     spec_json: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
@@ -427,7 +448,7 @@ def _no_engine_view(reading: BookReading) -> PlacementView:
                 model=str(getattr(cfg, ROLE_REGISTRY[role].config_field)),
                 notice=notice,
             )
-            for role, notice in reading.notices.items()
+            for role, notice in notices.items()
         ),
     )
 
