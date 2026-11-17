@@ -2164,6 +2164,44 @@ class TestResolveVaultPath:
         assert "documents" in result
 
 
+class TestResolveVaultPathScopedConfig:
+    """The vault link follows the active scoped config, as the source lookup does."""
+
+    def test_scoped_config_resolves_while_global_config_differs(self, tmp_path, monkeypatch):
+        from lilbee.app.search import resolve_vault_path
+        from lilbee.core.config import config_scope
+
+        vault = tmp_path / "vault"
+        scoped_docs = vault / "scoped" / "documents"
+        scoped_docs.mkdir(parents=True)
+        (scoped_docs / "doc.md").write_text("hello", encoding="utf-8")
+        global_docs = tmp_path / "global" / "documents"
+        global_docs.mkdir(parents=True)
+        monkeypatch.setattr(cfg, "vault_base", None)
+        monkeypatch.setattr(cfg, "documents_dir", global_docs)
+        scoped = cfg.model_copy(update={"vault_base": vault, "documents_dir": scoped_docs})
+        with config_scope(scoped):
+            assert resolve_vault_path("doc.md") == "scoped/documents/doc.md"
+        assert resolve_vault_path("doc.md") is None
+
+    def test_scoped_config_without_vault_base_ignores_global_vault_base(
+        self, tmp_path, monkeypatch
+    ):
+        from lilbee.app.search import resolve_vault_path
+        from lilbee.core.config import config_scope
+
+        vault = tmp_path / "vault"
+        docs = vault / "documents"
+        docs.mkdir(parents=True)
+        (docs / "doc.md").write_text("hello", encoding="utf-8")
+        monkeypatch.setattr(cfg, "vault_base", vault)
+        monkeypatch.setattr(cfg, "documents_dir", docs)
+        scoped = cfg.model_copy(update={"vault_base": None})
+        with config_scope(scoped):
+            assert resolve_vault_path("doc.md") is None
+        assert resolve_vault_path("doc.md") == "documents/doc.md"
+
+
 class TestCleanResultVaultPath:
     """clean_result stamps ``vault_path`` when resolve_vault_path returns a value."""
 

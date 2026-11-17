@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 
 if TYPE_CHECKING:
     from lilbee.data.store import SearchChunk
@@ -19,13 +19,14 @@ def resolve_vault_path(source_filename: str) -> str | None:
     Resolves symlinks on both sides and rejects ``..`` escapes from
     ``documents_dir``.
     """
-    if cfg.vault_base is None:
+    config = active_config()
+    if config.vault_base is None:
         return None
     from lilbee.data.ingest.discovery import resolve_source_path
 
     try:
-        vault_base = cfg.vault_base.resolve()
-        documents_dir = cfg.documents_dir.resolve()
+        vault_base = config.vault_base.resolve()
+        documents_dir = config.documents_dir.resolve()
         source_path = resolve_source_path(source_filename).resolve()
         source_path.relative_to(documents_dir)
         relative_docs_dir = documents_dir.relative_to(vault_base)
