@@ -11,6 +11,7 @@ from lilbee.app import services as services_mod
 from lilbee.app.settings import reconcile_embedding_dim
 from lilbee.core.config import META_TABLE, cfg
 from lilbee.data.store import Store
+from lilbee.data.store.lance_helpers import persisted_embedding_width
 from tests.conftest import make_mock_services
 
 MODEL = "ollama/stored-embed:latest"
@@ -62,6 +63,28 @@ def test_startup_keeps_the_configured_width_when_the_stored_width_is_below_1(sto
     reconcile_embedding_dim()
 
     assert cfg.embedding_dim == CONFIGURED_WIDTH
+
+
+@pytest.mark.parametrize(
+    ("stored", "read"), [(1, 1), (STORED_WIDTH, STORED_WIDTH), (0, None), (-1, None)]
+)
+def test_the_stored_width_read_gives_a_width_above_0_only(stored, read):
+    _store_with_stored_width(stored)
+
+    assert persisted_embedding_width(cfg.lancedb_dir, MODEL) == read
+
+
+def test_the_stored_width_read_gives_none_for_another_model():
+    _store_with_stored_width(STORED_WIDTH)
+
+    assert persisted_embedding_width(cfg.lancedb_dir, "ollama/other:latest") is None
+
+
+def test_the_stored_width_read_gives_none_for_a_library_without_a_meta_table():
+    cfg.lancedb_dir.mkdir(parents=True)
+    lancedb.connect(str(cfg.lancedb_dir))
+
+    assert persisted_embedding_width(cfg.lancedb_dir, MODEL) is None
 
 
 def _build_recording_width(monkeypatch) -> list[int]:
