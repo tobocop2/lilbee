@@ -63,8 +63,7 @@ assert_binaries() {
 @test "the derivation omits every soft cell" {
   local derived
   derived=$(bash "${DERIVE}" "${WORKFLOW}")
-  for asset in lilbee-compat-linux-x86_64 lilbee-compat-macos-x86_64 \
-               lilbee-compat-windows-x86_64.exe; do
+  for asset in lilbee-compat-linux-x86_64 lilbee-compat-windows-x86_64.exe; do
     run grep -qxF "${asset}" <<< "${derived}"
     [ "$status" -ne 0 ]
   done
@@ -84,7 +83,23 @@ assert_binaries() {
     [ "$status" -ne 0 ]
     checked=$(( checked + 1 ))
   done <<< "${soft}"
-  [ "${checked}" -eq 3 ]
+  [ "${checked}" -eq 2 ]
+}
+
+# The old-Mac builds live outside the release matrix, so a fork wheel that lags
+# upstream cannot strand a tag. Every one of their cells is droppable.
+@test "the old-Mac cells are all droppable and the release matrix does not carry them" {
+  local oldmac="${REPO_ROOT}/.github/oldmac-cells.yml"
+  local cells soft checked=0
+  cells=$(yq -r '.[].asset_name' "${oldmac}")
+  soft=$(bash "${DERIVE}" --soft "${oldmac}")
+  [ "${soft}" = "${cells}" ]
+  while IFS= read -r asset; do
+    run grep -qxF "${asset}" <<< "$(yq -r '.[].asset_name' "${WORKFLOW}")"
+    [ "$status" -ne 0 ]
+    checked=$(( checked + 1 ))
+  done <<< "${cells}"
+  [ "${checked}" -eq 2 ]
 }
 
 @test "the compat Linux binary is droppable" {

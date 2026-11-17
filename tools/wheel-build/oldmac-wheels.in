@@ -1,0 +1,4 @@
+# Fork wheels the old-Mac executables bundle, served by https://lilbee.sh/compat/.
+# One exact pin per line. Add xberg here when its fork publishes a wheel.
+crawlberg==1.13.0+compat
+liter-llm==2.7.0+compat

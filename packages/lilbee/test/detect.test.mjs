@@ -11,7 +11,7 @@ const KFD_NODES = "/sys/class/kfd/kfd/topology/nodes";
  * command tried, or null for "not installed"; `powershell` answers the Windows AVX2 probe
  * the same way. Every command run lands in `calls`.
  */
-const io = ({ smi = null, files = [], cpuflags = "fpu avx avx2", cpuinfo = null, sysctlAvx2 = "1", powershell = null, rocminfo = false, kfdNodes = null, kfdUnreadable = false } = {}) => {
+const io = ({ smi = null, files = [], cpuflags = "fpu avx avx2", cpuinfo = null, sysctlAvx2 = "1", macos = null, powershell = null, rocminfo = false, kfdNodes = null, kfdUnreadable = false } = {}) => {
   const calls = [];
   const notFound = (cmd) => Object.assign(new Error(`spawn ${cmd} ENOENT`), { code: "ENOENT" });
   const answer = (cmd, response) => {
@@ -29,6 +29,7 @@ const io = ({ smi = null, files = [], cpuflags = "fpu avx avx2", cpuinfo = null,
         return "ROCk module is loaded";
       }
       if (cmd === "sysctl") return answer(cmd, sysctlAvx2);
+      if (cmd === "sw_vers") return answer(cmd, macos);
       if (cmd === "powershell") return answer(cmd, powershell);
       throw notFound(cmd);
     },
@@ -132,7 +133,34 @@ test("intel macs without AVX2 get the compat build", async () => {
   assert.equal(await variant("darwin", "arm64", { sysctlAvx2: "0" }), "default");
 });
 
+test("an arm64 Mac older than the main build's macOS gets the compat build", async () => {
+  assert.equal(await variant("darwin", "arm64", { macos: "12.7.6\n" }), "compat");
+  assert.equal(await variant("darwin", "arm64", { macos: "13.0" }), "compat");
+  assert.equal(await variant("darwin", "arm64", { macos: "14.0" }), "default");
+  assert.equal(await variant("darwin", "arm64", { macos: "15.2" }), "default");
+});
+
+test("a Mac below the compat build's macOS, or one that does not say, gets the default build", async () => {
+  assert.equal(await variant("darwin", "arm64", { macos: "11.7" }), "default");
+  assert.equal(await variant("darwin", "arm64", { macos: "not a version" }), "default");
+  assert.equal(await variant("darwin", "arm64", { macos: null }), "default");
+  assert.equal(await variant("darwin", "arm64", { macos: new Error("sw_vers failed") }), "default");
+});
+
+test("an Intel Mac has no macOS release the compat build covers and the main build does not", async () => {
+  assert.equal(await variant("darwin", "x64", { macos: "12.0" }), "default");
+  assert.equal(await variant("darwin", "x64", { macos: "11.0" }), "default");
+  assert.equal(await variant("darwin", "x64", { macos: "12.0", sysctlAvx2: "0" }), "compat");
+});
+
+test("a darwin host of another architecture is not asked for its macOS release", async () => {
+  const host = io({ macos: "12.0" });
+  assert.equal((await detectVariant("darwin", "ia32", host)).variant, "default");
+  assert.ok(!host.calls.includes("sw_vers"));
+});
+
 test("detected variants all map to real release assets", () => {
+  assert.equal(assetNameFor("darwin", "arm64", "compat"), "lilbee-compat-macos-arm64");
   assert.equal(assetNameFor("linux", "x64", "compat-cu124"), "lilbee-compat-linux-x86_64-cu124");
   assert.equal(assetNameFor("linux", "x64", "compat-rocm"), "lilbee-compat-linux-x86_64-rocm");
   assert.equal(assetNameFor("linux", "x64", "cu125"), "lilbee-linux-x86_64-cu125");
@@ -299,11 +327,12 @@ test("detectHost carries the report, and a forced LILBEE_VARIANT probes nothing"
 });
 
 test("the log lines the CLI prints are unchanged by the report", async () => {
-  const lines = async (platform, probes) => {
+  const linesFor = async (platform, arch, probes) => {
     const out = [];
-    await detectVariant(platform, "x64", io(probes), (m) => out.push(m));
+    await detectVariant(platform, arch, io(probes), (m) => out.push(m));
     return out;
   };
+  const lines = (platform, probes) => linesFor(platform, "x64", probes);
   assert.deepEqual(await lines("linux", { smi: "CUDA Version: 12.6", cpuflags: "fpu sse4_2" }), [
     "lilbee: detected NVIDIA driver (CUDA 12.6) — using the cu125 build (override with LILBEE_VARIANT).",
     "lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).",
@@ -314,6 +343,8 @@ test("the log lines the CLI prints are unchanged by the report", async () => {
   assert.deepEqual(await lines("linux", { files: [...KFD, "/opt/rocm"] }), ["lilbee: detected a ROCm userland — using the rocm build (override with LILBEE_VARIANT)."]);
   assert.deepEqual(await lines("linux", {}), []);
   assert.deepEqual(await lines("darwin", { sysctlAvx2: "0" }), ["lilbee: this CPU has no AVX2 — using the -compat build (override with LILBEE_VARIANT)."]);
+  assert.deepEqual(await linesFor("darwin", "arm64", { macos: "13.1" }), ["lilbee: this macOS is older than the main build supports — using the -compat build (override with LILBEE_VARIANT)."]);
+  assert.deepEqual(await linesFor("darwin", "arm64", { macos: "15.0" }), []);
   assert.deepEqual(await lines("win32", { smi: "CUDA Version: 12.2" }), [
     "lilbee: detected NVIDIA driver (CUDA 12.2) — using the cu121 build (override with LILBEE_VARIANT).",
     "lilbee: this NVIDIA driver predates CUDA 12.4 — using the universal Windows build (override with LILBEE_VARIANT).",

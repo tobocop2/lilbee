@@ -71,7 +71,8 @@ export interface Host {
 
 /**
  * Probe the host: NVIDIA driver CUDA level (`nvidia-smi` on PATH, then the Windows install
- * locations, with a 10 s timeout), AMD KFD topology, AVX2 baseline (Linux, Intel macOS, Windows).
+ * locations, with a 10 s timeout), AMD KFD topology, AVX2 baseline (Linux, Intel macOS, Windows),
+ * and the macOS release (`sw_vers`).
  * Detection failures fall back to the default build; an unknown LILBEE_VARIANT in `env` throws,
  * and a valid one skips every probe, so the report shows each as "skipped".
  */

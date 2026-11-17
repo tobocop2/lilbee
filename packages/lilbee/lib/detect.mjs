@@ -30,6 +30,9 @@ const AVX2_PROBE_SCRIPT = [
 const AVX2_PROBE_ARGS = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(AVX2_PROBE_SCRIPT, "utf16le").toString("base64")];
 
 const COMPAT_BUILD_LOG = "lilbee: this CPU has no AVX2 — using the -compat build (override with LILBEE_VARIANT).";
+const OLD_MACOS_LOG = "lilbee: this macOS is older than the main build supports — using the -compat build (override with LILBEE_VARIANT).";
+/** The first macOS major each Mac build runs on: the main build, and the compat build below it. */
+const MACOS_FLOORS = { arm64: { main: 14, compat: 12 }, x64: { main: 12, compat: 12 } };
 const COMPAT_FAMILY_LOG = "lilbee: this CPU has no AVX2 — using the -compat build family (override with LILBEE_VARIANT).";
 
 const execFileAsync = promisify(execFile);
@@ -185,6 +188,15 @@ async function probeCpu(platform, arch, io, tryExec) {
   return { status: "skipped" };
 }
 
+/** Whether this Mac runs a macOS release the compat build supports and the main build does not. */
+async function macosBelowMainBuild(arch, tryExec) {
+  const floors = MACOS_FLOORS[arch];
+  if (!floors) return false;
+  const version = await tryExec("sw_vers", ["-productVersion"]);
+  const major = version === null ? Number.NaN : Number.parseInt(version, 10);
+  return major >= floors.compat && major < floors.main;
+}
+
 /** The report of a host whose build was forced: nothing was probed. */
 function skippedDetection() {
   return { nvidia: { status: "skipped" }, amd: { status: "skipped" }, cpu: { status: "skipped" }, detectedAt: new Date().toISOString() };
@@ -283,7 +295,9 @@ export async function detectVariant(platform, arch, io = nodeIo, log = () => {},
 
   if (platform === "darwin") {
     if (noAvx2) log(COMPAT_BUILD_LOG);
-    return host(noAvx2 ? "compat" : "default");
+    const oldMacos = await macosBelowMainBuild(arch, tryExec);
+    if (oldMacos && !noAvx2) log(OLD_MACOS_LOG);
+    return host(noAvx2 || oldMacos ? "compat" : "default");
   }
 
   const cuda = cudaBuild(detection.nvidia, platform, exists, log);

@@ -1,7 +1,9 @@
 """Executable build config: Playwright plugin, exact Nuitka pin, no publishing from a check."""
 
 import importlib.util
+import os
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -18,7 +20,12 @@ _NUITKA_INSTALL = re.compile(r"'(nuitka\[onefile\][^']*)'")
 _ACTIONS = _ROOT / ".github" / "actions"
 _NUITKA_PIN = "nuitka[onefile]==4.3.1"
 _PUBLISH_MARKERS = ("gh release", "ci_mirror", "publish-engine-asset", "phase: publish")
-_INSTALL_FILES = ("release.yml", "build-gpu-executables.yml", "flatpak-validate.yml")
+_INSTALL_FILES = (
+    "release.yml",
+    "build-gpu-executables.yml",
+    "build-oldmac-executables.yml",
+    "flatpak-validate.yml",
+)
 
 
 class _FakePluginBase:
@@ -81,13 +88,13 @@ def test_every_nuitka_install_names_the_same_requirement() -> None:
 
 
 def test_every_nuitka_install_site_is_counted() -> None:
-    """Four sites install Nuitka; a fifth added without the pin must fail the test above."""
+    """Five sites install Nuitka; a sixth added without the pin must fail the test above."""
     sites = sum(
         len(_NUITKA_INSTALL.findall((_WORKFLOWS / name).read_text(encoding="utf-8")))
         for name in _INSTALL_FILES
     )
 
-    assert sites == 4
+    assert sites == 5
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -187,3 +194,127 @@ def test_every_windows_trigger_also_triggers_the_check() -> None:
     paths = workflow.get("on", workflow.get(True))["pull_request"]["paths"]
 
     assert set(_windows_filter()) <= set(paths)
+
+
+_OLDMAC = _WORKFLOWS / "build-oldmac-executables.yml"
+_OLDMAC_CELLS = _ROOT / ".github" / "oldmac-cells.yml"
+_OLDMAC_PINS = _BUILD_DIR / "oldmac-wheels.in"
+
+
+def _oldmac_cells() -> list[dict[str, Any]]:
+    cells: list[dict[str, Any]] = yaml.safe_load(_OLDMAC_CELLS.read_text(encoding="utf-8"))
+    return cells
+
+
+def _oldmac_steps() -> dict[str, dict[str, Any]]:
+    steps = _load(_OLDMAC)["jobs"]["build"]["steps"]
+    return {step["name"]: step for step in steps if "name" in step}
+
+
+def test_both_old_mac_cells_are_droppable_and_checked_at_their_floor() -> None:
+    cells = _oldmac_cells()
+    floor_step = _oldmac_steps()["Verify macOS floor"]
+
+    assert {c["asset_name"] for c in cells} == {
+        "lilbee-compat-macos-x86_64",
+        "lilbee-compat-macos-arm64",
+    }
+    assert all(c["soft"] is True and c["macos_floor"] == "12.0" for c in cells)
+    assert floor_step["env"]["MACOSX_DEPLOYMENT_TARGET"] == "${{ matrix.macos_floor }}"
+    assert floor_step["run"] == "bash tools/wheel-build/check_macos_floor.sh"
+
+
+def test_only_the_intel_cell_swaps_lancedb_and_sets_a_cpu_baseline() -> None:
+    by_asset = {c["asset_name"]: c for c in _oldmac_cells()}
+
+    assert by_asset["lilbee-compat-macos-x86_64"]["lancedb_spec"] == "lancedb==0.40.0+compat"
+    assert by_asset["lilbee-compat-macos-x86_64"]["march"] == "x86-64-v2"
+    assert "lancedb_spec" not in by_asset["lilbee-compat-macos-arm64"]
+    assert "march" not in by_asset["lilbee-compat-macos-arm64"]
+
+
+def test_the_fork_wheels_are_exact_compat_pins_installed_binary_only() -> None:
+    pins = [
+        line
+        for line in _OLDMAC_PINS.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    run = _oldmac_steps()["Install dependencies"]["run"]
+
+    assert pins
+    for pin in pins:
+        assert re.fullmatch(r"[a-z-]+==\d+\.\d+\.\d+\+compat", pin), pin
+    assert "--only-binary" in run
+    assert "--extra-index-url https://lilbee.sh/compat/" in run
+    assert "--index-strategy unsafe-best-match" in run
+    assert '--python-platform "${PYTHON_PLATFORM}"' in run
+    assert "--no-emit-package" in run
+
+
+def _homebrew_render_args(tmp_path: Path, compat_sha: str) -> str:
+    """Run the Homebrew render-args step's script and return the args it writes."""
+    steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["homebrew"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Build render-args")
+    out = tmp_path / ("output-with" if compat_sha else "output-without")
+    env = {
+        "PATH": os.environ["PATH"],
+        "VERSION": "1.2.3",
+        "SHA_MACOS_ARM64": "a" * 64,
+        "SHA_MACOS_X86_64": "b" * 64,
+        "SHA_LINUX": "c" * 64,
+        "SHA_MACOS_ARM64_COMPAT": compat_sha,
+        "GITHUB_OUTPUT": str(out),
+    }
+    subprocess.run(["bash", "-c", step["run"]], env=env, check=True, capture_output=True)
+    return out.read_text(encoding="utf-8")
+
+
+def test_the_homebrew_args_carry_the_old_mac_digest_only_when_the_asset_exists(
+    tmp_path: Path,
+) -> None:
+    with_compat = _homebrew_render_args(tmp_path, "d" * 64)
+    without = _homebrew_render_args(tmp_path, "")
+
+    assert f"--sha-macos-arm64-compat {'d' * 64}" in with_compat
+    assert "--sha-macos-arm64-compat" not in without
+    assert f"--sha-linux-x86_64 {'c' * 64}" in without
+
+
+def test_the_release_resolves_the_old_mac_digest_without_requiring_it() -> None:
+    steps = _load(_WORKFLOWS / "publish-packages.yml")["jobs"]["resolve"]["steps"]
+    run = next(s for s in steps if s.get("id") == "info")["run"]
+
+    assert "sha_macos_arm64_compat=$(get_sha lilbee-compat-macos-arm64)" in run
+    assert "set -euo pipefail" in run
+
+
+def test_nothing_in_the_release_waits_on_the_old_mac_build() -> None:
+    jobs = _load(_WORKFLOWS / "release-candidate.yml")["jobs"]
+
+    assert jobs["build-oldmac"]["uses"] == "./.github/workflows/build-oldmac-executables.yml"
+    for name, job in jobs.items():
+        needs = job.get("needs", [])
+        needs = [needs] if isinstance(needs, str) else needs
+        assert "build-oldmac" not in needs, name
+
+
+def test_pages_serves_every_fork_the_old_mac_pins_name() -> None:
+    pages = (_WORKFLOWS / "pages.yml").read_text(encoding="utf-8")
+    pins = [
+        line.split("==")[0]
+        for line in _OLDMAC_PINS.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+
+    assert pins
+    assert "--repo tobocop2/lancedb" in pages
+    for project in pins:
+        assert f"--optional-repo tobocop2/{project}" in pages
+
+
+def test_the_old_mac_cells_are_not_in_the_release_matrix() -> None:
+    release = yaml.safe_load((_ROOT / ".github" / "release-cells.yml").read_text(encoding="utf-8"))
+    names = {cell["asset_name"] for cell in release}
+
+    assert names
+    assert not names & {c["asset_name"] for c in _oldmac_cells()}
