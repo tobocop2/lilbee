@@ -213,15 +213,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         ),
         advanced=True,
     ),
-    "token_sizing": SettingDef(
-        bool,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Size chunks by real embedder tokens, not chars; on by itself when the "
-            "embedder's window is below the character budget (changes invalidate the index)"
-        ),
-    ),
     "table_extraction": SettingDef(
         bool,
         nullable=False,

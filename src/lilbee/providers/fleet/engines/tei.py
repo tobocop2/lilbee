@@ -106,12 +106,11 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
 def _longest_input_tokens() -> int:
     """The token ceiling of the longest input lilbee sends: a chunk, plus a rerank query.
 
-    A token is at least one character, so the chunk character budget bounds its tokens.
-    The router warms up with one batch of this length, so it must not grow with the context.
+    The chunker counts tokens with this server's tokenizer, special tokens included, so a
+    chunk never has more than ``chunk_size``. The router warms up with one batch of this
+    length, so it must not grow with the context.
     """
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
-    return cfg.chunk_size * CHARS_PER_TOKEN + _RERANK_QUERY_TOKENS
+    return cfg.chunk_size + _RERANK_QUERY_TOKENS
 
 
 class TeiAdapter:

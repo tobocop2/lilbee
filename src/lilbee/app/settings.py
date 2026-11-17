@@ -565,15 +565,6 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     if changed_keys & FLEET_RELOAD_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
-    if "token_sizing" in changed_keys:
-        # Unregister lilbee's xberg tokenizer backend when token_sizing is turned
-        # off (via any settings path); the chunker binds it on demand when on.
-        from lilbee.app.services import peek_services
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        services = peek_services()
-        if services is not None:
-            sync_xberg_backend(BackendKind.TOKENIZER, services.provider)
     if "mcp_tool_threads" in changed_keys:
         # Resize the running server's thread pool now instead of only at startup.
         from lilbee.server.app import reapply_thread_pool_ceiling
