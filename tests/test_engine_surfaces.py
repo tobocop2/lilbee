@@ -27,11 +27,13 @@ from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import NoEngineError
-from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.engines.host_gate import HostGate
+from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
+from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import (
     GGUF_ENGINE,
     GGUF_REF,
@@ -165,6 +167,45 @@ def test_the_refused_preference_has_the_same_text_on_every_surface(no_mlx: None)
     assert (code, body["detail"]) == (422, expected)
     assert mcp_server.engine_prefer_tool("mlx") == {"error": expected}
     assert run_engine_command("prefer mlx").text == expected
+    assert _stored("preferred_engine") is None
+
+
+class _SilentRefusalEngine(FakeAdapter):
+    """An engine outside the package whose host gate refuses and gives no reason."""
+
+    name = "mistral.rs"
+    formats = frozenset({"gguf"})
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return HostGate(False)
+
+
+EMPTY_REASON_REFUSALS = {
+    "no-build": "Engine mistral.rs is not installed, and this computer cannot run it.",
+    "with-build": "Engine mistral.rs is installed, but this computer cannot run it.",
+}
+
+
+@pytest.mark.parametrize("surface", ["cli", "rest"])
+@pytest.mark.parametrize("case", sorted(EMPTY_REASON_REFUSALS))
+def test_a_host_refusal_with_no_reason_ends_the_text_at_the_sentence(
+    surface: str, case: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    adapter = _SilentRefusalEngine()
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, adapter)  # type: ignore[arg-type]
+    if case == "with-build":
+        monkeypatch.setattr(
+            engine_service, "installed_engines", lambda: {EngineName.MISTRAL: adapter.formats}
+        )
+    assert EngineName.MISTRAL not in engine_service.offered_engines()
+    expected = EMPTY_REASON_REFUSALS[case]
+    if surface == "cli":
+        code, body = _run_cli("prefer", "mistral.rs")
+        assert (code, body["error"]) == (1, expected)
+    else:
+        code, body = _rest("PUT", "/api/engines/preferred", {"engine": "mistral.rs"})
+        assert (code, body["detail"]) == (422, expected)
     assert _stored("preferred_engine") is None
 
 
