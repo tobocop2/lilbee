@@ -222,6 +222,75 @@ async def test_a_model_of_unknown_size_shows_its_notice(monkeypatch, size):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(140, 44), (80, 30)])
+async def test_a_tight_role_shows_how_much_memory_it_lacks_and_what_to_do(monkeypatch, size):
+    """A role placed on a card that cannot hold it says so in the fleet note."""
+    from textual.widgets import Static
+
+    from lilbee.app import placement as app_placement
+    from lilbee.core.config import cfg
+    from lilbee.providers.fleet.devices import FleetDevice
+    from lilbee.providers.fleet.placement import InstancePlan
+    from lilbee.providers.fleet.planning import ResolvedPlacement
+    from lilbee.providers.roles import WorkerRole
+
+    plan = ResolvedPlacement(
+        devices=(FleetDevice("CUDA", 0, "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        instances=(InstancePlan(role=WorkerRole.CHAT, devices=(0,)),),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.CHAT: "org/m"},
+        tight_roles={WorkerRole.CHAT: 3 * GIB},
+    )
+    monkeypatch.setattr(cfg, "placement", None)
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: plan)
+
+    app = FleetTestApp()
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        rendered = str(note.render())
+        assert "Memory is tight for the chat model org/m" in rendered
+        assert "3.0 GiB more GPU memory than is available" in rendered
+        assert "free up GPU memory or use a smaller model" in rendered
+
+
+@pytest.mark.asyncio
+async def test_two_tight_roles_show_one_line_each(monkeypatch):
+    """The fleet note puts each tight role on its own line, in role-name order."""
+    from textual.widgets import Static
+
+    from lilbee.app import placement as app_placement
+    from lilbee.core.config import cfg
+    from lilbee.providers.fleet.devices import FleetDevice
+    from lilbee.providers.fleet.placement import InstancePlan
+    from lilbee.providers.fleet.planning import ResolvedPlacement
+    from lilbee.providers.roles import WorkerRole
+
+    plan = ResolvedPlacement(
+        devices=(FleetDevice("CUDA", 0, "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        instances=(
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.CHAT: "org/chat", WorkerRole.EMBED: "org/embed"},
+        tight_roles={WorkerRole.EMBED: 1 * GIB, WorkerRole.CHAT: 3 * GIB},
+    )
+    monkeypatch.setattr(cfg, "placement", None)
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: plan)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        lines = str(app.screen.query_one("#placement-skipped", Static).render()).split("\n")
+
+    assert len(lines) == 2
+    assert lines[0].startswith("Memory is tight for the chat model org/chat:")
+    assert lines[1].startswith("Memory is tight for the embed model org/embed:")
+
+
+@pytest.mark.asyncio
 async def test_no_skipped_note_when_all_models_installed(monkeypatch):
     """With every configured model installed the note stays hidden."""
     from textual.widgets import Static

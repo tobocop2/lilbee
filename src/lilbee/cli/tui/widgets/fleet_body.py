@@ -345,6 +345,7 @@ class FleetBody(Widget):
             for skipped in view.skipped_no_engine
         )
         lines.extend(unknown.notice for unknown in view.size_unknown)
+        lines.extend(tight.notice for tight in view.tight)
         if view.refusal:
             lines.append(view.refusal)
         if view.hidden_note:
