@@ -1667,3 +1667,59 @@ async def test_the_screen_shows_the_saved_placement_and_each_missing_engine(
         assert app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE in notes
         state = str(app.screen.query_one("#placement-state", Static).render())
         assert state == msg.FLEET_STATE_AUTO
+
+
+def _no_engine_saved_view():  # type: ignore[no-untyped-def]
+    """What the service returns when a saved spec exists and no installed engine can run it."""
+    from lilbee.app.placement import SAVED_PLACEMENT_WAITS_FOR_ENGINE, PlacementView
+
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        refusal=SAVED_PLACEMENT_WAITS_FOR_ENGINE,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_saved_spec_with_no_engine_adds_no_editor_row(monkeypatch):
+    from textual.css.query import NoMatches
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _no_engine_saved_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        skipped = app.screen.query_one("#placement-skipped", Static)
+        assert await wait_until(pilot, lambda: skipped.display is True)
+        assert body._edits == {}
+        for selector in ("#tgt-chat-cpu", "#tgt-chat-auto"):
+            with pytest.raises(NoMatches):
+                body.query_one(selector)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spec_with_an_engine_keeps_a_row_for_a_role_the_plan_lacks(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import RoleTarget, WorkerRole
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _refused_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
+        chat = body._edits[WorkerRole.CHAT]
+        assert chat.model == ""
+        assert chat.target == RoleTarget.GPU
+        assert chat.devices == {1}
+        assert body.query_one("#tgt-chat-cpu")
+        assert body.query_one("#tgt-chat-auto")
