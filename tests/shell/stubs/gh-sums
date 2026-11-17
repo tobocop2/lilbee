@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # Stand-in for gh as scripts/write_release_sums.sh calls it: `release view` serves
-# $FIXTURE/assets.json, and `release upload` keeps the uploaded file in $FIXTURE/uploaded.
+# $FIXTURE/assets.json, `release download` serves $FIXTURE/existing-sums to --output,
+# and `release upload` keeps the uploaded file in $FIXTURE/uploaded.
 set -uo pipefail
 [ "$1" = release ] || { echo "stub gh: unsupported call $*" >&2; exit 1; }
 sub="$2"
 shift 2
 case "${sub}" in
-  view) jq -c '.assets' "${FIXTURE}/assets.json" ;;
+  view) jq -c '{assets, isPrerelease}' "${FIXTURE}/assets.json" ;;
+  download)
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --output ]; then cp "${FIXTURE}/existing-sums" "$2"; exit 0; fi
+      shift
+    done
+    echo "stub gh: download without --output" >&2
+    exit 1
+    ;;
   upload)
     echo "upload $*" >> "${FIXTURE}/actions.log"
     mkdir -p "${FIXTURE}/uploaded"
