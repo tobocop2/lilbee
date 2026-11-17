@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import faulthandler
 import logging
 import os
@@ -77,6 +78,7 @@ class _FaultLog:
 
     def __init__(self) -> None:
         self._handle: IO[str] | None = None
+        self._alarm_handle: IO[str] | None = None
 
     def enable(self) -> Path:
         """Open the fault log if needed and point faulthandler at it."""
@@ -85,6 +87,14 @@ class _FaultLog:
             self._handle = fault_path.open("a", encoding="utf-8")
             faulthandler.enable(file=self._handle)
         return fault_path
+
+    def dump_on_alarm(self) -> None:
+        """Dump every thread to the fault log on SIGALRM; the process then dies of it."""
+        with contextlib.suppress(OSError):  # pragma: no cover - POSIX only, no SIGALRM on Windows
+            self._alarm_handle = _fault_log_path().open("a", encoding="utf-8")
+            faulthandler.register(
+                signal.SIGALRM, file=self._alarm_handle, all_threads=True, chain=True
+            )
 
 
 _fault_log = _FaultLog()
@@ -110,13 +120,15 @@ def _exit_at_the_deadline(seconds: float) -> None:
 def arm_exit_deadline(seconds: float) -> None:
     """End the process with status 1 after *seconds*; the fault log names what held it.
 
-    A kernel timer kills the process shortly after, for a hang in finalization.
+    A kernel timer kills the process shortly after, for a hang in finalization, and
+    writes every thread to the fault log first.
     """
     threading.Thread(
         target=_exit_at_the_deadline, args=(seconds,), name="exit-deadline", daemon=True
     ).start()
     if sys.platform != "win32":  # pragma: no cover - Windows has no interval timer
         signal.setitimer(signal.ITIMER_REAL, seconds + _BACKSTOP_GRACE_S)
+        _fault_log.dump_on_alarm()
 
 
 class _ExceptHook:

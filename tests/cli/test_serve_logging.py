@@ -9,6 +9,7 @@ import sys
 from collections.abc import Iterator
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -341,11 +342,29 @@ class _Exited(BaseException):
     """Stands in for the process end, so the deadline runs inside the test."""
 
 
-def test_the_deadline_writes_the_held_threads_and_exits_with_status_1(
+@pytest.fixture
+def alarm_registrations(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from lilbee.cli.commands import serve_logging
+) -> Iterator[list[dict[str, Any]]]:
+    """Point the fault log at tmp_path and record what the arm registers for SIGALRM."""
+    registered: list[dict[str, Any]] = []
+    fresh = serve_logging._FaultLog()
+    monkeypatch.setattr(serve_logging.cfg, "data_root", tmp_path)
+    monkeypatch.setattr(serve_logging, "_fault_log", fresh)
+    monkeypatch.setattr(
+        serve_logging.faulthandler,
+        "register",
+        lambda signum, **kwargs: registered.append({"signum": signum, **kwargs}),
+        raising=False,
+    )
+    yield registered
+    if fresh._alarm_handle is not None:
+        fresh._alarm_handle.close()
 
+
+def test_the_deadline_writes_the_held_threads_and_exits_with_status_1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, alarm_registrations: list[dict[str, Any]]
+) -> None:
     statuses: list[int] = []
 
     def fake_exit(status: int) -> None:
@@ -368,7 +387,7 @@ def test_the_deadline_writes_the_held_threads_and_exits_with_status_1(
 
 
 def test_the_deadline_starts_one_named_daemon_thread_on_the_exit_function(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, alarm_registrations: list[dict[str, Any]]
 ) -> None:
     built: list[dict[str, object]] = []
     started: list[int] = []
@@ -396,7 +415,9 @@ def test_the_deadline_starts_one_named_daemon_thread_on_the_exit_function(
     assert started == [1]
 
 
-def test_the_deadline_sets_no_kernel_timer_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_deadline_sets_no_kernel_timer_on_windows(
+    monkeypatch: pytest.MonkeyPatch, alarm_registrations: list[dict[str, Any]]
+) -> None:
     timers: list[tuple[object, ...]] = []
     monkeypatch.setattr(serve_logging.threading.Thread, "start", lambda thread: None)
     monkeypatch.setattr(
@@ -405,11 +426,40 @@ def test_the_deadline_sets_no_kernel_timer_on_windows(monkeypatch: pytest.Monkey
     monkeypatch.setattr(serve_logging.sys, "platform", "win32")
     serve_logging.arm_exit_deadline(60.0)
     assert timers == []
+    assert alarm_registrations == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
+def test_the_deadline_dumps_every_thread_to_the_fault_log_on_sigalrm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, alarm_registrations: list[dict[str, Any]]
+) -> None:
+    import signal
+
+    monkeypatch.setattr(serve_logging.threading.Thread, "start", lambda thread: None)
+    monkeypatch.setattr(serve_logging.signal, "setitimer", lambda *_args: None)
+    serve_logging.arm_exit_deadline(60.0)
+    assert len(alarm_registrations) == 1
+    registration = alarm_registrations[0]
+    assert registration["signum"] == signal.SIGALRM
+    assert registration["all_threads"] is True
+    assert registration["chain"] is True
+    assert Path(registration["file"].name) == tmp_path / "logs" / "server-fault.log"
+
+
+def test_a_fault_log_that_cannot_open_leaves_the_alarm_unregistered(
+    monkeypatch: pytest.MonkeyPatch, alarm_registrations: list[dict[str, Any]]
+) -> None:
+    def cannot_open() -> Path:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(serve_logging, "_fault_log_path", cannot_open)
+    serve_logging._fault_log.dump_on_alarm()
+    assert alarm_registrations == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no interval timer")
 def test_the_deadline_sets_the_kernel_timer_after_the_grace(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, alarm_registrations: list[dict[str, Any]]
 ) -> None:
     import signal
 

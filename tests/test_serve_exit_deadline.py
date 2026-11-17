@@ -354,8 +354,8 @@ arm_exit_deadline(%r)
 """
 
 
-@posix_only
-def test_the_deadline_ends_a_process_that_hangs_in_finalization(tmp_path: Path) -> None:
+def _finalization_wedge_status(tmp_path: Path) -> int:
+    """Run the finalization wedge probe and return its status; fail if it outlives the backstop."""
     process = subprocess.Popen(
         [sys.executable, "-c", _FINALIZATION_WEDGE_PROBE],
         env=_child_env(tmp_path),
@@ -364,12 +364,28 @@ def test_the_deadline_ends_a_process_that_hangs_in_finalization(tmp_path: Path) 
         stderr=subprocess.DEVNULL,
     )
     try:
-        status = process.wait(timeout=_WAKE_LIMIT_S * 3)
+        return process.wait(timeout=_WAKE_LIMIT_S * 3)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
         pytest.fail("a destructor that hangs in finalization held the process past its deadline")
+
+
+@posix_only
+def test_the_deadline_ends_a_process_that_hangs_in_finalization(tmp_path: Path) -> None:
+    assert _finalization_wedge_status(tmp_path) == -signal.SIGALRM
+
+
+@posix_only
+def test_the_backstop_writes_the_hung_thread_to_the_fault_log_and_still_dies_of_sigalrm(
+    tmp_path: Path,
+) -> None:
+    status = _finalization_wedge_status(tmp_path)
+    fault_log = "".join(
+        path.read_text(encoding="utf-8") for path in tmp_path.rglob("server-fault.log")
+    )
     assert status == -signal.SIGALRM
+    assert "in __del__" in fault_log
 
 
 @posix_only
