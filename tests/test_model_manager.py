@@ -892,6 +892,29 @@ class TestModelManagerPull:
         )
         assert steps[-1] == "download"
 
+    def test_a_gguf_qualified_pull_downloads_what_the_bare_repo_downloads(
+        self, tmp_path: Path
+    ) -> None:
+        downloaded: list[CatalogModel] = []
+
+        def download(entry: CatalogModel, *_args: object, **_kwargs: object) -> Path:
+            downloaded.append(entry)
+            return tmp_path / "model.gguf"
+
+        manager = ModelManager(tmp_path, cfg)
+        with (
+            mock.patch("lilbee.catalog.download_model", side_effect=download),
+            mock.patch("lilbee.catalog.download.resolve_filename", return_value="m-Q4_K_M.gguf"),
+        ):
+            for ref in ("acme/Repo-GGUF", "acme/Repo-GGUF#gguf"):
+                manager._pull_native(ref, mock.Mock())
+        assert len(downloaded) == 2
+        assert downloaded[0] == downloaded[1]
+        assert (downloaded[1].hf_repo, downloaded[1].gguf_filename) == (
+            "acme/Repo-GGUF",
+            "m-Q4_K_M.gguf",
+        )
+
     @pytest.mark.parametrize(
         ("fmt", "task"),
         [
