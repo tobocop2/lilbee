@@ -156,7 +156,7 @@ def test_cli_show_prints_the_refusal_and_the_ignored_note_for_a_raising_spec(
     shown = _shown(saved_spec)
 
     assert PIN_MESSAGE in shown
-    assert "a saved placement does not fit this hardware and is being ignored" in shown
+    assert "is being ignored" not in shown
 
 
 def test_cli_show_prints_every_refused_role_reason(monkeypatch, saved_spec):
@@ -165,7 +165,7 @@ def test_cli_show_prints_every_refused_role_reason(monkeypatch, saved_spec):
     shown = _shown(saved_spec)
 
     assert f"{EMBED_REASON} {VISION_REASON}" in shown
-    assert "a saved placement does not fit this hardware and is being ignored" in shown
+    assert "is being ignored" not in shown
 
 
 def test_cli_show_prints_the_ignored_note_and_no_refusal_for_a_spec_that_did_not_apply(

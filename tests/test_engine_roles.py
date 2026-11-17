@@ -582,7 +582,7 @@ def test_the_placement_command_shows_each_missing_engine_when_no_role_has_an_eng
     result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
     assert result.exit_code == 0
     output = " ".join(result.output.split())
-    assert "Placement (manual)" in output
+    assert "Placement (auto)" in output
     assert "No installed engine loads" in output
     assert "Traceback" not in result.output
 
@@ -594,7 +594,8 @@ def test_the_mcp_placement_tool_shows_each_missing_engine_when_no_role_has_an_en
 
     out = get_placement_tool()
     assert "error" not in out
-    assert out["spec_json"] == '{"chat": {"devices": [0]}}'
+    assert out["spec_json"] is None
+    assert out["rejected_spec_json"] == '{"chat": {"devices": [0]}}'
     assert out["roles"] == []
     assert out["skipped_no_engine"]
 
@@ -608,7 +609,8 @@ def test_the_placement_route_shows_each_missing_engine_when_no_role_has_an_engin
     with create_test_client([placement_route]) as client:
         response = client.get("/api/placement")
     assert response.status_code == 200
-    assert response.json()["spec_json"] == '{"chat": {"devices": [0]}}'
+    assert response.json()["spec_json"] is None
+    assert response.json()["rejected_spec_json"] == '{"chat": {"devices": [0]}}'
     assert response.json()["roles"] == []
     assert response.json()["skipped_no_engine"]
 
