@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
 
 if TYPE_CHECKING:
@@ -27,6 +28,13 @@ if TYPE_CHECKING:
         OcrConfig,
     )
     from xberg.progress import ProgressCallback, ProgressEvent
+
+
+# TEMPORARY: matching the cancel class name in the error text is a stopgap.
+# xberg turns an OCR backend's exception into text and keeps no cause
+# (xberg-io/alef#927), then wraps it again as a plugin error
+# (xberg-io/xberg#3175). Remove this match when both fixes ship.
+_CANCEL_MARK = TaskCancelledError.__name__
 
 
 @dataclass(frozen=True)
@@ -87,11 +95,18 @@ async def aextract_document(
     xberg calls *on_progress* once per OCR'd page, from a worker thread, and
     swallows whatever it raises.
     """
+    from xberg import PluginError
     from xberg.progress import extract
 
-    return _first(
-        await extract(_input(data, mime_type, filename), _with_concurrency(config), on_progress)
-    )
+    try:
+        result = await extract(
+            _input(data, mime_type, filename), _with_concurrency(config), on_progress
+        )
+    except PluginError as exc:
+        if _CANCEL_MARK in str(exc):
+            raise RuntimeError(str(exc)) from exc
+        raise
+    return _first(result)
 
 
 def _route_by_input(items: list[BatchItem]) -> ProgressCallback | None:
