@@ -48,6 +48,8 @@ def test_show_with_a_saved_spec_reports_it_and_the_missing_engines(saved_spec):
     view = app_placement.get_placement()
     assert view.spec_json == _SPEC.to_json()
     assert view.manual is True
+    assert view.rejected_spec_json is None
+    assert view.refusal is None
     assert view.roles == ()
     assert view.gpus == ()
     skipped = {skip.role: skip for skip in view.skipped_no_engine}
@@ -60,6 +62,7 @@ def test_show_with_no_saved_spec_reports_none(no_engine_host):
     assert view.spec_json is None
     assert view.manual is False
     assert view.rejected_spec_json is None
+    assert view.refusal is None
     assert view.skipped_no_engine
 
 
@@ -72,6 +75,7 @@ def test_show_with_an_unreadable_saved_spec_keeps_the_text_and_the_reason(
     assert view.rejected_spec_json == '{"chat": {"devices": [0]}}'
     assert view.refusal == "the saved spec is unreadable"
     assert view.spec_json is None
+    assert view.manual is False
 
 
 def test_preview_with_no_engine_refuses_with_the_no_engine_message(no_engine_host):
