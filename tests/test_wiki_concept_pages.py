@@ -28,6 +28,8 @@ from lilbee.wiki.generation import (
     build_wiki,
 )
 
+pytestmark = pytest.mark.usefixtures("counting_provider")
+
 
 @pytest.fixture(autouse=True)
 def _stub_wiki_index_services(monkeypatch):

@@ -1344,7 +1344,7 @@ def wiki_enabled():
 
 
 @pytest.fixture(autouse=False)
-def wiki_isolated_env(tmp_path: Path):
+def wiki_isolated_env(tmp_path: Path, counting_provider):
     """Shared fixture for wiki tests: snapshot cfg, set wiki-related paths, restore."""
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path
