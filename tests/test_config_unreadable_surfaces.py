@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
@@ -22,8 +24,9 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.engines import LLAMA
-from lilbee.providers.server_registry import ConfigReadError, loopback_reserve_bytes
+from lilbee.providers.server_registry import ConfigReadError, loopback_reserve_bytes, route_for
 from tests._fleet_engines import engines_for_all_roles
+from tests.conftest import clean_env
 
 READ_TEXT = "Could not read config.toml"
 GB = 1024**3
@@ -67,6 +70,42 @@ class TestCli:
         assert "Traceback" not in result.output
         assert result.exception is None or isinstance(result.exception, SystemExit)
 
+    def test_a_command_that_routes_a_preset_ref_stops_with_one_line(
+        self, locked_config: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from lilbee.runtime import launcher
+
+        with pytest.raises(SystemExit) as exit_info:
+            launcher._run_cli(lambda: route_for("wired"))
+        assert exit_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith(f"Error: {READ_TEXT}")
+        assert err.count("\n") == 1
+
+    def test_a_real_command_with_an_env_preset_prints_no_traceback(
+        self, locked_config: Path
+    ) -> None:
+        env = {
+            **clean_env(locked_config),
+            "LILBEE_EMBEDDING_MODEL": "wired/e",
+            "LILBEE_NO_SPLASH": "1",
+            "NO_COLOR": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        done = subprocess.run(
+            [sys.executable, "-m", "lilbee", "status"],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            stdin=subprocess.DEVNULL,
+            timeout=120,
+        )
+        assert done.returncode == 1
+        assert "Traceback" not in done.stderr
+        shown = [line for line in done.stderr.splitlines() if not line.startswith("Failed to read")]
+        assert len(shown) == 1
+        assert shown[0].startswith(f"Error: {READ_TEXT}")
+
     def test_a_write_failure_prints_the_caller_message(self, capsys: pytest.CaptureFixture) -> None:
         from lilbee.cli.commands._shared import run_or_fail
 
@@ -94,6 +133,32 @@ class TestRest:
             auth_mod.session_manager.cleanup()
         assert resp.status_code == 503
         assert READ_TEXT in resp.json()["detail"]
+
+    @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/messages"])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_a_chat_on_the_v1_routes_answers_503_with_the_read_text(
+        self, locked_config: Path, path: str, stream: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from litestar.testing import TestClient
+
+        import lilbee.server.auth as auth_mod
+        from lilbee.server.app import create_app
+
+        monkeypatch.setattr(cfg, "chat_model", "wired/m")
+        body = {
+            "model": "wired/m",
+            "max_tokens": 16,
+            "stream": stream,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        auth_mod.session_manager.disable()
+        client = TestClient(create_app())
+        try:
+            resp = client.post(path, json=body)
+        finally:
+            auth_mod.session_manager.cleanup()
+        assert resp.status_code == 503
+        assert resp.json()["error"]["message"].startswith(READ_TEXT)
 
 
 class TestMcp:

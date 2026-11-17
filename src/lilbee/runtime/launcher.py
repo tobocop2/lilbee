@@ -54,8 +54,9 @@ def _warn_missing_vc_runtime() -> None:
 
 
 def _run_cli(app: Callable[[], object]) -> None:
-    """Run the CLI *app*; a config write that cannot take its lock exits 1 with a plain message."""
+    """Run the CLI *app*; a config.toml it cannot lock or read exits 1 with a plain message."""
     from lilbee.core.security import FileLockUnavailableError
+    from lilbee.providers.server_registry import ConfigReadError
 
     try:
         app()
@@ -63,6 +64,9 @@ def _run_cli(app: Callable[[], object]) -> None:
         from lilbee.app.settings import config_write_failure_message
 
         sys.stderr.write(f"Error: {config_write_failure_message(exc)}\n")
+        raise SystemExit(1) from None
+    except ConfigReadError as exc:
+        sys.stderr.write(f"Error: {exc}\n")
         raise SystemExit(1) from None
 
 
