@@ -238,3 +238,127 @@ def test_upsert_env_token_writes_the_env_owner_only(tmp_path):
 
     assert "LILBEE_TOKEN=tok-xyz" in env.read_text()
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+_PINNED_REF = "Acme/Pinned-GGUF/Pinned-Q4_K_M.gguf"
+_SERVED_CTX = 70_000
+
+
+def _serve_ctx_on_port(monkeypatch, ctx: int | None) -> None:
+    """Report *ctx* only when asked about the launch port, so a wrong port reads as unknown."""
+    monkeypatch.setattr(
+        "lilbee.cli.launchers.hermes.client_chat_ctx",
+        lambda port: ctx if port == _PORT else None,
+    )
+
+
+def test_hermes_prepare_writes_the_exact_config(tmp_path, monkeypatch):
+    """The whole file is pinned: provider, context sizes, MCP entry, model pin and key order."""
+    from lilbee.catalog import agent_model_id
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    _serve_ctx_on_port(monkeypatch, _SERVED_CTX)
+    monkeypatch.setattr(cfg, "chat_model", _PINNED_REF)
+    base = f"http://127.0.0.1:{_PORT}"
+
+    HermesLauncher(include_mcp=True).prepare(
+        token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF, _PINNED_REF]
+    )
+
+    text = (tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+    pinned_id = agent_model_id(_PINNED_REF)
+    assert yaml.safe_load(text) == {
+        "providers": {
+            "lilbee": {
+                "api": f"{base}/v1",
+                "api_key": "${LILBEE_TOKEN}",
+                "max_tokens": 8192,
+                "default_model": pinned_id,
+                "context_length": _SERVED_CTX,
+            }
+        },
+        "context_file_max_chars": _SERVED_CTX,
+        "mcp_servers": {
+            "lilbee": {
+                "url": f"{base}/mcp",
+                "headers": {"Authorization": "Bearer ${LILBEE_TOKEN}"},
+            }
+        },
+        "model": {"default": pinned_id, "provider": "lilbee", "max_tokens": 8192},
+    }
+    # sort_keys=False keeps the builder's order; a sorted dump starts with context_file_max_chars.
+    assert list(yaml.safe_load(text)) == [
+        "providers",
+        "context_file_max_chars",
+        "mcp_servers",
+        "model",
+    ]
+
+
+def test_hermes_prepare_without_mcp_writes_no_mcp_entry(tmp_path, monkeypatch):
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    _serve_ctx_on_port(monkeypatch, _SERVED_CTX)
+    HermesLauncher(include_mcp=False).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
+
+    assert "mcp_servers" not in _hermes_config(tmp_path)
+
+
+def test_hermes_prepare_warns_with_the_served_window_below_the_minimum(monkeypatch, capsys):
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    _serve_ctx_on_port(monkeypatch, 8_192)
+    HermesLauncher(include_mcp=False).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
+
+    assert capsys.readouterr().err == (
+        "Warning: hermes requires at least a 64,000-token context and lilbee serves 8,192, "
+        "so hermes will refuse to start. Chat with a longer-context model, a smaller "
+        "quantization, or a higher gpu_memory_fraction.\n"
+    )
+
+
+def test_hermes_prepare_accepts_a_served_window_of_exactly_the_minimum(
+    tmp_path, monkeypatch, capsys
+):
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    _serve_ctx_on_port(monkeypatch, 64_000)
+    HermesLauncher(include_mcp=False).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
+
+    assert capsys.readouterr().err == ""
+    assert _hermes_config(tmp_path)["providers"]["lilbee"]["context_length"] == 64_000
+
+
+def test_hermes_prepare_pins_the_first_model_ref_when_chat_model_is_unset(tmp_path, monkeypatch):
+    from lilbee.catalog import agent_model_id
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    monkeypatch.setattr(cfg, "chat_model", "")
+
+    HermesLauncher(include_mcp=False).prepare(
+        token=_TOKEN, port=_PORT, model_refs=[_PINNED_REF, _CHAT_REF]
+    )
+
+    written = _hermes_config(tmp_path)
+    pinned_id = agent_model_id(_PINNED_REF)
+    assert written["providers"]["lilbee"]["default_model"] == pinned_id
+    assert written["model"] == {"default": pinned_id, "provider": "lilbee", "max_tokens": 8192}
+
+
+def test_hermes_prepare_names_the_config_in_the_parse_error(tmp_path, capsys):
+    import typer
+
+    from lilbee.cli.launchers.hermes import HermesLauncher
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("{ this: is: not: yaml", encoding="utf-8")
+
+    with pytest.raises(typer.Exit) as exit_info:
+        HermesLauncher(include_mcp=True).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
+
+    assert exit_info.value.exit_code == 1
+    assert capsys.readouterr().err == (
+        "Your hermes config (config.yaml) did not parse, so lilbee will not overwrite it. "
+        "Fix or remove it, then retry.\n"
+    )
