@@ -129,23 +129,30 @@ class _FolderEngine(MistralAdapter):
         return DeviceProbe(devices=self._devices, output="")
 
 
+def _folder_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, devices: list[FleetDevice]
+) -> _FolderEngine:
+    """A host whose chat model is a 22 GiB folder, on *devices*."""
+    prepare_host(monkeypatch, tmp_path, (Role(WorkerRole.CHAT, 22),), 256 * GIB)
+    folder = tmp_path / "chat-folder"
+    folder.mkdir()
+    state_size(folder / "model.safetensors", 22 * GIB)
+    (folder / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+    (tmp_path / "engine-server").write_text("", encoding="utf-8")
+    engine = _FolderEngine(tmp_path / "engine-server", devices)
+    reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
+    monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
+    return engine
+
+
 @pytest.mark.usefixtures("stated_sizes")
 class TestAChatPastItsCard:
     """The card refusal of the launch, which the plan alone calls a tight placement."""
 
     @pytest.fixture
     def engine(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _FolderEngine:
-        prepare_host(monkeypatch, tmp_path, (Role(WorkerRole.CHAT, 22),), 256 * GIB)
-        folder = tmp_path / "chat-folder"
-        folder.mkdir()
-        state_size(folder / "model.safetensors", 22 * GIB)
-        (folder / "config.json").write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
-        (tmp_path / "engine-server").write_text("", encoding="utf-8")
-        engine = _FolderEngine(tmp_path / "engine-server", cards_of((24,)))
-        reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
-        monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
-        return engine
+        return _folder_host(monkeypatch, tmp_path, cards_of((24,)))
 
     def test_the_view_lists_it_with_the_reason_the_launch_gives(
         self, engine: _FolderEngine
@@ -207,6 +214,44 @@ class TestTheResolvedPlan:
         resolved = planning.resolve_placement_plan(None, engines=engines)
         assert resolved.unlaunched_roles == launch.refused_roles
         assert {inst.role for inst in resolved.instances} == {ln.role for ln in launch.launches}
+
+
+class TestTheCapacityTheViewChecks:
+    """Auto packing skips a shared-memory card, but a pin still names it."""
+
+    @pytest.fixture
+    def engine(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> CardEngine:
+        prepare_host(monkeypatch, tmp_path, ROLES, 64 * GIB)
+        devices = [*cards_of((24,)), FleetDevice("CUDA", 1, "igpu", 16 * GIB, 16 * GIB, True)]
+        return CardEngine("engine-a", tmp_path / "engine-server", ROLES, devices, spans=True)
+
+    def _capacity_of_the_check(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch, spec: PlacementSpec | None
+    ) -> dict[int, int]:
+        seen: dict[int, int] = {}
+        real = planning._launches_and_refusals
+
+        def spy(*args: object, **kwargs: object) -> object:
+            seen.update(kwargs["capacity"])  # type: ignore[arg-type]
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(planning, "_launches_and_refusals", spy)
+        planning.resolve_placement_plan(spec, engines=engines_for_all_roles(engine))
+        return seen
+
+    def test_a_pinned_shared_memory_card_keeps_its_capacity(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spec = PlacementSpec.from_json('{"chat": {"devices": [1]}, "embed": {"devices": [0]}}')
+        assert self._capacity_of_the_check(engine, monkeypatch, spec) == {
+            0: 24 * GIB,
+            1: 16 * GIB,
+        }
+
+    def test_an_unpinned_shared_memory_card_is_left_out(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._capacity_of_the_check(engine, monkeypatch, None) == {0: 24 * GIB}
 
 
 class TestNamedCards:
