@@ -14,6 +14,7 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
+from tests._toasts import posted_toasts
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 _TEST_LOCAL_LABEL = display_label_for_ref(TEST_LOCAL_REF)
@@ -297,10 +298,8 @@ async def test_startup_toasts_exactly_the_load_warnings(
         await await_chat(app, pilot)
         # Toasts arrive in order, so the probe arriving means every earlier one has.
         app.notify("probe")
-        assert await wait_until(
-            pilot, lambda: any(n.message == "probe" for n in app._notifications)
-        )
-        assert [(n.message, n.severity) for n in app._notifications] == [
+        assert await wait_until(pilot, lambda: any(n.message == "probe" for n in posted_toasts()))
+        assert [(n.message, n.severity) for n in posted_toasts()] == [
             *((warning, "warning") for warning in warnings),
             ("probe", "information"),
         ]

@@ -4482,6 +4482,16 @@ class TestCitedSubsetByName:
             "beta_summary.pdf",
         }
 
+    def test_name_mention_after_a_cited_source_is_still_found(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [
+            _make_result(source="a.pdf", chunk_index=0),
+            _make_result(source="b.pdf", chunk_index=1),
+        ]
+        answer = "See [1], and also b.pdf says more."
+        assert [c.source for c in cited_subset(answer, sources)] == ["a.pdf", "b.pdf"]
+
 
 class TestStripLlmCitations:
     def test_removes_sources_block(self):

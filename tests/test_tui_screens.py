@@ -73,6 +73,7 @@ from tests._lilbee_app_test_host import (
     pump_until,
     saved_setting,
 )
+from tests._toasts import posted_toasts
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 _RESET_REFUSED_MID_SYNC = (
@@ -9691,12 +9692,10 @@ async def test_enter_runs_a_typed_add_and_the_toast_names_the_locked_folder(tmp_
             await pilot.press("enter")
             for _ in range(100):
                 await pilot.pause(0.05)
-                if any(note.message == wanted for note in app._notifications):
+                if any(note.message == wanted for note in posted_toasts()):
                     break
         assert app.screen._chat_input.value == ""
-        assert [note.severity for note in app._notifications if note.message == wanted] == [
-            "warning"
-        ]
+        assert [note.severity for note in posted_toasts() if note.message == wanted] == ["warning"]
 
 
 async def _wait_for(pilot, predicate, tries: int = 200) -> bool:
@@ -9943,7 +9942,7 @@ async def test_an_unknown_command_keeps_the_draft_and_says_so():
         await pilot.press(*"/sync", "enter")
         await pilot.pause()
         assert app.screen._chat_input.value == "/sync"
-        notes = [note.message for note in app._notifications]
+        notes = [note.message for note in posted_toasts()]
         assert msg.CMD_UNKNOWN.format(cmd="/sync") in notes
 
 

@@ -34,6 +34,7 @@ from lilbee.runtime.progress import (
     UpgradePhase,
 )
 from lilbee.server import auth as auth_mod
+from tests._toasts import posted_toasts
 from tests.test_store import _meta_rows, _path_keyed_tables
 
 # The tables of ``_path_keyed_tables`` an upgrade visits, in order, with their rows.
@@ -773,7 +774,7 @@ class TestTuiShowsTheUpgrade:
             gate._show_event(_done())
             app.pop_screen()
             toasted = await wait_until(
-                pilot, lambda: any(n.message == f"{_FINISHED} 3.0 s." for n in app._notifications)
+                pilot, lambda: any(n.message == f"{_FINISHED} 3.0 s." for n in posted_toasts())
             )
 
             assert toasted

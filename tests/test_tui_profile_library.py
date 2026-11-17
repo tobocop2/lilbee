@@ -30,6 +30,7 @@ from tests._profile_fixtures import (
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
     sources_totaling,
 )
+from tests._toasts import posted_toasts
 from tests.test_tui_profile_tab import (
     _LEGAL,
     _dialog,
@@ -107,7 +108,7 @@ async def _highlight(pilot: Pilot, library: ProfileLibrary, row: str) -> None:
 
 
 async def _toasted(app: LilbeeAppHost, pilot: Pilot, text: str) -> None:
-    assert await _until(pilot, lambda: any(text in n.message for n in app._notifications)), text
+    assert await _until(pilot, lambda: any(text in n.message for n in posted_toasts())), text
 
 
 def _select_names(app: LilbeeAppHost) -> list[str]:
@@ -375,7 +376,7 @@ async def test_an_entry_its_name_does_not_pick_is_refused(key) -> None:
         await _highlight(pilot, library, "court-filings  global, shadowed")
         await pilot.press(key)
         await _toasted(app, pilot, "The name court-filings picks another file")
-        toast = next(n.message for n in app._notifications if "picks another file" in n.message)
+        toast = next(n.message for n in posted_toasts() if "picks another file" in n.message)
         assert "the global one" in toast
         assert str(hidden) not in toast, "a long path wraps in the toast and covers the hints"
         await app.workers.wait_for_complete()

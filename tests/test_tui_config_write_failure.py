@@ -12,6 +12,7 @@ from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost, pump_until
+from tests._toasts import posted_toasts
 from tests.test_tui_screens import ChatTestApp
 from tests.test_tui_settings_external import _App as SettingsApp
 from tests.test_tui_settings_external import _open_retrieval
@@ -32,7 +33,7 @@ def read_only_config():
 
 
 def _errors(app, text: str) -> list[str]:
-    return [n.message for n in app._notifications if n.message == text and n.severity == "error"]
+    return [n.message for n in posted_toasts() if n.message == text and n.severity == "error"]
 
 
 async def _one_error_toast(app, pilot, text: str) -> None:
@@ -66,7 +67,7 @@ async def test_cycling_the_theme_survives_a_failed_write(read_only_config):
     async with app.run_test(size=SIZE) as pilot:
         app.action_cycle_theme()
         await _one_error_toast(app, pilot, read_only_config)
-        assert not [n for n in app._notifications if n.message.startswith("Theme")]
+        assert not [n for n in posted_toasts() if n.message.startswith("Theme")]
         assert app.is_running
 
 
@@ -101,7 +102,7 @@ async def test_chat_set_shows_the_write_error_and_no_success_echo(read_only_conf
         before = cfg.top_k
         app.screen._handle_slash(f"/set top_k {before + 1}")
         await _one_error_toast(app, pilot, read_only_config)
-        assert not [n for n in app._notifications if n.message.startswith("top_k = ")]
+        assert not [n for n in posted_toasts() if n.message.startswith("top_k = ")]
         assert app.is_running
 
 

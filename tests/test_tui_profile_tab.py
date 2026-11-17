@@ -65,6 +65,7 @@ from tests._profile_fixtures import (
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
     sources_totaling,
 )
+from tests._toasts import posted_toasts
 
 
 class _Pick(StrEnum):
@@ -671,7 +672,7 @@ async def test_a_failed_write_on_apply_toasts_and_changes_nothing(sources) -> No
             await _dialog(app, pilot, ApplyProfileDialog)
             await _press(pilot, app.screen.query_one("#apply-apply", ConfirmPill))
             assert await _until(
-                pilot, lambda: any("disk full" in n.message for n in app._notifications)
+                pilot, lambda: any("disk full" in n.message for n in posted_toasts())
             )
             assert await _until(pilot, lambda: app.screen is screen)
     assert cfg.table_extraction is False
@@ -687,7 +688,7 @@ async def test_a_failed_diff_reloads_the_tab_and_reverts_the_select() -> None:
         fragile.write_text("not valid toml [[[", encoding="utf-8")
         select = screen.query_one("#profile-select", Select)
         _pick(screen, "fragile")
-        assert await _until(pilot, lambda: any("fragile" in n.message for n in app._notifications))
+        assert await _until(pilot, lambda: any("fragile" in n.message for n in posted_toasts()))
         await app.workers.wait_for_complete()
         assert app.screen is screen
         assert await _until(pilot, lambda: select.value == "Default")
@@ -702,9 +703,7 @@ async def test_a_failed_diff_toasts_an_os_error_and_reverts_the_select(sources) 
         await app.workers.wait_for_complete()
         select = screen.query_one("#profile-select", Select)
         _pick(screen, "Research papers")
-        assert await _until(
-            pilot, lambda: any("disk full" in n.message for n in app._notifications)
-        )
+        assert await _until(pilot, lambda: any("disk full" in n.message for n in posted_toasts()))
         await app.workers.wait_for_complete()
         assert app.screen is screen
         assert await _until(pilot, lambda: select.value == "Default")
@@ -946,7 +945,7 @@ async def test_a_refused_operation_toasts_its_reason() -> None:
             screen = await _loaded(app, pilot, "legal-discovery")
             await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
             assert await _until(
-                pilot, lambda: any(n.message == "nothing to discard" for n in app._notifications)
+                pilot, lambda: any(n.message == "nothing to discard" for n in posted_toasts())
             )
     assert cfg.chunk_size == 384
 
@@ -1158,7 +1157,7 @@ async def test_slash_profile_with_an_unknown_name_toasts(chat_app) -> None:
         chat.run_command("/profile nope")
         assert await _until(
             pilot,
-            lambda: any("No profile named 'nope'" in n.message for n in chat_app._notifications),
+            lambda: any("No profile named 'nope'" in n.message for n in posted_toasts()),
         )
         assert chat_app.screen is chat
 
