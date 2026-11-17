@@ -248,6 +248,7 @@ def test_concurrent_threads_probe_once(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 1
 
 
+@pytest.mark.real_nvidia_smi
 def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """run_tool resolves the binary via shutil.which on each call (tested in base)."""
     resolved: list[str] = []
@@ -707,6 +708,7 @@ def test_a_fast_failure_of_a_host_query_is_run_again_after_the_short_cache(
     assert smi.runs.count(kind) == 2
 
 
+@pytest.mark.real_nvidia_smi
 @pytest.mark.skipif(sys.platform == "win32", reason="the stand-in tool is a shell script")
 def test_a_tool_that_never_answers_is_stopped_at_the_time_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

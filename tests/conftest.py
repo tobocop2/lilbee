@@ -209,6 +209,35 @@ def _fresh_nvidia_probes() -> Generator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _sealed_host_cards(request, monkeypatch, tmp_path_factory) -> Generator[None]:
+    """Run each test on a host with no card: no nvidia-smi, no NVLink topology, no PCI device.
+
+    Every read of the host's cards answers "none", so no count depends on the machine that
+    runs the test. A test that needs cards patches the same reader itself, which wins over
+    this seal. ``real_nvidia_smi`` opts out for a test that drives ``run_tool`` for real.
+    """
+    from lilbee.providers.fleet import devices, gpu_hardware
+    from lilbee.providers.fleet.gpu_backends import nvidia
+
+    if not request.node.get_closest_marker("real_nvidia_smi"):
+        monkeypatch.setattr(nvidia, "run_tool", lambda tool, args, timeout: ("", None))
+
+    run_bounded = devices.run_bounded
+
+    def _without_topology(argv, **kwargs):
+        if list(argv[:3]) == ["nvidia-smi", "topo", "-m"]:
+            return "", None
+        return run_bounded(argv, **kwargs)
+
+    monkeypatch.setattr(devices, "run_bounded", _without_topology)
+    monkeypatch.setattr(
+        gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path_factory.getbasetemp() / "no-pci-bus"
+    )
+    monkeypatch.setattr(gpu_hardware, "_windows_adapters", lambda: iter(()))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _download_without_a_child_process(request, monkeypatch):
     """Run a download's transfer in this process so a test's patches reach it.
 
