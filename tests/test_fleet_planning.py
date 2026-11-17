@@ -4973,7 +4973,6 @@ class TestWarnWhenChatDownsized:
         """The chunker already switches to token sizing on its own below this cap,
         so there is nothing left for the adoption log to flag."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         launch = self._launch(slots=1, ctx=512, target=0)
         launch.token_cap = 504

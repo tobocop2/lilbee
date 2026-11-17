@@ -92,7 +92,7 @@ register_binding(
     XbergBinding(
         kind=BackendKind.TOKENIZER,
         name=TokenizerBackendName.LILBEE,
-        enabled=lambda cfg: cfg.token_sizing,
+        enabled=lambda cfg: True,
         make=_make_tokenizer_backend,
     )
 )

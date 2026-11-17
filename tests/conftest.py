@@ -993,8 +993,9 @@ def _default_provider_mock():
     provider.chat_prefill_progress.return_value = None
     # The chunker bounds its budget to the embed cap; None keeps the configured budget.
     provider.embed_token_cap.return_value = None
-    # xberg probes a tokenizer binding with a one-character count at registration.
-    provider.count_tokens.return_value = 1
+    # Four characters to a token, as the chunker assumed before it counted tokens; the
+    # one-character registration probe xberg sends counts one.
+    provider.count_tokens.side_effect = lambda text: max(1, len(text) // 4)
     # Retrieval budgets with the chat tokenizer when it answers; None keeps the character rule.
     provider.count_chat_text_tokens.return_value = None
     provider.health_warnings.return_value = []
