@@ -112,11 +112,12 @@ def test_the_sibling_tools_come_from_the_installed_pack(fetched) -> None:
     assert fetched == [CELL]
 
 
-def test_an_unpublished_pack_gives_the_named_error_with_the_install_command() -> None:
+def test_an_unpublished_pack_gives_the_named_error_and_says_there_is_nothing_to_download() -> None:
     with pytest.raises(ProviderError) as excinfo:
         resolve_llama_server()
     assert NAMED in str(excinfo.value)
-    assert "lilbee engine install" in str(excinfo.value)
+    assert "nothing to download" in str(excinfo.value)
+    assert "lilbee engine install" not in str(excinfo.value)
     assert excinfo.value.kind is ProviderErrorKind.NOT_FOUND
 
 
@@ -244,7 +245,8 @@ def test_an_engine_on_the_path_wins_over_the_pack(fetched, monkeypatch) -> None:
     assert fetched == []
 
 
-def test_the_install_hint_does_not_name_the_engine_extra() -> None:
+def test_the_install_hint_does_not_name_the_engine_extra(monkeypatch) -> None:
+    monkeypatch.setattr(first_use, "pack_lock", lambda: (None, "cell"))
     from lilbee.providers.fleet.engine_install import engine_install_hint
 
     for bundled in (True, False):

@@ -108,7 +108,10 @@ def test_every_install_surface_shows_the_unreadable_host_sentence(
         res = client.post("/api/engines/install", json={"engine": "tei"})
     assert (res.status_code, res.json()["detail"]) == (422, expected)
     monkeypatch.setattr(cfg, "mcp_engines_enabled", True)  # the CLI run reloads the settings
-    assert mcp_server.engine_install_tool("tei") == {"error": expected}
+    assert mcp_server.engine_install_tool("tei") == {
+        "error": expected,
+        "code": "engine_install_refused",
+    }
     slash = run_engine_command("install tei")
     assert (slash.ok, slash.text) == (False, expected)
 

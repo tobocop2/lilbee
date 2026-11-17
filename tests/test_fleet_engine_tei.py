@@ -284,6 +284,20 @@ def test_pin_names_the_picked_build_and_refuses_a_lock_with_no_pack(
         choice.pin_lock(pin)
 
 
+def test_binary_with_no_published_pack_says_there_is_nothing_to_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    with pytest.raises(
+        EngineNotInstalledError,
+        match=r"Engine tei is not installed\. No pack of tei is published yet, so there is "
+        r"nothing to install\.",
+    ):
+        TEI.binary()
+
+
 def test_binary_comes_from_the_store_record_of_the_pin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

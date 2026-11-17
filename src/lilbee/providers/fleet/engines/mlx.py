@@ -106,13 +106,11 @@ class MlxAdapter:
 
     def binary(self) -> Path:
         from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engines.choice import store_tool
+        from lilbee.providers.fleet.engines.choice import install_advice, store_tool
 
         tool = store_tool(self.pin_record(), _TOOL, session_host())
         if tool is None:
-            raise ProviderError(
-                f"The mlx engine is not installed. Run lilbee engine install {self.name}."
-            )
+            raise ProviderError(f"The mlx engine is not installed. {install_advice(self)}")
         return tool
 
     def identity(self, binary: Path) -> str:

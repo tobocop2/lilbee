@@ -149,10 +149,12 @@ class TeiAdapter:
         return PASS if pick.backend is not None else HostGate(False, pick.reason)
 
     def binary(self) -> Path:
+        from lilbee.providers.fleet.engines.choice import install_advice
+
         record = self._record()
         if record is None or record.binary is None:
             raise EngineNotInstalledError(
-                f"Engine {self.name} is not installed. Run lilbee engine install {self.name}."
+                f"Engine {self.name} is not installed. {install_advice(self)}"
             )
         return record.binary
 

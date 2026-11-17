@@ -22,6 +22,7 @@ from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.runtime.progress.columns import literal_text_column
 
 engine_app = typer.Typer(
@@ -162,7 +163,12 @@ def remove(
 def _refuse(command: str, exc: Exception) -> typer.Exit:
     """Show a refusal from the engine service on the surface and return the exit."""
     if cfg.json_mode:
-        json_out({"command": command, "error": str(exc)})
+        code = (
+            {"code": SseErrorCode.ENGINE_INSTALL_REFUSED}
+            if isinstance(exc, engine_service.EngineInstallRefusedError)
+            else {}
+        )
+        json_out({"command": command, "error": str(exc), **code})
     else:
         PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
     return typer.Exit(1)

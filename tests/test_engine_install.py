@@ -56,6 +56,7 @@ BAD_PACK = (
     "so lilbee did not install it. Run the install again. If this happens again, report it."
 )
 ROUTES = [routes.engine_install_route]
+INSTALL_REFUSED = "engine_install_refused"
 
 
 def make_wheel(path: Path, package: str = "lilbee_engine_fx") -> str:
@@ -542,7 +543,7 @@ def test_the_cli_refuses_with_the_service_text(good: Path, tmp_path: Path) -> No
     make_wheel(other, package="lilbee_engine_other")
     assert _cli("install", ENGINE.value, "--wheel", str(other)) == (
         1,
-        {"command": "engine install", "error": BAD_PACK},
+        {"command": "engine install", "error": BAD_PACK, "code": INSTALL_REFUSED},
     )
     result = CliRunner().invoke(cli_app, ["engine", "install", ENGINE.value, "--wheel", str(other)])
     assert result.exit_code == 1
@@ -569,6 +570,7 @@ def test_rest_refuses_with_a_422_and_the_service_text(good: Path) -> None:
     code, body = _rest({"engine": ENGINE.value})
     assert code == 422
     assert "cannot be downloaded" in body["detail"]
+    assert body["extra"] == {"code": INSTALL_REFUSED}
 
 
 def test_rest_install_is_gated_like_the_other_writes(good: Path, root: Path) -> None:
@@ -583,6 +585,7 @@ def test_rest_install_is_gated_like_the_other_writes(good: Path, root: Path) -> 
 def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
     refused = mcp_server.engine_install_tool(ENGINE.value)
     assert "cannot be downloaded" in refused["error"]
+    assert refused["code"] == INSTALL_REFUSED
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     assert mcp_server.engine_install_tool(ENGINE.value) == {
@@ -673,11 +676,18 @@ def test_an_engine_with_no_published_pack_is_refused_on_every_surface_and_touche
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, pack)
     assert str(exc.value) == NO_PACK
-    assert _cli("install", ENGINE.value, "--wheel", str(pack))[1]["error"] == NO_PACK
-    assert _cli("install", ENGINE.value)[1]["error"] == NO_PACK
+    assert _cli("install", ENGINE.value, "--wheel", str(pack))[1] == {
+        "command": "engine install",
+        "error": NO_PACK,
+        "code": INSTALL_REFUSED,
+    }
+    assert _cli("install", ENGINE.value)[1]["code"] == INSTALL_REFUSED
     code, body = _rest({"engine": ENGINE.value})
-    assert (code, body["detail"]) == (422, NO_PACK)
-    assert mcp_server.engine_install_tool(ENGINE.value) == {"error": NO_PACK}
+    assert (code, body["detail"], body["extra"]) == (422, NO_PACK, {"code": INSTALL_REFUSED})
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": NO_PACK,
+        "code": INSTALL_REFUSED,
+    }
     assert run_engine_command(f"install {ENGINE.value}").text == NO_PACK
     assert (reads, root.exists()) == ([], False)
 
@@ -701,11 +711,30 @@ def test_every_surface_shows_the_service_refusal(
     expected = str(exc.value)
     assert expected
     assert expected.endswith(STAYS) is (name == ENGINE.value)
-    assert _cli("install", name)[1]["error"] == expected
+    refused = name == ENGINE.value
+    coded = {"code": INSTALL_REFUSED} if refused else {}
+    assert _cli("install", name)[1] == {"command": "engine install", "error": expected, **coded}
     code, body = _rest({"engine": name})
-    assert (code, body["detail"]) == (422, expected)
-    assert mcp_server.engine_install_tool(name) == {"error": expected}
+    assert (code, body["detail"], body.get("extra")) == (422, expected, coded or None)
+    assert mcp_server.engine_install_tool(name) == {"error": expected, **coded}
     assert run_engine_command(f"install {name}").text == expected
+
+
+def test_the_advice_names_the_command_only_for_an_engine_with_a_published_pack() -> None:
+    assert choice.install_advice(StandIn("a" * 64)) == f"Run lilbee engine install {ENGINE}."
+    assert choice.install_advice(StandIn(None)) == (
+        f"No pack of {ENGINE} is published yet, so there is nothing to install."
+    )
+
+
+def test_the_advice_names_an_unusable_pin_record() -> None:
+    class NoBackend(StandIn):
+        def pin_record(self) -> Mapping[str, Any]:
+            return {**super().pin_record(), "backend": None}
+
+    assert choice.install_advice(NoBackend("a" * 64)).startswith(
+        f"Engine {ENGINE} cannot be installed: the pin record is not usable"
+    )
 
 
 def test_the_server_app_serves_the_install_route() -> None:
@@ -755,14 +784,17 @@ def test_a_pinned_wheel_the_store_cannot_read_is_refused_on_every_surface(
     expected = str(exc.value)
     assert _cli("install", ENGINE.value, "--wheel", str(wheel)) == (
         1,
-        {"command": "engine install", "error": expected},
+        {"command": "engine install", "error": expected, "code": INSTALL_REFUSED},
     )
     root_dir = engines_root(cfg.models_dir)
     (root_dir / "packs").mkdir(parents=True)
     (root_dir / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(wheel.read_bytes())
     code, body = _rest({"engine": ENGINE.value})
     assert (code, body["detail"]) == (422, expected)
-    assert mcp_server.engine_install_tool(ENGINE.value) == {"error": expected}
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": expected,
+        "code": INSTALL_REFUSED,
+    }
     slash = run_engine_command(f"install {ENGINE.value}")
     assert (slash.ok, slash.text) == (False, expected)
     assert _builds() == []
@@ -775,7 +807,8 @@ def test_auto_is_refused_as_not_installable_and_is_left_out_of_the_list() -> Non
     assert "auto" in text.split("Choose one of:")[0]
     assert "cannot be installed" in text
     assert "auto" not in text.split("Choose one of:")[1]
-    assert _cli("install", "auto")[1]["error"] == text
+    assert _cli("install", "auto")[1] == {"command": "engine install", "error": text}
+    assert "extra" not in _rest({"engine": "auto"})[1]
     assert _rest({"engine": "auto"})[1]["detail"] == text
     assert mcp_server.engine_install_tool("auto") == {"error": text}
     assert run_engine_command("install auto").text == text

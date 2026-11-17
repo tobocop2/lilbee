@@ -76,6 +76,10 @@ class EngineRefusedError(ValueError):
     """The engine service refuses a write; the text names the problem and the fix."""
 
 
+class EngineInstallRefusedError(EngineRefusedError):
+    """The install of a named engine is refused; every surface sends the same code."""
+
+
 class EngineNotAppliedError(Exception):
     """The choice is saved but the running server could not apply it; a fault, not a refusal."""
 
@@ -434,6 +438,21 @@ def install(
     the licence and the files of the wheel and writes the record.
     """
     adapter = _installable(name)
+    try:
+        return _install_adapter(adapter, name, wheel, on_update, on_retry, cancel)
+    except EngineRefusedError as exc:
+        raise EngineInstallRefusedError(str(exc)) from exc
+
+
+def _install_adapter(
+    adapter: EngineAdapter,
+    name: str,
+    wheel: Path | None,
+    on_update: Callable[[DownloadProgress], None] | None,
+    on_retry: Callable[[str], None] | None,
+    cancel: CancelSignal | None,
+) -> InstalledBuild:
+    """Install the build of *adapter*; every refusal is an ``EngineRefusedError``."""
     if adapter.bundled:
         if not _pack_installable():
             raise EngineRefusedError(
