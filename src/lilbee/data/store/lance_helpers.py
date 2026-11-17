@@ -292,7 +292,7 @@ def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
     """The width the index at *lancedb_dir* was written at, when it was built by *model*.
 
     Reads the ``_meta`` row without opening a store, so no upgrade runs. ``None`` when the
-    library, a readable row, or a match on *model* is absent.
+    library, a readable row, a match on *model*, or a width above 0 is absent.
     """
     if not lancedb_dir.is_dir():
         return None
@@ -303,7 +303,7 @@ def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
     if row is None or row["embedding_model"] != model:
         return None
     width: int | None = row["embedding_dim"]
-    return width
+    return width if width is not None and width > 0 else None
 
 
 def refs_compatible(
