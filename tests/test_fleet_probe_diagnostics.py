@@ -115,12 +115,16 @@ class TestEveryVendorGetsTheWarning:
         )
 
     @pytest.mark.parametrize(
-        ("vendor_id", "vendor"),
-        [(0x10DE, "NVIDIA"), (0x1002, "AMD"), (0x8086, "Intel")],
+        ("vendor_id", "vendor", "hint"),
+        [
+            (0x10DE, "NVIDIA", "CUDA_VISIBLE_DEVICES"),
+            (0x1002, "AMD", "ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES"),
+            (0x8086, "Intel", "ONEAPI_DEVICE_SELECTOR"),
+        ],
         ids=["nvidia", "amd", "intel"],
     )
     def test_an_unenumerated_card_of_any_vendor_is_reported(
-        self, monkeypatch, caplog, vendor_id: int, vendor: str
+        self, monkeypatch, caplog, vendor_id: int, vendor: str, hint: str
     ) -> None:
         from lilbee.providers.fleet import planning as planning_mod
 
@@ -129,6 +133,7 @@ class TestEveryVendorGetsTheWarning:
             planning_mod.resolve_devices(Path("/bin/llama-server"), engine=LLAMA)
         assert vendor in caplog.text
         assert "reported none" in caplog.text
+        assert f"driver, {hint}, and" in caplog.text
 
     def test_a_card_with_no_kernel_driver_is_named_with_the_cause(
         self, monkeypatch, caplog
