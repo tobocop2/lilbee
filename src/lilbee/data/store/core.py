@@ -77,6 +77,7 @@ from .lance_helpers import (
     newest_meta_row,
     open_committed,
     refs_compatible,
+    stored_width,
     table_names,
 )
 from .locations import SourceLocations, root_location, under_sql
@@ -1260,16 +1261,19 @@ class Store:
             )
 
     def get_meta(self) -> StoreMeta | None:
-        """Return the persisted store metadata row, or ``None`` if unset."""
+        """Return the persisted store metadata row, or ``None`` if unset or holding no width."""
         table = self.open_table(META_TABLE)
         if table is None:
             return None
         row = newest_meta_row(table)
         if row is None:
             return None
+        width = stored_width(row["embedding_dim"])
+        if width is None:
+            return None
         return StoreMeta(
             embedding_model=row["embedding_model"],
-            embedding_dim=int(row["embedding_dim"]),
+            embedding_dim=width,
             schema_version=int(row["schema_version"]),
             updated_at=row["updated_at"],
         )

@@ -288,6 +288,11 @@ def _width_readable(meta: LanceTable) -> bool:
     return meta.count_rows("updated_at IS NULL") == 0
 
 
+def stored_width(value: int | None) -> int | None:
+    """The width a ``_meta`` row holds, or ``None`` when it holds none above 0."""
+    return value if value is not None and value > 0 else None
+
+
 def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
     """The width the index at *lancedb_dir* was written at, when it was built by *model*.
 
@@ -302,8 +307,7 @@ def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
     row = newest_meta_row(meta) if meta is not None and _width_readable(meta) else None
     if row is None or row["embedding_model"] != model:
         return None
-    width: int | None = row["embedding_dim"]
-    return width if width is not None and width > 0 else None
+    return stored_width(row["embedding_dim"])
 
 
 def refs_compatible(
