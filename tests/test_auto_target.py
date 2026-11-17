@@ -186,12 +186,14 @@ class TestAutoPlansOnTheRemainingCards:
             '{"chat": {"target": "auto"}, "vision": {"target": "cpu"}, "embed": {"target": "cpu"}}'
         )
         engine = _host(monkeypatch, tmp_path, (16,), spec)
+        monkeypatch.setattr(cfg, "num_ctx", 4096)
         resolved = planning.resolve_placement_plan(
             PlacementSpec.from_json(spec),
             engines=engines_for_all_roles(engine),
             fall_back_to_auto=True,
         )
         assert set(resolved.tight_roles) == {WorkerRole.CHAT}
+        assert resolved.unlaunched_roles == {}
         assert resolved.refused_roles == {}
 
     def test_a_mixed_plan_beside_no_named_role_keeps_the_planners_refusal(
