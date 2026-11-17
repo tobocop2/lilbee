@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for ldd --version: reports musl when LIBC=musl.
+if [ "${LIBC:-glibc}" = musl ]; then echo "musl libc (x86_64)"; else echo "ldd (GNU libc) ${GLIBC:-2.39}"; fi

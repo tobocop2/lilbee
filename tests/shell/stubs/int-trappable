@@ -1,0 +1,5 @@
+#!/bin/sh
+# Exits 0 when this shell can trap SIGINT. A shell started in the background has SIGINT ignored, and cannot.
+trap 'exit 0' INT
+kill -s INT "$$"
+exit 1

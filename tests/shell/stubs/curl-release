@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Stand-in for curl: serves files from $FIXTURE/release by the last path segment of the URL,
+# and logs each URL. A name with no file answers like curl -f on a 404.
+set -uo pipefail
+dest=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dest="$2"; shift 2 ;;
+    --retry) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+echo "${url}" >> "${FIXTURE}/curl.log"
+src="${FIXTURE}/release/${url##*/}"
+[ -f "${src}" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+cp "${src}" "${dest}"

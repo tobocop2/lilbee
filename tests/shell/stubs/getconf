@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for getconf: reports the glibc in GLIBC.
+echo "glibc ${GLIBC:-2.39}"

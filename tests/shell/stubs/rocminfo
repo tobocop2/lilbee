@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for rocminfo: succeeds when ROCMINFO_OK is set, fails otherwise.
+[ -n "${ROCMINFO_OK:-}" ]
