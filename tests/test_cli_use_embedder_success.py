@@ -159,6 +159,7 @@ class TestSuccessJson:
             "model": _REF,
             "status": "adopted",
             "reindex_required": False,
+            "warning": None,
         }
 
     def test_the_embedder_already_in_use_reports_already_active(self, tmp_path):

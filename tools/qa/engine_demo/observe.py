@@ -6,9 +6,9 @@ so each step's stderr goes to one log file and the lines a step produced are the
 bytes appended to that file while the step ran. The oracles count served-by lines
 only from the steps that serve a request, so a line must belong to its own step.
 
-The engine is chosen before the first pull: a pull of a format with no chosen
-engine refuses, so ``engine prefer`` follows ``engine install`` and precedes every
-pull.
+The engine is chosen before the first pull: ``engine prefer`` follows
+``engine install`` and precedes every pull, so no pull prints the warning for a
+format with no chosen engine.
 
 Known limits:
 - ``lilbee chat`` refuses a stdin or stdout that is not a terminal, so the chat
