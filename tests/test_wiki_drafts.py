@@ -31,6 +31,8 @@ from lilbee.wiki.shared import (
     WikiSubdir,
 )
 
+pytestmark = pytest.mark.usefixtures("counting_provider")
+
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
