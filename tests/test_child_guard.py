@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
+import time
+import traceback
 from unittest import mock
 
 import pytest
@@ -234,31 +237,43 @@ class TestTheLifetimeSpawner:
         ):
             spawner.spawn(["/x/llama-swap"])
 
-    def test_the_worker_is_created_once_and_reused(self, spawner):
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
-            spawner.spawn(["/x"])
-            first = spawner._thread
-            spawner.spawn(["/x"])
+    @staticmethod
+    def _spawning_threads(spawner, count):
+        """Spawn *count* times and return the thread each Popen call ran on."""
+        seen: list[threading.Thread] = []
 
-        assert first is spawner._thread and first is not None
+        def _popen(*_args, **_kwargs):
+            seen.append(threading.current_thread())
+            return "proc"
 
-    def test_the_worker_is_a_daemon_thread(self, spawner):
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
-            spawner.spawn(["/x"])
+        with mock.patch.object(child_guard.subprocess, "Popen", side_effect=_popen):
+            for _ in range(count):
+                spawner.spawn(["/x"])
+        return seen
 
-        assert spawner._thread is not None
-        assert spawner._thread.daemon is True
-        assert spawner._thread.name == "fleet-spawner"
+    def test_every_spawn_runs_on_one_thread_that_is_not_the_caller(self, spawner):
+        first, second = self._spawning_threads(spawner, 2)
+
+        assert first is second
+        assert first is not threading.current_thread()
+
+    def test_the_worker_is_a_named_daemon_thread(self, spawner):
+        (worker,) = self._spawning_threads(spawner, 1)
+
+        assert worker.daemon is True
+        assert worker.name == "fleet-spawner"
 
     def test_close_stops_the_worker_and_is_safe_when_never_started(self, spawner):
         spawner.close()  # never started: no-op
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
-            spawner.spawn(["/x"])
-        assert spawner._thread is not None
+        (first,) = self._spawning_threads(spawner, 1)
         spawner.close()
-        assert spawner._thread is None
+        (second,) = self._spawning_threads(spawner, 1)
 
-    def test_a_spawn_during_interpreter_teardown_raises_without_queueing(self, spawner):
+        assert not first.is_alive()
+        assert second is not first
+
+    def test_a_spawn_during_interpreter_teardown_raises_without_starting_a_worker(self, spawner):
+        workers_before = {t for t in threading.enumerate() if t.name == "fleet-spawner"}
         with (
             mock.patch.object(child_guard.sys, "is_finalizing", return_value=True),
             mock.patch.object(child_guard.subprocess, "Popen") as popen,
@@ -267,8 +282,68 @@ class TestTheLifetimeSpawner:
             spawner.spawn(["/x"])
 
         popen.assert_not_called()
-        assert spawner._thread is None
-        assert spawner._requests.empty()
+        assert {t for t in threading.enumerate() if t.name == "fleet-spawner"} == workers_before
+
+    def test_the_fork_reset_starts_a_fresh_worker_on_the_next_spawn(self, spawner):
+        (before,) = self._spawning_threads(spawner, 1)
+        parents_requests = spawner._requests
+        spawner._reset_in_forked_child()
+        (after,) = self._spawning_threads(spawner, 1)
+
+        assert after is not before
+        assert after.name == "fleet-spawner"
+        # The reset drops the parent's worker without stopping it; stop it here.
+        parents_requests.put(None)
+        before.join(timeout=5)
+        assert not before.is_alive()
+
+    def test_the_fork_reset_frees_a_lock_another_thread_held_at_the_fork(self, spawner):
+        held = spawner._lock
+        held.acquire()  # a thread that is not in the child held it at the fork
+        spawner._reset_in_forked_child()
+        results: list[threading.Thread] = []
+
+        def _spawn() -> None:
+            results.extend(self._spawning_threads(spawner, 1))
+
+        caller = threading.Thread(target=_spawn, daemon=True)
+        caller.start()
+        caller.join(timeout=5)
+        stuck = caller.is_alive()
+        held.release()
+        caller.join(timeout=5)
+
+        assert not stuck
+        assert len(results) == 1
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_a_forked_child_can_spawn_a_process(self):
+        """The module spawner's thread is not in a forked child; the child starts its own."""
+        child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the forked child
+            code = 1
+            try:
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
+                signal.alarm(20)
+                code = child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+            except BaseException:
+                traceback.print_exc()
+            finally:
+                os._exit(code)
+        deadline = time.monotonic() + 30
+        status = None
+        while time.monotonic() < deadline:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            pytest.fail("the forked child never got its spawn back")
+
+        assert os.waitstatus_to_exitcode(status) == 0
 
     def test_close_does_not_strand_a_spawn_in_progress(self, spawner):
         results: list[object] = []
