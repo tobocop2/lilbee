@@ -11,7 +11,8 @@ import stat
 import threading
 import time
 import zipfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -19,6 +20,8 @@ from unittest import mock
 import pytest
 from huggingface_hub import constants as hub_constants
 from huggingface_hub.file_download import http_get
+from pydantic import BaseModel
+from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
@@ -26,6 +29,8 @@ from lilbee.app import engine_choice, engine_service
 from lilbee.catalog import download, runnable
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
+from lilbee.cli import engine as cli_engine
+from lilbee.cli import theme
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.task_queue import TaskStatus
@@ -39,6 +44,7 @@ from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
 from lilbee.providers.fleet.router_install import RouterDownloadError
+from lilbee.runtime.console import PlainConsole
 from lilbee.server.routes import engines as routes
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
@@ -1231,3 +1237,106 @@ def test_a_refused_engine_install_never_reaches_the_router(
     monkeypatch.setattr(engine_service, "install_router", fail)
     with pytest.raises(engine_service.EngineRefusedError, match="does not match its pin"):
         engine_service.install(ENGINE.value, other)
+
+
+def test_the_router_install_hears_the_progress_the_retries_and_the_cancel(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heard: dict[str, Any] = {}
+
+    def router(**signals: Any) -> Path:
+        heard.update(signals)
+        return tmp_path / "llama-swap"
+
+    monkeypatch.setattr(engine_service, "install_router", router)
+    cancel = threading.Event()
+    retries: list[str] = []
+    engine_service.install(
+        ENGINE.value, good, on_update=lambda _progress: None, on_retry=retries.append, cancel=cancel
+    )
+    assert heard["cancel"] is cancel
+    assert heard["on_progress"] is not None
+    heard["on_retry"](2, 3, "the link dropped")
+    assert len(retries) == 1
+    assert "the link dropped" in retries[0]
+
+
+class _Report(BaseModel):
+    folder: Path
+    stamp: datetime
+    names: set[str]
+    blob: bytes
+
+
+def test_the_mcp_result_is_plain_json_text() -> None:
+    report = _Report(
+        folder=Path("/engines"), stamp=datetime(2026, 1, 2, 3, 4, 5), names={"a"}, blob=b"ab"
+    )
+    assert mcp_server._engine_result(lambda: report) == {
+        "folder": str(Path("/engines")),
+        "stamp": "2026-01-02T03:04:05",
+        "names": ["a"],
+        "blob": "ab",
+    }
+
+
+def _raises(error: Exception) -> Callable[..., Any]:
+    def install(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    return install
+
+
+def test_the_mcp_tool_says_the_choice_is_saved_when_the_server_did_not_apply_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EngineNotAppliedError("the engine did not start")
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": "the engine did not start",
+        "code": engine_service.NOT_APPLIED_CODE,
+        "saved": True,
+    }
+
+
+def test_the_mcp_tool_asks_for_the_confirmation_of_an_embed_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EmbedConfirmRequiredError("docs", 3)
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": f"{error} Pass confirm_embed_change=true to confirm.",
+        "code": engine_service.CONFIRM_CODE,
+        "library": "docs",
+        "documents": 3,
+    }
+
+
+def test_rest_answers_a_failed_save_with_a_503_and_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EngineNotSavedError("the settings file is read-only")
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    code, body = _rest({"engine": ENGINE.value})
+    assert code == 503
+    assert body["detail"] == "the settings file is read-only"
+
+
+def test_a_refusal_in_plain_mode_goes_to_stderr_whole_and_in_the_error_style(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    printed: list[Text] = []
+
+    class Recorder(PlainConsole):
+        def print(self, *objects: Any, **kwargs: Any) -> None:
+            printed.extend(objects)
+            super().print(*objects, **kwargs)
+
+    monkeypatch.setattr(cli_engine, "PlainConsole", Recorder)
+    monkeypatch.setattr(cfg, "json_mode", False)
+    message = " ".join(["word"] * 80)
+    cli_engine._refuse("engine install", engine_service.EngineRefusedError(message))
+    seen = capsys.readouterr()
+    assert seen.out == ""
+    assert seen.err == message + "\n"
+    assert [(text.plain, text.style) for text in printed] == [(message, theme.ERROR)]
