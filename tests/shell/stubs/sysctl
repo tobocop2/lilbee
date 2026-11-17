@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stand-in for macOS sysctl -n: hw.optional.avx2_0 answers SYSCTL_AVX2 (1 by default),
+# sysctl.proc_translated answers SYSCTL_TRANSLATED (0 by default).
+case "$2" in
+  hw.optional.avx2_0) echo "${SYSCTL_AVX2:-1}" ;;
+  sysctl.proc_translated) echo "${SYSCTL_TRANSLATED:-0}" ;;
+  *) echo "stub sysctl: unknown key $2" >&2; exit 1 ;;
+esac

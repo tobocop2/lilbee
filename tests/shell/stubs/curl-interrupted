@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Stand-in for curl that serves the release files, except that the download of the binary
+# (the file in the install folder) is cut off: it writes half the file, sends SIGNAL
+# (INT by default) to the script that called it, and exits as a killed curl does.
+set -uo pipefail
+dest=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dest="$2"; shift 2 ;;
+    --retry) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+echo "${url}" >> "${FIXTURE}/curl.log"
+src="${FIXTURE}/release/${url##*/}"
+[ -f "${src}" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+case "${dest##*/}" in
+  .lilbee.*)
+    head -c 2 "${src}" > "${dest}"
+    kill -s "${SIGNAL:-INT}" "${PPID}"
+    sleep 0.3
+    exit 130
+    ;;
+esac
+cp "${src}" "${dest}"

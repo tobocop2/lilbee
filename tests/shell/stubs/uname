@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stand-in for uname: answers from UNAME_S and UNAME_M.
+case "$1" in
+  -s) echo "${UNAME_S:-Linux}" ;;
+  -m) echo "${UNAME_M:-x86_64}" ;;
+  *) echo "stub uname: unsupported flag $1" >&2; exit 1 ;;
+esac

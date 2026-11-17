@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stand-in for nvidia-smi: prints the banner for the CUDA version in NVIDIA_CUDA, and fails when it is unset.
+[ -n "${NVIDIA_CUDA:-}" ] || { echo "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver." >&2; exit 9; }
+printf '+---------------------------------------------------------------------------------------+\n'
+printf '| NVIDIA-SMI 550.54.14              Driver Version: 550.54.14    CUDA Version: %s     |\n' "${NVIDIA_CUDA}"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in for sw_vers -productVersion.
+echo "${MACOS:-15.1}"
