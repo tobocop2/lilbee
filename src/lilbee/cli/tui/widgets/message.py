@@ -49,20 +49,21 @@ def _answer_markdown_parser() -> MarkdownIt:
 
 def _shown_text(text: str, sources: Sequence[SourceRef], markdown: bool) -> str:
     """*text* followed by the Sources list of *sources*, as markdown with each label and
-    locator shown as written when *markdown*, and made safe for a terminal."""
+    locator shown as written when *markdown*. *text* is shown as saved; each source line is
+    made safe for a terminal."""
     # Lazy: formatting transitively imports the store stack, which widget
     # import must not pay at TUI startup.
+    from lilbee.core.text import strip_control_characters
     from lilbee.retrieval.query.formatting import (
         append_sources_block,
         markdown_source_line,
         source_ref_line,
-        terminal_sources_block,
     )
 
-    if sources:
-        render = markdown_source_line if markdown else source_ref_line
-        text = append_sources_block(text, sources, render)
-    return terminal_sources_block(text)
+    if not sources:
+        return text
+    render = markdown_source_line if markdown else source_ref_line
+    return append_sources_block(text, sources, lambda ref: strip_control_characters(render(ref)))
 
 
 _REASONING_BLOCK_CLASS = "reasoning-block"

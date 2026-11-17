@@ -464,7 +464,6 @@ class TestAskStream:
         tokens = [e for e in events if isinstance(e, StreamToken)]
         non_empty = [t for t in tokens if t.content.strip()]
         assert len(non_empty) > 0
-        assert all(isinstance(t, StreamToken) for t in non_empty)
         # With thinking models (qwen3), some tokens are reasoning. Verify
         # that at least some non-reasoning content exists (the actual answer).
         response_tokens = [t for t in non_empty if not t.is_reasoning]

@@ -18,13 +18,11 @@ from lilbee.app.session_sources import message_sources
 from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
 from lilbee.retrieval.query.formatting import (
-    FILE_LINK_RE,
     SourceRef,
     append_sources_block,
     close_open_fence,
     located,
     markdown_text,
-    split_sources_list,
 )
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
 
@@ -73,21 +71,8 @@ def _front_matter(meta: SessionMeta) -> str:
 def _message_section(message: SessionMessage) -> str:
     """One turn: the message with its headings nested, then its Sources list without links."""
     content = _LINE_BREAK_RE.sub("\n", message.content).rstrip()
-    if message.source_refs is None:
-        body = _legacy_body(content, message)
-    else:
-        body = _listed(_contained(content), message_sources(message)[1])
+    body = _listed(_contained(content), message_sources(message)[1])
     return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
-
-
-def _legacy_body(content: str, message: SessionMessage) -> str:
-    """The body of a turn saved before ``source_refs``: its text, then the Sources
-    list it ends in with its links made plain, or the list of its ``sources``."""
-    text, stored_sources = split_sources_list(content)
-    body = _contained(text.rstrip())
-    if stored_sources:
-        return body + _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
-    return _listed(body, message_sources(message)[1])
 
 
 def _listed(body: str, refs: list[SourceRef]) -> str:
@@ -102,11 +87,6 @@ def _listed(body: str, refs: list[SourceRef]) -> str:
 def _contained(text: str) -> str:
     """*text* with open fences closed and headings nested, so it stays inside its turn."""
     return _nest_headings(close_open_fence(text))
-
-
-def _plain_link(link: re.Match[str]) -> str:
-    """A stored Sources link as its label alone, as markdown that shows the label."""
-    return markdown_text(link["label"])
 
 
 def _html_inline_with_span(state: StateInline, silent: bool) -> bool:

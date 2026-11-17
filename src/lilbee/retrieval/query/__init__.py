@@ -11,7 +11,6 @@ from lilbee.retrieval.query.dedup import (
 from lilbee.retrieval.query.formatting import (
     SOURCES_BLOCK_MARKER,
     build_context,
-    format_sources_block,
     strip_llm_citations,
 )
 from lilbee.retrieval.query.searcher import AskResult, ChatMessage, Searcher
@@ -24,7 +23,6 @@ __all__ = [
     "build_context",
     "diversify_sources",
     "filter_results",
-    "format_sources_block",
     "prepare_results",
     "sort_by_relevance",
     "strip_llm_citations",

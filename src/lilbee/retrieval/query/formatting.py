@@ -236,23 +236,14 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(f"[{order[r.source]}] ({_context_header(r)})\n{r.chunk}" for r in results)
 
 
-# Grepped by consumers to know an answer carries its own Sources list (the
-# no-results toast; the pill row, which must not stack a second list).
+# Where the Sources list of an answer starts: ``search_chat.py`` holds the live answer
+# back at it, and the ``lilbee.retrieval.query`` package re-exports it.
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
 # A Sources line's ``[label](file-url)`` link. One source per line, so the label
 # runs to the line's last ``](file://``: a label holding that text cannot end it.
 FILE_LINK_RE = re.compile(r"\[(?P<label>[^\n]+)\]\((?P<url>file://[^)\s]+)\)")
 # Parsed after a text; if it lands inside a fence, the text left that fence open.
 _FENCE_PROBE = "\n\n# probe"
-
-
-def format_sources_block(results: list[SearchChunk], titles: Mapping[str, str]) -> str:
-    """The authoritative numbered ``Sources:`` block appended to an answer. Each
-    unique source is numbered to match the ``[n]`` markers the model emitted, so
-    every inline citation resolves to a line here; *titles* holds the stored title
-    of each crawled page. '' when there are no sources."""
-    refs = source_refs(results, titles)
-    return _sources_list(refs, source_ref_line) if refs else ""
 
 
 @dataclass(frozen=True)
@@ -272,7 +263,8 @@ class AnswerSources:
         refs = self.refs()
         if not refs:
             return ""
-        return close_open_fence(answer).removeprefix(answer) + _sources_list(refs, source_ref_line)
+        # Sliced at the rstripped answer: the text after it is the fence close and the list.
+        return append_sources_block(answer, refs)[len(answer.rstrip()) :]
 
 
 def append_sources_block(
@@ -302,32 +294,6 @@ def _sources_list(refs: Sequence[SourceRef], render: Callable[[SourceRef], str])
     return SOURCES_BLOCK_MARKER + "\n" + lines
 
 
-def split_sources_list(content: str) -> tuple[str, str]:
-    """*content* split before its last Sources list, unless that list is quoted in a code block.
-
-    A list after a code block the answer never closed (a cut-off answer) is lilbee's;
-    a list inside a code block that closes after it is pasted text.
-    """
-    text, marker, stored_sources = content.rpartition(SOURCES_BLOCK_MARKER)
-    if not marker:
-        return content, ""
-    fence = open_code_fence(text)
-    if fence is None or _never_closed(fence, content):
-        return text, marker + stored_sources
-    return content, ""
-
-
-def _never_closed(fence: Token, content: str) -> bool:
-    """Whether *fence*, opened in a prefix of *content*, is still open at its end."""
-    end = open_code_fence(content)
-    return (
-        end is not None
-        and end.map is not None
-        and fence.map is not None
-        and end.map[0] == fence.map[0]
-    )
-
-
 def terminal_sources_text(sources: str) -> str:
     """The Sources list *sources* with every control character and escape sequence removed.
 
@@ -335,12 +301,6 @@ def terminal_sources_text(sources: str) -> str:
     its title, and a terminal reads an escape sequence in it as a command. Line breaks stay.
     """
     return "\n".join(strip_control_characters(line) for line in sources.split("\n"))
-
-
-def terminal_sources_block(content: str) -> str:
-    """*content* with the Sources list it ends in made safe for a terminal or a TUI widget."""
-    text, sources = split_sources_list(content)
-    return text + terminal_sources_text(sources)
 
 
 @cache
@@ -394,7 +354,7 @@ def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
     """The sources the answer actually referenced, in order (empty if none).
 
     ``[n]`` markers are the primary signal, and ``n`` indexes the unique sources
-    (matching ``build_context``/``format_sources_block``). Name mentions count
+    (matching ``build_context`` and the Sources list). Name mentions count
     too: context blocks show the model each source's name, and models often
     attribute by name ("according to survey_report.pdf") instead of by marker,
     which otherwise reads as an ungrounded answer to JSON consumers.
