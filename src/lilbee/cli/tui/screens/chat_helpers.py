@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import errno
 import logging
+import os
 import subprocess
 import sys
 import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -17,7 +21,8 @@ from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.data.ingest.discovery import path_within_roots
+from lilbee.data.ingest.discovery import classify_file, path_within_roots
+from lilbee.data.types import CODE_CONTENT_TYPE
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -63,12 +68,134 @@ def _opener_argv(platform: str) -> list[str] | None:
     return None
 
 
-def open_local_file(href: str) -> bool:
+class LinkOpenResult(StrEnum):
+    """What opening a ``file:`` link did."""
+
+    OPENED = "opened"
+    OUTSIDE_ROOTS = "outside_roots"
+    NOT_A_DOCUMENT = "not_a_document"
+    RESOURCE_FORK = "resource_fork"
+
+
+LINK_REFUSAL_NOTICES = {
+    LinkOpenResult.OUTSIDE_ROOTS: msg.LINK_NOT_OPENED,
+    LinkOpenResult.NOT_A_DOCUMENT: msg.LINK_NOT_A_DOCUMENT,
+    LinkOpenResult.RESOURCE_FORK: msg.LINK_RESOURCE_FORK,
+}
+
+# Source types the ingest accepts whose default handler can run them as a program.
+_LAUNCHING_CODE_SUFFIXES = frozenset(
+    {
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ksh",
+        ".fish",
+        ".desktop",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".psm1",
+        ".py",
+        ".pyw",
+        ".applescript",
+    }
+)
+
+# A Finder alias or bookmark file starts with this data; it opens its target.
+_BOOKMARK_MAGIC = b"book\0\0\0\0mark"
+
+_FINDER_INFO = b"com.apple.FinderInfo"
+_FINDER_INFO_SIZE = 32
+_FINDER_FLAGS_OFFSET = 8
+_IS_ALIAS_FLAG = 0x8000
+_RESOURCE_FORK = b"com.apple.ResourceFork"
+_ENOATTR_DARWIN = 93
+# getxattr(2) errors that mean the file has no such attribute or the volume has none.
+_ABSENT_XATTR_ERRNOS = frozenset({_ENOATTR_DARWIN, errno.ENOTSUP})
+
+
+def _xattr_size(path: Path, name: bytes, buf: ctypes.Array[ctypes.c_char] | None = None) -> int:
+    """Size of the extended attribute *name* of *path*, read into *buf* when given.
+
+    0 when the file has no such attribute; raises OSError on any other read error.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)  # os.getxattr does not exist on macOS
+    libc.getxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    libc.getxattr.restype = ctypes.c_ssize_t
+    size = libc.getxattr(os.fsencode(path), name, buf, 0 if buf is None else len(buf), 0, 0)
+    if size >= 0:
+        return int(size)
+    err = ctypes.get_errno()
+    if err in _ABSENT_XATTR_ERRNOS:
+        return 0
+    raise OSError(err, os.strerror(err), str(path))
+
+
+def _has_alias_flag(path: Path) -> bool:
+    """Whether the Finder flags of *path* mark it as an alias; raises OSError on a read error."""
+    buf = ctypes.create_string_buffer(_FINDER_INFO_SIZE)
+    _xattr_size(path, _FINDER_INFO, buf)
+    flags = int.from_bytes(buf.raw[_FINDER_FLAGS_OFFSET : _FINDER_FLAGS_OFFSET + 2], "big")
+    return bool(flags & _IS_ALIAS_FLAG)
+
+
+def _has_resource_fork(path: Path) -> bool:
+    """Whether *path* has a non-empty macOS resource fork; raises OSError on a read error."""
+    return _xattr_size(path, _RESOURCE_FORK) > 0
+
+
+def _is_plain_file(path: Path) -> bool:
+    """Whether *path* is a regular file and not an alias; False on a read error."""
+    try:
+        if not path.is_file():
+            return False
+        with path.open("rb") as handle:
+            if handle.read(len(_BOOKMARK_MAGIC)) == _BOOKMARK_MAGIC:
+                return False
+        return not (sys.platform == "darwin" and _has_alias_flag(path))
+    except OSError:
+        return False
+
+
+def _is_openable_document(path: Path) -> bool:
+    """Whether *path* is a plain file of a type the ingest accepts and whose
+    default handler shows it instead of running it."""
+    if not _is_plain_file(path):
+        return False
+    content_type = classify_file(path)
+    if content_type is None:
+        return False
+    if content_type != CODE_CONTENT_TYPE:
+        return True
+    suffix = path.suffix.lower()
+    return sys.platform != "win32" and len(suffix) > 1 and suffix not in _LAUNCHING_CODE_SUFFIXES
+
+
+def _document_refusal(path: Path) -> LinkOpenResult | None:
+    """Why the opener refuses *path*, or None when it is a document the opener shows."""
+    if not _is_openable_document(path):
+        return LinkOpenResult.NOT_A_DOCUMENT
+    try:
+        forked = sys.platform == "darwin" and _has_resource_fork(path)
+    except OSError:
+        return LinkOpenResult.NOT_A_DOCUMENT
+    return LinkOpenResult.RESOURCE_FORK if forked else None
+
+
+def open_local_file(href: str) -> LinkOpenResult:
     """Open a ``file:`` URL with the OS opener so it lands in the default app
     for its type (an editor for markdown, a viewer for PDF), not a browser
     rendering raw text. Platforms without a known opener fall back to the
-    webbrowser module. Only the resolved path inside the document roots is
-    opened; any other path opens nothing and returns False."""
+    webbrowser module. Only a document inside the document roots is opened;
+    any other path, and any file that is not a plain ingestible document, opens nothing."""
     path = url2pathname(urlparse(href).path)
     try:
         resolved = Path(path).resolve(strict=False)
@@ -77,16 +204,20 @@ def open_local_file(href: str) -> bool:
         inside = False
     if not inside:
         log.warning("Refused to open a file outside the document roots: %s", path)
-        return False
+        return LinkOpenResult.OUTSIDE_ROOTS
+    refusal = _document_refusal(resolved)
+    if refusal is not None:
+        log.warning("Refused to open a file (%s): %s", refusal, resolved)
+        return refusal
     argv = _opener_argv(sys.platform)
     if argv is None:
         webbrowser.open(resolved.as_uri())
-        return True
+        return LinkOpenResult.OPENED
     try:
-        subprocess.run([*argv, str(resolved)], check=False, timeout=10)  # noqa: S603 - fixed opener command; resolved path is inside the document roots
+        subprocess.run([*argv, str(resolved)], check=False, timeout=10)  # noqa: S603 - fixed opener command; resolved path is a document inside the document roots
     except (OSError, subprocess.TimeoutExpired):
         log.warning("Could not open source file: %s", resolved)
-    return True
+    return LinkOpenResult.OPENED
 
 
 def detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
