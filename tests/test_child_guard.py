@@ -442,6 +442,40 @@ class TestTheSpawnerAcrossInterpreterShutdown:
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="spawns a real /bin/sh watcher")
 
+# Guards a sleeper through the death pipe, forks a child that outlives the parent,
+# records both pids, then dies by SIGKILL so no cleanup runs.
+_GUARDS_THEN_FORKS = (
+    "import os, signal, subprocess, sys, time\n"
+    "from lilbee.providers.fleet import child_guard\n"
+    "child_guard._libc = None\n"
+    "victim = child_guard.spawn_bound_child(\n"
+    "    [sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+    "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+    ")\n"
+    "lingerer = os.fork()\n"
+    "if lingerer == 0:\n"
+    "    time.sleep(600)\n"
+    "    os._exit(0)\n"
+    "open(sys.argv[1], 'w').write(f'{victim.pid} {lingerer}')\n"
+    "os.kill(os.getpid(), signal.SIGKILL)\n"
+)
+
+
+def _is_running(pid: int) -> bool:
+    """True while *pid* is alive and not a zombie awaiting a reaper."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    stat = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    ).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
 
 class TestTheDeathPipe:
     """The mock-based cases run on every platform (the death-pipe code is POSIX but
@@ -465,6 +499,70 @@ class TestTheDeathPipe:
             if victim.poll() is None:
                 victim.kill()
                 victim.wait(timeout=10)
+
+    def test_the_fork_hook_closes_and_forgets_every_write_end(self, monkeypatch):
+        """Closing the only write end gives the reader EOF; an already-closed fd is skipped."""
+        read_fd, write_fd = os.pipe()
+        held = {1: write_fd, 2: 10**6}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        try:
+            child_guard._close_death_pipes_in_forked_child()
+
+            assert held == {}
+            assert os.read(read_fd, 1) == b""
+        finally:
+            os.close(read_fd)
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_a_forked_child_holds_no_death_pipe_write_end(self):
+        """A real fork drops every inherited write end; the parent keeps its own."""
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            child_guard._watch_via_death_pipe(victim.pid)
+            write_fd = child_guard._death_pipe_write_fds[victim.pid]
+            pipe = os.fstat(write_fd)
+            pid = os.fork()
+            if pid == 0:  # pragma: no cover - runs in the forked child
+                # Match the pipe by device and inode: another after-fork hook can
+                # reopen the freed descriptor number as an unrelated file.
+                try:
+                    now = os.fstat(write_fd)
+                    code = 2 if (now.st_dev, now.st_ino) == (pipe.st_dev, pipe.st_ino) else 0
+                except OSError:
+                    code = 0
+                os._exit(code or (3 if child_guard._death_pipe_write_fds else 0))
+            _, status = os.waitpid(pid, 0)
+
+            assert os.waitstatus_to_exitcode(status) == 0, "2: fd still open, 3: table not emptied"
+            assert child_guard._death_pipe_write_fds == {victim.pid: write_fd}
+            os.fstat(write_fd)
+        finally:
+            child_guard.release_death_pipe(victim.pid)
+            victim.kill()
+            victim.wait(timeout=10)
+
+    @_POSIX_ONLY
+    def test_the_guarded_process_dies_with_its_parent_while_a_forked_child_lives(self, tmp_path):
+        """The inherited write end of a forked child must not hold the guard open."""
+        pids = tmp_path / "pids"
+        subprocess.run(
+            [sys.executable, "-c", _GUARDS_THEN_FORKS, str(pids)],
+            stdout=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+        victim_pid, lingerer_pid = (int(word) for word in pids.read_text(encoding="utf-8").split())
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and _is_running(victim_pid):
+                time.sleep(0.1)
+
+            assert not _is_running(victim_pid), "the guarded process outlived its parent"
+            assert _is_running(lingerer_pid), "the forked child died; the check proves nothing"
+        finally:
+            for pid in (victim_pid, lingerer_pid):
+                if _is_running(pid):
+                    os.kill(pid, signal.SIGKILL)
 
     def test_release_death_pipe_closes_the_write_end_for_a_stopped_child(self, monkeypatch):
         """Release closes the write end and drops the entry, idempotently."""
