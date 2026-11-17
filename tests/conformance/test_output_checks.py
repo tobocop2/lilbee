@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from tests.conformance.harness import (
     embed_fault,
     json_fault,
     reasoning_fault,
+    reasoning_split_fault,
     run,
     tool_arguments_fault,
 )
@@ -94,9 +96,9 @@ def test_tool_arguments_name_the_cause(arguments: Any, fault: str) -> None:
         ({"content": "<think>hm</think>Rome."}, "stop", True),
         # the chat template supplies the opening tag
         ({"content": "hm</think>Rome."}, "stop", True),
-        # a tag word in the answer text, with the reasoning in its own field
-        ({"reasoning_content": "hm", "content": "Write <think> to start."}, "stop", True),
-        ({"reasoning_content": "hm", "content": "Rome.</think>"}, "stop", True),
+        # a tag in the answer beside the field is a leak, open or closing
+        ({"reasoning_content": "hm", "content": "Write <think> to start."}, "stop", False),
+        ({"reasoning_content": "hm", "content": "Rome.</think>"}, "stop", False),
         # a full block in the answer beside the field is a leak
         ({"reasoning_content": "hm", "content": "<think>hm</think>Rome."}, "stop", False),
         ({"content": "<think>hm Rome."}, "stop", False),
@@ -110,6 +112,37 @@ def test_tool_arguments_name_the_cause(arguments: Any, fault: str) -> None:
 )
 def test_reasoning_split(message: dict[str, Any], finish: str, ok: bool) -> None:
     assert (reasoning_fault(message, finish) == "") is ok
+
+
+@pytest.mark.parametrize("check", [reasoning_fault, reasoning_split_fault])
+@pytest.mark.parametrize(
+    ("message", "ok"),
+    [
+        ({"content": "<think>hm Rome."}, False),
+        ({"reasoning_content": "hm", "content": "Write <think> to start."}, False),
+        ({"content": "<think>hm</think>Rome."}, True),
+        ({"reasoning_content": "hm", "content": "<think>hm</think>Rome."}, False),
+        ({"content": "hm</think>Rome."}, True),
+        ({"reasoning_content": "hm", "content": "Rome.</think>"}, False),
+        ({"reasoning_content": "hm", "content": "a<think>b Rome."}, False),
+        ({"reasoning_content": "hm", "content": "Rome."}, True),
+        ({"reasoning": "hm", "content": "Rome."}, True),
+        ({"reasoning_content": "", "content": "Rome."}, False),
+        # a blank field is no field: the answer needs its own closed think block
+        ({"reasoning_content": "  ", "content": "Rome."}, False),
+        ({"reasoning_content": "  ", "content": "<think>hm</think>Rome."}, True),
+        ({"reasoning_content": "  ", "content": "<think>hm Rome."}, False),
+        # text that is not a tag is no leak: the plain word, an escaped tag and an entity tag
+        ({"reasoning_content": "hm", "content": "I think Rome."}, True),
+        ({"reasoning_content": "hm", "content": "Use \\<think\\> to start."}, True),
+        ({"reasoning_content": "hm", "content": "Use &lt;think&gt; to start."}, True),
+        ({"reasoning_content": "hm", "content": ""}, False),
+    ],
+)
+def test_both_reasoning_checks_give_one_answer_for_the_think_tags(
+    check: Callable[[dict[str, Any], str], str], message: dict[str, Any], ok: bool
+) -> None:
+    assert (check(message, "stop") == "") is ok
 
 
 def test_answer_fault_accepts_plain_text_and_names_an_open_tag() -> None:
