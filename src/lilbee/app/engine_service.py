@@ -161,8 +161,6 @@ _UNREADABLE_WHEEL = (
     NotImplementedError,
 )
 
-WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
-
 
 def _unknown(name: str) -> EngineRefusedError:
     known = ", ".join([AUTO, *EngineName])

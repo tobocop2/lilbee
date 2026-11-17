@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -20,6 +21,7 @@ from unittest import mock
 import pytest
 from huggingface_hub import constants as hub_constants
 from huggingface_hub.file_download import http_get
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel
 from rich.text import Text
 from typer.testing import CliRunner
@@ -949,21 +951,58 @@ def test_the_cli_returns_at_once_for_a_fifo_as_the_wheel(good: Path, tmp_path: P
         os.close(held)
 
 
-def test_rest_refuses_a_wheel_field_and_installs_nothing(good: Path, root: Path) -> None:
+@pytest.mark.parametrize("as_null", [False, True], ids=["path", "null"])
+def test_rest_refuses_a_wheel_field_and_installs_nothing(
+    good: Path, root: Path, as_null: bool
+) -> None:
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
-    code, body = _rest({"engine": ENGINE.value, "wheel": str(good)})
-    assert (code, body["detail"]) == (422, WHEEL_CLI_ONLY)
+    code, body = _rest({"engine": ENGINE.value, "wheel": None if as_null else str(good)})
+    assert code == 400
+    assert WHEEL_CLI_ONLY in json.dumps(body["extra"])
     assert _builds() == []
 
 
-def test_mcp_refuses_a_wheel_argument_and_installs_nothing(good: Path, root: Path) -> None:
+def test_rest_still_ignores_an_unknown_field_other_than_wheel(good: Path, root: Path) -> None:
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
-    assert mcp_server.engine_install_tool(ENGINE.value, wheel=str(good)) == {
-        "error": WHEEL_CLI_ONLY
-    }
+    code, body = _rest({"engine": ENGINE.value, "client_tag": "plugin"})
+    assert (code, body["engine"]) == (200, ENGINE.value)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_the_rest_install_schema_lists_no_wheel_field() -> None:
+    with create_test_client(ROUTES, debug=False) as client:
+        schema = client.get("/schema/openapi.json").json()
+    body = schema["components"]["schemas"]["EngineInstallBody"]
+    assert list(body["properties"]) == ["engine"]
+
+
+@pytest.mark.parametrize("as_null", [False, True], ids=["path", "null"])
+def test_mcp_refuses_a_wheel_argument_and_installs_nothing(
+    good: Path, root: Path, as_null: bool
+) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    server = mcp_server.build_mcp_server()
+    arguments = {"engine": ENGINE.value, "wheel": None if as_null else str(good)}
+    with pytest.raises(ToolError, match=re.escape(WHEEL_CLI_ONLY)):
+        asyncio.run(server.call_tool("engine_install", arguments))
     assert _builds() == []
+
+
+def test_mcp_still_ignores_an_unknown_argument_other_than_wheel(good: Path, root: Path) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    server = mcp_server.build_mcp_server()
+    asyncio.run(server.call_tool("engine_install", {"engine": ENGINE.value, "client_tag": "x"}))
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_the_mcp_install_schema_lists_no_wheel_argument() -> None:
+    tools = asyncio.run(mcp_server.build_mcp_server().list_tools())
+    schema = next(t for t in tools if t.name == "engine_install").input_schema
+    assert list(schema["properties"]) == ["engine"]
 
 
 NOTE = "This host has no NVIDIA GPU, so the CPU archive runs."

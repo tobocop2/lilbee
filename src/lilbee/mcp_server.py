@@ -2415,17 +2415,12 @@ def engine_prefer_tool(engine: str, confirm_embed_change: bool = False) -> dict[
 
 
 @_tool_named("engine_install")
-def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]:
-    """Install an engine build from its pack; the host must pass the engine's gate.
-
-    ``wheel`` is a command line option; a call that sets it is refused.
-    """
+def engine_install_tool(engine: str) -> dict[str, Any]:
+    """Install an engine build from its pack; the host must pass the engine's gate."""
     from lilbee.server.models import EngineInstalledResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
-    if wheel is not None:
-        return _error(engine_service.WHEEL_CLI_ONLY)
 
     def install() -> EngineInstalledResponse:
         built = engine_service.install(engine)
@@ -2458,6 +2453,11 @@ def build_mcp_server() -> LilbeeMCP:
             # A key sent as the wrong type must not come back in the validation error.
             tool.fn_metadata.arg_model.model_config["hide_input_in_errors"] = True
             tool.fn_metadata.arg_model.model_rebuild(force=True)
+        if tool.name == "engine_install":
+            # The wheel option is CLI only: a call that sets it is refused, not dropped.
+            from lilbee.server.models import refusing_wheel
+
+            tool.fn_metadata.arg_model = refusing_wheel(tool.fn_metadata.arg_model)
     return server
 
 

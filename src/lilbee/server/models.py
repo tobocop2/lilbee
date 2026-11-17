@@ -5,9 +5,9 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, create_model, field_validator, model_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
@@ -1135,14 +1135,32 @@ class EngineChosenResponse(BaseModel):
     engine: str
 
 
-class EngineInstallBody(BaseModel):
-    """Request body for installing an engine build from its pack.
+WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
 
-    ``wheel`` is a command line option; a request that sets it is refused.
-    """
+
+class RefusesWheel(BaseModel):
+    """Mixin for a remote engine install input: a ``wheel`` entry is refused."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_wheel(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "wheel" in data:
+            raise ValueError(WHEEL_CLI_ONLY)
+        return data
+
+
+_M = TypeVar("_M", bound=BaseModel)
+
+
+def refusing_wheel(model: type[_M]) -> type[_M]:
+    """A subclass of *model* that refuses a ``wheel`` entry."""
+    return cast("type[_M]", create_model(model.__name__, __base__=(model, RefusesWheel)))
+
+
+class EngineInstallBody(RefusesWheel):
+    """Request body for installing an engine build from its pack."""
 
     engine: str
-    wheel: str | None = None
 
 
 class EngineInstalledResponse(BaseModel):
