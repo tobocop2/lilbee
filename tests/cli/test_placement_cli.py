@@ -2,7 +2,9 @@
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import lilbee.cli.placement as cli_placement
@@ -399,3 +401,50 @@ def test_set_inline_json_spec(monkeypatch: object) -> None:
     assert result.exit_code == 0
     assert isinstance(seen["spec"], PlacementSpec)
     assert seen["spec"].roles[WorkerRole.CHAT].devices == (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("argv", "action"),
+    [
+        (["show"], "get_placement"),
+        (["preview"], "preview_placement"),
+        (["set", "--spec", '{"chat": {"devices": [0]}}'], "set_placement"),
+        (["clear"], "set_placement"),
+    ],
+)
+def test_placement_command_starts_no_fleet_warm_up(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], action: str
+) -> None:
+    """Planning builds the services container; no command may start a warm-up with it."""
+    from lilbee.app import services as services_mod
+    from tests.conftest import make_mock_services
+
+    mock_services = make_mock_services()
+    monkeypatch.setattr(services_mod, "build_services", lambda *a, **k: mock_services)
+    monkeypatch.setattr("lilbee.app.settings.reconcile_embedding_dim", lambda registry: None)
+    monkeypatch.setattr(cfg, "worker_pool_eager_start", True)  # the shipped default
+
+    def _plans_through_the_container(*_args: object) -> PlacementView:
+        services_mod.get_services()  # what resolving a model path does while planning
+        return _view()
+
+    monkeypatch.setattr(cli_placement, action, _plans_through_the_container)
+    result = runner.invoke(placement_app, argv)
+    assert result.exit_code == 0
+    mock_services.provider.warm_up_pool.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["show"],
+        ["preview"],
+        ["set", "--spec", '{"chat": {"devices": [0]}}'],
+        ["clear"],
+    ],
+)
+def test_placement_command_refuses_global_with_data_dir(tmp_path: Path, argv: list[str]) -> None:
+    """Each command passes --global and --data-dir on to the shared override check."""
+    result = runner.invoke(placement_app, [*argv, "--global", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 2
+    assert "Cannot use --global with --data-dir" in result.output

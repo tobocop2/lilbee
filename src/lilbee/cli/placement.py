@@ -46,6 +46,17 @@ def _read_spec(spec: str | None) -> PlacementSpec | None:
     return PlacementSpec.from_json(raw)
 
 
+def _apply_placement_overrides(*, data_dir: Path | None, use_global: bool) -> None:
+    """Apply CLI overrides for a placement command, with the fleet left cold.
+
+    Planning reads the model registry through the services container, which would
+    start a fleet warm-up in this short-lived process. That warm races the command
+    and its exit, and reports a load failure after a placement that was applied.
+    """
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    cfg.worker_pool_eager_start = False
+
+
 def _guard(action: Callable[[], PlacementView]) -> None:
     """Run a placement action and render it, turning known failures into a clean exit."""
     try:
@@ -165,7 +176,7 @@ def show(
     use_global: bool = global_option,
 ) -> None:
     """Show the current effective placement."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(get_placement)
 
 
@@ -178,7 +189,7 @@ def preview(
     use_global: bool = global_option,
 ) -> None:
     """Preview what a spec (or auto) would place, without applying it."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(lambda: preview_placement(_read_spec(spec)))
 
 
@@ -189,7 +200,7 @@ def set_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Validate, persist, and apply a manual placement spec."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(lambda: set_placement(_read_spec(spec)))
 
 
@@ -199,5 +210,5 @@ def clear(
     use_global: bool = global_option,
 ) -> None:
     """Clear the manual placement and return to automatic placement."""
-    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _apply_placement_overrides(data_dir=data_dir, use_global=use_global)
     _guard(lambda: set_placement(None))
