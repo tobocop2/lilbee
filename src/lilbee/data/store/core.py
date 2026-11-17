@@ -1365,6 +1365,12 @@ class Store:
         """Public predicate: True iff the store currently holds at least one chunk."""
         return self._has_chunks()
 
+    def _chunks_width(self) -> int:
+        """The width of the vectors the chunks table holds. Call it when chunks exist."""
+        chunks = self.open_table(CHUNKS_TABLE)
+        assert chunks is not None  # callers checked for chunks  # noqa: S101
+        return cast("int", chunks.schema.field("vector").type.list_size)
+
     def initialize_meta_if_legacy(self) -> bool:
         """Pin a legacy store's identity to the current cfg if not already set.
 
@@ -1379,14 +1385,15 @@ class Store:
         if not self._has_chunks():
             return False
         embedding_model = self._config.embedding_model
-        embedding_dim = self._config.embedding_dim
+        embedding_dim = self._chunks_width()
         with self._write_lock():
             # Re-check under the lock so two callers do not both warn-and-write.
             if self.get_meta() is not None:
                 return False
             log.warning(
-                "Legacy store has chunks but no _meta row. Initializing _meta from "
-                "the current configuration (embedding_model=%s, embedding_dim=%d). "
+                "Legacy store has chunks but no _meta row. Initializing _meta from the "
+                "current embedding_model and the width of the stored chunks "
+                "(embedding_model=%s, embedding_dim=%d). "
                 "If you changed embedding_model before upgrading, run `lilbee rebuild` "
                 "to ensure the store is consistent.",
                 embedding_model,
