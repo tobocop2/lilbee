@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import posixpath
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -368,6 +368,18 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
         per_device=parsed.per_device_vram,
         per_device_shared=parsed.per_device_unified,
     )
+
+
+def estimate_gguf_cpu_decode(request: MemoryRequest) -> MemoryEstimate:
+    """The llama.cpp CPU chat figure: one logits row per slot, scores when flash is off."""
+    estimate = estimate_gguf(replace(request, batch_size=request.slots))
+    if request.flash_attn:
+        return estimate
+    scores = (
+        estimate_gguf(request).device_bytes
+        - estimate_gguf(replace(request, flash_attn=True)).device_bytes
+    )
+    return replace(estimate, shared_bytes=estimate.shared_bytes + scores)
 
 
 FORMAT_ESTIMATORS: Mapping[ModelFormat, Callable[[MemoryRequest], MemoryEstimate]] = {

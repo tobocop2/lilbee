@@ -41,7 +41,7 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.loadability import assert_engine_can_load
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import estimate_memory
+from lilbee.providers.fleet.model_memory import estimate_gguf_cpu_decode, estimate_memory
 from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
@@ -300,6 +300,8 @@ class LlamaCppAdapter:
         return {}
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        if request.on_cpu and request.batch_size is None:
+            return estimate_gguf_cpu_decode(request)
         return estimate_memory(ModelFormat.GGUF, request)
 
     def check_readback(self, binary: Path) -> bool:
