@@ -42,11 +42,13 @@ def isolated_cfg(tmp_path, monkeypatch):
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _store_with_stored_width(width: int | None, chunks: bool = False) -> None:
+def _store_with_stored_width(
+    width: int | None, chunks: bool = False, chunk_width: int = CONFIGURED_WIDTH
+) -> None:
     """Write the ``_meta`` row the way the store writer does, then set its width."""
     store = Store(cfg)
     if chunks:
-        cfg.embedding_dim = CONFIGURED_WIDTH
+        cfg.embedding_dim = chunk_width
         store.add_chunks([_record("a.md", 0), _record("b.md", 1)])
     else:
         store.restamp_meta()
@@ -151,6 +153,7 @@ async def _start_serve() -> None:
 
 @pytest.mark.parametrize("stored", [0, -1, None])
 def test_cli_status_reports_no_index_width_for_a_stored_width_below_1_or_null(monkeypatch, stored):
+    """These cases cannot prove the start-up reconcile call: with no width it changes nothing."""
     _store_with_stored_width(stored, chunks=True)
     built = _build_recording_width(monkeypatch)
 
@@ -163,6 +166,7 @@ def test_cli_status_reports_no_index_width_for_a_stored_width_below_1_or_null(mo
 
 @pytest.mark.parametrize("stored", [0, -1, None])
 def test_mcp_status_reports_no_index_width_for_a_stored_width_below_1_or_null(monkeypatch, stored):
+    """These cases cannot prove the start-up reconcile call: with no width it changes nothing."""
     _store_with_stored_width(stored, chunks=True)
     built = _build_recording_width(monkeypatch)
 
@@ -197,6 +201,7 @@ def test_mcp_status_reports_the_stored_width_when_it_is_above_0(monkeypatch):
     ("stored", "ends_with"), [(0, CONFIGURED_WIDTH), (STORED_WIDTH, STORED_WIDTH)]
 )
 async def test_serve_starts_with_the_width_that_start_up_reconciles(monkeypatch, stored, ends_with):
+    """The stored 0 case cannot prove the reconcile call: with no width it changes nothing."""
     _store_with_stored_width(stored, chunks=True)
     built = _build_recording_width(monkeypatch)
 
@@ -220,3 +225,33 @@ def test_a_search_after_a_stored_width_that_differs_is_still_refused():
 
     with pytest.raises(EmbeddingModelMismatchError, match="dim 16"):
         Store(cfg).search(_record("q.md", 0)["vector"], top_k=2, max_distance=0)
+
+
+@pytest.mark.parametrize("stored", [0, -1, None])
+def test_a_search_with_a_damaged_width_and_chunks_of_another_width_is_refused(stored):
+    _store_with_stored_width(stored, chunks=True, chunk_width=STORED_WIDTH)
+    query = np.zeros(CONFIGURED_WIDTH, dtype=np.float32)
+
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
+        Store(cfg).search(query, top_k=2, max_distance=0)
+
+    assert "so rebuild the index" in str(refused.value)
+
+
+def test_a_search_with_no_meta_row_and_chunks_of_another_width_is_refused():
+    _store_with_stored_width(STORED_WIDTH, chunks=True, chunk_width=STORED_WIDTH)
+    lancedb.connect(str(cfg.lancedb_dir)).drop_table(META_TABLE)
+    cfg.embedding_dim = CONFIGURED_WIDTH
+
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16"):
+        Store(cfg).search(np.zeros(CONFIGURED_WIDTH, dtype=np.float32), top_k=2, max_distance=0)
+
+
+@pytest.mark.parametrize("stored", [0, -1, None])
+def test_the_first_ingest_with_a_damaged_width_and_no_chunks_stamps_the_configured_width(stored):
+    _store_with_stored_width(stored)
+
+    Store(cfg).add_chunks([_record("a.md", 0)])
+
+    meta = lancedb.connect(str(cfg.lancedb_dir)).open_table(META_TABLE).to_arrow()
+    assert meta["embedding_dim"].to_pylist() == [CONFIGURED_WIDTH]
