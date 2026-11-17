@@ -86,9 +86,21 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 
 ## Install
 
+Have a package manager? Start there: Homebrew, Scoop, AUR, Nix and the rest of the table below, so updates come through it. No package manager? One line fetches the right build for your hardware and checks its SHA-256 before it installs:
+
+```sh
+# macOS / Linux
+curl -fsSL https://lilbee.sh/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://lilbee.sh/install.ps1 | iex
+```
+
 **Two routes, and the difference matters:**
 
-- **A self-contained bundle** (start here): the standalone binary, or the Homebrew / AUR / Nix / Docker / Flatpak / Snap / Scoop builds that wrap it. It carries its own Python runtime, `llama.cpp`, the model engine, and the optional extras, so there is nothing else to install and nothing to assemble. The trade-off is one large download and a small cold-start cost the first time it self-extracts.
+- **A self-contained bundle** (start here): the standalone binary (or the install script that fetches it), or the Homebrew / AUR / Nix / Docker / Flatpak / Snap / Scoop builds that wrap it. It carries its own Python runtime, `llama.cpp`, the model engine, and the optional extras, so there is nothing else to install and nothing to assemble. The trade-off is one large download and a small cold-start cost the first time it self-extracts.
 - **Into your own Python** with `pip` or `uv` (Python 3.11 to 3.14), in [its own section below](#developer-install-pip-and-uv). This is the developer route: it installs lilbee as a library in an environment you manage, and the model engine is a separate extra from a separate index that you have to ask for. Take it if you are working on lilbee or importing it into your own code.
 
 Have a discrete GPU? The bundled builds and the Vulkan engine already use it. There are faster vendor builds too: [NVIDIA (CUDA)](#on-nvidia-hardware) and [AMD (ROCm)](#on-amd-hardware).
@@ -105,7 +117,8 @@ No external services either way; lilbee downloads and runs models locally. Optio
 | **Snap**              | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap && sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic` | Linux x86_64. Sideloaded, so snapd flags it `--dangerous` (it just means unsigned) and it won't auto-update; rerun the same command to upgrade. |
 | **Scoop**             | `scoop install git; scoop bucket add lilbee https://github.com/tobocop2/scoop-lilbee; scoop install lilbee` | Windows x86_64. Scoop needs git to add a bucket, so the first command installs it (a no-op when present). Reads your NVIDIA driver version and installs the matching CUDA build (555.85+ gets cu125, 551.61+ gets cu124), otherwise the Vulkan build. It says which one it picked. `scoop update lilbee` upgrades. Added the bucket before 2026-09-08? It moved to its own repository, so run `scoop bucket rm lilbee` and add it again; your install is untouched. |
 | **npm**               | `npm install -g lilbee`                                                                  | macOS / Linux x86_64 / Windows, Node 18+. A small launcher: on first run it detects your hardware (CUDA, ROCm, Metal, or the AVX-baseline build), downloads the matching standalone binary of the latest release, verifies it, and caches it. `lilbee prepare` does that ahead of time; `npx -y lilbee mcp` runs the MCP server for agent hosts. |
-| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest)  | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it).                       |
+| **Install script**    | `curl -fsSL https://lilbee.sh/install.sh \| sh`<br>`irm https://lilbee.sh/install.ps1 \| iex` | macOS / Linux x86_64 (first command) and Windows x86_64 (second). Detects your hardware (CUDA, ROCm, Metal, or the AVX-baseline build), downloads the matching standalone binary, and refuses it unless its SHA-256 matches the release's `SHA256SUMS`. Installs one file to `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\lilbee`) and adds that folder to your PATH; `LILBEE_NO_MODIFY_PATH=1` skips the PATH change. `LILBEE_INSTALL_DIR`, `LILBEE_RELEASE` and `LILBEE_VARIANT` set the folder, the release and the build. Rerun it to upgrade. To uninstall, delete the file; models and data stay in place. |
+| **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest)  | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.34+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks a browser download).                       |
 
 ### On NVIDIA hardware
 
