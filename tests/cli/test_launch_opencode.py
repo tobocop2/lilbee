@@ -1103,3 +1103,78 @@ def test_run_launcher_serves_a_chat_model_set_by_path(tmp_path):
     ):
         run_launcher(launcher)
     assert launcher.prepare.call_args.kwargs["model_refs"] == [str(gguf)]
+
+
+_PINNED_REF = "Acme/Pinned-GGUF/Pinned-Q4_K_M.gguf"
+_SERVED_CTX = 70_000
+
+
+def _serve_ctx_on_port(monkeypatch, ctx: int | None) -> None:
+    """Report *ctx* only when asked about the launch port, so a wrong port reads as unknown."""
+    monkeypatch.setattr(
+        "lilbee.cli.launchers.opencode.client_chat_ctx",
+        lambda port: ctx if port == _PORT else None,
+    )
+
+
+def test_opencode_prepare_writes_the_exact_config(tmp_path, monkeypatch):
+    """The whole file is pinned: provider, window limits, MCP entry, model pin and the indent."""
+    from lilbee.catalog import display_label_for_ref
+    from lilbee.cli.launchers.opencode import OpencodeLauncher
+
+    _serve_ctx_on_port(monkeypatch, _SERVED_CTX)
+    monkeypatch.setattr(cfg, "chat_model", _PINNED_REF)
+    base = f"http://127.0.0.1:{_PORT}"
+
+    OpencodeLauncher(assume_yes=True, include_mcp=True).prepare(
+        token=_TOKEN, port=_PORT, model_refs=[_PINNED_REF]
+    )
+
+    expected = {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "lilbee": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "lilbee",
+                "options": {"baseURL": f"{base}/v1", "apiKey": "{env:LILBEE_TOKEN}"},
+                "models": {
+                    agent_model_id(_PINNED_REF): {
+                        "name": display_label_for_ref(_PINNED_REF),
+                        "limit": {"context": _SERVED_CTX, "output": 8192},
+                    }
+                },
+            }
+        },
+        "mcp": {
+            "lilbee": {
+                "type": "remote",
+                "url": f"{base}/mcp",
+                "enabled": True,
+                "headers": {"Authorization": "Bearer {env:LILBEE_TOKEN}"},
+                "timeout": 120_000,
+            }
+        },
+        "model": f"lilbee/{agent_model_id(_PINNED_REF)}",
+    }
+    text = (tmp_path / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
+    assert json.loads(text) == expected
+    assert text == json.dumps(expected, indent=2)
+
+
+def test_opencode_prepare_names_the_config_in_the_parse_error(tmp_path, capsys):
+    import typer
+
+    from lilbee.cli.launchers.opencode import OpencodeLauncher
+
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / "opencode.json").write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(typer.Exit) as exit_info:
+        OpencodeLauncher(assume_yes=True).prepare(token=_TOKEN, port=_PORT, model_refs=[_CHAT_REF])
+
+    assert exit_info.value.exit_code == 1
+    assert capsys.readouterr().err == (
+        "Your opencode config (opencode.json) did not parse, so lilbee will not overwrite it. "
+        "Fix or remove it, then retry.\n"
+    )

@@ -1859,6 +1859,7 @@ class TestOpenAPISchema:
         assert resp.status_code == 200
         schema = resp.json()
         assert schema["info"]["title"] == "lilbee"
+        assert schema["info"]["description"] == "Local knowledge base REST API"
         assert "/api/health" in schema["paths"]
         assert "/api/ask" in schema["paths"]
 
@@ -1950,6 +1951,86 @@ class TestCors:
                 },
             )
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
+
+    @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "DELETE", "PATCH"])
+    def test_preflight_admits_each_method_the_clients_use(self, method):
+        from lilbee.server.app import create_app
+
+        cfg.cors_origins = ["app://custom.example"]
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "app://custom.example",
+                    "Access-Control-Request-Method": method,
+                },
+            )
+        assert resp.status_code == 204
+        assert resp.headers["access-control-allow-origin"] == "app://custom.example"
+
+    def test_preflight_lists_exactly_the_allowed_methods(self):
+        from lilbee.server.app import create_app
+
+        cfg.cors_origins = ["app://custom.example"]
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "app://custom.example",
+                    "Access-Control-Request-Method": "PUT",
+                },
+            )
+        listed = {m.strip() for m in resp.headers["access-control-allow-methods"].split(",")}
+        assert listed == {"GET", "POST", "PUT", "DELETE", "PATCH"}
+
+    def test_preflight_refuses_a_method_outside_the_list(self):
+        from lilbee.server.app import create_app
+
+        cfg.cors_origins = ["app://custom.example"]
+        with TestClient(create_app()) as c:
+            resp = c.options(
+                "/api/health",
+                headers={
+                    "Origin": "app://custom.example",
+                    "Access-Control-Request-Method": "TRACE",
+                },
+            )
+        assert resp.status_code == 400
+
+
+class TestRequestBodyLimit:
+    """The app caps a request body at 10 MiB; a body past the cap is refused before the handler."""
+
+    _LIMIT = 10 * 1024 * 1024
+
+    @staticmethod
+    def _ask_body(size: int) -> bytes:
+        """A JSON body for /api/ask of exactly *size* bytes."""
+        frame = b'{"question": ""}'
+        return b'{"question": "' + b"a" * (size - len(frame)) + b'"}'
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "42", "sources": []},
+    )
+    def test_a_body_at_the_limit_is_accepted(self, mock_ask, client):
+        body = self._ask_body(self._LIMIT)
+        assert len(body) == self._LIMIT
+        resp = client.post("/api/ask", content=body, headers={"Content-Type": "application/json"})
+        assert resp.status_code == 201
+        mock_ask.assert_awaited_once()
+
+    @mock.patch(
+        "lilbee.server.handlers.ask",
+        new_callable=AsyncMock,
+        return_value={"answer": "42", "sources": []},
+    )
+    def test_a_body_one_byte_over_the_limit_is_refused(self, mock_ask, client):
+        body = self._ask_body(self._LIMIT + 1)
+        resp = client.post("/api/ask", content=body, headers={"Content-Type": "application/json"})
+        assert resp.status_code == 413
+        mock_ask.assert_not_awaited()
 
 
 class TestCorsDefaultRegex:
