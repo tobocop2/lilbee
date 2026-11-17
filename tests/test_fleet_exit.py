@@ -27,7 +27,6 @@ _WAIT_FOR_SERVER_S = 30.0
 _INTERRUPTED_STATUS = 130
 _SIGTERM_STATUS = 143
 _SIGHUP_STATUS = 129
-_STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
 _STOPPING = "The server is stopping."
 _OPEN_EXIT_NOTE = "lilbee: the library is still opening; exiting now. The next start finishes it."
 _LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
@@ -368,13 +367,37 @@ def test_a_hard_exit_signal_with_a_queued_write_says_it_is_saved_and_keeps_its_s
     assert "Timeout (" not in next(tmp_path.rglob("server-fault.log")).read_text(encoding="utf-8")
 
 
-def test_a_server_with_an_open_read_ends_after_sigint(server: _Server, tmp_path: Path) -> None:
+def test_a_server_with_a_queued_memory_write_ends_after_sigint(
+    server: _Server, tmp_path: Path
+) -> None:
     elapsed, answer = _sigint_with_a_request_open(
         server, tmp_path, "POST", "/api/memories", {"text": "a note"}
     )
     _assert_ended_by_the_signal(server, elapsed)
     assert answer.status_code == 503
-    assert answer.json()["detail"] == _STILL_STARTING
+    assert answer.json()["detail"] == _STOPPING
+
+
+@pytest.mark.parametrize(
+    ("signal_name", "status"),
+    [
+        ("SIGINT", _INTERRUPTED_STATUS),
+        ("SIGTERM", _SIGTERM_STATUS),
+        ("SIGHUP", _SIGHUP_STATUS),
+    ],
+)
+def test_a_queued_memory_write_answers_at_once_on_a_stop_signal(
+    server_with_the_real_write_wait: _Server, tmp_path: Path, signal_name: str, status: int
+) -> None:
+    """The write waits 60 s on the engines; the client waits 20 s, so a late answer fails."""
+    server = server_with_the_real_write_wait
+    _, answer = _signal_with_a_request_open(
+        server, tmp_path, "POST", "/api/memories", {"text": "a note"}, signal.Signals[signal_name]
+    )
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == _STOPPING
+    assert server.process.returncode == status, "\n".join(server.lines)
+    assert server.lines.count("teardown") == 1, "\n".join(server.lines)
 
 
 def test_a_server_with_a_queued_placement_write_says_it_is_saved(

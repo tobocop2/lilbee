@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -136,6 +137,36 @@ class TestRemove:
         cfg.memory_enabled = False
         assert client.delete("/api/memories/abc123").status_code == 404
         store.delete_memory.assert_not_called()
+
+
+class TestEventLoopStaysFree:
+    """Store work runs off the event loop, so a stop signal still reaches the loop."""
+
+    @pytest.mark.parametrize(
+        ("store_call", "returns", "handler"),
+        [
+            ("add_memory", "newid", lambda h: h.remember_memory("a note", MemoryKind.FACT, False)),
+            ("get_memories", [], lambda h: h.list_local_memories()),
+            ("update_memory", True, lambda h: h.update_memory_shared("abc123", True)),
+            ("delete_memory", True, lambda h: h.remove_memory("abc123")),
+        ],
+        ids=["remember", "list", "update", "remove"],
+    )
+    async def test_the_store_call_runs_off_the_loop_thread(
+        self, store, store_call, returns, handler
+    ):
+        from lilbee.server.handlers import memory as handlers
+
+        threads: list[int] = []
+
+        def record(*_args, **_kwargs):
+            threads.append(threading.get_ident())
+            return returns
+
+        getattr(store, store_call).side_effect = record
+        await handler(handlers)
+        assert len(threads) == 1
+        assert threads[0] != threading.get_ident()
 
 
 class TestMemoryRoutesRequireAuth:
