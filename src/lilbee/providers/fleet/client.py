@@ -1682,10 +1682,15 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
+        """Text for *tokens*; a gateway error is retried like a tokenize call."""
         path = self._require_route(self._profile.detokenize_path, "detokenize")
-        resp = self._http.post(self._native_route(path), json={"tokens": tokens})
-        self._raise_for_status(resp)
-        return str(resp.json()["content"])
+
+        def _call() -> str:
+            resp = self._http.post(self._native_route(path), json={"tokens": tokens})
+            self._raise_for_status(resp)
+            return str(resp.json()["content"])
+
+        return retry_on_gateway_error(_call)
 
     def _abortable(self, resp: httpx.Response) -> None:
         """Expose *resp* to ``abort_streams`` until the response closes."""

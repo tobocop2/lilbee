@@ -2494,6 +2494,48 @@ def test_tokenize_and_detokenize_use_upstream_route() -> None:
     assert "/upstream/test-model/detokenize" in seen
 
 
+def test_detokenize_retries_transient_gateway_error_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    bodies: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if len(bodies) < 3:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json={"content": "hi"})
+
+    assert _client(handler)._detokenize([1, 2, 3]) == "hi"
+    assert bodies == [{"tokens": [1, 2, 3]}] * 3
+
+
+def test_detokenize_without_route_names_the_missing_route() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request may be sent without a route")
+
+    with pytest.raises(NotImplementedError, match="no detokenize route"):
+        _no_route_client(handler)._detokenize([1])
+
+
+def test_embed_truncation_survives_a_gateway_error_on_detokenize(monkeypatch) -> None:
+    """The capped embed path re-detokenizes the cut tokens; a 503 there is retried."""
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    detokenize_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(12))})
+        if request.url.path.endswith("/detokenize"):
+            detokenize_calls["n"] += 1
+            if detokenize_calls["n"] == 1:
+                return httpx.Response(503, text="Service Unavailable")
+            return httpx.Response(200, json={"content": "cut"})
+        return httpx.Response(200, json=_embed_body([[0.5] for _ in body["input"]]))
+
+    assert _as_lists(_capped_client(handler, cap=10).embed([_LONG_TEXT])) == [[0.5]]
+    assert detokenize_calls["n"] == 2
+
+
 def test_count_tokens_returns_tokenize_length() -> None:
     """count_tokens is the length of the server's /tokenize result."""
 
