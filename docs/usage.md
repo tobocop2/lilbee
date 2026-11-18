@@ -1201,7 +1201,7 @@ is running, and the full OpenAPI schema is published at the
 reference. A Python-library API reference is still being written; for now,
 the source under `src/lilbee/` is the canonical reference.)
 
-Server-specific env vars live in the [Server table](#server) below.
+The server settings, such as `LILBEE_SERVER_PORT`, are in the [settings reference](settings.md#file-and-environment-only).
 
 ### Running as a service
 
