@@ -1008,6 +1008,12 @@ def detect_pending() -> int:
 _EXCLUDED_LOG_SAMPLE = 5
 # The reason held out with a failed file whose failure named none.
 _NO_REASON = "ingestion produced nothing"
+# The cause a retried file keeps when its write to the index failed.
+_NOT_WRITTEN = "the write to the index failed"
+# The cause a retried file keeps when the engine's error had no message.
+_ENGINE_SILENT = "the model engine failed without a message"
+# The longest cause a retried file keeps.
+_RETRY_REASON_LIMIT = 200
 # The text a rebuild embeds once to prove the embedder answers before it drops an index.
 _REBUILD_PROBE = "lilbee"
 
@@ -1034,8 +1040,12 @@ def _describe_failures(store: Store, names: Iterable[str]) -> list[SkippedSource
 
 
 def _held_hashes(store: Store) -> dict[str, str]:
-    """The content hash each held-out path is held out at, by path."""
-    return {path: record.file_hash for path, record in store.held_records().items()}
+    """The content hash each held-out path is held out at, by path; a retry holds nothing out."""
+    return {
+        path: record.file_hash
+        for path, record in store.held_records().items()
+        if record.kind is not HeldOut.RETRY
+    }
 
 
 async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bool) -> Path:
@@ -1050,17 +1060,38 @@ async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bo
     return active_config().data_root
 
 
-def _persist_failures(
-    store: Store, pending_hashes: dict[str, str], reasons: dict[str, str], failed: Iterable[str]
-) -> None:
-    """Hold each of *failed* out of later syncs at the hash this sync planned it at.
+def _retry_reason(reason: str | None) -> str:
+    """The cause a retried file keeps: one line, no exception type, of bounded length."""
+    if reason is None:
+        return _NOT_WRITTEN
+    line = reason.partition("\n")[0]
+    kind, separator, message = line.partition(": ")
+    if separator and kind.isidentifier():
+        line = message
+    return line.strip()[:_RETRY_REASON_LIMIT] or _ENGINE_SILENT
 
-    A file that ingests cleanly needs no step: its new source row holds nothing out.
-    A write that cannot take the lock is logged, and those files are tried again next sync.
+
+def _persist_failures(
+    store: Store,
+    pending_hashes: dict[str, str],
+    reasons: dict[str, str],
+    failed: Iterable[str],
+    retry: Iterable[str],
+) -> None:
+    """Hold each of *failed* out of later syncs, and mark each of *retry* to try again.
+
+    Each record is at the hash this sync planned the file at. A file that ingests
+    cleanly needs no step: its new source row records nothing. A write that cannot
+    take the lock is logged, and those files are tried again next sync.
     """
     held = {
         name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
         for name in failed
+        if (fhash := pending_hashes.get(name))
+    }
+    held |= {
+        name: HeldRecord(HeldOut.RETRY, fhash, _retry_reason(reasons.get(name)))
+        for name in retry
         if (fhash := pending_hashes.get(name))
     }
     try:
@@ -1657,7 +1688,7 @@ async def sync(
 
     # A flush or engine failure is not a verdict on the file: it is planned again next sync.
     held = [name for name in (*failed, *skipped) if name not in retry_next]
-    await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held)
+    await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held, retry_next)
 
     vanished = (
         await to_ingest_thread(_finish_in_place_rebuild, _store, rules, bool(failed))

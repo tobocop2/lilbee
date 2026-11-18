@@ -19,6 +19,7 @@ from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.llm_json import json_reply_format
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
+    INGEST_FAILURES,
     ChunkType,
     HeldOut,
     MemoryKind,
@@ -196,13 +197,13 @@ EMPTY_LIBRARY = (
 )
 
 
-def ingest_failed_message(count: int) -> str:
-    """The answer when nothing is indexed because *count* documents failed to ingest."""
+def ingest_failed_message(count: int, cause: str | None = None) -> str:
+    """The answer when *count* documents failed to ingest; a *cause* names an engine error."""
     noun = "document" if count == 1 else "documents"
-    return (
-        f"Nothing is indexed: {count} {noun} failed to ingest. "
-        "Run `lilbee status` to see why, then ask again."
-    )
+    head = f"Nothing is indexed: {count} {noun} failed to ingest."
+    if cause is None:
+        return f"{head} Run `lilbee status` to see why, then ask again."
+    return f"{head} The error was: {cause.rstrip('.')}. Run `lilbee sync` to try again."
 
 
 # Ask/search needs an embedder to ground an answer. When none is loaded, refuse
@@ -1605,11 +1606,17 @@ class Searcher:
         instead of this method telling the user to add documents.
         """
         if self.library_empty() and not self._memory_facts(question):
-            failed = sum(
-                record.kind is HeldOut.FAILED for record in self._store.held_records().values()
-            )
-            return ingest_failed_message(failed) if failed else EMPTY_LIBRARY
+            return self._empty_library_answer()
         return self.route_direct_answer(question)
+
+    def _empty_library_answer(self) -> str:
+        """The empty-library guidance, or the count of failed ingests and an engine cause."""
+        held = self._store.held_records()
+        failed = sorted(name for name, record in held.items() if record.kind in INGEST_FAILURES)
+        if not failed:
+            return EMPTY_LIBRARY
+        retried = (held[name].reason for name in failed if held[name].kind is HeldOut.RETRY)
+        return ingest_failed_message(len(failed), next(retried, None))
 
     def ask_raw(
         self,

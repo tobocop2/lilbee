@@ -17,6 +17,7 @@ from .ranking import cosine_sim, mmr_rerank
 from .types import (
     DOCUMENTS_PAGE_DEFAULT,
     DOCUMENTS_PAGE_MAX,
+    INGEST_FAILURES,
     LOCAL_OWNER,
     MEMORY_CONTENT_TYPE,
     MEMORY_SOURCE_PREFIX,
@@ -59,6 +60,7 @@ from .types import (
 __all__ = [
     "DOCUMENTS_PAGE_DEFAULT",
     "DOCUMENTS_PAGE_MAX",
+    "INGEST_FAILURES",
     "LOCAL_OWNER",
     "MEMORY_CONTENT_TYPE",
     "MEMORY_SOURCE_PREFIX",

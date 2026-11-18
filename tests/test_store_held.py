@@ -125,6 +125,36 @@ class TestHoldFailed:
         assert _listed(store) == ["a.md"]
 
 
+class TestRetryRecords:
+    """A retry is recorded like a failure: its row keeps the document it holds."""
+
+    _RETRY = HeldRecord(HeldOut.RETRY, "new", "the engine is down")
+
+    def test_a_retry_with_no_document_is_recorded_and_not_listed(self, store):
+        store.hold_failed({"scan.pdf": self._RETRY})
+        assert store.held_records() == {"scan.pdf": self._RETRY}
+        assert _listed(store) == []
+
+    def test_a_retried_edit_keeps_the_indexed_document_listed(self, store):
+        _index(store, "a.md", file_hash="old")
+        store.hold_failed({"a.md": self._RETRY})
+        assert store.held_records() == {"a.md": self._RETRY}
+        assert _listed(store) == ["a.md"]
+        assert [source["file_hash"] for source in store.get_sources()] == ["old"]
+
+    def test_a_retried_edit_moves_with_its_folder(self, store):
+        _index(store, "a/doc.md", file_hash="old")
+        store.hold_failed({"a/doc.md": self._RETRY})
+        step = store.relocate_sources([SourceMove(("a/doc.md",), "c/doc.md", None)])
+        assert step.taken == {"c/doc.md": "a/doc.md"}
+        assert store.held_records() == {"c/doc.md": self._RETRY}
+
+    def test_release_failed_leaves_a_retry(self, store):
+        store.hold_failed({"a.pdf": _failed("h1"), "b.pdf": self._RETRY})
+        assert store.release_failed() == ["a.pdf"]
+        assert store.held_records() == {"b.pdf": self._RETRY}
+
+
 class TestRemoveWithRecords:
     def test_a_removal_drops_the_chunks_and_holds_the_path(self, store):
         _index(store, "a.md", "b.md")

@@ -48,15 +48,22 @@ class SourceType(StrEnum):
 
 
 class HeldOut(StrEnum):
-    """Why a ``_sources`` row holds its path out of later syncs.
+    """Why a ``_sources`` row records that its path is not indexed at its content.
 
     ``REMOVED``: the user removed it; the row also keeps the path a citation names.
     ``FAILED``: ingestion produced nothing at that content; a row that holds a
     document keeps it listed.
+    ``RETRY``: the model engine or the index write failed on it; the next sync
+    tries it again, and a row that holds a document keeps it listed.
     """
 
     FAILED = "failed"
     REMOVED = "removed"
+    RETRY = "retry"
+
+
+# The records whose row keeps the document it holds, and that count as a failed ingest.
+INGEST_FAILURES = frozenset({HeldOut.FAILED, HeldOut.RETRY})
 
 
 class HeldRecord(NamedTuple):

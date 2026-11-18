@@ -22,7 +22,17 @@ from lilbee.core.config.enums import OcrMode
 from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
 from lilbee.data.types import ExtractMode, OcrBackendName
 from lilbee.runtime.progress import OcrBackendUsed
-from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
+from tests._held import (
+    ENGINE_ERROR,
+    FAILED_ANSWER,
+    FAILED_NAMES,
+    fail_every_ingest,
+    held_hashes,
+    held_kinds,
+    held_reasons,
+    hold_failed,
+    hold_removed,
+)
 from tests._unreadable import deny_listing
 from tests.conftest import make_pdf
 
@@ -2174,14 +2184,14 @@ class TestHeldOutRecordLifecycle:
         assert [held.filename for held in result.held_out] == []
 
     @pytest.mark.parametrize(
-        ("error", "held"),
+        ("error", "kind", "retried"),
         [
-            pytest.param("engine", {}, id="engine-failure"),
-            pytest.param("file", {"doc.txt": HeldOut.FAILED}, id="file-failure"),
+            pytest.param("engine", HeldOut.RETRY, True, id="engine-failure"),
+            pytest.param("file", HeldOut.FAILED, False, id="file-failure"),
         ],
     )
     async def test_an_engine_failure_is_not_held_out_and_ingests_next_sync(
-        self, isolated_env, mock_svc, error, held
+        self, isolated_env, mock_svc, error, kind, retried
     ):
         """A ProviderError is the model engine failing, so the file is planned again next sync."""
         from lilbee.data.ingest import sync
@@ -2193,9 +2203,10 @@ class TestHeldOutRecordLifecycle:
             first = await sync(quiet=True)
 
         assert first.failed == ["doc.txt"]
-        assert held_kinds() == held
+        assert held_kinds() == {"doc.txt": kind}
         second = await sync(quiet=True)
-        assert ("doc.txt" in second.added) is not held
+        assert ("doc.txt" in second.added) is retried
+        assert ("doc.txt" in held_kinds()) is not retried
 
     async def test_a_file_whose_token_count_failed_is_added_by_the_next_sync(
         self, isolated_env, mock_svc
@@ -2292,6 +2303,160 @@ class TestHeldOutRecordLifecycle:
             return await orig(path, name, content_type, **kwargs)
 
         return _produce
+
+
+class TestAnswerAfterEveryIngestFailed:
+    """The embed engine fails every file: each row records a retry, and ask names the failure."""
+
+    _NAMES = FAILED_NAMES
+    _QUESTION = "what do bees eat?"
+
+    def _answer(self) -> str | None:
+        return svc_mod.get_services().searcher.pre_retrieval_answer(self._QUESTION)
+
+    async def test_ask_names_the_failed_ingest_and_its_cause(self):
+        result = await fail_every_ingest(self._NAMES)
+
+        assert sorted(result.failed) == sorted(self._NAMES)
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.RETRY)
+        answer = svc_mod.get_services().searcher.ask_raw(self._QUESTION)
+        assert answer.answer == FAILED_ANSWER
+        assert answer.sources == []
+
+    async def test_a_sync_that_indexes_the_files_clears_the_retries(self):
+        from lilbee.data.ingest import sync
+
+        await fail_every_ingest(self._NAMES)
+        result = await sync(quiet=True)
+
+        assert result.failed == []
+        assert sorted(result.added) == sorted(self._NAMES)
+        assert held_kinds() == {}
+
+    async def test_removing_the_failed_files_leaves_an_empty_library(self):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        await fail_every_ingest(self._NAMES)
+        result = remove_documents_durably(self._NAMES)
+
+        assert sorted(result.removed) == sorted(self._NAMES)
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.REMOVED)
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_removing_one_failed_file_keeps_naming_the_others(self):
+        from lilbee.app.ingest import remove_documents_durably
+
+        await fail_every_ingest(self._NAMES)
+        remove_documents_durably([self._NAMES[0]])
+
+        assert self._answer() == FAILED_ANSWER.replace("3 documents", "2 documents")
+
+    async def test_a_reset_leaves_an_empty_library(self):
+        from lilbee.app.reset import perform_reset
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        await fail_every_ingest(self._NAMES)
+        assert self._answer() == FAILED_ANSWER
+        perform_reset()
+
+        assert held_kinds() == {}
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_deleted_data_dir_leaves_an_empty_library(self):
+        import shutil
+
+        from lilbee.data.store import Store
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+        from tests.conftest import make_mock_services
+
+        await fail_every_ingest(self._NAMES)
+        assert self._answer() == FAILED_ANSWER
+        svc_mod.get_services().store.close()
+        shutil.rmtree(cfg.data_dir)
+        svc_mod.set_services(make_mock_services(store=Store(cfg)))
+
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_library_no_sync_filled_is_empty(self):
+        from lilbee.data.store import Store
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+        from tests.conftest import make_mock_services
+
+        svc_mod.set_services(make_mock_services(store=Store(cfg)))
+
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_file_that_fails_to_parse_points_at_status(self):
+        """A parse error holds the file out at its hash; the answer names no engine error."""
+        from lilbee.retrieval.query.searcher import ingest_failed_message
+
+        result = await fail_every_ingest(self._NAMES, error=ValueError("not a document"))
+
+        assert sorted(result.failed) == sorted(self._NAMES)
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.FAILED)
+        assert self._answer() == ingest_failed_message(len(self._NAMES))
+
+    async def test_a_worker_records_its_retries_in_the_store_and_nothing_else(self):
+        """A fan-out worker leaves the same rows a single sync does, and no other file."""
+        from lilbee.data.types import ShardId
+
+        before = sorted(path.name for path in cfg.data_root.iterdir())
+        shard = ShardId(index=0, count=1, corpus_root=cfg.data_root)
+        result = await fail_every_ingest(self._NAMES, shard=shard)
+
+        assert sorted(result.failed) == sorted(self._NAMES)
+        assert sorted(path.name for path in cfg.data_root.iterdir()) == before
+        assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.RETRY)
+        assert self._answer() == FAILED_ANSWER
+
+    async def test_a_worker_result_crosses_the_spawn_queue_whole(self):
+        """The worker's result reaches the parent through a real spawn queue unchanged."""
+        import multiprocessing
+
+        from lilbee.data.ingest.fanout import ShardDone, aggregate_results
+        from lilbee.data.types import ShardId
+
+        shard = ShardId(index=0, count=1, corpus_root=cfg.data_root)
+        result = await fail_every_ingest(self._NAMES, shard=shard)
+        messages = multiprocessing.get_context("spawn").Queue()
+        messages.put(ShardDone(kind="done", index=0, result=result, error=None))
+        received = messages.get(timeout=30)
+        messages.close()
+
+        assert received.result == result
+        assert sorted(aggregate_results([received]).failed) == sorted(self._NAMES)
+        assert self._answer() == FAILED_ANSWER
+
+    @pytest.mark.parametrize(
+        ("reason", "kept"),
+        [
+            pytest.param("ProviderError: first line\nsecond line", "first line", id="one-line"),
+            pytest.param("ProviderError: no colon: here", "no colon: here", id="class-name-only"),
+            pytest.param("the engine said: no", "the engine said: no", id="no-class-name"),
+            pytest.param("x" * 250, "x" * 200, id="long-reason"),
+            pytest.param(
+                "ProviderError: ", "the model engine failed without a message", id="empty-message"
+            ),
+            pytest.param(None, "the write to the index failed", id="write-failed"),
+        ],
+    )
+    def test_the_kept_cause_is_plain_one_line_and_bounded(self, reason, kept):
+        from lilbee.data.ingest.pipeline import _retry_reason
+
+        assert _retry_reason(reason) == kept
+
+    async def test_an_engine_error_without_a_message_names_no_empty_cause(self):
+        """The answer never reads "The error was: ." for an engine error with no message."""
+        from lilbee.providers.base import ProviderError
+
+        await fail_every_ingest(self._NAMES, error=ProviderError(""))
+
+        answer = self._answer()
+        assert answer == FAILED_ANSWER.replace(
+            ENGINE_ERROR, "the model engine failed without a message"
+        )
+        assert "The error was: ." not in answer
 
 
 class TestSyncKeepsConcurrentHeldRecords:

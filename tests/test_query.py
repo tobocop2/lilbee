@@ -1548,6 +1548,43 @@ class TestAskRaw:
         assert answer is not None
         assert "2 documents failed to ingest" in answer
 
+    @pytest.mark.parametrize(
+        ("held", "answer"),
+        [
+            pytest.param(
+                {
+                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down."),
+                    "a.txt": HeldRecord(HeldOut.RETRY, "h", "the engine timed out"),
+                },
+                "Nothing is indexed: 2 documents failed to ingest. "
+                "The error was: the engine timed out. Run `lilbee sync` to try again.",
+                id="retries-name-the-first-cause",
+            ),
+            pytest.param(
+                {
+                    "a.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
+                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down."),
+                    "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
+                },
+                "Nothing is indexed: 2 documents failed to ingest. "
+                "The error was: the engine is down. Run `lilbee sync` to try again.",
+                id="counted-with-the-held-failures",
+            ),
+        ],
+    )
+    def test_retried_files_are_counted_and_their_cause_named(self, mock_svc, held, answer):
+        """A retry adds its file to the count and names its cause; its period is not doubled."""
+        mock_svc.store.has_chunks.return_value = False
+        mock_svc.store.held_records.return_value = held
+        assert get_services().searcher.pre_retrieval_answer("what do bees eat?") == answer
+
+    def test_retried_files_do_not_hide_an_indexed_library(self, mock_svc):
+        mock_svc.store.has_chunks.return_value = True
+        mock_svc.store.held_records.return_value = {
+            "a.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down")
+        }
+        assert get_services().searcher.pre_retrieval_answer("what do bees eat?") is None
+
     def test_failed_ingests_do_not_hide_an_indexed_library(self, mock_svc):
         """A failed file beside indexed content leaves the question to retrieval."""
         mock_svc.store.has_chunks.return_value = True

@@ -94,6 +94,7 @@ from .schema import (
 )
 from .types import (
     ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
+    INGEST_FAILURES,
     KEYED_SCHEMA_VERSION,
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
@@ -366,10 +367,13 @@ _UNSTAMPED = f"schema_version >= 2 AND schema_version < {KEYED_SCHEMA_VERSION}"
 # The type column of ``_sources``, and of the chunks table.
 _SOURCE_TYPE = "source_type"
 _CHUNK_TYPE = "chunk_type"
+# The rows whose held kind is a failed ingest, which keep the document they hold.
+_INGEST_FAILED_KINDS = ", ".join(f"'{kind}'" for kind in sorted(INGEST_FAILURES))
+_INGEST_FAILED = f"{_HELD_OUT} IN ({_INGEST_FAILED_KINDS})"
 # The source rows a listing shows: each that holds a document, failed at a later edit or not.
 _LISTED = (
     f"{_SOURCE_TYPE} != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
-    f" OR {_HELD_OUT} = '{HeldOut.FAILED}' AND file_hash IS NOT NULL)"
+    f" OR {_INGEST_FAILED} AND file_hash IS NOT NULL)"
 )
 # The source rows stored at their location; every other source is stored by its key.
 _DOCUMENT = f"{_SOURCE_TYPE} = '{SourceType.DOCUMENT}'"
@@ -385,7 +389,7 @@ _WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
 # The source rows a move found by a sync carries: the listed ones and every failure.
 _MOVABLE = (
     f"{_SOURCE_TYPE} != '{SourceType.WIKI}'"
-    f" AND ({_HELD_OUT} IS NULL OR {_HELD_OUT} = '{HeldOut.FAILED}')"
+    f" AND ({_HELD_OUT} IS NULL OR {_INGEST_FAILED})"
 )
 # The source rows an upgrade compares a document key with: any row whose type is not wiki.
 _NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR NOT ({_WIKI}))"
@@ -786,7 +790,7 @@ def _wiki_id(key: str) -> str:
 def _holds_document(row: Mapping[str, Any]) -> bool:
     """Whether a document source *row* holds an indexed document, as ``_LISTED`` reads it."""
     kind = row[_HELD_OUT]
-    return kind is None or (kind == HeldOut.FAILED and row["file_hash"] is not None)
+    return kind is None or (kind in INGEST_FAILURES and row["file_hash"] is not None)
 
 
 def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) -> dict[str, Any]:
@@ -797,7 +801,7 @@ def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) 
         _HELD_HASH: record.file_hash,
         _HELD_REASON: record.reason,
     }
-    if record.kind is HeldOut.FAILED and holds_document:
+    if record.kind in INGEST_FAILURES and holds_document:
         return held
     return {**held, "file_hash": None, "chunk_count": 0}
 
