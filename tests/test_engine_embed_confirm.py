@@ -292,6 +292,20 @@ def test_the_cli_asks_on_a_terminal_and_a_refusal_leaves_the_file_unchanged(
     assert path.read_bytes() == before
 
 
+def test_a_bare_enter_at_the_cli_prompt_answers_no_and_leaves_the_file_unchanged(
+    library: SimpleNamespace, with_openvino: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = cfg.data_root / "config.toml"
+    settings.set_value(cfg.data_root, "chat_model", GGUF_REF)
+    before = path.read_bytes()
+    result, action = _ask(monkeypatch, "\n")
+    assert result.exit_code == 1
+    assert "The engine is unchanged." in result.output.replace("\n", " ")
+    assert [call.kwargs["confirmed"] for call in action.call_args_list] == [False]
+    assert _stored("engine_choices") is None
+    assert path.read_bytes() == before
+
+
 def test_the_slash_command_refuses_and_leaves_the_file_unchanged(
     library: SimpleNamespace, with_openvino: None
 ) -> None:
