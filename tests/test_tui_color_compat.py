@@ -445,6 +445,8 @@ class TestNoPartialBlockBorders:
 
         from textual.widgets import TabbedContent, TabPane
 
+        from lilbee.cli.tui.screens.settings import _LazyGroupBody
+        from tests._async_wait import subtree_mounted, wait_until
         from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
 
         offenders: list[str] = []
@@ -457,9 +459,11 @@ class TestNoPartialBlockBorders:
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     cls = getattr(importlib.import_module(module), cls_name)
-                    app.push_screen(cls(**_screen_kwargs(cls_name)))
-                    for _ in range(4):
-                        await pilot.pause()
+                    screen = cls(**_screen_kwargs(cls_name))
+                    app.push_screen(screen)
+                    assert await wait_until(
+                        pilot, lambda: app.screen is screen and subtree_mounted(screen)
+                    ), f"{cls_name} never finished mounting"
 
                     assert list(app.screen.query("*")), f"{cls_name} mounted no widgets to audit"
 
@@ -467,8 +471,16 @@ class TestNoPartialBlockBorders:
                     panes = [pane.id for pane in app.screen.query(TabPane)]
                     for pane_id in panes:
                         tabbed[0].active = pane_id
-                        for _ in range(3):
-                            await pilot.pause()
+                        pane = app.screen.query_one(f"#{pane_id}", TabPane)
+
+                        def _pane_filled(pane: TabPane = pane, pane_id: str = pane_id) -> bool:
+                            return (
+                                tabbed[0].active == pane_id
+                                and all(body.populated for body in pane.query(_LazyGroupBody))
+                                and subtree_mounted(pane)
+                            )
+
+                        assert await wait_until(pilot, _pane_filled), f"{pane_id} never filled"
                         offenders += self._offenders(app.screen)
                     if not panes:
                         offenders = self._offenders(app.screen)
