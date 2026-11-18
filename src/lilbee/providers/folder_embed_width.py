@@ -21,8 +21,13 @@ def _read_json(path: Path) -> object:
     """The JSON value in *path*, or None when the file is absent or unreadable."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
+
+
+def read_folder_config(folder: Path) -> dict[str, Any]:
+    """The ``config.json`` object of a model folder, or an empty one when it is not an object."""
+    return _read_object(folder / _CONFIG)
 
 
 def _read_object(path: Path) -> dict[str, Any]:

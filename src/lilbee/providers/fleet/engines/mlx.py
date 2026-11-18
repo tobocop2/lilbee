@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,6 +24,7 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory
+from lilbee.providers.folder_embed_width import read_folder_config
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.32.2"
@@ -44,7 +44,6 @@ _PROMPT_CACHE_BYTES = 1024**3
 
 Not measured on a Mac yet.
 """
-_CONFIG = "config.json"
 _WINDOW_KEY = "max_position_embeddings"
 
 _PROFILE = RequestProfile(
@@ -178,12 +177,7 @@ class MlxAdapter:
 
         A vision-language model keeps the value under ``text_config``.
         """
-        try:
-            config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(config, dict):
-            return None
+        config = read_folder_config(path)
         for section in (config, config.get("text_config")):
             window = section.get(_WINDOW_KEY) if isinstance(section, dict) else None
             if isinstance(window, int) and not isinstance(window, bool) and window > 0:

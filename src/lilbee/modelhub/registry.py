@@ -39,6 +39,8 @@ from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.providers import gguf_meta
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engines.choice import loadable_refs
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import CatalogModel
@@ -557,15 +559,20 @@ class ModelRegistry:
             log.debug("Could not re-register %s from the model cache", ref, exc_info=True)
 
     def has_vision_projector(self, ref: str) -> bool:
-        """True when *ref* is installed with an mmproj projector beside its weights.
+        """True when *ref* is installed as a vision model.
 
-        A vision model is a chat model with a projector, so the manifest task
-        cannot tell the two apart. The vision picker and the vision-role check
-        both ask this question. The lookup walks the HF cache layout, so it
-        finds the projector from a content-hashed blob path too.
+        A GGUF is one when an mmproj projector sits beside its weights; the
+        lookup walks the HF cache layout, so a content-hashed blob path works.
+        A model folder is one when its ``config.json`` has a ``vision_config``
+        and an installed engine loads its format for the vision role.
+        The vision picker and the vision-role check both ask this question.
         """
         try:
-            gguf_meta.find_mmproj_for_model(self.resolve(ref))
+            path = self.resolve(ref)
+            if not gguf_meta.needs_sidecar_projector(path):
+                served = bool(loadable_refs([ref], WorkerRole.VISION))
+                return served and gguf_meta.declares_vision_config(path)
+            gguf_meta.find_mmproj_for_model(path)
         except (KeyError, ValueError, ProviderError):
             return False
         return True
