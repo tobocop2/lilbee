@@ -429,6 +429,15 @@ def is_repeat_pull(manager: ModelManager, ref: str, source: ModelSource) -> bool
     )
 
 
+def refreshes_safetensors_files(manager: ModelManager, ref: str, source: ModelSource) -> bool:
+    """True when a repeat pull of *ref* only checks an installed safetensors model for files."""
+    return (
+        source is ModelSource.NATIVE
+        and model_format(ref) is ModelFormat.SAFETENSORS
+        and is_repeat_pull(manager, ref, source)
+    )
+
+
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -453,7 +462,7 @@ def pull_model_data(
     manager = get_services().model_manager
 
     if is_repeat_pull(manager, ref, source):
-        if source is ModelSource.NATIVE and model_format(ref) is ModelFormat.SAFETENSORS:
+        if refreshes_safetensors_files(manager, ref, source):
             # A pull made before the module files were selected lacks them; the
             # pull fetches only the files the cache does not hold. An unreachable
             # Hub leaves the install as it is; any other fault reaches the caller.

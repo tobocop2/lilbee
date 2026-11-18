@@ -4277,6 +4277,40 @@ class TestModelsPull:
         assert len(done) == 1
         assert "warning" not in done[0]
 
+    @pytest.mark.parametrize(
+        ("ref", "registered", "sink_passed", "warn_unreadable"),
+        [
+            ("org/repo/model-Q4_K_M.gguf", False, True, True),
+            ("org/repo/model-Q4_K_M.gguf", True, True, False),
+            ("org/repo#safetensors", False, True, True),
+            ("org/repo#safetensors", True, False, False),
+        ],
+        ids=[
+            "gguf-cache-only",
+            "gguf-registered",
+            "safetensors-cache-only",
+            "safetensors-registered",
+        ],
+    )
+    async def test_the_pull_stream_follows_the_rule_of_the_cli_pull(
+        self, ref, registered, sink_passed, warn_unreadable
+    ):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = registered
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch(
+                "lilbee.server.handlers.models.ensure_vision_projector", return_value=None
+            ) as projector,
+        ):
+            _ = [e async for e in handlers.models_pull(ref, source="native")]
+        assert (mock_manager.pull.call_args.kwargs["on_notice"] is not None) is sink_passed
+        assert projector.call_args.kwargs["warn_unreadable"] is warn_unreadable
+
     async def test_done_event_joins_the_size_notice_and_the_projector_warning(self):
         mock_manager = MagicMock()
         mock_manager.is_installed.return_value = False

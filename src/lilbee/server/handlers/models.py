@@ -16,6 +16,7 @@ from lilbee.app.models import (
     is_repeat_pull,
     join_warnings,
     list_models_data,
+    refreshes_safetensors_files,
 )
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
@@ -604,12 +605,13 @@ async def models_pull(
 
         try:
             repeat = is_repeat_pull(manager, model, src)
+            refresh = refreshes_safetensors_files(manager, model, src)
             notices: list[str] = []
             manager.pull(
                 model,
                 src,
                 on_bytes=_on_bytes,
-                on_notice=None if repeat else notices.append,
+                on_notice=None if refresh else notices.append,
                 allow_unsupported=allow_unsupported,
                 cancel=sse.cancel,
             )
