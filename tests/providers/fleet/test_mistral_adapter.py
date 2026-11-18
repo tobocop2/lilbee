@@ -1473,3 +1473,168 @@ def test_a_manual_placement_does_not_hide_other_estimator_failures() -> None:
             {0: 24 * GIB},
             estimate_peak=unsizable,
         )
+
+
+# ---- a cached GGUF across several cards: the checks read its snapshot file ----
+
+_CACHED_NAME = "Qwen3-4B-Q4_K_M.gguf"
+
+
+def _cached_gguf(tmp_path: Path, size: int = 3200) -> tuple[Path, Path]:
+    """A cached single-file GGUF as the registry hands it out: its blob and its snapshot file."""
+    repo = tmp_path / "models--Qwen--Qwen3-4B-GGUF"
+    blob = repo / "blobs" / "9375c1fd"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * size)
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    entry = snapshot / _CACHED_NAME
+    entry.symlink_to(blob)
+    return blob, entry
+
+
+def _read_paths(monkeypatch: pytest.MonkeyPatch, meta: dict[str, str] | None) -> list[Path]:
+    """Serve *meta* for every GGUF read and return the list of the paths that were read."""
+    read: list[Path] = []
+
+    def fake_read(path: Path) -> dict[str, str] | None:
+        read.append(path)
+        return meta
+
+    monkeypatch.setattr(mistral_module, "read_gguf_metadata", fake_read)
+    return read
+
+
+@pytest.mark.parametrize("cards", [2, 4])
+def test_an_equal_split_of_a_cached_gguf_reads_the_heads_from_its_snapshot_file(
+    cards: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=cards)
+    blob, entry = _cached_gguf(tmp_path)
+    read = _read_paths(monkeypatch, _HEADS)
+    argv = _split_argv(tmp_path, (1,) * cards, model_path=blob)
+    assert argv[-4:] == ["-m", str(entry.parent), "-f", _CACHED_NAME]
+    assert read == [entry]
+
+
+def test_a_split_of_a_cached_gguf_whose_heads_do_not_divide_is_refused_by_file_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch, cards=3)
+    blob, _entry = _cached_gguf(tmp_path)
+    _read_paths(monkeypatch, _HEADS)
+    with pytest.raises(
+        ProviderError,
+        match=rf"mistral\.rs cannot split {_CACHED_NAME} across 3 cards: the attention heads",
+    ):
+        _split_argv(tmp_path, (1, 1, 1), model_path=blob)
+
+
+def test_an_uneven_split_of_a_cached_gguf_names_the_snapshot_file_not_the_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    blob, _entry = _cached_gguf(tmp_path)
+    _read_paths(monkeypatch, _HEADS)
+    with pytest.raises(
+        ProviderError, match=rf"mistral\.rs splits {_CACHED_NAME} only evenly across cards"
+    ):
+        _split_argv(tmp_path, (3, 1), model_path=blob)
+
+
+def test_a_cpu_build_refusal_of_a_cached_gguf_names_the_snapshot_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: caps("Linux", "x86_64", gpus=[]))
+    blob, _entry = _cached_gguf(tmp_path)
+    with pytest.raises(
+        ProviderError, match=rf"mistral\.rs cannot split {_CACHED_NAME} across 2 cards on the CPU"
+    ):
+        MISTRAL.check_split(blob, (1, 1))
+
+
+def test_a_split_estimate_of_a_cached_gguf_charges_each_card_its_layer_share(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blob, entry = _cached_gguf(tmp_path, size=3200)
+    read = _read_paths(monkeypatch, {"block_count": "32"})
+    estimate = _estimate(blob, (3, 1))
+    assert estimate.per_device == (2400, 800)
+    assert (estimate.kind, estimate.device_bytes) == (MemoryKind.FIXED_RESERVE, 3200)
+    assert read == [entry]
+
+
+def test_a_split_estimate_of_a_cached_gguf_counts_whole_bytes_per_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blob, _entry = _cached_gguf(tmp_path, size=3201)
+    _read_paths(monkeypatch, {"block_count": "32"})
+    per_device = _estimate(blob, (3, 1)).per_device
+    assert per_device == (2400, 800)
+    assert all(type(card_bytes) is int for card_bytes in per_device)
+
+
+def test_the_planner_sizes_an_equal_split_of_a_cached_gguf_instead_of_refusing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    blob, entry = _cached_gguf(tmp_path, size=3200)
+    read = _read_paths(monkeypatch, {**_HEADS, "block_count": "32"})
+    monkeypatch.setattr(planning.engine_params, "resolve_model_path", lambda _ref: blob)
+    estimate = planning._peak_estimator({WorkerRole.CHAT: "chat-ref"}, {WorkerRole.CHAT: MISTRAL})
+    per_device = estimate(WorkerRole.CHAT, (1, 1))
+    assert len(per_device) == 2
+    assert per_device[0] == per_device[1] > 0
+    assert set(read) == {entry}
+
+
+@pytest.mark.parametrize("shard", [None, "9b"])
+def test_a_split_of_a_cache_blob_with_no_snapshot_file_says_the_model_file_is_damaged(
+    shard: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    blobs = tmp_path / "models--Qwen--Qwen3-4B-GGUF" / "blobs"
+    blob = (blobs / shard if shard else blobs) / "9375c1fd"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 3200)
+    read = _read_paths(monkeypatch, _HEADS)
+    with pytest.raises(
+        ProviderError,
+        match=r"cannot split this model across 2 cards: its model file is incomplete or damaged\. "
+        r"Run 'lilbee model list', remove that model with 'lilbee model rm', "
+        r"then pull it again\.",
+    ) as refused:
+        _split_argv(tmp_path, (1, 1), model_path=blob)
+    assert blob.name not in str(refused.value)
+    assert read == []
+
+
+@pytest.mark.parametrize("shard", [None, "9b"])
+def test_a_split_of_a_loose_gguf_in_a_folder_named_blobs_outside_the_cache_reads_its_heads(
+    shard: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    folder = tmp_path / "blobs" / shard if shard else tmp_path / "blobs"
+    folder.mkdir(parents=True)
+    loose = folder / _CACHED_NAME
+    loose.write_bytes(b"x" * 3200)
+    read = _read_paths(monkeypatch, _HEADS)
+    argv = _split_argv(tmp_path, (1, 1), model_path=loose)
+    assert argv[-4:] == ["-m", str(folder), "-f", _CACHED_NAME]
+    assert read == [loose]
+
+
+@pytest.mark.parametrize("name", ["qwen.bin", "qwen", "qwen.gguf.part"])
+def test_a_split_of_a_loose_file_without_a_gguf_suffix_keeps_the_heads_refusal(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    loose = tmp_path / name
+    loose.write_bytes(b"x" * 3200)
+    read = _read_paths(monkeypatch, _HEADS)
+    with pytest.raises(
+        ProviderError,
+        match=rf"mistral\.rs cannot split {name} across 2 cards: the attention heads.*heads",
+    ):
+        _split_argv(tmp_path, (1, 1), model_path=loose)
+    assert read == []

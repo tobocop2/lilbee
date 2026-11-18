@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 _HF_BLOBS_DIR_NAME = "blobs"
 _HF_SHARD_LEN = 2
 _HF_SNAPSHOTS_DIR_NAME = "snapshots"
+_HF_REPO_DIR_PREFIX = "models--"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
 _DEFAULT_ARCH = "llama"
 _CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
@@ -317,17 +318,37 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None | _U
     return result or None
 
 
-def _hf_snapshots_dir_of(model_dir: Path) -> Path | None:
-    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree.
+def _hf_cache_dir_of(model_dir: Path) -> Path | None:
+    """The HF-cache repo dir above a ``blobs/`` dir, or None when *model_dir* is not one.
 
     The blob sits in ``blobs/`` directly, or in a two-character shard dir under
     it (``blobs/a0/``) with newer huggingface_hub releases.
     """
     if model_dir.name == _HF_BLOBS_DIR_NAME:
-        cache_dir = model_dir.parent
-    elif model_dir.parent.name == _HF_BLOBS_DIR_NAME and len(model_dir.name) == _HF_SHARD_LEN:
-        cache_dir = model_dir.parent.parent
-    else:
+        return model_dir.parent
+    if model_dir.parent.name == _HF_BLOBS_DIR_NAME and len(model_dir.name) == _HF_SHARD_LEN:
+        return model_dir.parent.parent
+    return None
+
+
+def is_hf_cache_blob(model_path: Path) -> bool:
+    """True when *model_path* is an existing file in the ``blobs/`` dir of an HF-cache repo.
+
+    A repo dir is named ``models--<org>--<repo>``. A loose file in some other dir
+    that happens to be called ``blobs`` is not a cache blob.
+    """
+    repo_dir = _hf_cache_dir_of(model_path.parent)
+    return (
+        repo_dir is not None
+        and repo_dir.name.startswith(_HF_REPO_DIR_PREFIX)
+        and model_path.is_file()
+    )
+
+
+def _hf_snapshots_dir_of(model_dir: Path) -> Path | None:
+    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree."""
+    cache_dir = _hf_cache_dir_of(model_dir)
+    if cache_dir is None:
         return None
     snapshots_dir = cache_dir / _HF_SNAPSHOTS_DIR_NAME
     return snapshots_dir if snapshots_dir.is_dir() else None

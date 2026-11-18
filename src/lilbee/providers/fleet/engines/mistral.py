@@ -28,7 +28,11 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
-from lilbee.providers.gguf_meta import read_gguf_metadata, snapshot_entry_of_blob
+from lilbee.providers.gguf_meta import (
+    is_hf_cache_blob,
+    read_gguf_metadata,
+    snapshot_entry_of_blob,
+)
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _MIN_SPLIT_CARDS = 2
@@ -352,7 +356,8 @@ class MistralAdapter:
             return
         from lilbee.catalog.runnable import session_host
 
-        name = model_path.name
+        path = snapshot_entry_of_blob(model_path)
+        name = path.name
         cards = len(ratio)
         backend = self.pick_build(session_host()).backend
         if backend in (None, _CPU, _METAL):
@@ -366,7 +371,14 @@ class MistralAdapter:
                 f"mistral.rs splits {name} only evenly across cards. "
                 f"Use the {EngineName.LLAMA.value} engine for an uneven split."
             )
-        heads = _head_counts(model_path)
+        if is_hf_cache_blob(path):
+            raise SplitRefusedError(
+                f"mistral.rs cannot split this model across {cards} cards: "
+                "its model file is incomplete or damaged. "
+                "Run 'lilbee model list', remove that model with 'lilbee model rm', "
+                "then pull it again."
+            )
+        heads = _head_counts(path)
         if heads is None or not _heads_divide(*heads, cards):
             raise SplitRefusedError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
@@ -392,7 +404,7 @@ class MistralAdapter:
         whole = self._whole_estimate(request)
         if len(request.tensor_split) < _MIN_SPLIT_CARDS:
             return whole
-        layers = _layer_count(request.model_path)
+        layers = _layer_count(snapshot_entry_of_blob(request.model_path))
         if layers is None:
             return whole
         shares = _apportion(layers, request.tensor_split)
