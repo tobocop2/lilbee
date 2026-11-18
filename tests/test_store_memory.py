@@ -497,6 +497,30 @@ class TestRebuildPrunesVersions:
         assert windows[0] > timedelta(seconds=_PAST_THE_WINDOW)
         assert reader.to_arrow().num_rows == 40
 
+    def test_a_failed_prune_after_the_overwrite_keeps_the_rebuilt_rows(
+        self, stocked, monkeypatch, caplog
+    ):
+        reader = stocked.open_table(MEMORIES_TABLE)
+        assert reader is not None
+
+        def failing(self, *args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(type(reader), "optimize", failing)
+        dim = stocked._config.embedding_dim
+        with caplog.at_level("WARNING", logger="lilbee.data.store.core"):
+            count = stocked.rebuild_memory_embeddings(
+                lambda texts: [_unit_array(dim, 3) for _ in texts]
+            )
+        assert count == 40
+        memories = stocked.get_memories(owner_predicate=LOCAL_PREDICATE)
+        assert len(memories) == 40
+        assert {m.vector.index(1.0) for m in memories} == {3}
+        assert any(
+            MEMORIES_TABLE in record.getMessage() and "disk full" in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_prune_runs_under_the_write_lock(self, stocked, monkeypatch):
         from lilbee.data.store import core
         from lilbee.runtime.lock import _write_mutex

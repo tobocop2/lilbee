@@ -4133,7 +4133,11 @@ class Store:
                 schema=self._memories_schema(),
                 mode="overwrite",
             )
-            prune_old_versions(rebuilt, keep_version=replaced_version)
+            try:
+                prune_old_versions(rebuilt, keep_version=replaced_version)
+            except Exception as exc:
+                # The rebuilt rows are committed; a failed prune leaves old versions for the next.
+                log.warning("Pruning old versions of %s failed: %s", MEMORIES_TABLE, exc)
         return len(memories)
 
     def close(self) -> None:
