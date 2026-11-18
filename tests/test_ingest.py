@@ -176,6 +176,30 @@ def mock_svc():
     svc_mod.set_services(None)
 
 
+# What a fleet engine says for an overflow: chat wording, wrong for a file.
+_CHAT_OVERFLOW_TEXT = (
+    "The conversation exceeds this model's context window. Start a new conversation or shorten "
+    "the input."
+)
+
+
+def _raised_for(error: str) -> Exception:
+    """The failure a file's extraction raises for each case of the held-out tests."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    if error == "embed-overflow":
+        from lilbee.providers.base import EmbeddingOverflowError
+
+        return EmbeddingOverflowError(_CHAT_OVERFLOW_TEXT, kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+    if error == "overflow":
+        return ProviderError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+    if error == "gateway":
+        return ProviderError("HTTP 503", kind=ProviderErrorKind.SERVER)
+    if error == "file":
+        return ValueError("bad file")
+    return ProviderError("engine crashed")
+
+
 def _install_real_store():
     """Swap the autouse mock store for a real LanceDB-backed one."""
     from lilbee.data.store import Store
@@ -2197,17 +2221,11 @@ class TestHeldOutRecordLifecycle:
     ):
         """A transient ProviderError plans the file again; an overflow or file error holds it."""
         from lilbee.data.ingest import sync
-        from lilbee.providers.base import EmbeddingOverflowError, ProviderError, ProviderErrorKind
 
-        overflow = ProviderErrorKind.CONTEXT_OVERFLOW
-        raised: Exception = {
-            "engine": ProviderError("engine crashed"),
-            "overflow": ProviderError("too long", kind=overflow),
-            "embed-overflow": EmbeddingOverflowError("too long", kind=overflow),
-            "file": ValueError("bad file"),
-        }[error]
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
-        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=_raised_for(error)
+        ):
             first = await sync(quiet=True)
 
         assert first.failed == ["doc.txt"]
@@ -2216,11 +2234,13 @@ class TestHeldOutRecordLifecycle:
         assert ("doc.txt" in second.added) is retried
         assert ("doc.txt" in held_kinds()) is not retried
         if error == "embed-overflow":
+            from lilbee.data.ingest.errors import OVERFLOW_REASON
+
             [held_file] = second.held_out
             assert held_file.filename == "doc.txt"
+            assert held_file.reason == OVERFLOW_REASON
             assert "chunk_size" in held_file.reason
-            assert "lilbee sync --retry-skipped" in held_file.reason
-            assert "too long" in held_file.reason
+            assert "conversation" not in held_file.reason
         if error == "overflow":
             [held_file] = second.held_out
             assert held_file.reason == "ProviderError: too long"
@@ -2236,22 +2256,17 @@ class TestHeldOutRecordLifecycle:
     async def test_the_failed_file_warning_names_the_file_and_the_cause(
         self, isolated_env, mock_svc, caplog, error, expected, absent
     ):
-        """An embedding overflow logs the way out and the provider's text; others keep the text."""
+        """An embedding overflow logs the way out, not chat text; others keep their text."""
         import logging
 
         from lilbee.data.ingest import sync
-        from lilbee.providers.base import EmbeddingOverflowError, ProviderError, ProviderErrorKind
 
-        overflow = ProviderErrorKind.CONTEXT_OVERFLOW
-        raised = {
-            "engine": ProviderError("engine crashed"),
-            "overflow": ProviderError("too long", kind=overflow),
-            "embed-overflow": EmbeddingOverflowError("too long", kind=overflow),
-        }[error]
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
         with (
             caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
-            mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised),
+            mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records", side_effect=_raised_for(error)
+            ),
         ):
             await sync(quiet=True)
 
@@ -2260,7 +2275,56 @@ class TestHeldOutRecordLifecycle:
         assert expected in line
         assert absent not in line
         if error == "embed-overflow":
-            assert line.endswith("(too long)")
+            from lilbee.data.ingest.errors import OVERFLOW_REASON
+
+            assert OVERFLOW_REASON in line
+            assert "conversation" not in line
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            pytest.param("chunk_size", 64, id="chunk-size"),
+            pytest.param("max_embed_chars", 99999, id="embed-chars"),
+            pytest.param("embedding_model", "other/model", id="embedding-model"),
+            pytest.param("num_ctx", 4096, id="context-size"),
+        ],
+    )
+    async def test_an_overflow_hold_is_released_when_a_deciding_setting_changes(
+        self, isolated_env, mock_svc, monkeypatch, field, value
+    ):
+        """Each setting that decides an overflow replans the held file; unchanged, it stays held."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderErrorKind
+
+        raised = EmbeddingOverflowError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW)
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
+            await sync(quiet=True)
+        assert held_kinds() == {"doc.txt": HeldOut.FAILED}
+        assert "doc.txt" not in (await sync(quiet=True)).added
+
+        monkeypatch.setattr(cfg, field, value)
+        changed = await sync(quiet=True)
+
+        assert "doc.txt" in changed.added
+        assert held_kinds() == {}
+
+    async def test_a_file_failure_hold_ignores_a_changed_setting(
+        self, isolated_env, mock_svc, monkeypatch
+    ):
+        """A failure that is not an embedding overflow stays held when a setting changes."""
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=ValueError("bad file")
+        ):
+            await sync(quiet=True)
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        second = await sync(quiet=True)
+
+        assert "doc.txt" not in second.added
+        assert held_kinds() == {"doc.txt": HeldOut.FAILED}
 
     async def test_a_file_whose_token_count_failed_is_added_by_the_next_sync(
         self, isolated_env, mock_svc

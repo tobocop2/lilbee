@@ -67,7 +67,7 @@ from lilbee.data.ingest.discovery import (
     resolve_source_path,
     resolve_source_root,
 )
-from lilbee.data.ingest.errors import error_reason, log_reason
+from lilbee.data.ingest.errors import OVERFLOW_REASON, error_reason, log_reason
 from lilbee.data.ingest.fanout import (
     WORKER_LOG_NAME,
     ShardDone,
@@ -1039,12 +1039,26 @@ def _describe_failures(store: Store, names: Iterable[str]) -> list[SkippedSource
     ]
 
 
+def _overflow_inputs() -> str:
+    """The settings that decide whether a piece of a file fits the embedding window."""
+    c = active_config()
+    return (
+        f"chunk_size={c.chunk_size};max_embed_chars={c.max_embed_chars};"
+        f"embedding_model={c.embedding_model};num_ctx={c.num_ctx}"
+    )
+
+
 def _held_hashes(store: Store) -> dict[str, str]:
-    """The content hash each held-out path is held out at, by path; a retry holds nothing out."""
+    """The content hash each held-out path is still held out at, by path.
+
+    A retry holds nothing out. A hold written under the overflow settings is dropped
+    once any of them changes, so the next sync plans that file again.
+    """
+    inputs = _overflow_inputs()
     return {
         path: record.file_hash
         for path, record in store.held_records().items()
-        if record.kind is not HeldOut.RETRY
+        if record.kind is not HeldOut.RETRY and (not record.inputs or record.inputs == inputs)
     }
 
 
@@ -1069,6 +1083,11 @@ def _retry_reason(reason: str) -> str:
     return line.rstrip(".")[:_RETRY_REASON_LIMIT] or _ENGINE_SILENT
 
 
+def _failure_record(digest: str, reason: str, inputs: str) -> HeldRecord:
+    """The hold of a failed file; an embedding overflow keeps the settings it overflowed under."""
+    return HeldRecord(HeldOut.FAILED, digest, reason, inputs if reason == OVERFLOW_REASON else "")
+
+
 def _persist_failures(
     store: Store,
     pending_hashes: dict[str, str],
@@ -1086,8 +1105,9 @@ def _persist_failures(
     logged, and those files are tried again next sync.
     """
     owns = shard.owns if shard is not None else None
+    inputs = _overflow_inputs()
     held = {
-        name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
+        name: _failure_record(fhash, reasons.get(name, _NO_REASON), inputs)
         for name in failed
         if (fhash := pending_hashes.get(name))
     }

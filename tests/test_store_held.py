@@ -322,8 +322,10 @@ class TestImportOfTheOlderFiles:
 
         db = lancedb.connect(str(held_config.lancedb_dir))
         schema = _sources_schema()
-        older = schema.remove(schema.get_field_index("held_reason")).remove(
-            schema.get_field_index("held_hash")
+        older = (
+            schema.remove(schema.get_field_index("held_inputs"))
+            .remove(schema.get_field_index("held_reason"))
+            .remove(schema.get_field_index("held_hash"))
         )
         ensure_table(db, SOURCES_TABLE, older)
         assert _held_unmigrated(db, tmp_path)
@@ -331,6 +333,30 @@ class TestImportOfTheOlderFiles:
         store.hold_failed({"a.pdf": _failed("h")})
         assert store.held_records() == {"a.pdf": _failed("h")}
         assert not _held_unmigrated(store.get_db(), tmp_path)
+
+    def test_an_index_with_only_the_inputs_column_missing_gains_it(self, held_config, tmp_path):
+        import lancedb
+
+        db = lancedb.connect(str(held_config.lancedb_dir))
+        schema = _sources_schema()
+        ensure_table(db, SOURCES_TABLE, schema.remove(schema.get_field_index("held_inputs")))
+        assert _held_unmigrated(db, tmp_path)
+        store = Store(held_config)
+        store.hold_failed({"a.pdf": HeldRecord(HeldOut.FAILED, "h", _REASON, "chunk_size=64")})
+        assert store.held_records()["a.pdf"].inputs == "chunk_size=64"
+        assert not _held_unmigrated(store.get_db(), tmp_path)
+
+    def test_a_hold_keeps_the_settings_it_was_written_under(self, held_config):
+        store = Store(held_config)
+        store.hold_failed(
+            {
+                "a.pdf": HeldRecord(HeldOut.FAILED, "h1", _REASON, "chunk_size=64"),
+                "b.pdf": _failed("h2"),
+            }
+        )
+        records = store.held_records()
+        assert records["a.pdf"].inputs == "chunk_size=64"
+        assert records["b.pdf"].inputs == ""
 
     def test_a_new_library_has_nothing_to_import(self, held_config, tmp_path):
         import lancedb

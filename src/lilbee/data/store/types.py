@@ -67,11 +67,12 @@ INGEST_FAILURES = frozenset({HeldOut.FAILED, HeldOut.RETRY})
 
 
 class HeldRecord(NamedTuple):
-    """Why a sync holds a path out, and the content hash it holds it out at."""
+    """Why a sync holds a path out, the content hash and the settings it holds it out at."""
 
     kind: HeldOut
     file_hash: str
     reason: str
+    inputs: str = ""
 
 
 # The reason a removal records, shown with the held-out file.

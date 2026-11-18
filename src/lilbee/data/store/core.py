@@ -321,10 +321,12 @@ _UPGRADE_THREAD_PREFIX = "library-upgrade"
 _PATH = "path"
 # The ``_sources`` column that names why a sync holds a row's path out (``HeldOut``).
 _HELD_OUT = "held_out"
-# The content hash a sync holds the path out at, and the reason shown for it.
+# The content hash a sync holds the path out at, the reason shown, and the settings it held it under.
 _HELD_HASH = "held_hash"
 _HELD_REASON = "held_reason"
-_HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON)
+_HELD_INPUTS = "held_inputs"
+_HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON, _HELD_INPUTS)
+_HELD_RECORD_COLUMNS = (_HELD_HASH, _HELD_REASON, _HELD_INPUTS)
 
 # Tables that hold a source's rows, deleted with the source. The concept
 # nodes/edges tables carry no source column (corpus-level aggregates).
@@ -422,6 +424,7 @@ _CITED_ONLY_SQL = {
     "chunk_count": "0",
     _HELD_HASH: _NULL_TEXT_SQL,
     _HELD_REASON: _NULL_TEXT_SQL,
+    _HELD_INPUTS: _NULL_TEXT_SQL,
 }
 
 # Rows a location fill reads and writes back in one batch: bounds its memory at any row count.
@@ -796,6 +799,7 @@ def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) 
         _HELD_OUT: record.kind.value,
         _HELD_HASH: record.file_hash,
         _HELD_REASON: record.reason,
+        _HELD_INPUTS: record.inputs or None,
     }
     if record.kind in INGEST_FAILURES and holds_document:
         return held
@@ -839,7 +843,7 @@ def _held_unmigrated(db: LanceDBConnection, data_root: Path) -> bool:
     if legacy_files(data_root):
         return True
     sources = open_committed(db, SOURCES_TABLE)
-    return sources is not None and not {_HELD_HASH, _HELD_REASON} <= set(sources.schema.names)
+    return sources is not None and not set(_HELD_RECORD_COLUMNS) <= set(sources.schema.names)
 
 
 def _add_held_columns(db: LanceDBConnection) -> None:
@@ -847,7 +851,7 @@ def _add_held_columns(db: LanceDBConnection) -> None:
     sources = open_committed(db, SOURCES_TABLE)
     if sources is None:
         return
-    missing = [name for name in (_HELD_HASH, _HELD_REASON) if name not in sources.schema.names]
+    missing = [name for name in _HELD_RECORD_COLUMNS if name not in sources.schema.names]
     if missing:
         sources.add_columns(dict.fromkeys(missing, _NULL_TEXT_SQL))
 
@@ -3544,7 +3548,10 @@ class Store:
         name = self._locations().name
         return {
             name(row[_PATH]): HeldRecord(
-                HeldOut(row[_HELD_OUT]), row[_HELD_HASH], row[_HELD_REASON]
+                HeldOut(row[_HELD_OUT]),
+                row[_HELD_HASH],
+                row[_HELD_REASON],
+                row[_HELD_INPUTS] or "",
             )
             for row in rows
         }

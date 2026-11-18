@@ -1114,6 +1114,42 @@ def test_raise_for_status_tags_recorded_prompt_length_400_as_overflow() -> None:
 
 
 @pytest.mark.parametrize(
+    ("status", "body", "kind"),
+    [
+        pytest.param(
+            400,
+            '{"error":{"code":400,"message":"request (9000 tokens) exceeds the available context '
+            'size (4096 tokens), try increasing it","type":"exceed_context_size_error",'
+            '"n_prompt_tokens":9000,"n_ctx":4096}}',
+            "context_overflow",
+            id="400-exceed-context-size",
+        ),
+        pytest.param(
+            500,
+            '{"error":{"code":500,"message":"input (136 tokens) is too large to process. '
+            'increase the physical batch size","type":"server_error"}}',
+            "context_overflow",
+            id="500-too-large-to-process",
+        ),
+        pytest.param(502, "Bad Gateway", "server", id="502-gateway"),
+        pytest.param(503, "Service Unavailable", "server", id="503-gateway"),
+        pytest.param(504, "Gateway Timeout", "server", id="504-gateway"),
+    ],
+)
+def test_an_engine_error_body_says_whether_a_retry_can_help(
+    status: int, body: str, kind: str
+) -> None:
+    """An overflow repeats on every retry; a gateway error is transient and is retried."""
+    from lilbee.providers.base import ProviderErrorKind
+
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(status, text=body))
+
+    assert excinfo.value.kind is ProviderErrorKind(kind)
+    assert excinfo.value.repeats_on_retry is (kind == "context_overflow")
+
+
+@pytest.mark.parametrize(
     "body",
     [
         '{"error":{"message":"Unknown field `foo`","type":"invalid_request_error"}}',
