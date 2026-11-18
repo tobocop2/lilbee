@@ -948,6 +948,8 @@ class RolePlacementResponse(BaseModel):
     tensor_split: list[int] | None
     replicas: int
     target: RoleTarget = RoleTarget.GPU
+    # What the planner charged one instance of the role, in bytes; 0 when none is recorded.
+    charge_bytes: int = 0
 
 
 class SkippedRoleResponse(BaseModel):
@@ -1022,6 +1024,7 @@ class PlacementResponse(BaseModel):
                     tensor_split=list(r.tensor_split) if r.tensor_split else None,
                     replicas=r.replicas,
                     target=r.target,
+                    charge_bytes=r.charge_bytes,
                 )
                 for r in view.roles
             ],

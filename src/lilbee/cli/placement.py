@@ -111,7 +111,8 @@ def _render_view(view: PlacementView) -> None:
             Text(
                 f"  {role_view.role.value}: target={role_view.target.value}"
                 f" devices={list(role_view.devices)}"
-                f" replicas={role_view.replicas}{split_info}  {role_view.model}"
+                f" replicas={role_view.replicas}{split_info}"
+                f" charge={role_view.charge_bytes / _GIB:.1f} GiB  {role_view.model}"
             ),
             soft_wrap=True,
         )

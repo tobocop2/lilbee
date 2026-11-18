@@ -59,6 +59,7 @@ def _busy_plan() -> ResolvedPlacement:
         co_tenants=_ReverseOrderSet({WorkerRole.EMBED, WorkerRole.CHAT, WorkerRole.RERANK}),
         engine_backend=EngineBackend.CUDA,
         size_unknown_roles=(WorkerRole.EMBED, WorkerRole.CHAT),
+        charged_bytes={WorkerRole.EMBED: 2 * GIB, WorkerRole.CHAT: 30 * GIB},
     )
 
 
@@ -86,6 +87,16 @@ def test_a_role_reports_its_model_and_a_role_without_a_ref_reports_an_empty_name
     assert rows[WorkerRole.CHAT].model == "org/chat.gguf"
     assert rows[WorkerRole.EMBED].model == "org/embed.gguf"
     assert rows[WorkerRole.RERANK].model == ""
+
+
+def test_a_role_reports_the_charge_the_planner_made_and_a_role_without_one_reports_zero(
+    busy_machine,
+):
+    rows = _by_role(app_placement.get_placement())
+
+    assert rows[WorkerRole.CHAT].charge_bytes == 30 * GIB
+    assert rows[WorkerRole.EMBED].charge_bytes == 2 * GIB
+    assert rows[WorkerRole.RERANK].charge_bytes == 0
 
 
 def test_tight_roles_report_their_shortfall_ordered_by_role_name(busy_machine):

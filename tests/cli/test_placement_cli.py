@@ -188,6 +188,34 @@ def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
     assert data["spec_json"] == '{"chat": {"devices": [0]}}'
 
 
+def _view_with_charge() -> PlacementView:
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 72 * _GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp", charge_bytes=7 * _GIB
+            ),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+
+def test_show_prints_each_roles_charge(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view_with_charge())
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "charge=7.0 GiB" in result.stdout
+
+
+def test_show_json_reports_each_roles_charge(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view_with_charge())
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert json.loads(result.stdout)["roles"][0]["charge_bytes"] == 7 * _GIB
+
+
 def test_show_json_mode_error_emits_error_object(monkeypatch: object) -> None:
     """A known failure in --json mode emits {"error": ...}, not a Rich error line."""
 

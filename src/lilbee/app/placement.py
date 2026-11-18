@@ -64,6 +64,8 @@ class RolePlacementView:
     engine: str
     # Where the role runs. ``devices`` is empty for a CPU role, which holds no card.
     target: RoleTarget = RoleTarget.GPU
+    # What the planner charged one instance of the role, in bytes; 0 when no charge is recorded.
+    charge_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,7 @@ def _view(
                 replicas=1,
                 engine=str(engines[plan.role].name),
                 target=plan.target,
+                charge_bytes=resolved.charged_bytes.get(plan.role, 0),
             )
     return PlacementView(
         gpus=gpus,

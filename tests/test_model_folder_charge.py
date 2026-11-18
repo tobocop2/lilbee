@@ -562,6 +562,12 @@ class TestAnUnknownSizeInThePlan:
         resolved = self._resolved(_folder(tmp_path), monkeypatch)
         assert resolved.size_unknown_roles == (WorkerRole.CHAT,)
 
+    def test_the_resolved_placement_records_the_charge_the_planner_made(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        resolved = self._resolved(_folder(tmp_path), monkeypatch)
+        assert resolved.charged_bytes == {WorkerRole.CHAT: model_memory.UNKNOWN_SIZE_RESERVE_BYTES}
+
     def test_the_resolved_placement_lists_no_role_of_known_size(
         self, tmp_path: Path, monkeypatch
     ) -> None:

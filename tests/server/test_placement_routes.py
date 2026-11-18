@@ -43,6 +43,28 @@ def test_get_placement(monkeypatch):
         assert r.json()["gpus"][0]["label"] == "CUDA0"
 
 
+def test_get_placement_reports_each_roles_charge(monkeypatch):
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp", charge_bytes=7 * GIB
+            ),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+    async def _placement():
+        return view
+
+    monkeypatch.setattr(handlers, "placement", _placement)
+    with create_test_client([placement_route]) as client:
+        body = client.get("/api/placement").json()
+    assert body["roles"][0]["charge_bytes"] == 7 * GIB
+
+
 def test_put_refused_on_daemon():
     """PUT placement is refused on the HTTP daemon (restarts the fleet's moved roles)."""
     with create_test_client([placement_set_route]) as client:

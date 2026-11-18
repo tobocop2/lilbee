@@ -3970,6 +3970,8 @@ class ResolvedPlacement:
     hidden: IcdChoice | None = None
     # Roles placed on the unknown-size reserve because no figure for the model was found.
     size_unknown_roles: tuple[WorkerRole, ...] = ()
+    # What the planner charged each role's instance, in bytes, the figure its fit checks use.
+    charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
 
 
 def resolve_placement_plan(
@@ -4055,6 +4057,7 @@ def resolve_placement_plan(
         engine_backend=reading.backend,
         hidden=_hidden_choice(devices),
         size_unknown_roles=tuple(inp.role for inp in inputs if not inp.size_known),
+        charged_bytes={inp.role: inp.est_vram_bytes for inp in inputs},
         skipped_no_engine={
             role: NoEngineRole(ref, (no_engine_notices or {}).get(role, ""))
             for role, ref in _roles_without_engine(None, engines).items()
