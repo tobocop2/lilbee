@@ -4101,8 +4101,8 @@ class Store:
         The snapshot, embed, and table swap all run under the write lock so a
         concurrent ``add_memory`` cannot commit into the read-then-swap window and
         be erased; it either lands before the snapshot or blocks until the rebuild
-        finishes. The overwrite leaves the old table version on disk, so the
-        versions older than the keep window are pruned after it.
+        finishes. The overwrite leaves the old table versions on disk, so they are
+        pruned after it; the replaced version stays, for a reader that opened it.
         """
         with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
@@ -4111,6 +4111,7 @@ class Store:
             rows = table.search().limit(None).to_list()
             if not rows:
                 return 0
+            replaced_version = table.version
             memories = [MemoryRow(**r) for r in rows]
             vectors = embed([m.text for m in memories])
             dim = self._config.embedding_dim
@@ -4132,7 +4133,7 @@ class Store:
                 schema=self._memories_schema(),
                 mode="overwrite",
             )
-            prune_old_versions(rebuilt)
+            prune_old_versions(rebuilt, keep_version=replaced_version)
         return len(memories)
 
     def close(self) -> None:

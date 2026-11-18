@@ -350,10 +350,10 @@ class CrawlPages:
     def compact(self) -> None:
         """Delete the rows later rows replaced, then fold the table's commits into one version.
 
-        A version the fold replaces stays readable for ``_KEEP_VERSIONS``, so a reader of
-        another process at that version still reads it. A store that committed nothing
-        since its last fold, and holds no replaced rows, has nothing to fold. Caller holds
-        :meth:`held`.
+        The fold deletes the versions older than the keep window of the shared prune, so a
+        reader of another process at an older version can lose it. A store that committed
+        nothing since its last fold, and holds no replaced rows, has nothing to fold.
+        Caller holds :meth:`held`.
         """
         table = self._table
         if table is None or not (self._unfolded or self._view.replaced):

@@ -3,7 +3,7 @@
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import numpy.typing as npt
@@ -20,6 +20,7 @@ from lilbee.data.store import (
     agent_owner,
     human_recall_predicate,
     is_agent_owner,
+    lance_helpers,
 )
 
 LOCAL_PREDICATE = f"owner = '{LOCAL_OWNER}'"
@@ -430,6 +431,9 @@ store.add_memory(
 """
 
 
+_PAST_THE_WINDOW = 11  # seconds: longer than the 10 s keep window of a replaced version
+
+
 def _table_bytes(store: Store) -> int:
     """Bytes the memories table occupies on disk, old versions included."""
     table_dir = store._config.lancedb_dir / f"{MEMORIES_TABLE}.lance"
@@ -445,41 +449,47 @@ class TestRebuildPrunesVersions:
             store.add_memory(_memory(store, text=f"memory {axis} " + "x" * 2000, axis=axis))
         return store
 
-    @pytest.fixture()
-    def no_keep_window(self, monkeypatch):
-        """Make every prune delete all replaced versions, as one older than the window would."""
-        from datetime import timedelta
-
-        from lancedb.table import LanceTable
-
-        real_optimize = LanceTable.optimize
-
-        def optimize_now(self, *args, **kwargs):
-            kwargs["cleanup_older_than"] = timedelta(0)
-            return real_optimize(self, *args, **kwargs)
-
-        monkeypatch.setattr(LanceTable, "optimize", optimize_now)
-
-    def test_repeated_rebuilds_keep_the_disk_flat(self, stocked, no_keep_window):
+    def test_rebuilds_spaced_past_the_window_keep_the_disk_flat(self, stocked, monkeypatch):
+        # The production window is 10 s; a 1 s window keeps the test fast and the rule the same.
+        monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", timedelta(seconds=1), raising=False)
         dim = stocked._config.embedding_dim
 
-        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
-            return [_unit_array(dim, 3) for _ in texts]
+        def rebuild() -> int:
+            time.sleep(1.2)
+            stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+            return _table_bytes(stocked)
 
-        stocked.rebuild_memory_embeddings(embed)
-        after_first = _table_bytes(stocked)
-        for _ in range(5):
-            stocked.rebuild_memory_embeddings(embed)
-        assert after_first > 0
-        assert _table_bytes(stocked) <= after_first * 1.1
+        rebuild()
+        steady = rebuild()
+        for _ in range(4):
+            rebuild()
+        assert steady > 0
+        assert _table_bytes(stocked) <= steady * 1.1
 
-    def test_rebuild_keeps_the_previous_version_within_the_window(self, stocked):
+    def test_reader_opened_before_a_rebuild_still_reads_after_it(self, stocked):
+        # The table sat idle past the window, so the version a rebuild replaces is older than it.
+        time.sleep(_PAST_THE_WINDOW)
+        reader = stocked.open_table(MEMORIES_TABLE)
+        assert reader is not None
         dim = stocked._config.embedding_dim
         stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
-        table = stocked.open_table(MEMORIES_TABLE)
-        assert table is not None
-        # A reader of another process at the version before the swap still reads it.
-        assert len(table.list_versions()) > 1
+        assert reader.to_arrow().num_rows == 40
+
+    def test_prune_runs_under_the_write_lock(self, stocked, monkeypatch):
+        from lilbee.data.store import core
+        from lilbee.runtime.lock import _write_mutex
+
+        real_prune = core.prune_old_versions
+        locked_during: list[bool] = []
+
+        def spy(*args, **kwargs):
+            locked_during.append(_write_mutex.locked())
+            real_prune(*args, **kwargs)
+
+        monkeypatch.setattr(core, "prune_old_versions", spy)
+        dim = stocked._config.embedding_dim
+        stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        assert locked_during == [True]
 
     def test_memory_added_by_another_process_during_a_rebuild_is_kept(self, stocked, tmp_path):
         script = tmp_path / "add_from_other_process.py"

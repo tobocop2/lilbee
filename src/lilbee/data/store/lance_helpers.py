@@ -28,10 +28,12 @@ log = logging.getLogger(__name__)
 # its sibling _TITLE_COLUMN.
 _CHUNK_COLUMN = "chunk"
 
-# How long a replaced table version stays readable: far longer than one read of the
-# table, which takes milliseconds. Kept short, as each kept version slows the check for
-# the latest one (about 1 ms per 1,000 versions on a laptop).
-KEEP_VERSIONS = timedelta(seconds=10)
+# The age at which a table version is deleted, counted from the version's own creation:
+# far longer than one read of the table, which takes milliseconds. Kept short, as each
+# kept version slows the check for the latest one (about 1 ms per 1,000 versions on a laptop).
+_KEEP_VERSIONS = timedelta(seconds=10)
+# The time allowed between the latest version and the prune that follows it.
+_AFTER_LATEST = timedelta(seconds=1)
 
 # Index types as LanceDB's IndexConfig reports them.
 _FTS_INDEX_TYPE = "FTS"
@@ -84,9 +86,19 @@ def open_committed(db: LanceDBConnection, name: str) -> LanceTable | None:
     return table
 
 
-def prune_old_versions(table: LanceTable) -> None:
-    """Delete the table versions older than ``KEEP_VERSIONS`` and fold the fragments."""
-    table.optimize(cleanup_older_than=KEEP_VERSIONS)
+def prune_old_versions(table: LanceTable, keep_version: int | None = None) -> None:
+    """Delete the table versions older than the keep window and fold the fragments.
+
+    LanceDB counts a version's age from its own creation, so a table that sat idle has
+    a replaced version older than the window. ``keep_version`` and every newer version
+    stay readable: the window grows to the time from that version to the latest one, plus
+    a second for the time since the latest one was made.
+    """
+    keep_for = _KEEP_VERSIONS
+    if keep_version is not None:
+        stamps = {row["version"]: row["timestamp"] for row in table.list_versions()}
+        keep_for = max(keep_for, max(stamps.values()) - stamps[keep_version] + _AFTER_LATEST)
+    table.optimize(cleanup_older_than=keep_for)
 
 
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:
