@@ -38,6 +38,7 @@ from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import CHAT_RUNTIME_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
+from tests._safetensors import safetensors_bytes
 
 CONTEXT = 40960
 PROMPT_TOKENS = 60008
@@ -197,7 +198,7 @@ def test_the_memory_estimate_is_the_weights_plus_the_cache_at_each_slot(tmp_path
             "head_dim": 4,
         },
     )
-    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1000))
     one = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, cfg.kv_cache_type))
     two = MLX.estimate_memory(MemoryRequest(folder, 4096, 2, 99, True, cfg.kv_cache_type))
     cache_per_slot = 32 * 4096
@@ -213,7 +214,7 @@ def test_the_memory_estimate_ignores_the_cache_type_setting(tmp_path: Path) -> N
         tmp_path,
         {"num_hidden_layers": 2, "num_attention_heads": 2, "head_dim": 4},
     )
-    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1000))
     q8 = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, KvCacheType.Q8_0))
     f16 = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, KvCacheType.F16))
     assert q8 == f16
@@ -371,7 +372,7 @@ def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prom
     from tests.test_fleet_provider import _FakeSwap
 
     folder = model_dir(tmp_path, {"max_position_embeddings": CONTEXT})
-    (folder / "model.safetensors").write_bytes(b"\0" * 1024)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1024))
     monkeypatch.setattr(cfg, "chat_n_ctx_target", CONTEXT)
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "placement", "")
@@ -422,7 +423,7 @@ def test_mlx_launch_ctx_is_the_smaller_of_the_window_and_the_target(
     from lilbee.providers.fleet import planning
 
     folder = model_dir(tmp_path, {"max_position_embeddings": window})
-    (folder / "model.safetensors").write_bytes(b"\0" * 1024)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1024))
     monkeypatch.setattr(cfg, "chat_n_ctx_target", target)
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "placement", "")

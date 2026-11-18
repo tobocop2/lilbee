@@ -46,6 +46,7 @@ from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
 from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._published import publish
+from tests._safetensors import safetensors_bytes
 from tests._stated_sizes import state_size
 
 L4 = ("NVIDIA L4", (8, 9))
@@ -464,7 +465,7 @@ def test_the_memory_estimate_is_a_fixed_reserve_of_the_file_size(tmp_path: Path)
 def test_the_memory_estimate_of_a_folder_prices_its_weights_and_its_cache(tmp_path: Path) -> None:
     folder = tmp_path / "model"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1000))
     config = {
         "num_hidden_layers": 2,
         "num_attention_heads": 2,
@@ -481,7 +482,7 @@ def test_the_memory_estimate_of_a_folder_prices_its_weights_and_its_cache(tmp_pa
 def _vision_folder(tmp_path: Path, config: dict[str, Any]) -> Path:
     folder = tmp_path / "vlm"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 1000)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1000))
     (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
     return folder
 
@@ -1212,7 +1213,7 @@ def test_a_split_estimate_charges_each_card_its_layer_share(
 def test_a_split_estimate_of_a_folder_charges_each_card_its_layer_share(tmp_path: Path) -> None:
     folder = tmp_path / "st"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 4000)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(4000))
     config = {
         "num_hidden_layers": 40,
         "num_attention_heads": 2,
@@ -1246,7 +1247,7 @@ def test_an_estimate_of_a_folder_without_a_layer_count_has_no_per_card_vector(
 ) -> None:
     folder = tmp_path / "st"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 4000)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(4000))
     (folder / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
     assert _estimate(folder, (1, 1)).per_device == ()
 

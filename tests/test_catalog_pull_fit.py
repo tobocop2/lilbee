@@ -18,6 +18,7 @@ from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.model_memory import CHAT_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import WorkerRole
+from tests._safetensors import safetensors_bytes
 
 GIB = 1024**3
 QWEN3_4B = {
@@ -158,7 +159,7 @@ class TestChatPullFit:
         folder = tmp_path / "model"
         folder.mkdir()
         (folder / "config.json").write_text(json.dumps(QWEN3_4B), encoding="utf-8")
-        (folder / "model.safetensors").write_bytes(b"\0" * 1_000_000)
+        (folder / "model.safetensors").write_bytes(safetensors_bytes(1_000_000))
         _hub(monkeypatch, QWEN3_4B, {"BF16": 500_000})
         installed = MISTRAL.estimate_memory(
             MemoryRequest(folder, 8192, 1, -1, True, KvCacheType.F16)

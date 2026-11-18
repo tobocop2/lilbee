@@ -19,8 +19,10 @@ from lilbee.providers.fleet.vram import (
 from lilbee.providers.model_cache import kv_bytes_per_token
 
 _SAFETENSORS_SUFFIX = ".safetensors"
-_MIN_SAFETENSORS_BYTES = 8 + len("{}")
-"""The smallest whole safetensors file: an 8-byte header length and an empty JSON header."""
+_SAFETENSORS_PREFIX_BYTES = 8
+_MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
+_SAFETENSORS_METADATA_KEY = "__metadata__"
+_SAFETENSORS_OFFSETS_KEY = "data_offsets"
 _IR_MODEL_STEM = "openvino_model"
 _IR_SUFFIXES = (".xml", ".bin")
 _IR_WEIGHTS_SUFFIX = ".bin"
@@ -312,17 +314,71 @@ def _installed_sizes(model_path: Path) -> dict[str, int]:
         return {}
 
 
-def installed_safetensors_bytes(model_path: Path) -> int:
-    """Bytes of the ``.safetensors`` files of an installed model.
+def _sum_suffix(sizes: Mapping[str, int], suffix: str) -> int:
+    return sum(size for name, size in sizes.items() if name.endswith(suffix))
 
-    0 when it holds none, or when any file is too short to hold a header: that file is
-    cut off, so the sum of the sizes is not the size of the weights.
+
+def installed_safetensors_bytes(model_path: Path) -> int:
+    """Bytes of the ``.safetensors`` files of an installed model; 0 when it holds none."""
+    return _sum_suffix(_installed_sizes(model_path), _SAFETENSORS_SUFFIX)
+
+
+def _is_whole_safetensors(path: Path, size: int) -> bool:
+    """Whether the file of *size* bytes is a whole safetensors file, not cut short.
+
+    The file is a u64 header length, the JSON header, then the data the header's
+    ``data_offsets`` span; the sizes add up to the file size exactly.
+    """
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(_SAFETENSORS_PREFIX_BYTES)
+            if len(prefix) < _SAFETENSORS_PREFIX_BYTES:
+                return False
+            header_bytes = int.from_bytes(prefix, "little")
+            if header_bytes > min(size - _SAFETENSORS_PREFIX_BYTES, _MAX_SAFETENSORS_HEADER_BYTES):
+                return False
+            raw_header = stream.read(header_bytes)
+    except OSError:
+        return False
+    try:
+        header = json.loads(raw_header)
+    except ValueError:
+        return False
+    data_end = _header_data_end(header)
+    return data_end is not None and size == _SAFETENSORS_PREFIX_BYTES + len(raw_header) + data_end
+
+
+def _header_data_end(header: object) -> int | None:
+    """The largest ``data_offsets`` end in a safetensors header, or None when it is malformed."""
+    if not isinstance(header, Mapping):
+        return None
+    data_end = 0
+    for name, entry in header.items():
+        if name == _SAFETENSORS_METADATA_KEY:
+            continue
+        offsets = entry.get(_SAFETENSORS_OFFSETS_KEY) if isinstance(entry, Mapping) else None
+        if not isinstance(offsets, list) or len(offsets) != 2:
+            return None
+        start, end = _whole_number(offsets[0]), _whole_number(offsets[1])
+        if start is None or end is None or not 0 <= start <= end:
+            return None
+        data_end = max(data_end, end)
+    return data_end
+
+
+def whole_safetensors_bytes(model_path: Path) -> int:
+    """Bytes of the ``.safetensors`` files of an installed model; 0 when any is cut short.
+
+    A cut-off file makes the sum of the sizes smaller than the weights, so the size is unknown.
     """
     sizes = _installed_sizes(model_path)
-    shards = [size for name, size in sizes.items() if name.endswith(_SAFETENSORS_SUFFIX)]
-    if any(size < _MIN_SAFETENSORS_BYTES for size in shards):
+    folder = model_path.parent if model_path.is_file() else model_path
+    shards = {
+        folder / name: size for name, size in sizes.items() if name.endswith(_SAFETENSORS_SUFFIX)
+    }
+    if not all(_is_whole_safetensors(path, size) for path, size in shards.items()):
         return 0
-    return sum(shards)
+    return sum(shards.values())
 
 
 def installed_config(model_path: Path) -> dict[str, Any] | None:
@@ -348,7 +404,7 @@ def _is_float32(config: Mapping[str, Any] | None) -> bool:
 
 def estimate_installed_encoder(model_path: Path, *, narrow_f32: bool) -> MemoryEstimate:
     """The encoder figure of an installed folder, its float32 weights halved when *narrow_f32*."""
-    weights = installed_safetensors_bytes(model_path)
+    weights = whole_safetensors_bytes(model_path)
     if narrow_f32 and _is_float32(installed_config(model_path)):
         weights //= 2
     return encoder_estimate(weights or None)
@@ -358,7 +414,7 @@ def _estimate_installed_chat(request: MemoryRequest) -> MemoryEstimate:
     """The chat figure of an installed folder: its weight files and the cache its config implies."""
     config = installed_config(request.model_path)
     return safetensors_chat_estimate(
-        installed_safetensors_bytes(request.model_path) or None,
+        whole_safetensors_bytes(request.model_path) or None,
         kv_per_token_from_config(config) if config is not None else None,
         request.ctx,
         request.slots,

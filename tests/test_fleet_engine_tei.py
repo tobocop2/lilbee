@@ -38,6 +38,7 @@ from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import ENCODER_RUNTIME_BYTES, UNKNOWN_SIZE_RESERVE_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.providers.truncation import note_truncated, truncation_scope
+from tests._safetensors import safetensors_bytes
 
 FIXTURES = Path(__file__).parent / "conformance" / "fixtures" / "engines"
 L4 = ("NVIDIA L4", (8, 9))
@@ -163,7 +164,7 @@ def test_choosing_auto_for_a_role_skips_the_served_roles_check(
 def _encoder_folder(root: Path, weight_bytes: int, dtype: str | None) -> Path:
     folder = root / "encoder"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"\0" * weight_bytes)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(weight_bytes))
     config = {"torch_dtype": dtype} if dtype is not None else {}
     (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
     return folder

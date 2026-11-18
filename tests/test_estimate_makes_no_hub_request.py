@@ -21,6 +21,7 @@ from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import WorkerRole
+from tests._safetensors import safetensors_bytes
 
 _CONFIG = {
     "num_hidden_layers": 36,
@@ -56,8 +57,7 @@ def folder(tmp_path: Path) -> Path:
     model = tmp_path / "model"
     model.mkdir()
     (model / "config.json").write_text(json.dumps(_CONFIG), encoding="utf-8")
-    with (model / "model.safetensors").open("wb") as shard:
-        shard.truncate(1_000_000)
+    (model / "model.safetensors").write_bytes(safetensors_bytes(1_000_000))
     return model
 
 

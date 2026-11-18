@@ -16,6 +16,7 @@ from lilbee.providers.fleet import model_memory as mm
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import GgufVramEstimate
+from tests._safetensors import safetensors_bytes
 from tests.conftest import child_pythonpath
 
 RESERVE = mm.UNKNOWN_SIZE_RESERVE_BYTES
@@ -37,7 +38,38 @@ def _request(path: Path, **overrides: object) -> MemoryRequest:
 def _write(folder: Path, name: str, size: int) -> None:
     target = folder / name
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(b"\0" * size)
+    whole = name.endswith(".safetensors") and size >= 10
+    target.write_bytes(safetensors_bytes(size) if whole else b"\0" * size)
+
+
+def _tensor(start: int, end: int) -> dict[str, object]:
+    return {"dtype": "U8", "shape": [end - start], "data_offsets": [start, end]}
+
+
+def _safetensors(header: object, data: int) -> bytes:
+    """A safetensors file: the length prefix, *header* as JSON, then *data* bytes."""
+    raw = json.dumps(header).encode()
+    return len(raw).to_bytes(8, "little") + raw + b"\0" * data
+
+
+_WHOLE_FILE = _safetensors(
+    {"__metadata__": {"format": "pt"}, "a": _tensor(600, 1000), "b": _tensor(0, 600)}, 1000
+)
+_CUT_FILES: dict[str, bytes] = {
+    "cut-in-the-data": _WHOLE_FILE[:1100],
+    "cut-in-the-header": _WHOLE_FILE[:50],
+    "shorter-than-a-prefix": b"\0" * 3,
+    "under-a-header": b"\0" * 9,
+    "extra-bytes": _WHOLE_FILE + b"\0" * 5,
+    "header-past-the-file": (10**6).to_bytes(8, "little") + b"{}",
+    "header-not-json": (4).to_bytes(8, "little") + b"nope",
+    "header-not-an-object": (2).to_bytes(8, "little") + b"[]",
+    "tensor-not-an-object": _safetensors({"a": 5}, 0),
+    "no-offsets": _safetensors({"a": {"dtype": "U8"}}, 0),
+    "one-offset": _safetensors({"a": {"data_offsets": [0]}}, 0),
+    "offset-not-a-number": _safetensors({"a": {"data_offsets": [0, "x"]}}, 0),
+    "offsets-reversed": _safetensors({"a": {"data_offsets": [5, 2]}}, 0),
+}
 
 
 SMALL_KV_BYTES = 32
@@ -277,29 +309,60 @@ class TestInstalledEncoder:
         est = mm.estimate_installed_encoder(tmp_path, narrow_f32=True)
         assert (est.device_bytes, est.size_known) == (RESERVE, False)
 
-    @pytest.mark.parametrize("size", [1, 9])
-    def test_a_weight_file_too_short_for_a_header_is_unknown(
-        self, size: int, tmp_path: Path
-    ) -> None:
-        _write(tmp_path, "model.safetensors", size)
+    @pytest.mark.parametrize("shape", sorted(_CUT_FILES))
+    def test_a_weight_file_that_is_not_whole_is_unknown(self, shape: str, tmp_path: Path) -> None:
+        (tmp_path / "model.safetensors").write_bytes(_CUT_FILES[shape])
         est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
         assert (est.device_bytes, est.size_known) == (RESERVE, False)
 
-    def test_a_weight_file_just_long_enough_for_a_header_is_known(self, tmp_path: Path) -> None:
-        _write(tmp_path, "model.safetensors", 10)
+    @pytest.mark.parametrize("size", [10, 11, 135, 136, 4000])
+    def test_a_whole_weight_file_is_known_at_its_size(self, size: int, tmp_path: Path) -> None:
+        _write(tmp_path, "model.safetensors", size)
         est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
-        assert (est.device_bytes, est.size_known) == (10 + mm.ENCODER_RUNTIME_BYTES, True)
+        assert (est.device_bytes, est.size_known) == (size + mm.ENCODER_RUNTIME_BYTES, True)
+
+    def test_tensors_in_any_order_and_a_metadata_entry_make_a_whole_file(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "model.safetensors").write_bytes(_WHOLE_FILE)
+        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        assert (est.device_bytes, est.size_known) == (
+            len(_WHOLE_FILE) + mm.ENCODER_RUNTIME_BYTES,
+            True,
+        )
 
     def test_one_cut_off_shard_makes_the_whole_folder_unknown(self, tmp_path: Path) -> None:
         _write(tmp_path, "model-00001-of-00002.safetensors", 4000)
-        _write(tmp_path, "model-00002-of-00002.safetensors", 9)
+        (tmp_path / "model-00002-of-00002.safetensors").write_bytes(_CUT_FILES["cut-in-the-data"])
         est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
         assert (est.device_bytes, est.size_known) == (RESERVE, False)
 
-    def test_a_cut_off_weight_file_gives_zero_installed_bytes(self, tmp_path: Path) -> None:
-        _write(tmp_path, "model.safetensors", 9)
-        assert mm.installed_safetensors_bytes(tmp_path) == 0
-        assert mm.installed_safetensors_bytes(tmp_path / "model.safetensors") == 0
+    def test_a_single_cut_off_file_is_unknown(self, tmp_path: Path) -> None:
+        target = tmp_path / "model.safetensors"
+        target.write_bytes(_CUT_FILES["cut-in-the-data"])
+        assert mm.whole_safetensors_bytes(target) == 0
+
+    def test_a_weight_file_that_cannot_be_opened_is_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write(tmp_path, "model.safetensors", 4000)
+
+        def refuse(self: Path, *args: object, **kwargs: object) -> object:
+            raise PermissionError("no access")
+
+        monkeypatch.setattr(Path, "open", refuse)
+        assert mm.whole_safetensors_bytes(tmp_path) == 0
+
+    def test_a_header_past_the_size_cap_is_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write(tmp_path, "model.safetensors", 4000)
+        monkeypatch.setattr(mm, "_MAX_SAFETENSORS_HEADER_BYTES", 100)
+        assert mm.whole_safetensors_bytes(tmp_path) == 0
+
+    def test_the_on_disk_sum_still_counts_a_cut_off_file(self, tmp_path: Path) -> None:
+        (tmp_path / "model.safetensors").write_bytes(_CUT_FILES["cut-in-the-data"])
+        assert mm.installed_safetensors_bytes(tmp_path) == 1100
 
 
 class TestWeightsFromFiles:
@@ -420,10 +483,10 @@ class TestInstalledEstimate:
         assert est.shared_bytes == 123 + SMALL_KV_BYTES * 4096 * 2 + mm.CHAT_RUNTIME_BYTES
 
     @pytest.mark.parametrize("fmt", [ModelFormat.MLX, ModelFormat.SAFETENSORS])
-    def test_a_chat_weight_file_too_short_for_a_header_is_the_unknown_size_reserve(
+    def test_a_chat_weight_file_cut_short_is_the_unknown_size_reserve(
         self, fmt: ModelFormat, tmp_path: Path
     ) -> None:
-        _write(tmp_path, "model.safetensors", 9)
+        (tmp_path / "model.safetensors").write_bytes(_CUT_FILES["cut-in-the-data"])
         _write_small_config(tmp_path)
         est = mm.estimate_memory(fmt, _request(tmp_path))
         assert (est.device_bytes, est.shared_bytes, est.size_known) == (RESERVE, RESERVE, False)

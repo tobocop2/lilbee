@@ -33,6 +33,7 @@ from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
 from tests._fleet_engines import Role, cards_of, engines_for_all_roles, prepare_host
 from tests._gguf_fixture import GGUF_MAGIC
+from tests._safetensors import safetensors_bytes
 from tests._stated_sizes import state_size
 
 _GB = 1024**3
@@ -3040,6 +3041,10 @@ class TestWeightsBytes:
         model.write_bytes(b"x" * 100)
         assert planning_mod._weights_bytes(model) == 100
 
+    def test_a_cut_off_safetensors_folder_keeps_its_on_disk_size(self, tmp_path) -> None:
+        (tmp_path / "model.safetensors").write_bytes(safetensors_bytes(4000)[:1000])
+        assert planning_mod._weights_bytes(tmp_path) == 1000
+
     def test_split_gguf_sums_all_sibling_shards(self, tmp_path) -> None:
         first = tmp_path / "big-00001-of-00003.gguf"
         first.write_bytes(b"x" * 100)
@@ -4090,6 +4095,35 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         # The file is 4096 bytes; the KV cache it will allocate dwarfs that.
         assert by_role[WorkerRole.CHAT].est_vram_bytes > 4096
         assert "floor rather than an estimate" in caplog.text
+
+    def test_a_cut_off_weights_folder_is_still_enrolled_at_its_on_disk_size(
+        self, _sizing_boom, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import logging
+
+        folder = tmp_path / "cut-folder"
+        folder.mkdir()
+        (folder / "model.safetensors").write_bytes(safetensors_bytes(4000)[:1000])
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: folder)
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
+                total_vram=24 * _GB, engines=engines_for_all_roles(LLAMA)
+            )
+        assert WorkerRole.CHAT in {i.role for i in inputs}
+        assert "could not size model" not in caplog.text
+
+    def test_a_cut_off_weights_folder_on_the_cpu_charges_its_on_disk_size(
+        self, _sizing_boom, tmp_path, monkeypatch
+    ) -> None:
+        folder = tmp_path / "cut-folder"
+        folder.mkdir()
+        (folder / "model.safetensors").write_bytes(safetensors_bytes(4000)[:1000])
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: folder)
+        charged = planning_mod._estimate_cpu_role(
+            WorkerRole.CHAT, "org/repo/unsizable.gguf", engine=LLAMA, skipped_not_installed={}
+        )
+        assert charged is not None
+        assert (charged.est_vram_bytes, charged.est_ram_bytes) == (0, 1000)
 
     def test_weights_beyond_every_pool_refuse_with_a_clear_message(
         self, _sizing_boom, monkeypatch, caplog
