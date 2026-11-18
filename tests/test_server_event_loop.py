@@ -15,6 +15,7 @@ from lilbee.catalog import CatalogResult
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.data.ingest import SyncResult
+from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL, RagContext
 from lilbee.runtime.progress.types import LibraryUpgradeEvent, UpgradePhase
 from lilbee.server import handlers
 from lilbee.server import wiki as server_wiki
@@ -255,6 +256,54 @@ class TestChatSummaryPersistStaysOffTheLoop:
         ):
             [f async for f in rag_handlers._context_management_frames([], "", "s1")]
         services.session_store.set_summary.assert_called_once_with("s1", "notes")
+
+
+class TestChatRetrievalStaysOffTheLoop:
+    """The one-shot chat route reads the library and memory on a worker thread."""
+
+    async def test_an_ungrounded_turn_builds_its_messages_off_the_loop(self, services):
+        threads: list[int] = []
+        searcher = services.searcher
+        with (
+            patch.object(
+                searcher,
+                "direct_messages",
+                side_effect=_recording(threads, returns=[{"role": "user", "content": "q"}]),
+            ),
+            pytest.raises(ModelNotFoundError, match="is not installed"),
+        ):
+            await rag_handlers.chat("q", [], top_k=0)
+        _assert_off_the_loop(threads, 1)
+
+    async def test_a_canned_answer_is_looked_up_off_the_loop(self, services):
+        threads: list[int] = []
+        searcher = services.searcher
+        with (
+            patch.object(searcher, "search_unavailable", return_value=False),
+            patch.object(searcher, "skip_retrieval", return_value=False),
+            patch.object(
+                searcher, "pre_retrieval_answer", side_effect=_recording(threads, returns="none")
+            ),
+        ):
+            result = await rag_handlers.chat("how many documents?", [])
+        assert result.answer == "none"
+        _assert_off_the_loop(threads, 1)
+
+    async def test_a_grounded_turn_retrieves_off_the_loop(self, services):
+        threads: list[int] = []
+        searcher = services.searcher
+        refused = RagContext([], [], refused=True)
+        with (
+            patch.object(searcher, "search_unavailable", return_value=False),
+            patch.object(searcher, "skip_retrieval", return_value=False),
+            patch.object(searcher, "pre_retrieval_answer", return_value=None),
+            patch.object(
+                searcher, "build_rag_context", side_effect=_recording(threads, returns=refused)
+            ),
+        ):
+            result = await rag_handlers.chat("q", [])
+        assert result.answer == GROUNDED_REFUSAL
+        _assert_off_the_loop(threads, 1)
 
 
 class TestSessionCallsStayOffTheLoop:
