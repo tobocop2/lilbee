@@ -160,7 +160,8 @@ def planned_chat_ctx() -> int | None:
     """The per-slot window the fleet will serve the configured chat model, or None.
 
     Mirrors the fleet's own single-GPU chat sizing, so it answers before the
-    engine is up: the same ``cfg.num_ctx`` short-circuit, then the same
+    engine is up: a ``cfg.num_ctx`` pin clamped to the trained window as the launch
+    clamps it, else the same
     :func:`resolve_chat_ctx` against the same budget the fleet sizes with, which
     is the memory the GPU reports rather than the host's (see
     :func:`lilbee.providers.fleet.planning.plan_sizing_budget`).
@@ -174,27 +175,29 @@ def planned_chat_ctx() -> int | None:
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
     from lilbee.providers.fleet.planning import plan_sizing_budget
+    from lilbee.providers.fleet.planning import planned_chat_ctx as pinned_chat_ctx
     from lilbee.providers.model_ref import parse_model_ref
 
     ref = str(cfg.chat_model)
     if not ref or not parse_model_ref(ref).is_local:
         return None
-    if cfg.num_ctx is not None:
-        return cfg.num_ctx
     try:
         path = resolve_model_path(ref)
         engine = resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
+        meta = engine.model_meta(path)
+        if cfg.num_ctx is not None:
+            return pinned_chat_ctx(path, meta)
         return resolve_chat_ctx(
             path,
-            engine.model_meta(path),
+            meta,
             engine=engine,
             available_bytes=plan_sizing_budget(engine),
         )
     except (ProviderError, OSError, ValueError):
-        # Sizing needs the model file and its GGUF header; an absent or unreadable
-        # one leaves the window unknown rather than failing the launch.
+        # Sizing needs the model file and its GGUF header. Without them the trained
+        # window is unknown: a pin stands as given, an unpinned window stays unknown.
         log.debug("planned_chat_ctx failed for %s", ref, exc_info=True)
-        return None
+        return cfg.num_ctx
 
 
 def client_chat_ctx(port: int) -> int | None:

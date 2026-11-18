@@ -150,6 +150,49 @@ def test_planned_chat_ctx_sizes_a_local_model_the_way_the_fleet_does(monkeypatch
     assert launch_mod.planned_chat_ctx() == 40960
 
 
+def _pin_on_trained_window(monkeypatch, tmp_path, *, trained: str | None) -> None:
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(b"0" * 1024)
+    meta = {"architecture": "qwen3"}
+    if trained is not None:
+        meta["context_length"] = trained
+    monkeypatch.setattr(cfg, "chat_model", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic", lambda _p: True
+    )
+
+
+@pytest.mark.no_warm_default
+def test_planned_chat_ctx_clamps_a_pin_past_the_trained_window(monkeypatch, tmp_path):
+    from lilbee.cli.launchers import server as launch_mod
+
+    _pin_on_trained_window(monkeypatch, tmp_path, trained="4096")
+    monkeypatch.setattr(cfg, "num_ctx", 8192)
+    assert launch_mod.planned_chat_ctx() == 4096
+
+
+@pytest.mark.no_warm_default
+def test_planned_chat_ctx_keeps_a_pin_inside_the_trained_window(monkeypatch, tmp_path):
+    from lilbee.cli.launchers import server as launch_mod
+
+    _pin_on_trained_window(monkeypatch, tmp_path, trained="40960")
+    monkeypatch.setattr(cfg, "num_ctx", 8192)
+    assert launch_mod.planned_chat_ctx() == 8192
+
+
+@pytest.mark.no_warm_default
+def test_client_chat_ctx_advertises_the_clamped_pin_while_the_engine_is_cold(monkeypatch, tmp_path):
+    from lilbee.cli.launchers import server as launch_mod
+
+    _pin_on_trained_window(monkeypatch, tmp_path, trained="4096")
+    monkeypatch.setattr(cfg, "num_ctx", 8192)
+    _health(monkeypatch, {"chat_ready": False, "chat_ctx": None})
+    assert launch_mod.client_chat_ctx(8765) == 4096
+
+
 @pytest.mark.no_warm_default
 def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(
     monkeypatch, tmp_path, stated_sizes
