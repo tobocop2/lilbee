@@ -1006,6 +1006,7 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
                 mock.patch.object(chat, "_run_preset_command"),
                 mock.patch.object(chat, "_run_hf_login"),
                 mock.patch.object(chat, "_send_message"),
+                mock.patch.object(chat, "_handle_slash"),
             ):
                 chat._submit_draft(chat._chat_input, typed)
             chat._chat_input.focus()
@@ -1020,6 +1021,16 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
             f"/LOGIN   {TOKEN}",
             f"/set crawl_password {PASSWORD}",
             f"/set  crawl_password\t{PASSWORD}",
+            f"/set OPENAI_API_KEY {PASSWORD}",
+            f"/set openai_api_key={PASSWORD}",
+            f"/set OpenAI_Api_Key={PASSWORD}",
+            f"/set ollama_base_url http://user:{PASSWORD}@host:11434",
+            f"/set lm_studio_base_url=http://user:{PASSWORD}@host:1234/v1",
+            f"/crawl https://user:{PASSWORD}@example.com/docs",
+            f"/crawl user:{PASSWORD}@example.com/docs",
+            f"/CRAWL https://example.com/a https://user:{PASSWORD}@example.com",
+            f"/add https://user:{PASSWORD}@example.com/page",
+            f"/add ./notes.md https://user:{PASSWORD}@example.com/page",
             f"/preset add x1 {LOCAL} --roles chat --key {PASSWORD}",
         ],
     )
@@ -1028,7 +1039,18 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
 
     @pytest.mark.parametrize(
         "typed",
-        ["/login", "/set top_k 5", "/version", "hello there"],
+        [
+            "/login",
+            "/set top_k 5",
+            "/set top_k=5",
+            "/version",
+            "hello there",
+            "/crawl https://example.com/docs?a=b@c",
+            "/crawl example.com",
+            "/add ./notes@v2.md",
+            "/add https://example.com/page",
+            "/set ollama_base_url http://localhost:11434",
+        ],
     )
     async def test_a_line_without_a_secret_is_recalled(self, typed):
         assert await self._recalled(typed) == typed
@@ -1042,6 +1064,12 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
             ("/set crawl_password", True),
             ("/set chunk_size 512", False),
             ("/set nonsense x", False),
+            ("/set CRAWL_PASSWORD x", True),
+            ("/set crawl_password=x", True),
+            ("/set ollama_base_url http://u:p@h", True),
+            ("/set ollama_base_url http://[::1@h", True),
+            ("/crawl http://[::1@h", True),
+            ("/add notes@v2.md", False),
             ("/set", False),
             ("/preset list", True),
             ("/version", False),
