@@ -633,6 +633,40 @@ class TestTheDeathPipe:
         assert recorded["kw"]["stdin"] not in held.values()
         child_guard.release_death_pipe(4242)
 
+    def test_the_watcher_is_spawned_with_the_pipe_read_end_its_own_session_and_no_stdio(
+        self, monkeypatch
+    ):
+        """Each spawn argument is pinned by name, so a dropped or changed one fails alone."""
+        held: dict[int, int] = {}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        real_pipe = os.pipe
+        ends: list[tuple[int, int]] = []
+
+        def _recording_pipe() -> tuple[int, int]:
+            pair = real_pipe()
+            ends.append(pair)
+            return pair
+
+        monkeypatch.setattr(child_guard.os, "pipe", _recording_pipe)
+        recorded: dict[str, object] = {}
+
+        def _capture(argv, **kw):
+            recorded["argv"], recorded["kw"] = argv, kw
+            return mock.MagicMock()
+
+        monkeypatch.setattr(child_guard._spawner, "spawn", _capture)
+        child_guard._watch_via_death_pipe(4242)
+
+        (read_fd, write_fd), kw = ends[0], recorded["kw"]
+        assert recorded["argv"][:2] == ["/bin/sh", "-c"]
+        assert set(kw) == {"stdin", "start_new_session", "stdout", "stderr"}
+        assert kw["stdin"] == read_fd
+        assert held[4242] == write_fd
+        assert kw["start_new_session"] is True
+        assert kw["stdout"] is subprocess.DEVNULL
+        assert kw["stderr"] is subprocess.DEVNULL
+        child_guard.release_death_pipe(4242)
+
     def test_a_watcher_that_cannot_start_leaks_no_fds(self, monkeypatch):
         """The reap is the fallback, but a leaked fd per failed spawn is not."""
         held: dict[int, int] = {}
