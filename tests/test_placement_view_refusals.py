@@ -311,24 +311,24 @@ class TestARefusedRoleIsNotTight:
         assert result.exit_code == 0
         body = json.loads(result.output)
         assert body["refusal"]
-        assert body.get("tight", []) == []
+        assert body["tight"] == []
 
     def test_rest_lists_no_tight_role(self, engine: _FolderEngine) -> None:
         with create_test_client([placement_route]) as client:
             body = client.get("/api/placement").json()
         assert body["refusal"]
-        assert body.get("tight", []) == []
+        assert body["tight"] == []
 
     def test_rest_preview_lists_no_tight_role(self, engine: _FolderEngine) -> None:
         with create_test_client([placement_preview_route]) as client:
             body = client.post("/api/placement/preview", json={"spec": None}).json()
         assert body["refusal"]
-        assert body.get("tight", []) == []
+        assert body["tight"] == []
 
     def test_mcp_lists_no_tight_role(self, engine: _FolderEngine) -> None:
         body = mcp_server.get_placement_tool()
         assert body["refusal"]
-        assert body.get("tight", []) == []
+        assert body["tight"] == []
 
 
 class TestAPinnedWindowWarnsOnce:
