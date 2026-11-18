@@ -268,12 +268,18 @@ class TestListingRead:
 
     @pytest.mark.parametrize("error_code", [None, "RepoNotFound"])
     def test_a_private_or_missing_repo_is_not_called_gated(
-        self, listing_server: _ListingServer, error_code: str | None
+        self,
+        listing_server: _ListingServer,
+        monkeypatch: pytest.MonkeyPatch,
+        error_code: str | None,
     ) -> None:
+        monkeypatch.setattr(dl, "hf_token", lambda: None)
         listing_server.status = 401
         listing_server.error_code = error_code
-        with pytest.raises(dl.ListingFailedError, match="Cannot query files for acme"):
+        with pytest.raises(dl.ListingFailedError, match="missing, private or gated") as caught:
             dl._repo_sibling_files(_REPO)
+        assert "Set HF_TOKEN" in str(caught.value)
+        assert "\n" not in str(caught.value)
 
     def test_an_unexpected_listing_fault_is_a_failed_fetch(
         self, monkeypatch: pytest.MonkeyPatch

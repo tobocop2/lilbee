@@ -2110,13 +2110,55 @@ class TestResolveFilename:
             "Set HF_TOKEN env var or visit the repo page to request access."
         )
 
-    @pytest.mark.parametrize("error_code", [None, "RepoNotFound"])
-    def test_a_401_the_hub_does_not_mark_gated_is_a_failed_listing(
-        self, monkeypatch: pytest.MonkeyPatch, error_code: str | None
+    @pytest.mark.parametrize(
+        ("status", "error_code"), [(401, None), (401, "RepoNotFound"), (404, "RepoNotFound")]
+    )
+    def test_a_missing_or_private_repo_without_a_token_names_the_token(
+        self, monkeypatch: pytest.MonkeyPatch, status: int, error_code: str | None
     ) -> None:
-        """A private or missing repo answers 401 too; only X-Error-Code GatedRepo reads as gated."""
+        """Only X-Error-Code GatedRepo reads as gated; an unmarked 401 may still be a gated repo."""
+        from lilbee.catalog import download
+
+        monkeypatch.setattr(download, "hf_token", lambda: None)
         self._headers(monkeypatch)
-        _stub_listing(monkeypatch, error=_hub_http_error(401, error_code))
+        _stub_listing(monkeypatch, error=_hub_http_error(status, error_code))
+        with pytest.raises(download.ListingFailedError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"Repository {PICKS_CHAT[0].hf_repo!r} is missing, private or gated on HuggingFace. "
+            "Set HF_TOKEN to get access if it exists."
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "error_code"), [(401, None), (401, "RepoNotFound"), (404, "RepoNotFound")]
+    )
+    def test_a_missing_or_private_repo_with_a_token_says_no_access(
+        self, monkeypatch: pytest.MonkeyPatch, status: int, error_code: str | None
+    ) -> None:
+        from lilbee.catalog import download
+
+        monkeypatch.setattr(download, "hf_token", lambda: "tok")
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(status, error_code))
+        with pytest.raises(download.ListingFailedError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"Repository {PICKS_CHAT[0].hf_repo!r} not found on HuggingFace, "
+            "or your token has no access."
+        )
+
+    def test_a_403_with_the_gated_code_is_gated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(403, "GatedRepo"))
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    @pytest.mark.parametrize("status", [403, 404])
+    def test_an_unmarked_403_or_404_is_a_failed_listing(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(status))
         with pytest.raises(catalog.download.ListingFailedError, match="Cannot query files"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
