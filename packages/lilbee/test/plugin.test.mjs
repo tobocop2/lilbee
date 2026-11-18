@@ -162,7 +162,8 @@ test("package.json points opencode and pi at existing plugin paths", () => {
 
 test("the packed tarball holds every file the entry points import", () => {
   const out = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT, encoding: "utf8" })
-  const files = JSON.parse(out)[0].files.map((file) => file.path)
+  // npm 12 prints an object keyed by package name, not an array.
+  const files = JSON.parse(out)["lilbee"].files.map((file) => file.path)
   for (const required of [
     "package.json",
     "plugin/server.js",
