@@ -1083,6 +1083,17 @@ def lost_card_reason(
     return " ".join(part for part in (f"{found}{count}.", hint, fix) if part)
 
 
+def unseen_card_reason(
+    role: WorkerRole, engine: str, unseen: Sequence[int], listed: Sequence[int]
+) -> str:
+    """The sentence for *role* placed on *unseen* devices that the *engine* does not list."""
+    return (
+        f"{role.value} is placed on {_device_phrase(unseen)}, but the {engine} engine "
+        f"lists only {_device_phrase(listed)}. Set the {role.value} target to cpu, "
+        "or choose an engine that lists that card."
+    )
+
+
 def _required_entry(
     spec: PlacementSpec,
     role: WorkerRole,

@@ -73,6 +73,7 @@ from lilbee.providers.fleet.placement import (
     placement_from_spec,
     plan_placement,
     refuse_role_without_entry,
+    unseen_card_reason,
 )
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
@@ -3221,6 +3222,19 @@ def _log_roles_left_unpinned(
             )
 
 
+def _unseen_card_reason(plan: InstancePlan, engine: EngineAdapter) -> str | None:
+    """Why *plan* cannot launch: *engine* lists cards, and not one that placement chose for it.
+
+    An engine that lists no card runs on the CPU and keeps its placement.
+    """
+    probe = _current_plan_probe(engine)
+    if probe is None or not probe.devices:
+        return None
+    listed = [d.index for d in probe.devices]
+    unseen = [index for index in plan.devices if index not in listed]
+    return unseen_card_reason(plan.role, engine.name, unseen, listed) if unseen else None
+
+
 def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
     """Devices the plan paths size against: the snapshot, else a live probe."""
     probe = _current_plan_probe(engine)
@@ -4587,6 +4601,10 @@ def _launches_and_refusals(
     for plan in placement.instances:
         if text_only := _text_only_vision_reason(plan.role, model_refs[plan.role]):
             refused[plan.role] = text_only
+            continue
+        unseen = _unseen_card_reason(plan, engines[plan.role])
+        if unseen is not None:
+            refused[plan.role] = unseen
             continue
         try:
             launch = _launch_for(
