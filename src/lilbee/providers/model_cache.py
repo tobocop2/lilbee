@@ -6,7 +6,6 @@ import logging
 import platform
 from collections.abc import Callable
 from enum import StrEnum
-from pathlib import Path
 
 from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal, card_totals
 from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, cuda_visible_cards, gpu_environ
@@ -29,9 +28,6 @@ _KV_BYTES_PER_CTX_TOKEN = 2048
 
 # Metal/CUDA buffer overhead as fraction of model weight memory
 _BUFFER_OVERHEAD_FRACTION = 0.10
-
-# Default context length for estimation when metadata unavailable
-_DEFAULT_CTX_LEN = 2048
 
 # Floor for the dynamic n_ctx computation (smaller is unusable for chat)
 _DYNAMIC_CTX_FLOOR = 512
@@ -72,20 +68,6 @@ def kv_bytes_per_token(
     except (KeyError, ValueError, ZeroDivisionError):
         return _KV_BYTES_PER_CTX_TOKEN
     return int(n_layers * head_count_kv * (k_dim * k_elem_bytes + v_dim * v_elem_bytes))
-
-
-def estimate_model_memory(
-    model_path: Path,
-    n_ctx: int = _DEFAULT_CTX_LEN,
-    kv_bytes_per_tok: int = _KV_BYTES_PER_CTX_TOKEN,
-) -> int:
-    """Estimate memory consumption for a GGUF model.
-    Approximation: file_size (weights) + KV cache + 10% buffer overhead.
-    """
-    file_bytes = model_path.stat().st_size if model_path.exists() else 0
-    kv_bytes = n_ctx * kv_bytes_per_tok
-    overhead = int(file_bytes * _BUFFER_OVERHEAD_FRACTION)
-    return file_bytes + kv_bytes + overhead
 
 
 def compute_dynamic_ctx(
