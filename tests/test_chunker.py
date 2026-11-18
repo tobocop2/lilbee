@@ -198,6 +198,11 @@ def _wordpiece_like(text: str) -> int:
     return len(_TOKEN.findall(text))
 
 
+def _heavy_at(extra: int):
+    """A tokenizer of one token per character and *extra* more for each ``@``."""
+    return lambda text: len(text) + extra * text.count("@")
+
+
 _PROSE = " ".join(
     f"Paragraph {i}: the aqueduct carried water across the valley to the city on a slope."
     for i in range(300)
@@ -397,6 +402,66 @@ class TestChunksFitTheEmbedderTokenLimit:
         assert len(chunks) > 1
         assert all(heading not in c for c in chunks)
         assert max(_wordpiece_like(c) for c in chunks) <= 64
+
+
+def _headings(*texts: str) -> SimpleNamespace:
+    """A heading context of one level-1 heading per text."""
+    return SimpleNamespace(headings=[SimpleNamespace(level=1, text=t) for t in texts])
+
+
+def _words(n: int, stem: str = "w") -> str:
+    return " ".join(f"{stem}{i}" for i in range(n))
+
+
+class TestFitBreadcrumb:
+    """The heading path fits inside the budget, or goes when it takes over half of it."""
+
+    @pytest.fixture(autouse=True)
+    def _word_counter(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+
+    def test_a_path_over_half_the_budget_leaves_the_chunk_bare(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        content = _words(8)
+
+        assert _fit_breadcrumb(content, _headings(_words(6, "p")), 10) == [content]
+
+    def test_a_path_of_exactly_half_the_budget_stays_on_every_piece(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        pieces = _fit_breadcrumb(_words(8), _headings(_words(4, "p")), 10)
+
+        assert len(pieces) > 1
+        assert all(p.startswith("# p0 p1 p2 p3\n\n") for p in pieces)
+        assert max(len(p.split()) for p in pieces) <= 10
+
+    def test_a_chunk_that_exactly_fills_the_budget_with_its_path_is_not_re_split(self, monkeypatch):
+        from lilbee.data.extract import chunk
+
+        def no_re_split(*_args):
+            raise AssertionError("a chunk that fits was re-split")
+
+        monkeypatch.setattr(chunk, "_extract_chunks", no_re_split)
+
+        assert chunk._fit_breadcrumb(_words(5), _headings(_words(4, "p")), 10) == [
+            "# p0 p1 p2 p3\n\n" + _words(5)
+        ]
+
+    def test_every_re_split_piece_carries_the_path(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        content = _words(20)
+
+        pieces = _fit_breadcrumb(content, _headings("Install"), 10)
+
+        assert len(pieces) > 2
+        assert all(p.startswith("# Install\n\n") for p in pieces)
+        assert " ".join(p.removeprefix("# Install\n\n") for p in pieces) == content
 
 
 class TestMarkdownChunking:
@@ -758,17 +823,36 @@ class Greeter:
         assert "".join(c.chunk.split("\n\n", 1)[1] for c in chunks) == line
 
     def test_a_piece_that_cannot_shrink_is_kept(self, monkeypatch, mock_services):
-        """A header alone over the budget leaves a one-character piece nothing to split."""
+        """One character over the budget on its own leaves nothing to split."""
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "chunk_size", 64)
-        mock_services.provider.count_tokens.side_effect = _wordpiece_like
-        result = _FakeResult([_FakeTSChunk("x", start_line=0, end_line=1, symbols=[])])
+        mock_services.provider.count_tokens.side_effect = _heavy_at(100)
+        result = _FakeResult([_FakeTSChunk("@", start_line=0, end_line=1, symbols=[])])
 
-        chunks = self._chunk_with_parser_result(result, source_name="/".join(["segment"] * 40))
+        chunks = self._chunk_with_parser_result(result)
 
         assert len(chunks) == 1
-        assert chunks[0].chunk.endswith("\n\nx")
+        assert chunks[0].chunk == "# File: pkg/mod.py (lines 1-1)\n\n@"
+
+    def test_a_file_name_over_half_the_budget_is_dropped_with_the_header(
+        self, monkeypatch, mock_services
+    ):
+        """A long file name does not split a body into a chunk for each character."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = len
+        body = "".join(f"row_{i:02d} = {i}\n" for i in range(40))
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=40, symbols=["row"])])
+
+        chunks = self._chunk_with_parser_result(result, source_name="n" * 57 + ".py")
+
+        assert 1 < len(chunks) < 20
+        assert max(len(c.chunk) for c in chunks) <= 64
+        assert all("# File:" not in c.chunk for c in chunks)
+        assert "".join(c.chunk for c in chunks) == body
+        assert (chunks[0].line_start, chunks[-1].line_end) == (1, 40)
 
     def test_a_symbol_list_over_half_the_budget_is_dropped_from_the_header(
         self, monkeypatch, mock_services
@@ -850,25 +934,23 @@ class Greeter:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "chunk_size", 64)
-        mock_services.provider.count_tokens.side_effect = len
-        name = "n" * (64 - 3 - len("# File:  (lines 1-1)"))
-        result = _FakeResult([_FakeTSChunk("ab", start_line=0, end_line=1)])
+        mock_services.provider.count_tokens.side_effect = _heavy_at(20)
+        result = _FakeResult([_FakeTSChunk("@@", start_line=0, end_line=1)])
 
-        chunks = self._chunk_with_parser_result(result, source_name=name)
+        chunks = self._chunk_with_parser_result(result)
 
-        assert self._bodies(chunks) == ["a", "b"]
+        assert self._bodies(chunks) == ["@", "@"]
 
     def test_one_long_line_splits_at_its_middle(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "chunk_size", 64)
-        mock_services.provider.count_tokens.side_effect = len
-        name = "n" * (64 - 5 - len("# File:  (lines 1-1)"))
-        result = _FakeResult([_FakeTSChunk("abcdef", start_line=0, end_line=1)])
+        mock_services.provider.count_tokens.side_effect = _heavy_at(12)
+        result = _FakeResult([_FakeTSChunk("@a@b@c", start_line=0, end_line=1)])
 
-        chunks = self._chunk_with_parser_result(result, source_name=name)
+        chunks = self._chunk_with_parser_result(result)
 
-        assert self._bodies(chunks) == ["abc", "def"]
+        assert self._bodies(chunks) == ["@a@", "b@c"]
 
     def test_a_symbol_list_within_half_the_budget_stays_in_the_header(
         self, monkeypatch, mock_services
