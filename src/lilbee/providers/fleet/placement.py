@@ -101,6 +101,14 @@ class RoomHolder:
 
 
 @dataclass(frozen=True)
+class LowFreeMemory:
+    """System memory a CPU role brings its plan to, and the memory free when it was read."""
+
+    wanted: int
+    free: int
+
+
+@dataclass(frozen=True)
 class Placement:
     """Planner output: server instances, swap tenants, and best-effort placements.
 
@@ -110,13 +118,15 @@ class Placement:
     places a role that fits nowhere anyway and lists it in ``tight_roles`` with
     its estimated shortfall in bytes. ``co_tenants`` share one llama-swap group
     and evict each other on demand, so only one is resident at a time; each runs
-    a single instance.
+    a single instance. ``low_free_memory`` lists each CPU role that fits the machine but
+    not the memory free now; the launch path logs it.
     """
 
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
     co_tenants: frozenset[WorkerRole] = frozenset()
     tight_roles: dict[WorkerRole, int] = field(default_factory=dict)
+    low_free_memory: dict[WorkerRole, LowFreeMemory] = field(default_factory=dict)
 
 
 def plan_placement(

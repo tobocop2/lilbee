@@ -173,10 +173,11 @@ class TestTheHostMemoryBound:
             mp.setattr(cfg, "cpu_moe", True, raising=False)
             mp.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
             mp.setattr(planning, "total_system_memory", lambda: 64 * _GB)
-            mp.setattr(planning, "free_system_memory", lambda: 32 * _GB)
-            refused_at = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed)
+            refused_at = planning._host_memory_refuses(
+                WorkerRole.CHAT, "m", ram, committed, lambda: 32 * _GB
+            )
             refused_more = planning._host_memory_refuses(
-                WorkerRole.CHAT, "m", ram, committed + extra
+                WorkerRole.CHAT, "m", ram, committed + extra, lambda: 32 * _GB
             )
         assert not (refused_at and not refused_more)
 
@@ -196,8 +197,9 @@ class TestTheHostMemoryBound:
             mp.setattr(cfg, "cpu_moe", True, raising=False)
             mp.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
             mp.setattr(planning, "total_system_memory", lambda: total)
-            mp.setattr(planning, "free_system_memory", lambda: total)
-            refused = planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, committed)
+            refused = planning._host_memory_refuses(
+                WorkerRole.CHAT, "m", ram, committed, lambda: total
+            )
         assert refused == (committed + ram > total)
 
     @given(ram=st.integers(min_value=1, max_value=500 * _GB))
@@ -208,7 +210,7 @@ class TestTheHostMemoryBound:
             mp.setattr(cfg, "cpu_moe", False, raising=False)
             mp.setattr(cfg, "n_cpu_moe", None, raising=False)
             mp.setattr(cfg, "n_gpu_layers", None, raising=False)
-            assert not planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, 0)
+            assert not planning._host_memory_refuses(WorkerRole.CHAT, "m", ram, 0, lambda: 0)
 
 
 class TestTheEstimatePlausibilityBand:
