@@ -994,6 +994,39 @@ class TestServerShowsTheUpgrade:
         assert b"upgrading the library" in sent[1]["body"]
         assert json.loads(sent[1]["body"])["upgrade"] == _table(1).model_dump(mode="json")
 
+    @pytest.mark.parametrize(
+        ("path", "read_text"),
+        [
+            ("/api/status", lambda body: body["detail"]),
+            ("/v1/models", lambda body: body["error"]["message"]),
+            ("/v1/messages/count_tokens", lambda body: body["error"]["message"]),
+        ],
+        ids=["plugin", "openai", "anthropic"],
+    )
+    async def test_a_slow_open_with_no_upgrade_says_opening_not_upgrading(self, path, read_text):
+        from lilbee.server import app as app_mod
+        from tests.conftest import make_mock_services
+
+        store = mock.MagicMock(is_open=False)
+        store.wait_for_open.return_value = False
+        store.upgrade_progress.return_value = None
+        services_mod.set_services(make_mock_services(store=store))
+        sent: list[dict] = []
+
+        async def _send(message):
+            sent.append(message)
+
+        async def _next_app(scope, receive, send):
+            raise AssertionError("the request must not reach the route")
+
+        scope = {"type": "http", "path": path, "headers": []}
+        await app_mod._LibraryOpenWait().handle(scope, None, _send, _next_app)
+
+        body = json.loads(sent[1]["body"])
+        assert sent[0]["status"] == 503
+        assert read_text(body) == "lilbee is opening the library. Try again in a few seconds."
+        assert body["upgrade"] is None
+
     async def test_a_request_past_the_limit_is_answered_in_the_error_shape_of_its_api(
         self, library, monkeypatch
     ):

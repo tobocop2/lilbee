@@ -249,21 +249,24 @@ _UPGRADE_WAIT_SECONDS = 10.0
 _OPEN_EXIT_WAIT_SECONDS = 5.0
 _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
+_OPENING_MESSAGE = "lilbee is opening the library. Try again in a few seconds."
 
 
 def _upgrading_response(path: str, upgrade: LibraryUpgradeEvent | None) -> Response:
     """The 503 for a request that waited out the limit, in the error shape of its API.
 
-    Every shape also carries the upgrade's progress, as health reports it.
+    The text names the upgrade only when one runs. Every shape also carries the upgrade's
+    progress, as health reports it.
     """
     code = CompletionsErrorCode.INTERNAL_ERROR
+    message = _OPENING_MESSAGE if upgrade is None else _UPGRADING_MESSAGE
     body: dict[str, Any]
     if path.startswith("/v1/messages"):
-        body = anthropic_error_body(anthropic_error_type(code), _UPGRADING_MESSAGE)
+        body = anthropic_error_body(anthropic_error_type(code), message)
     elif path.startswith("/v1/"):
-        body = completions_error_body(code, _UPGRADING_MESSAGE)
+        body = completions_error_body(code, message)
     else:
-        body = {"status_code": 503, "detail": _UPGRADING_MESSAGE}
+        body = {"status_code": 503, "detail": message}
     body["upgrade"] = None if upgrade is None else upgrade.model_dump(mode="json")
     return Response(
         body,
