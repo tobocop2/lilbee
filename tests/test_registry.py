@@ -905,7 +905,7 @@ class TestModelRegistryResolve:
         assert _vision_projector_missing(_REPO) is False
         assert _vision_projector_missing(f"{_REPO}#gguf") is False
 
-    def test_a_gguf_qualified_pull_of_a_repo_with_a_projector_succeeds(
+    def test_a_gguf_qualified_pull_of_an_installed_repo_fetches_no_projector(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from lilbee.app.models import ensure_vision_projector
@@ -920,6 +920,25 @@ class TestModelRegistryResolve:
             "lilbee.catalog.download_mmproj", lambda e, **_: fetched.append(e) or tmp_path / "p"
         )
         assert ensure_vision_projector(f"{_REPO}#gguf", warn_unreadable=True) is None
+        assert fetched == []
+
+    def test_a_gguf_qualified_exact_file_ref_reads_as_the_bare_file(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        blob_path = registry.install(_REPO, _FILENAME, _write_source(tmp_path), _make_manifest())
+        qualified = f"{_REPO}/{_FILENAME}#gguf"
+        assert registry.resolve(qualified) == blob_path
+        assert registry.has_manifest(qualified)
+
+    def test_a_missing_split_shard_names_the_ref_without_the_gguf_qualifier(
+        self, tmp_path: Path
+    ) -> None:
+        registry = ModelRegistry(tmp_path)
+        ref = f"{_REPO}/Qwen3-0.6B-Q4_K_M-00001-of-00002.gguf"
+        with pytest.raises(KeyError) as excinfo:
+            registry.resolve(f"{ref}#gguf")
+        assert excinfo.value.args[0] == (
+            f"Split GGUF {ref} is missing shards; re-pull to fetch the full set"
+        )
 
     def test_resolve_bare_repo_ref_skips_unparseable_manifest(self, tmp_path: Path) -> None:
         """A bare repo ref skips an unreadable per-repo manifest and falls back to the cache."""

@@ -13,6 +13,7 @@ from lilbee.catalog.refs import (
     gguf_filename_from_ref,
     hf_repo_from_ref,
     is_native_gguf_shape,
+    parse_model_ref,
 )
 from lilbee.catalog.types import ModelCompat
 
@@ -40,6 +41,10 @@ def resolve_arch_for_pull(ref: str, hf_client: HfClient) -> str:
     arch is cached; otherwise a transient probe failure would be cached permanently
     and disable the unsupported-arch guard for this ref on every later pull.
     """
+    try:
+        ref = parse_model_ref(ref).canonical
+    except ValueError:
+        return ""
     cached = hf_client.get_cached_arch(ref)
     if cached is not None:
         return cached
