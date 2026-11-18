@@ -617,6 +617,21 @@ def test_both_card_engines_see_no_card_for_a_repeated_mask(
     assert len(mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices) == 2
 
 
+def test_both_card_engines_keep_the_printed_index_across_a_gap(
+    host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(2, "GPU-c", "card2", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    tei_found = tei.TEI.discover_devices(host[EngineName.TEI]).devices
+    mistral_found = mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices
+    assert [d.index for d in tei_found] == [0, 2]
+    assert [d.index for d in mistral_found] == [0, 2]
+
+
 def test_a_cpu_tei_build_reads_no_card(
     cpu_host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
