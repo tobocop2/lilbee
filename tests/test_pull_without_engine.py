@@ -107,6 +107,17 @@ def test_a_gguf_pull_with_no_engine_installed_names_the_missing_engine(tmp_path:
     download.assert_not_called()
 
 
+def test_a_gguf_pull_that_allows_unsupported_still_needs_an_engine(tmp_path: Path) -> None:
+    entry = _entry(GGUF_REF, ModelFormat.GGUF)
+    with (
+        mock.patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+        mock.patch("lilbee.catalog.download_model", return_value=tmp_path) as download,
+        pytest.raises(NoEngineError, match="No installed engine loads the gguf format"),
+    ):
+        ModelManager(tmp_path, cfg).pull(GGUF_REF, ModelSource.NATIVE, allow_unsupported=True)
+    download.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_the_pull_preflight_lets_a_model_with_no_engine_through(tmp_path: Path) -> None:
     manager = ModelManager(tmp_path, cfg)
