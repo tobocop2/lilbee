@@ -583,8 +583,6 @@ class _EngineLifecycle:
         self._interrupts += 1
         if self._interrupts > 1:
             _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
-        elif server_is_stopping():
-            _start_signal_teardown(signum)
         else:
             self._on_hard_exit(signum, frame)
 
@@ -607,9 +605,10 @@ class _EngineLifecycle:
         """Stop the fleet on its own thread, then exit with the signal status.
 
         A serving loop is asked to stop and exits with the status itself. A
-        SystemExit raised into the loop cancels the ASGI lifespan with it,
-        which logs a traceback, or dies inside a request's ASGI wrapper. With
-        no serving loop the SystemExit unwinds the main thread. Signal handlers
+        server that is already stopping joins that stop. A SystemExit raised
+        into the loop cancels the ASGI lifespan with it, which logs a
+        traceback, or dies inside a request's ASGI wrapper. With no server the
+        SystemExit unwinds the main thread. Signal handlers
         all run on the main thread, and a second signal can interrupt this one
         mid-teardown: the kernel pairs SIGCONT with SIGHUP for an orphaned
         process group, and Textual's SIGCONT handler raises once the event loop
@@ -621,7 +620,7 @@ class _EngineLifecycle:
         status = _SIGNAL_EXIT_BASE + signum
         serving = request_server_exit(status)
         _start_signal_teardown(signum)
-        if not serving:
+        if not serving and not server_is_stopping():
             raise SystemExit(status)
 
 

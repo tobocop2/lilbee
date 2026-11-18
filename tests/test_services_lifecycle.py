@@ -189,6 +189,23 @@ def test_a_ctrl_c_after_the_server_hook_is_gone_joins_the_stop_without_raising()
     provider.shutdown.assert_called_once()
 
 
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_a_terminate_signal_after_the_server_hook_is_gone_joins_the_stop_without_raising(sig):
+    """The twin of the Ctrl-C case: SIGTERM and SIGHUP must not raise into a stuck lifespan."""
+    provider = _install_stub_services()
+    set_server_exit_hook(lambda _status: None)
+    services_mod.answer_provider_waiters()
+    set_server_exit_hook(None)
+    try:
+        install_engine_lifecycle_hooks()
+        signal.getsignal(sig)(sig, None)
+        _join_teardown()
+    finally:
+        set_server_exit_hook(lambda _status: None)
+        set_server_exit_hook(None)
+    provider.shutdown.assert_called_once()
+
+
 def test_a_ctrl_c_before_any_server_runs_still_unwinds_the_main_thread():
     """With no loop and no stop under way, the press exits through SystemExit."""
     _install_stub_services()
