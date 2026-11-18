@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from lilbee.app import services as services_mod
 from lilbee.app.settings import reconcile_embedding_dim
-from lilbee.core.config import CHUNKS_TABLE, MEMORIES_TABLE, META_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, MEMORIES_TABLE, META_TABLE, SOURCES_TABLE, cfg
 from lilbee.data.store import Store
 from lilbee.data.store.lance_helpers import persisted_embedding_width, table_names
 from lilbee.data.store.types import (
@@ -327,8 +327,17 @@ def _rows_of(name: str) -> list[dict]:
     return lancedb.connect(str(cfg.lancedb_dir)).open_table(name).to_arrow().to_pylist()
 
 
+def _chunk_sources() -> list[str]:
+    """The path of the source of each chunk row."""
+    paths = {row["source_id"]: row["path"] for row in _rows_of(SOURCES_TABLE)}
+    return [paths[row["source_id"]] for row in _rows_of(CHUNKS_TABLE)]
+
+
 def _chunk_vectors(source: str) -> list[list[float]]:
-    return [list(row["vector"]) for row in _rows_of(CHUNKS_TABLE) if row["source"] == source]
+    paths = {row["source_id"]: row["path"] for row in _rows_of(SOURCES_TABLE)}
+    return [
+        list(row["vector"]) for row in _rows_of(CHUNKS_TABLE) if paths[row["source_id"]] == source
+    ]
 
 
 def _unit_vector(axis: int) -> list[float]:
@@ -353,13 +362,11 @@ def _a_memory_is_added() -> None:
 
 @pytest.mark.parametrize("ingest", INGEST_ENTRY_POINTS)
 @pytest.mark.parametrize("stored", [0, -1, None, STORED_WIDTH])
-def test_an_ingest_at_another_width_than_the_stored_chunks_shows_the_rebuild_advice(
-    stored, ingest
-):
+def test_an_ingest_at_another_width_than_the_stored_chunks_shows_the_rebuild_advice(stored, ingest):
     _store_with_stored_width(stored, chunks=True, chunk_width=STORED_WIDTH)
     store = Store(cfg)
     before = _library_rows()
-    assert {row["source"] for row in _rows_of(CHUNKS_TABLE)} == {"a.md", "b.md"}
+    assert set(_chunk_sources()) == {"a.md", "b.md"}
 
     with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
         ingest(store)
@@ -375,7 +382,7 @@ def test_an_ingest_with_no_meta_row_and_chunks_of_another_width_shows_the_rebuil
     cfg.embedding_dim = CONFIGURED_WIDTH
     store = Store(cfg)
     before = _library_rows()
-    assert {row["source"] for row in _rows_of(CHUNKS_TABLE)} == {"a.md", "b.md"}
+    assert set(_chunk_sources()) == {"a.md", "b.md"}
 
     with pytest.raises(EmbeddingModelMismatchError, match="dim 16"):
         ingest(store)
