@@ -216,11 +216,12 @@ async def gpu_stats_stream(
     open while visible; ``max_ticks`` bounds it for tests. A heartbeat is emitted
     every ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
 
-    The per-vendor probe runs on a worker thread, not here. It is not light: every
-    backend shells out to an SMI tool with a five-second timeout, and the Intel
-    paths sleep and scan /proc on top of that. Driven inline it held the event
-    loop for the whole subprocess on every tick, once per connected client, which
-    stalls chat, search and embedding requests along with it.
+    The per-vendor probe and the Intel util hint run on a worker thread, not
+    here. They are not light: every backend shells out to an SMI tool with a
+    five-second timeout, and the Intel paths sleep and scan /proc on top of
+    that. Driven inline it held the event loop for the whole subprocess on
+    every tick, once per connected client, which stalls chat, search and
+    embedding requests along with it.
     """
     from lilbee.cli.tui import messages as msg
     from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats_shared
@@ -230,7 +231,7 @@ async def gpu_stats_stream(
     while max_ticks is None or tick < max_ticks:
         stats = await asyncio.to_thread(probe_gpu_stats_shared, devices)
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
-        hint = intel_util_hint(devices, stats)
+        hint = await asyncio.to_thread(intel_util_hint, devices, stats)
         if hint:
             payload["notice"] = msg.intel_util_hint_text(hint)
         yield sse_event(SseEvent.GPU_STATS, payload)

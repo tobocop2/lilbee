@@ -6492,6 +6492,40 @@ class TestPlacementHandlers:
         ]
         assert "igt-gpu-tools" in events[0]["notice"]
 
+    async def test_gpu_stats_stream_runs_intel_tool_check_off_the_loop(self):
+        import threading
+
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        check_threads: list[int] = []
+
+        def _tool_check() -> IntelUtilHint:
+            check_threads.append(threading.get_ident())
+            return IntelUtilHint(IntelHintKind.INSTALL, None)
+
+        with (
+            patch(
+                "lilbee.providers.fleet.gpu_stats.probe_gpu_stats",
+                return_value={0: GpuStat(0, None, 200, 200)},
+            ),
+            patch("lilbee.providers.fleet.gpu_stats._shared_sample", {}),
+            patch("lilbee.providers.fleet.gpu_stats._detect_intel_util_hint", _tool_check),
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
+        assert "igt-gpu-tools" in chunks[0]
+        assert len(check_threads) == 1
+        assert check_threads[0] != threading.get_ident()
+
     async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
         """A heartbeat event is emitted when the configured interval elapses."""
         from lilbee.app.placement import GpuInfo
