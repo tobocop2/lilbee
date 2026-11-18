@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+`lilbee placement show`, `lilbee placement preview` and `GET /api/placement` now show how much memory the planner charges for each role. The figure is for one instance of the role. It is card memory for a GPU role and system memory for a CPU role. The API field is `charge_bytes`, and it is `null` when the planner has no charge for the role.
+
 The `[engine]` extra is gone. `pip install lilbee[engine]` no longer installs an engine. Run `pip install --pre lilbee`, then run `lilbee engine install` to get the llama.cpp engine pack. If you skip the command, lilbee installs the pack the first time a model needs it.
 
 If you installed the old extra, the `lilbee-engine-llama-cpp` wheel stays in your environment. The wheel takes precedence over the pack. To use the pack, run `pip uninstall lilbee-engine-llama-cpp`, then run `lilbee engine install`.

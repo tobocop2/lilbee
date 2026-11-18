@@ -89,14 +89,14 @@ def test_a_role_reports_its_model_and_a_role_without_a_ref_reports_an_empty_name
     assert rows[WorkerRole.RERANK].model == ""
 
 
-def test_a_role_reports_the_charge_the_planner_made_and_a_role_without_one_reports_zero(
+def test_a_role_reports_the_charge_the_planner_made_and_a_role_without_one_reports_none(
     busy_machine,
 ):
     rows = _by_role(app_placement.get_placement())
 
     assert rows[WorkerRole.CHAT].charge_bytes == 30 * GIB
     assert rows[WorkerRole.EMBED].charge_bytes == 2 * GIB
-    assert rows[WorkerRole.RERANK].charge_bytes == 0
+    assert rows[WorkerRole.RERANK].charge_bytes is None
 
 
 def test_tight_roles_report_their_shortfall_ordered_by_role_name(busy_machine):

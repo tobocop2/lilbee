@@ -88,6 +88,13 @@ def unknown_size_text(subject: str, reserve_bytes: int = UNKNOWN_SIZE_RESERVE_BY
     return f"The size of {subject} is unknown, so {gib:.1f} GiB is reserved for it."
 
 
+def memory_size_text(num_bytes: int) -> str:
+    """*num_bytes* as GiB with one decimal, or whole MiB below one GiB."""
+    if num_bytes < 1024**3:
+        return f"{round(num_bytes / _MIB)} MiB"
+    return f"{num_bytes / 1024**3:.1f} GiB"
+
+
 def tight_memory_text(subject: str, shortfall_bytes: int) -> str:
     """The sentence that says *subject* needs more GPU memory than is free, and what to do."""
     return (

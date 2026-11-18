@@ -1872,7 +1872,11 @@ running, if a model that offloads to host memory is being refused.
 Both are writable at runtime through `/settings`, `lilbee settings set`, and MCP.
 
 **If a model is refused for memory it looks like it should have:** run
-`lilbee placement preview` to see what the planner budgeted. The planner charges
+`lilbee placement preview` to see what the planner budgeted. Each role row shows
+its `charge`: the memory the planner charges for one instance of the role, on a
+card for a GPU role and in system memory for a CPU role. `GET /api/placement`
+returns the same figure as `charge_bytes`, or `null` when the planner has no
+charge for the role. The planner charges
 free VRAM rather than the card's total, so another process holding memory shows
 up here. On a partially offloaded model, check `system_memory_reserve_gb` too:
 the host side is budgeted separately from the card.

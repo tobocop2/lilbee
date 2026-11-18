@@ -207,6 +207,41 @@ def test_show_prints_each_roles_charge(monkeypatch: object) -> None:
     result = runner.invoke(placement_app, ["show"])
     assert result.exit_code == 0
     assert "charge=7.0 GiB" in result.stdout
+    assert "charge=none" not in result.stdout
+
+
+def _view_with_small_and_absent_charges() -> PlacementView:
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 72 * _GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp", charge_bytes=40 << 20
+            ),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1, "llama.cpp"),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+
+def test_show_prints_a_small_charge_in_mib_and_a_missing_charge_as_none(
+    monkeypatch: object,
+) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_small_and_absent_charges)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "charge=40 MiB" in result.stdout
+    assert "charge=none" in result.stdout
+    assert "0.0 GiB" not in result.stdout
+
+
+def test_show_json_reports_a_missing_charge_as_null(monkeypatch: object) -> None:
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_small_and_absent_charges)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    roles = json.loads(result.stdout)["roles"]
+    assert [r["charge_bytes"] for r in roles] == [40 << 20, None]
 
 
 def test_show_json_reports_each_roles_charge(monkeypatch: object) -> None:

@@ -345,6 +345,15 @@ def test_the_tight_sentence_scales_by_a_binary_gib_and_never_shows_zero():
     assert "estimated to need 0.1 GiB more GPU memory" in tight_memory_text("the chat model", 1)
 
 
+def test_memory_size_text_uses_mib_below_one_gib_and_gib_from_one() -> None:
+    from lilbee.providers.fleet.model_memory import memory_size_text
+
+    assert memory_size_text(40 * 1024**2) == "40 MiB"
+    assert memory_size_text(1024**3 - 1) == "1024 MiB"
+    assert memory_size_text(1024**3) == "1.0 GiB"
+    assert memory_size_text(int(7.25 * 1024**3)) == "7.2 GiB"
+
+
 def test_the_planner_logs_the_tight_sentence_and_the_co_tenant_line_as_written(caplog):
     from lilbee.providers.fleet.model_memory import tight_memory_text
 

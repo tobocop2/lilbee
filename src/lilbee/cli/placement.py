@@ -23,6 +23,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.runtime.console import styled
 
@@ -107,12 +108,14 @@ def _render_view(view: PlacementView) -> None:
 
     for role_view in view.roles:
         split_info = f" split={list(role_view.tensor_split)}" if role_view.tensor_split else ""
+        charged = role_view.charge_bytes
+        charge = "none" if charged is None else memory_size_text(charged)
         console.print(
             Text(
                 f"  {role_view.role.value}: target={role_view.target.value}"
                 f" devices={list(role_view.devices)}"
                 f" replicas={role_view.replicas}{split_info}"
-                f" charge={role_view.charge_bytes / _GIB:.1f} GiB  {role_view.model}"
+                f" charge={charge}  {role_view.model}"
             ),
             soft_wrap=True,
         )

@@ -94,6 +94,36 @@ def _charges(plan) -> dict[WorkerRole, int]:
     return {launch.role: launch.est_vram_bytes for launch in plan.launches}
 
 
+class TestTheViewShowsTheChargeTheLaunchUsed:
+    """The charge on a role row is the figure the launch check read for the same plan."""
+
+    def _rows(self, engine: CardEngine) -> dict:
+        engines = engines_for_all_roles(engine)
+        spec = PlacementSpec.from_json(cfg.placement)
+        resolved = planning.resolve_placement_plan(spec, engines=engines)
+        view = app_placement._view(resolved, engines, manual=True, spec_json=cfg.placement)
+        return {row.role: row for row in view.roles}
+
+    def test_a_card_role_shows_the_card_charge_its_launch_used(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan, engine = _plan(monkeypatch, tmp_path, GPU_EMBED, 64)
+        rows = self._rows(engine)
+        launched = _charges(plan)
+        assert launched == {WorkerRole.CHAT: 10 * GIB, WorkerRole.EMBED: 6 * GIB}
+        assert {role: row.charge_bytes for role, row in rows.items()} == launched
+
+    def test_a_cpu_role_shows_the_system_memory_charge_its_bound_used(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan, engine = _plan(monkeypatch, tmp_path, CPU_EMBED, 64)
+        rows = self._rows(engine)
+        assert _charges(plan)[WorkerRole.EMBED] == 0
+        assert rows[WorkerRole.EMBED].target is RoleTarget.CPU
+        assert rows[WorkerRole.EMBED].charge_bytes == 6 * GIB
+        assert rows[WorkerRole.CHAT].charge_bytes == _charges(plan)[WorkerRole.CHAT]
+
+
 class TestTheChargeGoesToSystemMemory:
     """Rows cpu_role_charged_to_system_memory and cpu_role_not_charged_to_card."""
 

@@ -65,6 +65,15 @@ def test_get_placement_reports_each_roles_charge(monkeypatch):
     assert body["roles"][0]["charge_bytes"] == 7 * GIB
 
 
+def test_the_charge_field_states_its_unit_and_meaning_in_the_schema():
+    from lilbee.server.models import RolePlacementResponse
+
+    field = RolePlacementResponse.model_json_schema()["properties"]["charge_bytes"]
+    assert "Bytes" in field["description"]
+    assert "system memory for a CPU role" in field["description"]
+    assert {"type": "null"} in field["anyOf"]
+
+
 def test_put_refused_on_daemon():
     """PUT placement is refused on the HTTP daemon (restarts the fleet's moved roles)."""
     with create_test_client([placement_set_route]) as client:

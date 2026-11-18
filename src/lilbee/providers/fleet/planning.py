@@ -3970,7 +3970,8 @@ class ResolvedPlacement:
     hidden: IcdChoice | None = None
     # Roles placed on the unknown-size reserve because no figure for the model was found.
     size_unknown_roles: tuple[WorkerRole, ...] = ()
-    # What the planner charged each role's instance, in bytes, the figure its fit checks use.
+    # What the planner charged one instance of each role, in bytes: its card memory, or its
+    # system memory for a CPU role. The figure the launch and fit checks read.
     charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
 
 
@@ -3997,12 +3998,13 @@ def resolve_placement_plan(
     reading = _read_device_cache.get(binary, engine)
     devices = reading.devices
     unified_budget = _unified_memory_budget(devices, engine)
+    cpu_roles = _cpu_roles(placement)
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         None,
         engines=engines,
         unified_budget=unified_budget,
         total_vram=sum(d.total_bytes for d in devices),
-        cpu_roles=_cpu_roles(placement),
+        cpu_roles=cpu_roles,
     )
     admission_budget = _unified_admission_budget(devices, engine)
     refused_roles: dict[WorkerRole, str] = {}
@@ -4057,7 +4059,10 @@ def resolve_placement_plan(
         engine_backend=reading.backend,
         hidden=_hidden_choice(devices),
         size_unknown_roles=tuple(inp.role for inp in inputs if not inp.size_known),
-        charged_bytes={inp.role: inp.est_vram_bytes for inp in inputs},
+        charged_bytes={
+            inp.role: inp.est_ram_bytes if inp.role in cpu_roles else inp.est_vram_bytes
+            for inp in inputs
+        },
         skipped_no_engine={
             role: NoEngineRole(ref, (no_engine_notices or {}).get(role, ""))
             for role, ref in _roles_without_engine(None, engines).items()

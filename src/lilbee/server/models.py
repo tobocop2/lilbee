@@ -948,8 +948,14 @@ class RolePlacementResponse(BaseModel):
     tensor_split: list[int] | None
     replicas: int
     target: RoleTarget = RoleTarget.GPU
-    # What the planner charged one instance of the role, in bytes; 0 when none is recorded.
-    charge_bytes: int = 0
+    charge_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Bytes the planner charges for one instance of the role, on the memory the role "
+            "runs in: card memory for a GPU role, system memory for a CPU role. Multiply by "
+            "replicas for the total. Null when the planner has no charge for the role."
+        ),
+    )
 
 
 class SkippedRoleResponse(BaseModel):
