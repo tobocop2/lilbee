@@ -739,16 +739,43 @@ def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     return ceiling
 
 
-def _served_pinned_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
-    """:func:`_pinned_chat_ctx`, with one warning when the pin is past the trained window.
+_PinKey: TypeAlias = tuple[str, int | None, int]
+_warned_pins: contextvars.ContextVar[set[_PinKey] | None] = contextvars.ContextVar(
+    "lilbee_warned_pins", default=None
+)
 
-    Only the launch sizing calls this. The placement estimate runs before it and
-    reads the same window, so it stays silent and the line prints once.
-    """
+
+@contextmanager
+def _one_warning_per_pin() -> Iterator[None]:
+    """Open a plan's pin-warning scope; a nested one keeps the outer scope's record."""
+    if _warned_pins.get() is not None:
+        yield
+        return
+    token = _warned_pins.set(set())
+    try:
+        yield
+    finally:
+        _warned_pins.reset(token)
+
+
+def _first_pin_warning(model: str, pinned: int | None, served: int) -> bool:
+    """Whether the plan has not yet warned about this pin; outside a plan every call is first."""
+    warned = _warned_pins.get()
+    if warned is None:
+        return True
+    key = (model, pinned, served)
+    if key in warned:
+        return False
+    warned.add(key)
+    return True
+
+
+def _served_pinned_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+    """:func:`_pinned_chat_ctx`, warning once per plan when the pin is past the trained window."""
     from lilbee.core.config import cfg
 
     served = _pinned_chat_ctx(model_path, meta)
-    if served != cfg.num_ctx:
+    if served != cfg.num_ctx and _first_pin_warning(model_path.name, cfg.num_ctx, served):
         log.warning(
             "num_ctx is set to %d but %s was trained for %d, so %d is what will be served. "
             "Lower num_ctx to stop planning against a window this model does not have.",
@@ -3975,6 +4002,7 @@ class ResolvedPlacement:
     charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
 
 
+@_one_warning_per_pin()
 def resolve_placement_plan(
     placement: PlacementSpec | None,
     *,
@@ -4296,6 +4324,7 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]
     )
 
 
+@_one_warning_per_pin()
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     by_index: dict[int, FleetDevice],

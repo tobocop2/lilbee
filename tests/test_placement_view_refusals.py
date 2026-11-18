@@ -35,6 +35,7 @@ ROLES = (Role(WorkerRole.CHAT, 10), Role(WorkerRole.EMBED, 6))
 LOW_WINDOW = 512
 FLOOR_TEXT = "backs only a 512-token context"
 PINNED_CHAT = '{"chat": {"devices": [0]}, "embed": {"devices": [0]}}'
+CPU_EMBED = '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}}'
 
 
 @pytest.fixture
@@ -380,6 +381,111 @@ class TestAPinnedWindowWarnsOnce:
         monkeypatch.setattr(cfg, "num_ctx", 1024)
         app_placement.get_placement()
         assert self._warnings(caplog) == []
+
+    def test_a_launch_with_a_cpu_role_prints_the_line_once(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "placement", CPU_EMBED)
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(pinned))
+        assert {ln.role for ln in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert len(self._warnings(caplog)) == 1
+
+    def test_the_view_of_a_cpu_role_spec_prints_the_line_once(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "placement", CPU_EMBED)
+        view = app_placement.get_placement()
+        assert view.refusal is None
+        assert {r.role for r in view.roles} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert len(self._warnings(caplog)) == 1
+
+    def test_the_next_launch_warns_again_for_the_same_window(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "placement", CPU_EMBED)
+        for _ in range(2):
+            planning.plan_all_launches(engines=engines_for_all_roles(pinned))
+        assert len(self._warnings(caplog)) == 2
+
+    def test_a_second_window_warns_beside_the_first(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "placement", CPU_EMBED)
+        planning.plan_all_launches(engines=engines_for_all_roles(pinned))
+        monkeypatch.setattr(planning, "_known_chat_ceiling", lambda *_a, **_k: 1024)
+        planning.plan_all_launches(engines=engines_for_all_roles(pinned))
+        lines = self._warnings(caplog)
+        assert len(lines) == 2
+        assert "trained for 2048" in lines[0]
+        assert "trained for 1024" in lines[1]
+
+    def test_a_plan_scope_warns_once_per_window_across_nested_plans(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with planning._one_warning_per_pin():
+            for _ in range(2):
+                planning.plan_all_launches(engines=engines_for_all_roles(pinned))
+        assert len(self._warnings(caplog)) == 1
+
+    def test_a_scope_warns_again_for_another_model_or_another_pin(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with planning._one_warning_per_pin():
+            planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+            planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+            assert len(self._warnings(caplog)) == 1
+            planning._served_pinned_ctx(Path("/m/b.gguf"), None)
+            assert len(self._warnings(caplog)) == 2
+            monkeypatch.setattr(cfg, "num_ctx", 8192)
+            planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+        assert len(self._warnings(caplog)) == 3
+
+    def test_a_launch_outside_any_plan_warns_every_time(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+        planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+        assert len(self._warnings(caplog)) == 2
+
+    def test_the_sizing_asks_for_the_ceiling_of_the_model_and_its_header(
+        self, pinned: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked: list[tuple[Path, dict[str, str] | None]] = []
+
+        def ceiling(path: Path, meta: dict[str, str] | None) -> int:
+            asked.append((path, meta))
+            return self.TRAINED
+
+        monkeypatch.setattr(planning, "_known_chat_ceiling", ceiling)
+        header = {"context_length": "2048"}
+        planning._served_pinned_ctx(Path("/m/a.gguf"), header)
+        assert asked == [(Path("/m/a.gguf"), header)]
+
+    def test_the_line_reads_in_full(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+        assert self._warnings(caplog) == [
+            "num_ctx is set to 4096 but a.gguf was trained for 2048, so 2048 is what will be "
+            "served. Lower num_ctx to stop planning against a window this model does not have."
+        ]
+
+    def test_a_scope_warns_again_when_the_served_window_moves(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with planning._one_warning_per_pin():
+            planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+            monkeypatch.setattr(planning, "_known_chat_ceiling", lambda *_a, **_k: 1024)
+            planning._served_pinned_ctx(Path("/m/a.gguf"), None)
+        assert len(self._warnings(caplog)) == 2
+
+    def test_a_scope_prints_one_line_for_two_files_of_one_name(
+        self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with planning._one_warning_per_pin():
+            planning._served_pinned_ctx(Path("/x/a.gguf"), None)
+            planning._served_pinned_ctx(Path("/y/a.gguf"), None)
+        assert len(self._warnings(caplog)) == 1
 
 
 class TestASharedMemoryHostBudget:
