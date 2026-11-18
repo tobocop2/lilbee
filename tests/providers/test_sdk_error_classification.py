@@ -20,7 +20,7 @@ from lilbee.providers.backends.liter_llm.errors import (
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.sdk_backend import CompletionRequest
+from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest
 from tests import _fake_sdk as fakes
 
 # The kinds this backend can actually raise. Kinds that only a local engine can
@@ -178,3 +178,48 @@ def test_unrelated_400_through_the_backend_stays_a_bad_request(
 
 def test_prompt_length_text_on_another_error_type_keeps_its_kind(sdk: fakes.FakeSdk) -> None:
     assert _classify_error(sdk.error("ServerError", _OVERFLOW_400)) == ProviderErrorKind.SERVER
+
+
+def _embed_error(sdk: fakes.FakeSdk, exc: BaseException) -> ProviderError:
+    sdk.embed_error = exc
+    request = EmbeddingRequest(ref=parse_model_ref("openai/text-embedding-3-small"), inputs=["a"])
+    with pytest.raises(ProviderError) as caught:
+        LiterLlmBackend().embed(request)
+    return caught.value
+
+
+@pytest.mark.parametrize(
+    ("body", "reply"),
+    [
+        ('{"error":"batch size 33 > maximum allowed batch size 32"}', "batch size 33 > maximum"),
+        ("batch size 33 > maximum allowed batch size 32", "batch size 33 > maximum"),
+        ('{"detail":"batch size 33 > maximum allowed"}', '{"detail":"batch size 33 > maximum'),
+        ('{"error":{"code":7}}', '{"error":{"code":7}}'),
+        ("[1, 2]", "[1, 2]"),
+    ],
+)
+def test_a_422_quotes_the_server_reply_not_the_model_name(
+    sdk: fakes.FakeSdk, body: str, reply: str
+) -> None:
+    error = _embed_error(sdk, sdk.error("BadRequestError", body, status=422))
+    assert f'HTTP 422 ("{reply}' in str(error)
+    assert "Check the model name" not in str(error)
+    assert error.kind is ProviderErrorKind.BAD_REQUEST
+
+
+def test_a_400_bad_request_still_names_the_model(sdk: fakes.FakeSdk) -> None:
+    body = '{"error":"batch size 33 > maximum allowed batch size 32"}'
+    error = _embed_error(sdk, sdk.error("BadRequestError", body, status=400))
+    assert "Check the model name and your settings" in str(error)
+    assert "HTTP 422" not in str(error)
+
+
+def test_a_422_that_names_the_prompt_length_stays_a_context_overflow(sdk: fakes.FakeSdk) -> None:
+    error = _embed_error(sdk, sdk.error("BadRequestError", _OVERFLOW_400, status=422))
+    assert error.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert "HTTP 422" not in str(error)
+
+
+def test_a_content_policy_refusal_keeps_the_bad_request_text(sdk: fakes.FakeSdk) -> None:
+    error = _embed_error(sdk, sdk.error("ContentPolicyError", "blocked"))
+    assert "Check the model name and your settings" in str(error)

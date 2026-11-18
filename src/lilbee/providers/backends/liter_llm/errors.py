@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Protocol, cast
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind, is_prompt_length_overflow
 from lilbee.providers.model_ref import ProviderModelRef
@@ -84,6 +86,14 @@ _PRESET_NOT_FOUND = (
     "Check that the server has a model loaded for the {role} role."
 )
 
+# A server answers 422 when its own limits refuse a well-formed request, such as more inputs
+# than it accepts in one embedding request. {reply} is the server's own words.
+_HTTP_UNPROCESSABLE = 422
+_UNPROCESSABLE_MESSAGE = (
+    'The server for {model} refused the request with HTTP 422 ("{reply}"). '
+    "Check the limits of the server for one request, such as the number of inputs it accepts."
+)
+
 # Operation labels prefixed onto the fallback message for an unrecognised error.
 _CHAT_FAILED = "Chat failed"
 _EMBED_FAILED = "Embedding failed"
@@ -100,6 +110,33 @@ def _classify_error(exc: BaseException) -> ProviderErrorKind:
     if kind is ProviderErrorKind.BAD_REQUEST and is_prompt_length_overflow(str(exc)):
         return ProviderErrorKind.CONTEXT_OVERFLOW
     return kind
+
+
+class _BadRequest(Protocol):
+    """The fields of a liter-llm ``BadRequestError``: the server's reply and its HTTP status."""
+
+    message: str
+    status: int
+
+
+def _server_reply(message: str) -> str:
+    """The text of the ``error`` field of a JSON reply, or the whole reply when it has none."""
+    try:
+        body = json.loads(message)
+    except ValueError:
+        return message
+    detail = body.get("error") if isinstance(body, dict) else None
+    return detail if isinstance(detail, str) else message
+
+
+def _unprocessable_reply(kind: ProviderErrorKind, exc: Exception) -> str | None:
+    """The server's reply when *exc* is a bad request that the server answered with 422."""
+    if kind is not ProviderErrorKind.BAD_REQUEST or type(exc).__name__ != "BadRequestError":
+        return None
+    bad_request = cast(_BadRequest, exc)
+    if bad_request.status != _HTTP_UNPROCESSABLE:
+        return None
+    return _server_reply(bad_request.message)
 
 
 @dataclass(frozen=True)
@@ -130,6 +167,10 @@ def _provider_error(
     kind = _classify_error(exc)
     if kind is ProviderErrorKind.NOT_FOUND and preset is not None:
         message = _PRESET_NOT_FOUND.format(model=model, role=preset.role, url=preset.base_url)
+        return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
+    reply = _unprocessable_reply(kind, exc)
+    if reply is not None:
+        message = _UNPROCESSABLE_MESSAGE.format(model=model, reply=reply)
         return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
     template = _TYPE_MESSAGES.get(type(exc).__name__) or _KIND_MESSAGES.get(kind)
     message = template.format(model=model) if template is not None else f"{fallback}: {exc}"
