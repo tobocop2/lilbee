@@ -4248,22 +4248,35 @@ def _log_refused_roles(
 def _equal_split_refusal(
     role: WorkerRole, inputs: list[ModelPlacementInput], capacity: dict[int, int]
 ) -> str | None:
-    """Why an equal split of *role* does not fit the smallest card; None when it does.
+    """Why no equal split of *role* fits its cards; None when some split does.
 
-    Only an engine that launches equal shares and only more than one card apply.
+    Each count of cards from the largest is tried, as the planner does. The count that
+    misses by the least is named. Only an engine that launches equal shares and only
+    more than one card apply.
     """
     model = next(m for m in inputs if m.role is role)
     if not model.equal_split_only or len(capacity) < _MIN_SPLIT_GPUS:
         return None
-    smallest = min(capacity, key=lambda idx: capacity[idx])
-    usable = capacity[smallest] * usable_vram_fraction()
-    share = model.est_vram_bytes / len(capacity)
-    if share <= usable:
-        return None
+    by_size = sorted(capacity.items(), key=lambda card: card[1], reverse=True)
+    misses: list[tuple[float, int, int, float, float]] = []
+    for count in range(_MIN_SPLIT_GPUS, len(by_size) + 1):
+        device, size = by_size[count - 1]
+        usable = size * usable_vram_fraction()
+        share = model.est_vram_bytes / count
+        if share <= usable:
+            return None
+        misses.append((share - usable, count, device, usable, share))
+    _, count, device, usable, share = min(misses)
+    even_cards = by_size[0][1] == by_size[count - 1][1]
+    room = (
+        f"each has {usable / 1024**3:.1f} GiB usable"
+        if even_cards
+        else f"device {device}, the smallest of them, has {usable / 1024**3:.1f} GiB usable"
+    )
     return (
         f"needs {model.est_vram_bytes / 1024**3:.1f} GiB, and the engine splits it only "
-        f"evenly: each of the {len(capacity)} GPUs would hold {share / 1024**3:.1f} GiB, "
-        f"but device {smallest}, the smallest, has {usable / 1024**3:.1f} GiB usable. "
+        f"evenly: each of the {count} largest GPUs would hold {share / 1024**3:.1f} GiB, "
+        f"but {room}. "
         "It will not be served. Use a smaller model, or another engine for this role."
     )
 

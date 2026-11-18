@@ -1398,8 +1398,14 @@ def test_the_ladder_of_an_engine_that_takes_any_ratio_is_unchanged_on_unequal_ca
         (False, {0: 24, 1: 16}, 36),
         (True, {0: 24}, 36),
         (True, {0: 24, 1: 16}, 20),
+        (True, {0: 24, 1: 24, 2: 8}, 40),
     ],
-    ids=["engine takes any ratio", "one card", "equal share fits the small card"],
+    ids=[
+        "engine takes any ratio",
+        "one card",
+        "equal share fits the small card",
+        "equal share fits the two largest of three cards",
+    ],
 )
 def test_no_equal_split_refusal_is_worded_when_that_rule_did_not_refuse(
     equal_only: bool, cards: dict[int, int], model_gib: int
@@ -1437,7 +1443,43 @@ def test_the_refusal_of_an_equal_split_names_the_small_card_room(
     room = 16 * usable_vram_fraction()
     share = chat.est_vram_bytes / 2 / GIB
     assert f"each of the 2 GPUs would hold {share:.1f} GiB" in caplog.text
-    assert f"device 1, the smallest, has {room:.1f} GiB usable" in caplog.text
+    assert f"device 1, the smallest of them, has {room:.1f} GiB usable" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("cards", "model_gib", "count", "share_gib", "room_text"),
+    [
+        ({0: 24, 1: 24, 2: 8}, 60, 2, 30.0, "each has {usable:.1f} GiB usable"),
+        ({0: 24, 1: 24}, 60, 2, 30.0, "each has {usable:.1f} GiB usable"),
+        ({0: 16, 1: 16, 2: 16}, 70, 3, 70 / 3, "each has {usable:.1f} GiB usable"),
+        (
+            {0: 24, 1: 16, 2: 2},
+            36,
+            2,
+            18.0,
+            "device 1, the smallest of them, has {usable:.1f} GiB usable",
+        ),
+    ],
+    ids=["two large and one small", "equal cards", "three equal cards", "unequal best pair"],
+)
+def test_the_refusal_of_an_equal_split_names_the_best_count_of_cards(
+    cards: dict[int, int], model_gib: int, count: int, share_gib: float, room_text: str
+) -> None:
+    from lilbee.providers.fleet.placement import ModelPlacementInput
+    from lilbee.providers.fleet.vram import usable_vram_fraction
+
+    chat = ModelPlacementInput(
+        role=WorkerRole.CHAT, est_vram_bytes=model_gib * GIB, equal_split_only=True
+    )
+    said = planning._equal_split_refusal(
+        WorkerRole.CHAT, [chat], {idx: gib * GIB for idx, gib in cards.items()}
+    )
+    assert said is not None
+    smallest_used = sorted(cards.values(), reverse=True)[count - 1]
+    usable = smallest_used * usable_vram_fraction()
+    assert f"each of the {count} largest GPUs would hold {share_gib:.1f} GiB" in said
+    assert room_text.format(usable=usable) in said
+    assert ("the smallest" in said) == ("smallest" in room_text)
 
 
 @_stated
