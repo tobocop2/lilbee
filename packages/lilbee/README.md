@@ -142,7 +142,7 @@ Already uninstalled the package? `npx -y lilbee unprepare` still works. The cach
 
 ## Requirements
 
-Node 18+ for the launcher. The binary runs on macOS (Apple silicon and Intel), Linux x86_64 (glibc 2.34+), and Windows x86_64. No GPU required; with one, lilbee uses it. See the [hardware requirements](https://github.com/tobocop2/lilbee#hardware-requirements) for the full breakdown.
+Node 18+ for the launcher. The binary runs on macOS (Apple silicon and Intel), Linux x86_64 (glibc 2.34+), and Windows x86_64. No GPU required; with one, lilbee uses it. See the [hardware requirements](https://github.com/tobocop2/lilbee/blob/main/docs/install.md#hardware-requirements) for the full breakdown.
 
 ## Other install channels
 
