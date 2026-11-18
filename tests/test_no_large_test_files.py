@@ -23,6 +23,7 @@ _NOT_A_FILE_SIZE = frozenset(
         ("_hang_watchdog.py", "handle", "size"),  # a cursor in the small hang-dump file
     }
 )
+_EXEMPT_RECEIVERS = frozenset((name, receiver) for name, receiver, _ in _NOT_A_FILE_SIZE)
 _OPERATORS: dict[type[ast.operator], Callable[[int, int], int]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -87,13 +88,19 @@ def _size_argument(
         return _argument(call, *_OS_FUNCTIONS[functions[func.id]])
     if not isinstance(func, ast.Attribute):
         return None
+    if func.attr not in _FILE_METHODS and func.attr not in _OS_FUNCTIONS:
+        return None
     receiver = ast.unparse(func.value)
     if receiver in modules and func.attr in _OS_FUNCTIONS:
         return _argument(call, *_OS_FUNCTIONS[func.attr])
     if func.attr not in _FILE_METHODS:
         return None
     argument = _argument(call, 0, _FILE_METHODS[func.attr])
-    if argument is not None and (file_name, receiver, ast.unparse(argument)) in _NOT_A_FILE_SIZE:
+    if (
+        argument is not None
+        and (file_name, receiver) in _EXEMPT_RECEIVERS
+        and (file_name, receiver, ast.unparse(argument)) in _NOT_A_FILE_SIZE
+    ):
         return None
     return argument
 
@@ -116,6 +123,15 @@ def large_file_sites(source: str, file_name: str) -> list[tuple[int, str]]:
         elif size > LIMIT_BYTES:
             sites.append((node.lineno, f"{size} bytes is above {LIMIT_BYTES}"))
     return sites
+
+
+def test_the_scan_unparses_only_a_cutting_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+    unparsed: list[ast.AST] = []
+    real = ast.unparse
+    monkeypatch.setattr(ast, "unparse", lambda node: unparsed.append(node) or real(node))
+    source = "handle.write(1)\nlog.info(2)\nhandle.seek(0)\n"
+    assert large_file_sites(source, "test_x.py") == []
+    assert [real(node) for node in unparsed] == ["handle"]
 
 
 def test_no_test_truncates_or_seeks_past_the_limit() -> None:
