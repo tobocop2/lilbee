@@ -328,8 +328,9 @@ def test_no_role_is_written_with_a_model_cache_variable(
 _FREE = 20 << 30
 _LOW = 2 << 30
 _TOTAL = 24 << 30
-# llama.cpp prints whole MiB and the driver reports bytes, so one card has two totals.
-_TOTAL_IN_WHOLE_MIB = _TOTAL - (16 << 20)
+# The engine's total omits memory the CUDA runtime does not report, so one card has two totals
+# (450 MiB apart for an RTX 3090 in tests/conformance/fixtures/engines/llama.cpp-cuda.log).
+_TOTAL_IN_WHOLE_MIB = _TOTAL - (450 << 20)
 _FLEETS = [
     pytest.param(_LLAMA_ALL, id="llama"),
     pytest.param(_MISTRAL_WITH_LLAMA_RERANK, id="mistral-with-llama-rerank"),
@@ -481,7 +482,18 @@ def test_an_engine_chosen_after_the_capture_keeps_the_clean_free_figure(
     assert [d.backend for d in planning._current_plan_probe(llama.LLAMA).devices] == ["Vulkan"]
 
 
-def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
+def test_a_second_engine_on_the_same_backend_keeps_the_clean_free_figure(
+    host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = _Cards(monkeypatch)
+    planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
+    cards.free = _LOW
+    probe = planning._current_plan_probe(mistral.MISTRAL)
+    assert probe is not None
+    assert [(d.backend, d.free_bytes) for d in probe.devices] == [("CUDA", _FREE)]
+
+
+def test_a_smaller_card_at_the_same_index_reads_its_own_free_figure(
     host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = _Cards(monkeypatch)
@@ -493,7 +505,7 @@ def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
     )
     probe = planning._current_plan_probe(mistral.MISTRAL)
     assert probe is not None
-    assert [(d.total_bytes, d.free_bytes) for d in probe.devices] == [(_LOW, _LOW)]
+    assert [(d.total_bytes, d.free_bytes) for d in probe.devices] == [(_LOW, _LOW - (1 << 20))]
     assert cards.llama_reads == 1
 
 
@@ -540,6 +552,7 @@ def test_the_card_read_follows_the_visible_devices_mask(
     found = devices.visible_nvidia_cards()
     assert [d.name for d in found] == [f"card{i}" for i in indices]
     assert [d.index for d in found] == list(range(len(indices)))
+    assert [d.uuid for d in found] == [cards[i].uuid for i in indices]
 
 
 def test_a_missing_card_does_not_shift_the_pin_of_the_cards_after_it(

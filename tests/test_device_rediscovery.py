@@ -156,6 +156,49 @@ class TestTheRefreshKeepsThePerDeviceFreeFigures:
         assert [d.free_bytes for d in probe.devices] == [23 * _GB]
 
 
+class TestASwappedCardDoesNotInheritTheOldFreeFigure:
+    """Cases beside the table in tests/test_card_identity_carry.py."""
+
+    @pytest.mark.parametrize(
+        ("engine_mib", "driver_mib"),
+        [
+            # The A40 engine total is from tests/fixtures/engine-load-cuda-split.log. The
+            # driver total is constructed: 45568 MiB is 44.5 GiB, the old half-GiB split point.
+            pytest.param(45488, 45568, id="a40-engine-total-fixture-driver-total-constructed"),
+            pytest.param(24063, 24576, id="old-rounding-boundary"),
+        ],
+    )
+    def test_the_engines_total_and_the_drivers_are_the_same_card(
+        self, monkeypatch, engine_mib: int, driver_mib: int
+    ) -> None:
+        mib = 1 << 20
+        _snapshot(monkeypatch, [FleetDevice("CUDA", 0, "A", engine_mib * mib, 23 * _GB)])
+        again = [FleetDevice("CUDA", 0, "A", driver_mib * mib, 2 * _GB)]
+        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(again))
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
+        probe = planning_mod._plan_probe_store.get(LLAMA.name)
+        assert probe is not None
+        assert [d.free_bytes for d in probe.devices] == [23 * _GB]
+
+    def test_the_card_that_stayed_keeps_its_figure_beside_a_swapped_one(self, monkeypatch) -> None:
+        _snapshot(
+            monkeypatch,
+            [
+                FleetDevice("CUDA", 0, "A", 24 * _GB, 23 * _GB),
+                FleetDevice("CUDA", 1, "small", 8 * _GB, 7 * _GB),
+            ],
+        )
+        now = [
+            FleetDevice("CUDA", 0, "A", 24 * _GB, 2 * _GB),
+            FleetDevice("CUDA", 1, "big", 24 * _GB, 22 * _GB),
+        ]
+        monkeypatch.setattr(planning_mod, "_read_devices", lambda _b, engine: _reading(now))
+        planning_mod.refresh_plan_devices({WorkerRole.CHAT: LLAMA})
+        probe = planning_mod._plan_probe_store.get(LLAMA.name)
+        assert probe is not None
+        assert [d.free_bytes for d in probe.devices] == [23 * _GB, 22 * _GB]
+
+
 class TestAnEngineThatChangesUnderARunningServe:
     """A probe result describes one engine binary and must not outlive it.
 
