@@ -337,6 +337,25 @@ def test_a_ctrl_c_during_a_stuck_shutdown_logs_no_failure(start: Callable[..., _
 
 
 @posix_only
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["sigterm", "sighup"])
+def test_a_terminate_signal_during_a_stuck_shutdown_logs_no_failure(
+    start: Callable[..., _Serve], signum: signal.Signals
+) -> None:
+    server = start(X_DEADLINE="20", X_TEARDOWN="stuck")
+    server.request("POST", "/api/shutdown")
+    server.read_until("HELD")
+    server.process.send_signal(signum)
+    server.read_until("HELD")
+    time.sleep(_QUIET_WINDOW_S)
+    server.process.send_signal(signal.SIGINT)
+    time.sleep(_QUIET_WINDOW_S)
+    server.process.send_signal(signal.SIGINT)
+    assert server.wait() == _SIGINT_EXIT_STATUS
+    assert "Application shutdown failed" not in server.output
+    assert "SystemExit" not in server.output
+
+
+@posix_only
 def test_a_write_held_at_the_deadline_never_answers_200_and_leaves_the_old_file(
     start: Callable[..., _Serve], tmp_path: Path
 ) -> None:
