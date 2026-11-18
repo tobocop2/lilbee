@@ -3700,7 +3700,7 @@ class TestRoutingProviderRerank:
         rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.reranker_model = "openrouter/cohere/rerank-english-v3.0"
         scores = rp.rerank("q", ["a", "b"])
         assert scores == [0.9, 0.1]
         mock_sdk.rerank.assert_called_once_with("q", ["a", "b"])
@@ -3716,7 +3716,7 @@ class TestRoutingProviderRerank:
         rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.reranker_model = "openrouter/cohere/rerank-english-v3.0"
         with pytest.raises(ProviderError, match="hosted rerank backend not available"):
             rp.rerank("q", ["a", "b"])
         mock_sdk.rerank.assert_not_called()
@@ -3758,6 +3758,7 @@ class TestRoutingProviderRerank:
             "ollama/bge-reranker#safetensors",
             "lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf",
             "cohere/rerank-english-v3.0",
+            "openrouter/cohere/rerank-english-v3.0",
             "wired/bge-reranker",
             "wired/bge-reranker#safetensors",
         ],
@@ -3809,7 +3810,7 @@ class TestRoutingProviderRerank:
         rp = self._make_provider()
         mock_sdk = mock.MagicMock()
         rp._sdk_provider = mock_sdk
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.reranker_model = "openrouter/cohere/rerank-english-v3.0"
 
         mock_sdk.supports_rerank.return_value = False
         assert rp.supports_rerank() is False
@@ -3845,10 +3846,10 @@ class TestRoutingProviderRerank:
         )
 
     def test_non_gguf_two_part_ref_is_not_native(self) -> None:
-        """Two-part refs (e.g. ``cohere/rerank-v3``) still go to the SDK."""
+        """A built-in provider prefix still goes to the SDK."""
         from lilbee.providers.serving import routes_native
 
-        assert routes_native("cohere/rerank-english-v3.0") is False
+        assert routes_native("openrouter/cohere/rerank-english-v3.0") is False
 
     def test_lm_studio_gguf_path_reranker_is_not_native(self) -> None:
         """A local-server-prefixed GGUF path keeps the prefix exemption, like chat refs."""

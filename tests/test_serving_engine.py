@@ -197,10 +197,10 @@ def test_the_placement_response_names_the_engine_of_each_role() -> None:
     assert [r.engine for r in PlacementResponse.from_view(view).roles] == ["llama.cpp"]
 
 
-HOSTED_RERANK = "cohere/rerank-v3"
+HOSTED_RERANK = "openrouter/cohere/rerank-v3"
 
 
-def test_a_hosted_rerank_ref_with_an_unknown_prefix_gets_one_answer(
+def test_a_hosted_rerank_ref_gets_one_answer(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     provider, _local, sdk = _provider(monkeypatch)
@@ -212,12 +212,12 @@ def test_a_hosted_rerank_ref_with_an_unknown_prefix_gets_one_answer(
     with caplog.at_level(logging.INFO, logger="lilbee.providers.routing_provider"):
         provider.rerank("q", ["a"])
     assert _served_lines(caplog) == [
-        f"served by engine=cohere version={REMOTE_VERSION} build={NO_BUILD} role=rerank "
+        f"served by engine=openrouter version={REMOTE_VERSION} build={NO_BUILD} role=rerank "
         f"model={HOSTED_RERANK}"
     ]
     assert serving_roles() == [
         ServingStatus(
-            role=WorkerRole.RERANK, model=HOSTED_RERANK, engine="cohere", version=REMOTE_VERSION
+            role=WorkerRole.RERANK, model=HOSTED_RERANK, engine="openrouter", version=REMOTE_VERSION
         )
     ]
 
