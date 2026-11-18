@@ -12,6 +12,7 @@ from typing import Any
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import (
+    GgufVramEstimate,
     attention_shape,
     estimate_instance_footprint,
     repacked_weight_bytes,
@@ -431,25 +432,50 @@ def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
     return _sized_estimate(UNKNOWN_SIZE_RESERVE_BYTES)
 
 
-def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
-    """The GGUF parser's footprint for one instance, with its engine and mtime caches."""
-    parsed = estimate_instance_footprint(
+def _parse(request: MemoryRequest, *, gpu_layers: int, with_projector: bool) -> GgufVramEstimate:
+    return estimate_instance_footprint(
         request.model_path,
         ctx=request.ctx,
         slots=request.slots,
-        gpu_layers=request.gpu_layers,
+        gpu_layers=gpu_layers,
         flash_attn=request.flash_attn,
         kv_cache_type=request.kv_cache_type,
-        mmproj_path=request.mmproj_path,
+        mmproj_path=request.mmproj_path if with_projector else None,
         tensor_split=request.tensor_split,
         batch_size=request.batch_size,
         expert_offload=request.expert_offload,
+    )
+
+
+def _device_booked_buffer_bytes(parsed: GgufVramEstimate) -> int:
+    """Bytes the parser books to a device that its unified figure leaves out."""
+    return sum(
+        max(device - unified, 0)
+        for device, unified in zip(parsed.per_device_vram, parsed.per_device_unified, strict=True)
+    )
+
+
+def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
+    """The GGUF parser's footprint for one instance, with its engine and mtime caches.
+
+    A pooled CPU load, which launches with a batch raised to its context, is sized with no
+    layer offloaded: the parser then books only the batch compute buffer to the device, and
+    that buffer lives in host memory. The weights are already charged as the mapped file.
+    A CPU chat load keeps the parser figure, which its own estimator corrects.
+    """
+    pooled_on_cpu = request.on_cpu and request.batch_size is not None
+    gpu_layers = 0 if pooled_on_cpu else request.gpu_layers
+    parsed = _parse(request, gpu_layers=gpu_layers, with_projector=True)
+    compute_buffer = (
+        _device_booked_buffer_bytes(_parse(request, gpu_layers=0, with_projector=False))
+        if pooled_on_cpu
+        else 0
     )
     return MemoryEstimate(
         kind=MemoryKind.SIZED,
         device_bytes=parsed.vram_bytes,
         host_bytes=parsed.ram_bytes,
-        shared_bytes=parsed.unified_bytes,
+        shared_bytes=parsed.unified_bytes + compute_buffer,
         mapped_weights_bytes=parsed.mapped_weights_bytes
         + (repacked_weight_bytes(request.model_path) if request.on_cpu else 0),
         per_device=parsed.per_device_vram,
