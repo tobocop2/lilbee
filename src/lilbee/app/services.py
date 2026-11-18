@@ -574,9 +574,19 @@ class _EngineLifecycle:
             return
         self._installed = True
 
+    @staticmethod
+    def _interrupt_is_ignored() -> bool:
+        """Whether the process started with SIGINT ignored, as nohup or a background job does."""
+        return signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+
     def route_interrupt(self) -> None:
-        """Send Ctrl-C through the hard-exit path; a second press ends the process at once."""
+        """Send Ctrl-C through the hard-exit path; a second press ends the process at once.
+
+        An inherited ignore of SIGINT stays in place.
+        """
         self._interrupts = 0
+        if self._interrupt_is_ignored():
+            return
         signal.signal(signal.SIGINT, self._on_interrupt)
 
     def _on_interrupt(self, signum: int, frame: object) -> None:
@@ -593,7 +603,8 @@ class _EngineLifecycle:
         kernel may hand the signal to another thread while the loop sits in select.
         The loop's wakeup descriptor makes the delivery certain.
         """
-        for sig in (signal.SIGINT, *self._hard_exit_signals()):
+        interrupt = () if self._interrupt_is_ignored() else (signal.SIGINT,)
+        for sig in (*interrupt, *self._hard_exit_signals()):
             with suppress(NotImplementedError, RuntimeError):  # Windows, off main thread
                 loop.add_signal_handler(sig, self._on_hard_exit, sig, None)
 

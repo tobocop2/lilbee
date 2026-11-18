@@ -171,6 +171,41 @@ def test_the_first_ctrl_c_stops_the_server_and_the_second_forces_the_exit(monkey
     provider.shutdown.assert_called_once()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal disposition")
+def test_an_inherited_ignore_of_sigint_survives_stop_on_interrupt():
+    """A process started with SIGINT ignored keeps ignoring it, as Python does at start."""
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        stop_on_interrupt()
+        assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_an_inherited_ignore_of_sigint_survives_the_loop_routing_and_sigterm_still_routes():
+    """The loop leaves an ignored SIGINT alone; SIGTERM still stops the fleet."""
+    provider = _install_stub_services()
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    async def serve() -> None:
+        services_mod.exit_on_signals_in_loop(asyncio.get_running_loop())
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(0.2)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(30)
+
+    try:
+        with pytest.raises(SystemExit) as raised:
+            asyncio.run(serve())
+        _join_teardown()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    assert raised.value.code == 128 + signal.SIGTERM
+    provider.shutdown.assert_called_once()
+
+
 def test_a_ctrl_c_after_the_server_hook_is_gone_joins_the_stop_without_raising():
     """A stuck lifespan leaves the hook cleared; the press must not raise into the loop."""
     provider = _install_stub_services()

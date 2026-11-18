@@ -247,8 +247,8 @@ def serve(
             timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_S,
         )
         server = uvicorn.Server(config)
-        # Replaces an ignore that a launch may have set, and keeps asyncio from installing
-        # its own handler, which only cancels the main task through a loop callback.
+        # Keeps asyncio from installing its own handler, which only cancels the main task
+        # through a loop callback. An inherited ignore of SIGINT stays ignored.
         stop_on_interrupt()
         status = asyncio.run(_run_server(server, config, cfg.server_host))
     except Exception:

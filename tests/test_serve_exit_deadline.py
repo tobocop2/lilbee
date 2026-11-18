@@ -295,10 +295,15 @@ def test_the_shutdown_route_with_a_read_blocked_ends_at_the_deadline(
 
 
 @posix_only
-def test_an_inherited_ignore_of_sigint_does_not_hide_it(start: Callable[..., _Serve]) -> None:
-    server = start(X_DEADLINE="20", preexec=_ignore_sigint)
+def test_an_inherited_ignore_of_sigint_keeps_the_server_running_until_it_is_told_to_stop(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sigint)
     server.process.send_signal(signal.SIGINT)
-    assert server.wait() == _SIGINT_EXIT_STATUS
+    time.sleep(_QUIET_WINDOW_S)
+    assert server.process.poll() is None
+    server.request("POST", "/api/shutdown")
+    assert server.wait() == 0
 
 
 def test_the_grace_lets_a_clean_exit_reach_the_lifespan_teardown(
