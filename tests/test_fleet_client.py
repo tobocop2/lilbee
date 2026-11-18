@@ -629,6 +629,56 @@ def test_wait_idle_returns_when_the_last_request_ends_and_not_before() -> None:
     assert client.in_flight == 0
 
 
+_WAKE_TIMEOUT_S = 30.0
+
+
+def test_wait_idle_returns_on_the_wake_not_on_the_timeout() -> None:
+    """A timeout return also reports True once the count is zero, so time the wake."""
+    client = _client()
+    client.reserve()
+    released_at: list[float] = []
+    waiting = threading.Event()
+    real_wait = client._idle.wait
+
+    def _signal_then_wait(timeout: float | None = None) -> bool:
+        waiting.set()  # the count lock is held, so release() blocks until the wait starts
+        return real_wait(timeout)
+
+    client._idle.wait = _signal_then_wait  # type: ignore[method-assign]
+
+    def _end_request() -> None:
+        assert waiting.wait(_WAKE_TIMEOUT_S)
+        released_at.append(time.monotonic())
+        client.release()
+
+    ender = threading.Thread(target=_end_request)
+    ender.start()
+    assert client.wait_idle(_WAKE_TIMEOUT_S) is True
+    returned_at = time.monotonic()
+    ender.join()
+    assert released_at, "the request never ended"
+    assert returned_at - released_at[0] < _WAKE_TIMEOUT_S / 3
+
+
+def test_wait_idle_waits_out_the_timeout_when_no_wake_comes() -> None:
+    """The count reaches zero with no notify, so only the timeout re-checks it."""
+    client = _client()
+    client.reserve()
+
+    def _zero_without_notify() -> None:
+        with client._in_flight_lock:
+            client.in_flight = 0
+
+    flipper = threading.Timer(0.05, _zero_without_notify)
+    timeout_s = 0.3
+    started_at = time.monotonic()
+    flipper.start()
+    assert client.wait_idle(timeout_s) is True
+    elapsed_s = time.monotonic() - started_at
+    flipper.join()
+    assert elapsed_s >= timeout_s * 0.9
+
+
 def test_chat_stream_yields_deltas() -> None:
     chunks = list(_client().chat([{"role": "user", "content": "hi"}], stream=True))
     assert chunks == ["He", "llo"]
