@@ -14,11 +14,19 @@ from lilbee.app.models import RemoveResult
 from lilbee.catalog import CatalogResult
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
+from lilbee.core.web_names import WEB_PREFIX
 from lilbee.data.ingest import SyncResult
-from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL, RagContext
+from lilbee.data.store import SearchChunk
+from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL, SEARCH_NEEDS_EMBEDDER, RagContext
 from lilbee.runtime.progress.types import LibraryUpgradeEvent, UpgradePhase
 from lilbee.server import handlers
 from lilbee.server import wiki as server_wiki
+from lilbee.server.chat_dispatch.canonical import (
+    CanonicalResponse,
+    CanonicalUsage,
+    StopReason,
+    TextBlock,
+)
 from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 from lilbee.server.handlers import documents as document_handlers
 from lilbee.server.handlers import ingest as ingest_handlers
@@ -258,6 +266,15 @@ class TestChatSummaryPersistStaysOffTheLoop:
         services.session_store.set_summary.assert_called_once_with("s1", "notes")
 
 
+_ANSWER = CanonicalResponse(
+    id="msg_test",
+    model="m",
+    content=[TextBlock(text="ok")],
+    stop_reason=StopReason.END_TURN,
+    usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+)
+
+
 class TestChatRetrievalStaysOffTheLoop:
     """The one-shot chat route reads the library and memory on a worker thread."""
 
@@ -304,6 +321,47 @@ class TestChatRetrievalStaysOffTheLoop:
             result = await rag_handlers.chat("q", [])
         assert result.answer == GROUNDED_REFUSAL
         _assert_off_the_loop(threads, 1)
+
+    async def test_the_embedder_probe_runs_off_the_loop(self, services):
+        threads: list[int] = []
+        with patch.object(
+            services.searcher,
+            "search_unavailable",
+            side_effect=_recording(threads, returns=True),
+        ):
+            result = await rag_handlers.chat("q", [])
+        assert result.answer == SEARCH_NEEDS_EMBEDDER
+        _assert_off_the_loop(threads, 1)
+
+    async def test_a_crawled_page_source_is_titled_off_the_loop(self, services):
+        threads: list[int] = []
+        page = SearchChunk(
+            source=f"{WEB_PREFIX}page.md",
+            content_type="text",
+            chunk="text",
+            distance=0.1,
+            page_start=1,
+            page_end=1,
+            line_start=0,
+            line_end=0,
+            chunk_index=0,
+            vector=[0.1],
+        )
+        grounded = RagContext([page], [{"role": "user", "content": "q"}])
+        searcher = services.searcher
+        services.store.web_titles.side_effect = _recording(threads, returns={})
+        with (
+            patch.object(searcher, "search_unavailable", return_value=False),
+            patch.object(searcher, "skip_retrieval", return_value=False),
+            patch.object(searcher, "pre_retrieval_answer", return_value=None),
+            patch.object(searcher, "build_rag_context", return_value=grounded),
+            patch.object(rag_handlers, "dispatch_chat", return_value=_ANSWER),
+            patch.object(rag_handlers, "_store_extracted_memories", AsyncMock(return_value=[])),
+        ):
+            result = await rag_handlers.chat("q", [])
+        assert [source.source for source in result.sources] == [page.source]
+        # Titles are read for the sources, the cited subset and the dropped list.
+        _assert_off_the_loop(threads, 3)
 
 
 class TestSessionCallsStayOffTheLoop:
