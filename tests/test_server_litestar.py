@@ -1998,6 +1998,18 @@ class TestOpenAPISchema:
         assert resp.status_code == 200
 
 
+@pytest.fixture()
+def stub_services():
+    """Give a server start a stub container, so its startup build cannot fail."""
+    from lilbee.app.services import set_services
+    from tests.conftest import make_mock_services
+
+    set_services(make_mock_services())
+    yield
+    set_services(None)
+
+
+@pytest.mark.usefixtures("stub_services")
 class TestCors:
     @mock.patch(
         "lilbee.server.handlers.health",
@@ -2064,6 +2076,7 @@ class TestCors:
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
+@pytest.mark.usefixtures("stub_services")
 class TestCorsDefaultRegex:
     """Default cors_origin_regex should allow Obsidian (desktop + mobile) and any
     localhost origin out of the box, without any config or env var."""
@@ -2407,11 +2420,34 @@ class TestLifespan:
         mock_svc.embedder.validate_model.assert_called_once()
 
     @mock.patch("lilbee.server.app.get_services", side_effect=RuntimeError("no provider"))
-    async def test_provider_failure_does_not_block(self, mock_get_svc):
+    async def test_a_failed_build_ends_the_startup_and_logs_the_error(self, mock_get_svc, caplog):
+        from lilbee.server.app import _lifespan, _server_loop
+        from lilbee.server.auth import server_json_path
+
+        with (
+            caplog.at_level(logging.ERROR, logger="lilbee.server.app"),
+            pytest.raises(RuntimeError, match="no provider"),
+        ):
+            async with _lifespan(mock.MagicMock()):
+                pytest.fail("the server served after a failed services build")
+        assert "The services build failed" in caplog.text
+        assert "no provider" in caplog.text
+        assert not server_json_path().exists()
+        assert _server_loop.running() is None
+
+    async def test_a_stop_during_the_build_ends_the_startup_without_a_build_error(self, caplog):
+        from lilbee.app.services import ServicesStoppingError
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            pass
+        with (
+            mock.patch("lilbee.server.app.get_services", side_effect=ServicesStoppingError),
+            caplog.at_level(logging.INFO, logger="lilbee.server.app"),
+            pytest.raises(ServicesStoppingError),
+        ):
+            async with _lifespan(mock.MagicMock()):
+                pytest.fail("the server served after a stop during its build")
+        assert "A stop arrived during the services build" in caplog.text
+        assert "The services build failed" not in caplog.text
 
     @mock.patch("lilbee.server.app.get_services")
     async def test_a_raising_embedding_check_warns_and_does_not_block(self, mock_get_svc, caplog):

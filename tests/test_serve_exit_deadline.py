@@ -38,7 +38,7 @@ _NEW_VALUE = 0.75
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery")
 
 _SERVE_PROBE = """\
-import os, sys, threading
+import os, sys, threading, time
 import lilbee.app.services as services
 import lilbee.cli.commands.servers as servers
 import lilbee.core.security as security
@@ -65,14 +65,30 @@ class Searcher:
 def held_on_the_engine(event):
     event.wait()
 
+class Embedder:
+    def validate_model(self):
+        return True
+
+class Store:
+    def open_in_background(self):
+        pass
+
 class Services:
     searcher = Searcher()
+    embedder = Embedder()
+    store = Store()
 
-def no_engines():
-    raise RuntimeError("no engines in this probe")
-
-app_mod.get_services = no_engines
+app_mod.get_services = lambda: Services()
 rag.get_services = lambda: Services()
+
+if os.environ.get("X_SLOW_BUILD"):
+    def slow_build():
+        say("BUILDING")
+        while not services._lifecycle.stop_requested:
+            time.sleep(0.05)
+        raise services.ServicesStoppingError
+
+    app_mod.get_services = slow_build
 
 def stuck_teardown():
     say("HELD")
@@ -347,6 +363,43 @@ def test_an_inherited_ignore_of_sigterm_does_not_stop_sigterm_from_stopping_the_
     server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sigterm)
     server.process.send_signal(signal.SIGTERM)
     assert server.wait() == 128 + signal.SIGTERM
+
+
+@posix_only
+def test_a_stop_signal_during_the_startup_build_exits_with_its_status(tmp_path: Path) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", _SERVE_PROBE],
+        env={
+            **_child_env(tmp_path / "data"),
+            "HF_HUB_OFFLINE": "1",
+            "X_DEADLINE": "20",
+            "X_SLOW_BUILD": "1",
+        },
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+    )
+    # A kill at the failure ceiling turns a blocked read of the output into an EOF.
+    ceiling = threading.Timer(_FAILURE_CEILING_S, process.kill)
+    ceiling.daemon = True
+    ceiling.start()
+    try:
+        assert process.stdout is not None
+        building = next((line for line in process.stdout if "BUILDING" in line), None)
+        assert building is not None, "the server ended before its startup build"
+        process.send_signal(signal.SIGTERM)
+        output, _ = process.communicate(timeout=_FAILURE_CEILING_S)
+    finally:
+        ceiling.cancel()
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    server_log = next(tmp_path.rglob("server.log")).read_text(encoding="utf-8")
+    assert process.returncode == 128 + signal.SIGTERM, output
+    assert "A stop arrived during the services build" in server_log
+    assert "The services build failed" not in server_log + output
 
 
 def test_the_grace_lets_a_clean_exit_reach_the_lifespan_teardown(

@@ -1349,6 +1349,12 @@ shuts down as an external SIGTERM would, except that it gives responses in
 flight 10 seconds in place of 1 second and exits with status 0. Its locks
 release the moment it exits.
 
+The server builds its services (the model provider, the embedder and the library)
+before it serves. If that build fails, the server does not start: it writes the error
+to its log and exits with status 1. Fix the cause with `lilbee settings`, then start
+the server again. A stop signal during the build ends the server with the status of
+that signal, as at any other time.
+
 Every route needs the session token, reads included, `GET /api/health` among
 them; the daemon writes the token to `server.json` (mode `0600`) next to the
 port file, and `lilbee agent-config` hands it to local clients. The surface

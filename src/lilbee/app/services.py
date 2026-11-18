@@ -234,6 +234,14 @@ def wait_for_opens(timeout: float) -> bool:
     return done
 
 
+def _run_cleanup(step: Callable[[], None]) -> None:
+    """Run one cleanup step of a failed build; log its error so the build's own error stays."""
+    try:
+        step()
+    except Exception:
+        log.warning("Cleanup after a failed services build failed", exc_info=True)
+
+
 def build_services(
     config: Config,
     *,
@@ -273,46 +281,59 @@ def build_services(
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     engines = EngineBook(config)
+    owns_provider = provider is None
     provider = provider or create_provider(
         config, hold_warm=interactive, config_refresh=refresh_config
     )
-    from lilbee.data.extract.backends import sync_xberg_backends
+    store: Store | None = None
+    try:
+        from lilbee.data.extract.backends import sync_xberg_backends
 
-    sync_xberg_backends(provider)
-    registry = registry or ModelRegistry(config.models_dir)
-    # The first point that sees env vars, --model and config.toml together.
-    warn_unregistered_role_refs(config, registry)
-    embedder = Embedder(config, provider)
-    store = _new_store(config, canary_probe(config, embedder, registry))
-    reranker = Reranker(config)
-    concepts = ConceptGraph(config, store)
-    clusterer = Clusterer(config, store)
-    searcher = Searcher(config, provider, store, embedder, reranker, concepts)
-    hf_client = HfClient(config)
-    ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(config.models_dir, config)
-    crawler_semaphore = (
-        asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
-    )
-    crawler_sync_state = CrawlerSyncState()
-    known_models = KnownModelCache()
-    return Services(
-        provider=provider,
-        engines=engines,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        clusterer=clusterer,
-        searcher=searcher,
-        registry=registry,
-        hf_client=hf_client,
-        ingest_lock_registry=ingest_lock_registry,
-        model_manager=model_manager,
-        crawler_semaphore=crawler_semaphore,
-        crawler_sync_state=crawler_sync_state,
-        known_models=known_models,
-    )
+        sync_xberg_backends(provider)
+        registry = registry or ModelRegistry(config.models_dir)
+        # The first point that sees env vars, --model and config.toml together.
+        warn_unregistered_role_refs(config, registry)
+        embedder = Embedder(config, provider)
+        store = _new_store(config, canary_probe(config, embedder, registry))
+        reranker = Reranker(config)
+        concepts = ConceptGraph(config, store)
+        clusterer = Clusterer(config, store)
+        searcher = Searcher(config, provider, store, embedder, reranker, concepts)
+        hf_client = HfClient(config)
+        ingest_lock_registry = IngestLockRegistry()
+        model_manager = ModelManager(config.models_dir, config)
+        crawler_semaphore = (
+            asyncio.Semaphore(config.crawl_max_concurrent)
+            if config.crawl_max_concurrent > 0
+            else None
+        )
+        crawler_sync_state = CrawlerSyncState()
+        known_models = KnownModelCache()
+        return Services(
+            provider=provider,
+            engines=engines,
+            store=store,
+            embedder=embedder,
+            reranker=reranker,
+            concepts=concepts,
+            clusterer=clusterer,
+            searcher=searcher,
+            registry=registry,
+            hf_client=hf_client,
+            ingest_lock_registry=ingest_lock_registry,
+            model_manager=model_manager,
+            crawler_semaphore=crawler_semaphore,
+            crawler_sync_state=crawler_sync_state,
+            known_models=known_models,
+        )
+    except BaseException:
+        # A failed build leaves nothing open: the store it made and the provider it
+        # created (a caller-supplied provider stays the caller's).
+        if store is not None:
+            _run_cleanup(store.close)
+        if owns_provider:
+            _run_cleanup(provider.shutdown)
+        raise
 
 
 # Serializes first-touch singleton creation: several worker threads (e.g.

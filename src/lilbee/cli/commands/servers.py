@@ -62,6 +62,9 @@ Distinct from a generic failure so a supervisor can tell "another server owns
 this" apart from a crash without parsing output.
 """
 
+_STARTUP_FAILED_EXIT_STATUS = 1
+"""Exit code for a server whose startup failed, such as a failed services build."""
+
 _EXIT_DEADLINE_S = 60.0
 """Seconds from the start of shutdown until the process ends, whatever holds it."""
 
@@ -130,7 +133,12 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     parent_watcher: asyncio.Task[None] | None = None
     try:
         set_server_exit_hook(exit_request)
-        await server.startup()
+        try:
+            await server.startup()
+        except SystemExit:
+            # uvicorn ends a failed start (lifespan or bind) with the status a lock refusal uses.
+            # A stop signal during the start has set its own nonzero status.
+            return exit_request.status or _STARTUP_FAILED_EXIT_STATUS
         started = True
 
         parent_pid = parse_parent_pid()
