@@ -4256,11 +4256,12 @@ def _equal_split_refusal(
     miss = placement.split_misses.get(role)
     if not model.equal_split_only or miss is None:
         return None
+    beside = " beside the other models" if placement.instances else ""
     return (
         f"needs {model.est_vram_bytes / 1024**3:.1f} GiB, and the engine splits it only "
         f"evenly: over {miss.count} GPUs, device {miss.device} would need "
         f"{miss.need_bytes / 1024**3:.1f} GiB but has {miss.room_bytes / 1024**3:.1f} GiB "
-        "left beside the other models. "
+        f"left{beside}. "
         "It will not be served. Use a smaller model, or another engine for this role."
     )
 

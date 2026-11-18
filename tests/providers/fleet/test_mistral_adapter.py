@@ -1452,7 +1452,8 @@ def test_the_refusal_of_an_equal_split_names_the_card_the_planner_missed(
     said = _refusal_text(placed, (24, 16), caplog)
     need, room = miss.need_bytes / GIB, miss.room_bytes / GIB
     assert f"over 2 GPUs, device 1 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
-    assert "the smallest" not in said
+    assert f"has {room:.1f} GiB left. It will not be served." in said
+    assert "beside the other models" not in said
 
 
 @_stated
@@ -1476,6 +1477,19 @@ def test_the_refusal_of_an_equal_split_counts_the_room_other_roles_hold(
     said = _refusal_text(placed, (24, 24), caplog)
     need = miss.need_bytes / GIB
     assert f"device 0 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
+    assert f"{room:.1f} GiB left beside the other models. It will not be served." in said
+
+
+def test_the_first_pack_that_tries_a_role_keeps_its_nearest_miss() -> None:
+    from lilbee.providers.fleet.placement import ModelPlacementInput, SplitMiss, _noting_miss
+
+    chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=44 * GIB)
+    first = SplitMiss(2, 0, 22.0 * GIB, 9.6 * GIB)
+    later = SplitMiss(2, 1, 22.0 * GIB, 21.6 * GIB)
+    misses: dict[WorkerRole, SplitMiss] = {}
+    assert _noting_miss(None, chat, first, misses) is None
+    assert _noting_miss(None, chat, later, misses) is None
+    assert misses == {WorkerRole.CHAT: first}
 
 
 @pytest.mark.parametrize(
