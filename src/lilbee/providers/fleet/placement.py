@@ -820,7 +820,7 @@ def placement_from_spec(
     held: dict[int, list[RoomHolder]] = {}
     for role in active_roles:
         rp = _required_entry(
-            spec, role, device_capacity, lost_card, refuse_alone=not spec.all_on_cards
+            spec, role, device_capacity, lost_card, refuse_alone=refuses_role_alone(spec)
         )
         if rp.device_target is RoleTarget.AUTO:
             auto_roles.append(role)
@@ -836,7 +836,7 @@ def placement_from_spec(
         try:
             per_device = estimate_peak(role, ratio)
         except SplitRefusedError as exc:
-            raise _spec_refusal(role, str(exc), refuse_alone=not spec.all_on_cards) from exc
+            raise _spec_refusal(role, str(exc), refuse_alone=refuses_role_alone(spec)) from exc
         split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
             _charge_devices(
@@ -845,7 +845,7 @@ def placement_from_spec(
                 per_device,
                 remaining,
                 device_capacity,
-                refuse_alone=not spec.all_on_cards,
+                refuse_alone=refuses_role_alone(spec),
                 held=held,
             )
             instances.append(
@@ -1018,6 +1018,17 @@ def _required_entry(
 def _spec_refusal(role: WorkerRole, reason: str, *, refuse_alone: bool) -> PlacementError:
     """A manual spec's refusal: it names *role* when the launch drops that role alone."""
     return TargetRefusedError({role: reason}) if refuse_alone else PlacementError(reason)
+
+
+def refuses_role_alone(spec: PlacementSpec) -> bool:
+    """Whether *spec* drops a role it cannot place alone, rather than falling back to auto."""
+    return not spec.all_on_cards
+
+
+def refuse_role_without_entry(spec: PlacementSpec, role: WorkerRole) -> None:
+    """Raise serving's refusal when *spec* has no entry for *role* and drops it alone."""
+    if role not in spec.roles and refuses_role_alone(spec):
+        _required_entry(spec, role, {}, refuse_alone=True)
 
 
 def _charge_devices(

@@ -868,10 +868,31 @@ class TestSelfCheckUsesTheRoleTarget:
         assert _flag(launch.argv, "--n-gpu-layers") == "0"
         assert _flag(launch.argv, "--device") == "none"
 
-    def test_role_with_no_entry_is_checked_on_the_card(
+    def test_role_with_no_entry_in_a_spec_off_the_cards_is_refused_as_serving_refuses_it(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        launch = self._launch(monkeypatch, tmp_path, '{"chat": {"target": "cpu"}}')
+        with pytest.raises(TargetRefusedError) as caught:
+            self._launch(monkeypatch, tmp_path, '{"chat": {"target": "cpu"}}')
+        assert caught.value.reasons == {
+            WorkerRole.EMBED: (
+                "embed has a model but the placement has no entry for it. "
+                "Add an entry for embed with devices or a target, or clear the placement."
+            )
+        }
+
+    def test_role_with_a_card_entry_beside_a_cpu_role_keeps_its_card(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        launch = self._launch(
+            monkeypatch, tmp_path, '{"embed": {"devices": [0]}, "chat": {"target": "cpu"}}'
+        )
+        assert _flag(launch.argv, "--n-gpu-layers") == "-1"
+        assert _flag(launch.argv, "--device") == "Vulkan0"
+
+    def test_role_with_no_entry_in_a_spec_of_cards_is_checked_on_the_card(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        launch = self._launch(monkeypatch, tmp_path, '{"chat": {"devices": [0]}}')
         assert _flag(launch.argv, "--n-gpu-layers") == "-1"
         assert _flag(launch.argv, "--device") == "Vulkan0"
 

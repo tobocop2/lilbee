@@ -71,6 +71,7 @@ from lilbee.providers.fleet.placement import (
     lost_card_reason,
     placement_from_spec,
     plan_placement,
+    refuse_role_without_entry,
 )
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
@@ -2277,11 +2278,14 @@ def build_single_role_launch(
 
     Placement is the planner's, on the devices the plan snapshot holds, so the
     check runs on the card the role would really land on. A role that the saved
-    placement puts on the CPU is checked on the CPU.
+    placement puts on the CPU is checked on the CPU. A role with no entry in a
+    placement that serving drops it for is refused with serving's error.
     """
     from lilbee.core.config import cfg
 
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    if spec is not None:
+        refuse_role_without_entry(spec, role)
     entry = spec.roles.get(role) if spec is not None else None
     target = entry.device_target if entry is not None else RoleTarget.GPU
     binary = engine.binary()
