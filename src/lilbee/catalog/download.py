@@ -134,12 +134,21 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
     Scoped to the blobs the caller resolved, because another quant of the same
     repo downloads into the same directory at the same time and its temporary
     file is live.
+
+    Raises RuntimeError naming the folder when the cache cannot be listed.
     """
     from huggingface_hub.file_download import repo_folder_name
 
     repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
     for blob in blobs:
-        for partial in repo_dir.glob(f"blobs/{blob}.*.incomplete"):
+        try:
+            partials = list(repo_dir.glob(f"blobs/{blob}.*.incomplete"))
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
+                "Check that lilbee can read and write that folder."
+            ) from exc
+        for partial in partials:
             try:
                 partial.unlink()
             except OSError:

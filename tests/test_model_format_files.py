@@ -444,6 +444,27 @@ class TestDownloadRouting:
             download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
         assert fetch.call_count == 3
 
+    def test_an_unreadable_cache_stops_a_non_gguf_install_with_a_plain_error(
+        self, tmp_path: Path
+    ) -> None:
+        names = ["model.safetensors"]
+
+        def _refuse(self: Path, pattern: str) -> object:
+            raise PermissionError(13, "Permission denied")
+
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=names),
+            mock.patch.object(download, "_cached_path", return_value=None),
+            mock.patch.object(
+                download,
+                "fetch_remote_file",
+                return_value=download.RemoteFile(10, "model.safetensors"),
+            ),
+            mock.patch.object(Path, "glob", _refuse),
+            pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*models--"),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
+
     def test_the_space_check_still_refuses_when_the_missing_files_do_not_fit(
         self, tmp_path: Path
     ) -> None:

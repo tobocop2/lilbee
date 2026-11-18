@@ -213,3 +213,15 @@ def test_a_partial_that_will_not_delete_is_reported(
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
     assert "Left a partial download behind" in caplog.text
+
+
+def test_an_unreadable_cache_folder_is_named_in_a_plain_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _refuse(self: Path, pattern: str) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "glob", _refuse)
+
+    with pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*acme--big-GGUF"):
+        dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
