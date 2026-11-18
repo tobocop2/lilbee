@@ -1840,7 +1840,7 @@ class Store:
                 except LockTimeoutError:
                     self._report_upgrade(UpgradePhase.WAITING)
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
-                    self._record_upgrade_running()
+                    self._report_upgrade(UpgradePhase.STARTING)
                 # Another process can have upgraded it during the wait.
                 if self._upgrade_needed(db):
                     self._upgrade_unlocked(db)
