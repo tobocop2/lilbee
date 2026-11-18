@@ -294,6 +294,44 @@ class _ChatApp(LilbeeAppHost):
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_key_e_on_a_focused_pill_opens_the_picker_in_insert_mode(
+    size: tuple[int, int],
+) -> None:
+    app = _ChatApp()
+    async with app.run_test(size=size) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        assert chat._insert_mode is True
+        chat.query_one("#model-pick-chat", ModelPickerButton).focus()
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert chat._chat_input.value == ""
+
+
+async def test_a_key_the_focused_pill_does_not_bind_still_types_into_the_prompt() -> None:
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        chat.query_one("#model-pick-chat", ModelPickerButton).focus()
+        await pilot.press("x")
+        assert await wait_until(pilot, lambda: chat._chat_input.value == "x")
+        assert chat._chat_input.has_focus
+        assert not isinstance(app.screen, EnginePickerModal)
+
+
+async def test_key_e_off_the_strip_still_types_into_the_prompt() -> None:
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        chat._chat_log.focus()
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: chat._chat_input.value == "e")
+        assert not isinstance(app.screen, EnginePickerModal)
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
 async def test_the_slash_command_repaints_the_chips_and_clears_the_notice(
     size: tuple[int, int],
 ) -> None:
