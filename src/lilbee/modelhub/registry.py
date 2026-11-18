@@ -33,6 +33,7 @@ from lilbee.catalog.refs import (
     invalid_repo_id_message,
     is_bare_hf_repo,
     is_gguf_filename,
+    model_format,
     parse_model_ref,
     split_shard_filenames,
 )
@@ -588,7 +589,7 @@ class ModelRegistry:
         which the model list does not show until a manifest exists.
         """
         ref = canonical_ref(ref)
-        if is_bare_hf_repo(ref):
+        if is_bare_hf_repo(ref) and model_format(ref) is ModelFormat.GGUF:
             return self.installed_ref_for_repo(ref) is not None
         return self.get_manifest(ref) is not None
 

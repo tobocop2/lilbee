@@ -4258,8 +4258,28 @@ class TestModelsPull:
         assert any('"current": 500' in e for e in non_empty)
         assert any('"total": 1000' in e for e in non_empty)
 
+    async def test_a_repeat_pull_ends_in_done_with_no_pull_notice(self):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = True
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.server.handlers.models.ensure_vision_projector", return_value=None),
+        ):
+            events = [
+                e async for e in handlers.models_pull("org/repo#safetensors", source="native")
+            ]
+        assert mock_manager.pull.call_args.kwargs["on_notice"] is None
+        done = [e for e in events if e and "event: done" in e]
+        assert len(done) == 1
+        assert "warning" not in done[0]
+
     async def test_done_event_joins_the_size_notice_and_the_projector_warning(self):
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
 
         def fake_pull(model, source, *, on_notice=None, **_):
             on_notice("The size of this model is unknown, so 8.0 GiB is reserved for it.")

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.modelhub.model_manager import RemoteModel
+    from lilbee.modelhub.model_manager import ModelManager, RemoteModel
     from lilbee.modelhub.registry import ModelManifest
     from lilbee.runtime.cancellation import CancelSignal
 
@@ -418,6 +418,17 @@ def join_warnings(*parts: str | None) -> str | None:
     return " ".join(texts) if texts else None
 
 
+def is_repeat_pull(manager: ModelManager, ref: str, source: ModelSource) -> bool:
+    """True when *ref* is already installed, so a pull of it adds nothing new.
+
+    A GGUF found only in the HF cache is not listed until a manifest records it.
+    Pulling again registers it, or fails with the reason it cannot, so it is no repeat.
+    """
+    return manager.is_installed(ref, source) and (
+        source is not ModelSource.NATIVE or manager.is_registered(ref)
+    )
+
+
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -441,11 +452,7 @@ def pull_model_data(
     ref = canonical_ref(ref)
     manager = get_services().model_manager
 
-    # A GGUF found only in the HF cache is not listed until a manifest records it.
-    # Pulling again registers it, or fails with the reason it cannot.
-    if manager.is_installed(ref, source) and (
-        source is not ModelSource.NATIVE or manager.is_registered(ref)
-    ):
+    if is_repeat_pull(manager, ref, source):
         if source is ModelSource.NATIVE and model_format(ref) is ModelFormat.SAFETENSORS:
             # A pull made before the module files were selected lacks them; the
             # pull fetches only the files the cache does not hold. An unreachable

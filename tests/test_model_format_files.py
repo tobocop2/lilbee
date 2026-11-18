@@ -608,6 +608,15 @@ class TestNonGgufManifest:
             hashlib.sha256(files[n]).hexdigest() for n in ("config.json", "tokenizer.json")
         )
 
+    def test_a_manifest_records_the_ref_that_names_its_format(self, tmp_path: Path) -> None:
+        paths = _seed_snapshot(tmp_path, {"model.safetensors": b"w" * 8, "config.json": b"{}"})
+        with mock.patch.object(cfg, "models_dir", tmp_path):
+            register_downloaded_model(_entry(ModelFormat.SAFETENSORS), paths["model.safetensors"])
+        registry = ModelRegistry(tmp_path)
+        assert registry.has_manifest("org/repo#safetensors")
+        assert not registry.has_manifest("org/repo#mlx")
+        assert not registry.has_manifest("org/repo")
+
     def test_gguf_install_still_records_gguf(self, tmp_path: Path) -> None:
         paths = _seed_snapshot(tmp_path, {"m-Q4_K_M.gguf": b"GGUF" + b"\x00" * 8})
         entry = _entry(ModelFormat.GGUF, "m-Q4_K_M.gguf")
@@ -671,6 +680,30 @@ class TestPullOfAnInstalledModel:
         assert self._pull(manager).status == PullStatus.ALREADY_INSTALLED
         assert len(manager.fetched) == 1
         assert {"modules.json", "2_Dense/model.safetensors"} <= set(manager.fetched[0])
+
+    def test_a_repeat_pull_of_an_installed_safetensors_model_reports_already_installed(
+        self, tmp_path: Path
+    ) -> None:
+        from lilbee.app import models as models_mod
+        from lilbee.catalog.types import ModelSource
+        from lilbee.modelhub.model_manager import ModelManager
+
+        paths = _seed_snapshot(tmp_path, {"model.safetensors": b"w" * 8, "config.json": b"{}"})
+        with mock.patch.object(cfg, "models_dir", tmp_path):
+            register_downloaded_model(_entry(ModelFormat.SAFETENSORS), paths["model.safetensors"])
+        manager = ModelManager(tmp_path, cfg)
+        assert manager.is_installed(self._REF, ModelSource.NATIVE)
+        with (
+            mock.patch.object(manager, "pull") as pull,
+            mock.patch.object(
+                models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
+            ),
+            mock.patch.object(models_mod, "ensure_vision_projector", return_value=None),
+        ):
+            result = models_mod.pull_model_data(self._REF, ModelSource.NATIVE)
+        assert result.status == models_mod.PullStatus.ALREADY_INSTALLED
+        assert result.warning is None
+        assert "on_notice" not in pull.call_args.kwargs
 
     @staticmethod
     def _pull_offline(ref: str, error: Exception) -> tuple[str, int]:
