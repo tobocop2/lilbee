@@ -124,9 +124,9 @@ _CELL_LICENCES = {
         "AND BSL-1.0 AND ISC AND MIT-0 AND Unlicense"
     ],
 }
-# The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
-# engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
-_WHEEL_VERSION = "1.12032.1"
+# The pack build names the wheel 1.<N>.<release build> for the upstream tag b<N>.
+_UPSTREAM_TAG = "b12032"
+_WHEEL_VERSION = f"1.{_UPSTREAM_TAG.removeprefix('b')}.1"
 
 
 def has_usable_cuda(

@@ -19,6 +19,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import (
     _CUDA_DRIVER_FLOOR,
     _CUDA_MIN_COMPUTE,
+    _UPSTREAM_TAG,
     _WHEEL_VERSION,
     LlamaCppAdapter,
     cuda_pack_gap,
@@ -308,6 +309,19 @@ def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032()
     assert "-DGGML_NATIVE=OFF" in linux_build
     assert [o for o in _CUDA_ARCHITECTURE_OVERRIDES if o in linux_build + workflow] == []
     assert _CUDA_MIN_COMPUTE == (5, 0)
+
+
+def test_the_pinned_wheel_version_is_derived_from_the_upstream_tag() -> None:
+    assert _UPSTREAM_TAG == "b12032"
+    assert _WHEEL_VERSION == "1.12032.1"
+
+
+def test_the_pinned_upstream_tag_is_the_tag_the_pack_workflow_builds() -> None:
+    assert _pack_cells()["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG
+
+
+def test_the_pinned_wheel_version_is_the_version_the_pack_workflow_builds() -> None:
+    assert _pack_cells()["env"]["WHEEL_VERSION"] == _WHEEL_VERSION
 
 
 def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow() -> None:
