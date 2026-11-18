@@ -339,14 +339,26 @@ def llama_server_runtime_env() -> dict[str, str]:
     return cuda_runtime_env()
 
 
-@functools.lru_cache(maxsize=8)
+class _NoHelpTextError(Exception):
+    """The binary printed no ``--help`` text, so nothing is cached for it."""
+
+
 def engine_help(binary: Path) -> str:
     """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
 
-    Empty when the binary cannot run or answer in time. A gated flag then reads as
-    unsupported; the optional flags are all written, since no help text proves
-    them missing.
+    Empty when the binary cannot run, cannot answer in time or prints nothing. The
+    empty result is not cached, so the next call reads again. The optional flags are
+    all written meanwhile, since no help text proves them missing.
     """
+    try:
+        return _read_help(binary)
+    except _NoHelpTextError:
+        return ""
+
+
+@functools.lru_cache(maxsize=8)
+def _read_help(binary: Path) -> str:
+    """The ``--help`` text of *binary*, cached per path; raises when there is none."""
     from lilbee.providers.fleet.gpu_env import engine_environ
 
     try:
@@ -359,9 +371,12 @@ def engine_help(binary: Path) -> str:
             timeout=_HELP_PROBE_TIMEOUT_S,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return f"{done.stdout}\n{done.stderr}"
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _NoHelpTextError from exc
+    text = f"{done.stdout}\n{done.stderr}"
+    if not text.strip():
+        raise _NoHelpTextError
+    return text
 
 
 # Option lines start at the margin or a few columns in; wrapped descriptions start further right.

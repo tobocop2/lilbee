@@ -339,10 +339,10 @@ def test_the_engine_help_run_gets_the_engine_environment(
 
     monkeypatch.setattr(subprocess, "run", _run)
     monkeypatch.setattr(gpu_env, "engine_environ", lambda: {"MARK": "engine-env"})
-    binary.engine_help.cache_clear()
+    binary._read_help.cache_clear()
     assert binary.engine_help(tmp_path / "unique-help-binary") == "usage\n"
     assert seen["env"] == {"MARK": "engine-env"}
-    binary.engine_help.cache_clear()
+    binary._read_help.cache_clear()
 
 
 def test_a_load_warning_logs_once_without_touching_the_environment(

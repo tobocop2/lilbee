@@ -408,12 +408,12 @@ def _fresh_block_bar_answer():
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
     from lilbee.providers.fleet.adapters import _warn_once
-    from lilbee.providers.fleet.binary import engine_help
+    from lilbee.providers.fleet.binary import _read_help
 
-    engine_help.cache_clear()
+    _read_help.cache_clear()
     _warn_once.cache_clear()
     yield
-    engine_help.cache_clear()
+    _read_help.cache_clear()
     _warn_once.cache_clear()
 
 

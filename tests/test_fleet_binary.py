@@ -415,6 +415,47 @@ class TestEngineHelp:
         monkeypatch.setattr(binary_mod.subprocess, "run", _hang)
         assert binary_mod.engine_help(Path("/bin/llama-server")) == ""
 
+    def test_a_failed_read_is_retried_on_the_next_call(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        def _flaky(*_a, **_k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("transient")
+            return SimpleNamespace(stdout="--port PORT", stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _flaky)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_blank_read_is_retried_on_the_next_call(self, monkeypatch) -> None:
+        outputs = iter(["", "--port PORT"])
+        calls: list[int] = []
+
+        def _run(*_a, **_k):
+            calls.append(1)
+            return SimpleNamespace(stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_good_read_runs_the_binary_once_per_path(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        def _run(*_a, **_k):
+            calls.append(1)
+            return SimpleNamespace(stdout="--port PORT", stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == binary_mod.engine_help(binary)
+        assert len(calls) == 1
+
 
 @pytest.mark.parametrize(
     ("help_text", "flag", "listed"),

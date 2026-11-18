@@ -526,7 +526,7 @@ def _every_optional_flag_argv(
             raise OSError("no such file")
         return SimpleNamespace(stdout=help_text, stderr="")
 
-    binary_mod.engine_help.cache_clear()
+    binary_mod._read_help.cache_clear()
     monkeypatch.setattr(binary_mod.subprocess, "run", _run)
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: 4)
     spec = replace(
