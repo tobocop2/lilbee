@@ -1284,11 +1284,15 @@ class LlamaServerClient:
         self._max_input = int(resp.json()["max_input_length"])
         return self._max_input
 
-    def _count_route_tokens(self, path: str, inputs: list[str]) -> list[list[dict[str, Any]]]:
-        """The token lists the route *path* answers for *inputs*, one list for each input."""
-        resp = self._http.post(
-            self._native_route(path), json={"inputs": inputs}, timeout=_TRUNCATION_CHECK_TIMEOUT_S
-        )
+    def _count_route_tokens(
+        self, path: str, inputs: list[str], *, timeout: float | None = None
+    ) -> list[list[dict[str, Any]]]:
+        """The token lists the route *path* answers for *inputs*, one list for each input.
+
+        Without a *timeout* the request waits as long as the client's own timeout.
+        """
+        extra: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
+        resp = self._http.post(self._native_route(path), json={"inputs": inputs}, **extra)
         self._raise_for_side_route(resp)
         counts = resp.json()
         if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
@@ -1302,7 +1306,8 @@ class LlamaServerClient:
         a byte-level tokenizer makes more than one token from a character, so no
         character count bounds the tokens.
         """
-        return sum(len(tokens) > limit for tokens in self._count_route_tokens(path, texts))
+        counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+        return sum(len(tokens) > limit for tokens in counts)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
