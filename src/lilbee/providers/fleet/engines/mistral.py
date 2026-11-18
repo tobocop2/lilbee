@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Mapping
@@ -28,6 +27,7 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
+from lilbee.providers.folder_embed_width import read_folder_config
 from lilbee.providers.gguf_meta import (
     is_hf_cache_blob,
     read_gguf_metadata,
@@ -43,7 +43,6 @@ _P2P_LEVEL_ENV = "NCCL_P2P_LEVEL"
 _P2P_NVLINK_ONLY = "NVL"
 # A user who sets either variable keeps their choice.
 _P2P_USER_ENV = (_P2P_LEVEL_ENV, "NCCL_P2P_DISABLE")
-_CONFIG = "config.json"
 _LAYERS_KEY = "num_hidden_layers"
 _HEADS_KEY = "num_attention_heads"
 _KV_HEADS_KEY = "num_key_value_heads"
@@ -140,12 +139,7 @@ def _positive_int(value: object) -> int | None:
 
 def _config_sections(path: Path) -> list[Mapping[str, Any]]:
     """The top level and the text section of a model folder's config, as far as they are objects."""
-    try:
-        config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(config, dict):
-        return []
+    config = read_folder_config(path)
     return [s for s in (config, config.get(_TEXT_CONFIG_KEY)) if isinstance(s, dict)]
 
 

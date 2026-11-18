@@ -19,6 +19,7 @@ from typing import NamedTuple, cast
 
 from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.providers.base import ProviderError
+from lilbee.providers.folder_embed_width import read_folder_config
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ _HF_SHARD_LEN = 2
 _HF_SNAPSHOTS_DIR_NAME = "snapshots"
 _HF_REPO_DIR_PREFIX = "models--"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
+_VISION_CONFIG_KEY = "vision_config"
 _DEFAULT_ARCH = "llama"
 _CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
 _FILE_TYPE_KEY = "general.file_type"
@@ -411,6 +413,11 @@ def find_mmproj_for_model(model_path: Path) -> Path:
 def needs_sidecar_projector(model_path: Path) -> bool:
     """False for a model folder, which holds its own vision weights; True for a GGUF."""
     return not model_path.is_dir()
+
+
+def declares_vision_config(model_dir: Path) -> bool:
+    """True when the ``config.json`` of the model folder *model_dir* has a ``vision_config``."""
+    return isinstance(read_folder_config(model_dir).get(_VISION_CONFIG_KEY), dict)
 
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:

@@ -209,6 +209,15 @@ def loadable_refs(refs: Iterable[str], role: WorkerRole | None = None) -> list[s
     return [ref for ref in refs if loadable(ref)]
 
 
+def serving_engines(fmt: str, role: WorkerRole) -> list[EngineName]:
+    """The shipped engines whose adapter loads *fmt* and serves *role*, installed or not."""
+    return [
+        name
+        for name, adapter in ADAPTERS.items()
+        if fmt in adapter.formats and _accepts(name, role, fmt)
+    ]
+
+
 def _candidates(
     fmt: str, installed: InstalledEngines, role: WorkerRole | None, host: HostSource
 ) -> list[EngineName]:
@@ -234,6 +243,20 @@ def _choose_hint(names: list[EngineName], role: WorkerRole | None) -> str:
     )
 
 
+def _servers_to_install(
+    fmt: ModelFormat, installed: InstalledEngines, role: WorkerRole
+) -> list[EngineName]:
+    """The shipped engines to install so that *role* has one for *fmt*.
+
+    Empty when no installed engine loads *fmt* (the message then says no engine loads it),
+    and empty when an installed engine already serves *role* (the host refuses it, not the role).
+    """
+    if not engines_loading(fmt, installed):
+        return []
+    servers = serving_engines(fmt, role)
+    return [] if any(name in installed for name in servers) else servers
+
+
 def _by_default(
     fmt: ModelFormat,
     host: HostSource,
@@ -249,6 +272,11 @@ def _by_default(
     if candidates:
         text = f"No engine is chosen by default for the {fmt} format{of_model}. "
         text += _choose_hint(candidates, role)
+    elif role is not None and (missing := _servers_to_install(fmt, installed, role)):
+        text = (
+            f"No installed engine serves the {fmt} format{of_model} for {role.value}. "
+            f"{' or '.join(missing)} serves it. {install_advice(ADAPTERS[missing[0]])}"
+        )
     else:
         text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
     return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)

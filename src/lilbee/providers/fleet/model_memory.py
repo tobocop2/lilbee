@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import posixpath
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -16,6 +15,7 @@ from lilbee.providers.fleet.vram import (
     estimate_instance_footprint,
     repacked_weight_bytes,
 )
+from lilbee.providers.folder_embed_width import read_folder_config
 from lilbee.providers.model_cache import kv_bytes_per_token
 
 _SAFETENSORS_SUFFIX = ".safetensors"
@@ -55,7 +55,6 @@ _MAX_PARAMETER_COUNT = 10**13
 _NARROWED_F32_BYTES = 2
 """A float32 tensor counts at this width when the engine runs it as float16."""
 _F32 = "F32"
-_CONFIG_NAME = "config.json"
 _CONFIG_TEXT_KEY = "text_config"
 _CONFIG_DTYPE_KEYS = ("dtype", "torch_dtype")
 _CONFIG_FLOAT32 = "float32"
@@ -383,13 +382,9 @@ def whole_safetensors_bytes(model_path: Path) -> int:
 
 
 def installed_config(model_path: Path) -> dict[str, Any] | None:
-    """The ``config.json`` beside an installed model's weights, or None when it is not a mapping."""
+    """The ``config.json`` of an installed model, or None when it is empty or not a mapping."""
     folder = model_path if model_path.is_dir() else model_path.parent
-    try:
-        config = json.loads((folder / _CONFIG_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return config if isinstance(config, dict) else None
+    return read_folder_config(folder) or None
 
 
 def _is_float32(config: Mapping[str, Any] | None) -> bool:

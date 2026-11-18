@@ -140,7 +140,7 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             # Surface it under the vision picker too without dropping its
             # primary classification, so a chat model with vision (e.g.
             # gemma-3 with mmproj) shows up in both pickers.
-            if task != ModelTask.VISION and registry.has_vision_projector(ref):
+            if task == ModelTask.CHAT and registry.has_vision_projector(ref):
                 buckets[ModelTask.VISION].append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
