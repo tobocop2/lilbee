@@ -147,7 +147,7 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,

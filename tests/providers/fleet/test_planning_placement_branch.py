@@ -65,7 +65,7 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,
@@ -246,7 +246,7 @@ def test_interactive_resolve_still_raises(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,
@@ -278,7 +278,7 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,

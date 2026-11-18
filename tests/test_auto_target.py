@@ -292,6 +292,27 @@ class TestPlacementFromSpecWithAuto:
         assert captured == {"models": [WorkerRole.EMBED], "budget": 10 * GIB}
 
 
+class TestViewAndLaunchSizeReplicasAlike:
+    """The view and the launch resolve an auto replica knob from the same device count."""
+
+    def test_an_auto_embed_knob_gets_one_replica_per_card_in_both(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        engine = _host(monkeypatch, tmp_path, (24, 24), "")
+        monkeypatch.setattr(cfg, "embed_replicas", 0)
+        engines = engines_for_all_roles(engine)
+
+        plan = planning.plan_all_launches(engines=engines)
+        view = planning.resolve_placement_plan(None, engines=engines)
+
+        launched = sorted(
+            launch.replica for launch in plan.launches if launch.role is WorkerRole.EMBED
+        )
+        viewed = sorted(p.replica for p in view.instances if p.role is WorkerRole.EMBED)
+        assert launched == [0, 1]
+        assert viewed == launched
+
+
 def test_the_auto_target_reads_back_from_json() -> None:
     spec = PlacementSpec.from_json(SPEC)
     assert spec.roles[WorkerRole.VISION].target is RoleTarget.AUTO

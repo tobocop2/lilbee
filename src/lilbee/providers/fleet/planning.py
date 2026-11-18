@@ -1948,6 +1948,25 @@ def _server_model_inputs(
     return ordered, model_refs, reservation, skipped_not_installed
 
 
+def _model_inputs_for_devices(
+    roles: tuple[WorkerRole, ...] | None,
+    devices: Sequence[FleetDevice],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    unified_budget: int | None,
+    spec: PlacementSpec | None,
+) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int, dict[WorkerRole, str]]:
+    """Placement inputs sized against *devices*, for both the launch and the placement view."""
+    return _server_model_inputs(
+        roles,
+        engines=engines,
+        unified_budget=unified_budget,
+        device_count=len(devices),
+        total_vram=sum(d.total_bytes for d in devices),
+        cpu_roles=_cpu_roles(spec),
+    )
+
+
 def _non_chat_reservation(
     instances: Sequence[InstancePlan],
     inputs: Sequence[ModelPlacementInput],
@@ -4076,12 +4095,8 @@ def resolve_placement_plan(
     devices = reading.devices
     unified_budget = _unified_memory_budget(devices, engine)
     cpu_roles = _cpu_roles(placement)
-    inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
-        None,
-        engines=engines,
-        unified_budget=unified_budget,
-        total_vram=sum(d.total_bytes for d in devices),
-        cpu_roles=cpu_roles,
+    inputs, model_refs, reservation, skipped_not_installed = _model_inputs_for_devices(
+        None, devices, engines=engines, unified_budget=unified_budget, spec=placement
     )
     admission_budget = _unified_admission_budget(devices, engine)
     refused_roles: dict[WorkerRole, str] = {}
@@ -4459,13 +4474,8 @@ def _planned_launches(
     # a live probe is also missing the fleet's own residency.
     clean_box = _current_plan_probe(snapshot_engine) is not None
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
-    inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
-        roles,
-        engines=engines,
-        unified_budget=unified_budget,
-        device_count=len(devices),
-        total_vram=sum(d.total_bytes for d in devices),
-        cpu_roles=_cpu_roles(spec),
+    inputs, model_refs, reservation, skipped_not_installed = _model_inputs_for_devices(
+        roles, devices, engines=engines, unified_budget=unified_budget, spec=spec
     )
     admission_budget = _unified_admission_budget(devices, snapshot_engine)
     capacity = _auto_capacity(devices, clean_box, _named_cards(spec))
