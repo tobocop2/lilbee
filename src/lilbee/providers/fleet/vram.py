@@ -46,6 +46,17 @@ _KEY_TENSOR_SHAPE = "dimensions"
 _REPACKED_TYPES = frozenset({2, 12, 20})
 _MATRIX_DIMS = 2
 
+# The raw header's metadata list; an array value reports its length under "len".
+_KEY_HEADER = "header"
+_KEY_HEADER_KV = "metadataKV"
+_KEY_HEADER_KEY = "key"
+_KEY_HEADER_VALUE = "value"
+_KEY_ARRAY_LEN = "len"
+_GGUF_ARCH = "general.architecture"
+_GGUF_HEADS = "attention.head_count"
+_GGUF_KV_HEADS = "attention.head_count_kv"
+_GGUF_TOKENS = "tokenizer.ggml.tokens"
+
 # gguf-parser JSON keys: the per-instance footprint lives under estimate.items
 # (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
 _KEY_ESTIMATE = "estimate"
@@ -361,6 +372,45 @@ def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> in
             block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType(tensor[_KEY_TENSOR_TYPE])]
             total += math.prod(tensor[_KEY_TENSOR_SHAPE]) // block * type_size
         return total
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError(
+            f"Could not size the model {path_str!r}: the estimator returned unreadable output.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        ) from exc
+
+
+@dataclass(frozen=True)
+class AttentionShape:
+    """The header fields the CPU score and logits terms read."""
+
+    heads: int
+    kv_heads: int
+    vocab: int
+
+
+def attention_shape(model_path: Path) -> AttentionShape:
+    """Attention head counts and vocabulary size of a GGUF file, read from its header."""
+    return _cached_attention_shape(
+        engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
+    )
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cached_attention_shape(_engine_id: str, path_str: str, _mtime_ns: int) -> AttentionShape:
+    """Memoised head counts and vocabulary length from the raw header."""
+    argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
+    try:
+        entries = {
+            entry[_KEY_HEADER_KEY]: entry[_KEY_HEADER_VALUE]
+            for entry in json.loads(_run_parser(argv, path_str))[_KEY_HEADER][_KEY_HEADER_KV]
+        }
+        arch = entries[_GGUF_ARCH]
+        return AttentionShape(
+            heads=int(entries[f"{arch}.{_GGUF_HEADS}"]),
+            kv_heads=int(entries[f"{arch}.{_GGUF_KV_HEADS}"]),
+            vocab=int(entries[_GGUF_TOKENS][_KEY_ARRAY_LEN]),
+        )
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
             f"Could not size the model {path_str!r}: the estimator returned unreadable output.",

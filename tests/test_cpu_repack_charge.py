@@ -8,13 +8,16 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import model_memory as model_memory_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import vram as vram_mod
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryRequest
+from lilbee.providers.fleet.model_memory import CPU_RUNTIME_ALLOWANCE_BYTES
 from lilbee.providers.fleet.placement import ModelPlacementInput
+from lilbee.providers.fleet.vram import AttentionShape
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import engines_for_all_roles
 
@@ -23,6 +26,8 @@ FILE_SIZE = 5000
 UNIFIED = 700
 # 2-D Q4_K [256, 4]: 4 blocks of 144 bytes. Q4_0 [64, 2]: 4 blocks of 18. IQ4_NL [32, 3]: 3 of 18.
 REPACKED = 4 * 144 + 4 * 18 + 3 * 18
+# A chat launch on the CPU also carries the runtime allowance; the shape of this model is empty.
+CPU_CHARGE = UNIFIED + FILE_SIZE + REPACKED + CPU_RUNTIME_ALLOWANCE_BYTES
 
 
 def _tensor(kind: int, dims: list[int]) -> dict[str, object]:
@@ -49,6 +54,7 @@ def model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
     )
+    monkeypatch.setattr(model_memory_mod, "attention_shape", lambda _p: AttentionShape(0, 0, 0))
     monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
 
     def _parser(argv: list[str], _path: str) -> str:
@@ -101,7 +107,7 @@ class TestTheRepackedCopy:
     def test_a_cpu_load_backs_the_file_and_the_copy(self, model: Path) -> None:
         cpu = LLAMA.estimate_memory(_request(model, on_cpu=True))
         card = LLAMA.estimate_memory(_request(model, on_cpu=False))
-        assert cpu.resident_footprint(unified=True) == UNIFIED + FILE_SIZE + REPACKED
+        assert cpu.resident_footprint(unified=True) == CPU_CHARGE
         assert card.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
 
     def test_the_alternate_build_is_charged_no_copy(self, model: Path) -> None:
@@ -160,8 +166,8 @@ class TestTheOnePoolCharge:
             )
 
         # The parser prices every slot count alike, so only the copy moves the fit.
-        assert fit(UNIFIED + FILE_SIZE + REPACKED) == 4
-        assert fit(UNIFIED + FILE_SIZE + REPACKED - 1) == 1
+        assert fit(CPU_CHARGE) == 4
+        assert fit(CPU_CHARGE - 1) == 1
 
 
 class TestASharedFile:
@@ -322,6 +328,53 @@ class TestTheRepackFlagReachesTheEstimate:
             WorkerRole.EMBED, "ref", slots=1, engine=self.engine, unified_budget=10**9
         )
         assert [request.on_cpu for request in self.engine.requests] == [True]
+
+    def _launch_with_flash_auto(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda _e: "Vulkan")
+
+    def test_a_cpu_placed_chat_role_under_flash_auto_is_sent_as_flash_on_with_an_f16_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._launch_with_flash_auto(monkeypatch)
+        self._fit_slots(unified=True)
+        self._fit_chat()
+        planning_mod._estimate_role(
+            WorkerRole.CHAT, "ref", slots=1, engine=self.engine, unified_budget=10**9
+        )
+        assert len(self.engine.requests) >= 3
+        assert all(request.on_cpu for request in self.engine.requests)
+        assert all(request.flash_attn for request in self.engine.requests)
+        assert {request.kv_cache_type for request in self.engine.requests} == {KvCacheType.F16}
+
+    def test_a_cpu_placed_chat_role_under_flash_on_is_sent_with_the_configured_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "flash_attention", True)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda _e: "CUDA")
+        self._fit_slots(unified=True)
+        self._fit_chat()
+        planning_mod._estimate_role(
+            WorkerRole.CHAT, "ref", slots=1, engine=self.engine, unified_budget=10**9
+        )
+        assert len(self.engine.requests) >= 3
+        assert all(request.flash_attn for request in self.engine.requests)
+        assert {request.kv_cache_type for request in self.engine.requests} == {KvCacheType.Q8_0}
+        assert {request.gpu_layers for request in self.engine.requests} == {0}
+
+    def test_a_chat_role_on_a_card_under_flash_auto_is_still_sent_as_flash_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._launch_with_flash_auto(monkeypatch)
+        monkeypatch.setattr(planning_mod, "plan_sizing_is_unified", lambda _e: False)
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CUDA)
+        monkeypatch.setattr(planning_mod, "_role_gpu_layers", lambda _r: -1)
+        self._fit_slots(unified=False)
+        assert self.engine.requests
+        assert not any(request.on_cpu for request in self.engine.requests)
+        assert not any(request.flash_attn for request in self.engine.requests)
 
     def _only_for(self, role: WorkerRole, monkeypatch: pytest.MonkeyPatch) -> None:
         """Offload no layer for *role* and every layer for any other role."""

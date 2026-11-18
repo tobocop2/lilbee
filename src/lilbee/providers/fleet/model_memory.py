@@ -11,7 +11,11 @@ from typing import Any
 
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.vram import estimate_instance_footprint, repacked_weight_bytes
+from lilbee.providers.fleet.vram import (
+    attention_shape,
+    estimate_instance_footprint,
+    repacked_weight_bytes,
+)
 from lilbee.providers.model_cache import kv_bytes_per_token
 
 _SAFETENSORS_SUFFIX = ".safetensors"
@@ -61,6 +65,18 @@ CHAT_RUNTIME_BYTES = 512 * _MIB
 """What a safetensors chat engine holds beyond weights and cache: device context and workspace."""
 ENCODER_RUNTIME_BYTES = 500 * _MIB
 """What a safetensors encoder server holds beyond its weights (500 MiB measured on CUDA)."""
+
+CPU_RUNTIME_ALLOWANCE_BYTES = 96 * _MIB
+"""What a CPU chat server holds beyond the priced parts: heap, libraries and the compute the
+parser under-prices on a small model. The measured maximum is 92.8 MB."""
+_CPU_UBATCH = 512
+"""The ubatch of a chat launch, which the parser's default figure also uses."""
+_LOGITS_ROW_BYTES_PER_TOKEN = 8
+"""The parser's logits cost for one row, per vocabulary entry."""
+_SCORE_BYTES_PER_QUERY_HEAD = 4
+"""The f32 attention score matrix of a flash-off launch, per query head."""
+_SCORE_BYTES_PER_KV_HEAD = 6
+"""The CPU workspace beside the score matrix, per KV head (fitted to three models)."""
 
 UNKNOWN_SIZE_RESERVE_BYTES = 8 * 1024**3
 """What a non-GGUF model is charged when neither its header nor its files give a size."""
@@ -371,15 +387,21 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
 
 
 def estimate_gguf_cpu_decode(request: MemoryRequest) -> MemoryEstimate:
-    """The llama.cpp CPU chat figure: one logits row per slot, scores when flash is off."""
-    estimate = estimate_gguf(replace(request, batch_size=request.slots))
-    if request.flash_attn:
-        return estimate
+    """The CPU chat figure: one logits row per slot, scores when flash is off."""
+    estimate = estimate_gguf(request)
+    shape = attention_shape(request.model_path)
+    unused_logits = (_CPU_UBATCH - request.slots) * shape.vocab * _LOGITS_ROW_BYTES_PER_TOKEN
     scores = (
-        estimate_gguf(request).device_bytes
-        - estimate_gguf(replace(request, flash_attn=True)).device_bytes
+        0
+        if request.flash_attn
+        else _CPU_UBATCH
+        * request.ctx
+        * (_SCORE_BYTES_PER_QUERY_HEAD * shape.heads + _SCORE_BYTES_PER_KV_HEAD * shape.kv_heads)
     )
-    return replace(estimate, shared_bytes=estimate.shared_bytes + scores)
+    return replace(
+        estimate,
+        shared_bytes=estimate.shared_bytes - unused_logits + scores + CPU_RUNTIME_ALLOWANCE_BYTES,
+    )
 
 
 FORMAT_ESTIMATORS: Mapping[ModelFormat, Callable[[MemoryRequest], MemoryEstimate]] = {
