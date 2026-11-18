@@ -11,7 +11,6 @@ import stat
 import subprocess
 import sys
 import textwrap
-import time
 import zipfile
 from functools import partial
 from pathlib import Path
@@ -135,36 +134,75 @@ def test_second_install_returns_the_build_without_unpacking(
     unpack.assert_not_called()
 
 
+_CHILDREN = 3
+
 _CHILD = textwrap.dedent(
     """
-    import os, sys, time, uuid
+    import os, sys, time
     from pathlib import Path
+    from lilbee.core.security import FileLockUnavailableError
     from lilbee.providers.fleet import engine_store as es
 
-    root, wheel, sha, marks, start = sys.argv[1:]
-    marks = Path(marks)
+    root, wheel, sha, marks, children = sys.argv[1:]
+    marks, children, me = Path(marks), int(children), os.getpid()
     real_unpack, real_check = es._unpack, es._check_wheel
+    real_lock, real_complete = es.file_lock, es.EngineStore.complete_build
+    lock_path = Path(root) / es.LOCK_DIR / "fx"
+
+    def mark(kind):
+        (marks / f"{kind}-{me}").write_text("x")
+
+    def others(kind):
+        return {p.name.split("-")[1] for p in marks.glob(f"{kind}-*")} - {str(me)}
+
+    # With the product lock present this is always true, because the first installer holds
+    # it. It only tells a lock that does nothing apart: then the waiters pass the lock, and
+    # the first installer waits for their "checked" marks instead of the "lockwait" marks.
+    def lock_is_held_elsewhere():
+        try:
+            with real_lock(lock_path, 0):
+                return False
+        except FileLockUnavailableError:
+            return True
 
     def check(lock, wheel):
-        (marks / f"tried-{uuid.uuid4().hex}").write_text("x")
+        mark("tried")
         real_check(lock, wheel)
 
+    def file_lock(path, timeout):
+        mark("lockwait")
+        return real_lock(path, timeout)
+
+    def complete_build(self, lock):
+        found = real_complete(self, lock)
+        mark("checked")
+        return found
+
     def unpack(w, s):
-        (marks / f"unpack-{uuid.uuid4().hex}").write_text("x")
+        mark("unpack")
         try:
             os.close(os.open(marks / "holder", os.O_CREAT | os.O_EXCL))
         except FileExistsError:
             real_unpack(w, s)
             return
         deadline = time.time() + 30
-        while len(list(marks.glob("tried-*"))) < 2 and time.time() < deadline:
+        while time.time() < deadline:
+            if len(others("tried")) == children - 1:
+                # "checked": read the store; with the lock held that cannot happen before
+                # the first installer finishes. "lockwait": written just
+                # before the lock call, so that installer is about to block, not yet blocked.
+                free = others("checked")
+                blocked = others("lockwait") - free
+                settled = len(free | blocked) == children - 1
+                if settled and (not blocked or lock_is_held_elsewhere()):
+                    break
             time.sleep(0.01)
-        time.sleep(1)
+        else:
+            raise TimeoutError("the other installers never reached the install")
         real_unpack(w, s)
 
-    es._unpack, es._check_wheel = unpack, check
-    while time.time() < float(start):
-        time.sleep(0.01)
+    es._unpack, es._check_wheel, es.file_lock = unpack, check, file_lock
+    es.EngineStore.complete_build = complete_build
     pin = es.PinLock("fx", "1", "cpu", {}, ("MIT",), sha, "server")
     es.EngineStore(Path(root)).install_from_wheel(pin, Path(wheel))
     """
@@ -174,16 +212,17 @@ _CHILD = textwrap.dedent(
 def test_installer_processes_unpack_the_build_once_and_leave_no_stage(
     store: EngineStore, wheel: tuple[Path, str], tmp_path: Path
 ) -> None:
+    # The first installer waits inside its unpack until each other installer has read the
+    # store or is about to block on the held lock, so the overlap does not depend on speed.
     path, sha = wheel
     script = tmp_path / "child.py"
     script.write_text(_CHILD, encoding="utf-8")
     marks = tmp_path / "marks"
     marks.mkdir()
-    start = str(time.time() + 2)
-    args = [sys.executable, str(script), str(store.root), str(path), sha, str(marks), start]
-    children = [subprocess.Popen(args) for _ in range(3)]
-    assert [c.wait(timeout=120) for c in children] == [0, 0, 0]
-    assert len(list(marks.glob("tried-*"))) == 3
+    args = [sys.executable, str(script), str(store.root), str(path), sha, str(marks)]
+    procs = [subprocess.Popen([*args, str(_CHILDREN)]) for _ in range(_CHILDREN)]
+    assert [c.wait(timeout=120) for c in procs] == [0] * _CHILDREN
+    assert len(list(marks.glob("tried-*"))) == _CHILDREN
     assert len(list(marks.glob("unpack-*"))) == 1
     assert names(store.root / "fx") == ["1-cpu"]
     assert len(store.installed()) == 1
