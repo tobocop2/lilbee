@@ -6,13 +6,16 @@ import argparse
 import json
 import os
 import platform
+import re
 import socket
 import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from tools.qa.engine_demo.scrub import scrub_recording
 
+from lilbee.providers.fleet.readback import parse_memory_rows
 from tests.conformance.preset_check import (
     Outcome,
     Setup,
@@ -59,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Window the engine serves, for a server that has no overflow check of its own.",
     )
     parser.add_argument("--backend", default="cpu", help="Backend of the run: cpu, cuda, metal.")
+    parser.add_argument(
+        "--device-url",
+        default="",
+        help="Server whose /memory reply lists the devices, when --url is a proxy without it.",
+    )
     parser.add_argument("--front", default="", help="Proxy in front of the server, if any.")
     parser.add_argument("--out", required=True, type=Path)
     return parser
@@ -77,13 +85,72 @@ def setup_from(args: argparse.Namespace) -> Setup:
     )
 
 
-def run_log(args: argparse.Namespace, results: dict[str, Outcome]) -> str:
-    """The text saved beside a recording: engine, version, host, backend, models and each step."""
+_NO_REPORT = "none"
+_CPU = "cpu"
+_PROBE_TIMEOUT_S = 10
+# The word a device label starts with ("CUDA0", "MTL0", "Vulkan1") and the backend it names.
+_LABEL_BACKENDS = {
+    "cuda": "cuda",
+    "mtl": "metal",
+    "metal": "metal",
+    "vulkan": "vulkan",
+    "rocm": "rocm",
+    "hip": "rocm",
+    "sycl": "sycl",
+    "openvino": "openvino",
+    "cpu": _CPU,
+    "amx": _CPU,
+    "host": _CPU,
+}
+
+
+def reported_devices(url: str, token: str | None) -> list[str]:
+    """The device labels in the ``/memory`` reply of the engine at *url*; empty if none."""
+    request = urllib.request.Request(url.rstrip("/") + "/memory")  # noqa: S310
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=_PROBE_TIMEOUT_S) as resp:  # noqa: S310
+            payload = json.loads(resp.read())
+    except (OSError, ValueError):
+        return []
+    return sorted(parse_memory_rows(payload))
+
+
+def reported_backend(devices: list[str]) -> str:
+    """The backend the device labels name: the one GPU backend among them, else cpu."""
+    names: set[str] = set()
+    for label in devices:
+        word = re.match(r"[A-Za-z]+", label)
+        key = word.group().lower() if word else label.lower()
+        names.add(_LABEL_BACKENDS.get(key, key))
+    gpus = sorted(names - {_CPU})
+    if gpus:
+        return "+".join(gpus)
+    return _CPU if names else _NO_REPORT
+
+
+def check_backend(asked: str, reported: str) -> None:
+    """SystemExit unless the backend the engine reported is the backend the run asked for."""
+    if reported == asked or (reported == _NO_REPORT and asked == _CPU):
+        return
+    if reported == _NO_REPORT:
+        raise SystemExit(
+            f"--backend {asked}: the engine lists no device in its reply, "
+            f"so the run is not shown to use {asked}"
+        )
+    raise SystemExit(f"--backend {asked}: the engine reports {reported}")
+
+
+def run_log(args: argparse.Namespace, results: dict[str, Outcome], devices: list[str]) -> str:
+    """The text saved beside a recording: engine, version, host, backends, devices, steps."""
     lines = [
         f"engine: {args.server}",
         f"version: {args.version}",
         f"host: {platform.platform()}",
         f"backend: {args.backend}",
+        f"reported-backend: {reported_backend(devices)}",
+        f"devices: {','.join(devices) or _NO_REPORT}",
         f"models: {args.models}",
     ]
     if args.front:
@@ -116,11 +183,12 @@ def token_from(args: argparse.Namespace) -> str | None:
 def main() -> int:
     args = build_parser().parse_args()
     setup = setup_from(args)
+    token = token_from(args)
     with (
         tempfile.TemporaryDirectory() as root,
         recording(
             args.url,
-            token=token_from(args),
+            token=token,
             embed_url=args.embed_url or None,
             vision_url=args.vision_url or None,
         ) as (
@@ -130,8 +198,11 @@ def main() -> int:
         configured(proxy_url, setup, Path(root)),
     ):
         results = run_steps(setup)
+    device_url = args.device_url or args.url
+    devices = reported_devices(device_url, token if device_url == args.url else None)
+    check_backend(args.backend, reported_backend(devices))
     doc = fixture_json(args.server, args.version, setup, results, tape)
-    log = write_recording(args.out, doc, run_log(args, results))
+    log = write_recording(args.out, doc, run_log(args, results, devices))
     print(log, end="")
     return 0 if all(o.ok for o in results.values()) else 1
 
