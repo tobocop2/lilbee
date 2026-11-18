@@ -354,6 +354,13 @@ class TestCrawlConfig:
         assert len(capped) == warnings
         assert all(str(configured) in message and "20" in message for message in capped)
 
+    async def test_engine_is_created_off_the_event_loop_thread(self):
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(_http())
+        assert len(stub.engine_threads) == 1
+        assert stub.engine_threads[0] != threading.get_ident()
+
     async def test_ssrf_policy_reads_the_blocklist_at_crawl_time(self, monkeypatch):
         blocked = tuple(n for n in _BLOCKED_NETWORKS if n not in LOOPBACK)
         monkeypatch.setattr(config_mod.url_filter, "get_blocked_networks", lambda: blocked)

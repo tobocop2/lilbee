@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import json
+import threading
 import types
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -111,6 +112,7 @@ class StubCrawlberg:
         self.configs: list[Recorded] = []
         self.seeds: list[str] = []
         self.closed = 0
+        self.engine_threads: list[int] = []
         self.module = self._build()
 
     def _build(self) -> types.ModuleType:
@@ -132,6 +134,7 @@ class StubCrawlberg:
 
     def _create_engine(self, config: Recorded) -> object:
         self.configs.append(config)
+        self.engine_threads.append(threading.get_ident())
         reason = self._refuse(config) if self._refuse is not None else None
         if reason is not None:
             raise RuntimeError(reason)
