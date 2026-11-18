@@ -2262,6 +2262,27 @@ def test_chat_stream_closed_early_gives_the_reservation_back() -> None:
     assert client.in_flight == 0
 
 
+def test_chat_stream_gives_the_reservation_back_when_closing_the_source_fails() -> None:
+    class _SourceThatFailsToClose:
+        def __iter__(self) -> _SourceThatFailsToClose:
+            return self
+
+        def __next__(self) -> str:
+            return "a"
+
+        def close(self) -> None:
+            raise OSError("socket already gone")
+
+    client = _counting_client()
+    client.chat_stream_items.return_value = _SourceThatFailsToClose()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    with pytest.raises(OSError, match="socket already gone"):
+        stream.close()
+    assert client.in_flight == 0
+
+
 def test_chat_stream_that_fails_midway_gives_the_reservation_back() -> None:
     def _frames():
         yield "a"
