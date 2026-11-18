@@ -1323,10 +1323,12 @@ async def test_settings_list_editor_refused_pattern_blocks_save():
             ta.load_text(f"/ok\n{refused}")
             ta.blur()
             err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
-            # Focus change → blur handler → check → error widget class toggle are all
-            # async. Single pilot.pause is not enough on slower runners; poll until
-            # the -visible class lands.
-            await pump_until(pilot, lambda: err.has_class("-visible"))
+            # Focus change → blur handler → check → error text are all async. Wait
+            # for the text the test asserts on, and fail on the wait if it never lands.
+            assert await pump_until(pilot, lambda: "line 2" in str(err.render())), (
+                "the refused-pattern error never rendered"
+            )
+            assert err.has_class("-visible")
             shown = str(err.render())
             assert "line 2" in shown
             assert "unrecognized escape sequence" in shown
@@ -8204,16 +8206,20 @@ async def test_chat_toasts_a_failed_search_step(mock_svc, size):
     )
     app = ChatTestApp()
     async with app.run_test(size=size) as pilot:
-        inp = app.screen.query_one("#chat-input", ChatInput)
-        inp.value = "test"
-        await pilot.press("enter")
-        await wait_until(
-            pilot,
-            lambda: any(n.message == warning.line for n in app._notifications),
-            timeout=10,
-        )
-        toast = next(n for n in app._notifications if n.message == warning.line)
-        assert toast.severity == "warning"
+        # Textual drops a toast from its list five seconds after it is raised,
+        # so a poll on that list can miss a toast on a loaded host. Record the
+        # call that raises it and wait on that.
+        with patch.object(app, "notify", wraps=app.notify) as notify:
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.value = "test"
+            await pilot.press("enter")
+            assert await wait_until(
+                pilot,
+                lambda: any(c.args[:1] == (warning.line,) for c in notify.call_args_list),
+                timeout=10,
+            ), "the failed search step never raised its toast"
+        raised = next(c for c in notify.call_args_list if c.args[:1] == (warning.line,))
+        assert raised.kwargs["severity"] == "warning"
 
 
 async def test_chat_stream_response_error_worker(mock_svc):
