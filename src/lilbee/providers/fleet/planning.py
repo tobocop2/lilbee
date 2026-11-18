@@ -2902,6 +2902,11 @@ def capture_plan_probe(engines: Mapping[WorkerRole, EngineAdapter]) -> None:
     _plan_probe_store.capture(probes)
 
 
+# How far two totals for one card may sit apart; the engine's listing runs a few
+# hundred MiB under the driver's.
+_SAME_CARD_WINDOW = 1024**3
+
+
 def _structural(devices: Iterable[FleetDevice]) -> tuple[FleetDevice, ...]:
     """*devices* with the volatile free reading zeroed, so equality is structural.
 
@@ -2962,13 +2967,9 @@ def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
         len(devices),
         len(probe.devices),
     )
-    # Keyed on the index alone: another engine names and sizes the same card
-    # differently, and its clean free figure is still the host's. A card can
-    # never have more free than it holds.
-    snapshot_free = {d.index: d.free_bytes for d in probe.devices}
     merged = tuple(
-        replace(d, free_bytes=min(snapshot_free.get(d.index, d.free_bytes), d.total_bytes))
-        for d in devices
+        replace(d, free_bytes=_carried_free(old, d))
+        for d, old in zip(devices, _matched(probe.devices, devices), strict=True)
     )
     return _PlanProbe(
         devices=merged,
@@ -2978,6 +2979,47 @@ def _restated(probe: _PlanProbe, *, engine: EngineAdapter) -> _PlanProbe | None:
         engine_devices_all_refused=reading.refused_all,
         backend=reading.backend,
     )
+
+
+def _same_card(old: FleetDevice, new: FleetDevice) -> bool:
+    """Whether two readings, on any backend, are one physical card."""
+    # UUIDs decide when both sides have one; the name and a total within a window otherwise.
+    if old.uuid and new.uuid:
+        return old.uuid == new.uuid
+    return old.name == new.name and abs(old.total_bytes - new.total_bytes) <= _SAME_CARD_WINDOW
+
+
+def _matched(old: tuple[FleetDevice, ...], new: Sequence[FleetDevice]) -> list[FleetDevice | None]:
+    """The snapshot card each card of *new* is, taking each snapshot card at most once."""
+    unclaimed = list(old)
+    in_slot = [_claim(unclaimed, card, same_slot=True) for card in new]
+    return [
+        hit if hit is not None else _claim(unclaimed, card, same_slot=False)
+        for hit, card in zip(in_slot, new, strict=True)
+    ]
+
+
+def _claim(
+    unclaimed: list[FleetDevice], card: FleetDevice, *, same_slot: bool
+) -> FleetDevice | None:
+    """Remove and return the first unclaimed snapshot card that *card* is, or ``None``."""
+    hit = next(
+        (
+            old
+            for old in unclaimed
+            if _same_card(old, card)
+            and (not same_slot or (old.backend, old.index) == (card.backend, card.index))
+        ),
+        None,
+    )
+    if hit is not None:
+        unclaimed.remove(hit)
+    return hit
+
+
+def _carried_free(old: FleetDevice | None, new: FleetDevice) -> int:
+    """The free figure *new* plans with: the snapshot card's, capped by its total."""
+    return min(new.free_bytes if old is None else old.free_bytes, new.total_bytes)
 
 
 def _current_plan_probe(engine: EngineAdapter) -> _PlanProbe | None:
