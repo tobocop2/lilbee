@@ -1742,15 +1742,23 @@ class TestBuildFleetWiring:
         assert "--flash-attn" not in argv  # embedding path applies no flash attn
         assert "--cache-type-k" not in argv
 
-    def _launch_for_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096):
+    def _launch_for_role(
+        self,
+        tmp_path,
+        monkeypatch,
+        role: WorkerRole,
+        ctx: int = 4096,
+        meta: dict[str, str] | None = None,
+    ):
         model = tmp_path / "m.gguf"
-        model.write_bytes(b"x" * 1000)
+        # The engine reads a header only from a file that starts with the GGUF magic.
+        model.write_bytes((b"GGUF" if meta else b"") + b"x" * 1000)
         monkeypatch.setattr(
             "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: model,
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta or {}
         )
         monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: ctx)
@@ -1758,6 +1766,24 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
         return planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
+
+    def test_launch_for_chat_records_the_trained_window(self, tmp_path, monkeypatch) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.CHAT, meta={"context_length": "2048"}
+        )
+        assert launch.trained_ctx == 2048
+
+    def test_launch_for_chat_without_a_header_window_records_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch = self._launch_for_role(tmp_path, monkeypatch, WorkerRole.CHAT)
+        assert launch.trained_ctx == 0
+
+    def test_launch_for_embed_does_not_record_a_trained_window(self, tmp_path, monkeypatch) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.EMBED, meta={"context_length": "2048"}
+        )
+        assert launch.trained_ctx == 0
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
@@ -2050,6 +2076,56 @@ class TestBuildFleetWiring:
         assert str(min_usable_chat_ctx()) in reason
         assert "org/repo/chat.gguf" in reason
         assert reason in caplog.text
+
+    def test_plan_all_launches_refusal_names_the_trained_window(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "org/repo/chat.gguf"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
+            ),
+        )
+        short = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=[],
+            env_overrides={},
+            model="org/repo/chat.gguf",
+            ctx=2048,
+            trained_ctx=2048,
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: short)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+
+        assert plan.launches == ()
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert "was trained for a 2048-token window" in reason
+        assert str(min_usable_chat_ctx()) in reason
+        assert "memory" not in reason
 
     def test_plan_all_launches_serves_a_pinned_chat_window_unchecked(self, monkeypatch) -> None:
         # An explicit num_ctx pin is the user's override (and the documented
@@ -3577,6 +3653,28 @@ class TestUnusableChatCtxReason:
         reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
         assert reason is not None
         assert "loads, but" in reason
+
+    def test_trained_window_below_the_minimum_names_the_window(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        card = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        launch = replace(self._launch(WorkerRole.CHAT, 512, weights_bytes=1 * _GB), trained_ctx=512)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
+        assert reason is not None
+        assert "was trained for a 512-token window" in reason
+        assert str(min_usable_chat_ctx()) in reason
+        assert "org/m.gguf" in reason
+        assert "memory" not in reason
+        assert "num_ctx" not in reason
+
+    def test_trained_window_that_holds_a_prompt_blames_memory(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        launch = replace(self._launch(WorkerRole.CHAT, 512), trained_ctx=32768)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [])
+        assert reason is not None
+        assert "memory left after its weights backs only a 512-token context" in reason
+        assert "trained" not in reason
 
     def test_two_cards_name_the_cards_memory_in_gib(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
