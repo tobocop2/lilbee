@@ -2212,6 +2212,37 @@ class TestHeldOutRecordLifecycle:
         second = await sync(quiet=True)
         assert ("doc.txt" in second.added) is retried
         assert ("doc.txt" in held_kinds()) is not retried
+        if error == "overflow":
+            [held_file] = second.held_out
+            assert held_file.filename == "doc.txt"
+            assert "chunk_size" in held_file.reason
+            assert "lilbee sync --retry-skipped" in held_file.reason
+            assert "conversation" not in held_file.reason
+
+    async def test_an_overflow_failure_names_the_file_in_ingest_words(
+        self, isolated_env, mock_svc, caplog
+    ):
+        """The first sync logs the overflowing file with the way out, not chat wording."""
+        import logging
+
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        raised = ProviderError(
+            "Start a new conversation or shorten the input.",
+            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+        )
+        (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
+            mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised),
+        ):
+            await sync(quiet=True)
+
+        [line] = [r.getMessage() for r in caplog.records if "Failed to ingest" in r.getMessage()]
+        assert "doc.txt" in line
+        assert "chunk_size" in line
+        assert "conversation" not in line
 
     async def test_a_file_whose_token_count_failed_is_added_by_the_next_sync(
         self, isolated_env, mock_svc
