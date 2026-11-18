@@ -3655,7 +3655,7 @@ def test_tei_count_refuses_an_unexpected_body() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"tokens": [1]})
 
-    with pytest.raises(ValueError, match="unexpected body"):
+    with pytest.raises(ValueError, match="not a list of token lists"):
         _tei_client(handler).count_text_tokens("hi")
 
 

@@ -885,6 +885,16 @@ def test_a_side_route_request_asks_for_an_answer_within_five_seconds(route) -> N
     assert [t for path, t in router.timeouts.items() if path.endswith(route)] == [5.0]
 
 
+def test_a_count_for_chunk_sizing_waits_as_long_as_the_client_does() -> None:
+    router = _Embedder(by_char=True)
+    http = httpx.Client(transport=httpx.MockTransport(router), base_url="http://gpu0", timeout=60.0)
+    client = LlamaServerClient(
+        "http://gpu0", "m", http=http, profile=TEI.request_profile(WorkerRole.EMBED)
+    )
+    assert client.count_text_tokens("abc") == 3
+    assert [t for path, t in router.timeouts.items() if path.endswith("/tokenize")] == [60.0]
+
+
 class _RecoveringRouter(_Embedder):
     """A router whose /info answers with the status in ``info_status`` until the test changes it."""
 
