@@ -105,13 +105,15 @@ _BACKEND_LICENCES = {
 _WHEEL_VERSION = "1.12032.1"
 
 
-def _has_usable_cuda(host: HostCaps) -> bool:
-    """Whether the NVIDIA driver and a card of *host* can run the CUDA pack."""
+def has_usable_cuda(
+    host: HostCaps, driver_floor: tuple[int, int], min_compute: tuple[int, int]
+) -> bool:
+    """Whether the NVIDIA driver and a card of *host* can run a CUDA pack with these floors."""
     if not host.nvidia_known or not host.gpus:
         return False
-    if (host.nvidia_driver_cuda or (0, 0)) < _CUDA_DRIVER_FLOOR:
+    if (host.nvidia_driver_cuda or (0, 0)) < driver_floor:
         return False
-    return max(gpu.compute for gpu in host.gpus) >= _CUDA_MIN_COMPUTE
+    return max(gpu.compute for gpu in host.gpus) >= min_compute
 
 
 def _has_rocm_gpu(host: HostCaps) -> bool:
@@ -137,7 +139,7 @@ def cuda_pack_gap(host: HostCaps) -> str:
     """Why the CUDA pack cannot serve the NVIDIA card of *host*; empty when it can."""
     if (host.os, host.arch) not in _CUDA_HOSTS or not host.nvidia_known or not host.gpus:
         return ""
-    if _has_usable_cuda(host):
+    if has_usable_cuda(host, _CUDA_DRIVER_FLOOR, _CUDA_MIN_COMPUTE):
         return ""
     card = max(host.gpus, key=lambda gpu: gpu.compute)
     compute = f"{card.compute[0]}.{card.compute[1]}"
@@ -163,7 +165,7 @@ def pack_backend(host: HostCaps) -> str:
         return "metal"
     if (host.os, host.arch) not in _CUDA_HOSTS:
         return _CPU_PACK
-    if _has_usable_cuda(host):
+    if has_usable_cuda(host, _CUDA_DRIVER_FLOOR, _CUDA_MIN_COMPUTE):
         return _CUDA_BACKEND
     if _has_usable_rocm(host):
         return _ROCM_BACKEND
