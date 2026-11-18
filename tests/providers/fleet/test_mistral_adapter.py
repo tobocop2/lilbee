@@ -1320,13 +1320,21 @@ def _planner_chat_input(cards: int) -> Any:
     )
 
 
+# A model whose heads divide over two cards and over three.
+_TWELVE_HEADS = {"head_count": "12", "head_count_kv": "12", "block_count": "36"}
+
+
 def _placed_as_planned(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, card_gib: tuple[int, ...], model_gib: int
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    card_gib: tuple[int, ...],
+    model_gib: int,
+    meta: dict[str, str] | None = None,
 ) -> Any:
     """Place a *model_gib* chat model with the input the planner builds for mistral.rs."""
     from lilbee.providers.fleet.placement import plan_placement
 
-    peak = _staged_chat_peak(tmp_path, monkeypatch, card_gib, model_gib=model_gib)
+    peak = _staged_chat_peak(tmp_path, monkeypatch, card_gib, meta, model_gib=model_gib)
     chat = _planner_chat_input(len(card_gib))
     devices = [(index, gib * GIB) for index, gib in enumerate(card_gib)]
     return plan_placement([chat], devices, estimate_peak=peak, refuse_oversize=True)
@@ -1393,93 +1401,112 @@ def test_the_ladder_of_an_engine_that_takes_any_ratio_is_unchanged_on_unequal_ca
 
 
 @pytest.mark.parametrize(
-    ("equal_only", "cards", "model_gib"),
-    [
-        (False, {0: 24, 1: 16}, 36),
-        (True, {0: 24}, 36),
-        (True, {0: 24, 1: 16}, 20),
-        (True, {0: 24, 1: 24, 2: 8}, 40),
-    ],
-    ids=[
-        "engine takes any ratio",
-        "one card",
-        "equal share fits the small card",
-        "equal share fits the two largest of three cards",
-    ],
+    ("equal_only", "recorded"),
+    [(False, True), (True, False)],
+    ids=["engine takes any ratio", "planner tried no split"],
 )
 def test_no_equal_split_refusal_is_worded_when_that_rule_did_not_refuse(
-    equal_only: bool, cards: dict[int, int], model_gib: int
+    equal_only: bool, recorded: bool
 ) -> None:
-    from lilbee.providers.fleet.placement import ModelPlacementInput
+    from lilbee.providers.fleet.placement import ModelPlacementInput, Placement, SplitMiss
 
     chat = ModelPlacementInput(
-        role=WorkerRole.CHAT, est_vram_bytes=model_gib * GIB, equal_split_only=equal_only
+        role=WorkerRole.CHAT, est_vram_bytes=36 * GIB, equal_split_only=equal_only
     )
-    capacity = {idx: gib * GIB for idx, gib in cards.items()}
-    assert planning._equal_split_refusal(WorkerRole.CHAT, [chat], capacity) is None
+    misses = {WorkerRole.CHAT: SplitMiss(2, 1, 18.0 * GIB, 14.4 * GIB)} if recorded else {}
+    placement = Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,), split_misses=misses)
+    assert planning._equal_split_refusal(WorkerRole.CHAT, [chat], placement) is None
 
 
-@_stated
-def test_the_refusal_of_an_equal_split_names_the_small_card_room(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    from lilbee.providers.fleet.placement import Placement
-    from lilbee.providers.fleet.vram import usable_vram_fraction
-
-    _staged_chat_peak(tmp_path, monkeypatch, (24, 16), model_gib=36)
-    cards = _unequal_cards()
-    chat = _planner_chat_input(2)
+def _refusal_text(
+    placement: Any, card_gib: tuple[int, ...], caplog: pytest.LogCaptureFixture
+) -> str:
+    """The warning that the planner logs for the refused chat role of *placement*."""
+    cards = [
+        FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate(card_gib)
+    ]
     caplog.set_level("WARNING")
     planning._log_refused_roles(
-        Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,)),
+        placement,
         {WorkerRole.CHAT: "ref"},
         {WorkerRole.CHAT: MISTRAL},
-        [chat],
+        [_planner_chat_input(len(card_gib))],
         cards,
         planning.HostCards(cards),
         unified_budget=None,
-        capacity={0: 24 * GIB, 1: 16 * GIB},
+        capacity={i: gib * GIB for i, gib in enumerate(card_gib)},
     )
-    room = 16 * usable_vram_fraction()
-    share = chat.est_vram_bytes / 2 / GIB
-    assert f"each of the 2 GPUs would hold {share:.1f} GiB" in caplog.text
-    assert f"device 1, the smallest of them, has {room:.1f} GiB usable" in caplog.text
+    return caplog.text
+
+
+@_stated
+def test_the_refusal_of_an_equal_split_names_the_card_the_planner_missed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from lilbee.providers.fleet.vram import usable_vram_fraction
+
+    placed = _placed_as_planned(tmp_path, monkeypatch, (24, 16), 36)
+    miss = placed.split_misses[WorkerRole.CHAT]
+    assert (miss.count, miss.device) == (2, 1)
+    assert miss.room_bytes == pytest.approx(16 * GIB * usable_vram_fraction())
+    said = _refusal_text(placed, (24, 16), caplog)
+    need, room = miss.need_bytes / GIB, miss.room_bytes / GIB
+    assert f"over 2 GPUs, device 1 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
+    assert "the smallest" not in said
+
+
+@_stated
+def test_the_refusal_of_an_equal_split_counts_the_room_other_roles_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
+    from lilbee.providers.fleet.vram import usable_vram_fraction
+
+    peak = _staged_chat_peak(tmp_path, monkeypatch, (24, 24), model_gib=44)
+    embed = ModelPlacementInput(role=WorkerRole.EMBED, est_vram_bytes=12 * GIB)
+    devices = [(0, 24 * GIB), (1, 24 * GIB)]
+    placed = plan_placement(
+        [embed, _planner_chat_input(2)], devices, estimate_peak=peak, refuse_oversize=True
+    )
+    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
+    miss = placed.split_misses[WorkerRole.CHAT]
+    room = 24 * usable_vram_fraction() - 12
+    assert (miss.count, miss.device) == (2, 0)
+    assert miss.room_bytes / GIB == pytest.approx(room)
+    said = _refusal_text(placed, (24, 24), caplog)
+    need = miss.need_bytes / GIB
+    assert f"device 0 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
 
 
 @pytest.mark.parametrize(
-    ("cards", "model_gib", "count", "share_gib", "room_text"),
-    [
-        ({0: 24, 1: 24, 2: 8}, 60, 2, 30.0, "each has {usable:.1f} GiB usable"),
-        ({0: 24, 1: 24}, 60, 2, 30.0, "each has {usable:.1f} GiB usable"),
-        ({0: 16, 1: 16, 2: 16}, 70, 3, 70 / 3, "each has {usable:.1f} GiB usable"),
-        (
-            {0: 24, 1: 16, 2: 2},
-            36,
-            2,
-            18.0,
-            "device 1, the smallest of them, has {usable:.1f} GiB usable",
-        ),
-    ],
-    ids=["two large and one small", "equal cards", "three equal cards", "unequal best pair"],
+    ("card_gib", "model_gib", "count"),
+    [((24, 24, 8), 60, 2), ((16, 16, 16), 70, 3)],
+    ids=["two large cards and a small one", "three equal cards"],
 )
-def test_the_refusal_of_an_equal_split_names_the_best_count_of_cards(
-    cards: dict[int, int], model_gib: int, count: int, share_gib: float, room_text: str
+@_stated
+def test_the_refusal_of_an_equal_split_names_the_count_the_planner_came_nearest_with(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    card_gib: tuple[int, ...],
+    model_gib: int,
+    count: int,
 ) -> None:
-    from lilbee.providers.fleet.placement import ModelPlacementInput
-    from lilbee.providers.fleet.vram import usable_vram_fraction
+    placed = _placed_as_planned(tmp_path, monkeypatch, card_gib, model_gib, _TWELVE_HEADS)
+    assert placed.unplaceable_roles == (WorkerRole.CHAT,)
+    assert placed.split_misses[WorkerRole.CHAT].count == count
+    assert f"over {count} GPUs, device" in _refusal_text(placed, card_gib, caplog)
 
-    chat = ModelPlacementInput(
-        role=WorkerRole.CHAT, est_vram_bytes=model_gib * GIB, equal_split_only=True
-    )
-    said = planning._equal_split_refusal(
-        WorkerRole.CHAT, [chat], {idx: gib * GIB for idx, gib in cards.items()}
-    )
-    assert said is not None
-    smallest_used = sorted(cards.values(), reverse=True)[count - 1]
-    usable = smallest_used * usable_vram_fraction()
-    assert f"each of the {count} largest GPUs would hold {share_gib:.1f} GiB" in said
-    assert room_text.format(usable=usable) in said
-    assert ("the smallest" in said) == ("smallest" in room_text)
+
+@_stated
+def test_placement_offers_an_equal_split_over_the_two_larger_of_three_cards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    placed = _placed_as_planned(tmp_path, monkeypatch, (24, 24, 8), 40, _TWELVE_HEADS)
+    (instance,) = placed.instances
+    assert instance.devices == (0, 1)
+    assert placed.unplaceable_roles == ()
+    assert placed.split_misses == {}
 
 
 @_stated
@@ -1491,6 +1518,7 @@ def test_placement_offers_no_split_whose_heads_do_not_divide(
     assert len(instance.devices) == 3
     seven_heads = {"head_count": "7", "head_count_kv": "7", "block_count": "36"}
     refused = _placed_on(tmp_path, monkeypatch, (24, 24, 24), seven_heads)
+    assert refused.split_misses == {}
     assert refused.instances == ()
     assert refused.unplaceable_roles == (WorkerRole.CHAT,)
 

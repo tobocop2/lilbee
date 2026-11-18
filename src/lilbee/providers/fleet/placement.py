@@ -111,6 +111,16 @@ class LowFreeMemory:
 
 
 @dataclass(frozen=True)
+class SplitMiss:
+    """The nearest a split came to fitting: its card count and the card it overshot most."""
+
+    count: int
+    device: int
+    need_bytes: float
+    room_bytes: float
+
+
+@dataclass(frozen=True)
 class Placement:
     """Planner output: server instances, swap tenants, and best-effort placements.
 
@@ -129,6 +139,8 @@ class Placement:
     co_tenants: frozenset[WorkerRole] = frozenset()
     tight_roles: dict[WorkerRole, int] = field(default_factory=dict)
     low_free_memory: dict[WorkerRole, LowFreeMemory] = field(default_factory=dict)
+    split_misses: dict[WorkerRole, SplitMiss] = field(default_factory=dict, compare=False)
+    """Per role, the nearest split the planner tried, from the first pack that tried one."""
 
 
 def plan_placement(
@@ -175,6 +187,7 @@ def plan_placement(
         return _place_ungated(models)
     usable = usable_vram_fraction()
     cards: dict[int, float] = {idx: vram * usable for idx, vram in devices}
+    misses: dict[WorkerRole, SplitMiss] = {}
 
     def placer(remaining: dict[int, float]) -> Callable[[ModelPlacementInput], _Placed | None]:
         def place(model: ModelPlacementInput) -> _Placed | None:
@@ -185,6 +198,7 @@ def plan_placement(
                 chat_ctx_fit=chat_ctx_fit,
                 chat_ctx_target=chat_ctx_target,
                 free_headroom=free_headroom,
+                misses=misses,
             )
 
         return place
@@ -192,7 +206,7 @@ def plan_placement(
     if refuse_oversize:
         # The search repeats passes over the same roles and splits; one estimate each.
         estimate_peak = functools.cache(estimate_peak)
-        return _place_refusing(models, cards, placer)
+        return replace(_place_refusing(models, cards, placer), split_misses=misses)
 
     remaining = dict(cards)
     # The persistent singles are every replicas<=1 role plus replica 0 of each
@@ -540,6 +554,7 @@ def _place_single(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
+    misses: dict[WorkerRole, SplitMiss],
 ) -> _Placed | None:
     """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
     single = _best_single_device(model.est_vram_bytes, remaining)
@@ -556,6 +571,7 @@ def _place_single(
         chat_ctx_fit=chat_ctx_fit,
         chat_ctx_target=chat_ctx_target,
         free_headroom=free_headroom,
+        misses=misses,
     )
 
 
@@ -567,6 +583,7 @@ def _place_split(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
+    misses: dict[WorkerRole, SplitMiss],
 ) -> _Placed | None:
     """Tensor-split across the most-free GPUs whose per-device share each fits.
 
@@ -580,12 +597,16 @@ def _place_split(
     smallest card at the proportional ratio and fit at a shifted one. The sweep
     stops after ``_MAX_SPLIT_ESTIMATES`` estimator calls and says so, since each
     call is a subprocess. A split the engine refuses outright runs no estimate and is not counted.
+
+    When no split is placed, the estimated split whose busiest card overshoots its room
+    least goes to *misses* for the role, unless an earlier pack already recorded one.
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet.engines.base import SplitRefusedError
 
     by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
     best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
+    nearest: SplitMiss | None = None
     spent = 0
     refusals: set[str] = set()
     for count in range(2, len(by_free) + 1):
@@ -598,7 +619,7 @@ def _place_split(
                     model.role.value,
                     spent,
                 )
-                return _best_or_none(best, model, remaining)
+                return _noting_miss(_best_or_none(best, model, remaining), model, nearest, misses)
             spent += 1
             try:
                 per_device = estimate_peak(model.role, ratio)
@@ -612,9 +633,12 @@ def _place_split(
                 # An unsizable model cannot evaluate a split; the tight single-card
                 # path downstream places it or, when refusing, refuses it.
                 continue
-            if len(per_device) != count or not all(
+            if len(per_device) != count:
+                continue
+            if not all(
                 peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
             ):
+                nearest = _nearer_miss(nearest, chosen, per_device, remaining)
                 continue
             # Only chat is widened past the fewest fitting cards; everything else (and
             # the no-fitter generic path) takes the first shard that fits.
@@ -632,7 +656,43 @@ def _place_split(
                 return _charge_split(model, chosen, ratio, per_device, remaining)
             if best is None or served > best[0]:
                 best = (served, chosen, ratio, per_device)
-    return _best_or_none(best, model, remaining)
+    return _noting_miss(_best_or_none(best, model, remaining), model, nearest, misses)
+
+
+def _nearer_miss(
+    nearest: SplitMiss | None,
+    chosen: list[int],
+    per_device: tuple[int, ...],
+    remaining: dict[int, float],
+) -> SplitMiss:
+    """*nearest*, or the split of *chosen* when its busiest card overshoots its room less."""
+    candidate = max(
+        (
+            SplitMiss(len(chosen), idx, float(peak), remaining[idx])
+            for idx, peak in zip(chosen, per_device, strict=True)
+        ),
+        key=_overshoot,
+    )
+    if nearest is None or _overshoot(candidate) < _overshoot(nearest):
+        return candidate
+    return nearest
+
+
+def _overshoot(miss: SplitMiss) -> float:
+    """How far the busiest card of *miss* is over its room, in bytes."""
+    return miss.need_bytes - miss.room_bytes
+
+
+def _noting_miss(
+    placed: _Placed | None,
+    model: ModelPlacementInput,
+    nearest: SplitMiss | None,
+    misses: dict[WorkerRole, SplitMiss],
+) -> _Placed | None:
+    """Return *placed*; when it is None, keep *nearest* for the role unless one is kept."""
+    if placed is None and nearest is not None:
+        misses.setdefault(model.role, nearest)
+    return placed
 
 
 def _log_first_refusal(seen: set[str], count: int, role: WorkerRole, refusal: Exception) -> None:
