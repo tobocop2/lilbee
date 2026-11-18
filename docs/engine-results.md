@@ -22,7 +22,7 @@ A role that the engine does not claim has no row. A missing claim is `skip`, not
 
 A recording is taken when an engine is added and on each pin bump. The Fixture column names the recording of each row. A row with no fixture has no recording yet. A test compares each row with its fixture and fails when they differ. It also fails when a fixture has no row.
 
-The CPU rows of llama.cpp, mistral.rs and TEI come from a Linux cloud host. The OpenVINO rows come from an Intel i7-10750H laptop. The CUDA rows name an NVIDIA GeForce RTX 3090. The Version column is the engine version that the recorder saved.
+The Machine column names the machine that the recording names. The Version column is the engine version that the recorder saved.
 
 | Recording | Roles | Machine | Result | Version | Fixture |
 |---|---|---|---|---|---|

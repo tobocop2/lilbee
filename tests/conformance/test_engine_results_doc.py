@@ -80,6 +80,13 @@ def test_the_table_has_recorded_and_unrecorded_rows() -> None:
     assert any(row.result.startswith(NOT_RECORDED) for row in ROWS)
 
 
+def test_the_prose_names_no_machine_of_the_table() -> None:
+    prose = DOC.read_text(encoding="utf-8").split("## Recordings")[1].split("| Recording |")[0]
+    machines = {row.machine for row in ROWS} - {"CPU host"}
+    assert machines
+    assert [name for name in sorted(machines) if name in prose] == []
+
+
 def test_each_kind_of_recorded_row_is_present() -> None:
     assert HARNESS_ROWS
     assert HAND_ROWS
@@ -148,8 +155,10 @@ def test_the_device_list_row_matches_its_log() -> None:
     assert row.machine in log
     assert cpus + gpus == log.count("GGML_OPENVINO_DEVICE=")
     assert "[exit 0]" in log
+    assert {cpus, gpus} <= set(_COUNT_WORDS), f"{row.recording}: {cpus} CPU and {gpus} GPU lines"
     shown = f"{_COUNT_WORDS[cpus]} CPU and {_COUNT_WORDS[gpus]} GPU devices"
     assert row.result == f"pass: `--list-devices` shows {shown}"
+    assert not row.version
     assert row.roles == "none"
     assert "STEP " not in log
 
