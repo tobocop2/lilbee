@@ -41,7 +41,13 @@ from lilbee.providers.fleet.engines.base import SplitChecked
 from lilbee.providers.fleet.engines.choice import LIST_HINT
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
 from lilbee.providers.fleet.gpu_backends.nvidia import card_rows as nvidia_card_rows
-from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, ENGINE_TELEMETRY_OPT_OUT
+from lilbee.providers.fleet.gpu_env import (
+    CUDA_VISIBLE_VAR,
+    ENGINE_TELEMETRY_OPT_OUT,
+    HIP_VISIBLE_VAR,
+    ONEAPI_SELECTOR_VAR,
+    ROCR_VISIBLE_VAR,
+)
 from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
@@ -2241,8 +2247,8 @@ def resolve_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
 # the reader checks the one that applies to the card they actually have.
 _VENDOR_VISIBILITY_HINT = {
     "NVIDIA": CUDA_VISIBLE_VAR,
-    "AMD": "ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES",
-    "Intel": "ONEAPI_DEVICE_SELECTOR",
+    "AMD": f"{ROCR_VISIBLE_VAR} / {HIP_VISIBLE_VAR}",
+    "Intel": ONEAPI_SELECTOR_VAR,
 }
 
 

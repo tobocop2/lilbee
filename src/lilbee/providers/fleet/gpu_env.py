@@ -21,19 +21,25 @@ from lilbee.runtime.shard_process import shard_process
 log = logging.getLogger(__name__)
 
 CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
+ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
+HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
+# ROCm's third numeric visibility variable, filtering exactly as the other two do.
+GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
+VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
+ONEAPI_SELECTOR_VAR = "ONEAPI_DEVICE_SELECTOR"
 # Backend env vars set from ``cfg.gpu_devices``. Vulkan, CUDA, and ROCm each read
 # their own; a user-set ``cfg.gpu_devices`` is applied to all four because the
 # user is specifying their own indexes and opting in to all wheel flavors.
 _GPU_VISIBLE_ENV_VARS = (
-    "GGML_VK_VISIBLE_DEVICES",
+    VK_VISIBLE_VAR,
     CUDA_VISIBLE_VAR,
-    "HIP_VISIBLE_DEVICES",
-    "ROCR_VISIBLE_DEVICES",
+    HIP_VISIBLE_VAR,
+    ROCR_VISIBLE_VAR,
 )
 # The AMD pair is deliberately absent: ROCr filters before HIP re-indexes within
 # the survivors, so a pin may only ever be written to one of them. Which one is
 # devices.amd_visible_var's decision.
-_NON_AMD_VISIBLE_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES", CUDA_VISIBLE_VAR)
+_NON_AMD_VISIBLE_ENV_VARS = (VK_VISIBLE_VAR, CUDA_VISIBLE_VAR)
 # What the NVIDIA container runtime sets to say which GPUs it gave this
 # container. Its own words for "none" are below.
 _NVIDIA_RUNTIME_VISIBLE_VAR = "NVIDIA_VISIBLE_DEVICES"
