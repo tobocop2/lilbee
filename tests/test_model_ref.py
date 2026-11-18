@@ -485,16 +485,27 @@ class TestTranslateOptions:
         ],
         ids=str,
     )
-    def test_anthropic_drops_any_value_with_response_format(
+    def test_anthropic_refuses_any_value_with_response_format(
         self, option: str, value: float
     ) -> None:
-        """With a response_format the three options are dropped and the request goes out."""
+        """A response_format does not excuse the three options: they are refused, not dropped."""
+        ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
+        with pytest.raises(ProviderError, match=option) as caught:
+            translate_options(
+                {"temperature": 0.5, "response_format": {"type": "json_object"}, option: value},
+                ref,
+            )
+        assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+
+    def test_anthropic_keeps_response_format_and_drops_a_chosen_seed(self) -> None:
+        """An internal structured call keeps its reply format; lilbee's own seed is dropped."""
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
         reply_format = {"type": "json_object"}
-        result = translate_options(
-            {"temperature": 0.5, "response_format": reply_format, option: value}, ref
-        )
-        assert result == {"temperature": 0.5, "response_format": reply_format}
+        options = aux_options(64, seed=ChosenSeed(42), response_format=reply_format)
+        assert translate_options(options, ref) == {
+            "max_tokens": 64,
+            "response_format": reply_format,
+        }
 
     def test_anthropic_drops_the_seed_of_an_internal_call(self) -> None:
         """A search seeds its LLM steps; a provider with no seed still answers them."""
@@ -526,11 +537,10 @@ class TestTranslateOptions:
         with pytest.raises(ProviderError):
             translate_options(aux_options(64, seed=7), ref)
 
-    def test_anthropic_empty_response_format_counts_as_set(self) -> None:
-        """A present response_format key is enough, even when its value is empty."""
+    def test_anthropic_refuses_a_user_seed_beside_an_empty_response_format(self) -> None:
         ref = parse_model_ref("anthropic/claude-sonnet-4-20250514")
-        result = translate_options({"temperature": 0.5, "response_format": {}, "seed": 7}, ref)
-        assert result == {"temperature": 0.5, "response_format": {}}
+        with pytest.raises(ProviderError, match="seed"):
+            translate_options({"temperature": 0.5, "response_format": {}, "seed": 7}, ref)
 
     @pytest.mark.parametrize("option", ["seed", "frequency_penalty", "presence_penalty"], ids=str)
     def test_anthropic_sends_an_unset_option_unchanged(self, option: str) -> None:
