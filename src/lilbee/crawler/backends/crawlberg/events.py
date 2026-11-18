@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncGenerator
@@ -162,12 +163,12 @@ async def _events(
 ) -> AsyncGenerator[_Event, None]:
     """Stream one crawl's page and error events until it completes or *cancel* is set.
 
-    The engine is created and dropped inside this generator, so it never leaves the
-    thread whose event loop runs the crawl.
+    The engine is created in a worker thread so the event loop stays free, then used and
+    dropped inside this generator.
     """
     import crawlberg
 
-    engine = _create_engine(config)
+    engine = await asyncio.to_thread(_create_engine, config)
     # crawl_stream is an async generator; its stub types it as an AsyncIterator.
     stream = cast(AsyncGenerator[object, None], crawlberg.crawl_stream(engine, seed_url))
     async with aclosing(stream):
