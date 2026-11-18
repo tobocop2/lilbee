@@ -19,6 +19,8 @@ from lilbee.providers.fleet.vram import (
 from lilbee.providers.model_cache import kv_bytes_per_token
 
 _SAFETENSORS_SUFFIX = ".safetensors"
+_MIN_SAFETENSORS_BYTES = 8 + len("{}")
+"""The smallest whole safetensors file: an 8-byte header length and an empty JSON header."""
 _IR_MODEL_STEM = "openvino_model"
 _IR_SUFFIXES = (".xml", ".bin")
 _IR_WEIGHTS_SUFFIX = ".bin"
@@ -310,13 +312,17 @@ def _installed_sizes(model_path: Path) -> dict[str, int]:
         return {}
 
 
-def _sum_suffix(sizes: Mapping[str, int], suffix: str) -> int:
-    return sum(size for name, size in sizes.items() if name.endswith(suffix))
-
-
 def installed_safetensors_bytes(model_path: Path) -> int:
-    """Bytes of the ``.safetensors`` files of an installed model; 0 when it holds none."""
-    return _sum_suffix(_installed_sizes(model_path), _SAFETENSORS_SUFFIX)
+    """Bytes of the ``.safetensors`` files of an installed model.
+
+    0 when it holds none, or when any file is too short to hold a header: that file is
+    cut off, so the sum of the sizes is not the size of the weights.
+    """
+    sizes = _installed_sizes(model_path)
+    shards = [size for name, size in sizes.items() if name.endswith(_SAFETENSORS_SUFFIX)]
+    if any(size < _MIN_SAFETENSORS_BYTES for size in shards):
+        return 0
+    return sum(shards)
 
 
 def installed_config(model_path: Path) -> dict[str, Any] | None:

@@ -277,6 +277,30 @@ class TestInstalledEncoder:
         est = mm.estimate_installed_encoder(tmp_path, narrow_f32=True)
         assert (est.device_bytes, est.size_known) == (RESERVE, False)
 
+    @pytest.mark.parametrize("size", [1, 9])
+    def test_a_weight_file_too_short_for_a_header_is_unknown(
+        self, size: int, tmp_path: Path
+    ) -> None:
+        _write(tmp_path, "model.safetensors", size)
+        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        assert (est.device_bytes, est.size_known) == (RESERVE, False)
+
+    def test_a_weight_file_just_long_enough_for_a_header_is_known(self, tmp_path: Path) -> None:
+        _write(tmp_path, "model.safetensors", 10)
+        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        assert (est.device_bytes, est.size_known) == (10 + mm.ENCODER_RUNTIME_BYTES, True)
+
+    def test_one_cut_off_shard_makes_the_whole_folder_unknown(self, tmp_path: Path) -> None:
+        _write(tmp_path, "model-00001-of-00002.safetensors", 4000)
+        _write(tmp_path, "model-00002-of-00002.safetensors", 9)
+        est = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        assert (est.device_bytes, est.size_known) == (RESERVE, False)
+
+    def test_a_cut_off_weight_file_gives_zero_installed_bytes(self, tmp_path: Path) -> None:
+        _write(tmp_path, "model.safetensors", 9)
+        assert mm.installed_safetensors_bytes(tmp_path) == 0
+        assert mm.installed_safetensors_bytes(tmp_path / "model.safetensors") == 0
+
 
 class TestWeightsFromFiles:
     def test_counts_only_the_ir_model_files(self) -> None:
@@ -394,6 +418,15 @@ class TestInstalledEstimate:
         _write_small_config(tmp_path)
         est = mm.estimate_memory(ModelFormat.SAFETENSORS, _request(tmp_path / "model.safetensors"))
         assert est.shared_bytes == 123 + SMALL_KV_BYTES * 4096 * 2 + mm.CHAT_RUNTIME_BYTES
+
+    @pytest.mark.parametrize("fmt", [ModelFormat.MLX, ModelFormat.SAFETENSORS])
+    def test_a_chat_weight_file_too_short_for_a_header_is_the_unknown_size_reserve(
+        self, fmt: ModelFormat, tmp_path: Path
+    ) -> None:
+        _write(tmp_path, "model.safetensors", 9)
+        _write_small_config(tmp_path)
+        est = mm.estimate_memory(fmt, _request(tmp_path))
+        assert (est.device_bytes, est.shared_bytes, est.size_known) == (RESERVE, RESERVE, False)
 
     @pytest.mark.parametrize("fmt", [ModelFormat.MLX, ModelFormat.SAFETENSORS])
     def test_the_cache_grows_with_the_context_and_the_slots(
