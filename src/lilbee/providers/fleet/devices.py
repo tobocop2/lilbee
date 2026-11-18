@@ -672,11 +672,15 @@ def visible_nvidia_cards() -> list[FleetDevice]:
     """
     # circular: nvidia -> devices via MIB
     from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
-    from lilbee.providers.fleet.gpu_env import cuda_visible_cards
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, cuda_visible_cards, gpu_environ
 
+    cards = read_cards()
+    if gpu_environ().get(CUDA_VISIBLE_VAR) is None:
+        return [FleetDevice("CUDA", c.index, c.name, c.total_bytes, c.free_bytes) for c in cards]
+    # Under a mask the child's index is the card's place in the mask list.
     return [
-        FleetDevice("CUDA", index, card.name, card.total_bytes, card.free_bytes)
-        for index, card in enumerate(cuda_visible_cards(read_cards()))
+        FleetDevice("CUDA", place, card.name, card.total_bytes, card.free_bytes)
+        for place, card in enumerate(cuda_visible_cards(cards))
     ]
 
 

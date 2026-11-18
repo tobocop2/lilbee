@@ -542,6 +542,38 @@ def test_the_card_read_follows_the_visible_devices_mask(
     assert [d.index for d in found] == list(range(len(indices)))
 
 
+def test_a_missing_card_does_not_shift_the_pin_of_the_cards_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cards printed 0 and 2 keep those indices, and the child pin names them."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(2, "GPU-c", "card2", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    found = devices.visible_nvidia_cards()
+    assert [(d.index, d.name) for d in found] == [(0, "card0"), (2, "card2")]
+    assert devices.visible_env(tuple(found))["CUDA_VISIBLE_DEVICES"] == "0,2"
+
+
+def test_a_mask_names_a_card_by_its_printed_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mask entry 2 is the card nvidia-smi prints as 2, not the third card in the list."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(2, "GPU-c", "card2", _TOTAL // 2, _FREE // 2),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
+    found = devices.visible_nvidia_cards()
+    assert [(d.index, d.name) for d in found] == [(0, "card2"), (1, "card0")]
+    assert [(d.total_bytes, d.free_bytes) for d in found] == [
+        (_TOTAL // 2, _FREE // 2),
+        (_TOTAL, _FREE),
+    ]
+    assert devices.visible_env(tuple(found))["CUDA_VISIBLE_DEVICES"] == "2,0"
+
+
 @pytest.mark.parametrize("mask", ["1,1", "0,1,0", "GPU-b,GPU-b", "1,GPU-b", "GPU-a,1,0"])
 def test_a_mask_that_repeats_a_card_lists_no_card(
     mask: str, monkeypatch: pytest.MonkeyPatch
