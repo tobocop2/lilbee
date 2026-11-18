@@ -32,7 +32,7 @@ from lilbee.cli.tui.screens.settings_presets import (
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
-from tests._async_wait import wait_until
+from tests._async_wait import subtree_mounted, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 KEY = "SENTINEL-tui-key-91c4"
@@ -115,10 +115,7 @@ async def await_dialog(pilot, app) -> bool:
     """Wait until the preset dialog is the top screen and every widget in it is mounted."""
     return await wait_until(
         pilot,
-        lambda: (
-            isinstance(app.screen, PresetDialog)
-            and all(w.is_mounted for w in app.screen.walk_children(with_self=True))
-        ),
+        lambda: isinstance(app.screen, PresetDialog) and subtree_mounted(app.screen),
     )
 
 
@@ -856,16 +853,17 @@ class TestPaneKeyboardAccess:
             tabs.active = last_group
             assert await wait_until(pilot, lambda: bool(screen.query(f"#{last_group}-body > *")))
             body = screen.query_one(f"#{last_group}-body", VerticalScroll)
+            # The rows join the body first and compose their editors later; the last field is
+            # not known until every one of them has mounted.
+            assert await wait_until(pilot, lambda: subtree_mounted(body))
 
             def _on_last_field() -> bool:
-                stops = screen._focus_stops(body)
-                if not stops:
-                    return False
-                if app.focused is not stops[-1]:
+                last = screen._focus_stops(body)[-1]
+                if app.focused is not last:
                     screen._focus_pane_edge(last_group, -1)
-                return app.focused is stops[-1]
+                return app.focused is last
 
-            assert await wait_until(pilot, _on_last_field, timeout=30.0)
+            assert await wait_until(pilot, _on_last_field)
             await pilot.press("tab")
             assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
             assert await wait_until(

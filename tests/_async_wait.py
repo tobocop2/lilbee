@@ -51,6 +51,15 @@ async def wait_until(
     return True
 
 
+def subtree_mounted(root: Widget) -> bool:
+    """Whether *root* and every widget below it has finished mounting.
+
+    A widget's children join the tree before their own children compose, so a
+    query that finds the children says nothing about the widgets inside them.
+    """
+    return all(widget.is_mounted for widget in root.walk_children(with_self=True))
+
+
 def poll_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
     """Poll *predicate* until it holds or *timeout* seconds pass; returns whether it held."""
     deadline = time.monotonic() + timeout
