@@ -286,6 +286,9 @@ def mcp_cmd(
     _report_upgrade_as_log_lines()
     from lilbee.mcp_server import main
 
+    # Set before the loop starts, so asyncio leaves Ctrl-C to this handler and no
+    # loop takes a signal disposition with it when it closes.
+    stop_on_interrupt()
     try:
         main()
     except SystemExit as exc:

@@ -65,7 +65,6 @@ from lilbee.app.presets import (
 )
 from lilbee.app.search import clean_results
 from lilbee.app.services import (
-    exit_on_signals_in_loop,
     get_services,
     reset_services,
     reset_store,
@@ -2488,7 +2487,6 @@ def _exit_on_parent_death() -> None:
 
 async def _serve_stdio(server: LilbeeMCP) -> None:
     """Serve over stdio until stdin closes or a signal ends the process."""
-    exit_on_signals_in_loop(asyncio.get_running_loop())
     await server.run_stdio_async()
 
 

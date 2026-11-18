@@ -20,6 +20,7 @@ import asyncio
 import atexit
 import logging
 import os
+import queue
 import signal
 import sys
 import threading
@@ -29,6 +30,7 @@ from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -58,8 +60,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _SIGNAL_EXIT_BASE = 128
-
-_HARD_EXIT_THREAD_NAME = "hard-exit-teardown"
 
 
 def _default_session_store() -> SessionStore:
@@ -446,8 +446,8 @@ def answer_provider_waiters() -> None:
         services.provider.stop_waiting()
 
 
-# Serializes the singleton swap in reset_services: a signal's teardown thread
-# and an exiting caller's can race, and both tearing down the same container
+# Serializes the singleton swap in reset_services: the engine stop thread
+# and another caller can race, and both tearing down the same container
 # would double-close the store.
 _reset_swap_lock = threading.Lock()
 
@@ -457,9 +457,9 @@ def reset_services() -> None:
 
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
-    locked so concurrent callers (a signal's teardown thread plus an exiting
-    one) tear the container down exactly once. On ``lilbee serve``, SIGINT,
-    SIGTERM and SIGHUP run it on the signal's teardown thread while requests
+    locked so concurrent callers (the engine stop thread plus another one)
+    tear the container down exactly once. On ``lilbee serve``, SIGINT,
+    SIGTERM and SIGHUP run it on the engine stop thread while requests
     are still open; the shutdown route runs it after those requests end.
     """
     with _reset_swap_lock:
@@ -549,12 +549,80 @@ def request_server_exit(status: int = 0) -> bool:
     return _server_exit.request(status)
 
 
+class _StopStep(StrEnum):
+    """The teardown step the stop thread runs."""
+
+    ANSWER_WAITERS = "answering the callers that wait on the provider"
+    RESET_SERVICES = "stopping the services"
+
+
 class _EngineLifecycle:
-    """Owns the hard-exit hooks that stop the engine fleet."""
+    """Owns the hard-exit hooks and the one thread that stops the engine fleet."""
 
     def __init__(self) -> None:
         self._installed = False
         self._interrupts = 0
+        self._reset_in_forked_child()
+
+    def _reset_in_forked_child(self) -> None:
+        """Drop the stop thread and its queue, which a fork does not copy."""
+        self._start_lock = threading.Lock()
+        self._requests: queue.SimpleQueue[int] = queue.SimpleQueue()
+        self._stopped = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._forget_stop()
+
+    def _forget_stop(self) -> None:
+        """Clear every stop request, so the next request runs a new stop."""
+        self._stopped.clear()
+        self.stop_requested = False
+        self._signalled = False
+        self.owed_status: int | None = None
+        self.stop_step: _StopStep | None = None
+
+    def _ensure_stop_thread(self) -> None:
+        """Start the stop thread once, in ordinary context, before any handler can ask for it."""
+        with self._start_lock:
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._serve_stops, name="engine-stop", daemon=True
+                )
+                self._thread.start()
+
+    def _serve_stops(self) -> None:
+        while True:
+            signum = self._requests.get()
+            try:
+                self._stop(signum)
+            finally:
+                self._stopped.set()
+
+    def _stop(self, signum: int) -> None:
+        """Log the signal (0: an exit asked), answer the provider's waiters, stop the services."""
+        if signum:
+            log.info(
+                "Received signal %s; stopping the engine fleet before exit",
+                signal.Signals(signum).name,
+            )
+        self.stop_step = _StopStep.ANSWER_WAITERS
+        answer_provider_waiters()
+        self.stop_step = _StopStep.RESET_SERVICES
+        reset_services()
+
+    def ask_for_stop(self) -> None:
+        """Start the stop thread if needed and ask it for the stop; an exit path calls this."""
+        self._ensure_stop_thread()
+        self.request_stop(0)
+
+    def request_stop(self, signum: int) -> None:
+        """Queue the stop once; a later request joins the stop already asked for."""
+        if not self.stop_requested:
+            self.stop_requested = True
+            self._requests.put(signum)
+
+    def wait_stopped(self, timeout: float | None) -> bool:
+        """Wait for the stop to finish; False when *timeout* ran out first."""
+        return self._stopped.wait(timeout)
 
     @staticmethod
     def _hard_exit_signals() -> tuple[signal.Signals, ...]:  # pragma: no cover - platform split
@@ -582,6 +650,7 @@ class _EngineLifecycle:
         """Route hard-exit signals through teardown. Idempotent; no-op off the main thread."""
         if self._installed:
             return
+        self._ensure_stop_thread()
         try:
             for sig in self._routed_signals(interrupt=False):
                 signal.signal(sig, self._on_hard_exit)
@@ -597,6 +666,7 @@ class _EngineLifecycle:
         self._interrupts = 0
         if signal.SIGINT not in self._routed_signals(interrupt=True):
             return
+        self._ensure_stop_thread()
         signal.signal(signal.SIGINT, self._on_interrupt)
 
     def _on_interrupt(self, signum: int, frame: object) -> None:
@@ -606,42 +676,26 @@ class _EngineLifecycle:
         else:
             self._on_hard_exit(signum, frame)
 
-    def route_in_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Deliver Ctrl-C and the hard-exit signals as loop callbacks.
-
-        A plain handler runs only when the main thread returns to bytecode, and the
-        kernel may hand the signal to another thread while the loop sits in select.
-        The loop's wakeup descriptor makes the delivery certain.
-        """
-        for sig in self._routed_signals(interrupt=True):
-            with suppress(NotImplementedError, RuntimeError):  # Windows, off main thread
-                loop.add_signal_handler(sig, self._on_hard_exit, sig, None)
-
     def reset(self) -> None:
-        """Forget that handlers were installed."""
+        """Forget that handlers were installed and every stop request."""
         self._installed = False
+        self._interrupts = 0
+        self._forget_stop()
 
     def _on_hard_exit(self, signum: int, frame: object) -> None:
-        """Stop the fleet on its own thread, then exit with the signal status.
+        """Queue the stop and exit with the signal status; the handler only records.
 
-        A serving loop is asked to stop and exits with the status itself. A
-        server that is already stopping joins that stop. A SystemExit raised
-        into the loop cancels the ASGI lifespan with it, which logs a
-        traceback, or dies inside a request's ASGI wrapper. With no server the
-        SystemExit unwinds the main thread. The stop state is read before the
-        teardown thread starts, because that thread marks the server as
-        stopping. Signal handlers
-        all run on the main thread, and a second signal can interrupt this one
-        mid-teardown: the kernel pairs SIGCONT with SIGHUP for an orphaned
-        process group, and Textual's SIGCONT handler raises once the event loop
-        is gone, which aborted the reap half-done and orphaned a loaded fleet.
-        A dedicated non-daemon thread cannot be interrupted by signals, and the
-        interpreter waits for it even as the SystemExit unwinds the main thread.
+        It starts no thread, takes no lock and logs nothing: a signal can land
+        while the main thread holds one of threading's own locks.
         """
         del frame
         status = _SIGNAL_EXIT_BASE + signum
-        joining = request_server_exit(status) or server_is_stopping()
-        _start_signal_teardown(signum)
+        server_took = request_server_exit(status)
+        joining = server_took or server_is_stopping() or self.stop_requested
+        if joining and not server_took and not self._signalled:
+            self.owed_status = status
+        self._signalled = True
+        self.request_stop(signum)
         if not joining:
             raise SystemExit(status)
 
@@ -698,41 +752,42 @@ def _all_threads() -> list[threading.Thread]:
     return threading.enumerate()
 
 
-def wait_for_hard_exit_teardown() -> None:
-    """Block until any teardown thread (signal-driven or exit-driven) finishes.
-
-    Lets ``serve`` hold its OS locks through the fleet stop, so a successor
-    cannot acquire them while this server's models still occupy memory.
+def _wait_for_stop() -> None:
+    """Wait for the stop thread's teardown; silent for the grace, then the stopping note.
 
     An interrupt while waiting force-quits the process: waiting is the only
-    thing left, the interpreter would otherwise still join the non-daemon
-    teardown thread, and the engine reaper (or, without kernel file locks, the
+    thing left, and the engine reaper (or, without kernel file locks, the
     child guard) stops the engine once this was its last user.
     """
     try:
-        for thread in _all_threads():
-            if thread.name != _HARD_EXIT_THREAD_NAME:
-                continue
-            thread.join(_STOPPING_NOTE_GRACE_S)
-            if thread.is_alive():
-                _write_exit_note(_STOPPING_NOTE)
-                thread.join()
+        if not _lifecycle.wait_stopped(_STOPPING_NOTE_GRACE_S):
+            _write_exit_note(_STOPPING_NOTE)
+            _lifecycle.wait_stopped(None)
     except KeyboardInterrupt:
         _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
+def wait_for_hard_exit_teardown() -> None:
+    """Block until a stop that a signal or an exit asked for finishes; else return.
+
+    Lets ``serve`` hold its OS locks through the fleet stop, so a successor
+    cannot acquire them while this server's models still occupy memory.
+    """
+    if _lifecycle.stop_requested:
+        _wait_for_stop()
+
+
 def reset_services_on_exit() -> None:
-    """Tear the container down on a thread no signal reaches, and wait for it.
+    """Ask the stop thread for the teardown and wait for it; no-op with nothing to stop.
 
     Engine release waits on the fleet build lock before it releases anything, so
-    a Ctrl-C on the main thread skips the release, and atexit cannot retry: the
-    singleton is already cleared. The teardown thread is non-daemon and takes
-    no signals; a wait that outlives the grace names what is happening.
+    a Ctrl-C on the main thread would skip the release, and atexit cannot retry:
+    the singleton is already cleared. The stop thread takes no signals.
     """
-    if peek_services() is None:
+    if peek_services() is None and not _lifecycle.stop_requested:
         return
-    threading.Thread(target=reset_services, name=_HARD_EXIT_THREAD_NAME).start()
-    wait_for_hard_exit_teardown()
+    _lifecycle.ask_for_stop()
+    _wait_for_stop()
 
 
 def _straggler_threads() -> list[threading.Thread]:
@@ -759,13 +814,12 @@ def exit_when_stragglers_would_hang() -> None:
     """
     if not _state.interactive:
         return
-    _exit_if_stragglers(0)
+    _exit_if_stragglers(0, time.monotonic() + _STRAGGLER_BUDGET_S)
 
 
-def _exit_if_stragglers(status: int) -> None:
-    """Join leftover non-daemon threads within the budget, else exit with *status*."""
+def _exit_if_stragglers(status: int, deadline: float) -> None:
+    """Join leftover non-daemon threads before *deadline*, else exit with *status*."""
     try:
-        deadline = time.monotonic() + _STRAGGLER_BUDGET_S
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
@@ -784,41 +838,24 @@ def exit_if_opens_remain(status: int) -> None:
     _exit_now(status, _OPEN_EXIT_NOTE)
 
 
-def exit_on_signals_in_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """Make Ctrl-C and terminate signals end a process whose loop has no UI to catch them."""
-    _lifecycle.route_in_loop(loop)
-
-
 def stop_on_interrupt() -> None:
     """Make Ctrl-C stop a serving process as SIGTERM does; a second press ends it at once."""
     _lifecycle.route_interrupt()
 
 
 def exit_after_signal(status: int) -> None:
-    """Finish the signal-driven teardown, then exit with *status* even past a wedged thread.
+    """Finish the engine stop, then exit with *status* even past a wedged thread.
 
     The stdio MCP server reads stdin on a non-daemon thread that no signal
     wakes, so the interpreter would wait on it forever after the main thread
-    unwound.
+    unwound. The stop and the stragglers share one budget; a cut names its step.
     """
-    reset_services_on_exit()
-    _exit_if_stragglers(status)
-
-
-def _start_signal_teardown(signum: int) -> None:
-    """Run the signal teardown on its own non-daemon thread."""
-    threading.Thread(
-        target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
-    ).start()
-
-
-def _teardown_for_signal(signum: int) -> None:
-    """Log the fatal signal, then stop services; runs off the signal handler's thread."""
-    log.info(
-        "Received signal %s; stopping the engine fleet before exit", signal.Signals(signum).name
-    )
-    answer_provider_waiters()
-    reset_services()
+    deadline = time.monotonic() + _STRAGGLER_BUDGET_S
+    _lifecycle.ask_for_stop()
+    if not _lifecycle.wait_stopped(_STRAGGLER_BUDGET_S):
+        log.warning("The exit cut the engine stop while %s", _lifecycle.stop_step)
+        _exit_now(status, _STRAGGLER_NOTE)
+    _exit_if_stragglers(status, deadline)
 
 
 _lifecycle = _EngineLifecycle()
@@ -829,4 +866,14 @@ def install_engine_lifecycle_hooks() -> None:
     _lifecycle.install()
 
 
-atexit.register(reset_services_on_exit)
+def _stop_at_exit() -> None:
+    """Run the exit teardown; a first signal that joined an exit's stop sets the status."""
+    reset_services_on_exit()
+    if _lifecycle.owed_status is not None:
+        _exit_now(_lifecycle.owed_status, "")
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no cover - absent on Windows
+    os.register_at_fork(after_in_child=_lifecycle._reset_in_forked_child)
+
+atexit.register(_stop_at_exit)

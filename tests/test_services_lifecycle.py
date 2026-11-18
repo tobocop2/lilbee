@@ -51,10 +51,8 @@ def _restore_handlers():
 
 
 def _join_teardown() -> None:
-    """Wait out the handler's teardown thread so assertions don't race it."""
-    for thread in threading.enumerate():
-        if thread.name == "hard-exit-teardown":
-            thread.join(timeout=5)
+    """Wait out the stop thread's teardown so assertions don't race it."""
+    assert services_mod._lifecycle.wait_stopped(5)
 
 
 def _install_stub_services() -> MagicMock:
@@ -124,7 +122,7 @@ def test_teardown_runs_off_the_main_thread():
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
     _join_teardown()
 
-    assert teardown_threads == ["hard-exit-teardown"]
+    assert teardown_threads == ["engine-stop"]
 
 
 def test_signal_without_services_still_exits():
@@ -288,8 +286,8 @@ def test_a_first_terminate_signal_with_no_server_raises_even_when_the_teardown_w
         started.append(signum)
         services_mod.answer_provider_waiters()
 
-    monkeypatch.setattr(services_mod, "_start_signal_teardown", _teardown_marks_stopping_at_once)
     install_engine_lifecycle_hooks()
+    monkeypatch.setattr(services_mod._lifecycle, "request_stop", _teardown_marks_stopping_at_once)
     with pytest.raises(SystemExit) as exit_info:
         signal.getsignal(sig)(sig, None)
     assert exit_info.value.code == 128 + sig
@@ -348,25 +346,30 @@ def test_hard_exit_logs_the_received_signal(sig, caplog):
     assert any(signal.Signals(sig).name in rec.message for rec in caplog.records)
 
 
-def test_wait_for_hard_exit_teardown_joins_the_running_thread():
+def test_wait_for_hard_exit_teardown_waits_for_the_signal_stop():
     """serve's lock release must not outrun a signal-driven fleet stop."""
-    finished = threading.Event()
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+    install_engine_lifecycle_hooks()
+    with pytest.raises(SystemExit):
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
-    def slow_teardown() -> None:
-        finished.wait(timeout=5)
-
-    thread = threading.Thread(target=slow_teardown, name="hard-exit-teardown")
-    thread.start()
-    finished.set()
+    timer = threading.Timer(0.2, release.set)
+    timer.start()
     wait_for_hard_exit_teardown()
-    assert not thread.is_alive()
+    timer.join()
+
+    assert release.is_set()
+    provider.shutdown.assert_called_once()
 
 
 def test_wait_for_hard_exit_teardown_without_a_teardown_is_a_noop():
     wait_for_hard_exit_teardown()
+    assert services_mod._lifecycle.stop_requested is False
 
 
-def test_exit_teardown_runs_off_the_main_thread():
+def test_exit_teardown_runs_on_the_stop_thread():
     """Only the main thread takes signals, so an exit teardown must leave it."""
     provider = _install_stub_services()
     runners: list[threading.Thread] = []
@@ -374,33 +377,130 @@ def test_exit_teardown_runs_off_the_main_thread():
 
     reset_services_on_exit()
 
-    assert runners
-    assert runners[0] is not threading.main_thread()
-    assert runners[0].daemon is False
+    assert [runner.name for runner in runners] == ["engine-stop"]
     assert peek_services() is None
 
 
 def test_a_second_interrupt_force_quits_instead_of_waiting(monkeypatch):
-    """A second Ctrl-C force-quits: the child guard reaps the engine, and the
-    interpreter would otherwise still join the non-daemon teardown thread."""
+    """A second Ctrl-C force-quits: the child guard reaps the engine."""
     exits: list[int] = []
     monkeypatch.setattr(services_mod.os, "_exit", exits.append)
 
-    class _Interrupted:
-        name = services_mod._HARD_EXIT_THREAD_NAME
-        daemon = True  # the leak-check fixture enumerates threads too
+    def _interrupted(timeout: float | None) -> bool:
+        raise KeyboardInterrupt
 
-        def join(self, timeout: float | None = None) -> None:
-            raise KeyboardInterrupt
-
-        def is_alive(self) -> bool:
-            return False
-
-    monkeypatch.setattr(services_mod, "_all_threads", lambda: [_Interrupted()])
+    services_mod._lifecycle.stop_requested = True
+    monkeypatch.setattr(services_mod._lifecycle, "wait_stopped", _interrupted)
 
     services_mod.wait_for_hard_exit_teardown()
 
     assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+
+
+def test_the_signal_handler_starts_no_thread(monkeypatch):
+    """A handler that starts a thread can deadlock on threading's own lock (3.11, 3.12)."""
+    provider = _install_stub_services()
+    install_engine_lifecycle_hooks()
+    handler = signal.getsignal(signal.SIGTERM)
+
+    def _refuse(self: threading.Thread) -> None:
+        raise AssertionError(f"the signal handler started thread {self.name}")
+
+    monkeypatch.setattr(threading.Thread, "start", _refuse)
+    with pytest.raises(SystemExit) as raised:
+        handler(signal.SIGTERM, None)
+    monkeypatch.undo()
+    _join_teardown()
+
+    assert raised.value.code == 128 + signal.SIGTERM
+    provider.shutdown.assert_called_once()
+
+
+def test_every_exit_path_waits_for_a_stop_that_already_cleared_the_services():
+    """The stop clears the singleton first; a later exit must still wait for the teardown."""
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+    install_engine_lifecycle_hooks()
+    with pytest.raises(SystemExit):
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    deadline = time.monotonic() + 5
+    while peek_services() is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert peek_services() is None
+
+    waiter = threading.Thread(target=reset_services_on_exit)
+    waiter.start()
+    waiter.join(timeout=0.3)
+    still_waiting = waiter.is_alive()
+    release.set()
+    waiter.join(timeout=5)
+
+    assert still_waiting
+    provider.shutdown.assert_called_once()
+
+
+def test_a_request_after_the_stop_returns_at_once():
+    """A stop runs once per process; a later exit path joins the finished stop."""
+    provider = _install_stub_services()
+    reset_services_on_exit()
+    set_services(MagicMock())
+
+    started = time.monotonic()
+    reset_services_on_exit()
+
+    assert time.monotonic() - started < 1.0
+    provider.shutdown.assert_called_once()
+
+
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_a_signal_during_an_exit_stop_joins_it_and_sets_the_exit_status(sig, monkeypatch):
+    """A signal that lands during a clean exit's stop gives its status once the stop ends."""
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+    exits: list[int] = []
+    monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+    install_engine_lifecycle_hooks()
+    services_mod._lifecycle.ask_for_stop()
+
+    signal.getsignal(sig)(sig, None)
+    release.set()
+    services_mod._stop_at_exit()
+
+    assert exits == [128 + sig]
+    provider.shutdown.assert_called_once()
+
+
+def test_the_first_signal_status_wins_over_a_joined_one(monkeypatch):
+    """A second signal joins the stop the first one raised for; it owes no status."""
+    _install_stub_services()
+    exits: list[int] = []
+    monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+    install_engine_lifecycle_hooks()
+    with pytest.raises(SystemExit) as raised:
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    services_mod._stop_at_exit()
+
+    assert raised.value.code == 128 + signal.SIGTERM
+    assert exits == []
+
+
+def test_a_forked_child_drops_the_parent_stop_thread():
+    """A fork copies no thread; the child must start its own stop thread."""
+    lifecycle = services_mod._EngineLifecycle()
+    lifecycle.ask_for_stop()
+    assert lifecycle.wait_stopped(5)
+    parent_thread = lifecycle._thread
+
+    lifecycle._reset_in_forked_child()
+
+    assert lifecycle._thread is None
+    assert lifecycle.stop_requested is False
+    lifecycle.ask_for_stop()
+    assert lifecycle.wait_stopped(5)
+    assert lifecycle._thread is not parent_thread
 
 
 def test_a_slow_exit_names_the_wait_and_the_way_out(capsys, monkeypatch):
@@ -534,26 +634,74 @@ class TestStragglerExit:
         assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
 @pytest.mark.parametrize("sig", [signal.SIGINT, *_HARD_EXIT_SIGNALS], ids=lambda s: s.name.lower())
 def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(sig):
-    """A loop blocked in select sees the signal through its wakeup descriptor."""
+    """A loop blocked in select is interrupted by the signal and unwinds with its status."""
     provider = _install_stub_services()
+    previous = signal.getsignal(signal.SIGINT)
 
     async def serve() -> None:
-        services_mod.exit_on_signals_in_loop(asyncio.get_running_loop())
         os.kill(os.getpid(), sig)
         await asyncio.sleep(30)
 
-    with pytest.raises(SystemExit) as raised:
-        asyncio.run(serve())
-    _join_teardown()
+    try:
+        install_engine_lifecycle_hooks()
+        stop_on_interrupt()
+        with pytest.raises(SystemExit) as raised:
+            asyncio.run(serve())
+        _join_teardown()
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
     assert raised.value.code == 128 + sig
     provider.shutdown.assert_called_once()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_a_closed_loop_leaves_the_terminate_handlers_in_place():
+    """A signal after the loop closed must still reach the stop, not the default disposition."""
+    from lilbee import mcp_server
+
+    install_engine_lifecycle_hooks()
+    installed = {sig: signal.getsignal(sig) for sig in services_mod._lifecycle._hard_exit_signals()}
+
+    async def serve() -> None:
+        pass
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(mcp_server, "get_services", lambda: None)
+        patch.setattr(mcp_server, "build_mcp_server", MagicMock())
+        mcp_server.build_mcp_server.return_value.run_stdio_async = serve
+        mcp_server.main()
+
+    after = {sig: signal.getsignal(sig) for sig in installed}
+    assert after == installed
+    assert all(callable(handler) for handler in after.values())
+
+
 class TestExitAfterSignal:
+    def test_a_stop_past_the_budget_is_cut_and_names_its_step(
+        self, monkeypatch, caplog, capsys
+    ) -> None:
+        provider = _install_stub_services()
+        release = threading.Event()
+        provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.2)
+        monkeypatch.setattr(services_mod, "_all_threads", lambda: [threading.main_thread()])
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="lilbee.app.services"):
+                services_mod.exit_after_signal(143)
+        finally:
+            release.set()
+
+        assert exits == [143]
+        assert "would not stop" in capsys.readouterr().err
+        assert any("stopping the services" in rec.getMessage() for rec in caplog.records)
+
     def test_a_wedged_thread_cannot_hold_the_exit_status_back(self, monkeypatch) -> None:
         provider = _install_stub_services()
         exits: list[int] = []
