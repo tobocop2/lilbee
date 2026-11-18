@@ -824,12 +824,13 @@ class Greeter:
 
         monkeypatch.setattr(cfg, "chunk_size", 64)
         mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
-        line = " ".join(["w"] * 30) + "\n"
-        result = _FakeResult([_FakeTSChunk(line * 2, start_line=0, end_line=2)])
+        long_line = " ".join(["w"] * 40) + "\n"
+        short_line = " ".join(["w"] * 20) + "\n"
+        result = _FakeResult([_FakeTSChunk(long_line + short_line, start_line=0, end_line=2)])
 
         chunks = self._chunk_with_parser_result(result)
 
-        assert self._bodies(chunks) == [line, line]
+        assert self._bodies(chunks) == [long_line, short_line]
 
     def test_four_lines_over_the_budget_split_in_the_middle(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
