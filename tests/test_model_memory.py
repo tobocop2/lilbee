@@ -52,8 +52,15 @@ def _safetensors(header: object, data: int) -> bytes:
     return len(raw).to_bytes(8, "little") + raw + b"\0" * data
 
 
+def _raw_header(raw: bytes) -> bytes:
+    """A safetensors file whose header text is exactly *raw*, with no data."""
+    return len(raw).to_bytes(8, "little") + raw
+
+
+_BRACKET_NOTE = {"note": 'say "hi" [[[{{{ \\" ]]]}}}'}
+"""A metadata string full of brackets and quotes: it is text, not nesting."""
 _WHOLE_FILE = _safetensors(
-    {"__metadata__": {"format": "pt"}, "a": _tensor(600, 1000), "b": _tensor(0, 600)}, 1000
+    {"__metadata__": _BRACKET_NOTE, "a": _tensor(600, 1000), "b": _tensor(0, 600)}, 1000
 )
 _CUT_FILES: dict[str, bytes] = {
     "cut-in-the-data": _WHOLE_FILE[:1100],
@@ -63,6 +70,9 @@ _CUT_FILES: dict[str, bytes] = {
     "extra-bytes": _WHOLE_FILE + b"\0" * 5,
     "header-past-the-file": (10**6).to_bytes(8, "little") + b"{}",
     "header-not-json": (4).to_bytes(8, "little") + b"nope",
+    "header-nested-lists": _raw_header(b"[" * 200_000 + b"]" * 200_000),
+    "header-nested-objects": _raw_header(b'{"a":' * 100_000 + b"1" + b"}" * 100_000),
+    "header-one-level-too-deep": _raw_header(b'{"a":{"b":{"c":[0,0]}}}'),
     "header-not-an-object": (2).to_bytes(8, "little") + b"[]",
     "tensor-not-an-object": _safetensors({"a": 5}, 0),
     "no-offsets": _safetensors({"a": {"dtype": "U8"}}, 0),

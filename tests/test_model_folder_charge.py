@@ -33,6 +33,7 @@ from lilbee.providers.fleet.placement_spec import (
 )
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
+from tests._safetensors import safetensors_header
 from tests._stated_sizes import state_size
 
 GIB = 1024**3
@@ -83,6 +84,7 @@ def _snapshot(root: Path, size: int) -> Path:
     """A Hugging Face snapshot: the folder holds symlinks to a blob elsewhere."""
     blob = root / "blobs" / "abc"
     _sparse(blob, size)
+    blob.write_bytes(safetensors_header(size))
     folder = root / "snapshots" / "rev"
     folder.mkdir(parents=True)
     (folder / "model.safetensors").symlink_to(blob)

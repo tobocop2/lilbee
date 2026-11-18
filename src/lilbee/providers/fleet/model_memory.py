@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import posixpath
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -23,6 +24,10 @@ _SAFETENSORS_PREFIX_BYTES = 8
 _MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
 _SAFETENSORS_METADATA_KEY = "__metadata__"
 _SAFETENSORS_OFFSETS_KEY = "data_offsets"
+_SAFETENSORS_HEADER_DEPTH = 3
+_JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
+_INNERMOST_GROUP = re.compile(rb"[\[{][^\[\]{}]*[\]}]")
+_BRACKET = re.compile(rb"[\[\]{}]")
 _IR_MODEL_STEM = "openvino_model"
 _IR_SUFFIXES = (".xml", ".bin")
 _IR_WEIGHTS_SUFFIX = ".bin"
@@ -340,12 +345,26 @@ def _is_whole_safetensors(path: Path, size: int) -> bool:
             raw_header = stream.read(header_bytes)
     except OSError:
         return False
+    if not _is_flat_header(raw_header):
+        return False
     try:
         header = json.loads(raw_header)
     except ValueError:
         return False
     data_end = _header_data_end(header)
     return data_end is not None and size == _SAFETENSORS_PREFIX_BYTES + len(raw_header) + data_end
+
+
+def _is_flat_header(raw_header: bytes) -> bool:
+    """Whether the JSON text nests no deeper than a safetensors header does.
+
+    The header is one object of tensor entries, each holding a shape list: three levels.
+    Each pass removes the innermost groups, so a deeper text still has brackets left.
+    """
+    rest = _JSON_STRING.sub(b"", raw_header)
+    for _ in range(_SAFETENSORS_HEADER_DEPTH):
+        rest = _INNERMOST_GROUP.sub(b"", rest)
+    return _BRACKET.search(rest) is None
 
 
 def _header_data_end(header: object) -> int | None:
