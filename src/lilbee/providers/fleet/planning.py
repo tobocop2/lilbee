@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
+from lilbee.catalog.header_probe import SPLIT_GGUF_NAME
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.system import is_network_path
 from lilbee.providers import engine_params, model_cache
@@ -298,16 +299,12 @@ _PROBE_RETRY_DELAY_S = 1.0
 # exact ceiling is tuned on a network-volume host.
 _NO_MMAP_NETWORK_RAM_FRACTION = 0.85
 
-# llama.cpp split-GGUF shard naming ("%s-%05d-of-%05d.gguf"); the cold-load
-# timeout must scale with the SUM of the shards, not the first file alone.
-_SPLIT_GGUF_NAME = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$")
-
 
 def _weights_bytes(model_path: Path) -> int:
     """Total weights size on disk; a folder sums its shards, a split GGUF its sibling shards."""
     if model_path.is_dir():
         return installed_safetensors_bytes(model_path)
-    match = _SPLIT_GGUF_NAME.fullmatch(model_path.name)
+    match = SPLIT_GGUF_NAME.fullmatch(model_path.name)
     if match is None:
         return model_path.stat().st_size
     return sum(
@@ -319,7 +316,7 @@ def _weights_bytes(model_path: Path) -> int:
 
 def _is_sibling_shard(name: str, match: re.Match[str]) -> bool:
     """Whether *name* is a shard of the same split GGUF as *match*."""
-    shard = _SPLIT_GGUF_NAME.fullmatch(name)
+    shard = SPLIT_GGUF_NAME.fullmatch(name)
     return (
         shard is not None
         and shard["prefix"] == match["prefix"]

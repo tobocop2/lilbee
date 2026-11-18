@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import posixpath
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from lilbee.catalog.header_probe import gguf_bytes_on_disk, gguf_is_incomplete
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import (
@@ -28,6 +30,8 @@ _SAFETENSORS_OFFSET_COUNT = 2
 _IR_MODEL_STEM = "openvino_model"
 _IR_SUFFIXES = (".xml", ".bin")
 _IR_WEIGHTS_SUFFIX = ".bin"
+_IR_WEIGHT_SPAN = re.compile(r'<data\b[^>]*?\boffset="(\d+)"[^>]*?\bsize="(\d+)"')
+"""A constant's ``offset`` and ``size`` in the ``.bin``, in the order the IR writer emits them."""
 _GGUF_KEY_METADATA = "metadata"
 _GGUF_KEY_FILE_SIZE = "fileSize"
 
@@ -254,8 +258,8 @@ def encoder_estimate(weights: int | None) -> MemoryEstimate:
     return _sized_estimate(weights + ENCODER_RUNTIME_BYTES)
 
 
-def _ir_pair_bytes(sizes: Mapping[str, int]) -> int:
-    """Bytes of ``openvino_model.xml`` plus ``.bin`` in the shallowest folder that holds both."""
+def _ir_pair_folder(sizes: Mapping[str, int]) -> str | None:
+    """The shallowest folder that holds both ``openvino_model.xml`` and ``.bin``, or None."""
     folders = sorted(
         (
             posixpath.dirname(name)
@@ -265,11 +269,30 @@ def _ir_pair_bytes(sizes: Mapping[str, int]) -> int:
         ),
         key=lambda folder: (folder.count("/"), folder),
     )
-    if not folders:
+    return folders[0] if folders else None
+
+
+def _ir_pair_bytes(sizes: Mapping[str, int]) -> int:
+    """Bytes of ``openvino_model.xml`` plus ``.bin`` in the shallowest folder that holds both."""
+    folder = _ir_pair_folder(sizes)
+    if folder is None:
         return 0
-    return sum(
-        sizes[posixpath.join(folders[0], _IR_MODEL_STEM + suffix)] for suffix in _IR_SUFFIXES
+    return sum(sizes[posixpath.join(folder, _IR_MODEL_STEM + suffix)] for suffix in _IR_SUFFIXES)
+
+
+def _ir_bin_is_cut_off(model_path: Path, sizes: Mapping[str, int]) -> bool:
+    """Whether the ``.bin`` of the IR pair is shorter than the weight offsets its ``.xml`` lists."""
+    folder = _ir_pair_folder(sizes)
+    if folder is None:
+        return False
+    try:
+        xml_text = (model_path / folder / (_IR_MODEL_STEM + ".xml")).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return False
+    declared = max(
+        (int(offset) + int(size) for offset, size in _IR_WEIGHT_SPAN.findall(xml_text)), default=0
     )
+    return sizes[posixpath.join(folder, _IR_MODEL_STEM + _IR_WEIGHTS_SUFFIX)] < declared
 
 
 def weights_from_files(sizes: Mapping[str, int]) -> int:
@@ -424,7 +447,10 @@ def _estimate_installed_chat(request: MemoryRequest) -> MemoryEstimate:
 
 
 def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
-    return _sized_estimate(weights_from_files(_installed_sizes(request.model_path)))
+    sizes = _installed_sizes(request.model_path)
+    if _ir_bin_is_cut_off(request.model_path, sizes):
+        return _unknown_estimate(None)
+    return _sized_estimate(weights_from_files(sizes))
 
 
 def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
@@ -432,7 +458,13 @@ def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
 
 
 def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
-    """The GGUF parser's footprint for one instance, with its engine and mtime caches."""
+    """The GGUF parser's footprint for one instance, with its engine and mtime caches.
+
+    A cut-off file, or a split set with a missing shard, has no known size; it is charged the
+    reserve, or the bytes on disk when those are larger.
+    """
+    if gguf_is_incomplete(request.model_path):
+        return _unknown_estimate(gguf_bytes_on_disk(request.model_path))
     parsed = estimate_instance_footprint(
         request.model_path,
         ctx=request.ctx,
