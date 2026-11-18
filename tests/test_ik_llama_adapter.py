@@ -27,7 +27,7 @@ from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.lemonade import LemonadeAdapter
 from lilbee.providers.fleet.engines.llama import LLAMA
-from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.host_caps import NO_NVIDIA_DRIVER, collect
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
@@ -514,23 +514,51 @@ def test_a_linux_host_with_a_turing_or_newer_card_and_the_driver_gets_the_cuda_b
     [
         pytest.param(
             _nvidia_host(cards=((7, 0),)),
-            "card0 has compute capability 7.0, and the CUDA build needs 7.5 or newer",
+            "The NVIDIA GPU card0 has compute capability 7.0, "
+            "and the CUDA build needs 7.5 or newer.",
             id="volta",
         ),
         pytest.param(
             _nvidia_host(cards=((6, 1),)),
-            "card0 has compute capability 6.1, and the CUDA build needs 7.5 or newer",
+            "The NVIDIA GPU card0 has compute capability 6.1, "
+            "and the CUDA build needs 7.5 or newer.",
             id="pascal",
         ),
         pytest.param(
+            _nvidia_host(cards=((6, 1), (7, 0))),
+            "The NVIDIA GPU card1 has compute capability 7.0, "
+            "and the CUDA build needs 7.5 or newer.",
+            id="best-of-two-old-cards",
+        ),
+        pytest.param(
             _nvidia_host(cuda=12030),
-            "driver offers CUDA 12.3, and the CUDA build needs CUDA 12.4",
+            "The NVIDIA driver offers CUDA 12.3, and the CUDA build needs CUDA 12.4. "
+            "Update the driver.",
             id="driver",
         ),
-        pytest.param(_nvidia_host(cards=()), "No NVIDIA GPU found", id="no-card"),
-        pytest.param(_nvidia_host("Linux", "aarch64"), "No CUDA build exists", id="linux-arm64"),
-        pytest.param(_nvidia_host("Windows", "AMD64"), "No CUDA build exists", id="windows"),
-        pytest.param(_nvidia_host("Darwin", "arm64"), "No CUDA build exists", id="macos"),
+        pytest.param(
+            _nvidia_host(cuda=None),
+            "The NVIDIA driver offers CUDA 0.0, and the CUDA build needs CUDA 12.4. "
+            "Update the driver.",
+            id="driver-unreadable",
+        ),
+        pytest.param(_nvidia_host(cards=()), "No NVIDIA GPU found.", id="no-card"),
+        pytest.param(
+            collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None),
+            NO_NVIDIA_DRIVER,
+            id="no-driver",
+        ),
+        pytest.param(
+            _nvidia_host("Linux", "aarch64"),
+            "No CUDA build exists for this host.",
+            id="linux-arm64",
+        ),
+        pytest.param(
+            _nvidia_host("Windows", "AMD64"), "No CUDA build exists for this host.", id="windows"
+        ),
+        pytest.param(
+            _nvidia_host("Darwin", "arm64"), "No CUDA build exists for this host.", id="macos"
+        ),
     ],
 )
 def test_a_host_the_cuda_build_cannot_serve_gets_the_cpu_build_with_the_reason(
@@ -538,7 +566,7 @@ def test_a_host_the_cuda_build_cannot_serve_gets_the_cpu_build_with_the_reason(
 ) -> None:
     pick = IK_LLAMA.pick_build(host)
     assert pick.backend == "cpu"
-    assert reason in pick.reason
+    assert pick.reason == reason
 
 
 def test_the_pin_of_a_cuda_host_names_the_cuda_cell_and_its_licences(
