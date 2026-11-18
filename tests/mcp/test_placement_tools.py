@@ -26,6 +26,24 @@ def test_get_placement_tool(monkeypatch):
     assert out["manual"] is False
 
 
+def test_get_placement_tool_reads_each_roles_charge(monkeypatch):
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
+        roles=(
+            RolePlacementView(
+                WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp", charge_bytes=7 * GIB
+            ),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1, "llama.cpp"),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+    monkeypatch.setattr(mcp_server, "get_placement", lambda: view)
+    out = mcp_server.get_placement_tool()
+    assert [r["charge_bytes"] for r in out["roles"]] == [7 * GIB, None]
+
+
 def test_get_gpus_tool(monkeypatch):
     """get_gpus exposes the detected GPUs to agents, matching HTTP /api/gpus."""
     monkeypatch.setattr(mcp_server, "get_planned_placement", lambda: _view())

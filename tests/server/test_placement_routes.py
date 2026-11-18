@@ -70,6 +70,7 @@ def test_the_charge_field_states_its_unit_and_meaning_in_the_schema():
 
     field = RolePlacementResponse.model_json_schema()["properties"]["charge_bytes"]
     assert "Bytes" in field["description"]
+    assert "card memory for a GPU role" in field["description"]
     assert "system memory for a CPU role" in field["description"]
     assert {"type": "null"} in field["anyOf"]
 
