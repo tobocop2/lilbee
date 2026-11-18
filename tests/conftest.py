@@ -300,14 +300,15 @@ def _restore_server_stop_flag():
 def _forget_engine_stop():
     """Clear every engine stop request after each test.
 
-    A stop runs once per process, so a leak turns a later test's exit teardown
-    into a no-op, and an owed status would end the worker at exit.
+    A stop runs once per process and refuses new containers, so a leak breaks
+    every later test that builds the services. A stop still running would set
+    its done event during the next test, so it fails this test instead.
     """
     from lilbee.app import services as services_mod
 
     yield
     if services_mod._lifecycle.stop_requested:
-        services_mod._lifecycle.wait_stopped(5.0)
+        assert services_mod._lifecycle.wait_stopped(5.0), "the test left an engine stop running"
     services_mod._lifecycle.reset()
 
 

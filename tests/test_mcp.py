@@ -1362,6 +1362,26 @@ class TestMain:
         assert seen == [handler]
         assert after is handler
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="The proactor loop sets its own wakeup fd")
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    def test_the_stdio_loop_wakes_for_a_signal_on_any_thread(self, mock_build):
+        """The idle loop holds the signal wakeup fd while it serves and gives it back after."""
+        before = signal.set_wakeup_fd(-1)
+        signal.set_wakeup_fd(before)
+        seen: list[int] = []
+
+        async def serve() -> None:
+            held = signal.set_wakeup_fd(-1)
+            signal.set_wakeup_fd(held)
+            seen.append(held)
+
+        mock_build.return_value.run_stdio_async = serve
+        main()
+
+        assert seen[0] not in (-1, before)
+        after = signal.set_wakeup_fd(before)
+        assert after == before
+
 
 _STOP_TIMEOUT_S = 60.0
 
@@ -3698,6 +3718,13 @@ class TestImportDataset:
 class TestMcpCommandExit:
     """A signal ends the server through SystemExit; the command finishes the exit."""
 
+    @pytest.fixture(autouse=True)
+    def _restore_sigint(self):
+        """The command routes Ctrl-C to the stop; later tests get the old handler back."""
+        previous = signal.getsignal(signal.SIGINT)
+        yield
+        signal.signal(signal.SIGINT, previous)
+
     def test_the_signal_status_goes_to_the_exit_after_teardown(self, tmp_path):
         from typer.testing import CliRunner
 
@@ -3712,22 +3739,18 @@ class TestMcpCommandExit:
         assert result.exit_code == 143
 
     def test_ctrl_c_reaches_the_stop_before_the_loop_starts(self, tmp_path):
-        """Ctrl-C takes the stop path, so the loop leaves it alone and a second press forces."""
+        """The Ctrl-C handler is the stop path's before the loop starts, so asyncio leaves it."""
         from typer.testing import CliRunner
 
         from lilbee.app import services as services_mod
         from lilbee.cli import app
 
         seen: list[object] = []
-        previous = signal.getsignal(signal.SIGINT)
-        try:
-            with mock.patch(
-                "lilbee.mcp_server.main",
-                side_effect=lambda: seen.append(signal.getsignal(signal.SIGINT)),
-            ):
-                CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
-        finally:
-            signal.signal(signal.SIGINT, previous)
+        with mock.patch(
+            "lilbee.mcp_server.main",
+            side_effect=lambda: seen.append(signal.getsignal(signal.SIGINT)),
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         assert seen == [services_mod._lifecycle._on_interrupt]
 
     def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
@@ -3741,6 +3764,35 @@ class TestMcpCommandExit:
         ):
             CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(1)
+
+    def test_a_clean_exit_stops_the_engine_before_it_returns(self, tmp_path):
+        """stdin closing runs the teardown in the command, where a signal can set the status."""
+        from typer.testing import CliRunner
+
+        from lilbee.app import services as services_mod
+        from lilbee.cli import app
+
+        container = MagicMock()
+        with mock.patch(
+            "lilbee.mcp_server.main", side_effect=lambda: services_mod.set_services(container)
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+
+        assert result.exit_code == 0
+        container.provider.shutdown.assert_called_once_with()
+        assert services_mod.peek_services() is None
+
+    def test_a_signal_during_the_clean_exit_stop_sets_the_status(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main"),
+            mock.patch("lilbee.cli.commands.servers.exit_status_after_stop", return_value=143),
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 143
 
 
 class TestPlacementGuardConfigLock:

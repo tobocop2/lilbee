@@ -16,7 +16,9 @@ from lilbee.app.services import (
     answer_provider_waiters,
     exit_after_signal,
     exit_if_opens_remain,
+    exit_status_after_stop,
     report_library_upgrade,
+    reset_services_on_exit,
     set_server_exit_hook,
     stop_on_interrupt,
     wait_for_hard_exit_teardown,
@@ -262,7 +264,7 @@ def serve(
         raise
     finally:
         _stop_server(status, server_lock, scope_hold)
-    raise typer.Exit(status)
+    raise typer.Exit(exit_status_after_stop(status))
 
 
 def _stop_server(status: int, server_lock: FileLock, scope_hold: ScopeHold | None) -> None:
@@ -294,3 +296,8 @@ def mcp_cmd(
     except SystemExit as exc:
         exit_after_signal(exc.code if isinstance(exc.code, int) else 1)
         raise
+    # The teardown runs here, not at atexit, so a signal that lands during it sets the status.
+    reset_services_on_exit()
+    status = exit_status_after_stop(0)
+    if status:
+        raise typer.Exit(status)

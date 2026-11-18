@@ -66,6 +66,7 @@ from lilbee.app.presets import (
 from lilbee.app.search import clean_results
 from lilbee.app.services import (
     get_services,
+    loop_wakes_on_signals,
     reset_services,
     reset_store,
     set_config_refresh,
@@ -2487,7 +2488,9 @@ def _exit_on_parent_death() -> None:
 
 async def _serve_stdio(server: LilbeeMCP) -> None:
     """Serve over stdio until stdin closes or a signal ends the process."""
-    await server.run_stdio_async()
+    # A signal can land on the stdin worker thread; the wakeup fd wakes the idle loop.
+    with loop_wakes_on_signals(asyncio.get_running_loop()):
+        await server.run_stdio_async()
 
 
 def main() -> None:
