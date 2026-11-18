@@ -1382,24 +1382,27 @@ class Store:
         return cast("int", chunks.schema.field("vector").type.list_size)
 
     def initialize_meta_if_legacy(self) -> bool:
-        """Pin a legacy store's identity to the current cfg if not already set.
+        """Pin a legacy store's identity to the cfg model and the stored chunks width.
 
         Returns ``True`` when a meta row was just written. No-op when meta already
         exists or no chunks are present. This is the path that converts a
         pre-upgrade store (chunks present, no ``_meta``) into a gated store. It
-        snapshots cfg under the write lock to keep the recorded identity coherent
-        with what the gate is comparing against.
+        reads the cfg model and the chunks width under the write lock, so a rebuild
+        cannot change either between the read and the stamp.
         """
         if self.get_meta() is not None:
             return False
         if not self._has_chunks():
             return False
-        embedding_model = self._config.embedding_model
-        embedding_dim = self._chunks_width()
         with self._write_lock():
             # Re-check under the lock so two callers do not both warn-and-write.
             if self.get_meta() is not None:
                 return False
+            # A rebuild that ran before the lock may have dropped the chunks.
+            if not self._has_chunks():
+                return False
+            embedding_model = self._config.embedding_model
+            embedding_dim = self._chunks_width()
             log.warning(
                 "Legacy store has chunks but no _meta row. Initializing _meta from the "
                 "current embedding_model and the width of the stored chunks "
