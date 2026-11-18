@@ -150,13 +150,16 @@ def _fit_to_budget(
     """Header-prefixed pieces of *content*, each within *budget* embedder tokens.
 
     Tree-sitter sizes by bytes, so a piece that counts over *budget* is halved at a line
-    boundary, or at the middle of a single long line, until each half fits.
+    boundary, or at the middle of a single long line, until each half fits. A symbol list that
+    takes more than half the budget is dropped, so the body keeps its room.
     """
     line_start, line_end = _line_span(start_line, content)
     header = _chunk_header(source_name, symbols, line_start, line_end)
     text = f"{header}\n\n{content}"
     if count_embed_tokens(text) <= budget:
         return [(text, line_start, line_end)]
+    if symbols and count_embed_tokens(header) > budget // 2:
+        return _fit_to_budget(source_name, [], start_line, content, budget)
     lines = content.splitlines(keepends=True)
     if len(lines) > 1:
         mid = len(lines) // 2
