@@ -197,13 +197,15 @@ EMPTY_LIBRARY = (
 )
 
 
-def ingest_failed_message(count: int, cause: str | None = None) -> str:
-    """The answer when *count* documents failed to ingest; a *cause* names an engine error."""
+def ingest_failed_message(held: int, cause: str | None = None, retried: int = 0) -> str:
+    """The answer when *held* documents failed and *retried* hit the engine error *cause*."""
+    count = held + retried
     noun = "document" if count == 1 else "documents"
     head = f"Nothing is indexed: {count} {noun} failed to ingest."
     if cause is None:
         return f"{head} Run `lilbee status` to see why, then ask again."
-    return f"{head} The error was: {cause.rstrip('.')}. Run `lilbee sync` to try again."
+    retry = f"{head} The error was: {cause}. Run `lilbee sync` to try again."
+    return f"{retry} Run `lilbee status` to see why the others failed." if held else retry
 
 
 # Ask/search needs an embedder to ground an answer. When none is loaded, refuse
@@ -1615,8 +1617,9 @@ class Searcher:
         failed = sorted(name for name, record in held.items() if record.kind in INGEST_FAILURES)
         if not failed:
             return EMPTY_LIBRARY
-        retried = (held[name].reason for name in failed if held[name].kind is HeldOut.RETRY)
-        return ingest_failed_message(len(failed), next(retried, None))
+        causes = [held[name].reason for name in failed if held[name].kind is HeldOut.RETRY]
+        first_cause = next(iter(causes), None)
+        return ingest_failed_message(len(failed) - len(causes), first_cause, len(causes))
 
     def ask_raw(
         self,

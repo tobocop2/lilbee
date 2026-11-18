@@ -1193,12 +1193,12 @@ class TestSync:
         added: dict[str, None] = {"a.txt": None}
         updated: dict[str, None] = {}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         pipeline._flush_writes(buffer, added, updated, failed, {}, retry_next)
 
         assert added == {}
         assert list(failed) == ["a.txt"]
-        assert retry_next == {"a.txt"}
+        assert retry_next == {"a.txt": "the write to the index failed"}
         assert buffer == []
 
     def test_flush_failure_drops_page_text_only_file_from_skipped(self, _mock_extract_file):
@@ -1250,14 +1250,14 @@ class TestSync:
 
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         pipeline._flush_writes([result], added, {}, failed, {}, retry_next)
 
         assert store.write_chunks_batch.call_count == 2
         assert sleeps == [pipeline._FLUSH_RETRY_DELAY_SECONDS]
         assert list(added) == ["a.txt"]
         assert failed == {}
-        assert retry_next == set()
+        assert retry_next == {}
 
     def test_flush_writes_lock_timeout_twice_marks_retry_next(
         self, _mock_extract_file, monkeypatch
@@ -1283,11 +1283,11 @@ class TestSync:
 
         added: dict[str, None] = {"a.txt": None}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         pipeline._flush_writes([result], added, {}, failed, {}, retry_next)
 
         assert list(failed) == ["a.txt"]
-        assert retry_next == {"a.txt"}
+        assert retry_next == {"a.txt": "the write to the index failed"}
 
     async def test_flush_failure_does_not_hold_the_file_out(self, _mock_extract_file, isolated_env):
         # End-to-end: a hard flush failure records the file as failed but writes
@@ -1337,7 +1337,7 @@ class TestSync:
         store = _install_real_store()
         old_stat = SourceStat(11, 22, 33)
         first = _real_ingest_result("a.pdf", file_hash="h1", stat=old_stat)
-        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, {}, set())
+        pipeline._flush_writes([first], {"a.pdf": None}, {}, {}, {}, {})
 
         real_ensure = core_mod.ensure_table
 
@@ -1351,13 +1351,13 @@ class TestSync:
         )
         added: dict[str, None] = {"a.pdf": None}
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         with mock.patch.object(core_mod, "ensure_table", _failing_ensure):
             pipeline._flush_writes([replanned], added, {}, failed, {}, retry_next)
 
         assert added == {}
         assert list(failed) == ["a.pdf"]
-        assert retry_next == {"a.pdf"}
+        assert retry_next == {"a.pdf": "the write to the index failed"}
         record = {s["filename"]: s for s in store.get_sources()}["a.pdf"]
         assert record["file_hash"] == "h1"
         assert source_stat(record) == old_stat
@@ -2333,6 +2333,101 @@ class TestAnswerAfterEveryIngestFailed:
         assert sorted(result.added) == sorted(self._NAMES)
         assert held_kinds() == {}
 
+    @staticmethod
+    async def _sync_with_the_engine_down():
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ProviderError
+
+        failure = ProviderError(ENGINE_ERROR)
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=failure):
+            return await sync(quiet=True)
+
+    async def test_a_moved_file_that_fails_again_is_counted_once(self):
+        """The retry follows the file to its new folder; the old path keeps no record."""
+        await fail_every_ingest(self._NAMES)
+        (cfg.documents_dir / "moved").mkdir()
+        (cfg.documents_dir / "bees.txt").rename(cfg.documents_dir / "moved" / "bees.txt")
+        await self._sync_with_the_engine_down()
+
+        moved = ["ants.txt", "moved/bees.txt", "wasps.txt"]
+        assert held_kinds() == dict.fromkeys(moved, HeldOut.RETRY)
+        assert self._answer() == FAILED_ANSWER
+
+    async def test_a_moved_file_leaves_no_record_once_the_engine_is_back(self):
+        from lilbee.data.ingest import sync
+
+        await fail_every_ingest(self._NAMES)
+        (cfg.documents_dir / "moved").mkdir()
+        (cfg.documents_dir / "bees.txt").rename(cfg.documents_dir / "moved" / "bees.txt")
+        result = await sync(quiet=True)
+
+        assert sorted(result.added) == ["ants.txt", "moved/bees.txt", "wasps.txt"]
+        assert held_kinds() == {}
+
+    async def test_a_deleted_file_is_no_longer_counted(self):
+        await fail_every_ingest(self._NAMES)
+        (cfg.documents_dir / "wasps.txt").unlink()
+        await self._sync_with_the_engine_down()
+
+        assert held_kinds() == dict.fromkeys(["ants.txt", "bees.txt"], HeldOut.RETRY)
+        assert self._answer() == FAILED_ANSWER.replace("3 documents", "2 documents")
+
+    async def test_deleting_every_failed_file_leaves_an_empty_library(self):
+        from lilbee.data.ingest import sync
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        await fail_every_ingest(self._NAMES)
+        for name in self._NAMES:
+            (cfg.documents_dir / name).unlink()
+        await sync(quiet=True)
+
+        assert held_kinds() == {}
+        assert self._answer() == EMPTY_LIBRARY
+
+    async def test_a_worker_keeps_the_retries_of_the_other_slice(self):
+        """A worker of two releases only its own slice's retries; the sibling's survive."""
+        from lilbee.data.types import ShardId
+
+        from lilbee.data.store import Store
+
+        shard = ShardId(index=0, count=2, corpus_root=cfg.data_root)
+        names = [f"file{number}.txt" for number in range(32)]
+        mine, stale = [name for name in names if shard.owns(name)][:2]
+        sibling = next(name for name in names if not shard.owns(name))
+        retry = HeldRecord(HeldOut.RETRY, "h", "the engine is down")
+        Store(cfg).hold_failed({sibling: retry, stale: retry})
+        result = await fail_every_ingest([mine], shard=shard)
+
+        assert result.failed == [mine]
+        assert held_kinds() == {mine: HeldOut.RETRY, sibling: HeldOut.RETRY}
+
+    def test_a_busy_lock_on_the_release_is_logged_as_a_release(self, monkeypatch, caplog):
+        import logging
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.runtime.lock import LockTimeoutError
+
+        monkeypatch.setattr(pipeline.time, "sleep", lambda _s: None)
+        store = mock.MagicMock()
+        store.release_retries.side_effect = LockTimeoutError("busy")
+        with caplog.at_level(logging.ERROR, logger="lilbee.data.ingest.pipeline"):
+            pipeline._persist_failures(store, {"a.txt": "h"}, {}, [], {"a.txt": "down"}, None)
+
+        store.hold_failed.assert_called_once()
+        assert "Could not release the retry records this sync did not renew" in caplog.text
+        assert "Could not hold" not in caplog.text
+
+    def test_a_failed_page_text_write_names_the_write(self):
+        """A page-text-only file whose write failed keeps the write as its cause."""
+        from lilbee.data.ingest import pipeline
+
+        store = _install_real_store()
+        reasons = {"scan.pdf": "stored page text only (0 searchable chunks)"}
+        retry = {"scan.pdf": "the write to the index failed"}
+        pipeline._persist_failures(store, {"scan.pdf": "h1"}, reasons, [], retry, None)
+
+        assert held_reasons() == {"scan.pdf": "the write to the index failed"}
+
     async def test_removing_the_failed_files_leaves_an_empty_library(self):
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
@@ -2438,7 +2533,13 @@ class TestAnswerAfterEveryIngestFailed:
             pytest.param(
                 "ProviderError: ", "the model engine failed without a message", id="empty-message"
             ),
-            pytest.param(None, "the write to the index failed", id="write-failed"),
+            pytest.param("the engine is down.", "the engine is down", id="no-doubled-period"),
+            pytest.param(
+                "ProviderError: .\n\nthe engine stopped", "the engine stopped", id="text-later"
+            ),
+            pytest.param(
+                "ProviderError: ...", "the model engine failed without a message", id="dots-only"
+            ),
         ],
     )
     def test_the_kept_cause_is_plain_one_line_and_bounded(self, reason, kept):
@@ -4137,7 +4238,7 @@ class TestCancelDuringThresholdFlush:
         monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", flush_at)
         monkeypatch.setattr(pipeline, "_flush_batch", _disk_full)
         failed: dict[str, None] = {}
-        retry_next: set[str] = set()
+        retry_next: dict[str, str] = {}
         collect = pipeline._collect_results(
             _feed([_done()]), {}, {}, failed, {}, window=1, retry_next=retry_next, cancel=cancel
         )
@@ -4149,7 +4250,7 @@ class TestCancelDuringThresholdFlush:
             else:
                 await collect  # a failed write with no cancel is tracked, and the sync goes on
         assert failed == {"a.txt": None}
-        assert retry_next == {"a.txt"}
+        assert retry_next == {"a.txt": "the write to the index failed"}
         # The tracked failure is logged once, where it was tracked.
         assert [r.getMessage() for r in caplog.records] == ["Failed to write a.txt: disk full"]
 

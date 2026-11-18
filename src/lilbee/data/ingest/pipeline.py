@@ -1060,15 +1060,13 @@ async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bo
     return active_config().data_root
 
 
-def _retry_reason(reason: str | None) -> str:
-    """The cause a retried file keeps: one line, no exception type, of bounded length."""
-    if reason is None:
-        return _NOT_WRITTEN
-    line = reason.partition("\n")[0]
-    kind, separator, message = line.partition(": ")
+def _retry_reason(reason: str) -> str:
+    """The cause a retried file keeps: its first line of text, no exception type, bounded."""
+    kind, separator, message = reason.partition(": ")
     if separator and kind.isidentifier():
-        line = message
-    return line.strip()[:_RETRY_REASON_LIMIT] or _ENGINE_SILENT
+        reason = message
+    line = next((text.strip() for text in reason.splitlines() if text.strip(" .")), "")
+    return line.rstrip(".")[:_RETRY_REASON_LIMIT] or _ENGINE_SILENT
 
 
 def _persist_failures(
@@ -1076,13 +1074,16 @@ def _persist_failures(
     pending_hashes: dict[str, str],
     reasons: dict[str, str],
     failed: Iterable[str],
-    retry: Iterable[str],
+    retry: Mapping[str, str],
+    owns: Callable[[str], bool] | None,
 ) -> None:
     """Hold each of *failed* out of later syncs, and mark each of *retry* to try again.
 
     Each record is at the hash this sync planned the file at. A file that ingests
-    cleanly needs no step: its new source row records nothing. A write that cannot
-    take the lock is logged, and those files are tried again next sync.
+    cleanly needs no step: its new source row records nothing. Every other retry
+    record of the paths *owns* takes is released, so no record outlives a moved or
+    deleted file. A write that cannot take the lock is logged, and those files are
+    tried again next sync.
     """
     held = {
         name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
@@ -1090,14 +1091,18 @@ def _persist_failures(
         if (fhash := pending_hashes.get(name))
     }
     held |= {
-        name: HeldRecord(HeldOut.RETRY, fhash, _retry_reason(reasons.get(name)))
-        for name in retry
+        name: HeldRecord(HeldOut.RETRY, fhash, _retry_reason(cause))
+        for name, cause in retry.items()
         if (fhash := pending_hashes.get(name))
     }
     try:
         _retry_after_lock_timeout(lambda: store.hold_failed(held))
     except LockTimeoutError as error:
         log.error("Could not hold %d failed file(s) out of the next sync: %s", len(held), error)
+    try:
+        _retry_after_lock_timeout(lambda: store.release_retries(retry.keys(), owns))
+    except LockTimeoutError as error:
+        log.error("Could not release the retry records this sync did not renew: %s", error)
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1617,7 +1622,8 @@ async def sync(
     skipped: dict[str, OcrReport | None] = dict.fromkeys(scan.excluded)
     # filename → why it was skipped/failed (for reporting)
     reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
-    retry_next: set[str] = set()
+    # filename → the cause of the engine or write failure the next sync retries
+    retry_next: dict[str, str] = {}
     _log_excluded(scan.excluded)
 
     # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
@@ -1688,7 +1694,10 @@ async def sync(
 
     # A flush or engine failure is not a verdict on the file: it is planned again next sync.
     held = [name for name in (*failed, *skipped) if name not in retry_next]
-    await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held, retry_next)
+    owns = shard.owns if shard is not None else None
+    await to_ingest_thread(
+        _persist_failures, _store, pending_hashes, reasons, held, retry_next, owns
+    )
 
     vanished = (
         await to_ingest_thread(_finish_in_place_rebuild, _store, rules, bool(failed))
@@ -1947,7 +1956,7 @@ async def ingest_stream(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
 ) -> None:
     """Ingest a stream of planned file batches, optionally showing a Rich progress bar.
@@ -2212,7 +2221,7 @@ async def _collect_results(
     on_progress: DetailedProgressCallback = noop_callback,
     progress: Progress | None = None,
     ptask: Any = None,
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
     cancel: CancelSignal | None = None,
 ) -> None:
@@ -2257,7 +2266,7 @@ async def _collect_results(
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
                 if retry_next is not None and isinstance(result.error, ProviderError):
                     # The model engine failed, not the file: a later sync tries it again.
-                    retry_next.add(result.name)
+                    retry_next[result.name] = error_reason(result.error)
                 if status is BatchStatus.INGESTED:
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result,
@@ -2324,7 +2333,7 @@ async def _buffer_and_maybe_flush(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None,
+    retry_next: dict[str, str] | None,
     cancel: CancelSignal | None = None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
@@ -2343,7 +2352,7 @@ async def _flush_to_end(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None,
+    retry_next: dict[str, str] | None,
     cancel: CancelSignal | None = None,
 ) -> None:
     """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
@@ -2614,16 +2623,16 @@ def _flush_writes(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
 ) -> Exception | None:
     """Flush the buffered documents to the store; track and return a write failure.
 
     Each buffered file's page texts, chunks, cleanup delete, and source upsert
     are written by :func:`_flush_batch`. If that fails, every file in the batch
     is moved to ``failed`` since its source row did not land, and recorded in
-    *retry_next* so the caller replans them next sync instead of holding out
-    them; the exception never escapes, so the caller's sibling-cancel and
-    held-out path always runs. The buffer is cleared either way.
+    *retry_next* with the write as its cause, so the caller replans them next
+    sync instead of holding them out; the exception never escapes, so the
+    caller's sibling-cancel and held-out path always runs. The buffer is cleared either way.
     """
     if not buffer:
         return None
@@ -2639,7 +2648,7 @@ def _flush_writes(
             skipped.pop(r.name, None)
             failed[r.name] = None
             if retry_next is not None:
-                retry_next.add(r.name)
+                retry_next[r.name] = _NOT_WRITTEN
         return exc
     finally:
         buffer.clear()

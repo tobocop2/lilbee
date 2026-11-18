@@ -1553,7 +1553,7 @@ class TestAskRaw:
         [
             pytest.param(
                 {
-                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down."),
+                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down"),
                     "a.txt": HeldRecord(HeldOut.RETRY, "h", "the engine timed out"),
                 },
                 "Nothing is indexed: 2 documents failed to ingest. "
@@ -1563,17 +1563,18 @@ class TestAskRaw:
             pytest.param(
                 {
                     "a.md": HeldRecord(HeldOut.FAILED, "h", "dimension mismatch"),
-                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down."),
+                    "b.txt": HeldRecord(HeldOut.RETRY, "h", "the engine is down"),
                     "gone.md": HeldRecord(HeldOut.REMOVED, "h", "removed"),
                 },
                 "Nothing is indexed: 2 documents failed to ingest. "
-                "The error was: the engine is down. Run `lilbee sync` to try again.",
-                id="counted-with-the-held-failures",
+                "The error was: the engine is down. Run `lilbee sync` to try again. "
+                "Run `lilbee status` to see why the others failed.",
+                id="counted-with-the-held-failures-and-pointing-at-status",
             ),
         ],
     )
     def test_retried_files_are_counted_and_their_cause_named(self, mock_svc, held, answer):
-        """A retry adds its file to the count and names its cause; its period is not doubled."""
+        """A retry adds its file to the count and names its cause; a held failure keeps status."""
         mock_svc.store.has_chunks.return_value = False
         mock_svc.store.held_records.return_value = held
         assert get_services().searcher.pre_retrieval_answer("what do bees eat?") == answer

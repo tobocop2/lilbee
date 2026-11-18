@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
@@ -3591,6 +3591,33 @@ class Store:
                 batch = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
                 self._release_unlocked(f"{_PATH} IN ({batch})")
         self._invalidate_source_cache()
+
+    def release_retries(
+        self, keep: Collection[str], owns: Callable[[str], bool] | None = None
+    ) -> list[str]:
+        """Release each retry record but those of *keep*, of the paths *owns* takes; sorted paths.
+
+        A sync's retry records are then the files it could not finish: a moved or
+        deleted file loses its record. With no *owns*, every path is taken.
+        """
+        released: list[str] = []
+        with self._write_lock():
+            table = self.open_table(SOURCES_TABLE)
+            if table is None:
+                return []
+            name = self._locations().name
+            query = table.search().where(f"{_HELD_OUT} = '{HeldOut.RETRY}'")
+            rows = query.select([_SOURCE_ID, _PATH]).limit(None).to_list()
+            stale = sorted(
+                row[_SOURCE_ID]
+                for row in rows
+                if (path := name(row[_PATH])) not in keep and (owns is None or owns(path))
+            )
+            for start in range(0, len(stale), _SOURCE_STAT_BATCH_ROWS):
+                batch = _in_list(stale[start : start + _SOURCE_STAT_BATCH_ROWS])
+                released += self._release_unlocked(f"{_SOURCE_ID} IN ({batch})")
+        self._invalidate_source_cache()
+        return sorted(released)
 
     def release_failed(self) -> list[str]:
         """Hold no failed file out of a sync any more; returns their paths, sorted."""

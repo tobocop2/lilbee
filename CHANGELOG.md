@@ -12,6 +12,8 @@ No pack exists yet for AMD (ROCm), Vulkan, Linux on ARM, Windows on ARM, or Inte
 
 On a computer with an AMD or Intel GPU, lilbee installs the CPU pack and logs a warning that names the GPU vendor. For a GPU build, use a bundled build or your own `llama-server`.
 
+When every file fails to ingest because the model engine failed, `lilbee ask` now says that nothing is indexed and names the engine error, not "Your library is empty". The library records each such file with a new held state, `retry`, and the next sync tries the file again. An older lilbee cannot read a library that holds a `retry` record. To go back to an older lilbee, run `lilbee sync` with a working engine first, or run `lilbee reset`.
+
 ## 0.6.66b481
 
 You can now keep the HTTP server running in the background under your OS launcher: `brew services start lilbee` on macOS, `systemctl --user enable --now lilbee` on Arch, or import `nixosModules.lilbee` on NixOS. All three pin the server to `127.0.0.1:42697`. The daemon helps clients that hit the HTTP REST API (the Obsidian plugin, custom GUIs, scripts). The TUI, `lilbee chat`, the MCP server, and the rest of the CLI cold-start by design and are unaffected.

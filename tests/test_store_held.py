@@ -154,6 +154,19 @@ class TestRetryRecords:
         assert store.release_failed() == ["a.pdf"]
         assert store.held_records() == {"b.pdf": self._RETRY}
 
+    def test_release_retries_keeps_only_the_named_retries(self, store):
+        _index(store, "edit.md", file_hash="old")
+        records = {"keep.pdf": self._RETRY, "gone.pdf": self._RETRY, "edit.md": self._RETRY}
+        store.hold_failed({**records, "bad.pdf": _failed("h1")})
+        assert store.release_retries(["keep.pdf"]) == ["edit.md", "gone.pdf"]
+        assert store.held_records() == {"keep.pdf": self._RETRY, "bad.pdf": _failed("h1")}
+        assert _listed(store) == ["edit.md"]
+
+    def test_release_retries_touches_only_the_paths_a_slice_owns(self, store):
+        store.hold_failed({"a.pdf": self._RETRY, "b.pdf": self._RETRY})
+        assert store.release_retries([], owns=lambda path: path == "a.pdf") == ["a.pdf"]
+        assert store.held_records() == {"b.pdf": self._RETRY}
+
 
 class TestRemoveWithRecords:
     def test_a_removal_drops_the_chunks_and_holds_the_path(self, store):
