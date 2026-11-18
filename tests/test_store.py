@@ -3727,6 +3727,54 @@ class TestEmbeddingModelGate:
         with mock.patch.object(store, "get_meta", side_effect=repeat_last(None, winning_meta)):
             assert store.initialize_meta_if_legacy() is False
 
+    def _legacy_store_with_writer_before_lock(self, store, rebuild):
+        """Make a legacy store whose first lock request runs *rebuild* just before it grants."""
+        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
+
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        real_lock = store._write_lock
+        fired = []
+
+        def lock_after_writer(*args, **kwargs):
+            if not fired:
+                fired.append(True)
+                rebuild()
+            return real_lock(*args, **kwargs)
+
+        return mock.patch.object(store, "_write_lock", side_effect=lock_after_writer)
+
+    def test_legacy_stamp_reads_width_a_writer_set_before_the_lock(self, store, test_config):
+        """A rebuild at a new width between the has-chunks check and the lock is stamped as is."""
+        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
+        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
+
+        old_dim = test_config.embedding_dim
+        new_dim = old_dim + 16
+
+        def rebuild():
+            store.drop_all()
+            test_config.embedding_dim = new_dim
+            store.add_chunks(_make_records(dim=new_dim))
+            meta_table = store.open_table(META_TABLE)
+            assert meta_table is not None
+            _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+
+        with self._legacy_store_with_writer_before_lock(store, rebuild):
+            assert store.initialize_meta_if_legacy() is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_dim"] == new_dim
+
+    def test_legacy_stamp_writes_nothing_when_a_writer_dropped_the_chunks(self, store):
+        """A rebuild that drops the chunks between the check and the lock leaves no stamp."""
+        with self._legacy_store_with_writer_before_lock(store, store.drop_all):
+            assert store.initialize_meta_if_legacy() is False
+        assert store.get_meta() is None
+
 
 class TestSourceStatColumns:
     """Size/mtime travel with each source row; legacy tables migrate in place."""
