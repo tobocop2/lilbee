@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import ProfileScope
+from lilbee.core.config.model import ignore_not_settings
 from lilbee.core.config.resolve import PROFILE_FIELDS, builtin_value
 from lilbee.core.security import write_text_atomically
 from lilbee.core.system import canonical_data_root, default_data_dir
@@ -277,12 +278,19 @@ def _evidence_problems(values: Mapping[str, Any], evidence: str | None) -> list[
 
 
 def _value_problems(
-    raw: Mapping[str, Any], min_lilbee: str | None, folder: ProfileFolder, evidence: str | None
+    raw: Mapping[str, Any],
+    min_lilbee: str | None,
+    folder: ProfileFolder,
+    evidence: str | None,
+    label: str,
 ) -> list[str]:
     problems: list[str] = []
     normalized: dict[str, Any] = {}
     trial = cfg.model_copy()
+    ignored = ignore_not_settings(label, raw)
     for key, value in raw.items():
+        if key in ignored:
+            continue
         try:
             normalized[key] = _normalized(trial, key, value, min_lilbee)
         except ProfileFileError as exc:
@@ -332,7 +340,7 @@ def profile_problems(data: Mapping[str, Any], stem: str, folder: ProfileFolder) 
         evidence = meta.get("evidence")
         # untyped TOML: a non-text evidence is already a problem and counts as none
         evidence = evidence if isinstance(evidence, str) else None
-        problems += _value_problems(raw, min_lilbee, folder, evidence)
+        problems += _value_problems(raw, min_lilbee, folder, evidence, f"{stem}{PROFILE_SUFFIX}")
     return list(dict.fromkeys(problems))
 
 
@@ -350,7 +358,8 @@ def parse_profile(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> 
         format=PROFILE_FORMAT,
         min_lilbee=meta.get("min_lilbee"),
         evidence=meta.get("evidence"),
-        values=dict(data[VALUES_TABLE]),
+        # A key that is not a setting passed the checks with a warning and is left out.
+        values={k: v for k, v in data[VALUES_TABLE].items() if k in Config.model_fields},
     )
 
 
