@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -122,6 +122,7 @@ SERVICE_ONLY_FIELDS = frozenset({"server_presets", "preferred_engine", "engine_c
 _NOT_SETTINGS: dict[str, str] = {
     # llama-server reads it only under split mode none, which no fleet launch uses.
     "main_gpu": "choose the cards with gpu_devices or placement",
+    "token_sizing": "chunk_size always counts the embedding model's tokens",
 }
 
 # A field no environment string parses into, by name, and what to use instead.
@@ -1700,6 +1701,14 @@ def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
 def _not_a_setting(name: str, key: str) -> str:
     """The warning for *name*, which sets *key* although *key* is not a setting."""
     return f"{name} is not a setting and is ignored; {(_NOT_SETTINGS | _NOT_FROM_ENV)[key]}"
+
+
+def ignore_not_settings(label: str, keys: Iterable[str]) -> set[str]:
+    """The keys in *keys* that are not settings, each reported under *label* as ignored."""
+    found = _NOT_SETTINGS.keys() & set(keys)
+    for key in sorted(found):
+        warn_on_load(f"{label}: {_not_a_setting(key, key)}")
+    return found
 
 
 def _expected(error: ErrorDetails) -> str:

@@ -760,12 +760,24 @@ class TestOcrFromConfigToml:
         assert (loaded.ocr, loaded.top_k) == (OcrMode.AUTO, 7)
         assert caplog.records == []
 
-    def test_a_removed_token_sizing_key_takes_the_unknown_key_path(self, tmp_path, caplog):
+    def test_a_removed_token_sizing_key_is_ignored_with_a_warning(self, tmp_path, caplog):
         with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
             loaded = self._load(tmp_path, "token_sizing = true\ntop_k = 7\n")
         assert loaded.top_k == 7
         assert not hasattr(loaded, "token_sizing")
-        assert caplog.records == []
+        assert [r.getMessage() for r in caplog.records] == [
+            "config.toml: token_sizing is not a setting and is ignored; "
+            "chunk_size always counts the embedding model's tokens"
+        ]
+
+    def test_a_removed_token_sizing_variable_is_ignored_with_a_warning(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            loaded = self._load(tmp_path, "top_k = 7\n", LILBEE_TOKEN_SIZING="true")
+        assert loaded.top_k == 7
+        assert [r.getMessage() for r in caplog.records] == [
+            "LILBEE_TOKEN_SIZING is not a setting and is ignored; "
+            "chunk_size always counts the embedding model's tokens"
+        ]
 
 
 class TestFlashAttentionConfig:
