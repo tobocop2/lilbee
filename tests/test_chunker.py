@@ -790,6 +790,85 @@ class Greeter:
         body_lines = [ln for c in chunks for ln in c.chunk.split("\n\n", 1)[1].splitlines()]
         assert body_lines == body.splitlines()
 
+    def _bodies(self, chunks):
+        return [c.chunk.split("\n\n", 1)[1] for c in chunks]
+
+    def test_a_chunk_that_exactly_fills_the_budget_is_not_split(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        body = " ".join(["w"] * 59)
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=1)])
+
+        assert len(self._chunk_with_parser_result(result)) == 1
+
+    def test_a_header_of_exactly_half_the_budget_keeps_its_symbols(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        body = "w\n" * 40
+        symbols = [f"s{i}" for i in range(26)]
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=40, symbols=symbols)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) == 2
+        assert all(c.chunk.startswith("# File: pkg/mod.py | s0, s1, ") for c in chunks)
+
+    def test_two_lines_over_the_budget_split_at_the_line_boundary(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        line = " ".join(["w"] * 30) + "\n"
+        result = _FakeResult([_FakeTSChunk(line * 2, start_line=0, end_line=2)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert self._bodies(chunks) == [line, line]
+
+    def test_four_lines_over_the_budget_split_in_the_middle(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = lambda text: len(text.split())
+        line = " ".join(["w"] * 15) + "\n"
+        result = _FakeResult([_FakeTSChunk(line * 4, start_line=0, end_line=4)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert self._bodies(chunks) == [line * 2, line * 2]
+
+    def test_two_characters_over_the_budget_split_into_single_characters(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = len
+        name = "n" * (64 - 3 - len("# File:  (lines 1-1)"))
+        result = _FakeResult([_FakeTSChunk("ab", start_line=0, end_line=1)])
+
+        chunks = self._chunk_with_parser_result(result, source_name=name)
+
+        assert self._bodies(chunks) == ["a", "b"]
+
+    def test_one_long_line_splits_at_its_middle(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = len
+        name = "n" * (64 - 5 - len("# File:  (lines 1-1)"))
+        result = _FakeResult([_FakeTSChunk("abcdef", start_line=0, end_line=1)])
+
+        chunks = self._chunk_with_parser_result(result, source_name=name)
+
+        assert self._bodies(chunks) == ["abc", "def"]
+
     def test_a_symbol_list_within_half_the_budget_stays_in_the_header(
         self, monkeypatch, mock_services
     ):
