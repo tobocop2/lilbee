@@ -478,6 +478,22 @@ def _write_web(name: str, text: str) -> Path:
     return path
 
 
+def _crawler_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The warning and error records that the crawler package logged."""
+    return [
+        r
+        for r in caplog.records
+        if r.name.startswith("lilbee.crawler") and r.levelno >= logging.WARNING
+    ]
+
+
+def _log_unheld_role_warning() -> None:
+    """Log the role-check warning that a startup check in an earlier test leaves behind."""
+    logging.getLogger("lilbee.modelhub.role_validator").warning(
+        "chat_model is set to 'x', which the model registry does not hold."
+    )
+
+
 def _legacy_meta_file() -> Path:
     """The crawl metadata file an older lilbee kept."""
     return cfg.data_dir / "crawl_meta.json"
@@ -3251,7 +3267,8 @@ class TestSavePage:
     ):
         host = _write_web("example.com", "a user's file")
         record = crawl_record()
-        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+        with caplog.at_level("WARNING"):
+            _log_unheld_role_warning()
             saved = [
                 save_page(
                     CrawlResult(url=f"https://example.com/{p}", markdown=f"# {p}"),
@@ -3261,7 +3278,7 @@ class TestSavePage:
                 for p in ("a", "b")
             ]
         assert saved == [None, None]
-        warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        warned = [r.getMessage() for r in _crawler_warnings(caplog)]
         assert len(warned) == 1
         assert str(host) in warned[0]
         assert "move or delete it" in warned[0]
@@ -4035,6 +4052,7 @@ class TestStreamingFlush:
         _write_web("example.com", "a user's file")
 
         async def _gen():
+            _log_unheld_role_warning()
             for path in ("a", "b", "c"):
                 yield cb.page(f"https://example.com/{path}", f"# {path}")
 
@@ -4042,7 +4060,7 @@ class TestStreamingFlush:
         with stub.installed(), caplog.at_level("WARNING"):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
         assert paths == []
-        warned = [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+        warned = _crawler_warnings(caplog)
         assert [r.exc_info for r in warned] == [None]
         assert "example.com" in warned[0].getMessage()
         assert recorded() == {}
