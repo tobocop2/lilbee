@@ -2264,7 +2264,11 @@ async def _collect_results(
                     continue
                 completed_count += 1
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
-                if retry_next is not None and isinstance(result.error, ProviderError):
+                if (
+                    retry_next is not None
+                    and isinstance(result.error, ProviderError)
+                    and not result.error.repeats_on_retry
+                ):
                     # The model engine failed, not the file: a later sync tries it again.
                     retry_next[result.name] = error_reason(result.error)
                 if status is BatchStatus.INGESTED:

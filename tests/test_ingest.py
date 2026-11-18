@@ -2188,16 +2188,21 @@ class TestHeldOutRecordLifecycle:
         [
             pytest.param("engine", HeldOut.RETRY, True, id="engine-failure"),
             pytest.param("file", HeldOut.FAILED, False, id="file-failure"),
+            pytest.param("overflow", HeldOut.FAILED, False, id="context-overflow"),
         ],
     )
     async def test_an_engine_failure_is_not_held_out_and_ingests_next_sync(
         self, isolated_env, mock_svc, error, kind, retried
     ):
-        """A ProviderError is the model engine failing, so the file is planned again next sync."""
+        """A transient ProviderError plans the file again; an overflow or file error holds it."""
         from lilbee.data.ingest import sync
-        from lilbee.providers.base import ProviderError
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-        raised = ProviderError("engine crashed") if error == "engine" else ValueError("bad file")
+        raised: Exception = {
+            "engine": ProviderError("engine crashed"),
+            "overflow": ProviderError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+            "file": ValueError("bad file"),
+        }[error]
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
         with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=raised):
             first = await sync(quiet=True)

@@ -197,6 +197,11 @@ class ProviderError(Exception):
         self.kind = kind
         super().__init__(message)
 
+    @property
+    def repeats_on_retry(self) -> bool:
+        """Whether the same input fails the same way again, so a retry cannot help."""
+        return self.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
 
 # The 400 message of a server that refuses a prompt longer than its window.
 _PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
