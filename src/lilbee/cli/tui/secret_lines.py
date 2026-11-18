@@ -47,9 +47,7 @@ def carries_secret(text: str) -> bool:
     and a /set, /crawl or /add line with a URL that holds a password all count.
     """
     words = text.split()
-    if not words:
-        return False
-    command = words[0].lower()
+    command = words[0].lower() if words else ""
     if is_preset_line(text):
         return True
     if command == _LOGIN:
