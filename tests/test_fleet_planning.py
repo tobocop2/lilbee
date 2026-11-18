@@ -1779,6 +1779,43 @@ class TestBuildFleetWiring:
         launch = self._launch_for_role(tmp_path, monkeypatch, WorkerRole.CHAT)
         assert launch.trained_ctx == 0
 
+    def test_launch_for_chat_with_an_unreadable_header_window_records_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.CHAT, meta={"context_length": "junk"}
+        )
+        assert launch.trained_ctx == 0
+
+    @pytest.mark.parametrize(
+        ("meta", "expected"),
+        [
+            ({"context_length": "4096"}, 4096),
+            ({"context_length": "1"}, 1),
+            ({"context_length": "0"}, None),
+            ({"context_length": "junk"}, None),
+            ({}, None),
+            (None, None),
+        ],
+    )
+    def test_trained_chat_window_reads_the_header_value(self, meta, expected) -> None:
+        assert planning_mod._trained_chat_window(Path("m.gguf"), meta) == expected
+
+    @pytest.mark.parametrize(
+        ("num_ctx_max", "meta", "expected"),
+        [
+            (None, {"context_length": "junk"}, None),
+            (None, {"context_length": "1"}, 1),
+            (2048, {"context_length": "4096"}, 2048),
+            (8192, {"context_length": "4096"}, 4096),
+        ],
+    )
+    def test_known_chat_ceiling_is_the_smaller_positive_limit(
+        self, monkeypatch, num_ctx_max, meta, expected
+    ) -> None:
+        monkeypatch.setattr(cfg, "num_ctx_max", num_ctx_max)
+        assert planning_mod._known_chat_ceiling(Path("m.gguf"), meta) == expected
+
     def test_launch_for_embed_does_not_record_a_trained_window(self, tmp_path, monkeypatch) -> None:
         launch = self._launch_for_role(
             tmp_path, monkeypatch, WorkerRole.EMBED, meta={"context_length": "2048"}
@@ -3662,11 +3699,12 @@ class TestUnusableChatCtxReason:
         launch = replace(self._launch(WorkerRole.CHAT, 512, weights_bytes=1 * _GB), trained_ctx=512)
         reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
         assert reason is not None
-        assert "was trained for a 512-token window" in reason
-        assert str(min_usable_chat_ctx()) in reason
-        assert "org/m.gguf" in reason
-        assert "memory" not in reason
-        assert "num_ctx" not in reason
+        assert reason == (
+            "The chat model org/m.gguf was trained for a 512-token window, and a grounded "
+            f"answer needs about {min_usable_chat_ctx()} tokens (system prompt, a retrieved "
+            "source, the question, and room for the answer), so it will not be served. "
+            "Use a model with a larger trained window."
+        )
 
     def test_trained_window_that_holds_a_prompt_blames_memory(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
