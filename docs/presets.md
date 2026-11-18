@@ -131,3 +131,4 @@ The SDK checks the address when it connects. It reads every address of the host 
 - [Usage](usage.md) lists the slash commands and the CLI commands.
 - [Settings reference](settings.md) lists `server_presets`, `allow_http_engines` and `mcp_presets_enabled`.
 - [Engine integration](engine-integration.md) lists what a server must do before lilbee can use it.
+- [Engine results](engine-results.md) lists what each managed engine did in its recorded run.
