@@ -3530,12 +3530,7 @@ class TestEmbeddingModelGate:
         import logging
 
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
         assert store.get_meta() is None
 
         with caplog.at_level(logging.WARNING, logger="lilbee.data.store"):
@@ -3572,12 +3567,7 @@ class TestEmbeddingModelGate:
         adopting the new model as if it had built the store.
         """
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
         original_model = test_config.embedding_model
 
         wrote = store.initialize_meta_if_legacy()
@@ -3718,12 +3708,7 @@ class TestEmbeddingModelGate:
         """Defensive re-check inside the lock: if a concurrent caller already wrote
         meta between the unlocked pre-check and acquiring the lock, do not double-write."""
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
 
         winning_meta = {
             "embedding_model": "winner-model:v1",

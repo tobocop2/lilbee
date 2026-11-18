@@ -295,8 +295,8 @@ def _vector_index_dangling(
 def newest_meta_row(table: LanceTable) -> dict[str, Any] | None:
     """The newest row of the ``_meta`` table, or ``None`` when it holds none.
 
-    The table is meant to hold one row; a swallowed delete on rewrite can leave a stale one,
-    so identity reads take the newest to stay deterministic.
+    The table is meant to hold one row; identity reads take the newest to stay deterministic
+    when it holds more.
     """
     rows = table.search().limit(None).to_list()
     return max(rows, key=lambda r: r["updated_at"]) if rows else None

@@ -759,3 +759,97 @@ class TestRebuildKeepsMemoriesStopped:
         rebuilt_with(available=False)
 
         assert not store.has_chunks()
+
+
+def _rewrite_meta(store, config, **kwargs):
+    with write_lock():
+        store._write_meta_unlocked(
+            embedding_model=config.embedding_model,
+            embedding_dim=config.embedding_dim,
+            **kwargs,
+        )
+
+
+def _killed_before_commit():
+    """Every step of a rewrite that follows its first destructive step dies."""
+    return (
+        mock.patch.object(
+            lancedb.db.LanceDBConnection, "create_table", side_effect=RuntimeError("killed")
+        ),
+        mock.patch.object(lancedb.table.LanceTable, "add", side_effect=RuntimeError("killed")),
+    )
+
+
+class TestMetaReplaceHasNoGap:
+    """A process killed in the middle of a meta rewrite leaves the old table, not none."""
+
+    @pytest.fixture(params=["old columns", "current columns"])
+    def library(self, request, test_config, engine):
+        """A library whose meta table holds the old four columns, or all seven."""
+        if request.param == "old columns":
+            _make_v3_library(test_config)
+        else:
+            Store(test_config, canary_probe=engine.probe()).add_chunks(_make_records())
+        return _reopen(test_config, engine)
+
+    def test_a_kill_during_the_rewrite_leaves_the_meta_table_and_its_row(
+        self, library, test_config
+    ):
+        before = library.get_meta()
+        assert before is not None
+        killed_create, killed_add = _killed_before_commit()
+
+        with killed_create, killed_add, pytest.raises(RuntimeError, match="killed"):
+            _rewrite_meta(library, test_config, canary=CanaryState([[0.5]] * 12, "A", True))
+
+        assert Store(test_config).get_meta() == before
+
+    def test_a_kill_during_the_rewrite_leaves_the_baseline(self, test_config, engine):
+        Store(test_config, canary_probe=engine.probe()).add_chunks(_make_records())
+        store = _reopen(test_config, engine)
+        before = store.canary_state()
+        assert before is not None
+        killed_create, killed_add = _killed_before_commit()
+
+        with killed_create, killed_add, pytest.raises(RuntimeError, match="killed"):
+            _rewrite_meta(store, test_config)
+
+        assert Store(test_config).canary_state() == before
+
+    def test_a_rewrite_commits_a_new_version_of_the_same_table(self, store, test_config):
+        store.add_chunks(_make_records())
+        versions = len(store.open_table(META_TABLE).list_versions())
+
+        _rewrite_meta(store, test_config)
+
+        assert len(store.open_table(META_TABLE).list_versions()) == versions + 1
+        assert store.open_table(META_TABLE).count_rows() == 1
+
+    def test_a_rewrite_of_old_columns_keeps_the_new_baseline_and_the_identity(
+        self, test_config, engine
+    ):
+        _make_v3_library(test_config)
+        old = _reopen(test_config, engine)
+        baseline = CanaryState([[0.5, 0.25]] * len(CANARY_TEXTS), "A", True)
+
+        _rewrite_meta(old, test_config, canary=baseline)
+
+        meta = old.get_meta()
+        assert meta["embedding_model"] == test_config.embedding_model
+        assert meta["embedding_dim"] == test_config.embedding_dim
+        assert meta["schema_version"] == 4
+        assert old.canary_state() == baseline
+        assert old.open_table(META_TABLE).schema.names == _meta_schema().names
+        assert old.open_table(META_TABLE).count_rows() == 1
+
+    def test_a_rewrite_with_the_current_columns_keeps_the_baseline(self, store, test_config):
+        store.add_chunks(_make_records())
+        before = store.canary_state()
+        assert before is not None
+        embedding_model = store.get_meta()["embedding_model"]
+
+        _rewrite_meta(store, test_config)
+
+        assert store.canary_state() == before
+        assert store.get_meta()["embedding_model"] == embedding_model
+        assert store.open_table(META_TABLE).count_rows() == 1

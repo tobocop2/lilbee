@@ -96,7 +96,6 @@ from .types import (
     ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
     INGEST_FAILURES,
     KEYED_SCHEMA_VERSION,
-    META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
     SOURCE_STAT_UNKNOWN,
@@ -1310,26 +1309,16 @@ class Store:
         baseline stays as the row holds it unless *canary* replaces it.
         """
         state = self.canary_state() if isinstance(canary, str) else canary
-        db = self.get_db()
-        table = ensure_table(db, META_TABLE, _meta_schema())
-        if table.schema.remove_metadata().equals(_meta_schema()):
-            _safe_delete_unlocked(table, META_DELETE_ALL_PREDICATE)
-        else:
-            db.drop_table(META_TABLE)
-            table = ensure_table(db, META_TABLE, _meta_schema())
-        table.add(
-            [
-                {
-                    "embedding_model": embedding_model,
-                    "embedding_dim": embedding_dim,
-                    "schema_version": META_SCHEMA_VERSION,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                    CANARY_VECTORS_COLUMN: state.vectors if state else None,
-                    "canary_trigger": state.trigger if state else None,
-                    "canary_verified": state.verified if state else None,
-                }
-            ]
-        )
+        row = {
+            "embedding_model": embedding_model,
+            "embedding_dim": embedding_dim,
+            "schema_version": META_SCHEMA_VERSION,
+            "updated_at": datetime.now(UTC).isoformat(),
+            CANARY_VECTORS_COLUMN: state.vectors if state else None,
+            "canary_trigger": state.trigger if state else None,
+            "canary_verified": state.verified if state else None,
+        }
+        self.get_db().create_table(META_TABLE, [row], schema=_meta_schema(), mode="overwrite")
         # A rebuild is the remedy the prefix warning names, so the next query
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False

@@ -134,12 +134,7 @@ class ChunkType(StrEnum):
 KEYED_SCHEMA_VERSION = 3
 META_SCHEMA_VERSION = 4
 
-# Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
-# Lance's ``Table.delete`` requires a SQL where clause; this matches every row without
-# coupling the deletion to any specific column's value domain.
-META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
-
-# Same, for the single-row ``_entity_schema`` table.
+# Always-true predicate that clears the single-row ``_entity_schema`` table.
 ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
 
 
