@@ -2322,6 +2322,74 @@ def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -
     assert roles == [WorkerRole.CHAT]
 
 
+def test_vision_ocr_client_is_not_closed_by_reloads_during_its_request(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    held: list[int] = []
+
+    def _request(*_args: object, **_kwargs: object) -> str:
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        held.append(client.in_flight)
+        return "ocr text"
+
+    client.chat_abortable.side_effect = _request
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert held == [1]  # reserved while the call ran
+    assert client.in_flight == 0  # given back
+
+
+def test_vision_ocr_gives_the_reservation_back_when_it_fails(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _counting_client()
+    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError, match="boom"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert client.in_flight == 0
+
+
+def test_vision_failover_reserves_each_replica_only_while_it_runs() -> None:
+    failed, spare = _counting_client(), _counting_client()
+    seen: list[tuple[int, int]] = []
+
+    def _call(client: MagicMock) -> str:
+        seen.append((failed.in_flight, spare.in_flight))
+        if client is failed:
+            raise httpx.ConnectError("refused")
+        return "ok"
+
+    pool = [prov_mod._VisionReplica(failed, 1), prov_mod._VisionReplica(spare, 1)]
+    assert prov_mod._dispatch_vision(pool, _call) == "ok"
+    assert seen == [(1, 0), (0, 1)]  # the failed replica is let go before the retry
+    assert (failed.in_flight, spare.in_flight) == (0, 0)
+
+
+def test_vision_ocr_cancelled_while_waiting_reserves_nothing(monkeypatch) -> None:
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    class _CancelAfterOneWait:
+        """Not set on the first poll, so the request waits; set on the next."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            return self.polls > 1
+
+    monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 0.01)
+    busy, cancel = _counting_client(), _CancelAfterOneWait()
+    pool = [prov_mod._VisionReplica(busy, 1)]
+    with prov_mod._VISION_DISPATCHER.slot(pool):
+        with pytest.raises(TaskCancelledError):
+            prov_mod._dispatch_vision(pool, lambda c: "x", cancel)
+        assert cancel.polls == 2  # it waited once, then saw the cancel
+        assert busy.in_flight == 1  # only the slot holder's reservation
+    assert busy.in_flight == 0
+
+
 def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
     client = _counting_client()
     seen: list[int] = []

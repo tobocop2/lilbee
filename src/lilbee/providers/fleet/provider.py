@@ -687,15 +687,13 @@ class _VisionDispatcher:
     def slot(
         self, pool: Sequence[_VisionReplica], cancel: CancelSignal | None = None
     ) -> Iterator[LlamaServerClient]:
-        """Hold one batching slot on the pool's best replica; yields that client.
-
-        A set *cancel* raises ``TaskCancelledError`` while the request still waits.
-        """
+        """Hold a slot and a reservation on the best replica; a set *cancel* ends the wait."""
         client = self._acquire(pool, cancel)
         try:
             yield client
         finally:
             self._release(client)
+            client.release()  # outside the condition: its idle callback runs on this thread
 
     def _acquire(
         self, pool: Sequence[_VisionReplica], cancel: CancelSignal | None
@@ -707,6 +705,7 @@ class _VisionDispatcher:
                 client = self._pick(pool)
                 if client is not None:
                     self._assigned[client] = self._assigned.get(client, 0) + 1
+                    client.reserve()
                     return client
                 # The timed wait re-polls health: a replica can become routable
                 # again by cool-down expiry alone, which notifies no waiter.
