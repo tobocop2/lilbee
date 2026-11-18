@@ -10,7 +10,7 @@ from lilbee.core.vectors import Vector
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import EmbeddingOverflowError, LLMProvider, ProviderError
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
@@ -197,6 +197,17 @@ class Embedder:
             texts, self._profile().query_instruction, source=source, on_progress=on_progress
         )
 
+    def _embed_batch_of(self, batch: list[str]) -> list[Vector]:
+        """Embed one batch, naming a context overflow as the embedding call's own."""
+        try:
+            return self._provider.embed(batch)
+        except ProviderError as exc:
+            if exc.repeats_on_retry:
+                raise EmbeddingOverflowError(
+                    str(exc), provider=exc.provider, kind=exc.kind
+                ) from exc
+            raise
+
     def _embed_with(
         self,
         texts: list[str],
@@ -223,7 +234,7 @@ class Embedder:
             truncated = prefix + self.truncate(text, reserved=len(prefix))
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
-                vectors.extend(self._provider.embed(batch))
+                vectors.extend(self._embed_batch_of(batch))
                 on_progress(
                     EventType.EMBED,
                     EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
@@ -233,7 +244,7 @@ class Embedder:
             batch.append(truncated)
             batch_chars += chunk_len
         if batch:
-            vectors.extend(self._provider.embed(batch))
+            vectors.extend(self._embed_batch_of(batch))
             on_progress(
                 EventType.EMBED,
                 EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),

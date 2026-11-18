@@ -203,6 +203,10 @@ class ProviderError(Exception):
         return self.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
+class EmbeddingOverflowError(ProviderError):
+    """A context overflow raised by the embedding call."""
+
+
 # The 400 message of a server that refuses a prompt longer than its window.
 _PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
 

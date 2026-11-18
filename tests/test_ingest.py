@@ -2189,6 +2189,7 @@ class TestHeldOutRecordLifecycle:
             pytest.param("engine", HeldOut.RETRY, True, id="engine-failure"),
             pytest.param("file", HeldOut.FAILED, False, id="file-failure"),
             pytest.param("overflow", HeldOut.FAILED, False, id="context-overflow"),
+            pytest.param("embed-overflow", HeldOut.FAILED, False, id="embedding-overflow"),
         ],
     )
     async def test_an_engine_failure_is_not_held_out_and_ingests_next_sync(
@@ -2196,11 +2197,13 @@ class TestHeldOutRecordLifecycle:
     ):
         """A transient ProviderError plans the file again; an overflow or file error holds it."""
         from lilbee.data.ingest import sync
-        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderError, ProviderErrorKind
 
+        overflow = ProviderErrorKind.CONTEXT_OVERFLOW
         raised: Exception = {
             "engine": ProviderError("engine crashed"),
-            "overflow": ProviderError("too long", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+            "overflow": ProviderError("too long", kind=overflow),
+            "embed-overflow": EmbeddingOverflowError("too long", kind=overflow),
             "file": ValueError("bad file"),
         }[error]
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
@@ -2212,26 +2215,39 @@ class TestHeldOutRecordLifecycle:
         second = await sync(quiet=True)
         assert ("doc.txt" in second.added) is retried
         assert ("doc.txt" in held_kinds()) is not retried
-        if error == "overflow":
+        if error == "embed-overflow":
             [held_file] = second.held_out
             assert held_file.filename == "doc.txt"
             assert "chunk_size" in held_file.reason
             assert "lilbee sync --retry-skipped" in held_file.reason
-            assert "conversation" not in held_file.reason
+            assert "too long" in held_file.reason
+        if error == "overflow":
+            [held_file] = second.held_out
+            assert held_file.reason == "ProviderError: too long"
 
-    async def test_an_overflow_failure_names_the_file_in_ingest_words(
-        self, isolated_env, mock_svc, caplog
+    @pytest.mark.parametrize(
+        ("error", "expected", "absent"),
+        [
+            pytest.param("engine", "doc.txt: engine crashed", "chunk_size", id="engine-failure"),
+            pytest.param("overflow", "doc.txt: too long", "chunk_size", id="chat-overflow"),
+            pytest.param("embed-overflow", "chunk_size", "ProviderError", id="embedding-overflow"),
+        ],
+    )
+    async def test_the_failed_file_warning_names_the_file_and_the_cause(
+        self, isolated_env, mock_svc, caplog, error, expected, absent
     ):
-        """The first sync logs the overflowing file with the way out, not chat wording."""
+        """An embedding overflow logs the way out and the provider's text; others keep the text."""
         import logging
 
         from lilbee.data.ingest import sync
-        from lilbee.providers.base import ProviderError, ProviderErrorKind
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderError, ProviderErrorKind
 
-        raised = ProviderError(
-            "Start a new conversation or shorten the input.",
-            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
-        )
+        overflow = ProviderErrorKind.CONTEXT_OVERFLOW
+        raised = {
+            "engine": ProviderError("engine crashed"),
+            "overflow": ProviderError("too long", kind=overflow),
+            "embed-overflow": EmbeddingOverflowError("too long", kind=overflow),
+        }[error]
         (isolated_env / "doc.txt").write_text("plenty of text", encoding="utf-8")
         with (
             caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
@@ -2241,8 +2257,10 @@ class TestHeldOutRecordLifecycle:
 
         [line] = [r.getMessage() for r in caplog.records if "Failed to ingest" in r.getMessage()]
         assert "doc.txt" in line
-        assert "chunk_size" in line
-        assert "conversation" not in line
+        assert expected in line
+        assert absent not in line
+        if error == "embed-overflow":
+            assert line.endswith("(too long)")
 
     async def test_a_file_whose_token_count_failed_is_added_by_the_next_sync(
         self, isolated_env, mock_svc

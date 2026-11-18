@@ -67,7 +67,7 @@ from lilbee.data.ingest.discovery import (
     resolve_source_path,
     resolve_source_root,
 )
-from lilbee.data.ingest.errors import error_reason
+from lilbee.data.ingest.errors import error_reason, log_reason
 from lilbee.data.ingest.fanout import (
     WORKER_LOG_NAME,
     ShardDone,
@@ -2440,7 +2440,7 @@ def _classify_result(
         return BatchStatus.SKIPPED
     if result.error is not None:
         # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
-        log.warning("Failed to ingest %s: %s", result.name, error_reason(result.error))
+        log.warning("Failed to ingest %s: %s", result.name, log_reason(result.error))
         log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
         added.pop(result.name, None)
         updated.pop(result.name, None)
