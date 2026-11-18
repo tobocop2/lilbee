@@ -77,6 +77,18 @@ from tests.conftest import (
 )
 
 runner = CliRunner()
+
+
+def _assert_signal_token(token: object) -> None:
+    """Assert *token* is the lock-free flag a Ctrl-C handler sets, and not a threading.Event."""
+    from lilbee.runtime.cancellation import SignalFlag
+
+    assert not isinstance(token, threading.Event)
+    assert isinstance(token, SignalFlag)
+    token.set()
+    assert token.is_set()
+
+
 # How long a held reset lasts when a test hangs; no test waits for it.
 _HANG_LIMIT_S = 30.0
 
@@ -6130,6 +6142,32 @@ class TestSigintCancel:
             signal.raise_signal(signal.SIGINT)
             assert token.is_set(), "SIGINT did not reach the cancel token"
 
+    def test_the_token_is_a_plain_flag_not_an_event(self) -> None:
+        import threading as _threading
+
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel() as token:
+            assert not isinstance(token, _threading.Event)
+
+    def test_the_handler_records_without_an_event_or_a_lock(self, monkeypatch) -> None:
+        import threading as _threading
+
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        def _forbidden(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the SIGINT handler took a lock")
+
+        with sigint_cancel() as token:
+            handler = signal.getsignal(signal.SIGINT)
+            monkeypatch.setattr(_threading.Event, "set", _forbidden)
+            monkeypatch.setattr(_threading.Condition, "__enter__", _forbidden)
+            monkeypatch.setattr(_threading, "Lock", _forbidden)
+            monkeypatch.setattr(_threading, "RLock", _forbidden)
+            handler(signal.SIGINT, None)
+            monkeypatch.undo()
+            assert token.is_set()
+
     def test_a_second_sigint_is_left_to_the_default_handler(self) -> None:
         """A pass that ignores the token must still be interruptible."""
 
@@ -9020,7 +9058,7 @@ class TestSyncCancelledExit:
             "error": "Add cancelled. test.txt was not added.",
             "not_added": ["test.txt"],
         }
-        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        _assert_signal_token(fake_sync.call_args.kwargs["cancel"])
         assert cfg.linked_roots == {}
 
     _STAGES_BEFORE_THE_SYNC = ("crawl", "nothing_registered")
@@ -9297,7 +9335,7 @@ class TestSyncCancelledExit:
             result = runner.invoke(app, ["ask", "q"])
         assert result.exit_code == 130, result.output
         assert "Sync cancelled." in result.output
-        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        _assert_signal_token(fake_sync.call_args.kwargs["cancel"])
         mock_svc.searcher.ask_stream.assert_not_called()
 
     def test_a_cancelled_sync_before_json_ask_reports_json_and_exits_130(self, mock_svc):
@@ -9309,7 +9347,7 @@ class TestSyncCancelledExit:
             result = runner.invoke(app, ["--json", "ask", "q"])
         assert result.exit_code == 130, result.output
         assert json.loads(result.output) == {"error": "Sync cancelled."}
-        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        _assert_signal_token(fake_sync.call_args.kwargs["cancel"])
         mock_svc.searcher.ask_raw.assert_not_called()
 
 

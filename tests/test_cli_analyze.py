@@ -436,6 +436,28 @@ def test_add_prints_the_tip_after_the_sync_result(project, notes):
     assert flat.count(TIP_TEXT) == 1
 
 
+def test_the_add_command_scopes_ctrl_c_with_a_plain_flag(project, notes):
+    import threading
+    from contextlib import contextmanager
+
+    from lilbee.runtime.cancellation import SignalFlag
+
+    seen: list[object] = []
+
+    @contextmanager
+    def _scope(cancel_event, rollback):
+        seen.append(cancel_event)
+        raise SystemExit(0)
+        yield
+
+    with mock.patch("lilbee.cli.commands.ingest_sync._ctrl_c_stops", _scope):
+        result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+    assert isinstance(seen[0], SignalFlag)
+    assert not isinstance(seen[0], threading.Event)
+
+
 @pytest.mark.parametrize("ingest", [_refused_ingest, _cancelled_ingest])
 def test_an_add_that_fails_or_cancels_prints_no_tip(project, notes, ingest):
     with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_refused_add_paths(ingest)):

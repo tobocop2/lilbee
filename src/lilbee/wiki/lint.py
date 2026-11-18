@@ -8,7 +8,6 @@ Two modes:
 from __future__ import annotations
 
 import logging
-import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -17,6 +16,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.security import PathTraversalError, validate_path_within
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, Store
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.wiki.citations import (
     CitationStatus,
     find_unmarked_claims,
@@ -273,7 +273,7 @@ def lint_all(
     config: Config | None = None,
     *,
     record_log: bool = True,
-    cancel: threading.Event | None = None,
+    cancel: CancelSignal | None = None,
 ) -> LintReport:
     """Full lint: check every wiki page in the store.
 
