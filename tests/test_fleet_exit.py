@@ -29,7 +29,7 @@ _SIGTERM_STATUS = 143
 _SIGHUP_STATUS = 129
 _STOPPING = "The server is stopping."
 _OPEN_EXIT_NOTE = "lilbee: the library is still opening; exiting now. The next start finishes it."
-_LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
+_LIBRARY_WAIT = "lilbee is opening the library. Try again in a few seconds."
 _SAVED_PLACEMENT = 'placement = "{}"\n'
 
 _PROBE_SETUP = f"""
