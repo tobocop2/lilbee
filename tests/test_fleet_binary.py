@@ -284,6 +284,31 @@ class TestEnginePin:
         monkeypatch.setattr(_WHICH, lambda name: None)
         assert engine_build_id() == "unpinned"
 
+    def test_wheel_without_a_server_file_yields_to_the_path_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A stub wheel carries the pin accessor but no llama-server file: the server
+        # that launches is the PATH one, so the pin names that one.
+        fake = _fake_engine(tmp_path, make_files=False)
+        fake.get_engine_pin = lambda: "llama-cpp-0.0.0-stub"
+        monkeypatch.setitem(sys.modules, "lilbee_engine_llama_cpp", fake)
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        (tmp_path / "bin").mkdir()
+        server = _plant_host_binary(tmp_path / "bin", EngineTool.LLAMA_SERVER)
+        monkeypatch.setattr(_WHICH, lambda name: str(server))
+        assert resolve_engine_tool(EngineTool.LLAMA_SERVER) == server
+        assert engine_build_id().startswith(f"path:{server}@")
+
+    def test_wheel_without_a_server_file_and_no_server_is_unpinned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _fake_engine(tmp_path, make_files=False)
+        fake.get_engine_pin = lambda: "llama-cpp-0.0.0-stub"
+        monkeypatch.setitem(sys.modules, "lilbee_engine_llama_cpp", fake)
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        monkeypatch.setattr(_WHICH, lambda name: None)
+        assert engine_build_id() == "unpinned"
+
     def test_wheel_without_pin_accessor_reports_its_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -372,7 +397,7 @@ class TestEngineResolutionSeal:
         assert resolve_llama_server() == planted
 
 
-def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> None:
+def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch, tmp_path) -> None:
     """engine_pin runs on every state write, so it must not raise here.
 
     lilbee_engine_llama_cpp can be importable with nothing to look up: an extracted wheel
@@ -380,12 +405,11 @@ def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> No
     lilbee-engine-llama-cpp. A PackageNotFoundError escaping here aborts the state write.
     """
     import sys
-    import types
     from importlib.metadata import PackageNotFoundError
 
     from lilbee.providers.fleet import binary as binary_mod
 
-    stub = types.ModuleType("lilbee_engine_llama_cpp")  # no get_engine_pin -> pre-pin path
+    stub = _fake_engine(tmp_path, make_files=True)  # no get_engine_pin -> pre-pin path
     monkeypatch.setitem(sys.modules, "lilbee_engine_llama_cpp", stub)
     from lilbee.core.config import cfg
 

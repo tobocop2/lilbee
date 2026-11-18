@@ -81,7 +81,10 @@ def engine_pin() -> str:
 
 
 def engine_build_id() -> str:
-    """The engine build's identity: configured path, wheel pin, PATH, or unpinned.
+    """The identity of the llama-server ``resolve_engine_tool`` returns, or unpinned.
+
+    The order is the launch order: configured path, wheel pin (only for a wheel
+    that carries a llama-server file), PATH, the installed pack.
 
     A BYO (``custom:``) or PATH-resolved (``path:``) binary is identified by its
     location AND a cheap build fingerprint (size + mtime), so replacing the binary
@@ -93,11 +96,9 @@ def engine_build_id() -> str:
 
     if cfg.llama_server_path:
         return f"custom:{cfg.llama_server_path}@{_binary_signature(Path(cfg.llama_server_path))}"
-    try:
+    if _bundled_tool(EngineTool.LLAMA_SERVER) is not None:
         import lilbee_engine_llama_cpp
-    except ImportError:
-        lilbee_engine_llama_cpp = None
-    if lilbee_engine_llama_cpp is not None:
+
         try:
             return str(lilbee_engine_llama_cpp.get_engine_pin())
         except AttributeError:  # pre-pin wheels lack the accessor
