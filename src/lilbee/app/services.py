@@ -517,13 +517,16 @@ def reset_store() -> None:
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
     searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
-    _state.singleton = replace(
-        svc,
-        store=store,
-        concepts=concepts,
-        clusterer=clusterer,
-        searcher=searcher,
-    )
+    rebuilt = replace(svc, store=store, concepts=concepts, clusterer=clusterer, searcher=searcher)
+    # Same lock and stop check as get_services: a rebuild must not bring back a
+    # container that the stop already cleared.
+    with _reset_swap_lock:
+        stopping = _lifecycle.stop_requested
+        if not stopping:
+            _state.singleton = rebuilt
+    if stopping:
+        store.close()
+        raise ServicesStoppingError
     old_store.close()
 
 
