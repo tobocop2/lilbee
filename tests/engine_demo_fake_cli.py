@@ -151,13 +151,12 @@ def serve(argv: list[str]) -> None:
             stderr=subprocess.DEVNULL,
         )
         (ROOT / "child.pid").write_text(str(child.pid), encoding=UTF8)
-    port = int(argv[argv.index("--port") + 1])
+    httpd = ThreadingHTTPServer(("127.0.0.1", int(argv[argv.index("--port") + 1])), Api)
     Api.token = secrets.token_hex(8)
     (ROOT / "data").mkdir(exist_ok=True)
     (ROOT / "data" / "server.json").write_text(json.dumps({"token": Api.token}), encoding=UTF8)
-    (ROOT / "data" / "server.port").write_text(str(port), encoding=UTF8)
-    time.sleep(0.4)
-    ThreadingHTTPServer(("127.0.0.1", port), Api).serve_forever()
+    (ROOT / "data" / "server.port").write_text(str(httpd.server_address[1]), encoding=UTF8)
+    httpd.serve_forever()
 
 
 def engine_list(argv: list[str]) -> None:

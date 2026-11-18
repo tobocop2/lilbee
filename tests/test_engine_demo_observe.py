@@ -16,6 +16,9 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -407,6 +410,74 @@ def test_a_server_that_exits_before_it_answers_is_recorded(
     (chat,) = _step(t, StepName.CHAT)
     assert chat.exit_code == SERVER_DIED_EXIT_CODE
     assert Rule.STEP_FAILED in _rules(t)
+
+
+class _OtherServer(BaseHTTPRequestHandler):
+    """A listener of another test: it refuses every request with 401."""
+
+    def refuse(self) -> None:
+        self.rfile.read(int(self.headers["Content-Length"]))
+        body = b'{"detail": "bad token"}'
+        self.send_response(401)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        self.refuse()
+
+    def do_PUT(self) -> None:
+        self.refuse()
+
+    def log_message(self, *args: object) -> None:
+        return
+
+
+@contextlib.contextmanager
+def _other_listener() -> Iterator[int]:
+    """Hold a port with a server that is not the one under test; yield the port."""
+    other = ThreadingHTTPServer(("127.0.0.1", 0), _OtherServer)
+    thread = threading.Thread(target=other.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(other.server_address[1])
+    finally:
+        other.shutdown()
+        other.server_close()
+        thread.join()
+
+
+def _bound_port(tmp_path: Path) -> int:
+    return int((tmp_path / "lilbee" / "data" / "server.port").read_text(encoding="utf-8"))
+
+
+def test_the_observer_talks_to_the_port_its_server_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _other_listener() as taken:
+        # A probe that binds port 0 and reads the number back is told the port that the other
+        # listener holds, as when another test's probe or server picked it first.
+        monkeypatch.setattr(socket.socket, "getsockname", lambda self: ("127.0.0.1", taken))
+        t = observe(_plan(), tmp_path)
+    (chat,) = _step(t, StepName.CHAT)
+    assert chat.exit_code == 0
+    assert chat.command[1] == f"http://127.0.0.1:{_bound_port(tmp_path)}/api/chat"
+    assert str(taken) not in chat.command[1]
+    assert judge(t) == []
+
+
+def test_the_observer_ignores_the_port_file_of_an_earlier_server(tmp_path: Path) -> None:
+    data = tmp_path / "lilbee" / "data"
+    data.mkdir(parents=True)
+    with _other_listener() as taken:
+        (data / "server.json").write_text(json.dumps({"token": "old"}), encoding="utf-8")
+        (data / "server.port").write_text(str(taken), encoding="utf-8")
+        t = observe(_plan(), tmp_path)
+    set_models = _step(t, StepName.SET_MODEL)
+    assert set_models
+    assert [s.exit_code for s in (*set_models, *_step(t, StepName.CHAT))] == [0] * (
+        len(set_models) + 1
+    )
 
 
 def test_a_server_that_never_comes_up_times_out(

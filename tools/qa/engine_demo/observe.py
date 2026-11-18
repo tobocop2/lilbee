@@ -24,8 +24,10 @@ Known limits:
   outlive it, each with its command line. No oracle reads them: the engine reaper
   and a kept-warm engine outlive the server by design. A run on a host calibrates
   what a normal leftover looks like.
-- The server session reads the session file at data/server.json, where the
-  server writes it under the default data folder layout.
+- The server session starts the server on port 0 and reads the bound port from
+  data/server.port, which the server writes after it binds. It reads the token
+  from data/server.json, where the server writes it under the default data
+  folder layout.
 - Models pull into the shared models folder, not into the run folder. The engines
   folder sits beside the models folder, so a host that holds an install of an
   earlier run starts with it: the first ``engine list`` is the baseline.
@@ -37,7 +39,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import socket
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -67,6 +68,7 @@ _MODEL_ROUTES = {
     WorkerRole.VISION: "/api/models/vision",
 }
 _SESSION_FILE = Path("data") / "server.json"
+_PORT_FILE = Path("data") / "server.port"
 _POLL_S = 0.1
 
 DEFAULT_QUESTION = "How do honeybees tell each other where the flowers are?"
@@ -259,10 +261,12 @@ def _run_cli(
     )
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind((_LOOPBACK, 0))
-        return int(probe.getsockname()[1])
+def _bound_port(port_file: Path) -> int | None:
+    """The port the server wrote after it bound, or None while it has written none."""
+    try:
+        return int(port_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _session_token(session_file: Path) -> str | None:
@@ -300,11 +304,11 @@ def _http_session(
     the last. A last step records the server's child processes still running after
     the stop.
     """
-    port = _free_port()
-    base = f"http://{_LOOPBACK}:{port}"
-    serve = (*plan.cli, "serve", "--host", _LOOPBACK, "--port", str(port))
+    (data_root / _PORT_FILE).unlink(missing_ok=True)
+    serve = (*plan.cli, "serve", "--host", _LOOPBACK, "--port", "0")
+    port = 0
     marks = [log_path.stat().st_size]
-    results: list[tuple[int, str]] = []
+    results: list[tuple[int, int, str]] = []
     children: dict[psutil.Process, str] = {}
     with log_path.open("ab") as log:
         server = subprocess.Popen(
@@ -312,7 +316,8 @@ def _http_session(
         )
         try:
             for request in requests:
-                results.append(_send(server, data_root / _SESSION_FILE, base, request, plan))
+                port, code, text = _send(server, data_root, request, plan)
+                results.append((port, code, text))
                 marks.append(log_path.stat().st_size)
         finally:
             children = _children(server.pid)
@@ -327,12 +332,16 @@ def _http_session(
     steps = [
         Step(
             name=request.name,
-            command=(request.method, base + request.path, json.dumps(request.body)),
+            command=(
+                request.method,
+                f"http://{_LOOPBACK}:{bound}{request.path}",
+                json.dumps(request.body),
+            ),
             exit_code=code,
             stdout=text,
             log_lines=_lines(log_path, marks[i], marks[i + 1]),
         )
-        for i, (request, (code, text)) in enumerate(zip(requests, results, strict=True))
+        for i, (request, (bound, code, text)) in enumerate(zip(requests, results, strict=True))
     ]
     left = "".join(f"{p.pid} {children[p]}\n" for p in alive)
     steps.append(Step(StepName.ENGINES_LEFT_RUNNING, ("engines-left-running", str(port)), 0, left))
@@ -340,30 +349,32 @@ def _http_session(
 
 
 def _send(
-    server: subprocess.Popen[bytes], session_file: Path, base: str, request: _Request, plan: RunPlan
-) -> tuple[int, str]:
-    """Send *request* once the server listens; the code is 0 on success, else a status or error."""
+    server: subprocess.Popen[bytes], data_root: Path, request: _Request, plan: RunPlan
+) -> tuple[int, int, str]:
+    """Send *request* once the server listens; the port, then 0 on success, else a status or error.
+
+    The port is 0 while the server has not written one.
+    """
     deadline = time.monotonic() + plan.server_wait_s
+    port: int | None = None
     while time.monotonic() < deadline:
         if server.poll() is not None:
-            return SERVER_DIED_EXIT_CODE, ""
-        token = _session_token(session_file)
-        if token is not None:
+            return port or 0, SERVER_DIED_EXIT_CODE, ""
+        port = _bound_port(data_root / _PORT_FILE)
+        token = _session_token(data_root / _SESSION_FILE)
+        if port is not None and token is not None:
             try:
                 reply = httpx.request(
                     request.method,
-                    base + request.path,
+                    f"http://{_LOOPBACK}:{port}{request.path}",
                     json=request.body,
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=plan.step_timeout_s,
                 )
-            except httpx.ConnectError:
-                pass  # the session file is written before the server listens
             except httpx.TimeoutException:
-                return TIMEOUT_EXIT_CODE, ""
+                return port, TIMEOUT_EXIT_CODE, ""
             except httpx.HTTPError as exc:
-                return REQUEST_ERROR_EXIT_CODE, f"{type(exc).__name__}: {exc}"
-            else:
-                return (0 if reply.is_success else reply.status_code), reply.text
+                return port, REQUEST_ERROR_EXIT_CODE, f"{type(exc).__name__}: {exc}"
+            return port, (0 if reply.is_success else reply.status_code), reply.text
         time.sleep(_POLL_S)
-    return TIMEOUT_EXIT_CODE, ""
+    return port or 0, TIMEOUT_EXIT_CODE, ""
