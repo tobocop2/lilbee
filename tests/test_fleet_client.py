@@ -3626,7 +3626,7 @@ def test_embed_without_tokenize_route_keeps_input_within_cap() -> None:
     assert sent == ["x" * 12]
 
 
-def test_embed_without_tokenize_route_truncates_again_on_context_overflow() -> None:
+def test_embed_without_tokenize_route_resends_the_same_input_on_context_overflow() -> None:
     calls: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -3638,6 +3638,51 @@ def test_embed_without_tokenize_route_truncates_again_on_context_overflow() -> N
     out = _no_route_client(handler, cap=4).embed(["x" * 12])
     assert _as_lists(out) == [[0.5]]
     assert calls == [["x" * 12], ["x" * 12]]
+
+
+def test_tokenize_without_tokenize_route_names_the_missing_route() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    with pytest.raises(NotImplementedError, match="no tokenize route"):
+        _no_route_client(handler)._tokenize("hello")
+
+
+def test_embed_with_tokenize_but_no_detokenize_route_names_the_missing_route() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    profile = dataclasses.replace(LLAMA.request_profile(WorkerRole.EMBED), detokenize_path=None)
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient("http://gpu0", "m", http=http, token_cap=4, profile=profile)
+    with pytest.raises(NotImplementedError, match="no detokenize route"):
+        client.embed(["x" * 100])
+    assert paths == ["/upstream/m/tokenize"]
+
+
+def test_embed_redo_after_overflow_sends_the_input_truncated_by_the_server_tokenizer() -> None:
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/detokenize"):
+            assert json.loads(request.content)["tokens"] == list(range(10))
+            return httpx.Response(200, json={"content": "cut"})
+        if path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        sent.append(json.loads(request.content)["input"])
+        if len(sent) == 1:
+            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    out = _capped_client(handler, 10).embed(["dense"])
+    assert _as_lists(out) == [[0.5]]
+    assert sent == [["dense"], ["cut"]]
 
 
 def test_count_text_tokens_without_tokenize_route_is_none() -> None:
