@@ -321,7 +321,7 @@ _UPGRADE_THREAD_PREFIX = "library-upgrade"
 _PATH = "path"
 # The ``_sources`` column that names why a sync holds a row's path out (``HeldOut``).
 _HELD_OUT = "held_out"
-# The content hash a sync holds the path out at, the reason shown, and the settings it held it under.
+# The content hash a sync holds the path out at, the reason shown, and the settings of the hold.
 _HELD_HASH = "held_hash"
 _HELD_REASON = "held_reason"
 _HELD_INPUTS = "held_inputs"
