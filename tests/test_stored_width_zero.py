@@ -12,10 +12,17 @@ from typer.testing import CliRunner
 
 from lilbee.app import services as services_mod
 from lilbee.app.settings import reconcile_embedding_dim
-from lilbee.core.config import META_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, MEMORIES_TABLE, META_TABLE, cfg
 from lilbee.data.store import Store
-from lilbee.data.store.lance_helpers import persisted_embedding_width
-from lilbee.data.store.types import EmbeddingModelMismatchError
+from lilbee.data.store.lance_helpers import persisted_embedding_width, table_names
+from lilbee.data.store.types import (
+    ChunkType,
+    ChunkWrite,
+    EmbeddingModelMismatchError,
+    MemoryKind,
+    MemoryRow,
+    MemorySource,
+)
 from tests.conftest import make_mock_services
 
 MODEL = "ollama/stored-embed:latest"
@@ -256,6 +263,156 @@ def test_the_first_ingest_with_a_damaged_width_and_no_chunks_stamps_the_configur
 
     meta = lancedb.connect(str(cfg.lancedb_dir)).open_table(META_TABLE).to_arrow()
     assert meta["embedding_dim"].to_pylist() == [CONFIGURED_WIDTH]
+
+
+def _ingest_by_add(store: Store) -> None:
+    store.add_chunks([_record("c.md", 0)])
+
+
+def _ingest_by_replace(store: Store) -> None:
+    store.replace_chunks("a.md", ChunkType.RAW, [_record("a.md", 2)])
+
+
+def _ingest_by_batch(store: Store) -> None:
+    store.write_chunks_batch([ChunkWrite("a.md", "hash_a2", [_record("a.md", 2)], True)])
+
+
+def _ingest_new_source_by_replace(store: Store) -> None:
+    store.replace_chunks("c.md", ChunkType.RAW, [_record("c.md", 0)])
+
+
+def _ingest_new_source_by_batch(store: Store) -> None:
+    store.write_chunks_batch([ChunkWrite("c.md", "hash_c", [_record("c.md", 0)], False)])
+
+
+def _ingest_by_memory(store: Store) -> None:
+    vector = [0.0] * cfg.embedding_dim
+    vector[0] = 1.0
+    store.add_memory(
+        MemoryRow(
+            id="m0",
+            owner="local",
+            shared=False,
+            kind=MemoryKind.FACT,
+            source=MemorySource.MANUAL,
+            text="fact",
+            vector=vector,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+
+
+INGEST_ENTRY_POINTS = [
+    _ingest_by_add,
+    _ingest_by_replace,
+    _ingest_by_batch,
+    _ingest_new_source_by_replace,
+    _ingest_new_source_by_batch,
+    _ingest_by_memory,
+]
+
+
+def _library_rows() -> dict[str, tuple[int, list[str]]]:
+    """The version and every row of every table in the library, so a write to any table shows."""
+    db = lancedb.connect(str(cfg.lancedb_dir))
+    tables = {name: db.open_table(name) for name in table_names(db)}
+    return {
+        name: (table.version, sorted(repr(row) for row in table.to_arrow().to_pylist()))
+        for name, table in tables.items()
+    }
+
+
+def _rows_of(name: str) -> list[dict]:
+    return lancedb.connect(str(cfg.lancedb_dir)).open_table(name).to_arrow().to_pylist()
+
+
+def _chunk_vectors(source: str) -> list[list[float]]:
+    return [list(row["vector"]) for row in _rows_of(CHUNKS_TABLE) if row["source"] == source]
+
+
+def _unit_vector(axis: int) -> list[float]:
+    vector = [0.0] * CONFIGURED_WIDTH
+    vector[axis] = 1.0
+    return vector
+
+
+def _a_chunk_is_added() -> None:
+    assert _chunk_vectors("c.md") == [_unit_vector(0)]
+    assert _chunk_vectors("a.md") == [_unit_vector(0)]
+
+
+def _a_chunk_replaces_the_old_rows() -> None:
+    assert _chunk_vectors("a.md") == [_unit_vector(2)]
+    assert _chunk_vectors("b.md") == [_unit_vector(1)]
+
+
+def _a_memory_is_added() -> None:
+    assert [row["id"] for row in _rows_of(MEMORIES_TABLE)] == ["m0"]
+
+
+@pytest.mark.parametrize("ingest", INGEST_ENTRY_POINTS)
+@pytest.mark.parametrize("stored", [0, -1, None, STORED_WIDTH])
+def test_an_ingest_at_another_width_than_the_stored_chunks_shows_the_rebuild_advice(
+    stored, ingest
+):
+    _store_with_stored_width(stored, chunks=True, chunk_width=STORED_WIDTH)
+    store = Store(cfg)
+    before = _library_rows()
+    assert {row["source"] for row in _rows_of(CHUNKS_TABLE)} == {"a.md", "b.md"}
+
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
+        ingest(store)
+
+    assert "so rebuild the index" in str(refused.value)
+    assert _library_rows() == before
+
+
+@pytest.mark.parametrize("ingest", INGEST_ENTRY_POINTS)
+def test_an_ingest_with_no_meta_row_and_chunks_of_another_width_shows_the_rebuild_advice(ingest):
+    _store_with_stored_width(STORED_WIDTH, chunks=True, chunk_width=STORED_WIDTH)
+    lancedb.connect(str(cfg.lancedb_dir)).drop_table(META_TABLE)
+    cfg.embedding_dim = CONFIGURED_WIDTH
+    store = Store(cfg)
+    before = _library_rows()
+    assert {row["source"] for row in _rows_of(CHUNKS_TABLE)} == {"a.md", "b.md"}
+
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16"):
+        ingest(store)
+
+    assert _library_rows() == before
+
+
+SAME_WIDTH_INGESTS = [
+    (_ingest_by_add, _a_chunk_is_added),
+    (_ingest_by_replace, _a_chunk_replaces_the_old_rows),
+    (_ingest_by_batch, _a_chunk_replaces_the_old_rows),
+    (_ingest_new_source_by_replace, _a_chunk_is_added),
+    (_ingest_new_source_by_batch, _a_chunk_is_added),
+    (_ingest_by_memory, _a_memory_is_added),
+]
+
+
+@pytest.mark.parametrize(("ingest", "written"), SAME_WIDTH_INGESTS)
+@pytest.mark.parametrize("stored", [0, -1, None])
+def test_an_ingest_at_the_width_of_the_stored_chunks_is_not_refused(stored, ingest, written):
+    _store_with_stored_width(stored, chunks=True)
+
+    ingest(Store(cfg))
+
+    written()
+
+
+@pytest.mark.parametrize(("ingest", "written"), SAME_WIDTH_INGESTS)
+def test_an_ingest_with_no_meta_row_at_the_width_of_the_stored_chunks_is_not_refused(
+    ingest, written
+):
+    _store_with_stored_width(CONFIGURED_WIDTH, chunks=True)
+    lancedb.connect(str(cfg.lancedb_dir)).drop_table(META_TABLE)
+
+    ingest(Store(cfg))
+
+    written()
 
 
 TEXT_WIDTHS = ["768", "abc", ""]
