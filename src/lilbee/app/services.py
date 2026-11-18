@@ -473,6 +473,9 @@ def answer_provider_waiters() -> None:
 # would double-close the store.
 _reset_swap_lock = threading.Lock()
 
+# Serializes reset_store builds; taken before _reset_swap_lock, never inside it.
+_store_rebuild_lock = threading.Lock()
+
 
 def reset_services() -> None:
     """Shut down and discard all cached instances.
@@ -499,9 +502,6 @@ def reset_store() -> None:
     but the running provider/embedder/reranker are still good. Avoids the
     multi-second reload cost of ``reset_services()``.
     """
-    svc = _state.singleton
-    if svc is None:
-        return
     from dataclasses import replace
 
     from lilbee.core.config import cfg
@@ -510,24 +510,35 @@ def reset_store() -> None:
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
 
-    # Build the replacement, swap the reference, then close the old store last so
-    # a new caller never observes a closed handle mid-swap.
-    old_store = svc.store
-    store = _new_store(cfg, canary_probe(cfg, svc.embedder, svc.registry))
-    concepts = ConceptGraph(cfg, store)
-    clusterer = Clusterer(cfg, store)
-    searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
-    rebuilt = replace(svc, store=store, concepts=concepts, clusterer=clusterer, searcher=searcher)
-    # Same lock and stop check as get_services: a rebuild must not bring back a
-    # container that the stop already cleared.
-    with _reset_swap_lock:
-        stopping = _lifecycle.stop_requested
-        if not stopping:
-            _state.singleton = rebuilt
+    # One rebuild at a time, so two resets never build from the same container. This
+    # lock is taken before _reset_swap_lock and never inside it; get_services and
+    # reset_services never take it, so the stop is not held up by a build.
+    with _store_rebuild_lock:
+        svc = _state.singleton
+        if svc is None:
+            return
+        # Build the replacement, swap the reference, then close the old store last so
+        # a new caller never observes a closed handle mid-swap.
+        store = _new_store(cfg, canary_probe(cfg, svc.embedder, svc.registry))
+        concepts = ConceptGraph(cfg, store)
+        clusterer = Clusterer(cfg, store)
+        searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
+        rebuilt = replace(
+            svc, store=store, concepts=concepts, clusterer=clusterer, searcher=searcher
+        )
+        # Same lock and stop check as get_services: a rebuild must not bring back a
+        # container that the stop cleared, nor one that reset_services replaced.
+        with _reset_swap_lock:
+            stopping = _lifecycle.stop_requested
+            swapped = not stopping and _state.singleton is svc
+            if swapped:
+                _state.singleton = rebuilt
+    if swapped:
+        svc.store.close()
+        return
+    store.close()
     if stopping:
-        store.close()
         raise ServicesStoppingError
-    old_store.close()
 
 
 class _ServerExit:

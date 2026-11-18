@@ -190,7 +190,7 @@ def test_an_inherited_ignore_of_sighup_survives_install():
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     install_engine_lifecycle_hooks()
     assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
-    assert callable(signal.getsignal(signal.SIGTERM))
+    assert signal.getsignal(signal.SIGTERM) == services_mod._lifecycle._on_hard_exit
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal disposition")
@@ -198,7 +198,13 @@ def test_an_inherited_ignore_of_sigterm_does_not_stop_install_from_routing_it():
     """SIGTERM is the stop request, so install routes it even when the launch ignored it."""
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     install_engine_lifecycle_hooks()
-    assert callable(signal.getsignal(signal.SIGTERM))
+    assert signal.getsignal(signal.SIGTERM) == services_mod._lifecycle._on_hard_exit
+
+
+def test_install_routes_sigterm_to_the_stop_handler():
+    """The handler is the lifecycle's own, so a SIGTERM reaches the stop and not the default."""
+    install_engine_lifecycle_hooks()
+    assert signal.getsignal(signal.SIGTERM) == services_mod._lifecycle._on_hard_exit
 
 
 def test_the_handler_force_quit_writes_to_fd_2_and_takes_no_lock(monkeypatch):
@@ -563,6 +569,249 @@ def test_a_store_rebuilt_while_the_stop_begins_is_closed_not_kept(monkeypatch):
         get_services()
 
 
+def _rebuild_with(monkeypatch, new_stores, during_build):
+    """Build each store from *new_stores* in turn; run *during_build* in the first build.
+
+    Returns the list of builds, so a test can count them. Everything else in
+    ``reset_store`` runs for real.
+    """
+    builds = iter(new_stores)
+    calls: list[object] = []
+
+    def _build(*_args: object) -> MagicMock:
+        calls.append(None)
+        if len(calls) == 1:
+            during_build()
+        return next(builds)
+
+    monkeypatch.setattr(services_mod, "_new_store", _build)
+    return calls
+
+
+_THREAD_TIMEOUT_S = 10.0
+
+
+def _start_thread(fn, errors: list[BaseException]) -> threading.Thread:
+    """Run *fn* on a daemon thread; an exception it raises goes to *errors*."""
+
+    def _run() -> None:
+        try:
+            fn()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return thread
+
+
+def _run_within_timeout(fn) -> None:
+    """Run *fn* on a thread and fail, not hang, when it does not return in time."""
+    errors: list[BaseException] = []
+    thread = _start_thread(fn, errors)
+    thread.join(_THREAD_TIMEOUT_S)
+    assert not thread.is_alive(), "the call did not return: it waits on a lock it should not take"
+    if errors:
+        raise errors[0]
+
+
+def test_a_store_reset_does_not_bring_back_a_container_that_was_cleared_meanwhile(monkeypatch):
+    """A reset_services that ran during the build is not undone, and the new store is closed."""
+    from tests.conftest import make_mock_services
+
+    _without_a_stop_thread(monkeypatch)
+    set_services(make_mock_services())
+    new_store = MagicMock()
+    calls = _rebuild_with(monkeypatch, [new_store], reset_services)
+
+    _run_within_timeout(services_mod.reset_store)
+
+    new_store.close.assert_called_once_with()
+    assert peek_services() is None
+    assert len(calls) == 1
+
+
+def test_a_store_reset_keeps_a_container_that_replaced_it_meanwhile(monkeypatch):
+    """A container installed during the build stays; the new store is closed, not swapped in."""
+    from tests.conftest import make_mock_services
+
+    _without_a_stop_thread(monkeypatch)
+    set_services(make_mock_services())
+    replacement = make_mock_services()
+    new_store = MagicMock()
+
+    def _a_new_container_is_installed() -> None:
+        services_mod._state.singleton = replacement
+
+    calls = _rebuild_with(monkeypatch, [new_store], _a_new_container_is_installed)
+
+    services_mod.reset_store()
+
+    new_store.close.assert_called_once_with()
+    assert peek_services() is replacement
+    replacement.store.close.assert_not_called()
+    assert len(calls) == 1
+
+
+def test_a_store_reset_refuses_the_swap_once_the_stop_began_though_the_container_is_the_same(
+    monkeypatch,
+):
+    """The stop flag alone refuses the swap, though the container is still the current one."""
+    from tests.conftest import make_mock_services
+
+    _without_a_stop_thread(monkeypatch)
+    svc = make_mock_services()
+    set_services(svc)
+    new_store = MagicMock()
+
+    def _the_stop_begins() -> None:
+        services_mod._lifecycle.stop_requested = True
+
+    _rebuild_with(monkeypatch, [new_store], _the_stop_begins)
+
+    with pytest.raises(services_mod.ServicesStoppingError):
+        services_mod.reset_store()
+
+    new_store.close.assert_called_once_with()
+    assert services_mod._state.singleton is svc
+
+
+def test_a_store_reset_holds_the_rebuild_lock_for_the_build_but_not_the_swap_lock(monkeypatch):
+    """Two resets never build at once, and the build never blocks the stop's swap."""
+    from tests.conftest import make_mock_services
+
+    _without_a_stop_thread(monkeypatch)
+    set_services(make_mock_services())
+    seen: list[tuple[bool, bool]] = []
+
+    def _probe_the_locks() -> None:
+        seen.append(
+            (services_mod._store_rebuild_lock.locked(), services_mod._reset_swap_lock.locked())
+        )
+
+    _rebuild_with(monkeypatch, [MagicMock()], _probe_the_locks)
+
+    services_mod.reset_store()
+
+    assert seen == [(True, False)]
+    assert not services_mod._store_rebuild_lock.locked()
+
+
+def test_a_store_reset_reads_the_stop_inside_the_swap_lock(monkeypatch):
+    """A stop cannot land between the stop check and the swap: the check holds the swap lock."""
+    from tests.conftest import make_mock_services
+
+    class _WatchedStop(services_mod._EngineLifecycle):
+        """A lifecycle whose stop flag records whether the swap lock was held when it was read."""
+
+        def __init__(self) -> None:
+            self.reads: list[bool] = []
+            super().__init__()
+
+        @property
+        def stop_requested(self) -> bool:
+            self.reads.append(services_mod._reset_swap_lock.locked())
+            return False
+
+        @stop_requested.setter
+        def stop_requested(self, value: bool) -> None:
+            """The base class assigns the flag; the watched one stays False."""
+
+    watched = _WatchedStop()
+    monkeypatch.setattr(services_mod, "_lifecycle", watched)
+    set_services(make_mock_services())
+    _rebuild_with(monkeypatch, [MagicMock()], lambda: None)
+
+    services_mod.reset_store()
+
+    assert watched.reads == [True]
+
+
+class _TwoStoreResets:
+    """Two reset_store calls on threads: the first holds its build open until released."""
+
+    def __init__(self, monkeypatch) -> None:
+        from tests.conftest import make_mock_services
+
+        _without_a_stop_thread(monkeypatch)
+        self.original = make_mock_services()
+        set_services(self.original)
+        self.first_store, self.second_store = MagicMock(), MagicMock()
+        self.in_first_build = threading.Event()
+        self.release_first = threading.Event()
+        self.second_building = threading.Event()
+        self.seen: list[object] = []
+        self.errors: list[list[BaseException]] = [[], []]
+        stores = iter([self.first_store, self.second_store])
+
+        def _build(*_args: object) -> MagicMock:
+            self.seen.append(services_mod._state.singleton)
+            if len(self.seen) == 1:
+                self.in_first_build.set()
+                self.release_first.wait(_THREAD_TIMEOUT_S)
+            else:
+                self.second_building.set()
+            return next(stores)
+
+        monkeypatch.setattr(services_mod, "_new_store", _build)
+
+    def start(self) -> list[threading.Thread]:
+        """Start the first reset, wait until it builds, then start the second."""
+        first = _start_thread(services_mod.reset_store, self.errors[0])
+        assert self.in_first_build.wait(_THREAD_TIMEOUT_S)
+        second = _start_thread(services_mod.reset_store, self.errors[1])
+        return [first, second]
+
+    def finish(self, threads: list[threading.Thread]) -> None:
+        self.release_first.set()
+        for thread in threads:
+            thread.join(_THREAD_TIMEOUT_S)
+            assert not thread.is_alive()
+
+
+def test_two_store_resets_at_once_build_one_after_the_other(monkeypatch):
+    """The second reset waits for the first, then builds from the container the first installed."""
+    resets = _TwoStoreResets(monkeypatch)
+    threads = resets.start()
+    try:
+        assert not resets.second_building.wait(0.3)
+    finally:
+        resets.finish(threads)
+
+    assert resets.errors == [[], []]
+    assert len(resets.seen) == 2
+    assert resets.seen[0] is resets.original
+    second_read = resets.seen[1]
+    assert second_read is not resets.original
+    assert second_read.store is resets.first_store
+    kept = peek_services()
+    assert kept is not None
+    assert kept.store is resets.second_store
+    resets.original.store.close.assert_called_once_with()
+    resets.first_store.close.assert_called_once_with()
+    resets.second_store.close.assert_not_called()
+
+
+def test_a_stop_while_a_second_store_reset_waits_leaves_no_container_and_no_open_store(
+    monkeypatch,
+):
+    """The waiting reset builds nothing and the first one closes its store."""
+    resets = _TwoStoreResets(monkeypatch)
+    threads = resets.start()
+    try:
+        services_mod._lifecycle.stop_requested = True
+        reset_services()
+    finally:
+        resets.finish(threads)
+
+    assert [type(errors[0]) for errors in resets.errors if errors] == [ServicesStoppingError]
+    assert resets.errors[1] == []
+    assert len(resets.seen) == 1
+    resets.first_store.close.assert_called_once_with()
+    resets.second_store.close.assert_not_called()
+    assert peek_services() is None
+
+
 @pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
 def test_a_signal_during_an_exit_stop_joins_it_and_sets_the_exit_status(sig):
     """A signal that lands during a clean exit's stop gives its status once the stop ends."""
@@ -799,6 +1048,20 @@ def test_a_signal_on_another_thread_wakes_an_idle_loop():
         sender.join(timeout=5)
 
     assert time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP")
+def test_an_ignored_sighup_stays_ignored_inside_the_loop_wakeup():
+    """The wakeup context routes no signal of its own: a launch's ignore of SIGHUP holds."""
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+    async def inside() -> signal.Handlers | object:
+        with loop_wakes_on_signals(asyncio.get_running_loop()):
+            return signal.getsignal(signal.SIGHUP)
+
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        assert runner.run(inside()) == signal.SIG_IGN
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
 def test_the_thread_seam_lists_the_running_threads():
