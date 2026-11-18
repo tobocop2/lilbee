@@ -846,6 +846,41 @@ class TestNonZeroExit:
         assert nvidia_mod.card_count() == 0
         assert nvidia_mod._cache.stats() == {}
 
+    @pytest.mark.parametrize(
+        "printed",
+        [
+            _DRIVER_ERROR + "1, GPU-bbbb, 8192, 7000, NVIDIA GeForce GTX 1070 Ti\n"
+            "2, GPU-cccc, 8192, 7000, NVIDIA GeForce GTX 1070 Ti\n",
+            _DRIVER_ERROR + _TWO_CARDS,
+            _TWO_CARDS + _DRIVER_ERROR,
+        ],
+        ids=["error-then-rows-1-2", "error-then-rows-0-1", "rows-0-1-then-error"],
+    )
+    def test_an_unparsed_line_in_a_failed_run_keeps_no_row(
+        self, monkeypatch: pytest.MonkeyPatch, printed: str
+    ) -> None:
+        """An error line takes a position and hides a gap, so the run is not trusted."""
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, printed))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.card_rows() == 0
+        assert devices.visible_nvidia_cards() == []
+
+    @pytest.mark.parametrize(
+        "printed",
+        [
+            _DRIVER_ERROR + "1, 12, 61, 3352, 8192\n2, 40, 61, 3352, 8192\n",
+            _DRIVER_ERROR + _TWO_STATS,
+            _TWO_STATS + _DRIVER_ERROR,
+        ],
+        ids=["error-then-rows-1-2", "error-then-rows-0-1", "rows-0-1-then-error"],
+    )
+    def test_an_unparsed_line_in_failed_stats_counts_no_card(
+        self, monkeypatch: pytest.MonkeyPatch, printed: str
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, printed))
+        assert nvidia_mod.card_count() == 0
+        assert nvidia_mod._cache.stats() == {}
+
     def test_a_gap_after_an_exit_zero_is_not_this_probes_rule(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

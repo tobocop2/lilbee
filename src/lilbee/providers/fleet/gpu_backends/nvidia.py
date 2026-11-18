@@ -115,15 +115,16 @@ class _Probe:
             return self._reading
 
     def _rows_of_failed_run(self, printed: str, code: int | None) -> str:
-        """The rows a card-state exit printed when they have no gap and one is a card, else ``""``.
+        """The rows a card-state exit printed when every line is a row with no gap, else ``""``.
 
+        A line that is not a row, such as an error line, takes a position and hides a lost card.
         A gap in the printed indices is a card the driver lost: a child numbers the cards it can
         still see from 0, so a kept row after the gap would name the wrong card. Warns of the exit.
         """
         if code not in _CARD_STATE_EXITS or self._row_fields is None:
             return ""
         numbered = list(_numbered(printed, self._row_fields))
-        if not any(parts is not None for _, parts in numbered):
+        if not numbered or any(parts is None for _, parts in numbered):
             return ""
         if any(index != position for position, (index, _) in enumerate(numbered)):
             return ""
