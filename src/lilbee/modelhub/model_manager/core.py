@@ -11,7 +11,8 @@ from cachetools import TTLCache
 
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.refs import model_format
+from lilbee.catalog.refs import canonical_ref, model_format
+from lilbee.catalog.refs import parse_model_ref as parse_catalog_ref
 from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import DEFAULT_HTTP_TIMEOUT
 from lilbee.core.security import validate_path_within
@@ -215,6 +216,7 @@ class ModelManager:
                 f"lilbee runs {where} models but doesn't download them. "
                 f"Add the model in {where}, then pick it here."
             )
+        model = canonical_ref(model)
         engine, no_engine = self._pull_engine(model)
         if not allow_unsupported:
             self.enforce_arch_compat(model)
@@ -259,10 +261,16 @@ class ModelManager:
 
         Public because the pull preflight on the HTTP surface runs the same
         check before starting a download, so a caller learns the model is
-        unsupported before any bytes move.
+        unsupported before any bytes move. A malformed format qualifier has no
+        architecture to read; the pull refuses it when it resolves the target.
         """
-        if model_format(ref) is not ModelFormat.GGUF:
+        try:
+            parsed = parse_catalog_ref(ref)
+        except ValueError:
             return
+        if parsed.format is not ModelFormat.GGUF:
+            return
+        ref = parsed.canonical
         from lilbee.app.services import get_services
         from lilbee.catalog.compat import (
             ModelCompat,

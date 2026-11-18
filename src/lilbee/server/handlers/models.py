@@ -24,7 +24,7 @@ from lilbee.catalog import (
     page_window,
     picks_for,
 )
-from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo, model_format
+from lilbee.catalog.refs import canonical_ref, hf_repo_from_ref, is_bare_hf_repo, model_format
 from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import (
     CatalogSize,
@@ -225,6 +225,7 @@ def _require_model_available(model: str) -> str:
     )
     if not model:
         raise not_available
+    model = canonical_ref(model)
     available = set(get_services().provider.list_models())
     if model in available:
         return model
@@ -544,6 +545,7 @@ async def enforce_pull_arch_compat(
 
     if _parse_source(source) is not ModelSource.NATIVE:
         return
+    model = canonical_ref(model)
     if model_format(model) is not ModelFormat.GGUF:
         return
     manager = get_services().model_manager

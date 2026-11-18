@@ -848,10 +848,9 @@ def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
     """Start a saved chat session; returns its id."""
     if not agent_sessions_enabled():
         return _error(AGENT_SESSIONS_DISABLED_HINT)
-    session_id = get_services().session_store.create(
-        model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP
-    )
-    return {"id": session_id, "model_ref": model_ref, "scope": scope}
+    store = get_services().session_store
+    session_id = store.create(model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP)
+    return {"id": session_id, "model_ref": store.get(session_id).meta.model_ref, "scope": scope}
 
 
 @_tool_if(agent_sessions_enabled)

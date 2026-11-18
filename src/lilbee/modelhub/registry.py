@@ -27,6 +27,7 @@ from lilbee.catalog.formats import select_files
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
     ModelRef,
+    canonical_ref,
     format_native_gguf_ref,
     is_bare_hf_repo,
     is_gguf_filename,
@@ -282,7 +283,7 @@ class ModelRegistry:
         non_gguf = _non_gguf_repo(ref)
         if non_gguf is not None:
             return self._resolve_file_set(ref, *non_gguf)
-        return self._resolve_gguf(ref)
+        return self._resolve_gguf(parsed.canonical)
 
     def _remove_ticket(self, tag: str) -> bool:
         """Delete the ticket of the NPU model *tag*; the engine keeps its own download."""
@@ -329,7 +330,6 @@ class ModelRegistry:
 
     def _resolve_gguf(self, ref: str) -> Path:
         """Resolve a GGUF ref, or a bare ``<org>/<repo>``, to a loadable path."""
-        ref = parse_model_ref(ref).canonical
         if is_bare_hf_repo(ref):
             return self._resolve_repo_only(_validate_hf_repo(ref))
         hf_repo, gguf_filename = parse_hf_ref(ref)
@@ -592,10 +592,7 @@ class ModelRegistry:
         ``is_installed`` also answers True for a GGUF found in the HF cache,
         which the model list does not show until a manifest exists.
         """
-        try:
-            ref = parse_model_ref(ref).canonical
-        except ValueError:
-            return False
+        ref = canonical_ref(ref)
         if is_bare_hf_repo(ref):
             return self.installed_ref_for_repo(ref) is not None
         return self.get_manifest(ref) is not None

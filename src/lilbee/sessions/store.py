@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from lilbee.catalog.refs import canonical_ref
 from lilbee.core.config import cfg
 from lilbee.core.security import (
     ensure_private_dir,
@@ -370,7 +371,9 @@ class SessionStore:
         """Start a new session owned by *origin* and return its id."""
         session_id = uuid4().hex
         ensure_private_dir(self._dir)
-        meta = self._meta_event(session_id, model_ref, scope, origin, self._now(), forked_from="")
+        meta = self._meta_event(
+            session_id, canonical_ref(model_ref), scope, origin, self._now(), forked_from=""
+        )
         self._write_event(self._path(session_id), meta)
         return session_id
 

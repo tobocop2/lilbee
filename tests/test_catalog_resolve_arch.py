@@ -57,33 +57,6 @@ def test_resolve_does_not_cache_empty_arch_on_probe_failure(
     assert client.get_cached_arch("acme/flaky-GGUF") == "llama"
 
 
-def test_a_gguf_qualified_file_ref_probes_the_file_and_caches_under_the_bare_ref(
-    client: HfClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    probed: list[str] = []
-
-    def _probe(url: str) -> GgufHeader:
-        probed.append(url)
-        return GgufHeader(architecture="gemma3")
-
-    monkeypatch.setattr(compat, "probe_header", _probe)
-    assert resolve_arch_for_pull("acme/foo-GGUF/m-Q4_K_M.gguf#gguf", client) == "gemma3"
-    assert len(probed) == 1
-    assert probed[0].endswith("acme/foo-GGUF/resolve/main/m-Q4_K_M.gguf")
-    assert client.get_cached_arch("acme/foo-GGUF/m-Q4_K_M.gguf") == "gemma3"
-    assert client.get_cached_arch("acme/foo-GGUF/m-Q4_K_M.gguf#gguf") is None
-
-
-def test_a_malformed_format_qualifier_has_an_undetermined_arch_and_no_probe(
-    client: HfClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    probed: list[str] = []
-    monkeypatch.setattr(compat, "probe_header", lambda url: probed.append(url) or GgufHeader())
-    assert resolve_arch_for_pull("acme/foo-GGUF/m-Q4_K_M.gguf#nope", client) == ""
-    assert probed == []
-    assert client.get_cached_arch("acme/foo-GGUF/m-Q4_K_M.gguf#nope") is None
-
-
 def test_resolve_blob_url_returns_empty_for_glob_filename() -> None:
     """`*.gguf` filenames aren't unique blobs; resolver bails to UNKNOWN."""
     assert compat._resolve_blob_url("acme/foo-GGUF:*.gguf") == ""

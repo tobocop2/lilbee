@@ -15,6 +15,7 @@ from lilbee.catalog.query import (
     RERANKER_NAME_PATTERNS,
     VISION_NAME_PATTERNS,
 )
+from lilbee.catalog.refs import canonical_ref
 from lilbee.catalog.types import KeyStatus, ModelTask
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.model_manager.types import ApiModelGroup, RemoteModel
@@ -296,6 +297,7 @@ class KnownModelCache:
         produces it, so two same-labelled quants stay unresolved rather than
         routing to the wrong file.
         """
+        model = canonical_ref(model)
         refs = self.refs()
         if model in refs:
             return model

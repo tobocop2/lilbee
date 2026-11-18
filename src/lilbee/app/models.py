@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
 from lilbee.catalog.query import reclassify_by_name
-from lilbee.catalog.refs import model_format
+from lilbee.catalog.refs import canonical_ref, model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
@@ -218,6 +218,7 @@ def adopt_embedder(ref: str) -> AdoptResult:
     from lilbee.app.settings import apply_settings_update
     from lilbee.catalog.types import ModelSource
 
+    ref = canonical_ref(ref)
     manager = get_services().model_manager
     installed = manager.is_installed(ref, ModelSource.NATIVE)
     already_active = cfg.embedding_model == ref and installed

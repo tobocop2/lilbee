@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from lilbee.catalog.refs import is_gguf_filename, is_native_gguf_shape, model_format
+from lilbee.catalog.refs import canonical_ref, is_gguf_filename, is_native_gguf_shape, model_format
 from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.providers.base import (
     ChosenSeed,
@@ -154,8 +154,9 @@ def canonical_model_ref(raw: str) -> str:
 
     A ref that names a stored server preset and a ref that names none both keep
     the text as written, so this reads no stored preset. The config validators call it.
+    A ``#gguf`` qualifier reads as the plain ref, so config holds one spelling.
     """
-    return _classify(raw, read_presets=False).for_openai_prefix()
+    return _classify(canonical_ref(raw), read_presets=False).for_openai_prefix()
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:

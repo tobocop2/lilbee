@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeVar, o
 import httpx
 
 from lilbee.catalog import clean_display_name
+from lilbee.catalog.refs import canonical_ref
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.settings import read_persisted
@@ -2311,7 +2312,7 @@ class FleetProvider:
         a config change that respawns the server, not a per-call override. An
         empty/None ``model`` means "use the configured one" and is always accepted.
         """
-        if model and model != configured:
+        if model and canonical_ref(model) != configured:
             raise ProviderError(
                 configured_model_message(role, configured, model),
                 provider=_PROVIDER_NAME,

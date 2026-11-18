@@ -17,7 +17,7 @@ from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import make_download_callback
 from lilbee.catalog.models import DownloadProgress
-from lilbee.catalog.refs import model_format
+from lilbee.catalog.refs import canonical_ref, model_format
 from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
@@ -579,6 +579,7 @@ def use_for_role(
     role: WorkerRole, model: str, name: str, config: Config = cfg, confirmed: bool = False
 ) -> str:
     """Store the engine for the model of *role*; refuses a model that is not the role's model."""
+    model = canonical_ref(model)
     current = str(getattr(config, ROLE_REGISTRY[role].config_field))
     if not current.strip():
         raise EngineRefusedError(
