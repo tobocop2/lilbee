@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryRequest
 from lilbee.providers.fleet.model_memory import CPU_RUNTIME_ALLOWANCE_BYTES
 from lilbee.providers.fleet.placement import ModelPlacementInput
 from lilbee.providers.fleet.vram import AttentionShape
-from lilbee.providers.roles import EngineBackend, WorkerRole
+from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
 from tests._fleet_engines import engines_for_all_roles
 
 Q4_0, Q6_K, Q4_K, IQ4_NL = 2, 14, 12, 20
@@ -115,6 +116,106 @@ class TestTheRepackedCopy:
 
         estimate = IK_LLAMA.estimate_memory(_request(model, on_cpu=True))
         assert estimate.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
+
+
+COMPUTE_BUFFER = 4000
+HOST_PART = 100
+DEVICE_MODEL_INFLATION = 250
+PROJECTOR_UNIFIED = 60
+PROJECTOR_FILE = 80
+
+
+class TestTheComputeBuffer:
+    """A CPU load is sized at no offloaded layer, where the device holds only the buffer."""
+
+    @pytest.fixture(autouse=True)
+    def _parser_that_answers_by_layers(self, model: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _parser(argv: list[str], _path: str) -> str:
+            if "--raw" in argv:
+                return json.dumps(RAW)
+            on_card = argv[argv.index("--gpu-layers") + 1] != "0"
+            projector = PROJECTOR_UNIFIED if "--mmproj-path" in argv else 0
+            host = HOST_PART + projector + (DEVICE_MODEL_INFLATION if on_card else 0)
+            device = COMPUTE_BUFFER + (FILE_SIZE if on_card else 0)
+            return json.dumps(
+                {
+                    "metadata": {"fileSize": FILE_SIZE},
+                    "estimate": {
+                        "items": [
+                            {
+                                "ram": {"uma": host, "nonuma": HOST_PART},
+                                "vrams": [{"uma": 0, "nonuma": device}],
+                            }
+                        ]
+                    },
+                }
+            )
+
+        monkeypatch.setattr(vram_mod, "_run_parser", _parser)
+
+    @staticmethod
+    def _pooled(path: Path, *, on_cpu: bool = True) -> MemoryRequest:
+        return replace(_request(path, on_cpu=on_cpu), batch_size=16)
+
+    def test_a_cpu_load_backs_the_buffer(self, model: Path) -> None:
+        cpu = LLAMA.estimate_memory(self._pooled(model))
+        assert cpu.resident_footprint(unified=True) == (
+            HOST_PART + COMPUTE_BUFFER + FILE_SIZE + REPACKED
+        )
+
+    def test_a_cpu_chat_load_keeps_the_parser_figure(self, model: Path) -> None:
+        chat = model_memory_mod.estimate_gguf(_request(model, on_cpu=True))
+        assert chat.resident_footprint(unified=True) == (
+            HOST_PART + DEVICE_MODEL_INFLATION + FILE_SIZE + REPACKED
+        )
+
+    def test_a_cpu_load_is_the_same_at_every_layer_count(self, model: Path) -> None:
+        all_layers = LLAMA.estimate_memory(self._pooled(model))
+        none = LLAMA.estimate_memory(replace(self._pooled(model), gpu_layers=0))
+        assert all_layers.resident_footprint(unified=True) == none.resident_footprint(unified=True)
+
+    def test_a_card_load_leaves_the_buffer_on_the_card(self, model: Path) -> None:
+        card = LLAMA.estimate_memory(self._pooled(model, on_cpu=False))
+        assert card.resident_footprint(unified=True) == (
+            HOST_PART + DEVICE_MODEL_INFLATION + FILE_SIZE
+        )
+        assert card.device_bytes == COMPUTE_BUFFER + FILE_SIZE
+
+    def test_a_projector_is_not_charged_through_the_buffer(
+        self, model: Path, tmp_path: Path
+    ) -> None:
+        projector = tmp_path / "mmproj.gguf"
+        projector.write_bytes(b"x" * PROJECTOR_FILE)
+        plain = LLAMA.estimate_memory(self._pooled(model))
+        vision = LLAMA.estimate_memory(replace(self._pooled(model), mmproj_path=projector))
+        assert vision.resident_footprint(unified=True) - plain.resident_footprint(unified=True) == (
+            PROJECTOR_UNIFIED + PROJECTOR_FILE
+        )
+
+    def test_a_cpu_only_host_embed_role_charges_the_buffer_once(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CPU)
+        charge = planning_mod._estimate_role(
+            WorkerRole.EMBED, "ref", slots=1, engine=LLAMA, unified_budget=10**9
+        ).est_vram_bytes
+        assert charge == HOST_PART + COMPUTE_BUFFER + FILE_SIZE + REPACKED
+
+    @pytest.mark.parametrize(
+        ("mode", "charged"),
+        [(RerankMode.CROSS_ENCODER, True), (RerankMode.LLM, False)],
+        ids=["cross-encoder", "llm"],
+    )
+    def test_only_a_cross_encoder_rerank_is_charged_the_buffer(
+        self, model: Path, monkeypatch: pytest.MonkeyPatch, mode: RerankMode, charged: bool
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "engine_backend", lambda _e: EngineBackend.CPU)
+        monkeypatch.setattr(planning_mod, "_role_rerank_mode", lambda _role, _meta: mode)
+        charge = planning_mod._estimate_role(
+            WorkerRole.RERANK, "ref", slots=1, engine=LLAMA, unified_budget=10**9
+        ).est_vram_bytes
+        with_buffer = HOST_PART + COMPUTE_BUFFER + FILE_SIZE + REPACKED
+        assert (charge == with_buffer) is charged
 
 
 class TestTheOnePoolCharge:

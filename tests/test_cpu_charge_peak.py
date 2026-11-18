@@ -325,7 +325,8 @@ class TestWhatTheCpuChargeAsksFor:
         sized = fake.sized()
         assert [argv[argv.index("--ubatch-size") + 1] for argv in sized] == ["1"]
         figures = PARSER[(cell.model, 1, 4096, False, "f16")]
-        assert charge == figures.slot_uma + MODELS[cell.model].file_bytes
+        # The parser books the batch buffer to the device; a CPU load holds it in memory.
+        assert charge == figures.slot_uma + figures.slot_vram + MODELS[cell.model].file_bytes
 
 
 class TestTheScoreTerm:
