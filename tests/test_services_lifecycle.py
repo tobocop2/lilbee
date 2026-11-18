@@ -171,6 +171,38 @@ def test_the_first_ctrl_c_stops_the_server_and_the_second_forces_the_exit(monkey
     provider.shutdown.assert_called_once()
 
 
+def test_a_ctrl_c_after_the_server_hook_is_gone_joins_the_stop_without_raising():
+    """A stuck lifespan leaves the hook cleared; the press must not raise into the loop."""
+    provider = _install_stub_services()
+    set_server_exit_hook(lambda _status: None)
+    services_mod.answer_provider_waiters()
+    set_server_exit_hook(None)
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        stop_on_interrupt()
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        _join_teardown()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        set_server_exit_hook(lambda _status: None)
+        set_server_exit_hook(None)
+    provider.shutdown.assert_called_once()
+
+
+def test_a_ctrl_c_before_any_server_runs_still_unwinds_the_main_thread():
+    """With no loop and no stop under way, the press exits through SystemExit."""
+    _install_stub_services()
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        stop_on_interrupt()
+        with pytest.raises(SystemExit) as exit_info:
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        _join_teardown()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert exit_info.value.code == 128 + signal.SIGINT
+
+
 def test_cli_entry_point_installs_the_hooks():
     """Every surface enters through the Typer callback, so the hooks install there."""
     import inspect

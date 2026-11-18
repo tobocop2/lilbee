@@ -26,6 +26,7 @@ from lilbee.runtime.daemon_call import DaemonCall
 _FAILURE_CEILING_S = 30.0
 _WAKE_LIMIT_S = 5.0
 _BLOCKED_LOOP_BOUND_S = 15.0
+_QUIET_WINDOW_S = 1.0
 _FIXED_PATH = "/usr/bin:/bin"
 _DEADLINE_EXIT_STATUS = 1
 _SIGINT_EXIT_STATUS = 130
@@ -319,6 +320,20 @@ def test_a_second_ctrl_c_leaves_a_stuck_teardown_before_the_deadline(
     server.process.send_signal(signal.SIGINT)
     assert server.wait() == _SIGINT_EXIT_STATUS, server.output + server.fault_log()
     assert "Timeout (" not in server.fault_log()
+
+
+@posix_only
+def test_a_ctrl_c_during_a_stuck_shutdown_logs_no_failure(start: Callable[..., _Serve]) -> None:
+    server = start(X_DEADLINE="20", X_TEARDOWN="stuck")
+    server.request("POST", "/api/shutdown")
+    server.read_until("HELD")
+    server.process.send_signal(signal.SIGINT)
+    server.read_until("HELD")
+    time.sleep(_QUIET_WINDOW_S)
+    server.process.send_signal(signal.SIGINT)
+    assert server.wait() == _SIGINT_EXIT_STATUS
+    assert "Application shutdown failed" not in server.output
+    assert "SystemExit" not in server.output
 
 
 @posix_only

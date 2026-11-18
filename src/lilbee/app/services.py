@@ -458,9 +458,9 @@ def reset_services() -> None:
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
     locked so concurrent callers (a signal's teardown thread plus an exiting
-    one) tear the container down exactly once. On ``lilbee serve``, SIGTERM and
-    SIGHUP run it on the signal's teardown thread while requests are still
-    open; SIGINT and the shutdown route run it after those requests end.
+    one) tear the container down exactly once. On ``lilbee serve``, SIGINT,
+    SIGTERM and SIGHUP run it on the signal's teardown thread while requests
+    are still open; the shutdown route runs it after those requests end.
     """
     with _reset_swap_lock:
         old = _state.singleton
@@ -583,6 +583,8 @@ class _EngineLifecycle:
         self._interrupts += 1
         if self._interrupts > 1:
             _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+        elif server_is_stopping():
+            _start_signal_teardown(signum)
         else:
             self._on_hard_exit(signum, frame)
 
@@ -618,9 +620,7 @@ class _EngineLifecycle:
         del frame
         status = _SIGNAL_EXIT_BASE + signum
         serving = request_server_exit(status)
-        threading.Thread(
-            target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
-        ).start()
+        _start_signal_teardown(signum)
         if not serving:
             raise SystemExit(status)
 
@@ -782,6 +782,13 @@ def exit_after_signal(status: int) -> None:
     """
     reset_services_on_exit()
     _exit_if_stragglers(status)
+
+
+def _start_signal_teardown(signum: int) -> None:
+    """Run the signal teardown on its own non-daemon thread."""
+    threading.Thread(
+        target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
+    ).start()
 
 
 def _teardown_for_signal(signum: int) -> None:
