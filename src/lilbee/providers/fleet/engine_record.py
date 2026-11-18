@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from importlib import resources
 from typing import Any, NamedTuple
 
-PACKAGES_URL = "https://github.com/tobocop2/lilbee/releases/download/"
+PACKAGES_URL = "https://github.com/tobocop2/lilbee-engine-packs/releases/download/"
 RECORD_FILE = "engine_packs.json"
 _FIELDS = ("file", "url", "sha256", "size")
 _ENGINES = {

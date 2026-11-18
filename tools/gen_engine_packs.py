@@ -30,7 +30,7 @@ from lilbee.providers.fleet.engine_record import (
 )
 from lilbee.providers.fleet.engines.base import EngineName
 
-REPOSITORY = "tobocop2/lilbee"
+REPOSITORY = "tobocop2/lilbee-engine-packs"
 _ASSETS = ".[] | {tag_name, draft, assets: [.assets[] | {name, digest, size}]}"
 
 

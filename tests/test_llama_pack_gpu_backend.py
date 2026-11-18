@@ -401,7 +401,7 @@ def test_the_shipped_table_pins_the_published_wheel_of_each_gpu_cell(
     assert lock.platforms[cell].size == size
     row = engine_manifest.MANIFESTS["llama.cpp"][VERSION][cell]
     assert row["url"].startswith(
-        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-llama-gpu/"
+        "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261118/"
     )
     filename = row["url"].rsplit("/", 1)[1]
     build = "2" if system == "Windows" else "1"
