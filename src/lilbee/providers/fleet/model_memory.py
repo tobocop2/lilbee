@@ -387,9 +387,15 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
 
 
 def estimate_gguf_cpu_decode(request: MemoryRequest) -> MemoryEstimate:
-    """The CPU chat figure: one logits row per slot, scores when flash is off."""
+    """The CPU chat figure: one logits row per slot, scores when flash is off.
+
+    A header whose head counts are absent or per layer (a hybrid recurrent model), or that has
+    no vocabulary, keeps the parser's own figure.
+    """
     estimate = estimate_gguf(request)
     shape = attention_shape(request.model_path)
+    if shape is None:
+        return estimate
     unused_logits = (_CPU_UBATCH - request.slots) * shape.vocab * _LOGITS_ROW_BYTES_PER_TOKEN
     scores = (
         0

@@ -389,15 +389,30 @@ class AttentionShape:
     vocab: int
 
 
-def attention_shape(model_path: Path) -> AttentionShape:
-    """Attention head counts and vocabulary size of a GGUF file, read from its header."""
+def attention_shape(model_path: Path) -> AttentionShape | None:
+    """Scalar head counts and vocabulary size of a GGUF file; None when the header has no such."""
     return _cached_attention_shape(
         engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
     )
 
 
+def _shape_from_entries(entries: dict[str, object]) -> AttentionShape | None:
+    """The shape, or None when a head count is absent or per layer, or the vocabulary is absent."""
+    arch = entries.get(_GGUF_ARCH)
+    heads = entries.get(f"{arch}.{_GGUF_HEADS}")
+    kv_heads = entries.get(f"{arch}.{_GGUF_KV_HEADS}")
+    tokens = entries.get(_GGUF_TOKENS)
+    # The raw header is untyped JSON: a scalar count is a number, a per-layer count and the
+    # token list are array objects.
+    if not (isinstance(heads, int) and isinstance(kv_heads, int) and isinstance(tokens, dict)):
+        return None
+    return AttentionShape(heads=heads, kv_heads=kv_heads, vocab=int(tokens[_KEY_ARRAY_LEN]))
+
+
 @lru_cache(maxsize=_CACHE_SIZE)
-def _cached_attention_shape(_engine_id: str, path_str: str, _mtime_ns: int) -> AttentionShape:
+def _cached_attention_shape(
+    _engine_id: str, path_str: str, _mtime_ns: int
+) -> AttentionShape | None:
     """Memoised head counts and vocabulary length from the raw header."""
     argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
     try:
@@ -405,12 +420,7 @@ def _cached_attention_shape(_engine_id: str, path_str: str, _mtime_ns: int) -> A
             entry[_KEY_HEADER_KEY]: entry[_KEY_HEADER_VALUE]
             for entry in json.loads(_run_parser(argv, path_str))[_KEY_HEADER][_KEY_HEADER_KV]
         }
-        arch = entries[_GGUF_ARCH]
-        return AttentionShape(
-            heads=int(entries[f"{arch}.{_GGUF_HEADS}"]),
-            kv_heads=int(entries[f"{arch}.{_GGUF_KV_HEADS}"]),
-            vocab=int(entries[_GGUF_TOKENS][_KEY_ARRAY_LEN]),
-        )
+        return _shape_from_entries(entries)
     except (ValueError, KeyError, TypeError) as exc:
         raise ProviderError(
             f"Could not size the model {path_str!r}: the estimator returned unreadable output.",

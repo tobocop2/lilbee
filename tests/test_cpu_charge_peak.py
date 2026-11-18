@@ -160,12 +160,13 @@ class _Parser:
     def __init__(self, name: str) -> None:
         self.name = name
         self.argvs: list[list[str]] = []
+        self.header: dict[str, object] | None = None
 
     def __call__(self, argv: list[str], _path: str) -> str:
         self.argvs.append(argv)
         model = MODELS[self.name]
         if "--raw" in argv:
-            return json.dumps(_header(model))
+            return json.dumps(self.header or _header(model))
         slots = int(argv[argv.index("--parallel") + 1])
         ctx = int(argv[argv.index("--ctx-size") + 1]) // slots
         flash = "--no-flash-attention" not in argv
@@ -393,7 +394,7 @@ class TestTheAttentionShape:
         self, parser_for: ParserFor, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         path, _ = parser_for("qwen-7b-q4km")
-        assert vram_mod.attention_shape(path).heads == 28
+        assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(28, 4, 152_064)
         monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps(_header(OTHER)))
         path.write_bytes(b"GGUF2")
         assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(1, 1, 1)
@@ -403,13 +404,13 @@ class TestTheAttentionShape:
     ) -> None:
         path, _ = parser_for("qwen-7b-q4km")
         monkeypatch.setattr(vram_mod, "engine_build_identity", lambda: "build-a")
-        assert vram_mod.attention_shape(path).heads == 28
+        assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(28, 4, 152_064)
         monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps(_header(OTHER)))
-        assert vram_mod.attention_shape(path).heads == 28
+        assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(28, 4, 152_064)
         monkeypatch.setattr(vram_mod, "engine_build_identity", lambda: "build-b")
-        assert vram_mod.attention_shape(path).heads == 1
+        assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(1, 1, 1)
 
-    def test_a_header_without_the_vocabulary_is_refused(
+    def test_unreadable_raw_output_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         path = tmp_path / "m.gguf"
@@ -420,16 +421,71 @@ class TestTheAttentionShape:
         with pytest.raises(ProviderError, match="unreadable output"):
             vram_mod.attention_shape(path)
 
-    def test_a_per_layer_kv_head_count_is_refused(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+
+LFM2_KV = [0, 0, 8, 0, 0, 8, 0, 0, 8, 0, 8, 0, 8, 0, 8, 0]
+"""LFM2-350M's per-layer KV heads: zero on a convolution layer, 8 on an attention layer."""
+
+
+def _array(items: list[int]) -> dict[str, object]:
+    """A per-layer count as the raw header writes it."""
+    return {"type": 4, "len": len(items), "array": items, "startOffset": 1, "size": 4}
+
+
+def _arch_header(
+    heads: object, kv_heads: object, *, vocab: int | None = 65_536
+) -> dict[str, object]:
+    """A raw header of architecture ``hybrid``; a ``None`` field is left out."""
+    fields = {
+        "hybrid.attention.head_count": heads,
+        "hybrid.attention.head_count_kv": kv_heads,
+        "tokenizer.ggml.tokens": None if vocab is None else {"type": 8, "len": vocab},
+    }
+    entries = [{"key": "general.architecture", "value": "hybrid"}] + [
+        {"key": key, "value": value} for key, value in fields.items() if value is not None
+    ]
+    return {"header": {"metadataKV": entries}}
+
+
+GRANITE_H_KV = [0] * 10 + [4, 0, 0, 4, 0, 0, 0, 4] + [0] * 9 + [4, 0, 0, 0, 0]
+"""granite-4.0-h-350m's per-layer KV heads: four attention layers among 32."""
+
+UNSCALED = {
+    "lfm2-kv-array": _arch_header(16, _array(LFM2_KV)),
+    "granite-h-kv-array": _arch_header(12, _array(GRANITE_H_KV)),
+    "query-head-array": _arch_header(_array([32, 16]), 8),
+    "no-kv-heads": _arch_header(32, None),
+    "no-heads": _arch_header(None, None),
+    "no-vocabulary": _arch_header(32, 8, vocab=None),
+    "text-heads": _arch_header("32", 8),
+}
+"""Headers the CPU rule has no measurement for: per-layer, absent or unreadable head counts."""
+
+
+class TestAHeaderWithoutScalarHeads:
+    def _shape(self, parser_for: ParserFor, header: dict[str, object]) -> object:
+        path, fake = parser_for("llama-1b-q8")
+        fake.header = header
+        return vram_mod.attention_shape(path)
+
+    def test_a_scalar_header_has_its_heads_and_vocabulary(self, parser_for: ParserFor) -> None:
+        shape = self._shape(parser_for, _arch_header(32, 8))
+        assert shape == vram_mod.AttentionShape(32, 8, 65_536)
+
+    @pytest.mark.parametrize("case", sorted(UNSCALED))
+    def test_it_has_no_shape(self, case: str, parser_for: ParserFor) -> None:
+        assert self._shape(parser_for, UNSCALED[case]) is None
+
+    @pytest.mark.parametrize("flash", [True, False])
+    @pytest.mark.parametrize("case", sorted(UNSCALED))
+    def test_it_keeps_the_parsers_own_figure(
+        self, case: str, flash: bool, parser_for: ParserFor
     ) -> None:
-        path = tmp_path / "m.gguf"
-        path.write_bytes(b"GGUF")
-        vram_mod._cached_attention_shape.cache_clear()
-        header = _header(MODELS["llama-1b-q8"])
-        entries = header["header"]["metadataKV"]  # type: ignore[index]
-        entries[2]["value"] = {"type": 4, "len": 16, "startOffset": 1, "size": 1}
-        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
-        monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps(header))
-        with pytest.raises(ProviderError, match="unreadable output"):
-            vram_mod.attention_shape(path)
+        path, fake = parser_for("llama-1b-q8")
+        fake.header = UNSCALED[case]
+        request = MemoryRequest(
+            model_path=path, ctx=4096, slots=1, gpu_layers=0, flash_attn=flash,
+            kv_cache_type=KvCacheType.F16, on_cpu=True,
+        )  # fmt: skip
+        assert _charge(request) == (
+            PARSER[("llama-1b-q8", 1, 4096, flash, "f16")].uma + MODELS["llama-1b-q8"].file_bytes
+        )
