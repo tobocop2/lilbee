@@ -57,7 +57,9 @@ def carries_secret(text: str) -> bool:
     if command == _SET and len(words) > 1:
         return _is_secret_setting(words[1]) or any(_set_word_has_userinfo(w) for w in words[1:])
     if command == _CRAWL:
-        return any(_has_userinfo(w if is_url(w) else f"https://{w}") for w in words[1:])
+        # The crawl command reads only the first word as the address.
+        address = words[1] if len(words) > 1 else ""
+        return _has_userinfo(address if is_url(address) else f"https://{address}")
     if command == _ADD:
         return any(is_url(w) and _has_userinfo(w) for w in words[1:])
     return False
