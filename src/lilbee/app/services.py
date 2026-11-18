@@ -519,12 +519,16 @@ def reset_store() -> None:
         # Build the replacement, swap the reference, then close the old store last so
         # a new caller never observes a closed handle mid-swap.
         store = _new_store(cfg, canary_probe(cfg, svc.embedder, svc.registry))
-        concepts = ConceptGraph(cfg, store)
-        clusterer = Clusterer(cfg, store)
-        searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
-        rebuilt = replace(
-            svc, store=store, concepts=concepts, clusterer=clusterer, searcher=searcher
-        )
+        try:
+            concepts = ConceptGraph(cfg, store)
+            clusterer = Clusterer(cfg, store)
+            searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
+            rebuilt = replace(
+                svc, store=store, concepts=concepts, clusterer=clusterer, searcher=searcher
+            )
+        except BaseException:
+            store.close()
+            raise
         # Same lock and stop check as get_services: a rebuild must not bring back a
         # container that the stop cleared, nor one that reset_services replaced.
         with _reset_swap_lock:
