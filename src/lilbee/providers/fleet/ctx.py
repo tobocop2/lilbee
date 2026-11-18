@@ -4,7 +4,7 @@
 :func:`fit_split_ctx` sizes a tensor split against the busiest card's headroom
 rather than the summed pool. Both bisect the same quantized grid.
 ``engine_params.resolve_chat_ctx`` is the entry point for the single-device fit
-and holds the header-math fallback. See docs/architecture.md (VRAM estimation).
+and holds the header-math fallback. See docs/internals/engine.md (VRAM estimation).
 """
 
 from __future__ import annotations

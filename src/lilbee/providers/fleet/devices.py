@@ -4,7 +4,7 @@ The hazard this avoids: a device index from one API (Vulkan) is meaningless to
 another (CUDA); the same ordinal can be a different physical card. So both
 enumeration and pinning go through the binary's native backend index space,
 obtained from ``llama-server --list-devices``. The Vulkan VRAM probe is only a
-fallback when the binary can't enumerate. See docs/architecture.md.
+fallback when the binary can't enumerate. See docs/internals/engine.md.
 """
 
 from __future__ import annotations

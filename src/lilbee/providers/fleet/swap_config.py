@@ -2,7 +2,7 @@
 
 Each group runs behind its own llama-swap process with its own config, so a
 reload of one group never touches another's loaded servers. See
-docs/architecture.md (llama-swap) for the supervisor/proxy design.
+docs/internals/engine.md (llama-swap) for the supervisor/proxy design.
 """
 
 from __future__ import annotations

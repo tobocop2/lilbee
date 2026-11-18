@@ -40,7 +40,7 @@ EOF
 cd /root/bench
 for i in 1 2 3; do lilbee model pull "$CHAT" && break; log "pull retry $i"; sleep 5; done
 lilbee model pull "$EMBED"
-cp /workspace/lilbee/docs/usage.md /workspace/lilbee/docs/architecture.md kb/ 2>/dev/null || cp /root/lilbee/docs/usage.md /root/lilbee/docs/architecture.md kb/ 2>/dev/null
+cp /workspace/lilbee/docs/usage.md /workspace/lilbee/docs/architecture.md /workspace/lilbee/docs/internals/*.md kb/ 2>/dev/null || cp /root/lilbee/docs/usage.md /root/lilbee/docs/architecture.md /root/lilbee/docs/internals/*.md kb/ 2>/dev/null
 lilbee add kb/ > /dev/null 2>&1
 
 log "starting lilbee serve"

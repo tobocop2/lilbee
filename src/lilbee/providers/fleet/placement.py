@@ -7,7 +7,7 @@ on a GPU with spare VRAM, and a model too big for any single GPU is tensor-split
 across enough GPUs to fit. Roles that never run in the same phase (ingest OCR vs a
 query) share one swap group when they cannot all co-reside, so only the phase in
 use is charged. On GPUs the estimate advises but never refuses: a role that fits
-nowhere is placed tight (best-effort, with a warning). See docs/architecture.md.
+nowhere is placed tight (best-effort, with a warning). See docs/internals/engine.md.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def plan_placement(
     tighter shard would starve its served context below ``chat_ctx_target``; the
     fitter is sized against ``free_headroom`` (the plan snapshot's free VRAM per
     device index; see ``planning.capture_plan_probe``). See
-    docs/architecture.md (Placement). Other splits keep the fewest-cards behavior.
+    docs/internals/engine.md (Placement). Other splits keep the fewest-cards behavior.
 
     A ``unified_budget`` (free system RAM, bytes) means every device this host has
     shares the host's memory, or it has none: an integrated GPU, an Apple Silicon
