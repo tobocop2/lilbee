@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -59,6 +60,46 @@ def test_download_target_translates_unsupported_arch_to_runtime_error() -> None:
     with (
         patch("lilbee.app.models.pull_model_data", side_effect=_raise),
         pytest.raises(RuntimeError, match="kimi_k2"),
+    ):
+        _download_target(_Reporter(), model)
+
+
+def test_download_target_cache_plain_error_is_not_the_login_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable cache shows the folder message, not the gated-repo login advice."""
+    from lilbee.catalog import download
+    from lilbee.catalog.models import CatalogModel
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.widgets.task_bar_controller import _download_target
+
+    class _Reporter:
+        def update(self, percent: float, detail: str) -> None:
+            pass
+
+    model = CatalogModel(
+        hf_repo="acme/foo-GGUF",
+        gguf_filename="*.gguf",
+        size_gb=1.0,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=ModelTask.CHAT,
+    )
+
+    def _refuse(self: Path, pattern: str) -> object:
+        raise PermissionError(13, "Permission denied")
+
+    def _pull(*args: object, **kwargs: object) -> object:
+        download.discard_partial_blobs(tmp_path, "acme/foo-GGUF", ["abc123"])
+        return object()
+
+    monkeypatch.setattr(Path, "glob", _refuse)
+
+    with (
+        patch("lilbee.app.models.pull_model_data", side_effect=_pull),
+        pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*acme--foo-GGUF"),
     ):
         _download_target(_Reporter(), model)
 
