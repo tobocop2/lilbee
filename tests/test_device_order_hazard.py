@@ -284,7 +284,7 @@ def test_a_plan_with_one_engine_reads_no_driver_count(host) -> None:
     assert planning._roles_without_a_pin(_INPUTS, engine.reading, engines, None, cards) == ()
 
 
-def _refusal_text(host, caplog, seen: int, cards: int) -> str:
+def _refusal_text(host, seen: int, cards: int) -> str:
     """The warning for a role refused on *seen* visible devices of a host of *cards*."""
     first = _engine("first", "Vulkan", seen, True)
     other = _engine("other", "CUDA", seen, False)
@@ -293,18 +293,17 @@ def _refusal_text(host, caplog, seen: int, cards: int) -> str:
     host.setattr(planning, "_roles_that_fit_alone", lambda *_args: set())
     host.setattr(planning, "nvidia_card_rows", lambda: cards)
     placement = SimpleNamespace(unplaceable_roles=(_EMBED,), instances=(), co_tenants=frozenset())
-    with caplog.at_level(logging.WARNING, logger=planning.log.name):
-        planning._log_refused_roles(
-            placement,
-            {_CHAT: "chat-model", _EMBED: "embed-model"},
-            {_CHAT: first, _EMBED: other},
-            _INPUTS,
-            first.reading,
-            planning.HostCards(first.reading),
-            unified_budget=None,
-            capacity={d.index: 8 * GIB for d in first.reading},
-        )
-    return caplog.text
+    reasons = planning._unplaceable_reasons(
+        placement,
+        {_CHAT: "chat-model", _EMBED: "embed-model"},
+        {_CHAT: first, _EMBED: other},
+        _INPUTS,
+        first.reading,
+        planning.HostCards(first.reading),
+        unified_budget=None,
+        capacity={d.index: 8 * GIB for d in first.reading},
+    )
+    return reasons[_EMBED]
 
 
 @pytest.mark.parametrize(
@@ -313,9 +312,9 @@ def _refusal_text(host, caplog, seen: int, cards: int) -> str:
     ids=["mask-hides-a-card", "driver-read-fails", "more-visible-than-driver-cards"],
 )
 def test_the_refusal_states_the_count_of_cards_that_caused_it(
-    host, caplog, seen: int, cards: int, count: int
+    host, seen: int, cards: int, count: int
 ) -> None:
-    assert f"this host has {count} GPUs" in _refusal_text(host, caplog, seen, cards)
+    assert f"this host has {count} GPUs" in _refusal_text(host, seen, cards)
 
 
 def _hot_cards(host, fleet: list[FleetDevice]) -> Signals:

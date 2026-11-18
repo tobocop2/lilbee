@@ -101,6 +101,15 @@ class SizeUnknownRole:
 
 
 @dataclass(frozen=True)
+class UnplaceableRole:
+    """A role that gets no server, with the sentence that says why and what to do."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+@dataclass(frozen=True)
 class TightRole:
     """A placed role whose estimate exceeds the memory on the card it landed on."""
 
@@ -155,6 +164,8 @@ class PlacementView:
     hidden_note: str | None = None
     # Roles placed on the unknown-size reserve, so a surface can say the figure is a guess.
     size_unknown: tuple[SizeUnknownRole, ...] = ()
+    # Why each role in ``unplaceable`` gets no server, in the words the launch logs.
+    unplaceable_notices: tuple[UnplaceableRole, ...] = ()
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -243,6 +254,10 @@ def _view(
                 notice=unknown_size_text(f"the {role.value} model {resolved.model_refs[role]}"),
             )
             for role in sorted(resolved.size_unknown_roles, key=lambda r: r.value)
+        ),
+        unplaceable_notices=tuple(
+            UnplaceableRole(role=role, model=resolved.model_refs.get(role, ""), notice=notice)
+            for role, notice in resolved.unplaceable_reasons.items()
         ),
     )
 

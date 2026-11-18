@@ -990,6 +990,14 @@ class TightRoleResponse(BaseModel):
     notice: str
 
 
+class UnplaceableNoticeResponse(BaseModel):
+    """A role that gets no server, and why."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -1017,6 +1025,8 @@ class PlacementResponse(BaseModel):
     size_unknown: list[SizeUnknownResponse] = []
     # Roles placed on a card that cannot hold them; empty when every role fits.
     tight: list[TightRoleResponse] = []
+    # Why each role in ``unplaceable`` gets no server; empty when every role is placed.
+    unplaceable_notices: list[UnplaceableNoticeResponse] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -1061,6 +1071,10 @@ class PlacementResponse(BaseModel):
                     role=t.role, model=t.model, shortfall_bytes=t.shortfall_bytes, notice=t.notice
                 )
                 for t in view.tight
+            ],
+            unplaceable_notices=[
+                UnplaceableNoticeResponse(role=u.role, model=u.model, notice=u.notice)
+                for u in view.unplaceable_notices
             ],
         )
 

@@ -124,8 +124,10 @@ def _render_view(view: PlacementView) -> None:
         names = ", ".join(role.value for role in view.co_tenants)
         console.print(f"  {names}: share memory, one loaded at a time", style=theme.MUTED)
 
+    notices = {unplaceable.role: unplaceable.notice for unplaceable in view.unplaceable_notices}
     for role in view.unplaceable:
-        console.print(f"  {role.value}: does not fit, no server", style=theme.ERROR)
+        line = notices.get(role) or f"{role.value}: does not fit, no server"
+        console.print(Text(f"  {line}"), style=theme.ERROR, soft_wrap=True)
 
     for skipped in view.skipped_not_installed:
         console.print(

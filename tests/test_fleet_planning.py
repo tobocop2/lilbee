@@ -4027,25 +4027,25 @@ class TestPlacementFindingsLog:
         assert "4.1 GiB" in caplog.text
         assert "will still load on demand" in caplog.text
 
-    def test_unplaceable_shared_memory_role_still_warns_it_gets_no_server(self, caplog) -> None:
-        import logging
-
+    def test_unplaceable_shared_memory_role_has_a_reason_that_it_gets_no_server(self) -> None:
         placement = Placement(
             instances=(),
             unplaceable_roles=(WorkerRole.CHAT,),
         )
-        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
-            planning_mod._log_refused_roles(
-                placement,
-                {WorkerRole.CHAT: "org/chat.gguf"},
-                engines_for_all_roles(LLAMA),
-                [],
-                [],
-                planning_mod.HostCards([]),
-                unified_budget=_GB,
-                capacity={},
-            )
-        assert "will not be served" in caplog.text
+        reasons = planning_mod._unplaceable_reasons(
+            placement,
+            {WorkerRole.CHAT: "org/chat.gguf"},
+            engines_for_all_roles(LLAMA),
+            [],
+            [],
+            planning_mod.HostCards([]),
+            unified_budget=_GB,
+            capacity={},
+        )
+        assert reasons == {
+            WorkerRole.CHAT: "chat model org/chat.gguf does not fit available memory and "
+            "will not be served; free up memory or use a smaller model."
+        }
 
     def test_tiny_shortfall_never_reads_as_zero(self, caplog) -> None:
         import logging
