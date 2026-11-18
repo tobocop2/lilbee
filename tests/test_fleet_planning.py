@@ -3706,6 +3706,13 @@ class TestUnusableChatCtxReason:
             "Use a model with a larger trained window."
         )
 
+    def test_a_one_token_trained_window_names_the_window(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        launch = replace(self._launch(WorkerRole.CHAT, 1), trained_ctx=1)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [])
+        assert reason is not None
+        assert "was trained for a 1-token window" in reason
+
     def test_trained_window_that_holds_a_prompt_blames_memory(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
         launch = replace(self._launch(WorkerRole.CHAT, 512), trained_ctx=32768)
