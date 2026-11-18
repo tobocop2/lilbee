@@ -5857,7 +5857,7 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> 
         "plan_all_launches",
         lambda *, engines: planning_mod.FleetPlan(
             (chat, vision, embed),
-            co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
         ),
     )
 

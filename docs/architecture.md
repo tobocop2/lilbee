@@ -918,7 +918,7 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process
-  (one per role, except co-tenant chat and vision which share one), and a reload
+  (one per role, except the co-tenant roles, which share one), and a reload
   re-plans the whole fleet but restarts **only the groups whose launches
   changed**. That diff is sound because launches are a pure function of config,
   hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
@@ -1024,14 +1024,22 @@ under the table.
   other's models in VRAM. Roles that share
   no run **phase** (`RoleInfo.phases`) are never resident together, so when they
   cannot all co-reside a role that does not fit **refunds** the already-charged
-  phase-disjoint roles and retries; the roles that let it in become co-tenants of a
-  single `swap: true` llama-swap group. On a tight card this pulls the query-only
-  rerank and chat into vision's swap group, so ingest's embed + vision fits exactly
-  as it did in-process. Only one member is resident at a time, so the group is
-  charged its largest member and each co-tenant runs a single instance (a
-  `swap: true` group evicts same-group siblings, so a second replica inside it would
-  evict the first). Interleaving a query with an ingest costs a model reload each
-  way. With the VRAM to hold everything at once, no swap group forms and every role
+  phase-disjoint roles and retries; the roles that let it in become co-tenants of
+  one swap process. On a tight card this pulls the query-only rerank and chat into
+  vision's swap process, so ingest's embed + vision fits exactly as it did
+  in-process. The co-tenants split into **residency classes**: roles that share a
+  run phase (chat and rerank both answer one query) stay loaded together, and
+  loading a role of another class evicts them. One router group holds each
+  class (`swap: false`, `exclusive: true`, `persistent: false`), so the router
+  itself does the eviction. Placement first packs the fleet as before, each
+  co-tenant in a class of its own. It then merges chat and rerank into one class only
+  when the class fits in the room left after every role is placed; otherwise they
+  stay apart and evict each other, as every co-tenant did before. A tight role holds what is left
+  of its card and joins no class. The swap process is charged its largest class,
+  the members of that class added up, and each co-tenant runs a single instance
+  (the elastic tier does not replicate a role inside the process). Interleaving a
+  query with an ingest costs a model reload each way. With the VRAM to hold
+  everything at once, no swap group forms and every role
   pins to its own group. A plan with several engines on discrete cards gives each
   role a named card or a refusal, and a refused role takes no card. It checks three
   causes in order: the engine cannot be pinned on several cards (it reports another

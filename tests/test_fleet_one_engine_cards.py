@@ -78,7 +78,7 @@ def run_scenario(
     result = plan(engine)
     group = sorted(role.value for role in result.co_tenants)
     # A frozenset's repr order changes per process, so the group is written sorted.
-    text = repr(replace(result, co_tenants=frozenset()))
+    text = repr(replace(result, swap_classes=()))
     return _without_the_temp_path(f"{text} group={group}", tmp_path)
 
 

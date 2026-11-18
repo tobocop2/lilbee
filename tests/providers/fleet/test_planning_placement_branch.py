@@ -370,7 +370,7 @@ def test_the_planner_logs_the_tight_sentence_and_the_co_tenant_line_as_written(c
     placement = Placement(
         instances=(),
         unplaceable_roles=(),
-        co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.CHAT}),
+        swap_classes=(frozenset({WorkerRole.EMBED, WorkerRole.CHAT}),),
         tight_roles={WorkerRole.CHAT: 2 * 1024**3},
     )
 
@@ -379,5 +379,5 @@ def test_the_planner_logs_the_tight_sentence_and_the_co_tenant_line_as_written(c
 
     assert [r.getMessage() for r in caplog.records] == [
         tight_memory_text("the chat model org/chat.gguf", 2 * 1024**3),
-        "chat, embed share GPU memory and load on demand; only one is resident at a time.",
+        "chat + embed: share memory, one group loaded at a time",
     ]

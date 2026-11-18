@@ -52,6 +52,7 @@ from lilbee.providers.fleet.gpu_env import (
     ROCR_VISIBLE_VAR,
 )
 from lilbee.providers.fleet.gpu_select import PCIVendorID
+from lilbee.providers.fleet.groups import class_label, class_roles, swap_summary
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import (
@@ -1983,24 +1984,34 @@ def _model_inputs_for_devices(
     )
 
 
+def _evicted_by(
+    role: WorkerRole, swap_classes: tuple[frozenset[WorkerRole], ...]
+) -> frozenset[WorkerRole]:
+    """The co-tenants loading *role* evicts: every role outside its class; none if it has none."""
+    if not any(role in members for members in swap_classes):
+        return frozenset()
+    return class_roles(tuple(members for members in swap_classes if role not in members))
+
+
 def _non_chat_reservation(
     instances: Sequence[InstancePlan],
     inputs: Sequence[ModelPlacementInput],
-    co_tenants: frozenset[WorkerRole] = frozenset(),
+    swap_classes: tuple[frozenset[WorkerRole], ...] = (),
 ) -> dict[int, int]:
     """Per-device VRAM the non-chat role servers occupy, keyed by device index.
 
     A tensor-split chat shard must size its KV against the headroom left after the
     embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
     it over-commits and OOMs at launch. Chat is excluded because it sizes its own
-    weights. Chat's own swap-group siblings are excluded too: they are evicted while
-    chat is resident, so their VRAM is chat's to use. That only holds when chat is
-    itself a co-tenant; a co-tenant group that does not include chat runs behind its
-    own swap process and can be resident beside chat, so it is charged normally.
+    weights. The roles of the other swap classes are excluded too: they are evicted
+    while chat is resident, so their VRAM is chat's to use. Chat's class-mates stay
+    loaded beside chat and are charged. That only holds when chat is itself a
+    co-tenant; a co-tenant group that does not include chat runs behind its own swap
+    process and can be resident beside chat, so it is charged normally.
     Non-chat roles are single-device, so each charges its full footprint (once per
     replica) to its card.
     """
-    chat_siblings = co_tenants if WorkerRole.CHAT in co_tenants else frozenset()
+    chat_siblings = _evicted_by(WorkerRole.CHAT, swap_classes)
     charge_by_role = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved: dict[int, int] = {}
     for inst in instances:
@@ -3570,7 +3581,7 @@ def _resolve_placement(
             _launching_instances(placed, inputs, model_refs, devices, engines=engines),
             free=_plan_free_system_memory(engines[min(cpu_present, key=lambda r: r.value)]),
             unified=unified_budget is not None,
-            co_tenants=placed.co_tenants,
+            swap_classes=placed.swap_classes,
         )
         if past_memory:
             raise TargetRefusedError(past_memory)
@@ -3691,7 +3702,7 @@ def _launching_instances(
 ) -> list[InstancePlan]:
     """The instances of *placed* that get a server: a chat below the prompt floor gets none."""
     by_index = {d.index: d for d in devices}
-    reserved = _non_chat_reservation(placed.instances, inputs, placed.co_tenants)
+    reserved = _non_chat_reservation(placed.instances, inputs, placed.swap_classes)
     return [
         inst
         for inst in placed.instances
@@ -3718,18 +3729,19 @@ def _cpu_roles_past_memory(
     *,
     free: int,
     unified: bool,
-    co_tenants: frozenset[WorkerRole] = frozenset(),
+    swap_classes: tuple[frozenset[WorkerRole], ...] = (),
 ) -> tuple[dict[WorkerRole, str], dict[WorkerRole, LowFreeMemory]]:
     """The reason for each CPU role that system memory cannot hold, and each that is tight.
 
     The bound is total system memory less what the card roles in *launching* commit:
     their host bytes, or on a card that shares system memory their whole footprint,
-    which already holds the host bytes. A swap group commits its largest member, since
-    one is resident at a time. The CPU roles are taken in order and the first past the
-    total is refused, with no fallback to a card. A CPU role that is not in *launching*
-    adds no charge for the next one. A CPU role that fits the total but not the *free*
-    memory left after the roles admitted before it is admitted and listed as tight;
-    nothing here logs, so a plan repeated or only viewed warns nobody.
+    which already holds the host bytes. A swap group commits its largest class, the
+    members of one class added up, since one class is resident at a time. The CPU roles
+    are taken in order and the first past the total is refused, with no fallback to a
+    card. A CPU role that is not in *launching* adds no charge for the next one. A CPU
+    role that fits the total but not the *free* memory left after the roles admitted
+    before it is admitted and listed as tight; nothing here logs, so a plan repeated or
+    only viewed warns nobody.
     """
     cpu = _cpu_roles(placement)
     sized = cpu.intersection(i.role for i in inputs)
@@ -3751,8 +3763,8 @@ def _cpu_roles_past_memory(
         return model.est_vram_bytes if unified else model.est_ram_bytes
 
     card_roles = [inst.role for inst in launching if inst.role not in cpu]
-    swapped = [commit(role) for role in card_roles if role in co_tenants]
-    held = sum(commit(role) for role in card_roles if role not in co_tenants)
+    swapped = [sum(commit(role) for role in card_roles if role in c) for c in swap_classes]
+    held = sum(commit(role) for role in card_roles if role not in class_roles(swap_classes))
     held += max(swapped, default=0)
     refused: dict[WorkerRole, str] = {}
     tight: dict[WorkerRole, LowFreeMemory] = {}
@@ -4081,7 +4093,7 @@ class ResolvedPlacement:
     # planner has always known this and only logged it, so a surface showed a
     # tight role as comfortably placed.
     tight_roles: dict[WorkerRole, int] = field(default_factory=dict)
-    co_tenants: frozenset[WorkerRole] = frozenset()
+    swap_classes: tuple[frozenset[WorkerRole], ...] = ()
     # False when a spec was given but did not fit the hardware, so these instances
     # are the auto planner's and a surface must not present them as the manual plan.
     spec_applied: bool = True
@@ -4109,6 +4121,11 @@ class ResolvedPlacement:
     charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
     # Where each pinned role runs once the auto plan replaced a spec that did not fit.
     pins_dropped: str = ""
+
+    @property
+    def co_tenants(self) -> frozenset[WorkerRole]:
+        """Every role that runs in the shared swap process."""
+        return class_roles(self.swap_classes)
 
 
 @_one_warning_per_plan()
@@ -4186,7 +4203,7 @@ def resolve_placement_plan(
         unlaunched_roles=unlaunched,
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
-        co_tenants=resolved.co_tenants,
+        swap_classes=resolved.swap_classes,
         skipped_not_installed=skipped_not_installed,
         spec_applied=spec_applied,
         refused_roles=refused_roles,
@@ -4211,10 +4228,10 @@ def resolve_placement_plan(
 
 @dataclass(frozen=True)
 class FleetPlan:
-    """The servers to start, and the roles that share one swap group."""
+    """The servers to start, and the residency classes of the roles that share one swap process."""
 
     launches: tuple[InstanceLaunch, ...]
-    co_tenants: frozenset[WorkerRole] = frozenset()
+    swap_classes: tuple[frozenset[WorkerRole], ...] = ()
     # Configured roles left unplaced because their model isn't installed (role ->
     # ref), so the warm path can fail a not-installed chat with a named reason
     # instead of spinning the warm line forever.
@@ -4225,6 +4242,11 @@ class FleetPlan:
     # Configured roles whose engine mapping has no engine (role -> ref); the plan
     # warns for each. Left out of the repr so a one-engine plan reads as it always did.
     skipped_no_engine: dict[WorkerRole, str] = field(default_factory=dict, repr=False)
+
+    @property
+    def co_tenants(self) -> frozenset[WorkerRole]:
+        """Every role that runs in the shared swap process."""
+        return class_roles(self.swap_classes)
 
 
 def _is_mixed(engines: Mapping[WorkerRole, EngineAdapter]) -> bool:
@@ -4355,16 +4377,19 @@ def _room_beside_placed(
 ) -> float:
     """Usable bytes left on the GPU with the most room after the placed roles."""
     held: dict[int, float] = dict.fromkeys(capacity, 0.0)
-    group_peak: dict[int, float] = dict.fromkeys(capacity, 0.0)
+    class_held: dict[frozenset[WorkerRole], dict[int, float]] = {
+        members: dict.fromkeys(capacity, 0.0) for members in placement.swap_classes
+    }
     for inst in placement.instances:
         for device in inst.devices:
             share = charges[inst.role] / len(inst.devices)
-            if inst.role in placement.co_tenants:
-                group_peak[device] = max(group_peak[device], share)
-            else:
+            members = next((c for c in placement.swap_classes if inst.role in c), None)
+            if members is None:
                 held[device] += share
-    for device, peak in group_peak.items():
-        held[device] += peak
+            else:
+                class_held[members][device] += share
+    for device in held:
+        held[device] += max((per_device[device] for per_device in class_held.values()), default=0.0)
     usable = usable_vram_fraction()
     return max((cap * usable - held[idx] for idx, cap in capacity.items()), default=0.0)
 
@@ -4385,11 +4410,8 @@ def _log_placement_findings(
         )
     for role, short in placement.low_free_memory.items():
         _warn_low_free_memory(role, model_refs[role], short.wanted, short.free, action="Running")
-    if placement.co_tenants:
-        log.info(
-            "%s share GPU memory and load on demand; only one is resident at a time.",
-            ", ".join(sorted(role.value for role in placement.co_tenants)),
-        )
+    if placement.swap_classes:
+        log.info("%s", swap_summary(placement.swap_classes))
 
 
 def _gib_text(num_bytes: int) -> str:
@@ -4494,15 +4516,15 @@ def _room_holders(
     charged: Mapping[WorkerRole, int],
     model_refs: Mapping[WorkerRole, str],
 ) -> tuple[RoomHolder, ...]:
-    """The other roles charged to *device*; a swap group's members are never resident together."""
-    grouped = placement.co_tenants if plan.role in placement.co_tenants else frozenset()
+    """The other roles charged to *device*, less those of another class (never resident with it)."""
+    evicted = _evicted_by(plan.role, placement.swap_classes)
     return tuple(
         RoomHolder(inst.role, model_refs[inst.role], charged[inst.role])
         for inst in placement.instances
         if device in inst.devices
         and inst.replica == 0
         and inst.role is not plan.role
-        and inst.role not in grouped
+        and inst.role not in evicted
     )
 
 
@@ -4569,7 +4591,7 @@ def _planned_launches(
         log.warning(reason)
     return FleetPlan(
         launches=tuple(launches),
-        co_tenants=placement.co_tenants,
+        swap_classes=placement.swap_classes,
         skipped_not_installed=skipped_not_installed,
         refused_roles={**refused_roles, **unlaunched},
     )
@@ -4592,13 +4614,13 @@ def _launches_and_refusals(
     The launch and the placement view both read this, so a chat below the prompt
     floor or past its card is refused in the view for the reason the launch gives.
     """
-    reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
+    reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.swap_classes)
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved_after_chat = _reservation_past_the_card(
         _non_chat_reservation(
             [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
             inputs,
-            placement.co_tenants,
+            placement.swap_classes,
         ),
         placement.instances,
         charged,
@@ -4637,6 +4659,7 @@ def _launches_and_refusals(
         except RankPoolingMissingError as exc:
             refused[plan.role] = str(exc)
             continue
+        launch.swap_class = class_label(plan.role, placement.swap_classes)
         reason = _unusable_chat_ctx_reason(
             launch, [by_index[i] for i in plan.devices if i in by_index] if clean_box else []
         )

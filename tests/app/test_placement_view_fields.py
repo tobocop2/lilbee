@@ -56,7 +56,7 @@ def _busy_plan() -> ResolvedPlacement:
             WorkerRole.CHAT: 9 * GIB,
             WorkerRole.RERANK: 5 * GIB,
         },
-        co_tenants=_ReverseOrderSet({WorkerRole.EMBED, WorkerRole.CHAT, WorkerRole.RERANK}),
+        swap_classes=(_ReverseOrderSet({WorkerRole.EMBED, WorkerRole.CHAT, WorkerRole.RERANK}),),
         engine_backend=EngineBackend.CUDA,
         size_unknown_roles=(WorkerRole.EMBED, WorkerRole.CHAT),
         charged_bytes={WorkerRole.EMBED: 2 * GIB, WorkerRole.CHAT: 30 * GIB},
@@ -149,7 +149,7 @@ def test_cli_show_prints_the_split_and_the_model_of_each_role(busy_machine, tmp_
 def test_cli_show_prints_the_co_tenants_in_role_name_order(busy_machine, tmp_path):
     shown = _shown(tmp_path)
 
-    assert "chat, embed, rerank: share memory, one loaded at a time" in shown
+    assert "chat + embed + rerank: share memory, one group loaded at a time" in shown
 
 
 def test_cli_show_prints_the_unknown_size_notices_in_role_name_order(busy_machine, tmp_path):

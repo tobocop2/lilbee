@@ -5,16 +5,23 @@ from __future__ import annotations
 from collections.abc import Sequence
 from math import ceil
 
+import pytest
+
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
     PeakEstimator,
     Placement,
+    _SwapGroup,
     plan_placement,
 )
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
+_CHAT = frozenset({WorkerRole.CHAT})
+_RERANK = frozenset({WorkerRole.RERANK})
+_VISION = frozenset({WorkerRole.VISION})
+_CHAT_RERANK = frozenset({WorkerRole.CHAT, WorkerRole.RERANK})
 _FOUR_24GB_CARDS = [(0, 24 * _GB), (1, 24 * _GB), (2, 24 * _GB), (3, 24 * _GB)]
 _FOUR_24GB_FREE = {0: 24 * _GB, 1: 24 * _GB, 2: 24 * _GB, 3: 24 * _GB}
 
@@ -639,6 +646,22 @@ class TestChatVisionCoTenancy:
             WorkerRole.VISION,
         }
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+        # Chat and rerank (4GB together) fit inside vision's 6GB slot: one class.
+        assert plan.swap_classes == (_CHAT_RERANK, _VISION)
+
+    def test_a_class_that_outgrows_the_slot_stays_apart(self) -> None:
+        # Rerank 4 + chat 3 = 7GB would grow the 6GB vision slot past the 0.2GB left
+        # on the card, so each of them takes its own turn.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 4 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.swap_classes == (_CHAT, _RERANK, _VISION)
 
     def test_swap_group_slot_holds_vram_for_its_largest_member(self) -> None:
         # 6GB card (5.4 usable): embed 0.4 (2 replicas), vision 5.0 fits exactly,
@@ -678,6 +701,8 @@ class TestChatVisionCoTenancy:
         }
         assert plan.tight_roles.keys() == {WorkerRole.RERANK}
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+        # A tight role holds what is left of its card, so chat never merges with it.
+        assert plan.swap_classes == (_CHAT, _RERANK, _VISION)
 
     def test_vision_swap_group_forms_without_chat_when_chat_is_disabled(self) -> None:
         # No chat model configured: on a tight card vision still cannot sit beside the
@@ -792,6 +817,72 @@ class TestTightPlacement:
         assert len(embeds) == 1
 
 
+class TestMergeLeavesTheBasePlan:
+    """A class merges only into room left after every role is placed."""
+
+    @pytest.mark.parametrize(
+        ("card_gb", "chat_gb", "vision_gb", "rerank_gb"),
+        [(8, 2.0, 1.0, 5.0), (6, 3.0, 1.0, 2.0)],
+        ids=["gpu8", "gpu6"],
+    )
+    def test_refusing_mode_places_every_role_the_base_places(
+        self, card_gb: int, chat_gb: float, vision_gb: float, rerank_gb: float
+    ) -> None:
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, int(chat_gb * _GB)),
+            ModelPlacementInput(WorkerRole.VISION, int(vision_gb * _GB)),
+            ModelPlacementInput(WorkerRole.EMBED, int(0.6 * _GB)),
+            ModelPlacementInput(WorkerRole.RERANK, int(rerank_gb * _GB)),
+        ]
+        plan = plan_placement(
+            models, [(0, card_gb * _GB)], estimate_peak=_never, refuse_oversize=True
+        )
+
+        assert plan.unplaceable_roles == ()
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+
+    def _group(self, tight: frozenset[WorkerRole] = frozenset()) -> _SwapGroup:
+        own = {
+            WorkerRole.CHAT: {0: 3.0 * _GB},
+            WorkerRole.RERANK: {0: 1.0 * _GB},
+            WorkerRole.VISION: {0: 6.0 * _GB},
+        }
+        group = _SwapGroup(tight=set(tight))
+        group.form(own, WorkerRole.VISION, {0: 10.0 * _GB})
+        return group
+
+    def test_a_formed_group_is_one_class_per_member(self) -> None:
+        assert self._group().classes == (_CHAT, _RERANK, _VISION)
+
+    def test_merge_joins_the_members_that_share_a_phase_when_the_growth_fits(self) -> None:
+        group = self._group()
+        remaining = {0: 0.0}
+        group.merge(remaining)
+        assert group.classes == (_CHAT_RERANK, _VISION)
+        assert remaining == {0: 0.0}
+
+    def test_merge_leaves_classes_apart_when_the_growth_does_not_fit(self) -> None:
+        group = self._group()
+        group.own[WorkerRole.RERANK] = {0: 4.0 * _GB}
+        remaining = {0: 0.5 * _GB}
+        group.merge(remaining)
+        assert group.classes == (_CHAT, _RERANK, _VISION)
+        assert remaining == {0: 0.5 * _GB}
+
+    def test_merge_charges_the_growth_beyond_the_old_slot(self) -> None:
+        group = self._group()
+        group.own[WorkerRole.RERANK] = {0: 4.0 * _GB}
+        remaining = {0: 2.0 * _GB}
+        group.merge(remaining)
+        assert group.classes == (_CHAT_RERANK, _VISION)
+        assert remaining == {0: 1.0 * _GB}
+
+    def test_a_tight_member_joins_no_class(self) -> None:
+        group = self._group(tight=frozenset({WorkerRole.RERANK}))
+        group.merge({0: 50.0 * _GB})
+        assert group.classes == (_CHAT, _RERANK, _VISION)
+
+
 class TestSharedMemoryCoTenancy:
     """The unified-memory path reaches the same verdict as the discrete-GPU path."""
 
@@ -824,6 +915,19 @@ class TestSharedMemoryCoTenancy:
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
         persistent = [i.role for i in plan.instances if i.role not in plan.co_tenants]
         assert persistent == [WorkerRole.EMBED]
+        assert plan.swap_classes == (_CHAT, _RERANK, _VISION)
+
+    def test_shared_memory_merges_chat_and_rerank_that_fit_the_vision_slot(self) -> None:
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        plan = plan_placement(models, [], estimate_peak=_never, unified_budget=7 * _GB)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.swap_classes == (_CHAT_RERANK, _VISION)
 
     def test_co_tenant_vision_drops_to_one_replica_in_shared_memory(self) -> None:
         # The elastic vision replicas are refunded with the rest of vision's pool;

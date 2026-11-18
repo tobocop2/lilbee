@@ -6403,11 +6403,12 @@ class TestPlacementHandlers:
             unplaceable=(),
             manual=False,
             spec_json=None,
-            co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+            swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
         )
         with patch("lilbee.app.placement.get_placement", return_value=view):
             resp = await handlers.placement()
         assert resp.co_tenants == ["chat", "vision"]
+        assert resp.swap_classes == [["chat"], ["vision"]]
         assert resp.unplaceable == []
 
     async def test_placement_preview_without_spec(self):

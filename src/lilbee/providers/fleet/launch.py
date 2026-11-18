@@ -79,6 +79,8 @@ class InstanceLaunch:
 
     Empty in a record written before the field existed.
     """
+    swap_class: str = ""
+    """The residency class this launch stays loaded with; empty means a class of its own."""
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -103,6 +105,7 @@ class InstanceLaunch:
             "settings": self.settings,
             "swap_extras": dict(self.swap_extras),
             "server_binary": self.server_binary,
+            "swap_class": self.swap_class,
         }
 
     @classmethod
@@ -131,6 +134,7 @@ class InstanceLaunch:
             settings=str(payload.get("settings") or ""),
             swap_extras=dict(payload.get("swap_extras") or {}),
             server_binary=str(payload.get("server_binary") or ""),
+            swap_class=str(payload.get("swap_class") or ""),
         )
 
     @property

@@ -22,7 +22,7 @@ def _make_view(  # type: ignore[type-arg]
     manual: bool = False,
     unplaceable: tuple = (),
     spec_json=None,
-    co_tenants: tuple = (),
+    swap_classes: tuple = (),
     rejected_spec_json=None,
 ):
     from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
@@ -39,7 +39,7 @@ def _make_view(  # type: ignore[type-arg]
         unplaceable=unplaceable,
         manual=manual,
         spec_json=spec_json,
-        co_tenants=co_tenants,
+        swap_classes=swap_classes,
         rejected_spec_json=rejected_spec_json,
     )
 
@@ -632,7 +632,7 @@ async def test_co_tenant_roles_are_surfaced(monkeypatch):
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.providers.roles import WorkerRole
 
-    view = _make_view(co_tenants=(WorkerRole.CHAT, WorkerRole.VISION))
+    view = _make_view(swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})))
     monkeypatch.setattr(fbm, "get_placement", lambda: view)
 
     notes: list[str] = []
@@ -1488,7 +1488,7 @@ async def test_choosing_cpu_on_a_swap_plan_leaves_the_other_roles_to_the_planner
         ),
         manual=False,
         spec_json=None,
-        co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+        swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
     )
     monkeypatch.setattr(fbm, "get_placement", lambda: view)
     app = FleetTestApp()
@@ -1509,7 +1509,7 @@ async def test_a_card_pressed_on_a_planned_role_pins_that_role(monkeypatch):
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.providers.roles import WorkerRole
 
-    view = _make_view(co_tenants=(WorkerRole.CHAT, WorkerRole.EMBED))
+    view = _make_view(swap_classes=(frozenset({WorkerRole.CHAT, WorkerRole.EMBED}),))
     monkeypatch.setattr(fbm, "get_placement", lambda: view)
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:

@@ -292,7 +292,7 @@ def _refusal_text(host, caplog, seen: int, cards: int) -> str:
     host.setattr(planning, "_read_device_cache", cache)
     host.setattr(planning, "_roles_that_fit_alone", lambda *_args: set())
     host.setattr(planning, "nvidia_card_rows", lambda: cards)
-    placement = SimpleNamespace(unplaceable_roles=(_EMBED,), instances=(), co_tenants=frozenset())
+    placement = SimpleNamespace(unplaceable_roles=(_EMBED,), instances=(), swap_classes=())
     with caplog.at_level(logging.WARNING, logger=planning.log.name):
         planning._log_refused_roles(
             placement,

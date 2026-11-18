@@ -14,6 +14,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.groups import class_roles
 from lilbee.providers.fleet.model_memory import tight_memory_text, unknown_size_text
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.planning import (
@@ -125,9 +126,10 @@ class PlacementView:
     # Configured roles left out because no installed engine loads their model, each
     # with the notice that says why, so a surface can say it and name the fix.
     skipped_no_engine: tuple[SkippedNoEngine, ...] = ()
-    # Roles sharing one swap group: each is placed, but only one is resident at a
-    # time, so their footprints do not sum against the card they name.
-    co_tenants: tuple[WorkerRole, ...] = ()
+    # Roles sharing one swap process: each is placed, and the roles of one class stay
+    # resident together while the other classes are evicted, so only the largest class
+    # sums against the card they name.
+    swap_classes: tuple[frozenset[WorkerRole], ...] = ()
     # A saved spec that is not in use: this hardware does not satisfy it, no engine
     # or model is installed for it, or it places no role. The auto plan is what runs,
     # but the spec stays in config.toml and reapplies once it fits again, so a
@@ -155,6 +157,11 @@ class PlacementView:
     hidden_note: str | None = None
     # Roles placed on the unknown-size reserve, so a surface can say the figure is a guess.
     size_unknown: tuple[SizeUnknownRole, ...] = ()
+
+    @property
+    def co_tenants(self) -> tuple[WorkerRole, ...]:
+        """Every role in the shared swap process, in role name order."""
+        return tuple(sorted(class_roles(self.swap_classes), key=lambda role: role.value))
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -229,7 +236,7 @@ def _view(
             SkippedNoEngine(role=role, model=skip.model, notice=skip.notice)
             for role, skip in resolved.skipped_no_engine.items()
         ),
-        co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
+        swap_classes=resolved.swap_classes,
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
         refusal=" ".join(filter(None, (refusal, *resolved.unlaunched_roles.values()))) or None,
