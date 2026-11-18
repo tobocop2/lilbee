@@ -47,6 +47,11 @@ STATUS_ERROR_NAMES = ("BadRequestError",)
 
 
 def _status_error_init(self: Any, message: str, status: int = 400) -> None:
+    """Set the reply text and status.
+
+    The SDK sets ``message`` to the ``error.message`` of an OpenAI-style reply, as bare text,
+    and to the raw body for any other reply.
+    """
     Exception.__init__(self, message)
     self.message = message
     self.status = status

@@ -130,16 +130,16 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _reason(body: str) -> str | None:
-    """The reason text in a JSON reply body: its error, detail or message field, capped.
+def _reason_text(body: str) -> str | None:
+    """The reason in a reply body: a text body that is not HTML, or fields of a JSON object.
 
-    Reads only message fields, never request content such as an echoed ``input``. A body
-    that is not a JSON object, or has no such field, has no reason.
+    A JSON object gives its ``error``, ``detail`` or ``message`` text; the ``input`` and
+    ``loc`` values are never read. A JSON value that is not an object has no reason.
     """
     try:
         parsed = json.loads(body)
     except ValueError:
-        return None
+        return None if body.lstrip().startswith("<") else _text(body)
     if not isinstance(parsed, dict):
         return None
     error = parsed.get("error")
@@ -150,10 +150,18 @@ def _reason(body: str) -> str | None:
         detail = "; ".join(
             msg for entry in detail if isinstance(entry, dict) and (msg := _text(entry.get("msg")))
         )
-    found = _text(error) or _text(detail) or _text(parsed.get("message"))
+    return _text(error) or _text(detail) or _text(parsed.get("message"))
+
+
+def _reason(body: str) -> str | None:
+    """The reason of a reply body on one line, safe to encode, capped at the reason limit.
+
+    A reason that echoes the request still shows, up to the cap.
+    """
+    found = _reason_text(body)
     if found is None:
         return None
-    flat = " ".join(found.split())
+    flat = " ".join(found.split()).encode("utf-8", "replace").decode("utf-8")
     return flat if len(flat) <= _REASON_LIMIT else flat[:_REASON_LIMIT].rstrip() + "..."
 
 

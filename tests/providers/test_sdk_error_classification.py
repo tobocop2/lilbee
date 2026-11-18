@@ -189,7 +189,7 @@ def _embed_error(sdk: fakes.FakeSdk, exc: BaseException) -> ProviderError:
     return caught.value
 
 
-_SECRET = "SECRET PROMPT TEXT"
+_PROMPT_TEXT = "private prompt words"
 _MODEL = "openai/text-embedding-3-small"
 _NO_REASON = (
     f"The server for {_MODEL} refused the request with HTTP 422 and gave no readable reason. "
@@ -213,26 +213,49 @@ def _quoted(reason: str) -> str:
             id="tei-string-error",
         ),
         pytest.param(
+            "too many inputs", _quoted("too many inputs"), id="openai-reason-unwrapped-by-the-sdk"
+        ),
+        pytest.param(
             '{"error":{"message":"too many inputs","type":"invalid_request_error"}}',
             _quoted("too many inputs"),
-            id="openai-nested-error",
+            id="nested-error-object",
         ),
         pytest.param(
             '{"detail":[{"type":"too_long","loc":["body","input"],"msg":"List too long",'
-            f'"input":["{_SECRET}"]}},"junk",{{"msg":"  "}},{{"msg":"Second reason"}}]}}',
+            f'"input":["{_PROMPT_TEXT}"]}},"junk",{{"msg":"  "}},{{"msg":"Second reason"}}]}}',
             _quoted("List too long; Second reason"),
             id="fastapi-detail-list-with-input-echo",
         ),
+        pytest.param(
+            '{"error":"first","detail":"second","message":"third"}',
+            _quoted("first"),
+            id="error-beats-detail-and-message",
+        ),
+        pytest.param(
+            '{"detail":"second","message":"third"}', _quoted("second"), id="detail-beats-message"
+        ),
+        pytest.param(
+            '{"error":{"code":7},"detail":"second"}',
+            _quoted("second"),
+            id="error-without-text-falls-to-detail",
+        ),
+        pytest.param('{"error":"bad \\ud800 value"}', _quoted("bad ? value"), id="lone-surrogate"),
         pytest.param('{"detail":"too many inputs"}', _quoted("too many inputs"), id="detail-text"),
         pytest.param('{"message":"too many inputs"}', _quoted("too many inputs"), id="message"),
         pytest.param(
             '{"error":"line one\\n   line two"}', _quoted("line one line two"), id="whitespace"
         ),
-        pytest.param(f"<html><body>502 {_SECRET}</body></html>", _NO_REASON, id="html-proxy-body"),
-        pytest.param(f'{{"input":"{_SECRET}"}}', _NO_REASON, id="unknown-json"),
+        pytest.param(
+            f"<html><body>502 {_PROMPT_TEXT}</body></html>", _NO_REASON, id="html-proxy-body"
+        ),
+        pytest.param(
+            f"\n  <!DOCTYPE html><p>{_PROMPT_TEXT}</p>", _NO_REASON, id="html-after-whitespace"
+        ),
+        pytest.param(f'{{"input":"{_PROMPT_TEXT}"}}', _NO_REASON, id="unknown-json"),
         pytest.param('{"error":{"code":7},"detail":[]}', _NO_REASON, id="no-text-field"),
-        pytest.param(f'["{_SECRET}"]', _NO_REASON, id="json-list"),
+        pytest.param(f'["{_PROMPT_TEXT}"]', _NO_REASON, id="json-list"),
         pytest.param("", _NO_REASON, id="empty-body"),
+        pytest.param("  \n ", _NO_REASON, id="blank-body"),
     ],
 )
 def test_a_422_shows_only_the_reason_of_the_reply(
@@ -240,14 +263,37 @@ def test_a_422_shows_only_the_reason_of_the_reply(
 ) -> None:
     error = _embed_error(sdk, sdk.error("BadRequestError", body, status=422))
     assert str(error) == expected
-    assert _SECRET not in str(error)
+    assert _PROMPT_TEXT not in str(error)
     assert error.kind is ProviderErrorKind.BAD_REQUEST
+    str(error).encode("utf-8")
 
 
-def test_a_422_reason_is_capped(sdk: fakes.FakeSdk) -> None:
+@pytest.mark.parametrize(
+    ("length", "shown"),
+    [(199, 199), (200, 200), (201, 203)],
+    ids=["below-the-cap", "at-the-cap", "above-the-cap"],
+)
+def test_a_422_reason_is_capped_at_200_characters(
+    sdk: fakes.FakeSdk, length: int, shown: int
+) -> None:
+    error = _embed_error(sdk, sdk.error("BadRequestError", "a" * length, status=422))
+    expected = "a" * length if length <= 200 else "a" * 200 + "..."
+    assert len(expected) == shown
+    assert str(error) == _quoted(expected)
+
+
+def test_a_422_reason_is_cut_at_a_word_edge_without_a_trailing_blank(sdk: fakes.FakeSdk) -> None:
     body = json.dumps({"error": "word " * 200})
     error = _embed_error(sdk, sdk.error("BadRequestError", body, status=422))
     assert str(error) == _quoted(("word " * 40).rstrip()[:200].rstrip() + "...")
+
+
+def test_a_reason_that_echoes_the_request_shows_up_to_the_cap(sdk: fakes.FakeSdk) -> None:
+    body = json.dumps({"detail": [{"msg": f"Invalid value {_PROMPT_TEXT} " * 20}]})
+    error = _embed_error(sdk, sdk.error("BadRequestError", body, status=422))
+    reason = str(error).split('"')[1]
+    assert reason.startswith(f"Invalid value {_PROMPT_TEXT}")
+    assert len(reason) <= 203
 
 
 def test_a_400_bad_request_still_names_the_model(sdk: fakes.FakeSdk) -> None:
