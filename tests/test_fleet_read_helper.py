@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +23,12 @@ from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
-from tests.test_fleet_mixed_plan import _GIB, _host, _SizedEngine
+from tests._fleet_engines import GIB, SizedEngine, one_machine
 
 _MLX_REF = "org/repo#mlx"
 
 
-class _BundledLlama(_SizedEngine):
+class _BundledLlama(SizedEngine):
     """A bundled engine that loads gguf files and sizes every model at two GiB."""
 
     bundled = True
@@ -38,10 +39,10 @@ class _BundledLlama(_SizedEngine):
 @pytest.fixture
 def chat_without_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _BundledLlama:
     """A host where only the gguf engine is installed and the chat model is an mlx model."""
-    device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
+    device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
     binary = tmp_path / "llama-server"
     binary.write_bytes(b"a")
-    engine = _BundledLlama("llama.cpp", binary, MemoryKind.SIZED, 2 * _GIB, device)
+    engine = _BundledLlama("llama.cpp", binary, MemoryKind.SIZED, 2 * GIB, device)
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, engine)  # type: ignore[arg-type]
     monkeypatch.delitem(choice.ADAPTERS, EngineName.MLX, raising=False)
     monkeypatch.setattr(
@@ -50,7 +51,6 @@ def chat_without_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Bun
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
     monkeypatch.setattr(cfg, "chat_model", _MLX_REF)
-    monkeypatch.setattr(placement, "cfg", cfg)
     return engine
 
 
@@ -81,6 +81,51 @@ class TestARoleWithNoEngineIsLeftOut:
         placed = {role.role for role in view.roles}
         assert WorkerRole.EMBED in placed
         assert WorkerRole.CHAT not in placed
+
+
+class TestEveryPlacementReaderLeavesARoleOutInsteadOfFailing:
+    """Each reader of the engine book reports the role with no engine; none raises for it."""
+
+    def test_a_preview_reports_the_role_that_has_no_engine(
+        self, chat_without_engine: _BundledLlama
+    ) -> None:
+        view = placement.preview_placement()
+
+        assert [skipped.role for skipped in view.skipped_no_engine] == [WorkerRole.CHAT]
+        assert WorkerRole.EMBED in {role.role for role in view.roles}
+
+    def test_a_saved_placement_reports_the_role_that_has_no_engine(
+        self, chat_without_engine: _BundledLlama, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(placement, "peek_services", lambda: None)
+
+        view = placement.set_placement(None)
+
+        assert [skipped.role for skipped in view.skipped_no_engine] == [WorkerRole.CHAT]
+        assert WorkerRole.EMBED in {role.role for role in view.roles}
+
+    def test_the_size_notice_of_the_role_that_has_an_engine_is_kept(
+        self, chat_without_engine: _BundledLlama, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sized = chat_without_engine.estimate_memory
+        monkeypatch.setattr(
+            chat_without_engine,
+            "estimate_memory",
+            lambda request: replace(sized(request), size_known=False),
+        )
+
+        notices = placement.size_unknown_notices(WorkerRole.EMBED)
+
+        assert len(notices) == 1
+        assert "embed model" in notices[0]
+
+    def test_the_host_engine_is_the_engine_of_the_role_that_has_one(
+        self, chat_without_engine: _BundledLlama
+    ) -> None:
+        provider = FleetProvider()
+
+        assert provider._host_engine() is chat_without_engine
+        assert provider._unusable_engine_reason() is None
 
 
 def _broken_engine(error: Exception) -> property:
@@ -138,14 +183,14 @@ class TestThePlanSearchKeepsItsEstimates:
 
         def estimate(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
             asked[(role, ratio)] += 1
-            return tuple(6 * _GIB for _ in ratio)
+            return tuple(6 * GIB for _ in ratio)
 
         placed = plan_placement(
             [
-                ModelPlacementInput(role=role, est_vram_bytes=12 * _GIB)
+                ModelPlacementInput(role=role, est_vram_bytes=12 * GIB)
                 for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION)
             ],
-            [(0, 8 * _GIB), (1, 8 * _GIB)],
+            [(0, 8 * GIB), (1, 8 * GIB)],
             estimate_peak=estimate,
             refuse_oversize=True,
         )

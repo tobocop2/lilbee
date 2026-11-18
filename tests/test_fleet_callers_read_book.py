@@ -12,13 +12,13 @@ from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
-from tests.test_fleet_mixed_plan import _GIB, _host, _pair, _SizedEngine
+from tests._fleet_engines import GIB, SizedEngine, engine_pair, one_machine
 from tests.test_fleet_swap_manager import _GROUP, _fake_response, _FakeProc, _launch
 from tests.test_fleet_swap_manager import _patch_http as _patch_swap_http
 from tests.test_fleet_swap_manager import _patch_spawn as _patch_swap_spawn
 
 
-def _book(monkeypatch, chat, embed) -> dict[WorkerRole, _SizedEngine]:
+def _book(monkeypatch, chat, embed) -> dict[WorkerRole, SizedEngine]:
     """Put chat on one adapter and embed on another in the engine book."""
     mapping = {WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
     monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(dict(mapping), {}))
@@ -33,8 +33,8 @@ class TestTwoAdaptersOnePlan:
     def test_placement_and_the_launch_path_give_one_plan_and_the_same_cards(
         self, monkeypatch, tmp_path
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB, cards=2)
-        chat, embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB, cards=2)
+        chat, embed = engine_pair(tmp_path, device, 8, 2)
         _book(monkeypatch, chat, embed)
         monkeypatch.setattr(placement, "cfg", cfg)
         provider = FleetProvider()
@@ -59,8 +59,8 @@ class TestTwoAdaptersOnePlan:
         self, monkeypatch, tmp_path
     ) -> None:
         # Chat 8 GiB and embed 20 GiB do not fit one 24 GiB pool; two embeds of 8 would.
-        device = _host(monkeypatch, tmp_path, unified=True, total=24 * _GIB)
-        chat, embed = _pair(tmp_path, device, 8, 20)
+        device = one_machine(monkeypatch, tmp_path, unified=True, total=24 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 8, 20)
         mapping = _book(monkeypatch, chat, embed)
 
         resolved = planning.resolve_placement_plan(None, engines=mapping)
@@ -69,8 +69,8 @@ class TestTwoAdaptersOnePlan:
         assert {instance.role for instance in resolved.instances} == {WorkerRole.EMBED}
 
     def test_a_role_with_no_engine_does_not_stop_the_read(self, monkeypatch, tmp_path) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
-        chat, _embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        chat, _embed = engine_pair(tmp_path, device, 8, 2)
         resolved = planning.resolve_placement_plan(None, engines={WorkerRole.CHAT: chat})
 
         assert {instance.role for instance in resolved.instances} == {WorkerRole.CHAT}
@@ -87,8 +87,8 @@ class TestTwoAdaptersOnePlan:
 
 class TestProviderReadsTheBook:
     def test_the_demand_check_gets_the_book_not_one_engine(self, monkeypatch, tmp_path) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
-        chat, embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 8, 2)
         mapping = _book(monkeypatch, chat, embed)
         seen: list[object] = []
 
@@ -107,8 +107,8 @@ class TestProviderReadsTheBook:
     def test_adopted_launches_are_logged_with_the_engine_of_their_role(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
-        chat, embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 8, 2)
         monkeypatch.setattr(planning, "engine_build_id", lambda: "b")
         monkeypatch.setattr(planning, "engine_backend", _backend_by_engine)
         monkeypatch.setattr(planning, "probed_devices", lambda engine: ())
@@ -123,8 +123,8 @@ class TestProviderReadsTheBook:
         assert ["backend vulkan" in line for line in lines] == [False, True]
 
     def test_a_role_with_no_engine_now_logs_no_launch(self, monkeypatch, tmp_path, caplog) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
-        chat, _embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        chat, _embed = engine_pair(tmp_path, device, 8, 2)
         with caplog.at_level(logging.INFO, logger=planning.__name__):
             planning.log_role_launches([_launch(WorkerRole.EMBED)], engines={WorkerRole.CHAT: chat})
         assert not [r for r in caplog.records if "serving" in r.message]
@@ -134,8 +134,8 @@ class TestSwapManagerLogsTheRoleEngine:
     def test_each_launch_is_logged_with_the_engine_of_its_role(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=24 * _GIB)
-        chat, embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 8, 2)
         monkeypatch.setattr(planning, "engine_build_id", lambda: "b")
         monkeypatch.setattr(planning, "engine_backend", _backend_by_engine)
         monkeypatch.setattr(planning, "probed_devices", lambda engine: ())
