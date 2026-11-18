@@ -717,6 +717,35 @@ def test_a_store_reset_refuses_the_swap_once_the_stop_began_though_the_container
     assert services_mod._state.singleton is svc
 
 
+@pytest.mark.parametrize(
+    ("target", "error"),
+    [
+        ("lilbee.retrieval.concepts.ConceptGraph", OSError),
+        ("lilbee.retrieval.clustering.Clusterer", OSError),
+        ("lilbee.retrieval.query.Searcher", OSError),
+        ("lilbee.retrieval.query.Searcher", KeyboardInterrupt),
+    ],
+)
+def test_a_store_reset_closes_the_new_store_when_a_dependent_raises(monkeypatch, target, error):
+    """A dependent that fails to build leaves no open new store, and the old container stays."""
+    from tests.conftest import make_mock_services
+
+    _without_a_stop_thread(monkeypatch)
+    current = make_mock_services()
+    set_services(current)
+    new_store = MagicMock()
+    _rebuild_with(monkeypatch, [new_store], lambda: None)
+    monkeypatch.setattr(target, MagicMock(side_effect=error("boom")))
+
+    with pytest.raises(error, match="boom"):
+        services_mod.reset_store()
+
+    new_store.close.assert_called_once_with()
+    assert peek_services() is current
+    current.store.close.assert_not_called()
+    assert not services_mod._store_rebuild_lock.locked()
+
+
 def test_a_store_reset_holds_the_rebuild_lock_for_the_build_but_not_the_swap_lock(monkeypatch):
     """Two resets never build at once, and the build never blocks the stop's swap."""
     from tests.conftest import make_mock_services
