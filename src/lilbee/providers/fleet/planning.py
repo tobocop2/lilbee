@@ -757,12 +757,19 @@ def _known_chat_ceiling(model_path: Path, meta: dict[str, str] | None) -> int | 
     no ``cfg.num_ctx_max``: there is then no measured ceiling, only a default.
     """
     from lilbee.core.config import cfg
+
+    trained = _trained_chat_window(model_path, meta)
+    known = [value for value in (trained, cfg.num_ctx_max) if value is not None and value > 0]
+    return min(known) if known else None
+
+
+def _trained_chat_window(model_path: Path, meta: dict[str, str] | None) -> int | None:
+    """The context length the GGUF header says the model was trained for, or ``None``."""
     from lilbee.providers.gguf_meta import train_ctx_from_meta
 
     sentinel = -1
     trained = train_ctx_from_meta(meta, fallback=sentinel, model_path=model_path)
-    known = [value for value in (trained, cfg.num_ctx_max) if value is not None and value > 0]
-    return min(known) if known else None
+    return trained if trained > 0 else None
 
 
 def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
@@ -2157,6 +2164,7 @@ def _launch_for(
         # Slots is the chat concurrency the gate admits; ctx is what a client fits to.
         slots=slots,
         ctx=ctx,
+        trained_ctx=(_trained_chat_window(model_path, meta) or 0) if is_chat else 0,
         built_ctx_target=(
             (cfg.num_ctx if cfg.num_ctx is not None else cfg.chat_n_ctx_target) if is_chat else 0
         ),
@@ -4169,6 +4177,13 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]
         return None
     if launch.ctx >= needed:
         return None
+    if 0 < launch.trained_ctx < needed:
+        return (
+            f"The chat model {launch.model} was trained for a {launch.trained_ctx}-token "
+            f"window, and a grounded answer needs about {needed} tokens (system prompt, "
+            "a retrieved source, the question, and room for the answer), so it will not "
+            "be served. Use a model with a larger trained window."
+        )
     if devices and launch.weights_bytes > sum(d.free_bytes for d in devices):
         opening = (
             f"The chat model {launch.model} does not fit: its weights are larger than the "

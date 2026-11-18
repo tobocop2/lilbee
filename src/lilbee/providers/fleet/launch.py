@@ -37,6 +37,9 @@ class InstanceLaunch:
     # served window is smaller: the same planner aiming at least as high
     # already achieved this window, so a rebuild cannot beat it.
     built_ctx_target: int = 0
+    # The context length the model's header says it was trained for; 0 for non-chat
+    # roles and when the header gives none. Plan-time only: not written to state.
+    trained_ctx: int = 0
     # The vision slot ceiling the builder fitted against (vision_ocr_concurrency);
     # 0 for other roles and pre-field records.
     built_slots_target: int = 0
