@@ -171,3 +171,6 @@ release	path	digest	installed	installer
 0.6.90b691	lilbee/skills/lilbee_mcp/SKILL.md	a58cd4cab79874535b5983b1d5bedc05f7be66d632260d84e767dd4266bd6d04	yes	dunder-skip
 0.6.90b691	lilbee/skills/lilbee_mcp/__init__.py	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	no	dunder-skip
 0.6.90b692	lilbee/skills/lilbee_mcp/SKILL.md	92bddb8e9d3b92c18c71747ba323d15d35a072ea3f04ef557b2b9a24cbe646a7	yes	all-files
+0.6.90b693	lilbee/skills/lilbee_mcp/SKILL.md	eceed74a30d320e55506464fc8d800a1189647d336b4de0e5f99aa289646c5eb	yes	all-files
+0.6.90b693	lilbee/skills/lilbee_mcp/reference-settings.md	9aa05001c478c43da0189b89da456784b3fb1eebb3b6896a771835896281305c	yes	all-files
+0.6.90b693	lilbee/skills/lilbee_mcp/reference-tuning.md	105f78bf4cc87d90a0056208fe7f8642c57666d95ae312656b734d1dd6e298a5	yes	all-files

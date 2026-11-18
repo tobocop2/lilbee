@@ -365,8 +365,12 @@ def test_the_known_versions_keep_every_file_a_release_installed():
     for row in rows:
         if row["installed"] == "yes":
             installed.setdefault(Path(row["path"]).name, set()).add(row["digest"])
-    assert len({row["release"] for row in rows}) == 58
-    assert {name: len(digests) for name, digests in installed.items()} == {"SKILL.md": 14}
+    assert len({row["release"] for row in rows}) == 59
+    assert {name: len(digests) for name, digests in installed.items()} == {
+        "SKILL.md": 15,
+        "reference-settings.md": 1,
+        "reference-tuning.md": 1,
+    }
     for name, digests in installed.items():
         missing = digests - skill_install._KNOWN_SKILL_FILES.get(name, frozenset())
         assert not missing, f"keep the sha256 of every released {name}: {sorted(missing)}"
