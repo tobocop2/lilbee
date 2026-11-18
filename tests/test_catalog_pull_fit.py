@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from pathlib import Path
 
@@ -114,6 +115,19 @@ class TestChatPullFit:
         monkeypatch.setattr(cfg, "num_ctx", 2048)
         _hub(monkeypatch, QWEN3_4B, {"BF16": 100})
         assert chat_pull_fit("org/model", MISTRAL).ctx == 2048
+
+    def test_a_pin_past_the_trained_window_is_sized_at_the_window_and_logs_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The preview of a candidate repo reports the window and stays silent: the launch warns."""
+        monkeypatch.setattr(cfg, "num_ctx", 8192)
+        _hub(monkeypatch, {**QWEN3_4B, "max_position_embeddings": 4096}, {"BF16": 100})
+        with caplog.at_level(logging.DEBUG):
+            fit = chat_pull_fit("org/model", MLX)
+        assert fit.ctx == 4096
+        assert fit.device_bytes == 200 + KV_QWEN3_4B * 4096 + CHAT_RUNTIME_BYTES
+        assert "trained" not in fit.text()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     def test_each_slot_holds_its_own_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", 1000)
