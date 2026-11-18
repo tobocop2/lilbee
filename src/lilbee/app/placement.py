@@ -120,7 +120,8 @@ class PlacementView:
     # Roles sharing one swap group: each is placed, but only one is resident at a
     # time, so their footprints do not sum against the card they name.
     co_tenants: tuple[WorkerRole, ...] = ()
-    # A saved spec this hardware no longer satisfies. The auto plan is what runs,
+    # A saved spec that is not in use: this hardware does not satisfy it, no engine
+    # or model is installed for it, or it places no role. The auto plan is what runs,
     # but the spec stays in config.toml and reapplies once it fits again, so a
     # surface has to say it is there rather than report placement as plain auto.
     rejected_spec_json: str | None = None
@@ -132,8 +133,9 @@ class PlacementView:
     # it off ``gpus``: an empty device list is a CPU host and a failed probe
     # alike, and only UNKNOWN says which one this is.
     engine_backend: EngineBackend = EngineBackend.UNKNOWN
-    # Why the saved spec cannot run here, in words a user can act on. The spec
-    # itself is in ``rejected_spec_json`` so it can be corrected.
+    # Why the saved spec is not in use here, in words a user can act on: refused by
+    # the planner, or waiting for an engine or a model. The spec itself is in
+    # ``rejected_spec_json`` so it can be corrected.
     refusal: str | None = None
     # Vendors whose hardware is in this machine but hidden from the engine by the
     # launch, so no row in ``gpus`` is a pin target for them, and the line that

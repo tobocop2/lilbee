@@ -109,6 +109,7 @@ def test_the_cli_says_auto_and_why(show_args: list[str]) -> None:
     assert "Placement (auto)" in shown
     assert "Placement (manual)" not in shown
     assert WAITS_FOR_A_MODEL in shown
+    assert "placement clear" not in shown
 
 
 @pytest.mark.usefixtures("no_model_installed")
@@ -118,7 +119,7 @@ def test_the_cli_json_carries_the_reason_and_keeps_every_field(
     monkeypatch.setattr(cfg, "json_mode", True)
     result = CLI.invoke(placement_app, show_args)
     assert result.exit_code == 0
-    body = json.loads(result.output)
+    body = json.loads(result.stdout)
     assert body["manual"] is False
     assert body["spec_json"] is None
     assert body["rejected_spec_json"] == SPEC.to_json()
