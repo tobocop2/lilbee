@@ -13,6 +13,7 @@ running server. See docs/architecture.md for swap tenancy.
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import functools
 import json
 import logging
@@ -23,7 +24,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Generic, Literal, NamedTuple, NoReturn, TypeVar, overload
 
 import httpx
 
@@ -135,6 +136,7 @@ _DRAIN_POLL_S = 0.25
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
+    from contextlib import AbstractContextManager
 
     from lilbee.providers.base import (
         ChatMessage,
@@ -199,6 +201,7 @@ _VISION_REPEAT_LAST_N = 64
 # unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
 _DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
+_Item = TypeVar("_Item")
 
 
 def _prewarm_key(shard: Path) -> tuple[str, int, int]:
@@ -240,7 +243,7 @@ def _by_role(launches: list[InstanceLaunch]) -> dict[WorkerRole, list[InstanceLa
     return grouped
 
 
-def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
+def _least_in_flight(clients: Sequence[LlamaServerClient]) -> LlamaServerClient:
     """Pick the healthy client with the fewest in-flight requests.
 
     Falls back to the full pool when every client is marked unhealthy, so a
@@ -251,23 +254,42 @@ def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     return min(healthy or clients, key=lambda c: c.in_flight)
 
 
-# Serializes pick-and-reserve so concurrent routers see each other's assignment.
-# Held only for the O(replicas) selection, never across the request itself.
-_ROUTE_LOCK = threading.Lock()
+@dataclasses.dataclass(frozen=True)
+class _LivePool(Generic[_Item]):
+    """A role's replicas, read fresh at each pick under the lock that retires them.
 
-
-def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
-    """Atomically pick the least-loaded healthy client and reserve a slot on it.
-
-    Selection and reservation are one critical section: without it, concurrent
-    callers all read the same idlest replica before any of them increments its
-    counter and route there together (a thundering herd that starves the rest of
-    the fleet). The caller must :meth:`~LlamaServerClient.release` the slot.
+    *read* returns the live members (the caller holds *lock*); *wait* blocks while
+    the role has no members, or raises when it will get none. A pick and its
+    reservation are one critical section, so concurrent pickers spread out.
     """
-    with _ROUTE_LOCK:
-        client = _least_in_flight(clients)
-        client.reserve()
-        return client
+
+    lock: AbstractContextManager[object]
+    read: Callable[[], Sequence[_Item]]
+    wait: Callable[[], object]
+
+    def pick(self, choose: Callable[[Sequence[_Item]], _T]) -> _T:
+        """Run *choose* on the live members; a client it reserves is never closed under it."""
+        while True:
+            self.wait()
+            with self.lock:
+                live = self.read()
+                if live:
+                    return choose(live)
+
+
+def _reserve_least_busy(clients: Sequence[LlamaServerClient]) -> LlamaServerClient:
+    """Reserve a slot on the least-loaded healthy client; the caller releases it."""
+    client = _least_in_flight(clients)
+    client.reserve()
+    return client
+
+
+def _reserve_other_than(
+    clients: Sequence[LlamaServerClient], failed: LlamaServerClient
+) -> LlamaServerClient | None:
+    """Reserve the least-loaded client other than *failed*, or None when no other is left."""
+    others = [client for client in clients if client is not failed]
+    return _reserve_least_busy(others) if others else None
 
 
 def _launch_moves(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ...]) -> list[str]:
@@ -459,11 +481,11 @@ class _ReservedStream:
 
 
 def _stream_reserved(
-    clients: list[LlamaServerClient],
+    pool: _LivePool[LlamaServerClient],
     open_stream: Callable[[LlamaServerClient], ClosableIterator[ChatStreamItem]],
 ) -> ClosableIterator[ChatStreamItem]:
     """Open a stream on the least-busy client; its reservation lasts until the stream ends."""
-    client = _reserve_least_in_flight(clients)
+    client = pool.pick(_reserve_least_busy)
     try:
         return _ReservedStream(client, _primed_stream(open_stream(client)))
     except BaseException:
@@ -471,9 +493,11 @@ def _stream_reserved(
         raise
 
 
-def _call_reserved(clients: list[LlamaServerClient], call: Callable[[LlamaServerClient], _T]) -> _T:
+def _call_reserved(
+    pool: _LivePool[LlamaServerClient], call: Callable[[LlamaServerClient], _T]
+) -> _T:
     """Run *call* on the least-busy client, holding its reservation for the whole call."""
-    client = _reserve_least_in_flight(clients)
+    client = pool.pick(_reserve_least_busy)
     try:
         return call(client)
     finally:
@@ -481,7 +505,7 @@ def _call_reserved(clients: list[LlamaServerClient], call: Callable[[LlamaServer
 
 
 def _call_with_failover(
-    clients: list[LlamaServerClient],
+    pool: _LivePool[LlamaServerClient],
     call: Callable[[LlamaServerClient], _T],
 ) -> _T:
     """Run *call* on the least-busy healthy client, retrying once on another replica.
@@ -491,14 +515,14 @@ def _call_with_failover(
     retries once on a different replica; with no other replica the failure
     surfaces. The reservation is released once the call resolves.
     """
-    client = _reserve_least_in_flight(clients)
+    client = pool.pick(_reserve_least_busy)
     try:
         result = call(client)
     except Exception as exc:
         if not is_connection_failure(exc):
             raise
         client.mark_unhealthy()
-        return _retry_on_other_replica(clients, client, call, exc)
+        return _retry_on_other_replica(pool, client, call, exc)
     else:
         client.mark_healthy()
         return result
@@ -507,16 +531,15 @@ def _call_with_failover(
 
 
 def _retry_on_other_replica(
-    clients: list[LlamaServerClient],
+    pool: _LivePool[LlamaServerClient],
     failed: LlamaServerClient,
     call: Callable[[LlamaServerClient], _T],
     cause: Exception,
 ) -> _T:
     """Retry *call* once on a replica other than *failed*, marking its health."""
-    others = [c for c in clients if c is not failed]
-    if not others:
+    retry = pool.pick(lambda clients: _reserve_other_than(clients, failed))
+    if retry is None:
         _raise_no_healthy_replica(cause)
-    retry = _reserve_least_in_flight(others)
     try:
         retry_result = call(retry)
     except Exception as retry_exc:
@@ -682,12 +705,14 @@ class _VisionDispatcher:
     def __init__(self) -> None:
         self._cond = threading.Condition()
         self._assigned: dict[LlamaServerClient, int] = {}
+        # Counts releases, so a slot freed between a waiter's pick and its wait wakes it.
+        self._releases = 0
 
     @contextmanager
     def slot(
-        self, pool: Sequence[_VisionReplica], cancel: CancelSignal | None = None
+        self, pool: _LivePool[_VisionReplica], cancel: CancelSignal | None = None
     ) -> Iterator[LlamaServerClient]:
-        """Hold a slot and a reservation on the best replica; a set *cancel* ends the wait."""
+        """Hold a slot and a reservation on the best live replica; a set *cancel* ends the wait."""
         client = self._acquire(pool, cancel)
         try:
             yield client
@@ -696,20 +721,32 @@ class _VisionDispatcher:
             client.release()  # outside the condition: its idle callback runs on this thread
 
     def _acquire(
-        self, pool: Sequence[_VisionReplica], cancel: CancelSignal | None
+        self, pool: _LivePool[_VisionReplica], cancel: CancelSignal | None
     ) -> LlamaServerClient:
+        """Pick from the live pool after each wait, so a reload in the wait is never picked."""
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise TaskCancelledError
+            with self._cond:
+                releases = self._releases
+            # The pool's lock comes first and the condition second, on every path.
+            client = pool.pick(self._take)
+            if client is not None:
+                return client
+            with self._cond:
+                if self._releases == releases:
+                    # The timed wait re-polls health: a replica can become routable
+                    # again by cool-down expiry alone, which notifies no waiter.
+                    self._cond.wait(timeout=_DISPATCH_HEALTH_RECHECK_S)
+
+    def _take(self, pool: Sequence[_VisionReplica]) -> LlamaServerClient | None:
+        """Assign and reserve a slot on the best replica of *pool*, or None while all are full."""
         with self._cond:
-            while True:
-                if cancel is not None and cancel.is_set():
-                    raise TaskCancelledError
-                client = self._pick(pool)
-                if client is not None:
-                    self._assigned[client] = self._assigned.get(client, 0) + 1
-                    client.reserve()
-                    return client
-                # The timed wait re-polls health: a replica can become routable
-                # again by cool-down expiry alone, which notifies no waiter.
-                self._cond.wait(timeout=_DISPATCH_HEALTH_RECHECK_S)
+            client = self._pick(pool)
+            if client is not None:
+                self._assigned[client] = self._assigned.get(client, 0) + 1
+                client.reserve()
+            return client
 
     def _pick(self, pool: Sequence[_VisionReplica]) -> LlamaServerClient | None:
         """The usable replica with the most free slots, or None while all are full.
@@ -732,14 +769,25 @@ class _VisionDispatcher:
                 self._assigned.pop(client, None)
             else:
                 self._assigned[client] = remaining
+            self._releases += 1
             self._cond.notify_all()
 
 
 _VISION_DISPATCHER = _VisionDispatcher()
 
 
+def _others_than(
+    replicas: Sequence[_VisionReplica], failed: LlamaServerClient, cause: Exception
+) -> list[_VisionReplica]:
+    """The replicas other than *failed*; with none left, the no-healthy-replica error."""
+    others = [replica for replica in replicas if replica.client is not failed]
+    if not others:
+        _raise_no_healthy_replica(cause)
+    return others
+
+
 def _dispatch_vision(
-    pool: Sequence[_VisionReplica],
+    pool: _LivePool[_VisionReplica],
     call: Callable[[LlamaServerClient], _T],
     cancel: CancelSignal | None = None,
 ) -> _T:
@@ -760,9 +808,7 @@ def _dispatch_vision(
         else:
             client.mark_healthy()
             return result
-    others = [replica for replica in pool if replica.client is not failed]
-    if not others:
-        _raise_no_healthy_replica(cause)
+    others = dataclasses.replace(pool, read=lambda: _others_than(pool.read(), failed, cause))
     with _VISION_DISPATCHER.slot(others, cancel) as retry_client:
         try:
             retry_result = call(retry_client)
@@ -807,7 +853,7 @@ def _vision_call(
 
 
 def _ocr_dispatch(
-    pool: Sequence[_VisionReplica],
+    pool: _LivePool[_VisionReplica],
     messages: Sequence[Mapping[str, Any]],
     deadline: float | None,
     cancel: CancelSignal | None = None,
@@ -2378,7 +2424,7 @@ class FleetProvider:
                 # caller as a retry error, and rediscovery covers the next call.
                 return self._with_rediscover(
                     lambda: _stream_reserved(
-                        self._require_clients(WorkerRole.CHAT),
+                        self._live_pool(WorkerRole.CHAT),
                         lambda client: client.chat_stream_items(
                             messages, tools=tools, tool_choice=tool_choice, options=server_options
                         ),
@@ -2387,7 +2433,7 @@ class FleetProvider:
                 )
             return self._with_rediscover(
                 lambda: _call_reserved(
-                    self._require_clients(WorkerRole.CHAT),
+                    self._live_pool(WorkerRole.CHAT),
                     lambda client: client.chat_result(
                         messages, tools=tools, tool_choice=tool_choice, options=server_options
                     ),
@@ -2416,7 +2462,7 @@ class FleetProvider:
             server_options = chat_options_to_kwargs(options) or None
             return self._with_rediscover(
                 lambda: _call_reserved(
-                    self._require_clients(WorkerRole.CHAT),
+                    self._live_pool(WorkerRole.CHAT),
                     lambda client: client.chat_tools(
                         messages, tools=tools, tool_choice=tool_choice, options=server_options
                     ),
@@ -2472,8 +2518,8 @@ class FleetProvider:
         return self._with_rediscover(lambda: self._embed_once(texts), role=WorkerRole.EMBED)
 
     def _embed_once(self, texts: list[str]) -> list[Vector]:
-        clients = self._require_clients(WorkerRole.EMBED)
-        return _call_with_failover(clients, lambda client: client.embed(texts))
+        pool = self._live_pool(WorkerRole.EMBED)
+        return _call_with_failover(pool, lambda client: client.embed(texts))
 
     def count_tokens(self, text: str) -> int:
         """Exact token count of *text* under the embedding model's tokenizer.
@@ -2484,8 +2530,8 @@ class FleetProvider:
         return self._with_rediscover(lambda: self._count_once(text), role=WorkerRole.EMBED)
 
     def _count_once(self, text: str) -> int:
-        clients = self._require_clients(WorkerRole.EMBED)
-        return _call_with_failover(clients, lambda client: client.count_tokens(text))
+        pool = self._live_pool(WorkerRole.EMBED)
+        return _call_with_failover(pool, lambda client: client.count_tokens(text))
 
     def count_chat_text_tokens(self, text: str) -> int | None:
         """Tokens in *text* under the chat server's tokenizer, or None with no tokenize route.
@@ -2496,7 +2542,7 @@ class FleetProvider:
         with self._lazy_warm_scope():
             return self._with_rediscover(
                 lambda: _call_reserved(
-                    self._require_clients(WorkerRole.CHAT),
+                    self._live_pool(WorkerRole.CHAT),
                     lambda client: client.count_text_tokens(text),
                 ),
                 role=WorkerRole.CHAT,
@@ -2524,7 +2570,7 @@ class FleetProvider:
         with self._lazy_warm_scope():
             return self._with_rediscover(
                 lambda: _call_reserved(
-                    self._require_clients(WorkerRole.CHAT),
+                    self._live_pool(WorkerRole.CHAT),
                     lambda client: client.count_chat_prompt_tokens(
                         messages, tools=tools, tool_choice=tool_choice, options=server_options
                     ),
@@ -2544,7 +2590,8 @@ class FleetProvider:
         from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
         self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
-        pool = self._vision_pool()
+        self._serve_vision_on_request()
+        pool = self._live_vision_pool()
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
         try:
@@ -2568,8 +2615,22 @@ class FleetProvider:
             return None
         return max(1, sum(launch.slots for launch in launches))
 
-    def _vision_pool(self) -> list[_VisionReplica]:
-        """Each vision replica paired with its fitted ``--parallel`` slot count.
+    def _live_pool(self, role: WorkerRole) -> _LivePool[LlamaServerClient]:
+        """*role*'s clients, read under the lock a reload retires them under."""
+        return _LivePool(
+            self._lock, lambda: self._clients.get(role, []), lambda: self._require_clients(role)
+        )
+
+    def _live_vision_pool(self) -> _LivePool[_VisionReplica]:
+        """The vision replicas, each with its fitted slot count, read like :meth:`_live_pool`."""
+        return _LivePool(
+            self._lock,
+            lambda: self._vision_replicas(self._clients.get(WorkerRole.VISION, [])),
+            lambda: self._require_clients(WorkerRole.VISION),
+        )
+
+    def _vision_replicas(self, clients: list[LlamaServerClient]) -> list[_VisionReplica]:
+        """Each vision client paired with its fitted ``--parallel`` slot count.
 
         The fitted count can be lower than ``vision_ocr_concurrency`` when memory
         forced a smaller fit; dispatching at the configured ceiling instead
@@ -2577,8 +2638,6 @@ class FleetProvider:
         only when no matching launch snapshot exists (a reload can momentarily
         drop it between two reads).
         """
-        self._serve_vision_on_request()
-        clients = self._require_clients(WorkerRole.VISION)
         launches = self._role_launches(WorkerRole.VISION)
         if launches and len(launches) == len(clients):
             return [
@@ -2623,8 +2682,8 @@ class FleetProvider:
         )
 
     def _rerank_once(self, query: str, candidates: list[str]) -> list[float]:
-        clients = self._require_clients(WorkerRole.RERANK)
-        return _call_with_failover(clients, lambda client: client.rerank(query, candidates))
+        pool = self._live_pool(WorkerRole.RERANK)
+        return _call_with_failover(pool, lambda client: client.rerank(query, candidates))
 
     # --- model management: registry / GGUF reads, no running server needed ---
 

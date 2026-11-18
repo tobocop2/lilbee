@@ -89,6 +89,7 @@ def _routing_over(monkeypatch: pytest.MonkeyPatch, server: _CuttingServer) -> Ro
     client = LlamaServerClient(server.url, "chat-0", profile=LLAMA.request_profile(WorkerRole.CHAT))
     # The fleet start-up layer is out; the client and its socket are real.
     monkeypatch.setattr(fleet, "_require_clients", lambda role: [client])
+    monkeypatch.setattr(fleet, "_clients", {WorkerRole.CHAT: [client]})
     monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
     monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
     return routing

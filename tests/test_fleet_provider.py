@@ -62,6 +62,11 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
     return client
 
 
+def _pool(*members: object) -> prov_mod._LivePool:
+    """A live pool over fixed *members*, the shape the routing helpers take."""
+    return prov_mod._LivePool(threading.RLock(), lambda: list(members), lambda: None)
+
+
 def _fake_launch(
     role: WorkerRole,
     *,
@@ -1236,7 +1241,7 @@ def test_vision_ocr_waiting_for_a_slot_stops_on_cancel(monkeypatch) -> None:
         except BaseException as exc:
             raised.append(exc)
 
-    with prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(client, 1)]):
+    with prov_mod._VISION_DISPATCHER.slot(_pool(prov_mod._VisionReplica(client, 1))):
         waiter = threading.Thread(target=_page, daemon=True)
         waiter.start()
         waiter.join(timeout=0.3)
@@ -1551,7 +1556,7 @@ def test_vision_pool_pairs_each_replica_with_its_fitted_slots(monkeypatch) -> No
         _fake_launch(WorkerRole.VISION, slots=3),
         _fake_launch(WorkerRole.VISION, slots=2, replica=1),
     )
-    assert p._vision_pool() == [
+    assert p._live_vision_pool().pick(list) == [
         prov_mod._VisionReplica(first_client, 3),
         prov_mod._VisionReplica(second_client, 2),
     ]
@@ -1562,7 +1567,7 @@ def test_vision_pool_falls_back_to_configured_slots(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.VISION: [client]})
-    assert p._vision_pool() == [prov_mod._VisionReplica(client, 4)]
+    assert p._live_vision_pool().pick(list) == [prov_mod._VisionReplica(client, 4)]
 
 
 def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
@@ -1573,7 +1578,7 @@ def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
     p = _provider_with_clients({WorkerRole.VISION: clients})
     p._role_group[WorkerRole.VISION] = SwapGroup.VISION
     p._launches[SwapGroup.VISION] = (_fake_launch(WorkerRole.VISION, slots=3),)
-    assert [replica.slots for replica in p._vision_pool()] == [4, 4]
+    assert [replica.slots for replica in p._live_vision_pool().pick(list)] == [4, 4]
 
 
 def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
@@ -1780,7 +1785,7 @@ def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
 
     dispatcher = prov_mod._VisionDispatcher()
     replica_a, replica_b = _fake_client(), _fake_client()
-    pool = [prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1)]
+    pool = _pool(prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1))
 
     lock = threading.Lock()
     live: dict[int, int] = {}
@@ -1819,7 +1824,7 @@ def test_vision_dispatcher_blocks_on_a_full_pool_until_a_slot_frees() -> None:
 
     dispatcher = prov_mod._VisionDispatcher()
     only = _fake_client()
-    pool = [prov_mod._VisionReplica(only, 1)]
+    pool = _pool(prov_mod._VisionReplica(only, 1))
 
     acquired = threading.Event()
 
@@ -1845,7 +1850,7 @@ def test_vision_dispatcher_prefers_replica_with_most_free_slots() -> None:
     # the most free slots, not to whichever raced ahead.
     dispatcher = prov_mod._VisionDispatcher()
     roomy, tight = _fake_client(), _fake_client()
-    pool = [prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3)]
+    pool = _pool(prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3))
     with dispatcher.slot(pool) as first, dispatcher.slot(pool) as second:
         assert first is roomy  # 3 free beats 1
         assert second is roomy  # still 2 free vs 1
@@ -1859,7 +1864,7 @@ def test_vision_dispatcher_skips_unhealthy_replica() -> None:
     dispatcher = prov_mod._VisionDispatcher()
     dead, alive = _fake_client(), _fake_client()
     dead.healthy = False
-    pool = [prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1))
     with dispatcher.slot(pool) as client:
         assert client is alive
 
@@ -1871,7 +1876,7 @@ def test_vision_dispatcher_falls_back_when_all_unhealthy() -> None:
     dispatcher = prov_mod._VisionDispatcher()
     dead = _fake_client()
     dead.healthy = False
-    pool = [prov_mod._VisionReplica(dead, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 1))
     with dispatcher.slot(pool) as client:
         assert client is dead
 
@@ -1886,7 +1891,7 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
     dead, alive = _fake_client(), _fake_client()
     dead.chat.side_effect = _httpx.ConnectError("refused")
     alive.chat.return_value = "ocr text"
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1))
     result = prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
     assert result == "ocr text"
     dead.mark_unhealthy.assert_called_once()
@@ -1897,7 +1902,7 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
     lone.chat.side_effect = _httpx.ConnectError("refused")
     with pytest.raises(ProviderError, match="no healthy replica"):
         prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
+            _pool(prov_mod._VisionReplica(lone, 1)),
             lambda c: c.chat([], options={}, stream=False),
         )
 
@@ -1918,9 +1923,9 @@ def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
         raise _httpx.ConnectError("refused")
 
     dead.chat.side_effect = _refuse
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1))
     with (
-        prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(busy, 1)]),
+        prov_mod._VISION_DISPATCHER.slot(_pool(prov_mod._VisionReplica(busy, 1))),
         pytest.raises(TaskCancelledError),
     ):
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False), cancel)
@@ -1961,7 +1966,7 @@ def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatc
     log = Path("/engine/logs/llama-swap-embed.log")
     client = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(client), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
@@ -1975,7 +1980,7 @@ def test_exited_engine_without_a_known_log_still_names_the_death(monkeypatch) ->
 
     monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([_exited_embed_client(None)], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(_exited_embed_client(None)), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500)."
     )
@@ -1989,7 +1994,7 @@ def test_lone_rerank_replica_whose_engine_exited_names_the_model_and_the_log(mon
     log = Path("/engine/logs/llama-swap-rerank.log")
     client = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([client], lambda c: c.rerank("q", ["a"]))
+        prov_mod._call_with_failover(_pool(client), lambda c: c.rerank("q", ["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
@@ -2006,7 +2011,7 @@ def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
     lone.engine_log = Path("/engine/logs/llama-swap-embed.log")
     lone.embed.side_effect = _httpx.ConnectError("refused")
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([lone], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(lone), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         "The model server is not responding and no healthy replica is available. "
         "It may be restarting; try again in a moment."
@@ -2022,7 +2027,7 @@ def test_lone_vision_replica_whose_engine_exited_names_the_death(monkeypatch) ->
     lone = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
         prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
+            _pool(prov_mod._VisionReplica(lone, 1)),
             lambda c: c.embed(["a"]),
         )
     assert str(info.value) == (
@@ -2084,7 +2089,7 @@ def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> No
     refused = _httpx.ConnectError("refused")
     dead_a.chat.side_effect = _httpx.ConnectError("refused")
     dead_b.chat.side_effect = refused
-    pool = [prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1))
     with pytest.raises(ProviderError, match="not responding") as caught:
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
     assert caught.value.kind is ProviderErrorKind.CONNECTION
@@ -2098,7 +2103,7 @@ def test_dispatch_vision_model_error_on_the_retry_replica_surfaces_unchanged() -
     rejected = ProviderError("bad image", kind=ProviderErrorKind.BAD_REQUEST)
     dead.chat.side_effect = httpx.ConnectError("refused")
     other.chat.side_effect = rejected
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(other, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(other, 1))
     with pytest.raises(ProviderError) as caught:
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
     assert caught.value is rejected
@@ -2360,7 +2365,7 @@ def test_vision_failover_reserves_each_replica_only_while_it_runs() -> None:
             raise httpx.ConnectError("refused")
         return "ok"
 
-    pool = [prov_mod._VisionReplica(failed, 1), prov_mod._VisionReplica(spare, 1)]
+    pool = _pool(prov_mod._VisionReplica(failed, 1), prov_mod._VisionReplica(spare, 1))
     assert prov_mod._dispatch_vision(pool, _call) == "ok"
     assert seen == [(1, 0), (0, 1)]  # the failed replica is let go before the retry
     assert (failed.in_flight, spare.in_flight) == (0, 0)
@@ -2381,13 +2386,156 @@ def test_vision_ocr_cancelled_while_waiting_reserves_nothing(monkeypatch) -> Non
 
     monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 0.01)
     busy, cancel = _counting_client(), _CancelAfterOneWait()
-    pool = [prov_mod._VisionReplica(busy, 1)]
+    pool = _pool(prov_mod._VisionReplica(busy, 1))
     with prov_mod._VISION_DISPATCHER.slot(pool):
         with pytest.raises(TaskCancelledError):
             prov_mod._dispatch_vision(pool, lambda c: "x", cancel)
         assert cancel.polls == 2  # it waited once, then saw the cancel
         assert busy.in_flight == 1  # only the slot holder's reservation
     assert busy.in_flight == 0
+
+
+def _serving_client(served: list[bool]) -> MagicMock:
+    """A counting client that records, at each call, whether a reload had closed it."""
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+
+    def _serve(result: object) -> Callable[..., object]:
+        def _call(*_args: object, **_kwargs: object) -> object:
+            served.append(client.close.called)
+            return result
+
+        return _call
+
+    client.chat_result.side_effect = _serve(
+        ChatResult(text="a", tool_calls=(), finish_reason=FinishReason.STOP)
+    )
+    client.chat_stream_items.side_effect = lambda *_a, **_k: _serve(_frames_of("a"))()
+    client.embed.side_effect = _serve([[0.1]])
+    return client
+
+
+@pytest.mark.parametrize("route", ["chat", "stream", "embed"])
+def test_a_pick_after_two_reloads_reserves_a_live_client(monkeypatch, route: str) -> None:
+    # Each pool read is followed by two reloads: the first retires what the read
+    # returned, the second closes it while idle. The pick must not land on it.
+    role = WorkerRole.EMBED if route == "embed" else WorkerRole.CHAT
+    served: list[bool] = []
+    p = _provider_with_clients({role: [_serving_client(served)]})
+    read = p._require_clients
+
+    def _read_then_reload_twice(asked: WorkerRole) -> list[LlamaServerClient]:
+        clients = read(asked)
+        p._clients[role] = [_serving_client(served)]
+        with p._lock:
+            p._retire_clients(list(clients))
+            p._retire_clients([])
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _read_then_reload_twice)
+    messages = [{"role": "user", "content": "hi"}]
+    if route == "embed":
+        assert p.embed(["x"]) == [[0.1]]
+    elif route == "stream":
+        assert list(p.chat(messages, stream=True)) == ["a"]
+    else:
+        assert p.chat(messages).text == "a"
+    assert served == [False]  # one call, on a client no reload closed
+
+
+def test_an_ocr_pick_after_two_reloads_in_its_slot_wait_reserves_a_live_client(
+    monkeypatch,
+) -> None:
+    # Page one holds the only slot on the old client. Page two waits for a slot;
+    # two reloads during that wait retire and close the old client. When the slot
+    # frees, page two must run on the new client.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    old, new = _fake_client(), _fake_client()  # in_flight stays 0: the reload closes old
+    entered, finish = threading.Event(), threading.Event()
+    served: list[tuple[str, bool]] = []
+
+    def _old_call(*_args: object, **_kwargs: object) -> str:
+        served.append(("old", old.close.called))
+        entered.set()
+        finish.wait(10)
+        return "old text"
+
+    old.chat_abortable.side_effect = _old_call
+    new.chat_abortable.return_value = "new text"
+    p = _provider_with_clients({WorkerRole.VISION: [old]})
+
+    class _SeesTheWait:
+        """Never set; marks that page two reached its slot wait."""
+
+        def __init__(self) -> None:
+            self.waiting = threading.Event()
+
+        def is_set(self) -> bool:
+            self.waiting.set()
+            return False
+
+    results: list[str] = []
+    first = threading.Thread(target=lambda: results.append(p.vision_ocr(b"png", "")))
+    first.start()
+    assert entered.wait(10)
+    probe = _SeesTheWait()
+    second = threading.Thread(
+        target=lambda: results.append(p.vision_ocr(b"png", "", cancel=probe))
+    )
+    second.start()
+    assert probe.waiting.wait(10)
+    p._clients[WorkerRole.VISION] = [new]
+    with p._lock:
+        p._retire_clients([old])
+        p._retire_clients([])
+    old.close.assert_called_once()  # the second reload closed the idle old client
+    finish.set()
+    first.join(10)
+    second.join(10)
+    assert sorted(results) == ["new text", "old text"]
+    assert served == [("old", False)]  # only page one ran on old, before it closed
+
+
+def test_live_pool_waits_again_when_a_reload_empties_it_before_the_pick() -> None:
+    reads: list[list[str]] = [[], ["live"]]
+    waits: list[int] = []
+    pool = prov_mod._LivePool(threading.RLock(), lambda: reads.pop(0), lambda: waits.append(1))
+    assert pool.pick(list) == ["live"]
+    assert waits == [1, 1]  # the empty read sent the pick back to wait
+
+
+def test_vision_dispatcher_does_not_wait_for_a_slot_freed_after_its_pick(monkeypatch) -> None:
+    # A slot freed between a full pick and the wait must not be slept through.
+    monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 60.0)
+    dispatcher = prov_mod._VisionDispatcher()
+    only = _fake_client()
+    replicas = [prov_mod._VisionReplica(only, 1)]
+    held = dispatcher.slot(_pool(*replicas))
+    assert held.__enter__() is only
+
+    class _FreeTheSlotAfterThePick:
+        """The pool lock; leaving it the first time frees the held slot."""
+
+        def __init__(self) -> None:
+            self.left = 0
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_exc: object) -> None:
+            self.left += 1
+            if self.left == 1:
+                held.__exit__(None, None, None)
+
+    lock = _FreeTheSlotAfterThePick()
+    pool = prov_mod._LivePool(lock, lambda: replicas, lambda: None)
+    started = time.monotonic()
+    with dispatcher.slot(pool) as client:
+        assert client is only
+    assert lock.left == 2  # one full pick, then the pick that took the freed slot
+    assert time.monotonic() - started < 5.0
 
 
 def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
@@ -4406,13 +4554,13 @@ class TestReserveSpreadsLoad:
         # each get exactly one request instead of all landing on the first
         # (the thundering herd that left cards idle on the 8x A100 fleet).
         replicas = [_FakeReplica() for _ in range(4)]
-        picked = [prov_mod._reserve_least_in_flight(replicas) for _ in range(4)]
+        picked = [prov_mod._reserve_least_busy(replicas) for _ in range(4)]
         assert {id(c) for c in picked} == {id(c) for c in replicas}
         assert all(r.in_flight == 1 for r in replicas)
 
     def test_call_with_failover_releases_the_reservation(self) -> None:
         replicas = [_FakeReplica(), _FakeReplica()]
-        prov_mod._call_with_failover(replicas, lambda c: c.embed(["x"]))
+        prov_mod._call_with_failover(_pool(*replicas), lambda c: c.embed(["x"]))
         assert all(r.in_flight == 0 for r in replicas)  # reservation released
 
     def test_failover_releases_both_reservations(self) -> None:
@@ -4420,7 +4568,7 @@ class TestReserveSpreadsLoad:
 
         bad = _FakeReplica(fail=httpx.ConnectError("refused"))
         good = _FakeReplica()
-        prov_mod._call_with_failover([bad, good], lambda c: c.embed(["x"]))
+        prov_mod._call_with_failover(_pool(bad, good), lambda c: c.embed(["x"]))
         assert bad.in_flight == 0 and good.in_flight == 0  # both released
         assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
 
@@ -4429,7 +4577,7 @@ class TestReserveSpreadsLoad:
         first = _FakeReplica(fail=refused)
         second = _FakeReplica(fail=refused)
         with pytest.raises(ProviderError, match="not responding") as info:
-            prov_mod._call_with_failover([first, second], lambda c: c.embed(["x"]))
+            prov_mod._call_with_failover(_pool(first, second), lambda c: c.embed(["x"]))
         assert info.value.kind is ProviderErrorKind.CONNECTION
         assert info.value.__cause__ is refused
         assert not first.healthy and not second.healthy
@@ -4440,7 +4588,7 @@ class TestReserveSpreadsLoad:
         rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
         other = _FakeReplica(fail=rejected)
         with pytest.raises(ProviderError) as info:
-            prov_mod._call_with_failover([bad, other], lambda c: c.embed(["x"]))
+            prov_mod._call_with_failover(_pool(bad, other), lambda c: c.embed(["x"]))
         assert info.value is rejected
         assert other.healthy
 
@@ -4453,9 +4601,10 @@ class TestReserveSpreadsLoad:
         # With the atomic reserve the 8 requests spread evenly (2 per replica);
         # without it the herd piled onto whichever replica read idlest first.
         overlap = threading.Barrier(8)
+        pool = _pool(*replicas)
 
         def _dispatch() -> None:
-            prov_mod._call_with_failover(replicas, lambda c: (overlap.wait(), c.embed(["x"]))[1])
+            prov_mod._call_with_failover(pool, lambda c: (overlap.wait(), c.embed(["x"]))[1])
 
         threads = [threading.Thread(target=_dispatch) for _ in range(8)]
         for t in threads:
@@ -8054,6 +8203,7 @@ class TestDeadServersThroughTheRoutingProvider:
             for role in (WorkerRole.EMBED, WorkerRole.CHAT)
         }
         monkeypatch.setattr(fleet, "_require_clients", lambda role: pools[role])
+        monkeypatch.setattr(fleet, "_clients", pools)
         # The fleet start-up layer is out; the clients and their sockets are real.
         monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
         monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
@@ -8148,6 +8298,7 @@ class TestAStreamCutBeforeAnyText:
             )
             # The fleet start-up layer is out; the client and its socket are real.
             monkeypatch.setattr(fleet, "_require_clients", lambda role: [client])
+            monkeypatch.setattr(fleet, "_clients", {WorkerRole.CHAT: [client]})
             monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
             monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
             with pytest.raises(ProviderError, match="not responding") as caught:
