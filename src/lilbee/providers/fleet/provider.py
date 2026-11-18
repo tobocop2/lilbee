@@ -150,6 +150,7 @@ if TYPE_CHECKING:
 _PROVIDER_NAME = "llama-server"
 RELOADING_NOTICE = "A change to the engines is being applied; roles may run their previous engine."
 RELOAD_FAILED_NOTICE = "The last engine reload failed; a role may still run its previous engine."
+NO_ENGINE_NOTICE = "The last engine start failed; no local engine group is running."
 # No-healthy-replica message for a server that stopped answering at the transport.
 _NOT_RESPONDING_MESSAGE = (
     "The model server is not responding and no healthy replica is available. "
@@ -1276,7 +1277,7 @@ class FleetProvider:
         self._build_wanted = False
         # Roles whose dead group the next pass restarts with an unchanged plan.
         self._forced_roles: set[WorkerRole] = set()
-        # How the last fleet work ended; read only with a group up.
+        # How the last fleet work ended.
         self._reload_failed = False
         # Roles the running reload pass may still bring a server back for: every role
         # from the start of a pass until its plan is known, then the planned
@@ -1465,11 +1466,11 @@ class FleetProvider:
         self._fleet_work = None
         self._build_wanted = False
         self._forced_roles.clear()
-        self._reload_failed = failure is not None
         if failure is not None:
             # A no-op for a running group, so a live engine is never abandoned unstopped.
             for group in [g for g, swap in self._swaps.items() if not swap.running]:
                 self._drop_group(group)
+        self._reload_failed = failure is not None
 
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
@@ -1913,13 +1914,14 @@ class FleetProvider:
         ]
 
     def _drop_group(self, group: SwapGroup) -> SwapManager | None:
-        """Forget *group*'s swap/launches and every member role's clients.
+        """Forget *group*'s swap/launches and every member role's clients, and the last failure.
 
         Caller holds ``self._lock``. Member clients are retired (closed at a later
         reload or shutdown, never while a reader could still hold one) and the chat
         capacity falls back to its defaults when chat's group is dropped.
         """
         swap = self._swaps.pop(group, None)
+        self._reload_failed = False
         self._launches.pop(group, None)
         # Prune the dir map with the group: a stale entry outliving its group makes
         # _reload_dir see two dirs and pick one arbitrarily, splitting the provider.
@@ -2186,8 +2188,8 @@ class FleetProvider:
         with self._lock:
             if self._fleet_work is not None and self._writes_wanted != self._writes_done:
                 return RELOADING_NOTICE
-            if self._reload_failed and self._swaps:
-                return RELOAD_FAILED_NOTICE
+            if self._reload_failed and not self._shut_down:
+                return RELOAD_FAILED_NOTICE if self._swaps else NO_ENGINE_NOTICE
         return None
 
     def health_warnings(self) -> list[HealthWarning]:
