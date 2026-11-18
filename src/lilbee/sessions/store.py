@@ -22,12 +22,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from filelock import FileLock
-
 from lilbee.core.config import cfg
 from lilbee.core.security import (
-    OWNER_ONLY_MODE,
     ensure_private_dir,
+    file_lock,
     private_opener,
     write_private_text,
 )
@@ -327,7 +325,7 @@ class SessionStore:
         # milliseconds, so a blocked writer waits, never fails, under any
         # realistic contention; the timeout only bounds a wedged holder.
         with (
-            FileLock(str(path) + ".lock", timeout=_APPEND_LOCK_TIMEOUT_S, mode=OWNER_ONLY_MODE),
+            file_lock(path, _APPEND_LOCK_TIMEOUT_S),
             open(path, "a", encoding="utf-8", opener=private_opener) as fh,
         ):
             fh.write(json.dumps(event) + "\n")

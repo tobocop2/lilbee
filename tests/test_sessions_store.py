@@ -599,6 +599,55 @@ def test_appends_keep_the_session_file_owner_only(
 
 
 @posix_only
+def test_a_refused_chmod_on_the_append_lock_still_appends_under_the_lock(
+    store: SessionStore, monkeypatch
+) -> None:
+    import errno
+    import fcntl
+
+    flocks: list[int] = []
+    real_flock = fcntl.flock
+
+    def recording_flock(fd, op):
+        flocks.append(op)
+        return real_flock(fd, op)
+
+    def refuse_chmod(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr("os.fchmod", refuse_chmod)
+    monkeypatch.setattr(Path, "chmod", refuse_chmod)
+    monkeypatch.setattr(fcntl, "flock", recording_flock)
+    # create() makes the lock file, the only time filelock applies a mode.
+    sid = store.create(model_ref="m", scope="both")
+    store.add_message(sid, _msg("hello"))
+    assert [m.content for m in store.get(sid).messages] == ["hello"]
+    assert fcntl.LOCK_EX in [op & ~fcntl.LOCK_NB for op in flocks]
+
+
+def test_an_append_lock_the_system_refuses_fails_and_writes_nothing(
+    store: SessionStore, tmp_path, monkeypatch
+) -> None:
+    import errno
+
+    import filelock
+
+    from lilbee.core.security import FileLockUnavailableError
+
+    sid = store.create(model_ref="m", scope="both")
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl"
+    before = path.read_bytes()
+
+    def refuse(self, *_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(filelock.FileLock, "acquire", refuse)
+    with pytest.raises(FileLockUnavailableError, match="cannot be taken"):
+        store.add_message(sid, _msg("hello"))
+    assert path.read_bytes() == before
+
+
+@posix_only
 @pytest.mark.parametrize("action", ["create", "fork"])
 def test_the_sessions_dir_is_owner_only(
     store: SessionStore, tmp_path, permissive_umask, action: str
