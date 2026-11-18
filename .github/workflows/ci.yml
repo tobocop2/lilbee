@@ -166,6 +166,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Use the npm major the publish job uses
+        run: npm install -g npm@12   # must match the npm job in publish-packages.yml
+
       - name: Install launcher dependencies
         run: npm ci --no-audit --no-fund
         working-directory: packages/lilbee

@@ -341,7 +341,7 @@ jobs:
       - name: Use an npm that can do trusted publishing
         run: |
           set -euo pipefail
-          npm install -g npm@11   # trusted publishing needs npm >= 11.5.1; major pinned so a new npm major cannot change tests or publish
+          npm install -g npm@12   # trusted publishing needs npm >= 11.5.1; the major matches PR CI, so the release job runs the tests PR CI ran
           npm --version
 
       - name: Install launcher dependencies
