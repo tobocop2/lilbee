@@ -9,7 +9,6 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
-from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +18,7 @@ from lilbee.core.config import CRAWL_PAGES_TABLE
 from lilbee.core.web_names import WEB_PREFIX
 from lilbee.runtime.lock import LOCK_TIMEOUT, crawl_pages_lock
 
-from .lance_helpers import ensure_table, escape_sql_string, open_committed
+from .lance_helpers import ensure_table, escape_sql_string, open_committed, prune_old_versions
 
 if TYPE_CHECKING:
     from lancedb.db import LanceDBConnection
@@ -36,10 +35,6 @@ _TABLE_ID = b"lilbee.table_id"
 # The commits a store makes between two folds of the table, and the keys one delete names.
 _FOLD_EVERY = 100
 _KEYS_PER_DELETE = 200
-# How long a version a fold replaces stays readable: far longer than one read of the
-# table, which takes milliseconds. Kept short, as each kept version slows the check for
-# the latest one (about 1 ms per 1,000 versions on a laptop).
-_KEEP_VERSIONS = timedelta(seconds=10)
 
 
 class CrawlPagesError(OSError):
@@ -375,7 +370,7 @@ class CrawlPages:
                     )
                     or "false"
                 )
-            table.optimize(cleanup_older_than=_KEEP_VERSIONS)
+            prune_old_versions(table)
             self._view.replaced.clear()
             # One row per key is left; a count that differs means a writer without the
             # crawl lock committed in between, so the rows are read again.

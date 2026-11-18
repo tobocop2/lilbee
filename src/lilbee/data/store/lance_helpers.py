@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,11 @@ log = logging.getLogger(__name__)
 # arm, named here so the store's query and index code shares one spelling with
 # its sibling _TITLE_COLUMN.
 _CHUNK_COLUMN = "chunk"
+
+# How long a replaced table version stays readable: far longer than one read of the
+# table, which takes milliseconds. Kept short, as each kept version slows the check for
+# the latest one (about 1 ms per 1,000 versions on a laptop).
+KEEP_VERSIONS = timedelta(seconds=10)
 
 # Index types as LanceDB's IndexConfig reports them.
 _FTS_INDEX_TYPE = "FTS"
@@ -76,6 +82,11 @@ def open_committed(db: LanceDBConnection, name: str) -> LanceTable | None:
     except ValueError:
         return None
     return table
+
+
+def prune_old_versions(table: LanceTable) -> None:
+    """Delete the table versions older than ``KEEP_VERSIONS`` and fold the fragments."""
+    table.optimize(cleanup_older_than=KEEP_VERSIONS)
 
 
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:

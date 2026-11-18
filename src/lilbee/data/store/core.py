@@ -76,6 +76,7 @@ from .lance_helpers import (
     escape_sql_string,
     newest_meta_row,
     open_committed,
+    prune_old_versions,
     refs_compatible,
     stored_width,
     table_names,
@@ -4100,7 +4101,8 @@ class Store:
         The snapshot, embed, and table swap all run under the write lock so a
         concurrent ``add_memory`` cannot commit into the read-then-swap window and
         be erased; it either lands before the snapshot or blocks until the rebuild
-        finishes.
+        finishes. The overwrite leaves the old table version on disk, so the
+        versions older than the keep window are pruned after it.
         """
         with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
@@ -4124,12 +4126,13 @@ class Store:
                     )
                 # MemoryRow serializes to JSON on write, which has no ndarray encoding.
                 memory.vector = vector.tolist()
-            self.get_db().create_table(
+            rebuilt = self.get_db().create_table(
                 MEMORIES_TABLE,
                 data=[m.model_dump(mode="json") for m in memories],
                 schema=self._memories_schema(),
                 mode="overwrite",
             )
+            prune_old_versions(rebuilt)
         return len(memories)
 
     def close(self) -> None:

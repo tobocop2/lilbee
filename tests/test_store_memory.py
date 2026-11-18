@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 
 import numpy as np
@@ -400,6 +401,117 @@ class TestRebuildEmbeddings:
 
         store.rebuild_memory_embeddings(embed)
         assert locked_during == [True]  # embed ran while the write lock was held
+
+
+_ADD_FROM_OTHER_PROCESS = """
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from lilbee.core.config import cfg
+from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, MemorySource, Store
+
+store = Store(cfg.model_copy(update={"lancedb_dir": Path(sys.argv[1])}))
+now = datetime.now(UTC).isoformat()
+print("ready", flush=True)
+store.add_memory(
+    MemoryRow(
+        id="id-other-process",
+        owner=LOCAL_OWNER,
+        shared=False,
+        kind=MemoryKind.FACT,
+        source=MemorySource.MANUAL,
+        text="from another process",
+        vector=[0.0] * store._config.embedding_dim,
+        created_at=now,
+        updated_at=now,
+    )
+)
+"""
+
+
+def _table_bytes(store: Store) -> int:
+    """Bytes the memories table occupies on disk, old versions included."""
+    table_dir = store._config.lancedb_dir / f"{MEMORIES_TABLE}.lance"
+    return sum(path.stat().st_size for path in table_dir.rglob("*") if path.is_file())
+
+
+class TestRebuildPrunesVersions:
+    """Each rebuild replaces the table; the replaced versions must not pile up on disk."""
+
+    @pytest.fixture()
+    def stocked(self, store):
+        for axis in range(40):
+            store.add_memory(_memory(store, text=f"memory {axis} " + "x" * 2000, axis=axis))
+        return store
+
+    @pytest.fixture()
+    def no_keep_window(self, monkeypatch):
+        """Make every prune delete all replaced versions, as one older than the window would."""
+        from datetime import timedelta
+
+        from lancedb.table import LanceTable
+
+        real_optimize = LanceTable.optimize
+
+        def optimize_now(self, *args, **kwargs):
+            kwargs["cleanup_older_than"] = timedelta(0)
+            return real_optimize(self, *args, **kwargs)
+
+        monkeypatch.setattr(LanceTable, "optimize", optimize_now)
+
+    def test_repeated_rebuilds_keep_the_disk_flat(self, stocked, no_keep_window):
+        dim = stocked._config.embedding_dim
+
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            return [_unit_array(dim, 3) for _ in texts]
+
+        stocked.rebuild_memory_embeddings(embed)
+        after_first = _table_bytes(stocked)
+        for _ in range(5):
+            stocked.rebuild_memory_embeddings(embed)
+        assert after_first > 0
+        assert _table_bytes(stocked) <= after_first * 1.1
+
+    def test_rebuild_keeps_the_previous_version_within_the_window(self, stocked):
+        dim = stocked._config.embedding_dim
+        stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        table = stocked.open_table(MEMORIES_TABLE)
+        assert table is not None
+        # A reader of another process at the version before the swap still reads it.
+        assert len(table.list_versions()) > 1
+
+    def test_memory_added_by_another_process_during_a_rebuild_is_kept(self, stocked, tmp_path):
+        script = tmp_path / "add_from_other_process.py"
+        script.write_text(_ADD_FROM_OTHER_PROCESS, encoding="utf-8")
+        dim = stocked._config.embedding_dim
+        other = subprocess.Popen(
+            [sys.executable, str(script), str(stocked._config.lancedb_dir)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        blocked_during: list[bool] = []
+
+        def embed(texts: list[str]) -> list[npt.NDArray[np.float32]]:
+            assert other.stdout is not None
+            assert other.stdout.readline().strip() == "ready"
+            time.sleep(1.0)
+            # The other process asked for the write lock; it must still be waiting for it.
+            blocked_during.append(other.poll() is None)
+            return [_unit_array(dim, 3) for _ in texts]
+
+        try:
+            stocked.rebuild_memory_embeddings(embed)
+            _, stderr = other.communicate(timeout=120)
+        finally:
+            other.kill()
+        assert blocked_during == [True]
+        assert other.returncode == 0, stderr
+        texts = {m.text for m in stocked.get_memories(owner_predicate=LOCAL_PREDICATE)}
+        assert "from another process" in texts
+        assert len(texts) == 41
 
 
 _KILL_DURING_SWAP = """
