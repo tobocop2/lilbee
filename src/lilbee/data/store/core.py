@@ -1817,14 +1817,14 @@ class Store:
         """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
         self._upgrade_started = time.monotonic()
         try:
-            # Recorded, not reported: health and the 503 name the upgrade from its first moment.
-            self._upgrade = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
+            self._record_upgrade_running()
             with ExitStack() as held:
                 try:
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=0.0))
                 except LockTimeoutError:
                     self._report_upgrade(UpgradePhase.WAITING)
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
+                    self._record_upgrade_running()
                 # Another process can have upgraded it during the wait.
                 if self._upgrade_needed(db):
                     self._upgrade_unlocked(db)
@@ -1842,11 +1842,16 @@ class Store:
             _add_held_columns(db)
         if _upgrade_pending(db):
             self._migrate_unlocked(db)
+            self._record_upgrade_running()
         if held:
             self._import_held_unlocked(db)
         if legacy_crawl_files(self._config.data_dir):
             import_legacy_crawl_files(db, self._config.data_dir)
         _fill_locations(db, self._locations())
+
+    def _record_upgrade_running(self) -> None:
+        """Record the upgrade as running with no table in hand, without reporting an event."""
+        self._upgrade = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
 
     def _report_upgrade(self, phase: UpgradePhase, step: _TableStep | None = None) -> None:
         """Pass *phase* to the reporter, timed from the upgrade's start; record it while it runs."""
