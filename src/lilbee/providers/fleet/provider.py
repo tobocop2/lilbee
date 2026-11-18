@@ -284,6 +284,14 @@ def _reserve_least_busy(clients: Sequence[LlamaServerClient]) -> LlamaServerClie
     return client
 
 
+def _wait_for_failover(wait: Callable[[], object], cause: Exception) -> None:
+    """Run a failover pick's *wait*; a no-server error there surfaces the failover's *cause*."""
+    try:
+        wait()
+    except ProviderError:
+        _raise_no_healthy_replica(cause)
+
+
 def _reserve_other_than(
     clients: Sequence[LlamaServerClient], failed: LlamaServerClient
 ) -> LlamaServerClient | None:
@@ -537,7 +545,8 @@ def _retry_on_other_replica(
     cause: Exception,
 ) -> _T:
     """Retry *call* once on a replica other than *failed*, marking its health."""
-    retry = pool.pick(lambda clients: _reserve_other_than(clients, failed))
+    failover = dataclasses.replace(pool, wait=lambda: _wait_for_failover(pool.wait, cause))
+    retry = failover.pick(lambda clients: _reserve_other_than(clients, failed))
     if retry is None:
         _raise_no_healthy_replica(cause)
     try:
@@ -808,7 +817,11 @@ def _dispatch_vision(
         else:
             client.mark_healthy()
             return result
-    others = dataclasses.replace(pool, read=lambda: _others_than(pool.read(), failed, cause))
+    others = dataclasses.replace(
+        pool,
+        read=lambda: _others_than(pool.read(), failed, cause),
+        wait=lambda: _wait_for_failover(pool.wait, cause),
+    )
     with _VISION_DISPATCHER.slot(others, cancel) as retry_client:
         try:
             retry_result = call(retry_client)
@@ -1979,18 +1992,39 @@ class FleetProvider:
             with self._lock:
                 clients = self._clients.get(role)
         if not clients:
-            # A refused launch's recorded reason wins over the generic line.
-            # BAD_REQUEST so the HTTP surfaces return this deterministic,
-            # actionable refusal in a 4xx body instead of a generic 500.
-            reason = self._engine_refusal or self._refused_roles.get(role)
-            if reason is not None:
-                raise ProviderError(
-                    reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST
-                )
-            raise ProviderError(
-                _no_server_message(role, self._unusable_engine_reason()), provider=_PROVIDER_NAME
-            )
+            self._raise_no_clients(role)
         return list(clients)
+
+    def _raise_no_clients(self, role: WorkerRole) -> NoReturn:
+        """Raise the user-facing error for *role* having no server."""
+        # A refused launch's recorded reason wins over the generic line.
+        # BAD_REQUEST so the HTTP surfaces return this deterministic,
+        # actionable refusal in a 4xx body instead of a generic 500.
+        reason = self._engine_refusal or self._refused_roles.get(role)
+        if reason is not None:
+            raise ProviderError(reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST)
+        raise ProviderError(
+            _no_server_message(role, self._unusable_engine_reason()), provider=_PROVIDER_NAME
+        )
+
+    def _await_vision_clients(self, cancel: CancelSignal | None) -> None:
+        """Wait one dispatch recheck for vision clients while a reload owes them; never builds.
+
+        Raises when *cancel* is set, or when vision has no clients and no reload brings any.
+        """
+        if cancel is not None and cancel.is_set():
+            raise TaskCancelledError
+        with self._lock:
+            self._reload_done.wait_for(
+                lambda: (
+                    bool(self._clients.get(WorkerRole.VISION))
+                    or WorkerRole.VISION not in self._reload_owed
+                ),
+                _DISPATCH_HEALTH_RECHECK_S,
+            )
+            if self._clients.get(WorkerRole.VISION) or WorkerRole.VISION in self._reload_owed:
+                return
+        self._raise_no_clients(WorkerRole.VISION)
 
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
         """Run *call*; on a connection-kind or load-capacity failure, retry once.
@@ -2591,7 +2625,9 @@ class FleetProvider:
 
         self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
         self._serve_vision_on_request()
-        pool = self._live_vision_pool()
+        # The one fleet check of the call: a failing build surfaces here, never retried.
+        self._require_clients(WorkerRole.VISION)
+        pool = self._live_vision_pool(cancel)
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
         try:
@@ -2621,12 +2657,12 @@ class FleetProvider:
             self._lock, lambda: self._clients.get(role, []), lambda: self._require_clients(role)
         )
 
-    def _live_vision_pool(self) -> _LivePool[_VisionReplica]:
-        """The vision replicas, each with its fitted slot count, read like :meth:`_live_pool`."""
+    def _live_vision_pool(self, cancel: CancelSignal | None = None) -> _LivePool[_VisionReplica]:
+        """Vision replicas with fitted slot counts; a pick waits out a reload and never builds."""
         return _LivePool(
             self._lock,
             lambda: self._vision_replicas(self._clients.get(WorkerRole.VISION, [])),
-            lambda: self._require_clients(WorkerRole.VISION),
+            lambda: self._await_vision_clients(cancel),
         )
 
     def _vision_replicas(self, clients: list[LlamaServerClient]) -> list[_VisionReplica]:

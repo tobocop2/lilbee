@@ -8,6 +8,7 @@ import gc
 import json
 import logging
 import os
+import re
 import socket
 import struct
 import threading
@@ -2467,13 +2468,17 @@ def test_an_ocr_pick_after_two_reloads_in_its_slot_wait_reserves_a_live_client(
     p = _provider_with_clients({WorkerRole.VISION: [old]})
 
     class _SeesTheWait:
-        """Never set; marks that page two reached its slot wait."""
+        """Never set; marks that page two found the pool full and waited at least once."""
 
         def __init__(self) -> None:
+            self.polls = 0
             self.waiting = threading.Event()
 
         def is_set(self) -> bool:
-            self.waiting.set()
+            # The dispatcher polls before each pick, so a third poll comes after a wait.
+            self.polls += 1
+            if self.polls >= 3:
+                self.waiting.set()
             return False
 
     results: list[str] = []
@@ -2481,9 +2486,7 @@ def test_an_ocr_pick_after_two_reloads_in_its_slot_wait_reserves_a_live_client(
     first.start()
     assert entered.wait(10)
     probe = _SeesTheWait()
-    second = threading.Thread(
-        target=lambda: results.append(p.vision_ocr(b"png", "", cancel=probe))
-    )
+    second = threading.Thread(target=lambda: results.append(p.vision_ocr(b"png", "", cancel=probe)))
     second.start()
     assert probe.waiting.wait(10)
     p._clients[WorkerRole.VISION] = [new]
@@ -2496,6 +2499,199 @@ def test_an_ocr_pick_after_two_reloads_in_its_slot_wait_reserves_a_live_client(
     second.join(10)
     assert sorted(results) == ["new text", "old text"]
     assert served == [("old", False)]  # only page one ran on old, before it closed
+
+
+def test_vision_ocr_attempts_a_failing_fleet_check_once(monkeypatch) -> None:
+    # A build that fails with a retryable kind surfaces at once, not after the
+    # gateway retries: the fleet check runs once, outside the retry loop.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    checks: list[WorkerRole] = []
+
+    def _engine_missing(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        raise ProviderError("the engine library is missing", kind=ProviderErrorKind.SERVER)
+
+    monkeypatch.setattr(p, "_require_clients", _engine_missing)
+    with pytest.raises(ProviderError, match="engine library is missing"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert checks == [WorkerRole.VISION]
+    client.chat_abortable.assert_not_called()
+
+
+def _start_vision_reload(p: FleetProvider, monkeypatch) -> None:
+    """After the call's fleet check, a reload drops vision; *owed* says one brings it back."""
+    check = p._require_clients
+
+    def _check_then_drop(role: WorkerRole) -> list[LlamaServerClient]:
+        clients = check(role)
+        p._clients.pop(WorkerRole.VISION)
+        p._reload_owed = frozenset({WorkerRole.VISION})
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _check_then_drop)
+
+
+def test_vision_ocr_sees_a_cancel_while_a_reload_owes_its_clients(monkeypatch) -> None:
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    class _CancelOnSecondPoll:
+        """Not set on the dispatcher's first poll; set on the reload wait's poll."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            return self.polls > 1
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    cancel = _CancelOnSecondPoll()
+    with pytest.raises(TaskCancelledError):
+        p.vision_ocr(b"png", "org/repo/v.gguf", cancel=cancel)
+    assert cancel.polls == 2  # the reload wait checked the cancel
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_ocr_waits_out_a_reload_and_runs_on_the_new_client(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    old, new = _fake_client(), _fake_client()
+    new.chat_abortable.return_value = "new text"
+    p = _provider_with_clients({WorkerRole.VISION: [old]})
+    _start_vision_reload(p, monkeypatch)
+
+    def _adopt() -> None:
+        with p._lock:
+            p._clients[WorkerRole.VISION] = [new]
+            p._reload_owed = frozenset()
+            p._reload_done.notify_all()
+
+    adopter = threading.Timer(0.7, _adopt)  # past one recheck, so the wait runs twice
+    adopter.start()
+    try:
+        assert p.vision_ocr(b"png", "org/repo/v.gguf") == "new text"
+    finally:
+        adopter.join(10)
+    old.chat_abortable.assert_not_called()
+
+
+def test_vision_ocr_raises_when_a_reload_left_no_vision_server(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    check = p._require_clients
+
+    def _check_then_drop_for_good(role: WorkerRole) -> list[LlamaServerClient]:
+        clients = check(role)
+        p._reload_owed = frozenset()  # the reload ended without vision
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _check_then_drop_for_good)
+    with pytest.raises(ProviderError) as expected:
+        p._raise_no_clients(WorkerRole.VISION)
+    with pytest.raises(ProviderError, match=re.escape(str(expected.value))):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    client.chat_abortable.assert_not_called()
+
+
+def test_embed_failover_after_two_reloads_retries_on_a_live_client() -> None:
+    # The first replica refuses after two reloads retired the pool: the retry must
+    # run on the new pool, not on the old spare that the second reload closed.
+    served: list[bool] = []
+    first, spare, fresh = _counting_client(), _serving_client(served), _serving_client(served)
+    p = _provider_with_clients({WorkerRole.EMBED: [first, spare]})
+
+    def _refuse_after_reloads(*_args: object, **_kwargs: object) -> object:
+        p._clients[WorkerRole.EMBED] = [fresh]
+        with p._lock:
+            p._retire_clients([first, spare])
+            p._retire_clients([])
+        raise httpx.ConnectError("refused")
+
+    first.embed.side_effect = _refuse_after_reloads
+    assert p.embed(["x"]) == [[0.1]]
+    assert served == [False]  # the retry ran once, on a client no reload closed
+    spare.close.assert_called_once()
+
+
+def test_embed_failover_with_no_server_left_surfaces_the_connection_error(monkeypatch) -> None:
+    first = _counting_client()
+    p = _provider_with_clients({WorkerRole.EMBED: [first, _counting_client()]})
+    refused = httpx.ConnectError("refused")
+    check = p._require_clients
+    checks: list[WorkerRole] = []
+
+    def _no_server_on_the_retry(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        if len(checks) > 1:
+            raise ProviderError("the embed server is still restarting")
+        return check(role)
+
+    monkeypatch.setattr(p, "_require_clients", _no_server_on_the_retry)
+    first.embed.side_effect = refused
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        prov_mod._call_with_failover(p._live_pool(WorkerRole.EMBED), lambda c: c.embed(["x"]))
+    assert caught.value.__cause__ is refused
+    assert len(checks) == 2  # the retry's check ran and its error gave way
+
+
+def _vision_pair(
+    monkeypatch, first_fails: Exception
+) -> tuple[FleetProvider, MagicMock, MagicMock, MagicMock]:
+    """A vision pool of two; the first call reloads twice to a new client, then fails."""
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    first, spare, fresh = _fake_client(), _fake_client(), _fake_client()
+    spare.chat_abortable.return_value = "spare text"
+    fresh.chat_abortable.return_value = "fresh text"
+    p = _provider_with_clients({WorkerRole.VISION: [first, spare]})
+
+    def _fail_after_reloads(*_args: object, **_kwargs: object) -> str:
+        p._clients[WorkerRole.VISION] = [fresh]
+        with p._lock:
+            p._retire_clients([first, spare])
+            p._retire_clients([])
+        raise first_fails
+
+    first.chat_abortable.side_effect = _fail_after_reloads
+    return p, first, spare, fresh
+
+
+def test_vision_failover_after_two_reloads_retries_on_a_live_client(monkeypatch) -> None:
+    p, first, spare, _fresh = _vision_pair(monkeypatch, httpx.ConnectError("refused"))
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "fresh text"
+    first.mark_unhealthy.assert_called_once()
+    spare.chat_abortable.assert_not_called()  # closed by the second reload
+
+
+def test_vision_gateway_retry_after_two_reloads_runs_on_a_live_client(monkeypatch) -> None:
+    gateway = ProviderError("bad gateway", kind=ProviderErrorKind.SERVER)
+    p, first, spare, _fresh = _vision_pair(monkeypatch, gateway)
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "fresh text"
+    assert first.chat_abortable.call_count == 1
+    spare.chat_abortable.assert_not_called()
+
+
+def test_vision_failover_with_no_server_left_surfaces_the_connection_error(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    first, spare = _fake_client(), _fake_client()
+    refused = httpx.ConnectError("refused")
+    p = _provider_with_clients({WorkerRole.VISION: [first, spare]})
+
+    def _refuse_after_vision_left(*_args: object, **_kwargs: object) -> str:
+        p._clients.pop(WorkerRole.VISION)  # a reload ended without vision
+        raise refused
+
+    first.chat_abortable.side_effect = _refuse_after_vision_left
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert caught.value.__cause__ is refused
+    spare.chat_abortable.assert_not_called()
 
 
 def test_live_pool_waits_again_when_a_reload_empties_it_before_the_pick() -> None:
