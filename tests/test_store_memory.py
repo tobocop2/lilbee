@@ -450,8 +450,9 @@ class TestRebuildPrunesVersions:
         return store
 
     def test_rebuilds_spaced_past_the_window_keep_the_disk_flat(self, stocked, monkeypatch):
-        # The production window is 10 s; a 1 s window keeps the test fast and the rule the same.
+        # The production window and slack are 10 s and 60 s; 1 s each keeps the test fast.
         monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", timedelta(seconds=1))
+        monkeypatch.setattr(lance_helpers, "_CLOCK_SLACK", timedelta(seconds=1))
         dim = stocked._config.embedding_dim
 
         def rebuild() -> int:
@@ -475,25 +476,25 @@ class TestRebuildPrunesVersions:
         stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
         assert reader.to_arrow().num_rows == 40
 
-    def test_reader_still_reads_after_a_slow_fold(self, stocked, monkeypatch):
-        # The first optimize of a prune is the fold; it runs 2 s here, past the 1 s slack.
+    def test_reader_still_reads_after_a_slow_prune(self, stocked, monkeypatch):
+        # The prune starts 2 s after its clock read; the slack covers that delay.
         time.sleep(_PAST_THE_WINDOW)
         reader = stocked.open_table(MEMORIES_TABLE)
         assert reader is not None
         table_type = type(reader)
         real_optimize = table_type.optimize
-        calls: list[int] = []
+        windows: list[timedelta] = []
 
-        def slow_first(self, *args, **kwargs):
-            calls.append(1)
-            if len(calls) == 1:
-                time.sleep(2)
+        def slow(self, *args, **kwargs):
+            windows.append(kwargs["cleanup_older_than"])
+            time.sleep(2)
             return real_optimize(self, *args, **kwargs)
 
-        monkeypatch.setattr(table_type, "optimize", slow_first)
+        monkeypatch.setattr(table_type, "optimize", slow)
         dim = stocked._config.embedding_dim
         stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
-        assert len(calls) == 2  # the fold, then the cleanup
+        assert len(windows) == 1
+        assert windows[0] > timedelta(seconds=_PAST_THE_WINDOW)
         assert reader.to_arrow().num_rows == 40
 
     def test_prune_runs_under_the_write_lock(self, stocked, monkeypatch):
@@ -543,6 +544,65 @@ class TestRebuildPrunesVersions:
         texts = {m.text for m in stocked.get_memories(owner_predicate=LOCAL_PREDICATE)}
         assert "from another process" in texts
         assert len(texts) == 41
+
+
+_NOW = 1_800_000_000.0  # a fixed epoch for the prune clock
+_DAY = 86400.0
+
+
+class _RecordingTable:
+    """A table that lists the versions it is given and records each call the prune makes."""
+
+    def __init__(self, ages: dict[int, float]) -> None:
+        # Stamps as LanceDB lists them: naive local times built from the manifest epoch.
+        self._versions = [
+            {"version": version, "timestamp": datetime.fromtimestamp(_NOW - age)}
+            for version, age in ages.items()
+        ]
+        self.calls: list[tuple[str, timedelta | None]] = []
+
+    def list_versions(self) -> list[dict[str, object]]:
+        self.calls.append(("list_versions", None))
+        return self._versions
+
+    def optimize(self, *, cleanup_older_than: timedelta) -> None:
+        self.calls.append(("optimize", cleanup_older_than))
+
+
+class TestPruneWindow:
+    """The single optimize of a prune names a window that keeps the keep version."""
+
+    @pytest.fixture(autouse=True)
+    def fixed_clock(self, monkeypatch):
+        monkeypatch.setattr(lance_helpers.time, "time", lambda: _NOW)
+
+    def _prune(self, ages: dict[int, float], keep_version: int | None) -> list[tuple]:
+        table = _RecordingTable(ages)
+        lance_helpers.prune_old_versions(table, keep_version=keep_version)
+        return table.calls
+
+    def test_an_eight_day_old_keep_version_sets_the_window(self):
+        calls = self._prune({1: 9 * _DAY, 2: 8 * _DAY, 3: 1.0}, keep_version=2)
+        window = timedelta(seconds=8 * _DAY) + lance_helpers._CLOCK_SLACK
+        assert calls == [("list_versions", None), ("optimize", window)]
+
+    def test_a_newer_version_stamped_earlier_sets_the_window(self):
+        # The clock stepped back between the replaced version and the overwrite.
+        calls = self._prune({1: 900.0, 2: 300.0, 3: 400.0}, keep_version=2)
+        assert calls[-1] == ("optimize", timedelta(seconds=400) + lance_helpers._CLOCK_SLACK)
+
+    def test_a_version_older_than_the_keep_version_does_not_set_the_window(self):
+        calls = self._prune({1: 3 * _DAY, 2: 300.0, 3: 1.0}, keep_version=2)
+        assert calls[-1] == ("optimize", timedelta(seconds=300) + lance_helpers._CLOCK_SLACK)
+
+    def test_a_keep_version_stamped_ahead_of_the_clock_gets_the_floor_window(self):
+        # The clock stepped back after the overwrite: the age is negative.
+        calls = self._prune({1: -120.0, 2: -121.0}, keep_version=1)
+        assert calls[-1] == ("optimize", lance_helpers._KEEP_VERSIONS)
+
+    def test_no_keep_version_folds_at_the_floor_window_without_listing(self):
+        calls = self._prune({1: 3 * _DAY, 2: 1.0}, keep_version=None)
+        assert calls == [("optimize", lance_helpers._KEEP_VERSIONS)]
 
 
 _KILL_DURING_SWAP = """

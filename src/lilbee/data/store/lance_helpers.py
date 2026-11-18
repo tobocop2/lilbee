@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timedelta
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +34,7 @@ _CHUNK_COLUMN = "chunk"
 # kept version slows the check for the latest one (about 1 ms per 1,000 versions on a laptop).
 _KEEP_VERSIONS = timedelta(seconds=10)
 # The time allowed between reading the clock and the cutoff the cleanup takes from it.
-_CLOCK_SLACK = timedelta(seconds=1)
+_CLOCK_SLACK = timedelta(seconds=60)
 
 # Index types as LanceDB's IndexConfig reports them.
 _FTS_INDEX_TYPE = "FTS"
@@ -87,21 +88,22 @@ def open_committed(db: LanceDBConnection, name: str) -> LanceTable | None:
 
 
 def prune_old_versions(table: LanceTable, keep_version: int | None = None) -> None:
-    """Delete the table versions older than the keep window and fold the fragments.
+    """Fold the fragments and delete the table versions older than the keep window.
 
-    LanceDB counts a version's age from its own creation, so a table that sat idle has
-    a replaced version older than the window. ``keep_version`` and every newer version
-    stay readable: the window grows to the age of ``keep_version`` read from the clock.
-    The fold runs first, apart from the cleanup, so its run time cannot age the version
-    between the clock read and the cutoff the cleanup takes.
+    ``keep_version`` and every newer version stay readable: the window grows to the
+    epoch age of the oldest of them. Every optimize names its window, as none means 7 days.
     """
     if keep_version is None:
         table.optimize(cleanup_older_than=_KEEP_VERSIONS)
         return
-    table.optimize()
-    stamps = {row["version"]: row["timestamp"] for row in table.list_versions()}
-    stamp = stamps[keep_version]
-    age = datetime.now(stamp.tzinfo) - stamp
+    # Listed stamps are naive local times; .timestamp() gives back the epoch, across DST.
+    oldest = min(
+        row["timestamp"].timestamp()
+        for row in table.list_versions()
+        if row["version"] >= keep_version
+    )
+    # The age compares this machine's clock with the writer's: one machine per data dir.
+    age = timedelta(seconds=time.time() - oldest)
     table.optimize(cleanup_older_than=max(_KEEP_VERSIONS, age + _CLOCK_SLACK))
 
 
