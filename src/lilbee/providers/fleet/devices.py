@@ -56,11 +56,6 @@ MIB = 1024 * 1024
 # re-emit them, composed through any parent restriction).
 _CUDA_ORDER_VAR = "CUDA_DEVICE_ORDER"
 _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
-_ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
-_HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
-# ROCm's third numeric visibility variable, filtering exactly as the other two do.
-_GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
-_VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
@@ -746,10 +741,16 @@ def amd_visible_var(env: Mapping[str, str]) -> str:
     variable in use", so it does not claim precedence. Every caller writing an AMD
     pin asks here; two callers each picking their own would put the pair back.
     """
-    for name in (_HIP_VISIBLE_VAR, _GPU_DEVICE_ORDINAL_VAR, _ROCR_VISIBLE_VAR):
+    from lilbee.providers.fleet.gpu_env import (
+        GPU_DEVICE_ORDINAL_VAR,
+        HIP_VISIBLE_VAR,
+        ROCR_VISIBLE_VAR,
+    )
+
+    for name in (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR):
         if env.get(name, "").strip():
             return name
-    return _HIP_VISIBLE_VAR
+    return HIP_VISIBLE_VAR
 
 
 def _amd_visible_env(indices: list[int], env: Mapping[str, str]) -> dict[str, str]:
