@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config import active_config
-from lilbee.data.types import EmbeddingBackendName, TokenizerBackendName
+from lilbee.data.types import EmbeddingBackendName
 
 if TYPE_CHECKING:
     from xberg import (
@@ -60,20 +60,16 @@ def _char_budget() -> tuple[int, int]:
 
 
 def _tokenizer_sizing() -> ChunkSizing:
-    """xberg sizing through lilbee's tokenizer backend, bound to the provider on demand.
-
-    xberg fails extraction when a sizing names an unregistered tokenizer, so the
-    bind precedes every sizing that routes to it. The bind is a no-op once the
-    current provider holds the binding.
-    """
+    """xberg sizing through the tokenizer registered for the current provider."""
     from xberg import ChunkSizing
 
     from lilbee.app.services import get_services
 
-    from .backends import BackendKind, bind_backend
+    from .backends.tokenizer import TOKENIZER_SIZING_TYPE, provider_tokenizers
 
-    bind_backend(BackendKind.TOKENIZER, get_services().provider)
-    return ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE)
+    return ChunkSizing(
+        type=TOKENIZER_SIZING_TYPE, model=provider_tokenizers.name_for(get_services().provider)
+    )
 
 
 def _size_params(max_tokens: int | None = None) -> tuple[int, int, ChunkSizing]:

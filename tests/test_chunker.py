@@ -21,23 +21,13 @@ from tests.conftest import make_mock_services
 @pytest.fixture(autouse=True)
 def mock_services():
     """Mock services for every chunker test: the sizer reads the provider's embed cap
-    and binds its tokenizer to the provider; each test starts and ends with no binding,
-    since a test in another file that chunks text leaves one in the worker."""
-    import xberg
-
+    and counts through the tokenizer registered for that provider."""
     import lilbee.app.services as svc_mod
-    from lilbee.data.types import TokenizerBackendName
 
-    def drop_binding() -> None:
-        if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
-            xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
-
-    drop_binding()
     services = make_mock_services()
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
-    drop_binding()
 
 
 @dataclass
@@ -169,7 +159,7 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.chunker_type == "text"
         assert (result.max_characters, result.overlap) == (512, 100)
-        assert str(result.sizing) == _TOKENIZER_SIZING
+        assert str(result.sizing) == _current_provider_sizing()
         assert result.embedding is None
 
     def test_disabled_does_not_attach_embedding(self, monkeypatch):
@@ -238,7 +228,7 @@ class TestChunkBudgetUnderTheEmbedWindow:
         mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
         max_size, overlap, sizing = _size_params()
         assert (max_size, overlap) == (_BGE_SMALL_CAP, _BGE_SMALL_CAP // 2)
-        assert str(sizing) == _TOKENIZER_SIZING
+        assert str(sizing) == _current_provider_sizing()
 
     def test_wide_window_keeps_chunk_size(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
@@ -285,20 +275,29 @@ class TestChunkBudgetUnderTheEmbedWindow:
         assert max(len(c) for c in prose) > 2 * _BGE_SMALL_CAP
         assert max(len(c) for c in dense) <= _BGE_SMALL_CAP * 4
 
-    def test_tokenizer_is_bound_to_the_provider_on_first_use(self, monkeypatch, bge_small_embedder):
+    def test_tokenizer_is_registered_for_the_provider_on_first_use(
+        self, monkeypatch, bge_small_embedder
+    ):
         import xberg
 
         from lilbee.core.config import cfg
-        from lilbee.data.types import TokenizerBackendName
+        from lilbee.data.extract.backends.tokenizer import provider_tokenizers
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        assert TokenizerBackendName.LILBEE not in xberg.list_tokenizer_backends()
+        before = set(xberg.list_tokenizer_backends())
         chunk_text("a short line", use_semantic=False)
-        assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
+        added = set(xberg.list_tokenizer_backends()) - before
+        assert added == {provider_tokenizers.name_for(bge_small_embedder)}
         bge_small_embedder.count_tokens.assert_called()
 
 
-_TOKENIZER_SIZING = '{"type":"tokenizer","model":"lilbee"}'
+def _current_provider_sizing() -> str:
+    """The sizing that names the tokenizer registered for the current provider."""
+    from lilbee.app.services import get_services
+    from lilbee.data.extract.backends.tokenizer import provider_tokenizers
+
+    name = provider_tokenizers.name_for(get_services().provider)
+    return f'{{"type":"tokenizer","model":"{name}"}}'
 
 
 class TestTokenSizing:
@@ -313,7 +312,7 @@ class TestTokenSizing:
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         max_size, overlap, sizing = _size_params()
         assert (max_size, overlap) == (512, 100)
-        assert str(sizing) == _TOKENIZER_SIZING
+        assert str(sizing) == _current_provider_sizing()
 
     def test_overlap_capped_at_half_the_token_budget(self, monkeypatch):
         from lilbee.core.config import cfg
@@ -349,7 +348,7 @@ class TestTokenSizing:
 
         monkeypatch.setattr("lilbee.data.extract.xberg.extract_document", fake_extract_document)
         chunk_text("# Heading\n\nbody text", mime_type="text/markdown", heading_context=True)
-        assert captured["sizing"] == _TOKENIZER_SIZING
+        assert captured["sizing"] == _current_provider_sizing()
         assert captured["chunker_type"] == "markdown"
 
 
