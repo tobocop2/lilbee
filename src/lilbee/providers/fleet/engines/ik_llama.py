@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -22,8 +23,8 @@ from lilbee.providers.fleet.engines.base import (
     ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
-from lilbee.providers.fleet.engines.llama import LLAMA
-from lilbee.providers.fleet.host_caps import HostArch, HostCaps
+from lilbee.providers.fleet.engines.llama import LLAMA, has_usable_cuda
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
@@ -32,7 +33,13 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 IK_LLAMA_COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
 _VERSION_HEX_DIGITS = 12
 VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
-BACKEND = "cpu"
+
+# The CUDA build is made with CUDA 12.4 for compute capability 7.5 (Turing) and newer.
+# A test reads the build script and fails when it stops agreeing with these two.
+_CUDA_DRIVER_FLOOR = (12, 4)
+_CUDA_MIN_COMPUTE = (7, 5)
+_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+_CPU_LICENCES = ["MIT"]
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
@@ -41,6 +48,25 @@ _PROFILE = dataclasses.replace(
     label="ik_llama.cpp server",
     unreadable_embedding_hint="The ik_llama.cpp server answered embeddings that cannot be decoded.",
 )
+
+
+class IkBackend(StrEnum):
+    """The builds of the pack: one CPU baseline, or the same server with CUDA."""
+
+    CPU = "cpu"
+    CUDA = "cuda"
+
+
+@dataclasses.dataclass(frozen=True)
+class BuildPick:
+    """The build chosen for a host, with the reason when it is not the CUDA build."""
+
+    backend: IkBackend
+    reason: str = ""
+
+
+def _version(pair: tuple[int, int]) -> str:
+    return f"{pair[0]}.{pair[1]}"
 
 
 class IkLlamaAdapter:
@@ -67,13 +93,37 @@ class IkLlamaAdapter:
             return gate
         return HostGate(False, f"{gate.reason} {_REFUSAL_TAIL}")
 
+    def pick_build(self, host: HostCaps) -> BuildPick:
+        """The CUDA build on a Linux x86_64 host with a card and driver that it serves, else CPU."""
+        if (host.os, host.arch) != (HostOS.LINUX, HostArch.X86_64):
+            return BuildPick(IkBackend.CPU, "No CUDA build exists for this host.")
+        if has_usable_cuda(host, _CUDA_DRIVER_FLOOR, _CUDA_MIN_COMPUTE):
+            return BuildPick(IkBackend.CUDA)
+        if not host.gpus:
+            return BuildPick(IkBackend.CPU, host.nvidia_reason or "No NVIDIA GPU found.")
+        card = max(host.gpus, key=lambda gpu: gpu.compute)
+        if card.compute < _CUDA_MIN_COMPUTE:
+            return BuildPick(
+                IkBackend.CPU,
+                f"The NVIDIA GPU {card.name} has compute capability {_version(card.compute)}, "
+                f"and the CUDA build needs {_version(_CUDA_MIN_COMPUTE)} or newer.",
+            )
+        driver = host.nvidia_driver_cuda or (0, 0)
+        return BuildPick(
+            IkBackend.CPU,
+            f"The NVIDIA driver offers CUDA {_version(driver)}, "
+            f"and the CUDA build needs CUDA {_version(_CUDA_DRIVER_FLOOR)}. Update the driver.",
+        )
+
     def binary(self) -> Path:
         """The server of the installed build of the pin; raises when the pack is not installed."""
+        from lilbee.catalog.runnable import session_host
         from lilbee.providers.fleet.engines.choice import install_advice
 
+        backend = self.pick_build(session_host()).backend
         store = EngineStore(engines_root(cfg.models_dir))
         for build in store.installed():
-            of_pin = (build.engine, build.version, build.backend) == (self.name, VERSION, BACKEND)
+            of_pin = (build.engine, build.version, build.backend) == (self.name, VERSION, backend)
             if of_pin and build.binary is not None:
                 return build.binary
         raise ProviderError(
@@ -88,18 +138,19 @@ class IkLlamaAdapter:
         from lilbee.catalog.runnable import session_host
 
         host = session_host()
-        platforms = pack_platforms(self.name.value, VERSION, host, BACKEND)
+        backend = self.pick_build(host).backend
+        platforms = pack_platforms(self.name.value, VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": VERSION,
             "upstream_ref": IK_LLAMA_COMMIT,
-            "backend": BACKEND,
-            "sha256": pack_digest(self.name.value, VERSION, host, BACKEND),
+            "backend": backend.value,
+            "sha256": pack_digest(self.name.value, VERSION, host, backend),
             "tool": EngineTool.LLAMA_SERVER.value,
             "launch": _PIN_LAUNCH,
             "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
-            "licenses": ["MIT"],
+            "licenses": _CUDA_LICENCES if backend is IkBackend.CUDA else _CPU_LICENCES,
         }
 
     def role_spec(

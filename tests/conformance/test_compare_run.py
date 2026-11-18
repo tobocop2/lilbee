@@ -367,9 +367,9 @@ class TestRefusals:
 
     def test_an_engine_with_no_pack_row_is_refused(self, tmp_path: Path) -> None:
         with _servers() as (engine, oracle):
-            spec = _spec(engine.url, oracle.url, tmp_path, backend="linux-x86_64-cuda")
+            spec = _spec(engine.url, oracle.url, tmp_path, backend="windows-x86_64-cuda")
             with pytest.raises(
-                RunError, match=r"ships no pack for ik_llama\.cpp on linux-x86_64-cuda"
+                RunError, match=r"ships no pack for ik_llama\.cpp on windows-x86_64-cuda"
             ):
                 _run(spec)
 

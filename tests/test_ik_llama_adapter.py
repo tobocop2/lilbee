@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import stat
 import zipfile
 from pathlib import Path
@@ -75,7 +76,7 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     lock = PinLock(
         EngineName.IK_LLAMA.value,
         ik_llama.VERSION,
-        ik_llama.BACKEND,
+        ik_llama.IkBackend.CPU,
         {},
         ("MIT",),
         sha,
@@ -166,7 +167,7 @@ def test_binary_skips_a_build_of_another_version_and_one_with_no_server(
 
 @pytest.mark.parametrize(
     ("version", "backend"),
-    [("0+gitaaaaaaaaaaaa", ik_llama.BACKEND), (ik_llama.VERSION, "cuda")],
+    [("0+gitaaaaaaaaaaaa", ik_llama.IkBackend.CPU), (ik_llama.VERSION, ik_llama.IkBackend.CUDA)],
 )
 def test_binary_skips_a_build_of_another_version_or_backend_that_has_a_server(
     version: str, backend: str, tmp_path: Path
@@ -478,3 +479,111 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         "supports_shared_kv",
         "swap_extras",
     ]
+
+
+def _nvidia_host(
+    system: str = "Linux",
+    machine: str = "x86_64",
+    *,
+    cards: tuple[tuple[int, int], ...] = ((8, 9),),
+    cuda: int | None = 12040,
+) -> Any:
+    facts = {
+        "driver": "550.135",
+        "cuda_driver": cuda,
+        "gpus": [{"name": f"card{i}", "cc": list(cc)} for i, cc in enumerate(cards)],
+    }
+    return collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=facts)
+
+
+@pytest.mark.parametrize(
+    "cards",
+    [((7, 5),), ((8, 9),), ((12, 0),), ((6, 1), (8, 6))],
+    ids=["turing", "ada", "blackwell", "one-card-served"],
+)
+def test_a_linux_host_with_a_turing_or_newer_card_and_the_driver_gets_the_cuda_build(
+    cards: tuple[tuple[int, int], ...],
+) -> None:
+    pick = IK_LLAMA.pick_build(_nvidia_host(cards=cards))
+    assert pick.backend == "cuda"
+    assert pick.reason == ""
+
+
+@pytest.mark.parametrize(
+    ("host", "reason"),
+    [
+        pytest.param(
+            _nvidia_host(cards=((7, 0),)),
+            "card0 has compute capability 7.0, and the CUDA build needs 7.5 or newer",
+            id="volta",
+        ),
+        pytest.param(
+            _nvidia_host(cards=((6, 1),)),
+            "card0 has compute capability 6.1, and the CUDA build needs 7.5 or newer",
+            id="pascal",
+        ),
+        pytest.param(
+            _nvidia_host(cuda=12030),
+            "driver offers CUDA 12.3, and the CUDA build needs CUDA 12.4",
+            id="driver",
+        ),
+        pytest.param(_nvidia_host(cards=()), "No NVIDIA GPU found", id="no-card"),
+        pytest.param(_nvidia_host("Linux", "aarch64"), "No CUDA build exists", id="linux-arm64"),
+        pytest.param(_nvidia_host("Windows", "AMD64"), "No CUDA build exists", id="windows"),
+        pytest.param(_nvidia_host("Darwin", "arm64"), "No CUDA build exists", id="macos"),
+    ],
+)
+def test_a_host_the_cuda_build_cannot_serve_gets_the_cpu_build_with_the_reason(
+    host: Any, reason: str
+) -> None:
+    pick = IK_LLAMA.pick_build(host)
+    assert pick.backend == "cpu"
+    assert reason in pick.reason
+
+
+def test_the_pin_of_a_cuda_host_names_the_cuda_cell_and_its_licences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: _nvidia_host())
+    cpu = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]["linux-x86_64-cpu"]
+    table = {"ik_llama.cpp": {ik_llama.VERSION: {"linux-x86_64-cuda": {**cpu, "sha256": "c" * 64}}}}
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", table)
+    pin = IK_LLAMA.pin_record()
+    assert pin["backend"] == "cuda"
+    assert pin["sha256"] == "c" * 64
+    assert list(pin["platforms"]) == ["linux-x86_64-cuda"]
+    assert pin["licenses"] == ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+
+
+def test_binary_on_a_cuda_host_is_the_cuda_build_and_not_the_cpu_one(
+    build: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: _nvidia_host())
+    with pytest.raises(ProviderError, match="is not installed"):
+        IK_LLAMA.binary()
+    wheel = tmp_path / "ik-cuda.whl"
+    sha = _make_wheel(wheel)
+    lock = PinLock("ik_llama.cpp", ik_llama.VERSION, "cuda", {}, ("MIT",), sha, "llama-server")
+    cuda = EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
+    assert IK_LLAMA.binary() == cuda / "lilbee_engine_ik" / "bin" / "llama-server"
+
+
+_BUILD_SCRIPT = Path(__file__).resolve().parents[1] / "tools/wheel-build/ik_llama_manylinux.sh"
+
+
+def test_the_driver_floor_is_the_cuda_version_the_build_script_installs() -> None:
+    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
+    dash = re.search(r"^cuda_dash=(\d+)-(\d+)$", text, re.MULTILINE)
+    assert dash is not None
+    assert (int(dash[1]), int(dash[2])) == ik_llama._CUDA_DRIVER_FLOOR
+    assert f"/usr/local/cuda-{dash[1]}.{dash[2]}" in text
+
+
+def test_the_compute_floor_is_the_lowest_architecture_the_build_script_compiles() -> None:
+    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
+    listed = re.search(r'-DCMAKE_CUDA_ARCHITECTURES=([\d;a-z-]+)"', text)
+    assert listed is not None
+    lowest = min(int(arch.split("-")[0]) for arch in listed[1].split(";"))
+    assert (lowest // 10, lowest % 10) == ik_llama._CUDA_MIN_COMPUTE
+    assert "-DGGML_NATIVE=OFF" in text
+    assert "-DGGML_NCCL=OFF" in text
