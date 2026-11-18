@@ -14,7 +14,12 @@ from lilbee.cli import app as cli_app
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ingest_warmth
 from lilbee.providers.fleet import provider as fleet_provider
-from lilbee.providers.fleet.provider import RELOAD_FAILED_NOTICE, RELOADING_NOTICE, FleetProvider
+from lilbee.providers.fleet.provider import (
+    NO_ENGINE_NOTICE,
+    RELOAD_FAILED_NOTICE,
+    RELOADING_NOTICE,
+    FleetProvider,
+)
 from lilbee.providers.roles import WorkerRole
 from tests.test_engine_real_fleet import GGUF_CHAT
 from tests.test_engine_write_applied import (
@@ -206,7 +211,7 @@ def test_o4_a_write_after_the_work_ends_runs_its_own_pass(fleet: Any, passes: li
     assert "--mlx" not in _chat_argv(local)
 
 
-def test_o5_a_write_after_a_failed_pass_with_no_group_shows_no_notice(
+def test_o5_a_write_after_a_failed_pass_with_no_group_shows_the_no_engine_notice(
     fleet: Any, passes: list[int]
 ) -> None:
     local = _local(fleet)
@@ -218,7 +223,7 @@ def test_o5_a_write_after_a_failed_pass_with_no_group_shows_no_notice(
     _ProcessSwap.start_failure = None
     assert engine_service.prefer(_LLAMA) == _LLAMA
     assert len(passes) == 1
-    assert local.reload_notice() is None
+    assert local.reload_notice() == NO_ENGINE_NOTICE
 
 
 def test_o6_a_write_with_no_group_and_no_work_starts_no_thread(fleet: Any) -> None:
@@ -417,7 +422,7 @@ def test_s5_a_build_that_ends_after_the_bound_still_applies_the_write(
     assert local.reload_notice() is None
 
 
-def test_s6_a_build_that_ends_with_no_group_runs_no_pass(
+def test_s6_a_build_that_ends_with_no_group_runs_no_pass_and_shows_the_no_engine_notice(
     fleet: Any, passes: list[int], no_wait: None
 ) -> None:
     local = _local(fleet)
@@ -430,7 +435,7 @@ def test_s6_a_build_that_ends_with_no_group_runs_no_pass(
     _settle(local)
     assert passes == []
     assert local._swaps == {}
-    assert local.reload_notice() is None
+    assert local.reload_notice() == NO_ENGINE_NOTICE
 
 
 def test_s7_a_write_during_a_stuck_pass_answers_at_the_bound(
