@@ -6,6 +6,7 @@ the health probe are fake.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from collections.abc import Callable
@@ -345,6 +346,46 @@ def test_the_restart_log_names_each_launch_field_that_moved() -> None:
     assert prov_mod._launch_changes((before,), (after,)) == "ctx 2048 -> 1536"
     assert prov_mod._launch_changes((before,), (before,)) == "no launch field moved"
     assert prov_mod._launch_changes((), (after,)) == "replicas 0 -> 1"
+
+
+def test_the_restart_log_skips_a_field_outside_the_launch_plan() -> None:
+    before = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=2048, trained_ctx=0)
+    after = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=1536, trained_ctx=4096)
+    assert prov_mod._launch_changes((before,), (after,)) == "ctx 2048 -> 1536"
+    same_plan = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=2048, trained_ctx=4096)
+    assert prov_mod._launch_changes((before,), (same_plan,)) == "no launch field moved"
+
+
+def test_a_reload_keeps_a_group_whose_launches_differ_only_outside_the_plan(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    provider, states = _owner(monkeypatch, tmp_path)
+    kept = dict(states)
+    with provider._lock:
+        for group, launches in list(provider._launches.items()):
+            provider._launches[group] = tuple(
+                dataclasses.replace(launch, trained_ctx=launch.trained_ctx + 4096)
+                for launch in launches
+            )
+        assert provider._launches
+    provider._reload_pass()
+    assert all(states[group] is kept[group] for group in kept)
+    assert set(states) == set(kept)
+    with provider._lock:
+        provider._launches[SwapGroup.CHAT] = tuple(
+            dataclasses.replace(launch, ctx=launch.ctx + 1)
+            for launch in provider._launches[SwapGroup.CHAT]
+        )
+    provider._reload_pass()
+    assert states[SwapGroup.CHAT] is not kept[SwapGroup.CHAT]
+
+
+def test_every_launch_field_but_the_plan_time_one_is_in_the_plan_record() -> None:
+    fields = {field.name for field in dataclasses.fields(InstanceLaunch)}
+    record = set(InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m").to_state())
+    assert fields
+    assert fields - record == {"trained_ctx"}
+    assert record <= fields
 
 
 @pytest.mark.parametrize(

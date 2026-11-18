@@ -13,7 +13,6 @@ running server. See docs/architecture.md for swap tenancy.
 from __future__ import annotations
 
 import contextvars
-import dataclasses
 import functools
 import json
 import logging
@@ -270,17 +269,24 @@ def _reserve_least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerCli
         return client
 
 
-def _launch_changes(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ...]) -> str:
-    """The launch fields that differ, as ``field before -> after``."""
+def _launch_moves(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ...]) -> list[str]:
+    """The ``to_state`` launch-plan fields that differ, as ``field before -> after``."""
     if len(old) != len(new):
-        return f"replicas {len(old)} -> {len(new)}"
-    moved = [
-        f"{field.name} {getattr(before, field.name)!r} -> {getattr(after, field.name)!r}"
-        for before, after in zip(old, new, strict=True)
-        for field in dataclasses.fields(InstanceLaunch)
-        if getattr(before, field.name) != getattr(after, field.name)
-    ]
-    return ", ".join(moved) or "no launch field moved"
+        return [f"replicas {len(old)} -> {len(new)}"]
+    moves: list[str] = []
+    for before, after in zip(old, new, strict=True):
+        after_plan = after.to_state()
+        moves.extend(
+            f"{name} {value!r} -> {after_plan[name]!r}"
+            for name, value in before.to_state().items()
+            if value != after_plan[name]
+        )
+    return moves
+
+
+def _launch_changes(old: tuple[InstanceLaunch, ...], new: tuple[InstanceLaunch, ...]) -> str:
+    """The restart log text for a group: its moved plan fields, or that none moved."""
+    return ", ".join(_launch_moves(old, new)) or "no launch field moved"
 
 
 def _healthy_states(engine_dir: Path, *, in_use: bool = False) -> dict[SwapGroup, SwapState]:
@@ -3188,7 +3194,8 @@ class FleetProvider:
             changed = {
                 group
                 for group in running | set(new)
-                if (group in running) != (group in new) or old.get(group, ()) != new.get(group, ())
+                if (group in running) != (group in new)
+                or _launch_moves(old.get(group, ()), new.get(group, ()))
             }
             changed |= {group_for(role, plan.co_tenants) for role in force}
             with self._lock:
