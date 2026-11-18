@@ -361,6 +361,34 @@ def test_a_blob_that_no_snapshot_names_stays_as_given(tmp_path: Path) -> None:
     assert snapshot_entry_of_blob(blob) == blob
 
 
+def _split_snapshot(tmp_path: Path) -> tuple[Path, list[Path]]:
+    """A cached three-shard GGUF: the snapshot folder and its shard links, first shard first."""
+    repo = tmp_path / "models" / "models--Qwen--Qwen3-4B-GGUF"
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    links = []
+    for number in (1, 2, 3):
+        blob = repo / "blobs" / f"hash-shard-{number}"
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"gguf")
+        link = snapshot / f"Qwen3-4B-Q4_K_M-0000{number}-of-00003.gguf"
+        link.symlink_to(blob)
+        links.append(link)
+    return snapshot, links
+
+
+def test_a_split_gguf_launches_by_its_first_shard_snapshot_link(tmp_path: Path) -> None:
+    snapshot, shards = _split_snapshot(tmp_path)
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=shards[0]))
+    assert argv[-4:] == ["-m", str(snapshot), "-f", "Qwen3-4B-Q4_K_M-00001-of-00003.gguf"]
+
+
+def test_the_first_shard_snapshot_link_of_a_split_gguf_stays_as_given(tmp_path: Path) -> None:
+    _, shards = _split_snapshot(tmp_path)
+    assert snapshot_entry_of_blob(shards[0]) == shards[0]
+
+
 def test_a_blob_without_a_snapshot_folder_stays_as_given(tmp_path: Path) -> None:
     blob = tmp_path / "models--org--repo" / "blobs" / "abc"
     blob.parent.mkdir(parents=True)
