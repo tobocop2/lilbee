@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -62,25 +63,28 @@ def _with_concurrency(config: ExtractionConfig) -> ExtractionConfig:
     return replace(config, concurrency=_concurrency_config())
 
 
-def _sized_by_tokens(config: ExtractionConfig) -> bool:
-    """Whether *config* sizes its chunks with a registered tokenizer."""
+def _tokenizer_name(config: ExtractionConfig) -> str | None:
+    """The registered tokenizer *config* sizes its chunks with, or None."""
     from xberg import ChunkSizing
 
     chunking = config.chunking
     # sizing is a ChunkSizing or the plain string "characters".
-    return (
-        chunking is not None
-        and isinstance(chunking.sizing, ChunkSizing)
-        and chunking.sizing.type == TOKENIZER_SIZING_TYPE
-    )
+    if chunking is None or not isinstance(chunking.sizing, ChunkSizing):
+        return None
+    if chunking.sizing.type != TOKENIZER_SIZING_TYPE:
+        return None
+    # ChunkSizing exposes the tokenizer name only in its JSON form.
+    name: str = json.loads(str(chunking.sizing))["model"]
+    return name
 
 
 def _count_failed_since(config: ExtractionConfig) -> Callable[[], bool]:
-    """A check that a token count failed after this call, when *config* sizes by tokens."""
-    if not _sized_by_tokens(config):
+    """A check that *config*'s tokenizer failed a count, or lost its provider, after this call."""
+    name = _tokenizer_name(config)
+    if name is None:
         return lambda: False
-    start = provider_tokenizers.failures()
-    return lambda: provider_tokenizers.failures() != start
+    start = provider_tokenizers.failures(name)
+    return lambda: start is None or provider_tokenizers.failures(name) != start
 
 
 def _first(result: ExtractionResult) -> ExtractedDocument:
