@@ -79,7 +79,7 @@ def embed_window_warning(cap: int) -> HealthWarning | None:
             message=(
                 f"The embedding model accepts {cap} tokens per input, below the {chars} "
                 f"characters that chunk_size {cfg.chunk_size} allows. Semantic chunking "
-                f"sizes chunks by characters and ignores token sizing, so a chunk over "
+                f"sizes chunks by characters, not by the model's tokens, so a chunk over "
                 f"{cap} tokens loses text at embedding time."
             ),
             remedy="Turn off semantic_chunking or lower chunk_size.",

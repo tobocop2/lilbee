@@ -330,7 +330,7 @@ class TestEmbedTokenCap:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
 
-    def test_no_warning_when_token_sizing_self_corrects(self, monkeypatch) -> None:
+    def test_no_warning_when_plain_chunking_sizes_to_the_cap(self, monkeypatch) -> None:
         """A cap below the chunk budget makes the chunker size to the cap, so there is
         nothing left to warn about."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
@@ -338,7 +338,7 @@ class TestEmbedTokenCap:
         assert ep.embed_window_warning(2040) is None
         assert ep.embed_window_warning(504) is None
 
-    def test_no_warning_right_at_the_self_correcting_boundary(self, monkeypatch) -> None:
+    def test_no_warning_right_at_the_chunk_budget_boundary(self, monkeypatch) -> None:
         from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
