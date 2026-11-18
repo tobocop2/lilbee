@@ -135,9 +135,6 @@ class ChunkType(StrEnum):
 KEYED_SCHEMA_VERSION = 3
 META_SCHEMA_VERSION = 4
 
-# Always-true predicate that clears the single-row ``_entity_schema`` table.
-ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
-
 
 class EntitySchemaState(TypedDict):
     """Single-row state of the induced entity schema.
