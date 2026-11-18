@@ -37,9 +37,11 @@ _HARD_EXIT_SIGNALS = [
 @pytest.fixture(autouse=True)
 def _restore_handlers():
     """Snapshot and restore the real signal table around every test."""
-    saved = {
-        sig: signal.getsignal(sig) for sig in services_mod._EngineLifecycle._hard_exit_signals()
-    }
+    watched = (signal.SIGINT, *services_mod._EngineLifecycle._hard_exit_signals())
+    saved = {sig: signal.getsignal(sig) for sig in watched}
+    for sig in saved:
+        # A nohup or background launch must not change what the lifecycle routes.
+        signal.signal(sig, signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL)
     services_mod._lifecycle.reset()
     yield
     for sig, handler in saved.items():
@@ -183,14 +185,16 @@ def test_an_inherited_ignore_of_sigint_survives_stop_on_interrupt():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
-def test_an_inherited_ignore_of_sigint_survives_the_loop_routing_and_sigterm_still_routes():
-    """The loop leaves an ignored SIGINT alone; SIGTERM still stops the fleet."""
+@pytest.mark.parametrize("ignored", ["SIGINT", "SIGHUP"])
+def test_an_inherited_ignore_survives_the_loop_routing_and_sigterm_still_routes(ignored):
+    """The loop leaves an ignored SIGINT or SIGHUP alone; SIGTERM still stops the fleet."""
     provider = _install_stub_services()
-    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    ignored_signal = signal.Signals[ignored]
+    previous = signal.signal(ignored_signal, signal.SIG_IGN)
 
     async def serve() -> None:
         services_mod.exit_on_signals_in_loop(asyncio.get_running_loop())
-        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), ignored_signal)
         await asyncio.sleep(0.2)
         os.kill(os.getpid(), signal.SIGTERM)
         await asyncio.sleep(30)
@@ -200,10 +204,27 @@ def test_an_inherited_ignore_of_sigint_survives_the_loop_routing_and_sigterm_sti
             asyncio.run(serve())
         _join_teardown()
     finally:
-        signal.signal(signal.SIGINT, previous)
+        signal.signal(ignored_signal, previous)
 
     assert raised.value.code == 128 + signal.SIGTERM
     provider.shutdown.assert_called_once()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP")
+def test_an_inherited_ignore_of_sighup_survives_install():
+    """A process started under nohup keeps ignoring SIGHUP; SIGTERM is still routed."""
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    install_engine_lifecycle_hooks()
+    assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+    assert callable(signal.getsignal(signal.SIGTERM))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal disposition")
+def test_an_inherited_ignore_of_sigterm_does_not_stop_install_from_routing_it():
+    """SIGTERM is the stop request, so install routes it even when the launch ignored it."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    install_engine_lifecycle_hooks()
+    assert callable(signal.getsignal(signal.SIGTERM))
 
 
 def test_a_ctrl_c_after_the_server_hook_is_gone_joins_the_stop_without_raising():

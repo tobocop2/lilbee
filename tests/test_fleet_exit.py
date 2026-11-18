@@ -15,6 +15,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests._signals import child_preexec
+
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="SIGINT is POSIX here")
 
 # The fake write bound is longer than the shutdown bound, so the signal lands with
@@ -160,6 +162,7 @@ class _Server:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding="utf-8",
+            preexec_fn=child_preexec(),
         )
         self.lines: list[str] = []
         self._changed = threading.Condition()

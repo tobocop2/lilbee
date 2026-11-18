@@ -22,6 +22,7 @@ from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.runtime.daemon_call import DaemonCall
+from tests._signals import child_preexec
 
 _FAILURE_CEILING_S = 30.0
 _WAKE_LIMIT_S = 5.0
@@ -158,7 +159,7 @@ class _Serve:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding="utf-8",
-            preexec_fn=preexec,
+            preexec_fn=child_preexec(preexec),
         )
         # A kill at the failure ceiling turns a blocked read of the output into an EOF.
         self.ceiling = threading.Timer(_FAILURE_CEILING_S, self.process.kill)
@@ -267,13 +268,14 @@ def test_a_hard_exit_signal_ends_a_blocked_read_without_the_full_grace(
 
 @posix_only
 @pytest.mark.parametrize(
-    "signum",
-    [signal.SIGINT, signal.SIGTERM, signal.SIGHUP],
+    "signal_name",
+    ["SIGINT", "SIGTERM", "SIGHUP"],
     ids=["sigint", "sigterm", "sighup"],
 )
 def test_a_stop_signal_wakes_a_wait_on_a_blocked_loop_at_once(
-    start: Callable[..., _Serve], signum: signal.Signals
+    start: Callable[..., _Serve], signal_name: str
 ) -> None:
+    signum = signal.Signals[signal_name]
     server = start(X_DEADLINE="25", X_BLOCK_LOOP=str(_BLOCKED_LOOP_BOUND_S))
     server.client = server.request("GET", "/block")
     server.read_until("BLOCKED")
@@ -304,6 +306,47 @@ def test_an_inherited_ignore_of_sigint_keeps_the_server_running_until_it_is_told
     assert server.process.poll() is None
     server.request("POST", "/api/shutdown")
     assert server.wait() == 0
+
+
+def _ignore_sighup() -> None:
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+
+def _ignore_sigterm() -> None:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+
+@posix_only
+def test_an_inherited_ignore_of_sighup_keeps_the_server_answering(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sighup)
+    server.process.send_signal(signal.SIGHUP)
+    time.sleep(_QUIET_WINDOW_S)
+    assert server.process.poll() is None
+    answer = server.request("GET", "/api/health")
+    answer.settimeout(_WAKE_LIMIT_S)
+    assert b" 200 " in answer.recv(200)
+    server.request("POST", "/api/shutdown")
+    assert server.wait() == 0
+
+
+@posix_only
+def test_a_sighup_with_the_default_disposition_stops_the_server(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release")
+    server.process.send_signal(signal.SIGHUP)
+    assert server.wait() == 128 + signal.SIGHUP
+
+
+@posix_only
+def test_an_inherited_ignore_of_sigterm_does_not_stop_sigterm_from_stopping_the_server(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sigterm)
+    server.process.send_signal(signal.SIGTERM)
+    assert server.wait() == 128 + signal.SIGTERM
 
 
 def test_the_grace_lets_a_clean_exit_reach_the_lifespan_teardown(
