@@ -297,6 +297,21 @@ def _restore_server_stop_flag():
 
 
 @pytest.fixture(autouse=True)
+def _forget_engine_stop():
+    """Clear every engine stop request after each test.
+
+    A stop runs once per process, so a leak turns a later test's exit teardown
+    into a no-op, and an owed status would end the worker at exit.
+    """
+    from lilbee.app import services as services_mod
+
+    yield
+    if services_mod._lifecycle.stop_requested:
+        services_mod._lifecycle.wait_stopped(5.0)
+    services_mod._lifecycle.reset()
+
+
+@pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 

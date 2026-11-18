@@ -645,7 +645,7 @@ def test_the_signal_teardown_tells_the_provider_before_it_clears_the_services() 
     calls.services.provider.stop_waiting.side_effect = lambda: calls.seen(
         services_module.peek_services() is calls.services
     )
-    services_module._teardown_for_signal(signal.SIGTERM)
+    services_module._lifecycle._stop(signal.SIGTERM)
     calls.seen.assert_called_once_with(True)
     calls.services.provider.shutdown.assert_called_once_with()
     assert services_module.peek_services() is None

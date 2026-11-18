@@ -1338,21 +1338,29 @@ class TestMain:
         main()
         mock_build.return_value.run_stdio_async.assert_awaited_once()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGTERM handler to keep")
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    @mock.patch("lilbee.mcp_server.exit_on_signals_in_loop")
-    def test_main_routes_signals_through_the_running_loop(self, mock_route, mock_build):
-        """The signal hook is given the loop that serves stdio, not a loop made later."""
-        seen: list[asyncio.AbstractEventLoop] = []
-        mock_route.side_effect = seen.append
-        loops: list[asyncio.AbstractEventLoop] = []
+    def test_main_leaves_the_terminate_handler_to_the_process(self, mock_build):
+        """No loop takes SIGTERM, so its close cannot reset it to the default disposition."""
+        previous = signal.getsignal(signal.SIGTERM)
+
+        def handler(signum: int, frame: object) -> None:
+            raise AssertionError("never delivered")
+
+        seen: list[object] = []
 
         async def serve() -> None:
-            loops.append(asyncio.get_running_loop())
+            seen.append(signal.getsignal(signal.SIGTERM))
 
-        mock_build.return_value.run_stdio_async = serve
-        main()
-        assert len(seen) == 1
-        assert seen == loops
+        signal.signal(signal.SIGTERM, handler)
+        try:
+            mock_build.return_value.run_stdio_async = serve
+            main()
+            after = signal.getsignal(signal.SIGTERM)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        assert seen == [handler]
+        assert after is handler
 
 
 _STOP_TIMEOUT_S = 60.0
@@ -3702,6 +3710,25 @@ class TestMcpCommandExit:
             result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(143)
         assert result.exit_code == 143
+
+    def test_ctrl_c_reaches_the_stop_before_the_loop_starts(self, tmp_path):
+        """Ctrl-C takes the stop path, so the loop leaves it alone and a second press forces."""
+        from typer.testing import CliRunner
+
+        from lilbee.app import services as services_mod
+        from lilbee.cli import app
+
+        seen: list[object] = []
+        previous = signal.getsignal(signal.SIGINT)
+        try:
+            with mock.patch(
+                "lilbee.mcp_server.main",
+                side_effect=lambda: seen.append(signal.getsignal(signal.SIGINT)),
+            ):
+                CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        finally:
+            signal.signal(signal.SIGINT, previous)
+        assert seen == [services_mod._lifecycle._on_interrupt]
 
     def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
         from typer.testing import CliRunner
