@@ -31,6 +31,7 @@ def _rows() -> list[Row]:
         if not line.startswith("|"):
             break
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        assert len(cells) == len(Row._fields), f"a row with {len(cells)} cells: {line}"
         row = Row(*cells)
         rows.append(row._replace(fixture=row.fixture.strip("`")))
     return rows
