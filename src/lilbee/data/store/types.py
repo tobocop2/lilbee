@@ -132,9 +132,6 @@ META_SCHEMA_VERSION = 4
 # coupling the deletion to any specific column's value domain.
 META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
 
-# Same, for the single-row ``_entity_schema`` table.
-ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
-
 
 class EntitySchemaState(TypedDict):
     """Single-row state of the induced entity schema.

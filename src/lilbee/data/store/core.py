@@ -92,7 +92,6 @@ from .schema import (
     _wiki_mentions_schema,
 )
 from .types import (
-    ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
     KEYED_SCHEMA_VERSION,
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
@@ -2707,18 +2706,14 @@ class Store:
     def save_entity_schema(self, schema_json: str, *, applied: bool, source_count: int) -> None:
         """Overwrite the single persisted entity schema row."""
         with self._write_lock():
-            db = self.get_db()
-            table = ensure_table(db, ENTITY_SCHEMA_TABLE, _entity_schema_state_schema())
-            _safe_delete_unlocked(table, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
-            table.add(
-                [
-                    {
-                        "schema_json": schema_json,
-                        "applied": applied,
-                        "source_count": source_count,
-                        "updated_at": datetime.now(UTC).isoformat(),
-                    }
-                ]
+            row = {
+                "schema_json": schema_json,
+                "applied": applied,
+                "source_count": source_count,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            self.get_db().create_table(
+                ENTITY_SCHEMA_TABLE, [row], schema=_entity_schema_state_schema(), mode="overwrite"
             )
 
     def mark_entity_schema_applied(self) -> None:
