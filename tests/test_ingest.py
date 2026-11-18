@@ -2197,6 +2197,37 @@ class TestHeldOutRecordLifecycle:
         second = await sync(quiet=True)
         assert ("doc.txt" in second.added) is not held
 
+    async def test_a_file_whose_token_count_failed_is_added_by_the_next_sync(
+        self, isolated_env, mock_svc
+    ):
+        """A count route that is down fails the files; the sync after it recovers adds them."""
+        from lilbee.data.extract.chunk import build_chunking_config
+        from lilbee.data.ingest import sync
+        from lilbee.providers.base import ProviderError
+
+        route = {"down": False}
+
+        def _count(text: str) -> int:
+            if route["down"]:
+                raise ProviderError("The embedding server stopped")
+            return max(1, len(text) // 4)
+
+        mock_svc.provider.count_tokens.side_effect = _count
+        names = ["a.txt", "b.txt", "c.txt"]
+        for name in names:
+            (isolated_env / name).write_text(
+                f"{name} holds plenty of text. " * 40, encoding="utf-8"
+            )
+        build_chunking_config()  # the registration probe, while the route is up
+        route["down"] = True
+        first = await sync(quiet=True)
+        assert sorted(first.failed) == names
+
+        route["down"] = False
+        second = await sync(quiet=True)
+        assert sorted(second.added) == names
+        assert held_kinds() == {}
+
     async def _fail_then_move_folder(self, isolated_env):
         """Fail old/bad.pdf on a real store, rename old/ to new/, and sync with no extraction."""
         from lilbee.data.ingest import sync

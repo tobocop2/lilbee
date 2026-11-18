@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from xberg import ChunkingConfig, ChunkSizing, ExtractionConfig
+from xberg import ChunkingConfig, ChunkSizing, ExtractedDocument, ExtractionConfig
 
 from lilbee.data.extract.backends import tokenizer as tokenizer_module
 from lilbee.data.extract.backends.tokenizer import (
@@ -19,7 +19,7 @@ from lilbee.data.extract.backends.tokenizer import (
 from lilbee.data.extract.chunk import build_chunking_config, chunk_text
 from lilbee.data.extract.xberg import BatchItem, aextract_batch, extract_document
 from lilbee.data.types import TokenizerBackendName
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from tests.conftest import make_mock_services
 
 _NOTE = b"A note about turbines and pumps. " * 20
@@ -184,17 +184,20 @@ class TestProviderTokenizers:
         registered: list[LilbeeTokenizerBackend] = []
         monkeypatch.setattr(tokenizer_module, "_register", registered.append)
         tokenizers = _ProviderTokenizers()
-        assert tokenizers.failures() == 0
         first, second = _StopsAfterTheProbe(), _WordCounter()
-        assert tokenizers.name_for(first) == f"{TokenizerBackendName.LILBEE}-1"
-        assert tokenizers.name_for(second) == f"{TokenizerBackendName.LILBEE}-2"
-        assert [b.name() for b in registered] == [
+        first_name, second_name = (
             f"{TokenizerBackendName.LILBEE}-1",
             f"{TokenizerBackendName.LILBEE}-2",
-        ]
+        )
+        assert tokenizers.failures(first_name) is None
+        assert tokenizers.name_for(first) == first_name
+        assert tokenizers.name_for(second) == second_name
+        assert [b.name() for b in registered] == [first_name, second_name]
+        assert tokenizers.failures(first_name) == 0
         with pytest.raises(ProviderError, match="The embedding server stopped"):
             registered[0].count_tokens("two words")
-        assert tokenizers.failures() == 1
+        assert tokenizers.failures(first_name) == 1
+        assert tokenizers.failures(second_name) == 0
 
     def test_each_provider_registers_one_name_of_its_own(self):
         import xberg
@@ -248,9 +251,8 @@ class TestProviderTokenizers:
             def count_tokens(self, text: str) -> int:
                 raise NotImplementedError("no local tokenizer")
 
-        failures = provider_tokenizers.failures()
-        provider_tokenizers.name_for(_Sdk())
-        assert provider_tokenizers.failures() == failures
+        provider = _Sdk()
+        assert provider_tokenizers.failures(provider_tokenizers.name_for(provider)) == 0
 
     def test_a_registered_backend_does_not_keep_its_provider_alive(self):
         import gc
@@ -266,14 +268,69 @@ class TestProviderTokenizers:
     def test_a_count_after_the_provider_is_gone_fails_and_is_recorded(self):
         import gc
 
-        provider = _WordCounter()
-        counter = provider_tokenizers._counter(provider)
+        keeper, provider = _WordCounter(), _WordCounter()
+        name = provider_tokenizers.name_for(keeper)
+        counter = provider_tokenizers._counter(provider, name)
         del provider
         gc.collect()
-        failures = provider_tokenizers.failures()
         with pytest.raises(ReferenceError, match="no longer exists"):
             counter("text")
-        assert provider_tokenizers.failures() == failures + 1
+        assert provider_tokenizers.failures(name) == 1
+
+    def test_a_new_registration_never_unregisters_an_older_name(self, services_with):
+        import xberg
+
+        older = _WordCounter()
+        services_with(older)
+        config = ExtractionConfig(chunking=build_chunking_config())
+        name = provider_tokenizers.name_for(older)
+        services_with(_WordCounter())
+        build_chunking_config()
+        assert name in xberg.list_tokenizer_backends()
+        calls = older.calls
+        doc = extract_document(_NOTE, "text/plain", config=config)
+        assert len(doc.chunks or []) > 0
+        assert older.calls > calls
+
+    def test_a_gone_provider_name_is_unregistered_by_the_next_registration(self, services_with):
+        import gc
+
+        import xberg
+
+        provider = _WordCounter()
+        services_with(provider)
+        config = ExtractionConfig(chunking=build_chunking_config())
+        name = provider_tokenizers.name_for(provider)
+        del provider
+        services_with(_WordCounter())
+        gc.collect()
+        assert name in xberg.list_tokenizer_backends()
+        build_chunking_config()
+        assert name not in xberg.list_tokenizer_backends()
+        assert provider_tokenizers.failures(name) is None
+        with pytest.raises(TokenCountError, match="failed to count tokens"):
+            extract_document(_NOTE, "text/plain", config=config)
+
+    def test_the_losing_name_of_a_first_use_race_is_unregistered(self, monkeypatch):
+        import xberg
+
+        provider = _WordCounter()
+        register = tokenizer_module._register
+        names: list[str] = []
+
+        def _register_while_another_registers(backend: LilbeeTokenizerBackend) -> None:
+            register(backend)
+            if not names:
+                names.append(backend.name())
+                names.append(provider_tokenizers.name_for(provider))
+
+        monkeypatch.setattr(tokenizer_module, "_register", _register_while_another_registers)
+        assert provider_tokenizers.name_for(provider) == names[1]
+        assert names[0] != names[1]
+        provider_tokenizers.name_for(_WordCounter())
+        assert names[0] not in xberg.list_tokenizer_backends()
+        assert names[1] in xberg.list_tokenizer_backends()
+        assert provider_tokenizers.failures(names[0]) is None
 
 
 def test_a_second_provider_registering_its_tokenizer_leaves_a_built_config_its_chunks(
@@ -309,6 +366,72 @@ def test_a_second_provider_registering_its_tokenizer_leaves_a_built_config_its_c
     assert first.calls > 1
 
 
+class _HeldCounter(_Provider):
+    """A word counter whose first count after the probe waits until it is released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.counting, self.release = threading.Event(), threading.Event()
+
+    def count_tokens(self, text: str) -> int:
+        if self.calls == 1:
+            self.counting.set()
+            self.release.wait(_HOLD_S)
+        return super().count_tokens(text)
+
+
+def _extract_while(services_with, during) -> ExtractedDocument | TokenCountError:
+    """Extract a note with a held provider's tokenizer while *during* runs; return the result."""
+    held = _HeldCounter()
+    services_with(held)
+    config = ExtractionConfig(chunking=build_chunking_config())
+    results: list[ExtractedDocument | TokenCountError] = []
+
+    def _extract() -> None:
+        try:
+            results.append(extract_document(_NOTE, "text/plain", config=config))
+        except TokenCountError as error:
+            results.append(error)
+
+    worker = threading.Thread(target=_extract)
+    worker.start()
+    try:
+        assert held.counting.wait(_HOLD_S)
+        during()
+    finally:
+        held.release.set()
+        worker.join()
+    return results[0]
+
+
+def test_a_failed_count_of_another_tokenizer_leaves_a_running_extraction_its_chunks(
+    services_with,
+):
+    def _fail_another_extraction() -> None:
+        services_with(_StopsAfterTheProbe())
+        config = ExtractionConfig(chunking=build_chunking_config())
+        with pytest.raises(TokenCountError, match="failed to count tokens"):
+            extract_document(_NOTE, "text/plain", config=config)
+
+    doc = _extract_while(services_with, _fail_another_extraction)
+    assert not isinstance(doc, Exception)
+    assert doc.chunks
+
+
+def test_a_failed_registration_probe_leaves_a_running_extraction_its_chunks(services_with):
+    class _NoModel(_Provider):
+        def count_tokens(self, text: str) -> int:
+            raise ProviderError("No embedding model is configured")
+
+    def _fail_a_registration() -> None:
+        with pytest.raises(ProviderError, match="No embedding model is configured"):
+            provider_tokenizers.name_for(_NoModel())
+
+    doc = _extract_while(services_with, _fail_a_registration)
+    assert not isinstance(doc, Exception)
+    assert doc.chunks
+
+
 def test_a_config_whose_provider_is_gone_fails_the_extraction(services_with):
     import gc
 
@@ -337,6 +460,7 @@ def test_a_count_that_fails_in_a_batch_fails_every_extracted_input(services_with
     results = asyncio.run(aextract_batch(items, config))
     assert [type(r) for r in results] == [TokenCountError, TokenCountError]
     assert results[0] is not results[1]
+    assert [r.kind for r in results] == [ProviderErrorKind.CONNECTION] * 2
 
 
 @pytest.mark.parametrize(
@@ -356,7 +480,7 @@ def test_a_count_failure_elsewhere_leaves_an_extraction_not_sized_by_tokens(monk
     import itertools
 
     counts = itertools.count()
-    monkeypatch.setattr(provider_tokenizers, "failures", lambda: next(counts))
+    monkeypatch.setattr(provider_tokenizers, "failures", lambda _name: next(counts))
     config = ExtractionConfig(chunking=chunking)
     items = [BatchItem(data=_NOTE, mime="text/plain", filename=None, ocr=None)]
     (doc,) = asyncio.run(aextract_batch(items, config))

@@ -8,6 +8,7 @@ lilbee's embedder is a GGUF model whose vocab isn't published that way. This let
 
 from __future__ import annotations
 
+import collections
 import itertools
 import logging
 import threading
@@ -15,6 +16,7 @@ import weakref
 from typing import TYPE_CHECKING
 
 from lilbee.data.types import TokenizerBackendName
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -87,53 +89,75 @@ class LilbeeTokenizerBackend:
         return count if count > 0 else _estimate_tokens(text)
 
 
-class TokenCountError(RuntimeError):
+class TokenCountError(ProviderError):
     """The embedder failed to count tokens while chunks were sized."""
 
     def __init__(self) -> None:
         super().__init__(
             "The embedding model failed to count tokens while sizing chunks, so the text "
-            "was not indexed. Check that the embedding model is running, then try again."
+            "was not indexed. Check that the embedding model is running, then try again.",
+            kind=ProviderErrorKind.CONNECTION,
         )
 
 
 class _ProviderTokenizers:
-    """One registered tokenizer backend per provider, and the count failures they report.
+    """One registered tokenizer backend per provider, and the count failures of each name.
 
-    A name is registered once and never unregistered, so a config built for one
+    A name stays registered while its provider lives, so a config built for one
     provider keeps its tokenizer while another provider registers its own. Each
-    backend holds its provider weakly; a provider that is gone fails its counts.
+    backend holds its provider weakly. The name of a provider that is gone is
+    unregistered by the next registration, and its configs fail their counts.
     """
 
     def __init__(self) -> None:
         self._names: weakref.WeakKeyDictionary[LLMProvider, str] = weakref.WeakKeyDictionary()
         self._serial = itertools.count(1)
-        self._failures = 0
+        self._failures: dict[str, int] = {}
+        self._released: collections.deque[str] = collections.deque()
         self._lock = threading.Lock()
 
     def name_for(self, provider: LLMProvider) -> str:
         """The registered tokenizer name for *provider*, registering it on first use.
 
-        Two first uses at once both register; the first name stored wins, the other stays unused.
+        Two first uses at once both register; the first name stored wins, the other is released.
         """
+        self._unregister_released()
         with self._lock:
             name = self._names.get(provider)
             if name is not None:
                 return name
             name = f"{TokenizerBackendName.LILBEE}-{next(self._serial)}"
-        backend = LilbeeTokenizerBackend(count_fn=self._counter(provider), name=name)
+        backend = LilbeeTokenizerBackend(count_fn=self._counter(provider, name), name=name)
         backend.probe()
         _register(backend)
         with self._lock:
-            return self._names.setdefault(provider, name)
+            stored = self._names.setdefault(provider, name)
+            if stored != name:
+                self._released.append(name)
+                return stored
+            self._failures[name] = 0
+        # The finalizer only appends: it can run in a garbage collection while any lock is held.
+        weakref.finalize(provider, self._released.append, name)
+        return name
 
-    def failures(self) -> int:
-        """How many counts of a registered backend have failed in this process."""
+    def failures(self, name: str) -> int | None:
+        """How many counts of *name* have failed, or None when its provider is gone."""
         with self._lock:
-            return self._failures
+            return self._failures.get(name)
 
-    def _counter(self, provider: LLMProvider) -> Callable[[str], int]:
-        """A count through *provider*, held weakly, that records each failure."""
+    def _unregister_released(self) -> None:
+        """Unregister the name of each released provider and drop its count."""
+        while True:
+            try:
+                name = self._released.popleft()
+            except IndexError:  # empty; another thread may have taken the last name
+                return
+            with self._lock:
+                self._failures.pop(name, None)
+            _unregister(name)
+
+    def _counter(self, provider: LLMProvider, name: str) -> Callable[[str], int]:
+        """A count through *provider*, held weakly, that records each failure against *name*."""
         ref = weakref.ref(provider)
 
         def count(text: str) -> int:
@@ -147,7 +171,8 @@ class _ProviderTokenizers:
             except Exception:
                 log.debug("token count for chunk sizing failed", exc_info=True)
                 with self._lock:
-                    self._failures += 1
+                    if name in self._failures:
+                        self._failures[name] += 1
                 raise
 
         return count
@@ -158,6 +183,13 @@ def _register(backend: LilbeeTokenizerBackend) -> None:
     import xberg
 
     xberg.register_tokenizer_backend(backend)
+
+
+def _unregister(name: str) -> None:
+    """Remove the backend *name* from xberg's tokenizer registry."""
+    import xberg
+
+    xberg.unregister_tokenizer_backend(name)
 
 
 provider_tokenizers = _ProviderTokenizers()
