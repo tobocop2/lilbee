@@ -391,8 +391,7 @@ class TestASharedMemoryHostBudget:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, free: int
     ) -> tuple[CardEngine, list[FleetDevice]]:
         prepare_host(monkeypatch, tmp_path, self.CHAT, 64 * GIB)
-        for module in (planning, planning.model_cache):
-            monkeypatch.setattr(module, "free_system_memory", lambda: free)
+        monkeypatch.setattr(planning.model_cache, "free_system_memory", lambda: free)
         devices = [FleetDevice("CUDA", 0, "igpu", 16 * GIB, 16 * GIB, True)]
         return CardEngine("engine-a", tmp_path / "engine-server", self.CHAT, devices), devices
 

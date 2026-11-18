@@ -155,7 +155,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     planning.clear_read_device_cache()
     for module in (planning, planning.model_cache):
         monkeypatch.setattr(module, "total_system_memory", lambda: 64 * _GIB)
-        monkeypatch.setattr(module, "free_system_memory", lambda: 64 * _GIB)
+        monkeypatch.setattr(planning.model_cache, "free_system_memory", lambda: 64 * _GIB)
     settings: dict[str, Any] = {
         "system_memory_reserve_gb": 0,
         "gpu_memory_fraction": 1.0,

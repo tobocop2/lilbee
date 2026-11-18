@@ -164,11 +164,22 @@ class TestACpuRoleIsChargedItsSinglePool:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         prepare_host(monkeypatch, tmp_path, self.ROLES, 5 * GIB)
-        monkeypatch.setattr(planning, "free_system_memory", lambda: pytest.fail("live free read"))
+        monkeypatch.setattr(
+            planning.model_cache, "free_system_memory", lambda: pytest.fail("live free read")
+        )
         spec = PlacementSpec.from_json(CHAT_NAMED_EMBED_CPU)
         inputs = [planning.ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=2 * GIB)]
         launching = [InstancePlan(role=WorkerRole.EMBED, devices=())]
-        assert planning._cpu_roles_past_memory(spec, inputs, launching, unified=False) == {}
+        assert (
+            planning._cpu_roles_past_memory(
+                spec,
+                inputs,
+                launching,
+                free=0,
+                unified=False,
+            )[0]
+            == {}
+        )
 
     def test_a_chat_role_is_not_scaled_by_the_card_serve_budget(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

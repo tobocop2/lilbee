@@ -53,6 +53,7 @@ from lilbee.providers.fleet.model_memory import (
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     LostCardWording,
+    LowFreeMemory,
     ModelPlacementInput,
     PeakEstimator,
     Placement,
@@ -70,7 +71,7 @@ from lilbee.providers.fleet.placement_spec import (
 )
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import usable_vram_fraction
-from lilbee.providers.model_cache import free_system_memory, total_system_memory
+from lilbee.providers.model_cache import total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import (
     ROLE_REGISTRY,
@@ -1452,7 +1453,9 @@ def _admit_estimate(
     if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref, engine=engine)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
-    if _host_memory_refuses(role, ref, ram_bytes, host_committed):
+    if _host_memory_refuses(
+        role, ref, ram_bytes, host_committed, lambda: _plan_free_system_memory(engine)
+    ):
         return None
     if total_vram > 0 and weights > total_vram:
         _warn_weights_spill(role, ref, weights, total_vram)
@@ -1570,7 +1573,9 @@ def _sizing_failure_fallback(
         exc,
         floor / 1024**3,
     )
-    if _host_memory_refuses(role, ref, floor, host_committed):
+    if _host_memory_refuses(
+        role, ref, floor, host_committed, lambda: _plan_free_system_memory(engine)
+    ):
         return None
     return ModelPlacementInput(
         role=role, est_vram_bytes=floor, replicas=_replica_count(role, device_count)
@@ -1672,8 +1677,13 @@ def _host_committed(admitted: Mapping[WorkerRole, ModelPlacementInput]) -> int:
     return sum(inp.est_ram_bytes for inp in admitted.values())
 
 
-def _host_memory_refuses(role: WorkerRole, ref: str, ram_bytes: int, committed: int) -> bool:
+def _host_memory_refuses(
+    role: WorkerRole, ref: str, ram_bytes: int, committed: int, free: Callable[[], int]
+) -> bool:
     """Whether *role*'s system-memory half is too big for this machine to load.
+
+    *free* reads the free system memory, and runs only when the role is admitted: a
+    shortfall there warns. A role nothing offloads, and a refused role, never read it.
 
     Charged only when something actually offloads, and only when the bytes must
     be resident: refusing a mapped model that would have streamed from disk is a
@@ -1698,18 +1708,25 @@ def _host_memory_refuses(role: WorkerRole, ref: str, ram_bytes: int, committed: 
             total / 1024**3,
         )
         return True
-    free = free_system_memory()
+    _warn_low_free_memory(role, ref, wanted, free(), action="Offloading")
+    return False
+
+
+def _warn_low_free_memory(
+    role: WorkerRole, ref: str, wanted: int, free: int, *, action: str
+) -> None:
+    """Warn when *wanted* bytes exceed the *free* system memory; a zero *free* is unread."""
     if free and wanted > free:
         log.warning(
-            "Offloading the %s model %s brings this plan to %.1f GiB in system memory and "
+            "%s the %s model %s brings this plan to %.1f GiB in system memory and "
             "only %.1f GiB is free. It will still load; close other programs if it swaps "
             "or runs slowly.",
+            action,
             role.value,
             ref,
             wanted / 1024**3,
             free / 1024**3,
         )
-    return False
 
 
 def _warn_weights_exceed(role: WorkerRole, ref: str, weights: int, total_vram: int) -> None:
@@ -3115,7 +3132,7 @@ def _live_sizing_devices(engine: EngineAdapter) -> list[FleetDevice]:
 
 
 def _plan_free_system_memory(engine: EngineAdapter) -> int:
-    """Free system RAM for the unified-memory budget: the snapshot, else live."""
+    """Free system RAM the plan sizes against: the snapshot, else live."""
     probe = _current_plan_probe(engine)
     return probe.free_system if probe is not None else model_cache.free_system_memory()
 
@@ -3374,18 +3391,20 @@ def _resolve_placement(
             model_refs=model_refs,
             lost_card=_lost_card_wording(devices, host_cards),
         )
-        if _cpu_roles(placement).isdisjoint(model_refs):
+        cpu_present = _cpu_roles(placement).intersection(model_refs)
+        if not cpu_present:
             return placed
-        past_memory = _cpu_roles_past_memory(
+        past_memory, low_free = _cpu_roles_past_memory(
             placement,
             inputs,
             _launching_instances(placed, inputs, model_refs, devices, engines=engines),
+            free=_plan_free_system_memory(engines[min(cpu_present, key=lambda r: r.value)]),
             unified=unified_budget is not None,
             co_tenants=placed.co_tenants,
         )
         if past_memory:
             raise TargetRefusedError(past_memory)
-        return placed
+        return replace(placed, low_free_memory=low_free)
     return _auto_placement(
         inputs,
         auto_cards,
@@ -3527,22 +3546,25 @@ def _cpu_roles_past_memory(
     inputs: Sequence[ModelPlacementInput],
     launching: Sequence[InstancePlan],
     *,
+    free: int,
     unified: bool,
     co_tenants: frozenset[WorkerRole] = frozenset(),
-) -> dict[WorkerRole, str]:
-    """The reason for each CPU role that system memory cannot hold.
+) -> tuple[dict[WorkerRole, str], dict[WorkerRole, LowFreeMemory]]:
+    """The reason for each CPU role that system memory cannot hold, and each that is tight.
 
     The bound is total system memory less what the card roles in *launching* commit:
     their host bytes, or on a card that shares system memory their whole footprint,
     which already holds the host bytes. A swap group commits its largest member, since
     one is resident at a time. The CPU roles are taken in order and the first past the
     total is refused, with no fallback to a card. A CPU role that is not in *launching*
-    adds no charge for the next one.
+    adds no charge for the next one. A CPU role that fits the total but not the *free*
+    memory left after the roles admitted before it is admitted and listed as tight;
+    nothing here logs, so a plan repeated or only viewed warns nobody.
     """
     cpu = _cpu_roles(placement)
     sized = cpu.intersection(i.role for i in inputs)
     if not sized:
-        return {}
+        return {}, {}
     try:
         total = total_system_memory()
     except RuntimeError:
@@ -3550,7 +3572,7 @@ def _cpu_roles_past_memory(
             role: f"{role.value}: the system memory of this machine cannot be read, so the CPU "
             "cannot be sized. Choose a GPU."
             for role in sorted(sized, key=lambda r: r.value)
-        }
+        }, {}
     by_role = {i.role: i for i in inputs}
     starts = {inst.role for inst in launching}
 
@@ -3563,6 +3585,7 @@ def _cpu_roles_past_memory(
     held = sum(commit(role) for role in card_roles if role not in co_tenants)
     held += max(swapped, default=0)
     refused: dict[WorkerRole, str] = {}
+    tight: dict[WorkerRole, LowFreeMemory] = {}
     for inp in inputs:
         if inp.role not in sized:
             continue
@@ -3574,8 +3597,10 @@ def _cpu_roles_past_memory(
                 "Choose a smaller model or a GPU."
             )
         elif inp.role in starts:
+            if need > 0 and free and held + need > free:
+                tight[inp.role] = LowFreeMemory(wanted=held + need, free=free)
             held += need
-    return refused
+    return refused, tight
 
 
 def _targets_gpu(placement: PlacementSpec, role: WorkerRole) -> bool:
@@ -4130,12 +4155,15 @@ def _log_placement_findings(
     """Warn about a role that loads over its estimate and about roles that share a card.
 
     With one engine a GPU role is never refused: one whose estimate exceeds the free
-    VRAM still loads on demand, with a warning carrying the shortfall.
+    VRAM still loads on demand, with a warning carrying the shortfall. A CPU role that
+    fits the machine but not its free memory warns here, once, from the settled plan.
     """
     for role, shortfall in placement.tight_roles.items():
         log.warning(
             "%s", tight_memory_text(f"the {role.value} model {model_refs[role]}", shortfall)
         )
+    for role, short in placement.low_free_memory.items():
+        _warn_low_free_memory(role, model_refs[role], short.wanted, short.free, action="Running")
     if placement.co_tenants:
         log.info(
             "%s share GPU memory and load on demand; only one is resident at a time.",
