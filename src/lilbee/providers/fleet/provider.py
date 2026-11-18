@@ -2007,10 +2007,11 @@ class FleetProvider:
             _no_server_message(role, self._unusable_engine_reason()), provider=_PROVIDER_NAME
         )
 
-    def _await_vision_clients(self, cancel: CancelSignal | None) -> None:
+    def _await_vision_clients(self, cancel: CancelSignal | None, deadline: float) -> None:
         """Wait one dispatch recheck for vision clients while a reload owes them; never builds.
 
-        Raises when *cancel* is set, or when vision has no clients and no reload brings any.
+        Raises when *cancel* is set, when vision has no clients and no reload brings any,
+        or when the reload still owes them at *deadline* (a ``time.monotonic`` value).
         """
         if cancel is not None and cancel.is_set():
             raise TaskCancelledError
@@ -2020,11 +2021,19 @@ class FleetProvider:
                     bool(self._clients.get(WorkerRole.VISION))
                     or WorkerRole.VISION not in self._reload_owed
                 ),
-                _DISPATCH_HEALTH_RECHECK_S,
+                min(_DISPATCH_HEALTH_RECHECK_S, max(0.0, deadline - time.monotonic())),
             )
-            if self._clients.get(WorkerRole.VISION) or WorkerRole.VISION in self._reload_owed:
+            if self._clients.get(WorkerRole.VISION):
                 return
-        self._raise_no_clients(WorkerRole.VISION)
+            owed = WorkerRole.VISION in self._reload_owed
+        if not owed:
+            self._raise_no_clients(WorkerRole.VISION)
+        if time.monotonic() >= deadline:
+            raise ProviderError(
+                "The vision model did not come back from its reload in time.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.STARTING,
+            )
 
     def _with_rediscover(self, call: Callable[[], _T], *, role: WorkerRole | None = None) -> _T:
         """Run *call*; on a connection-kind or load-capacity failure, retry once.
@@ -2627,11 +2636,16 @@ class FleetProvider:
         self._serve_vision_on_request()
         # The one fleet check of the call: a failing build surfaces here, never retried.
         self._require_clients(WorkerRole.VISION)
-        pool = self._live_vision_pool(cancel)
+        deadline = _ocr_deadline(timeout)
+        # A page with no limit still bounds a reload's wait by the model-load budget.
+        reload_deadline = (
+            time.monotonic() + cfg.vision_load_budget_s if deadline is None else deadline
+        )
+        pool = self._live_vision_pool(reload_deadline, cancel)
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
         try:
-            return _ocr_dispatch(pool, messages, _ocr_deadline(timeout), cancel)
+            return _ocr_dispatch(pool, messages, deadline, cancel)
         except _PageBudgetExhausted:
             raise ProviderError(
                 "Vision OCR timed out waiting for a free vision slot.",
@@ -2657,12 +2671,17 @@ class FleetProvider:
             self._lock, lambda: self._clients.get(role, []), lambda: self._require_clients(role)
         )
 
-    def _live_vision_pool(self, cancel: CancelSignal | None = None) -> _LivePool[_VisionReplica]:
-        """Vision replicas with fitted slot counts; a pick waits out a reload and never builds."""
+    def _live_vision_pool(
+        self, reload_deadline: float, cancel: CancelSignal | None = None
+    ) -> _LivePool[_VisionReplica]:
+        """Vision replicas with fitted slot counts; a pick waits out a reload and never builds.
+
+        The reload wait ends at *reload_deadline* (a ``time.monotonic`` value).
+        """
         return _LivePool(
             self._lock,
             lambda: self._vision_replicas(self._clients.get(WorkerRole.VISION, [])),
-            lambda: self._await_vision_clients(cancel),
+            lambda: self._await_vision_clients(cancel, reload_deadline),
         )
 
     def _vision_replicas(self, clients: list[LlamaServerClient]) -> list[_VisionReplica]:
