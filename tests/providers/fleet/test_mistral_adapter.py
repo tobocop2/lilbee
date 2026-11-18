@@ -1419,18 +1419,22 @@ def test_no_equal_split_refusal_is_worded_when_that_rule_did_not_refuse(
 
 
 def _refusal_text(
-    placement: Any, card_gib: tuple[int, ...], caplog: pytest.LogCaptureFixture
+    placement: Any,
+    card_gib: tuple[int, ...],
+    caplog: pytest.LogCaptureFixture,
+    others: tuple[Any, ...] = (),
 ) -> str:
     """The warning that the planner logs for the refused chat role of *placement*."""
     cards = [
         FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate(card_gib)
     ]
+    inputs = [_planner_chat_input(len(card_gib)), *others]
     caplog.set_level("WARNING")
     planning._log_refused_roles(
         placement,
-        {WorkerRole.CHAT: "ref"},
-        {WorkerRole.CHAT: MISTRAL},
-        [_planner_chat_input(len(card_gib))],
+        {inp.role: "ref" for inp in inputs},
+        {inp.role: MISTRAL for inp in inputs},
+        inputs,
         cards,
         planning.HostCards(cards),
         unified_budget=None,
@@ -1474,7 +1478,7 @@ def test_the_refusal_of_an_equal_split_counts_the_room_other_roles_hold(
     room = 24 * usable_vram_fraction() - 12
     assert (miss.count, miss.device) == (2, 0)
     assert miss.room_bytes / GIB == pytest.approx(room)
-    said = _refusal_text(placed, (24, 24), caplog)
+    said = _refusal_text(placed, (24, 24), caplog, (embed,))
     need = miss.need_bytes / GIB
     assert f"device 0 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
     assert f"{room:.1f} GiB left beside the other models. It will not be served." in said
@@ -1585,7 +1589,7 @@ def _sweep_calls(refuse_every: int, message: str = "refused") -> tuple[int, int]
 
     remaining = {idx: float((40 + idx) * GIB) for idx in range(30)}
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
-    assert _place_split(chat, remaining, estimate) is None
+    assert _place_split(chat, remaining, estimate, misses={}) is None
     return seen["estimated"], seen["refused"]
 
 
@@ -1621,7 +1625,7 @@ def test_a_refused_ratio_leaves_the_other_ratios_of_that_card_count_to_try() -> 
 
     remaining = {0: float(24 * GIB), 1: float(16 * GIB)}
     chat = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB)
-    placed = _place_split(chat, remaining, estimate)
+    placed = _place_split(chat, remaining, estimate, misses={})
     assert placed is not None
     assert placed.plan.devices == (0, 1)
     assert placed.plan.tensor_split == asked[1]

@@ -633,11 +633,7 @@ def _place_split(
                 # An unsizable model cannot evaluate a split; the tight single-card
                 # path downstream places it or, when refusing, refuses it.
                 continue
-            if len(per_device) != count:
-                continue
-            if not all(
-                peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
-            ):
+            if not _split_fits(chosen, per_device, remaining):
                 nearest = _nearer_miss(nearest, chosen, per_device, remaining)
                 continue
             # Only chat is widened past the fewest fitting cards; everything else (and
@@ -659,13 +655,27 @@ def _place_split(
     return _noting_miss(_best_or_none(best, model, remaining), model, nearest, misses)
 
 
+def _split_fits(
+    chosen: list[int], per_device: tuple[int, ...], remaining: dict[int, float]
+) -> bool:
+    """Whether *per_device* gives one figure per chosen card and each card holds its own."""
+    return len(per_device) == len(chosen) and all(
+        peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
+    )
+
+
 def _nearer_miss(
     nearest: SplitMiss | None,
     chosen: list[int],
     per_device: tuple[int, ...],
     remaining: dict[int, float],
-) -> SplitMiss:
-    """*nearest*, or the split of *chosen* when its busiest card overshoots its room less."""
+) -> SplitMiss | None:
+    """*nearest*, or the split of *chosen* when its busiest card overshoots its room less.
+
+    An estimate that does not give one figure per chosen card is no split and changes nothing.
+    """
+    if len(per_device) != len(chosen):
+        return nearest
     candidate = max(
         (
             SplitMiss(len(chosen), idx, float(peak), remaining[idx])
