@@ -657,9 +657,15 @@ class ChatScreen(Screen[None]):
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
     def on_key(self, event: events.Key) -> None:
-        """In INSERT mode, type a printable key into the prompt when focus sits elsewhere."""
+        """In INSERT mode, type a printable key into the prompt unless the focused pill binds it."""
         inp = self._chat_input
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
+        if (
+            self._insert_mode
+            and not inp.has_focus
+            and event.is_printable
+            and event.character
+            and not self._focused_strip_member_binds(event.key)
+        ):
             self.set_focus(inp)
             inp.insert(event.character)
             event.prevent_default()
@@ -2927,6 +2933,11 @@ class ChatScreen(Screen[None]):
         """
         focused = self.focused
         return bool(focused and any(isinstance(n, ModelBar) for n in focused.ancestors_with_self))
+
+    def _focused_strip_member_binds(self, key: str) -> bool:
+        """True when the focused model-strip member has its own binding for *key*."""
+        binding = self.active_bindings.get(key)
+        return binding is not None and binding.node is self.focused and self._focus_in_model_bar()
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement
