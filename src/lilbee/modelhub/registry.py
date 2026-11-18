@@ -904,15 +904,22 @@ class ModelRegistry:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and _is_unknown_format(data.get("format", ModelFormat.GGUF)):
+                log.warning("Manifest uses a newer format than this lilbee reads: %s", path)
+                return None
             return ModelManifest(**data)
         # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
-        # An unknown format name is a ValueError, as a bad key is a TypeError.
         except (ValueError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
 
 
 _HF_SNAPSHOTS_DIR = "snapshots"
+
+
+def _is_unknown_format(value: object) -> bool:
+    """True when *value* is a string naming no ``ModelFormat`` this lilbee knows."""
+    return isinstance(value, str) and value not in [f.value for f in ModelFormat]
 
 
 def _repo_relative_gguf_name(file_path: Path) -> str:
