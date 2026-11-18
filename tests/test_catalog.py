@@ -1727,11 +1727,19 @@ def _stub_listing(
     monkeypatch.setattr(HfApi, "model_info", model_info)
 
 
-def _hub_http_error(status: int) -> Exception:
-    from huggingface_hub.errors import HfHubHTTPError
+def _hub_http_error(status: int, error_code: str | None = None) -> Exception:
+    """The error the Hub client raises for *status*, mapped by its own X-Error-Code reading."""
+    import httpx2
+    from huggingface_hub.utils import hf_raise_for_status
 
-    response = httpx.Response(status, request=httpx.Request("GET", "https://example.com"))
-    return HfHubHTTPError(f"HTTP {status}", response=response)
+    headers = {"X-Error-Code": error_code} if error_code else {}
+    request = httpx2.Request("GET", "https://huggingface.co/api/models/acme/model")
+    response = httpx2.Response(status, headers=headers, request=request)
+    try:
+        hf_raise_for_status(response)
+    except Exception as exc:
+        return exc
+    raise AssertionError(f"status {status} raised nothing")
 
 
 class TestResolveFilename:
@@ -2056,7 +2064,7 @@ class TestResolveFilename:
 
         answers: list[object] = [
             SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[]),
-            _hub_http_error(401),
+            _hub_http_error(401, "GatedRepo"),
         ]
 
         def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
@@ -2094,13 +2102,23 @@ class TestResolveFilename:
 
     def test_gated_listing_says_how_to_authenticate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._headers(monkeypatch)
-        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        _stub_listing(monkeypatch, error=_hub_http_error(401, "GatedRepo"))
         with pytest.raises(PermissionError) as raised:
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
         assert str(raised.value) == (
             f"{PICKS_CHAT[0].hf_repo} requires HuggingFace authentication. "
             "Set HF_TOKEN env var or visit the repo page to request access."
         )
+
+    @pytest.mark.parametrize("error_code", [None, "RepoNotFound"])
+    def test_a_401_the_hub_does_not_mark_gated_is_a_failed_listing(
+        self, monkeypatch: pytest.MonkeyPatch, error_code: str | None
+    ) -> None:
+        """A private or missing repo answers 401 too; only X-Error-Code GatedRepo reads as gated."""
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(401, error_code))
+        with pytest.raises(catalog.download.ListingFailedError, match="Cannot query files"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
     def test_unreadable_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A tag read that fails cannot tell MLX from safetensors, so the refusal names nothing."""
@@ -2167,7 +2185,7 @@ class TestResolveFilename:
 
     def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HTTP 401 response raises PermissionError with auth message."""
-        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        _stub_listing(monkeypatch, error=_hub_http_error(401, "GatedRepo"))
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
@@ -3063,7 +3081,7 @@ class TestResolveMmprojFilename:
     def test_gated_repo_listing_raises_projector_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        _stub_listing(monkeypatch, error=_hub_http_error(401, "GatedRepo"))
         with pytest.raises(_download.ProjectorListingError, match="authentication"):
             _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
 

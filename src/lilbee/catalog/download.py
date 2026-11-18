@@ -714,16 +714,16 @@ class ListingFailedError(RuntimeError):
 def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
     """The Hub record of *hf_repo*; a gated repo, an unreachable Hub and a failed read are typed."""
     from huggingface_hub import HfApi
-    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, OfflineModeIsEnabled
 
     try:
         return HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
+    except GatedRepoError as exc:
+        raise PermissionError(
+            f"{hf_repo} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
+        ) from exc
     except HfHubHTTPError as exc:
-        if exc.response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise PermissionError(
-                f"{hf_repo} requires HuggingFace authentication. "
-                "Set HF_TOKEN env var or visit the repo page to request access."
-            ) from exc
         raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
     except (OfflineModeIsEnabled, httpx2.TransportError) as exc:
         raise ListingOfflineError(

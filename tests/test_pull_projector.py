@@ -164,6 +164,7 @@ class _ListingServer:
     def __init__(self) -> None:
         self.requests: list[str] = []
         self.status = 200
+        self.error_code: str | None = None
         owner = self
 
         class _Handler(BaseHTTPRequestHandler):
@@ -171,6 +172,8 @@ class _ListingServer:
                 owner.requests.append(self.path)
                 if owner.status != 200:
                     self.send_response(owner.status)
+                    if owner.error_code:
+                        self.send_header("X-Error-Code", owner.error_code)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
@@ -259,7 +262,17 @@ class TestListingRead:
 
     def test_a_gated_repo_stays_a_permission_error(self, listing_server: _ListingServer) -> None:
         listing_server.status = 401
+        listing_server.error_code = "GatedRepo"
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
+            dl._repo_sibling_files(_REPO)
+
+    @pytest.mark.parametrize("error_code", [None, "RepoNotFound"])
+    def test_a_private_or_missing_repo_is_not_called_gated(
+        self, listing_server: _ListingServer, error_code: str | None
+    ) -> None:
+        listing_server.status = 401
+        listing_server.error_code = error_code
+        with pytest.raises(dl.ListingFailedError, match="Cannot query files for acme"):
             dl._repo_sibling_files(_REPO)
 
     def test_an_unexpected_listing_fault_is_a_failed_fetch(
