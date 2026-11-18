@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -357,8 +358,12 @@ class TestInstalledEncoder:
     ) -> None:
         _write(tmp_path, "model.safetensors", 4000)
 
-        def refuse(self: Path, *args: object, **kwargs: object) -> object:
-            raise PermissionError("no access")
+        real_open = Path.open
+
+        def refuse(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if self.suffix == ".safetensors":
+                raise PermissionError("no access")
+            return real_open(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", refuse)
         assert mm.whole_safetensors_bytes(tmp_path) == 0

@@ -1,4 +1,4 @@
-"""Whole safetensors files of a stated size, for tests that need a weight size the planner accepts."""
+"""Whole safetensors files of a stated size, for tests that need a known weight size."""
 
 from __future__ import annotations
 

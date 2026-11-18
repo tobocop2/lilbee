@@ -24,6 +24,7 @@ _SAFETENSORS_PREFIX_BYTES = 8
 _MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
 _SAFETENSORS_METADATA_KEY = "__metadata__"
 _SAFETENSORS_OFFSETS_KEY = "data_offsets"
+_SAFETENSORS_OFFSET_COUNT = 2
 _SAFETENSORS_HEADER_DEPTH = 3
 _JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
 _INNERMOST_GROUP = re.compile(rb"[\[{][^\[\]{}]*[\]}]")
@@ -376,7 +377,7 @@ def _header_data_end(header: object) -> int | None:
         if name == _SAFETENSORS_METADATA_KEY:
             continue
         offsets = entry.get(_SAFETENSORS_OFFSETS_KEY) if isinstance(entry, Mapping) else None
-        if not isinstance(offsets, list) or len(offsets) != 2:
+        if not isinstance(offsets, list) or len(offsets) != _SAFETENSORS_OFFSET_COUNT:
             return None
         start, end = _whole_number(offsets[0]), _whole_number(offsets[1])
         if start is None or end is None or not 0 <= start <= end:
