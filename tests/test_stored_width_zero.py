@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import lancedb
 import numpy as np
+import pyarrow as pa
 import pytest
 from typer.testing import CliRunner
 
@@ -250,6 +251,74 @@ def test_a_search_with_no_meta_row_and_chunks_of_another_width_is_refused():
 @pytest.mark.parametrize("stored", [0, -1, None])
 def test_the_first_ingest_with_a_damaged_width_and_no_chunks_stamps_the_configured_width(stored):
     _store_with_stored_width(stored)
+
+    Store(cfg).add_chunks([_record("a.md", 0)])
+
+    meta = lancedb.connect(str(cfg.lancedb_dir)).open_table(META_TABLE).to_arrow()
+    assert meta["embedding_dim"].to_pylist() == [CONFIGURED_WIDTH]
+
+
+TEXT_WIDTHS = ["768", "abc", ""]
+
+
+def _store_with_text_width(text: str, chunks: bool = False, chunk_width: int = CONFIGURED_WIDTH):
+    """Write the ``_meta`` row, then rebuild its table with the width column typed as text."""
+    _store_with_stored_width(STORED_WIDTH, chunks=chunks, chunk_width=chunk_width)
+    db = lancedb.connect(str(cfg.lancedb_dir))
+    rows = db.open_table(META_TABLE).to_arrow()
+    index = rows.schema.get_field_index("embedding_dim")
+    retyped = rows.schema.set(index, pa.field("embedding_dim", pa.utf8()))
+    db.create_table(META_TABLE, rows.cast(retyped).to_pylist(), schema=retyped, mode="overwrite")
+    assert db.open_table(META_TABLE).to_arrow()["embedding_dim"].to_pylist() == [str(STORED_WIDTH)]
+    db.open_table(META_TABLE).update(values={"embedding_dim": text})
+    assert db.open_table(META_TABLE).to_arrow()["embedding_dim"].to_pylist() == [text]
+
+
+@pytest.mark.parametrize("stored", TEXT_WIDTHS)
+def test_cli_status_reports_no_index_width_for_a_text_stored_width(monkeypatch, stored):
+    _store_with_text_width(stored, chunks=True)
+    built = _build_recording_width(monkeypatch)
+
+    output = _status_on_cli()
+
+    assert built == [CONFIGURED_WIDTH]
+    assert "dims" not in output
+    assert "Index built with" not in output
+
+
+@pytest.mark.parametrize("stored", TEXT_WIDTHS)
+def test_mcp_status_reports_no_index_width_for_a_text_stored_width(monkeypatch, stored):
+    _store_with_text_width(stored, chunks=True)
+    built = _build_recording_width(monkeypatch)
+
+    index = _status_on_mcp()
+
+    assert built == [CONFIGURED_WIDTH]
+    assert index is None
+
+
+@pytest.mark.parametrize("stored", TEXT_WIDTHS)
+def test_a_search_after_a_text_stored_width_is_not_refused(stored):
+    _store_with_text_width(stored, chunks=True)
+
+    hits = Store(cfg).search(_record("q.md", 0)["vector"], top_k=2, max_distance=0)
+
+    assert {hit.source for hit in hits} == {"a.md", "b.md"}
+
+
+@pytest.mark.parametrize("stored", TEXT_WIDTHS)
+def test_a_search_with_a_text_width_and_chunks_of_another_width_is_refused(stored):
+    _store_with_text_width(stored, chunks=True, chunk_width=STORED_WIDTH)
+
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
+        Store(cfg).search(np.zeros(CONFIGURED_WIDTH, dtype=np.float32), top_k=2, max_distance=0)
+
+    assert "so rebuild the index" in str(refused.value)
+
+
+@pytest.mark.parametrize("stored", TEXT_WIDTHS)
+def test_the_first_ingest_with_a_text_width_and_no_chunks_stamps_the_configured_width(stored):
+    _store_with_text_width(stored)
 
     Store(cfg).add_chunks([_record("a.md", 0)])
 
