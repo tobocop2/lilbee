@@ -18,14 +18,14 @@ from lilbee.app.engine_choice import BookReading
 from lilbee.cli.placement import placement_app
 from lilbee.core import settings
 from lilbee.core.config import cfg
-from lilbee.mcp_server import get_placement_tool, set_placement_tool
+from lilbee.mcp_server import get_placement_tool, preview_placement_tool, set_placement_tool
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.placement import InstancePlan
-from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.planning import ResolvedPlacement
 from lilbee.providers.roles import WorkerRole
-from lilbee.server.routes.placement import placement_route
+from lilbee.server.routes.placement import placement_preview_route, placement_route
 from tests._fleet_engines import CardEngine, Role, cards_of, engines_for_all_roles, prepare_host
 from tests._litestar_test_client import create_test_client
 
@@ -36,6 +36,7 @@ WAITS_FOR_A_MODEL = (
     "It applies once a model is installed."
 )
 PLACES_NO_ROLE = "The saved placement is kept but not used: it places no role on this machine."
+NO_ENTRY_FOR_CHAT = "chat has a model but the placement has no entry for it"
 CLI = CliRunner()
 
 
@@ -174,6 +175,75 @@ def test_preview_of_auto_is_not_manual_and_carries_no_spec() -> None:
     assert view.spec_json is None
     assert view.rejected_spec_json is None
     assert view.refusal is None
+
+
+@pytest.mark.usefixtures("engine_host")
+def test_preview_of_an_empty_spec_with_a_model_refuses_for_the_missing_entry() -> None:
+    with pytest.raises(PlacementError, match=NO_ENTRY_FOR_CHAT):
+        app_placement.preview_placement(PlacementSpec({}))
+
+
+@pytest.mark.usefixtures("engine_host")
+def test_the_mcp_preview_of_an_empty_spec_with_a_model_refuses_like_the_library() -> None:
+    body = preview_placement_tool({})
+    assert body.keys() == {"error"}
+    assert NO_ENTRY_FOR_CHAT in body["error"]
+
+
+@pytest.mark.usefixtures("engine_host")
+def test_the_http_preview_of_an_empty_spec_with_a_model_refuses_the_same_way() -> None:
+    with create_test_client(route_handlers=[placement_preview_route]) as client:
+        response = client.post("/api/placement/preview", json={"spec": {}})
+    assert response.status_code == 422
+    assert NO_ENTRY_FOR_CHAT in response.json()["detail"]
+
+
+def test_the_cli_preview_of_an_empty_spec_with_a_model_refuses_the_same_way(
+    engine_host: Path,
+) -> None:
+    result = CLI.invoke(placement_app, ["preview", "--spec", "{}", "--data-dir", str(engine_host)])
+    assert result.exit_code == 1
+    assert NO_ENTRY_FOR_CHAT in " ".join(result.output.split())
+
+
+@pytest.mark.usefixtures("no_model_installed")
+def test_preview_of_an_empty_spec_with_no_model_refuses_because_it_names_no_role() -> None:
+    view = app_placement.preview_placement(PlacementSpec({}))
+    assert view.manual is False
+    assert view.refusal == PLACES_NO_ROLE
+    assert view.rejected_spec_json == "{}"
+
+
+@pytest.mark.usefixtures("no_model_installed")
+def test_the_mcp_preview_of_an_empty_spec_with_no_model_refuses_like_the_library() -> None:
+    body = preview_placement_tool({})
+    assert body["manual"] is False
+    assert body["refusal"] == PLACES_NO_ROLE
+    assert body["rejected_spec_json"] == "{}"
+
+
+@pytest.mark.usefixtures("no_model_installed")
+def test_the_http_preview_of_an_empty_spec_with_no_model_refuses_the_same_way() -> None:
+    with create_test_client(route_handlers=[placement_preview_route]) as client:
+        response = client.post("/api/placement/preview", json={"spec": {}})
+    assert response.status_code == 200
+    assert response.json()["refusal"] == PLACES_NO_ROLE
+
+
+@pytest.mark.usefixtures("no_model_installed")
+def test_the_cli_preview_of_an_empty_spec_with_no_model_refuses_the_same_way(
+    engine_host: Path,
+) -> None:
+    result = CLI.invoke(placement_app, ["preview", "--spec", "{}", "--data-dir", str(engine_host)])
+    assert result.exit_code == 0
+    assert PLACES_NO_ROLE in " ".join(result.output.split())
+
+
+@pytest.mark.usefixtures("engine_host")
+def test_the_mcp_preview_with_no_spec_is_auto_with_no_refusal() -> None:
+    body = preview_placement_tool(None)
+    assert body["refusal"] is None
+    assert body["rejected_spec_json"] is None
 
 
 @pytest.mark.usefixtures("engine_host")

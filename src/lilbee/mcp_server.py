@@ -2138,7 +2138,7 @@ def _placement_result(
 def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return PlacementSpec.from_json(json.dumps(spec)) if spec else None
+    return PlacementSpec.from_json(json.dumps(spec)) if spec is not None else None
 
 
 @_tool_named("get_gpus")
