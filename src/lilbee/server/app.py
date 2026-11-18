@@ -21,6 +21,7 @@ from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
+    ServicesStoppingError,
     get_services,
     peek_services,
     reset_services,
@@ -422,6 +423,12 @@ def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> 
     return _json_error_response(request, unavailable)
 
 
+def _services_stopping_response(request: Request, exc: ServicesStoppingError) -> Response:
+    """Answer a request that lands after the engine stop began as a 503."""
+    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    return _json_error_response(request, unavailable)
+
+
 def _config_unreadable_response(request: Request, exc: ConfigReadError) -> Response:
     """Answer a config.toml that cannot be read as a 503 with its text."""
     unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
@@ -447,6 +454,7 @@ def create_app() -> Litestar:
             ValidationException: _validation_error_response,
             FileLockUnavailableError: _config_locked_response,
             ConfigReadError: _config_unreadable_response,
+            ServicesStoppingError: _services_stopping_response,
             ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },

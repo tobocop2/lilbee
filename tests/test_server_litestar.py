@@ -176,6 +176,20 @@ class TestSearchRoute:
         assert resp.status_code == 400
 
 
+def test_a_request_after_the_engine_stop_began_gets_a_503(client):
+    """The stop refuses new containers; the request learns lilbee is stopping."""
+    from lilbee.app.services import ServicesStoppingError
+
+    with mock.patch(
+        "lilbee.server.handlers.status",
+        new_callable=AsyncMock,
+        side_effect=ServicesStoppingError(),
+    ):
+        resp = client.get("/api/status")
+    assert resp.status_code == 503
+    assert "lilbee is stopping" in resp.json()["detail"]
+
+
 class TestSearchDoesNotLeakInternals:
     """/api/search errors stay generic even for authorized callers."""
 

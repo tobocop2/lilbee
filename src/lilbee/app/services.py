@@ -22,6 +22,7 @@ import logging
 import os
 import queue
 import signal
+import socket
 import sys
 import threading
 import time
@@ -60,6 +61,15 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _SIGNAL_EXIT_BASE = 128
+
+SERVICES_STOPPING_MESSAGE = "lilbee is stopping."
+
+
+class ServicesStoppingError(RuntimeError):
+    """The engine stop has begun; no new container is built."""
+
+    def __init__(self) -> None:
+        super().__init__(SERVICES_STOPPING_MESSAGE)
 
 
 def _default_session_store() -> SessionStore:
@@ -319,7 +329,8 @@ def get_services() -> Services:
     Creates the singleton on first call (against the process-global cfg). A
     config-file embedding_model with no embedding_dim would otherwise build the
     store at the stale 768 default, so the width is pinned to the embedder before
-    the store is built.
+    the store is built. Once the engine stop has begun it builds nothing and
+    raises ServicesStoppingError, so no container outlives the stop.
     """
     override = _state.override.get()
     if override is not None:
@@ -332,6 +343,8 @@ def get_services() -> Services:
     with _singleton_create_lock:
         if _state.singleton is not None:
             return _state.singleton
+        if _lifecycle.stop_requested:
+            raise ServicesStoppingError
 
         from lilbee.app.settings import reconcile_embedding_dim
         from lilbee.modelhub.registry import ModelRegistry
@@ -341,7 +354,16 @@ def get_services() -> Services:
         # resolution doesn't re-enter this half-built get_services.
         reconcile_embedding_dim(registry)
         services = build_services(cfg, registry=registry, interactive=_state.interactive)
-        _state.singleton = services
+        # A stop asked for during the build may already have swapped the singleton
+        # out, so this container is shut down here instead of outliving the stop.
+        with _reset_swap_lock:
+            stopping = _lifecycle.stop_requested
+            if not stopping:
+                _state.singleton = services
+        if stopping:
+            services.provider.shutdown()
+            services.store.close()
+            raise ServicesStoppingError
         # Eager start is the default: pay the spawn cost per role server at TUI mount
         # so the first user action lands on a warm fleet. Roles whose model is unset
         # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -550,8 +572,9 @@ def request_server_exit(status: int = 0) -> bool:
 
 
 class _StopStep(StrEnum):
-    """The teardown step the stop thread runs."""
+    """The teardown step the stop runs."""
 
+    STARTING = "starting the stop"
     ANSWER_WAITERS = "answering the callers that wait on the provider"
     RESET_SERVICES = "stopping the services"
 
@@ -578,7 +601,7 @@ class _EngineLifecycle:
         self.stop_requested = False
         self._signalled = False
         self.owed_status: int | None = None
-        self.stop_step: _StopStep | None = None
+        self.stop_step = _StopStep.STARTING
 
     def _ensure_stop_thread(self) -> None:
         """Start the stop thread once, in ordinary context, before any handler can ask for it."""
@@ -591,11 +614,13 @@ class _EngineLifecycle:
 
     def _serve_stops(self) -> None:
         while True:
-            signum = self._requests.get()
-            try:
-                self._stop(signum)
-            finally:
-                self._stopped.set()
+            self._run_stop(self._requests.get())
+
+    def _run_stop(self, signum: int) -> None:
+        try:
+            self._stop(signum)
+        finally:
+            self._stopped.set()
 
     def _stop(self, signum: int) -> None:
         """Log the signal (0: an exit asked), answer the provider's waiters, stop the services."""
@@ -609,10 +634,18 @@ class _EngineLifecycle:
         self.stop_step = _StopStep.RESET_SERVICES
         reset_services()
 
-    def ask_for_stop(self) -> None:
-        """Start the stop thread if needed and ask it for the stop; an exit path calls this."""
-        self._ensure_stop_thread()
+    def stop_for_exit(self) -> bool:
+        """Ask the stop thread for the stop; True when the caller must wait for it.
+
+        With no stop thread (no handler installed: library use, or atexit) the stop
+        runs on the calling thread, which starts no thread at interpreter shutdown.
+        """
+        if self._thread is None:
+            self.stop_requested = True
+            self._run_stop(0)
+            return False
         self.request_stop(0)
+        return True
 
     def request_stop(self, signum: int) -> None:
         """Queue the stop once; a later request joins the stop already asked for."""
@@ -672,7 +705,7 @@ class _EngineLifecycle:
     def _on_interrupt(self, signum: int, frame: object) -> None:
         self._interrupts += 1
         if self._interrupts > 1:
-            _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+            _force_quit_from_handler()
         else:
             self._on_hard_exit(signum, frame)
 
@@ -708,6 +741,8 @@ _STOPPING_NOTE_GRACE_S = 1.0
 """Seconds a teardown may run silently; a fast exit stays as quiet as ever."""
 
 _FORCE_QUIT_NOTE = "lilbee: force quit. The engine stops with it.\n"
+
+_FORCE_QUIT_NOTE_BYTES = _FORCE_QUIT_NOTE.encode()
 
 _STRAGGLER_BUDGET_S = 5.0
 """Seconds every leftover non-daemon thread gets, together, before the exit."""
@@ -747,6 +782,22 @@ def _exit_now(status: int, note: str) -> None:
     os._exit(status)
 
 
+def _force_quit_from_handler() -> None:
+    """End the process from a signal handler: a bare write of the note to fd 2, no lock."""
+    with suppress(OSError):
+        os.write(2, _FORCE_QUIT_NOTE_BYTES)
+    os._exit(_FORCE_QUIT_EXIT_CODE)
+
+
+@contextmanager
+def _interrupt_force_quits() -> Iterator[None]:
+    """Turn a Ctrl-C during an exit wait into the force quit."""
+    try:
+        yield
+    except KeyboardInterrupt:
+        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+
+
 def _all_threads() -> list[threading.Thread]:
     """Seam over threading.enumerate, so tests never patch the stdlib global."""
     return threading.enumerate()
@@ -759,12 +810,10 @@ def _wait_for_stop() -> None:
     thing left, and the engine reaper (or, without kernel file locks, the
     child guard) stops the engine once this was its last user.
     """
-    try:
+    with _interrupt_force_quits():
         if not _lifecycle.wait_stopped(_STOPPING_NOTE_GRACE_S):
             _write_exit_note(_STOPPING_NOTE)
             _lifecycle.wait_stopped(None)
-    except KeyboardInterrupt:
-        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
 def wait_for_hard_exit_teardown() -> None:
@@ -778,16 +827,17 @@ def wait_for_hard_exit_teardown() -> None:
 
 
 def reset_services_on_exit() -> None:
-    """Ask the stop thread for the teardown and wait for it; no-op with nothing to stop.
+    """Run the teardown and wait for it; no-op with nothing to stop.
 
-    Engine release waits on the fleet build lock before it releases anything, so
-    a Ctrl-C on the main thread would skip the release, and atexit cannot retry:
-    the singleton is already cleared. The stop thread takes no signals.
+    With signal handlers installed the stop thread runs it, since a Ctrl-C on the
+    main thread would skip the engine release and atexit cannot retry. Without
+    them it runs here, and a Ctrl-C during it force-quits.
     """
     if peek_services() is None and not _lifecycle.stop_requested:
         return
-    _lifecycle.ask_for_stop()
-    _wait_for_stop()
+    with _interrupt_force_quits():
+        if _lifecycle.stop_for_exit():
+            _wait_for_stop()
 
 
 def _straggler_threads() -> list[threading.Thread]:
@@ -819,13 +869,11 @@ def exit_when_stragglers_would_hang() -> None:
 
 def _exit_if_stragglers(status: int, deadline: float) -> None:
     """Join leftover non-daemon threads before *deadline*, else exit with *status*."""
-    try:
+    with _interrupt_force_quits():
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
             _exit_now(status, _STRAGGLER_NOTE)
-    except KeyboardInterrupt:
-        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
 def exit_if_opens_remain(status: int) -> None:
@@ -851,8 +899,7 @@ def exit_after_signal(status: int) -> None:
     unwound. The stop and the stragglers share one budget; a cut names its step.
     """
     deadline = time.monotonic() + _STRAGGLER_BUDGET_S
-    _lifecycle.ask_for_stop()
-    if not _lifecycle.wait_stopped(_STRAGGLER_BUDGET_S):
+    if _lifecycle.stop_for_exit() and not _lifecycle.wait_stopped(_STRAGGLER_BUDGET_S):
         log.warning("The exit cut the engine stop while %s", _lifecycle.stop_step)
         _exit_now(status, _STRAGGLER_NOTE)
     _exit_if_stragglers(status, deadline)
@@ -866,14 +913,44 @@ def install_engine_lifecycle_hooks() -> None:
     _lifecycle.install()
 
 
-def _stop_at_exit() -> None:
-    """Run the exit teardown; a first signal that joined an exit's stop sets the status."""
-    reset_services_on_exit()
-    if _lifecycle.owed_status is not None:
-        _exit_now(_lifecycle.owed_status, "")
+def _drain_wakeups(reader: socket.socket) -> None:
+    with suppress(OSError):
+        reader.recv(4096)
+
+
+@contextmanager
+def loop_wakes_on_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
+    """Make a signal on any thread wake *loop*, so its handler runs on the main thread at once.
+
+    The handler stays a plain process handler; only the wakeup fd points at the loop.
+    """
+    reader, writer = socket.socketpair()
+    reader.setblocking(False)
+    writer.setblocking(False)
+    try:
+        loop.add_reader(reader.fileno(), _drain_wakeups, reader)
+    except NotImplementedError:  # pragma: no cover - the proactor loop sets its own wakeup fd
+        reader.close()
+        writer.close()
+        yield
+        return
+    previous = signal.set_wakeup_fd(writer.fileno(), warn_on_full_buffer=False)
+    try:
+        yield
+    finally:
+        signal.set_wakeup_fd(previous)
+        loop.remove_reader(reader.fileno())
+        reader.close()
+        writer.close()
+
+
+def exit_status_after_stop(status: int) -> int:
+    """Return the status of a first signal that joined an exit's stop, else *status*."""
+    owed = _lifecycle.owed_status
+    return status if owed is None else owed
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no cover - absent on Windows
     os.register_at_fork(after_in_child=_lifecycle._reset_in_forked_child)
 
-atexit.register(_stop_at_exit)
+atexit.register(reset_services_on_exit)
