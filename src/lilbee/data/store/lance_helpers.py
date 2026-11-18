@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,8 +32,8 @@ _CHUNK_COLUMN = "chunk"
 # far longer than one read of the table, which takes milliseconds. Kept short, as each
 # kept version slows the check for the latest one (about 1 ms per 1,000 versions on a laptop).
 _KEEP_VERSIONS = timedelta(seconds=10)
-# The time allowed between the latest version and the prune that follows it.
-_AFTER_LATEST = timedelta(seconds=1)
+# The time allowed between reading the clock and the cutoff the cleanup takes from it.
+_CLOCK_SLACK = timedelta(seconds=1)
 
 # Index types as LanceDB's IndexConfig reports them.
 _FTS_INDEX_TYPE = "FTS"
@@ -91,14 +91,18 @@ def prune_old_versions(table: LanceTable, keep_version: int | None = None) -> No
 
     LanceDB counts a version's age from its own creation, so a table that sat idle has
     a replaced version older than the window. ``keep_version`` and every newer version
-    stay readable: the window grows to the time from that version to the latest one, plus
-    a second for the time since the latest one was made.
+    stay readable: the window grows to the age of ``keep_version`` read from the clock.
+    The fold runs first, apart from the cleanup, so its run time cannot age the version
+    between the clock read and the cutoff the cleanup takes.
     """
-    keep_for = _KEEP_VERSIONS
-    if keep_version is not None:
-        stamps = {row["version"]: row["timestamp"] for row in table.list_versions()}
-        keep_for = max(keep_for, max(stamps.values()) - stamps[keep_version] + _AFTER_LATEST)
-    table.optimize(cleanup_older_than=keep_for)
+    if keep_version is None:
+        table.optimize(cleanup_older_than=_KEEP_VERSIONS)
+        return
+    table.optimize()
+    stamps = {row["version"]: row["timestamp"] for row in table.list_versions()}
+    stamp = stamps[keep_version]
+    age = datetime.now(stamp.tzinfo) - stamp
+    table.optimize(cleanup_older_than=max(_KEEP_VERSIONS, age + _CLOCK_SLACK))
 
 
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:

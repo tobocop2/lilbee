@@ -451,7 +451,7 @@ class TestRebuildPrunesVersions:
 
     def test_rebuilds_spaced_past_the_window_keep_the_disk_flat(self, stocked, monkeypatch):
         # The production window is 10 s; a 1 s window keeps the test fast and the rule the same.
-        monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", timedelta(seconds=1), raising=False)
+        monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", timedelta(seconds=1))
         dim = stocked._config.embedding_dim
 
         def rebuild() -> int:
@@ -473,6 +473,27 @@ class TestRebuildPrunesVersions:
         assert reader is not None
         dim = stocked._config.embedding_dim
         stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        assert reader.to_arrow().num_rows == 40
+
+    def test_reader_still_reads_after_a_slow_fold(self, stocked, monkeypatch):
+        # The first optimize of a prune is the fold; it runs 2 s here, past the 1 s slack.
+        time.sleep(_PAST_THE_WINDOW)
+        reader = stocked.open_table(MEMORIES_TABLE)
+        assert reader is not None
+        table_type = type(reader)
+        real_optimize = table_type.optimize
+        calls: list[int] = []
+
+        def slow_first(self, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                time.sleep(2)
+            return real_optimize(self, *args, **kwargs)
+
+        monkeypatch.setattr(table_type, "optimize", slow_first)
+        dim = stocked._config.embedding_dim
+        stocked.rebuild_memory_embeddings(lambda texts: [_unit_array(dim, 3) for _ in texts])
+        assert len(calls) == 2  # the fold, then the cleanup
         assert reader.to_arrow().num_rows == 40
 
     def test_prune_runs_under_the_write_lock(self, stocked, monkeypatch):
