@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 
+from lilbee.catalog.header_probe import SPLIT_GGUF_NAME
 from lilbee.catalog.types import ModelFormat
 from lilbee.catalog.xdna import XDNA_TAG_RE
 
@@ -107,7 +108,6 @@ def _quant_token_re() -> re.Pattern[str]:
     )
 
 
-_SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 _SHARD_NUMBER_WIDTH = 5
 _FIRST_SHARD_INDEX = 1
 
@@ -167,10 +167,10 @@ def split_shard_filenames(filename: str) -> list[str]:
     shard but needs every part on disk, so the catalog must fetch all of them and
     only consider the model installed once the full set is present.
     """
-    match = _SPLIT_SHARD_RE.match(filename)
+    match = SPLIT_GGUF_NAME.match(filename)
     if match is None:
         return [filename]
-    base = match.group("base")
+    base = match.group("prefix")
     total = int(match.group("total"))
     return [_shard_name(base, index, total) for index in range(_FIRST_SHARD_INDEX, total + 1)]
 
@@ -181,10 +181,10 @@ def _first_shard(filename: str) -> str:
     Only the first shard carries the full metadata header, so it is the one a
     header probe can read and the only part worth ranking as a candidate.
     """
-    match = _SPLIT_SHARD_RE.match(filename)
+    match = SPLIT_GGUF_NAME.match(filename)
     if match is None:
         return filename
-    return _shard_name(match.group("base"), _FIRST_SHARD_INDEX, int(match.group("total")))
+    return _shard_name(match.group("prefix"), _FIRST_SHARD_INDEX, int(match.group("total")))
 
 
 def _rank_key(filename: str) -> tuple[int, int, str]:
