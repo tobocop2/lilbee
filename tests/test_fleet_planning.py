@@ -2114,6 +2114,79 @@ class TestBuildFleetWiring:
         assert "org/repo/chat.gguf" in reason
         assert reason in caplog.text
 
+    def test_a_reranker_on_a_build_without_pooling_is_refused_and_chat_still_plans(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+        from lilbee.providers.fleet import adapters as adapters_mod
+        from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        refs = {WorkerRole.CHAT: "org/repo/chat.gguf", WorkerRole.RERANK: "org/repo/rank.gguf"}
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [
+                    ModelPlacementInput(WorkerRole.CHAT, 5 * _GB),
+                    ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+                ],
+                refs,
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(
+                    InstancePlan(WorkerRole.RERANK, (0,)),
+                    InstancePlan(WorkerRole.CHAT, (0,)),
+                ),
+                unplaceable_roles=(),
+            ),
+        )
+        # The build lists no --pooling; the stand-in runs the real argv builder per role.
+        monkeypatch.setattr(adapters_mod, "engine_help", lambda _binary: "  --model X  the model\n")
+
+        def launch_with_real_argv(plan, model, *_a, **_kw):
+            argv = build_server_argv(
+                binary=Path("/bin/llama-server"),
+                spec=ROLE_SPECS[plan.role],
+                model_path=Path("/m.gguf"),
+                devices=(0,),
+                n_gpu_layers=-1,
+                slots=1,
+                ctx_per_slot=512,
+            )
+            return InstanceLaunch(
+                role=plan.role,
+                argv=argv,
+                env_overrides={},
+                model=model,
+                ctx=min_usable_chat_ctx() * 4,
+            )
+
+        monkeypatch.setattr(planning_mod, "_launch_for", launch_with_real_argv)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+        assert set(plan.refused_roles) == {WorkerRole.RERANK}
+        assert "does not list --pooling" in plan.refused_roles[WorkerRole.RERANK]
+
     def test_plan_all_launches_refusal_names_the_trained_window(self, monkeypatch) -> None:
         from lilbee.providers.engine_params import min_usable_chat_ctx
         from lilbee.providers.fleet.launch import InstanceLaunch

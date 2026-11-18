@@ -18,7 +18,7 @@ from lilbee.providers.fleet.host_caps import collect
 BINARY = PurePosixPath("/engines/bin/server")
 MODEL = PurePosixPath("/models/model.gguf")
 THREADS = 8
-HELP = "  --device <dev>  devices\n  -ts, --tensor-split N0,N1  split\n"
+HELP = "  --device <dev>  devices\n  -ts, --tensor-split N0,N1  split\n  --pooling TYPE  pooling\n"
 
 
 def launch_argvs(

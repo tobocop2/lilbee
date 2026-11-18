@@ -23,6 +23,7 @@ from lilbee.providers.fleet import gpu_hardware
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     NO_DEVICE,
+    RankPoolingMissingError,
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import (
@@ -4447,17 +4448,21 @@ def _launches_and_refusals(
     launches: list[InstanceLaunch] = []
     refused: dict[WorkerRole, str] = {}
     for plan in placement.instances:
-        launch = _launch_for(
-            plan,
-            model_refs[plan.role],
-            by_index,
-            unified_budget=unified_budget,
-            chat_reservation=chat_reservation,
-            reserved_by_device=reserved_by_device,
-            reserved_after_chat=reserved_after_chat,
-            est_vram_bytes=charged.get(plan.role, 0),
-            engine=engines[plan.role],
-        )
+        try:
+            launch = _launch_for(
+                plan,
+                model_refs[plan.role],
+                by_index,
+                unified_budget=unified_budget,
+                chat_reservation=chat_reservation,
+                reserved_by_device=reserved_by_device,
+                reserved_after_chat=reserved_after_chat,
+                est_vram_bytes=charged.get(plan.role, 0),
+                engine=engines[plan.role],
+            )
+        except RankPoolingMissingError as exc:
+            refused[plan.role] = str(exc)
+            continue
         reason = _unusable_chat_ctx_reason(
             launch, [by_index[i] for i in plan.devices if i in by_index] if clean_box else []
         )

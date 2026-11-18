@@ -89,6 +89,26 @@ def test_llama_role_spec_ignores_a_rerank_mode_on_other_roles() -> None:
     assert spec is adapters.ROLE_SPECS[WorkerRole.CHAT]
 
 
+def test_llama_launch_argv_refuses_a_reranker_on_a_build_without_pooling(tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+
+    binary = tmp_path / "srv"
+    binary.write_text("#!/bin/sh\necho '  --model X  text'\n", encoding="utf-8")
+    binary.chmod(0o755)
+    request = LaunchRequest(
+        binary=binary,
+        model_path=Path("/m/r.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+    with pytest.raises(ProviderError, match=r"srv does not list --pooling"):
+        LLAMA.launch_argv(adapters.ROLE_SPECS[WorkerRole.RERANK], request)
+    embed = LLAMA.launch_argv(adapters.ROLE_SPECS[WorkerRole.EMBED], request)
+    assert "--embeddings" in embed
+
+
 def test_llama_launch_argv_matches_the_argv_builder(tmp_path: Path) -> None:
     binary = tmp_path / "srv"
     binary.write_text("#!/bin/sh\necho '  --model X  text'\n", encoding="utf-8")
