@@ -11,6 +11,7 @@ from lilbee.app.engine_choice import BookReading, EngineBook
 from lilbee.app.services import Services, peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engines.base import EngineAdapter
 from lilbee.providers.fleet.model_memory import tight_memory_text, unknown_size_text
@@ -30,6 +31,11 @@ PLACEMENT_READ_ERRORS = (PlacementError, ProviderError, OSError)
 """What reading the placement raises: a bad spec, an engine probe that fails, an unreadable file."""
 
 _PLACEMENT_KEY = "placement"
+
+
+class PlacementConfigWriteError(OSError):
+    """Saving the placement to config.toml failed; the device probe is not at fault."""
+
 
 # Ceiling and cadence for waiting out the post-reload chat warm: a cold
 # tensor-split giant off a slow filesystem takes minutes, and the wait stops
@@ -424,10 +430,7 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     reading = _planning_engines()
     spec_json = None if spec is None else spec.to_json()
     resolved = _plan_for_write(spec, reading)
-    if spec_json is None:
-        settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
-    else:
-        settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
+    _persist(spec_json)
     settings.sync_from_resolver(cfg, [_PLACEMENT_KEY])
     services = peek_services()
     if resolved is None or services is None:
@@ -442,6 +445,19 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     if spec is None:
         return _view(resolved, reading.adapters, manual=False, spec_json=None)
     return _spec_view(resolved, reading.adapters, spec)
+
+
+def _persist(spec_json: str | None) -> None:
+    """Write the spec to config.toml, or remove it when *spec_json* is None."""
+    try:
+        if spec_json is None:
+            settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
+        else:
+            settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
+    except (FileLockUnavailableError, settings.ReadOnlyConfigError):
+        raise  # each has its own answer on every surface
+    except OSError as exc:
+        raise PlacementConfigWriteError(exc.errno, exc.strerror or str(exc), exc.filename) from exc
 
 
 def _plan_for_write(spec: PlacementSpec | None, reading: BookReading) -> ResolvedPlacement | None:

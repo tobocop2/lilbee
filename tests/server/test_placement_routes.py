@@ -245,7 +245,9 @@ def test_put_missing_spec_returns_422_when_enabled(monkeypatch):
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={})
         assert r.status_code == 422
-        assert "spec is required" in r.text
+        assert r.json()["detail"] == (
+            "spec is required to apply placement; send DELETE to /api/placement to clear it."
+        )
 
 
 def test_put_unfit_spec_returns_422_when_enabled(monkeypatch):
@@ -307,6 +309,57 @@ def test_delete_provider_error_returns_503_when_enabled(monkeypatch):
     with create_test_client([placement_clear_route]) as client:
         r = client.delete("/api/placement")
         assert r.status_code == 503
+
+
+def test_delete_probe_oserror_is_service_unavailable_when_enabled(monkeypatch):
+    """DELETE answers a failed GPU probe with the same 503 PUT gives."""
+    _enable_http_placement(monkeypatch)
+
+    async def _boom():
+        raise PermissionError(13, "Permission denied", "/dev/nvidia0")
+
+    monkeypatch.setattr(handlers, "placement_clear", _boom)
+    with create_test_client([placement_clear_route]) as client:
+        r = client.delete("/api/placement")
+    assert r.status_code == 503
+    assert "Could not probe the GPUs" in r.json()["detail"]
+
+
+def test_delete_input_error_returns_422_when_enabled(monkeypatch):
+    """DELETE answers a placement error with the 422 PUT gives."""
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    _enable_http_placement(monkeypatch)
+
+    async def _boom():
+        raise PlacementError("chat needs 70 GiB but device 0 has 40 GiB free")
+
+    monkeypatch.setattr(handlers, "placement_clear", _boom)
+    with create_test_client([placement_clear_route]) as client:
+        r = client.delete("/api/placement")
+    assert r.status_code == 422
+    assert "40 GiB free" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_a_read_only_config_is_not_reported_as_a_probe_failure(method, monkeypatch):
+    """A config.toml the owner made read-only answers 503 with the file's own message."""
+    from lilbee.core.settings import ReadOnlyConfigError
+
+    _enable_http_placement(monkeypatch)
+    message = "/data/config.toml is read-only; make it writable and try again"
+
+    async def _boom(*_args):
+        raise ReadOnlyConfigError(message)
+
+    handler = "placement_set" if method == "put" else "placement_clear"
+    route = placement_set_route if method == "put" else placement_clear_route
+    kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+    monkeypatch.setattr(handlers, handler, _boom)
+    with create_test_client([route]) as client:
+        r = getattr(client, method)("/api/placement", **kwargs)
+    assert r.status_code == 503
+    assert r.json()["detail"] == f"{message}."
 
 
 def test_get_gpus(monkeypatch):
@@ -527,4 +580,25 @@ class TestPlacementWriteOnAHeldConfigLock:
         detail = r.json()["detail"]
         assert detail.startswith("Could not write config.toml: another lilbee process")
         assert "Nothing was changed." in detail
+        assert "probe" not in detail.lower()
+
+    @pytest.mark.parametrize("method", ["put", "delete"])
+    def test_a_disk_full_write_names_the_config(self, method, monkeypatch, tmp_path):
+        import errno
+
+        from lilbee.app import placement as app_placement
+
+        def _full(*_args):
+            raise OSError(errno.ENOSPC, "No space left on device", str(tmp_path / "config.toml"))
+
+        monkeypatch.setattr(app_placement.settings, "update_values", _full)
+        monkeypatch.setattr(app_placement.settings, "delete_values", _full)
+        route = placement_set_route if method == "put" else placement_clear_route
+        kwargs = {"json": {"spec": {"chat": {"devices": [0]}}}} if method == "put" else {}
+        with self._client(route, monkeypatch, tmp_path) as client:
+            r = getattr(client, method)("/api/placement", **kwargs)
+        assert r.status_code == 503
+        detail = r.json()["detail"]
+        assert detail.startswith("Could not write config.toml: ")
+        assert "No space left on device" in detail
         assert "probe" not in detail.lower()

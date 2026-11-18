@@ -1,6 +1,10 @@
+import errno
+
 import pytest
 
 from lilbee.app import placement as app_placement
+from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.settings import ReadOnlyConfigError
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
@@ -334,6 +338,56 @@ def test_set_keeps_device_probe_on_the_live_path(monkeypatch):
         assert cleared["called"] is False
     finally:
         app_placement.cfg.placement = prior
+
+
+_EMBED_SPEC = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
+_DISK_FULL = OSError(errno.ENOSPC, "No space left on device", "/data/config.toml")
+
+
+class TestAFailedConfigWriteIsNotAProbeFailure:
+    """A config write failure is named as one; the read-only and lock errors pass through."""
+
+    @staticmethod
+    def _host(monkeypatch):
+        def plan(spec, **_kw):
+            return _resolved()
+
+        monkeypatch.setattr(app_placement, "resolve_placement_plan", plan)
+        monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+        monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+
+    @staticmethod
+    def _fail_write(monkeypatch, spec, error):
+        def boom(*_args):
+            raise error
+
+        name = "delete_values" if spec is None else "update_values"
+        monkeypatch.setattr(app_placement.settings, name, boom)
+
+    @pytest.mark.parametrize("spec", [None, _EMBED_SPEC])
+    def test_a_disk_full_write_keeps_its_errno_and_reason(self, spec, monkeypatch):
+        self._host(monkeypatch)
+        self._fail_write(monkeypatch, spec, _DISK_FULL)
+        with pytest.raises(app_placement.PlacementConfigWriteError) as raised:
+            app_placement.set_placement(spec)
+        assert raised.value.errno == errno.ENOSPC
+        assert raised.value.strerror == "No space left on device"
+        assert raised.value.filename == "/data/config.toml"
+
+    @pytest.mark.parametrize("spec", [None, _EMBED_SPEC])
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ReadOnlyConfigError("/data/config.toml is read-only"),
+            FileLockUnavailableError("config.toml is locked"),
+        ],
+    )
+    def test_the_read_only_and_lock_errors_pass_through(self, spec, error, monkeypatch):
+        self._host(monkeypatch)
+        self._fail_write(monkeypatch, spec, error)
+        with pytest.raises(type(error)) as raised:
+            app_placement.set_placement(spec)
+        assert raised.value is error
 
 
 def test_set_none_clears(monkeypatch):
