@@ -314,7 +314,8 @@ class TestStoreReportsTheUpgrade:
         assert store.health_warnings() == []
 
     def test_an_upgrade_that_took_the_lock_after_a_wait_no_longer_says_waiting(self, library):
-        store = Store(library)
+        events, record = _recorder()
+        store = Store(library, on_upgrade=record)
         entered, release = threading.Event(), threading.Event()
 
         def _lock(lancedb_dir=None, timeout=None):
@@ -336,6 +337,36 @@ class TestStoreReportsTheUpgrade:
         assert progress is not None
         assert "Waiting for another lilbee process" not in progress.text
         assert "Waiting for another lilbee process" not in warnings[0].message
+        assert [e.phase for e in events] == [
+            UpgradePhase.WAITING,
+            UpgradePhase.STARTING,
+            UpgradePhase.DONE,
+        ]
+
+    def test_an_upgrade_another_process_finished_during_the_wait_ends_with_no_upgrade_left(
+        self, library
+    ):
+        events, record = _recorder()
+        store = Store(library, on_upgrade=record)
+
+        def _lock(lancedb_dir=None, timeout=None):
+            if timeout == 0.0:
+                raise LockTimeoutError("busy")
+            return nullcontext()
+
+        with (
+            mock.patch.object(Store, "_upgrade_needed", side_effect=[True, False]),
+            mock.patch.object(core_mod, "write_lock", _lock),
+        ):
+            store.get_db()
+
+        assert [e.phase for e in events] == [
+            UpgradePhase.WAITING,
+            UpgradePhase.STARTING,
+            UpgradePhase.DONE,
+        ]
+        assert store.upgrade_progress() is None
+        assert store.is_open is True
 
     def test_an_upgrade_past_its_last_table_no_longer_names_a_table(self, library):
         store = Store(library)
@@ -437,7 +468,11 @@ class TestOthersWaitForTheUpgrade:
         finally:
             assert other.wait(30) == 0
         assert waited > _SHORT_LOCK_S
-        assert [e.phase for e in events] == [UpgradePhase.WAITING, UpgradePhase.DONE]
+        assert [e.phase for e in events] == [
+            UpgradePhase.WAITING,
+            UpgradePhase.STARTING,
+            UpgradePhase.DONE,
+        ]
         assert (
             events[0].text == "Waiting for another lilbee process to finish with the library · 0 s"
         )
@@ -594,6 +629,20 @@ class TestUpgradeText:
     )
     def test_only_the_wait_and_a_table_are_running(self, phase, running):
         assert LibraryUpgradeEvent(phase=phase).running is running
+
+    @pytest.mark.parametrize("phase", list(UpgradePhase))
+    def test_the_wire_phase_stays_inside_the_set_clients_read(self, phase):
+        released = {"waiting", "table", "done", "failed"}
+
+        assert len(list(UpgradePhase)) > 0
+        assert LibraryUpgradeEvent(phase=phase).model_dump(mode="json")["phase"] in released
+        assert LibraryUpgradeEvent(phase=phase).phase is phase
+
+    def test_the_starting_phase_goes_out_as_the_table_phase(self):
+        event = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
+
+        assert event.model_dump(mode="json")["phase"] == "table"
+        assert json.loads(event.model_dump_json())["phase"] == "table"
 
 
 class TestServicesForwardTheUpgrade:
@@ -1136,7 +1185,8 @@ class TestServerShowsTheUpgrade:
 
         assert held.status_code == 503
         assert "upgrading the library" in held.json()["detail"]
-        assert held.json()["upgrade"]["phase"] == "starting"
+        assert held.json()["upgrade"]["phase"] == "table"
+        assert health.json()["upgrade"]["phase"] == "table"
         assert [w["code"] for w in health.json()["warnings"]] == ["library_upgrading"]
 
     async def test_a_request_past_the_limit_is_answered_in_the_error_shape_of_its_api(

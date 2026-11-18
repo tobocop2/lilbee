@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 from lilbee.core.config.enums import OcrMode
 
@@ -340,6 +340,11 @@ class LibraryUpgradeEvent(BaseModel):
     tables_done: int = 0
     tables_total: int = 0
     elapsed_s: float = 0.0
+
+    @field_serializer("phase")
+    def serialize_phase(self, phase: UpgradePhase) -> UpgradePhase:
+        """The starting phase goes out as the table phase, the running value every client reads."""
+        return UpgradePhase.TABLE if phase is UpgradePhase.STARTING else phase
 
     @property
     def running(self) -> bool:
