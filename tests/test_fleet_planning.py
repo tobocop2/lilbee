@@ -3676,6 +3676,16 @@ class TestUnusableChatCtxReason:
         assert "memory left after its weights backs only a 512-token context" in reason
         assert "trained" not in reason
 
+    def test_trained_window_equal_to_the_minimum_blames_memory(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        launch = replace(self._launch(WorkerRole.CHAT, 512), trained_ctx=min_usable_chat_ctx())
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [])
+        assert reason is not None
+        assert "memory left after its weights backs only a 512-token context" in reason
+        assert "trained" not in reason
+
     def test_two_cards_name_the_cards_memory_in_gib(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
         cards = [
