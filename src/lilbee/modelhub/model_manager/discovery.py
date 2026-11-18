@@ -27,7 +27,10 @@ from lilbee.providers.local_servers import (
     LocalServerSpec,
     openai_models_url,
 )
-from lilbee.providers.local_servers.config_urls import configured_local_servers
+from lilbee.providers.local_servers.config_urls import (
+    configured_local_servers,
+    local_server_api_key,
+)
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 
@@ -54,9 +57,9 @@ def _discovery_client() -> httpx.Client:
     return httpx.Client()
 
 
-def _http_get(url: str, *, timeout: float) -> httpx.Response:
+def _http_get(url: str, *, timeout: float, headers: dict[str, str] | None = None) -> httpx.Response:
     """GET via the shared discovery client (module seam; tests stub here)."""
-    return _discovery_client().get(url, timeout=timeout)
+    return _discovery_client().get(url, timeout=timeout, headers=headers)
 
 
 def _classify_remote_task(name: str, family: str) -> ModelTask:
@@ -149,7 +152,9 @@ def _discover_via_openai_models(
     is intentionally not filtered to locally-downloaded models.
     """
     try:
-        resp = _http_get(openai_models_url(base_url), timeout=timeout)
+        api_key = local_server_api_key(LM_STUDIO)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        resp = _http_get(openai_models_url(base_url), timeout=timeout, headers=headers)
         resp.raise_for_status()
         raw_models = resp.json().get("data", [])
     except Exception:

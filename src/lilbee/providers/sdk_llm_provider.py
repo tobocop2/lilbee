@@ -37,8 +37,12 @@ from lilbee.providers.base import (
     require_role_ref,
 )
 from lilbee.providers.key_check import provider_api_key_in_use
-from lilbee.providers.local_servers import OLLAMA, local_server_for_key
-from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
+from lilbee.providers.local_servers import local_server_for_key
+from lilbee.providers.local_servers.config_urls import (
+    base_url_for,
+    configured_local_servers,
+    local_server_api_key,
+)
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
@@ -85,8 +89,9 @@ def _api_key_for(ref: ProviderModelRef, route: ServerRoute | None = None) -> str
         return route.api_key
     if ref.is_api:
         return provider_api_key_in_use(ref.provider)
-    if ref.provider == OLLAMA.key:
-        return None
+    spec = local_server_for_key(ref.provider)
+    if spec is not None:
+        return local_server_api_key(spec)
     return cfg.llm_api_key or None
 
 
