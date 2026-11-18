@@ -530,6 +530,58 @@ def _persist_summary(session_id: str | None, info: CompactionInfo | None) -> Non
         get_services().session_store.set_summary(session_id, info.summary)
 
 
+class _ChatGrounding(NamedTuple):
+    """Retrieval outcome for a one-shot chat turn.
+
+    A set ``early`` is the finished response (a canned answer or a refusal);
+    otherwise ``messages`` lead the model call and ``sources`` ground it.
+    """
+
+    early: AskResponse | None
+    sources: list[SearchChunk]
+    messages: list[ChatMessage]
+    retrieval_query: str | None
+    dropped: list[SearchChunk]
+    degraded: list[HealthWarning]
+
+
+def _ground_chat_turn(
+    searcher: Searcher,
+    question: str,
+    history: list[ChatMessage],
+    top_k: int | None,
+    chunk_type: ChunkType | None,
+    compaction: CompactionInfo | None,
+) -> _ChatGrounding:
+    """Resolve retrieval for a one-shot chat turn; blocking, run it on a worker."""
+    if _retrieval_off(searcher, top_k):
+        # Chat-only mode or an explicit top_k:0 pure-LLM call.
+        return _ChatGrounding(None, [], searcher.direct_messages(question, history), None, [], [])
+    # Grounded turn: the searcher's own pre-retrieval ladder (empty
+    # library, count routing, memory-awareness) so surfaces cannot drift.
+    pre_answer = searcher.pre_retrieval_answer(question)
+    if pre_answer is not None:
+        early = AskResponse(answer=pre_answer, sources=[], cited_sources=[], compaction=compaction)
+        return _ChatGrounding(early, [], [], None, [], [])
+    rag = searcher.build_rag_context(
+        question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+    )
+    if rag.refused:
+        # Refuse like every sibling surface; the old fallback silently
+        # answered off-corpus with nothing telling the caller so.
+        early = AskResponse(
+            answer=GROUNDED_REFUSAL,
+            sources=[],
+            cited_sources=[],
+            compaction=compaction,
+            warnings=list(rag.degraded),
+        )
+        return _ChatGrounding(early, [], [], None, [], [])
+    return _ChatGrounding(
+        None, rag.results, rag.messages, rag.retrieval_query, rag.dropped or [], list(rag.degraded)
+    )
+
+
 async def chat(
     question: str,
     history: list[ChatMessage],
@@ -548,38 +600,15 @@ async def chat(
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
     history, compaction = await asyncio.to_thread(_manage_history, history, summary)
     await asyncio.to_thread(_persist_summary, session_id, compaction)
-    retrieval_query: str | None = None
-    dropped: list[SearchChunk] = []
-    degraded: list[HealthWarning] = []
-    if _retrieval_off(searcher, top_k):
-        # Chat-only mode or an explicit top_k:0 pure-LLM call.
-        sources: list[SearchChunk] = []
-        messages = searcher.direct_messages(question, history)
-    else:
-        # Grounded turn: the searcher's own pre-retrieval ladder (empty
-        # library, count routing, memory-awareness) so surfaces cannot drift.
-        pre_answer = searcher.pre_retrieval_answer(question)
-        if pre_answer is not None:
-            return AskResponse(
-                answer=pre_answer, sources=[], cited_sources=[], compaction=compaction
-            )
-        rag = searcher.build_rag_context(
-            question, top_k=top_k or 0, history=history, chunk_type=chunk_type
-        )
-        if rag.refused:
-            # Refuse like every sibling surface; the old fallback silently
-            # answered off-corpus with nothing telling the caller so.
-            return AskResponse(
-                answer=GROUNDED_REFUSAL,
-                sources=[],
-                cited_sources=[],
-                compaction=compaction,
-                warnings=list(rag.degraded),
-            )
-        sources, messages = rag.results, rag.messages
-        retrieval_query = rag.retrieval_query
-        dropped = rag.dropped or []
-        degraded = list(rag.degraded)
+    # Retrieval reads the library and memory store; on the loop a slow read
+    # stalls every other admitted request, so the whole step runs on a worker.
+    turn = await asyncio.to_thread(
+        _ground_chat_turn, searcher, question, history, top_k, chunk_type, compaction
+    )
+    if turn.early is not None:
+        return turn.early
+    sources, messages = turn.sources, turn.messages
+    retrieval_query, dropped, degraded = turn.retrieval_query, turn.dropped, turn.degraded
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
