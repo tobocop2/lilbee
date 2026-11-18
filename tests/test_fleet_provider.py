@@ -684,6 +684,26 @@ def test_count_tokens_connection_failure_rediscovers_once_and_recovers(
     assert len(clients) == 2  # first pool failed, rediscovery built a second
 
 
+def test_a_count_with_the_engine_down_raises_the_not_responding_message(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A count for chunk sizing fails with the message an embedding gets, not a transport error."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.count_tokens.side_effect = httpx.ConnectError("router down")
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+
+    with pytest.raises(ProviderError, match=r"^The model server is not responding") as err:
+        FleetProvider().count_tokens("hello")
+    assert err.value.kind is ProviderErrorKind.CONNECTION
+
+
 def test_embed_routes_to_least_busy_replica() -> None:
     # Data-parallel replicas: a request goes to the idlest replica in the pool.
     busy, idle = _fake_client(5), _fake_client(1)
@@ -3874,8 +3894,8 @@ class TestEmbedTokenCap:
         assert FleetProvider().embed_token_cap() == 8184
         assert seen == ["org/repo/e.gguf"]
 
-    def test_health_is_clean_when_token_sizing_self_corrects(self, monkeypatch) -> None:
-        """The chunker already switches to token sizing on its own below this cap,
+    def test_health_is_clean_when_plain_chunking_sizes_to_the_cap(self, monkeypatch) -> None:
+        """Plain chunking sizes chunks by the model's tokens up to this cap,
         so health has nothing actionable to report."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
