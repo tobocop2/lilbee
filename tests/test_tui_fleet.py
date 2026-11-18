@@ -1765,3 +1765,52 @@ async def test_a_refused_spec_with_an_engine_and_nothing_placed_keeps_the_saved_
         assert body._edits[WorkerRole.EMBED].target == RoleTarget.CPU
         assert body.query_one("#tgt-chat-cpu")
         assert body.query_one("#tgt-chat-auto")
+
+
+def _editor_row_view(spec_json, rejected_spec_json):  # type: ignore[no-untyped-def]
+    """A view whose chat row runs a split model, with the saved spec in the named field."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(3)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1, "llama.cpp"),
+        ),
+        unplaceable=(),
+        manual=spec_json is not None,
+        spec_json=spec_json,
+        rejected_spec_json=rejected_spec_json,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spec_json", "rejected_spec_json", "split"),
+    [
+        pytest.param(None, None, (3, 1), id="no-saved-spec"),
+        pytest.param('{"chat": {"devices": [1, 2]}}', None, (3, 1), id="saved-spec-names-the-role"),
+        pytest.param(None, '{"chat": {"devices": [1, 2]}}', None, id="refused-spec-names-the-role"),
+    ],
+)
+async def test_an_editor_row_keeps_the_model_the_plan_runs(
+    monkeypatch, spec_json, rejected_spec_json, split
+):
+    """Each branch that builds a row hands on the plan's model, and the plan's split unless a
+    refused spec names the role."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+    from tests._async_wait import wait_until
+
+    view = _editor_row_view(spec_json, rejected_spec_json)
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
+        row = body._edits[WorkerRole.CHAT]
+        assert row.model == "org/chat.gguf"
+        assert row.tensor_split == split
