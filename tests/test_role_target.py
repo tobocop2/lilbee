@@ -441,9 +441,29 @@ class TestTargetRefusedPlainMessage:
         plan = self._resolve('{"embed": {"target": "cpu"}}', LLAMA, cards)
         assert plan.instances == (InstancePlan(WorkerRole.EMBED, (), (), 0, RoleTarget.CPU),)
         monkeypatch.setattr(planning, "_peak_estimator", lambda *_a: _no_estimate)
-        with pytest.raises(PlacementError) as caught:
+        refusal = (
+            "embed: this engine cannot be told which GPU to use. "
+            "Set its target to cpu, or use another engine for this role."
+        )
+        with pytest.raises(TargetRefusedError) as caught:
+            self._resolve('{"embed": {"devices": [0], "target": "gpu"}}', LLAMA, cards)
+        assert caught.value.reasons == {WorkerRole.EMBED: refusal}
+        with pytest.raises(PlacementError) as plain:
             self._resolve('{"embed": {"devices": [0]}}', LLAMA, cards)
-        assert str(caught.value) == "the engine of embed cannot be told which GPU to use"
+        assert not isinstance(plain.value, TargetRefusedError)
+        assert str(plain.value) == refusal
+
+    def test_mixed_many_card_gate_leaves_a_role_with_no_entry_to_the_entry_check(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _help(monkeypatch, LLAMA_HELP)
+        monkeypatch.setattr(type(LLAMA), "binary", lambda _self: tmp_path / "server")
+        monkeypatch.setattr(planning, "_roles_without_a_pin", lambda *_a: (WorkerRole.EMBED,))
+        monkeypatch.setattr(planning, "_peak_estimator", lambda *_a: _no_estimate)
+        cards = [FleetDevice("CUDA", i, f"gpu{i}", 8 * GIB, 8 * GIB) for i in range(2)]
+        with pytest.raises(TargetRefusedError, match="no entry for it") as caught:
+            self._resolve('{"chat": {"target": "cpu"}}', LLAMA, cards)
+        assert set(caught.value.reasons) == {WorkerRole.EMBED}
 
 
 class TestNoFallbackToAuto:

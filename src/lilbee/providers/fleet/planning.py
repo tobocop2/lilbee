@@ -246,6 +246,10 @@ _TARGET_REFUSED = {
     ),
     RoleTarget.NPU: "this engine's installed build cannot run on an NPU. Choose a GPU or the CPU.",
 }
+_PIN_REFUSED = (
+    "this engine cannot be told which GPU to use. "
+    "Set its target to cpu, or use another engine for this role."
+)
 # Backends pinned by the name the engine printed rather than through an env var,
 # because their variables index a different space than --list-devices reports.
 _NAME_PINNED_BACKENDS = frozenset({VULKAN_BACKEND, "SYCL"})
@@ -3447,10 +3451,15 @@ def _resolve_placement(
         refused = _unusable_targets(placement, model_refs, engines)
         if refused:
             raise TargetRefusedError(refused)
-        pinned = [role for role in unpinnable if _targets_gpu(placement, role)]
+        pinned = {
+            role: f"{role.value}: {_PIN_REFUSED}"
+            for role in unpinnable
+            if _targets_gpu(placement, role)
+        }
         if pinned:
-            names = ", ".join(role.value for role in pinned)
-            raise PlacementError(f"the engine of {names} cannot be told which GPU to use")
+            if not _names_a_target(placement):
+                raise PlacementError(" ".join(pinned.values()))
+            raise TargetRefusedError(pinned)
         auto_roles = frozenset(
             role
             for role, entry in placement.roles.items()
@@ -3700,9 +3709,14 @@ def _cpu_roles_past_memory(
 
 
 def _targets_gpu(placement: PlacementSpec, role: WorkerRole) -> bool:
-    """Whether *role* needs a card under *placement*; a role with no entry is refused later."""
+    """Whether *role* has an entry that needs a card; a role with no entry is refused later."""
     entry = placement.roles.get(role)
-    return entry is None or entry.device_target is RoleTarget.GPU
+    return entry is not None and entry.device_target is RoleTarget.GPU
+
+
+def _names_a_target(spec: PlacementSpec) -> bool:
+    """Whether any entry of *spec* names a device target, so it never falls back to auto."""
+    return any(entry.target is not None for entry in spec.roles.values())
 
 
 def _unusable_targets(
@@ -3737,7 +3751,7 @@ def _roles_on_missing_cards(
     on a card, so the role on the missing card gets no server and the others launch.
     A spec with no target key keeps the fallback and names none.
     """
-    if spec is None or all(entry.target is None for entry in spec.roles.values()):
+    if spec is None or not _names_a_target(spec):
         return {}
     present = {d.index for d in devices}
     wording = _lost_card_wording(devices, host_cards)
@@ -3883,10 +3897,11 @@ def _placement_or_auto(
     caller just asked for and a silent substitution would be the surprise. A spec
     that names a device target also fails loud on a pin error: the target is a
     refusal to run anywhere else, and automatic placement would put that role on a
-    card. A role with no entry, a role whose target the engine cannot run, an auto
-    role with no room beside the named roles, or a named role its card cannot hold in
-    a spec that has a role off the cards, raises for :func:`_placement_that_runs` to
-    refuse alone.
+    card. A role with no entry, a role whose target the engine cannot run, a card role
+    whose engine takes no pin, an auto role with no room beside the named roles, or a
+    named role its card cannot hold in a spec that has a role off the cards, raises
+    for :func:`_placement_that_runs` to refuse alone. A spec with no target key keeps
+    the fallback for a card role whose engine takes no pin.
     """
     if placement is None:
         return _resolve_placement(
@@ -3913,8 +3928,6 @@ def _placement_or_auto(
     except TargetRefusedError:
         raise
     except PlacementError as exc:
-        if not placement.all_on_cards:
-            raise
         log.warning(
             "The saved GPU placement does not fit this hardware (%s); using automatic "
             "placement instead. Set a new placement to replace it.",
