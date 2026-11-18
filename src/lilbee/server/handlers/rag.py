@@ -533,7 +533,7 @@ def _persist_summary(session_id: str | None, info: CompactionInfo | None) -> Non
 class _ChatGrounding(NamedTuple):
     """Retrieval outcome for a one-shot chat turn.
 
-    A set ``early`` is the finished response (a canned answer or a refusal);
+    A set ``early`` is the finished response (a refusal or a canned answer);
     otherwise ``messages`` lead the model call and ``sources`` ground it.
     """
 
@@ -543,32 +543,38 @@ class _ChatGrounding(NamedTuple):
     retrieval_query: str | None
     dropped: list[SearchChunk]
     degraded: list[HealthWarning]
+    compaction: CompactionInfo | None
 
 
-def _ground_chat_turn(
+def _prepare_chat_turn(
     searcher: Searcher,
     question: str,
     history: list[ChatMessage],
+    summary: str,
+    session_id: str | None,
     top_k: int | None,
     chunk_type: ChunkType | None,
-    compaction: CompactionInfo | None,
 ) -> _ChatGrounding:
-    """Resolve retrieval for a one-shot chat turn; blocking, run it on a worker."""
+    """Run every blocking step before the model call; run it on a worker."""
+    if top_k != 0 and searcher.search_unavailable():
+        # No embedder, so search can't ground; an explicit top_k 0 needs none.
+        early = AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
+        return _ChatGrounding(early, [], [], None, [], [], None)
+    history, compaction = _manage_history(history, summary)
+    _persist_summary(session_id, compaction)
     if _retrieval_off(searcher, top_k):
         # Chat-only mode or an explicit top_k:0 pure-LLM call.
-        return _ChatGrounding(None, [], searcher.direct_messages(question, history), None, [], [])
-    # Grounded turn: the searcher's own pre-retrieval ladder (empty
-    # library, count routing, memory-awareness) so surfaces cannot drift.
+        messages = searcher.direct_messages(question, history)
+        return _ChatGrounding(None, [], messages, None, [], [], compaction)
+    # The searcher's own pre-retrieval ladder, so surfaces cannot drift.
     pre_answer = searcher.pre_retrieval_answer(question)
     if pre_answer is not None:
         early = AskResponse(answer=pre_answer, sources=[], cited_sources=[], compaction=compaction)
-        return _ChatGrounding(early, [], [], None, [], [])
+        return _ChatGrounding(early, [], [], None, [], [], compaction)
     rag = searcher.build_rag_context(
         question, top_k=top_k or 0, history=history, chunk_type=chunk_type
     )
     if rag.refused:
-        # Refuse like every sibling surface; the old fallback silently
-        # answered off-corpus with nothing telling the caller so.
         early = AskResponse(
             answer=GROUNDED_REFUSAL,
             sources=[],
@@ -576,9 +582,29 @@ def _ground_chat_turn(
             compaction=compaction,
             warnings=list(rag.degraded),
         )
-        return _ChatGrounding(early, [], [], None, [], [])
+        return _ChatGrounding(early, [], [], None, [], [], compaction)
     return _ChatGrounding(
-        None, rag.results, rag.messages, rag.retrieval_query, rag.dropped or [], list(rag.degraded)
+        None,
+        rag.results,
+        rag.messages,
+        rag.retrieval_query,
+        rag.dropped or [],
+        list(rag.degraded),
+        compaction,
+    )
+
+
+def _chat_response(answer: str, turn: _ChatGrounding) -> AskResponse:
+    """Build the chat response; labelling sources reads the store, so run it on a worker."""
+    sources = turn.sources
+    return AskResponse(
+        answer=answer,
+        sources=_cleaned_chunks(sources, sources),
+        cited_sources=_cleaned_chunks(cited_subset(strip_llm_citations(answer), sources), sources),
+        compaction=turn.compaction,
+        retrieval_query=turn.retrieval_query,
+        dropped_sources=_cleaned_chunks(turn.dropped, sources),
+        warnings=turn.degraded,
     )
 
 
@@ -592,24 +618,20 @@ async def chat(
     session_id: str | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources via canonical dispatch."""
-    searcher = get_services().searcher
-    if top_k != 0 and searcher.search_unavailable():
-        # Search mode with no embedder can't ground; refuse cleanly with the same
-        # message ask returns instead of silently answering off-corpus. An
-        # explicit top_k 0 runs no search, so it needs no embedder.
-        return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
-    history, compaction = await asyncio.to_thread(_manage_history, history, summary)
-    await asyncio.to_thread(_persist_summary, session_id, compaction)
-    # Retrieval reads the library and memory store; on the loop a slow read
-    # stalls every other admitted request, so the whole step runs on a worker.
+    # Embedder, store and provider reads block, so they run on one worker.
     turn = await asyncio.to_thread(
-        _ground_chat_turn, searcher, question, history, top_k, chunk_type, compaction
+        _prepare_chat_turn,
+        get_services().searcher,
+        question,
+        history,
+        summary,
+        session_id,
+        top_k,
+        chunk_type,
     )
     if turn.early is not None:
         return turn.early
-    sources, messages = turn.sources, turn.messages
-    retrieval_query, dropped, degraded = turn.retrieval_query, turn.dropped, turn.degraded
-    req = _build_canonical_request(messages, options)
+    req = _build_canonical_request(turn.messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
     answer = text if cfg.show_reasoning else strip_reasoning(text)
@@ -622,15 +644,7 @@ async def chat(
         answer = REASONING_EXHAUSTED_NOTICE
     else:
         await _store_extracted_memories(question, answer)
-    return AskResponse(
-        answer=answer,
-        sources=_cleaned_chunks(sources, sources),
-        cited_sources=_cleaned_chunks(cited_subset(strip_llm_citations(answer), sources), sources),
-        compaction=compaction,
-        retrieval_query=retrieval_query,
-        dropped_sources=_cleaned_chunks(dropped, sources),
-        warnings=degraded,
-    )
+    return await asyncio.to_thread(_chat_response, answer, turn)
 
 
 def chat_stream(
