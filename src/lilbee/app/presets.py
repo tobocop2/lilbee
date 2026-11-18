@@ -9,6 +9,8 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
 from lilbee.app.settings import config_write_failure_message
 from lilbee.core import settings
 from lilbee.core.blocked_networks import check_url_form, url_origin, validate_preset_url
@@ -316,6 +318,9 @@ def edit_preset(
 
     A URL with a new scheme, host or port and no new key is refused: the stored key never
     follows the URL to a new origin. A key change alone checks only that preset's entry.
+
+    A stored row that is no valid preset can be edited when it is valid with the change applied,
+    for example a new key in place of a stored key that cannot be a header value.
     """
     given = (
         sum(value is not None for value in (url, roles, rerank_wire, memory_reserve_gb))
@@ -329,18 +334,36 @@ def edit_preset(
 
     def change(entries: list[Entry]) -> list[Entry]:
         target = _named(entries, name)
-        if isinstance(target, UnreadableEntry):
-            raise ValueError(f"The stored preset {name!r} is refused: {_UNREADABLE_ENTRY}")
         moves_key = target.has_key and not api_key
-        if url is not None and moves_key and url_origin(target.url) != url_origin(url):
+        if url is not None and moves_key and url_origin(_stored_url(target)) != url_origin(url):
             raise ValueError(_KEY_STAYS_WITH_ORIGIN)
-        updated = target.model_copy(update=changes)
+        updated = _edited(target, changes)
         changed = [updated if entry is target else entry for entry in entries]
         key_change_only = list(changes) == ["api_key"]
         _check_list([e for e in changed if e.name == name] if key_change_only else changed)
         return changed
 
     return _view(_named(_store(change), name))
+
+
+def _stored_url(entry: Entry) -> str:
+    """The URL stored in *entry*; empty when an unreadable row holds none."""
+    if isinstance(entry, StoredPreset):
+        return entry.url
+    url = entry.raw.get("url")
+    return url if isinstance(url, str) else ""
+
+
+def _edited(target: Entry, changes: dict[str, Any]) -> StoredPreset:
+    """*target* with *changes* applied. An unreadable row must be a valid preset after them."""
+    if isinstance(target, StoredPreset):
+        return target.model_copy(update=changes)
+    try:
+        return StoredPreset.model_validate({**target.raw, **changes})
+    except ValidationError:
+        raise ValueError(
+            f"The stored preset {target.name!r} is refused: {_UNREADABLE_ENTRY}"
+        ) from None
 
 
 def _clear_key(name: str) -> ServerPreset:

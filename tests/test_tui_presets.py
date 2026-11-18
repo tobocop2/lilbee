@@ -742,6 +742,20 @@ class TestPane:
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
         assert "api_key" not in _stored()[0]
 
+    async def test_a_new_key_in_the_dialog_replaces_a_stored_bad_key(self):
+        row = {"name": "omlx", "url": LOCAL, "roles": ["chat"], "api_key": "tab\tkey"}
+        settings.set_value(cfg.data_root, "server_presets", json.dumps([row]))
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await await_dialog(pilot, app)
+            app.screen.query_one("#preset-key-input", Input).value = KEY
+            _press(app, "#preset-save")
+            assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+        assert _stored() == [{**row, "api_key": KEY}]
+
     async def test_edit_dialog_has_no_clear_key_button_without_a_key(self):
         _seed(key=None)
         app = _ChatApp()

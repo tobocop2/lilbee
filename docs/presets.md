@@ -85,6 +85,8 @@ There is no `--key` flag. A key on the command line shows in the shell history a
 
 If you change the URL to a different scheme, host or port, lilbee refuses the edit unless you give a new key or clear the key first. A stored key never follows the URL to a new server.
 
+If a stored key cannot be sent in a header, lilbee refuses the preset. Run `lilbee preset edit NAME --key-stdin` with a new key to replace it. The edit works when the preset is valid with the new key.
+
 ### Slash command
 
 In the chat, run `/preset list`, `/preset add NAME URL --roles ROLES`, `/preset edit NAME` or `/preset remove NAME`. `/preset add` accepts `--wire` and `--reserve`. `/preset edit NAME` with no flag opens a dialog. In the dialog you enter or clear the key. `/preset edit` also accepts `--url`, `--roles`, `--wire`, `--reserve`, `--clear-reserve` and `--clear-key`.

@@ -564,6 +564,22 @@ class TestEverySurfaceMatchesTheService:
             assert secret not in repr(outcome)
 
 
+class TestANewKeyRepairsAStoredBadKey:
+    @pytest.mark.parametrize("surface", DATA_SURFACES)
+    @pytest.mark.parametrize("bad_key", ["tab\tkey", "klúč-key"], ids=["tab", "non-ascii"])
+    def test_the_edit_replaces_the_key_the_store_holds(
+        self, surface, bad_key, tmp_path, monkeypatch, client
+    ):
+        _fresh_store(tmp_path / surface, (), monkeypatch)
+        row = {**OMLX_STORED, "api_key": bad_key}
+        settings.set_value(cfg.data_root, "server_presets", json.dumps([row]))
+        case = Case("repair", "edit", (), {"name": "omlx", "key": NEW_KEY}, ok=True, stored=[])
+        outcome = _run(surface, client, case)
+        assert outcome.ok, outcome.error
+        assert (outcome.data["valid"], outcome.data["has_key"]) == (True, True)
+        assert _stored() == [{**row, "api_key": NEW_KEY}]
+
+
 class TestTheCaseTable:
     def test_the_table_is_nonempty_and_has_unique_ids(self):
         assert len(CASES) > 0
