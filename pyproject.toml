@@ -202,6 +202,7 @@ markers = [
     "real_hf_client: opt out of the global hf_client.fetch_models stub (tests the client itself)",
     "download_child: opt out of the in-process download stub (drives the real child-process relay)",
     "real_nvidia_smi: opt out of the nvidia-smi seal (the test drives the tool runner itself)",
+    "real_windows_registry: opt out of the Windows adapter seal (the test injects its own registry)",
     "fleet_warm_up: the test runs a real fleet warm-up thread and joins it itself",
 ]
 

@@ -214,7 +214,8 @@ def _sealed_host_cards(request, monkeypatch, tmp_path_factory) -> Generator[None
 
     Every read of the host's cards answers "none", so no count depends on the machine that
     runs the test. A test that needs cards patches the same reader itself, which wins over
-    this seal. ``real_nvidia_smi`` opts out for a test that drives ``run_tool`` for real.
+    this seal. ``real_nvidia_smi`` opts out for a test that drives ``run_tool`` for real, and
+    ``real_windows_registry`` for a test that injects its own registry module.
     """
     from lilbee.providers.fleet import devices, gpu_hardware
     from lilbee.providers.fleet.gpu_backends import nvidia
@@ -233,7 +234,8 @@ def _sealed_host_cards(request, monkeypatch, tmp_path_factory) -> Generator[None
     monkeypatch.setattr(
         gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path_factory.getbasetemp() / "no-pci-bus"
     )
-    monkeypatch.setattr(gpu_hardware, "_windows_adapters", lambda: iter(()))
+    if not request.node.get_closest_marker("real_windows_registry"):
+        monkeypatch.setattr(gpu_hardware, "_windows_adapters", lambda: iter(()))
     yield
 
 

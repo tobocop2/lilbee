@@ -18,6 +18,9 @@ class TestHostWithoutCards:
         assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
         assert gpu_hardware.undriven_gpu_vendor_ids() == frozenset()
 
+    def test_windows_registry_lists_no_adapter(self) -> None:
+        assert list(gpu_hardware._windows_adapters()) == []
+
     def test_nvlink_topology_makes_no_claim(self) -> None:
         assert devices.host_lacks_nvlink() is False
         assert planning.host_lacks_nvlink() is False
