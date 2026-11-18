@@ -116,6 +116,9 @@ class FleetDevice:
     # different space from the one the engine names its devices in, so it can be
     # sized against but never pinned by.
     from_loader: bool = False
+    # The card's UUID where the reader has one (the driver query does; the
+    # engine's listing does not). Empty when unknown.
+    uuid: str = ""
 
 
 @dataclass(frozen=True)
@@ -676,10 +679,13 @@ def visible_nvidia_cards() -> list[FleetDevice]:
 
     cards = read_cards()
     if gpu_environ().get(CUDA_VISIBLE_VAR) is None:
-        return [FleetDevice("CUDA", c.index, c.name, c.total_bytes, c.free_bytes) for c in cards]
+        return [
+            FleetDevice("CUDA", c.index, c.name, c.total_bytes, c.free_bytes, uuid=c.uuid)
+            for c in cards
+        ]
     # Under a mask the child's index is the card's place in the mask list.
     return [
-        FleetDevice("CUDA", place, card.name, card.total_bytes, card.free_bytes)
+        FleetDevice("CUDA", place, card.name, card.total_bytes, card.free_bytes, uuid=card.uuid)
         for place, card in enumerate(cuda_visible_cards(cards))
     ]
 

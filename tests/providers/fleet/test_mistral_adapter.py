@@ -645,7 +645,7 @@ def test_a_cuda_build_reads_the_cards_from_the_driver(
     )
     monkeypatch.setattr(nvidia_mod, "cards", lambda: [card])
     probe = MISTRAL.discover_devices(tmp_path / "never-run")
-    assert probe.devices == [FleetDevice("CUDA", 0, "NVIDIA L4", 24 << 30, 20 << 30)]
+    assert probe.devices == [FleetDevice("CUDA", 0, "NVIDIA L4", 24 << 30, 20 << 30, uuid="GPU-a")]
 
 
 def test_the_probes_answer_unknown_without_running_the_binary(tmp_path: Path) -> None:
