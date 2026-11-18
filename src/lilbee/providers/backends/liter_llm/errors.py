@@ -9,6 +9,7 @@ from typing import Protocol, runtime_checkable
 from lilbee.providers.base import ProviderError, ProviderErrorKind, is_prompt_length_overflow
 from lilbee.providers.model_ref import ProviderModelRef
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import RerankWire
 
 _PROVIDER_NAME = "remote"
 
@@ -99,6 +100,13 @@ _UNPROCESSABLE_NO_REASON = (
     "Check the request limits of the server."
 )
 
+# A rerank 404 on a preset names the route of its wire and the wires to set instead.
+_RERANK_WIRE_HINT = (
+    "The server answered 404 at {route}, the route of the {wire} rerank wire. "
+    "If a model is loaded, the server has no such route: set rerank_wire to {others} "
+    "(the --wire flag of a preset command)."
+)
+
 # Operation labels prefixed onto the fallback message for an unrecognised error.
 _CHAT_FAILED = "Chat failed"
 _EMBED_FAILED = "Embedding failed"
@@ -183,15 +191,22 @@ class PresetCall:
 
     base_url: str
     role: WorkerRole
+    wire: RerankWire | None = None
 
 
 def _preset_call(
-    ref: ProviderModelRef, api_base: str | None, role: WorkerRole
+    ref: ProviderModelRef, api_base: str | None, role: WorkerRole, wire: RerankWire | None = None
 ) -> PresetCall | None:
     """The preset call of *ref*, or None for a hosted or local-server ref."""
     if not ref.is_preset or not api_base:
         return None
-    return PresetCall(api_base, role)
+    return PresetCall(api_base, role, wire)
+
+
+def _rerank_wire_hint(wire: RerankWire) -> str:
+    """The sentence that names the route of *wire* and the other wires to set."""
+    others = " or ".join(w.value for w in RerankWire if w is not wire)
+    return _RERANK_WIRE_HINT.format(route=wire.route, wire=wire.value, others=others)
 
 
 def _provider_error(
@@ -205,6 +220,8 @@ def _provider_error(
     kind = _classify_error(exc)
     if kind is ProviderErrorKind.NOT_FOUND and preset is not None:
         message = _PRESET_NOT_FOUND.format(model=model, role=preset.role, url=preset.base_url)
+        if preset.wire is not None:
+            message = f"{message} {_rerank_wire_hint(preset.wire)}"
         return ProviderError(message, provider=_PROVIDER_NAME, kind=kind)
     unprocessable = _unprocessable_message(kind, exc, model)
     if unprocessable is not None:

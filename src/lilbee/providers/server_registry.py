@@ -9,7 +9,7 @@ import re
 import socket
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, assert_never
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
@@ -48,8 +48,18 @@ class ConfigReadError(Exception):
 class RerankWire(StrEnum):
     """The request shape a preset's rerank endpoint reads."""
 
-    V1 = "v1"  # POST /v1/rerank with documents: Jina, Cohere, llama-server, Lemonade
-    TEI = "tei"  # POST /rerank with texts: Hugging Face text-embeddings-inference
+    V1 = "v1"  # documents: Jina, Cohere, llama-server, Lemonade
+    TEI = "tei"  # texts: Hugging Face text-embeddings-inference
+
+    @property
+    def route(self) -> str:
+        """The route a rerank request of this wire posts to."""
+        match self:
+            case RerankWire.V1:
+                return "/v1/rerank"
+            case RerankWire.TEI:
+                return "/rerank"
+        assert_never(self)  # pragma: no cover
 
 
 def checked_key(api_key: str) -> SecretStr:
