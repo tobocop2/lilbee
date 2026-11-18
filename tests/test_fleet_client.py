@@ -9,7 +9,8 @@ import dataclasses
 import json
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 
 import httpx
@@ -4216,3 +4217,86 @@ def test_every_chat_entry_point_keeps_a_schema_off_the_mlx_wire(how: str) -> Non
     with pytest.raises(ProviderError, match="does not enforce a JSON schema"):
         _call_chat(client, how, {"response_format": _SCHEMA_FORMAT})
     assert sent == []
+
+
+class _RecordedRequests:
+    """The request paths a local engine server received, and its answer delay."""
+
+    def __init__(self, delay_s: float) -> None:
+        self.paths: list[str] = []
+        self.release = threading.Event()
+        self.delay_s = delay_s
+
+
+@contextlib.contextmanager
+def _local_engine(delay_s: float = 0.0) -> Iterator[tuple[str, _RecordedRequests]]:
+    """A real loopback server that answers chat requests; yields its base URL and what it saw."""
+    seen = _RecordedRequests(delay_s)
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            # requestline keeps the target as sent; the server's own path drops a leading "//".
+            seen.paths.append(self.requestline.split()[1])
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.release.wait(seen.delay_s)
+            if body.get("stream"):
+                payload, kind = _STREAM_BODY.encode(), "text/event-stream"
+            else:
+                payload = json.dumps({"choices": [{"message": {"content": "Hello"}}]}).encode()
+                kind = "application/json"
+            with contextlib.suppress(OSError):
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", seen
+    finally:
+        seen.release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def _wire_client(base_url: str, **kwargs: float) -> LlamaServerClient:
+    """A client that owns its HTTP clients and talks to *base_url* over a socket."""
+    client = LlamaServerClient(
+        base_url, "m", profile=LLAMA.request_profile(WorkerRole.CHAT), **kwargs
+    )
+    client._needs_alternation = False
+    return client
+
+
+_WIRE_CALLS = {
+    "chat": lambda client: client.chat([{"role": "user", "content": "hi"}]),
+    "chat_abortable": lambda client: client.chat_abortable([{"role": "user", "content": "hi"}]),
+}
+
+
+@pytest.mark.parametrize("how", sorted(_WIRE_CALLS))
+@pytest.mark.parametrize("slashes", ["//", "///"])
+def test_a_base_url_with_trailing_slashes_reaches_the_server_as_one_route(
+    how: str, slashes: str
+) -> None:
+    """The server receives the chat route with no doubled slash, on both HTTP clients."""
+    with _local_engine() as (url, seen):
+        assert _WIRE_CALLS[how](_wire_client(url + slashes)) == "Hello"
+    assert seen.paths == ["/v1/chat/completions"]
+
+
+@pytest.mark.parametrize("how", sorted(_WIRE_CALLS))
+def test_the_client_timeout_ends_a_request_the_server_answers_late(how: str) -> None:
+    """A server that answers after the client timeout makes the request fail, on both clients."""
+    with _local_engine(delay_s=1.5) as (url, seen):
+        client = _wire_client(url, timeout=0.2)
+        with pytest.raises(httpx.ReadTimeout):
+            _WIRE_CALLS[how](client)
+    assert seen.paths == ["/v1/chat/completions"]
