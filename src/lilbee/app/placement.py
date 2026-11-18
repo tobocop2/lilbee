@@ -245,6 +245,13 @@ SAVED_PLACEMENT_WAITS_FOR_ENGINE = (
     "The saved placement is kept but not used: no installed engine can run the models. "
     "It applies once an engine is installed."
 )
+SAVED_PLACEMENT_WAITS_FOR_A_MODEL = (
+    "The saved placement is kept but not used: no model is installed for any role it names. "
+    "It applies once a model is installed."
+)
+SAVED_PLACEMENT_PLACES_NO_ROLE = (
+    "The saved placement is kept but not used: it places no role on this machine."
+)
 
 
 def get_placement() -> PlacementView:
@@ -309,7 +316,27 @@ def _read_placement(reading: BookReading) -> PlacementView:
             rejected_spec_json=spec.to_json(),
             refusal=" ".join(resolved.refused_roles.values()),
         )
-    return _view(resolved, engines, manual=True, spec_json=spec.to_json())
+    return _spec_view(resolved, engines, spec)
+
+
+def _spec_view(
+    resolved: ResolvedPlacement, engines: Mapping[WorkerRole, EngineAdapter], spec: PlacementSpec
+) -> PlacementView:
+    """The view of an applied *spec*: manual when it places a role, else kept with its reason."""
+    if resolved.instances:
+        return _view(resolved, engines, manual=True, spec_json=spec.to_json())
+    if spec.roles.keys() & resolved.skipped_not_installed.keys():
+        refusal = SAVED_PLACEMENT_WAITS_FOR_A_MODEL
+    else:
+        refusal = SAVED_PLACEMENT_PLACES_NO_ROLE
+    return _view(
+        resolved,
+        engines,
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=spec.to_json(),
+        refusal=refusal,
+    )
 
 
 def size_unknown_notices(role: WorkerRole) -> list[str]:
@@ -332,12 +359,9 @@ def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     """Dry-run: what spec (or auto, when None) would place. No persistence or reload."""
     reading = _planning_engines()
     resolved = _resolve(spec, reading)
-    return _view(
-        resolved,
-        reading.adapters,
-        manual=spec is not None,
-        spec_json=spec.to_json() if spec else None,
-    )
+    if spec is None:
+        return _view(resolved, reading.adapters, manual=False, spec_json=None)
+    return _spec_view(resolved, reading.adapters, spec)
 
 
 def placement_refused_message() -> str:
@@ -397,7 +421,9 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
         return _no_engine_view(reading, running)
     if cfg.placement != spec_json:
         return get_placement()  # LILBEE_PLACEMENT outranks the saved spec; report what runs
-    return _view(resolved, reading.adapters, manual=spec is not None, spec_json=spec_json)
+    if spec is None:
+        return _view(resolved, reading.adapters, manual=False, spec_json=None)
+    return _spec_view(resolved, reading.adapters, spec)
 
 
 def _plan_for_write(spec: PlacementSpec | None, reading: BookReading) -> ResolvedPlacement | None:
