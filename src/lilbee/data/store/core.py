@@ -500,6 +500,22 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
             )
 
 
+def _meta_drift(
+    meta: StoreMeta | None, current_model: str, current_dim: int
+) -> EmbeddingModelMismatchError | None:
+    """The drift between the *meta* row and the current embedder, or ``None``."""
+    if meta is None or refs_compatible(
+        meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+    ):
+        return None
+    return EmbeddingModelMismatchError(
+        persisted_model=meta["embedding_model"],
+        persisted_dim=meta["embedding_dim"],
+        current_model=current_model,
+        current_dim=current_dim,
+    )
+
+
 def _citations_for_wiki_predicate(wiki_source: str) -> str:
     """SQL predicate selecting every citation row belonging to *wiki_source*."""
     return f"wiki_source = '{escape_sql_string(wiki_source)}'"
@@ -1420,19 +1436,7 @@ class Store:
         """
         current_model = self._config.embedding_model if model is None else model
         current_dim = self._config.embedding_dim if dim is None else dim
-        meta = self.get_meta()
-        if meta is None:
-            return None
-        if refs_compatible(
-            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
-        ):
-            return None
-        return EmbeddingModelMismatchError(
-            persisted_model=meta["embedding_model"],
-            persisted_dim=meta["embedding_dim"],
-            current_model=current_model,
-            current_dim=current_dim,
-        )
+        return _meta_drift(self.get_meta(), current_model, current_dim)
 
     def _embed_canaries(self, probe: CanaryProbe) -> list[Vector] | None:
         """Embed the canary texts, or ``None`` when the embedder is down."""
@@ -1563,9 +1567,27 @@ class Store:
         if mismatch is not None:
             raise mismatch
 
+    def _unstamped_width_mismatch(self) -> EmbeddingModelMismatchError | None:
+        """The width drift of stored chunks that no meta row describes, or None."""
+        if not self._has_chunks():
+            return None
+        width = self._chunks_width()
+        if width == self._config.embedding_dim:
+            return None
+        return EmbeddingModelMismatchError(
+            persisted_model=self._config.embedding_model,
+            persisted_dim=width,
+            current_model=self._config.embedding_model,
+            current_dim=self._config.embedding_dim,
+        )
+
     def _ensure_embedding_compat(self) -> None:
         """Raise when the persisted embedding identity drifts from cfg."""
-        mismatch = self.index_mismatch()
+        meta = self.get_meta()
+        if meta is None:
+            mismatch = self._unstamped_width_mismatch()
+        else:
+            mismatch = _meta_drift(meta, self._config.embedding_model, self._config.embedding_dim)
         if mismatch is not None:
             raise mismatch
 
