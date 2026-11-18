@@ -8,8 +8,9 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile, ServerProcess
@@ -132,7 +133,7 @@ class FakeAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

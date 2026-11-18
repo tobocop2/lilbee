@@ -7,8 +7,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
@@ -430,7 +431,7 @@ class MistralAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-from typing import Literal
 
 from lilbee.catalog.compat import UnsupportedQuantError
+from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.binary import resolve_gguf_parser
 from lilbee.providers.fleet.proc import run_bounded
@@ -69,9 +69,7 @@ def _named_quant(detail: str) -> str:
     return detail.split(": ", 1)[-1] if ": " in detail else detail
 
 
-def assert_engine_can_load(
-    hf_repo: str, filename: str, token: str | Literal[False] | None = None
-) -> None:
+def assert_engine_can_load(hf_repo: str, filename: str, token: HfToken = None) -> None:
     """Raise :class:`UnsupportedQuantError` when the engine cannot decode *filename*.
 
     gguf-parser is the engine's own reader, built from the same pin as

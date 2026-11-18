@@ -7,8 +7,9 @@ from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
@@ -206,8 +207,13 @@ class EngineAdapter(Protocol, Hashable):
         """Header metadata of the model file at *path*, or ``None`` when it has none."""
         ...
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
-        """Raise ``UnsupportedQuantError`` when the engine cannot load the remote file."""
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
+        """Raise ``UnsupportedQuantError`` when the engine cannot load the remote file.
+
+        *token* is a Hugging Face token. A string is the token to send. ``False`` means
+        a token was refused, so the request goes anonymous. ``None`` means none was found.
+        The adapter sends no token for ``False`` or ``None``.
+        """
         ...
 
     def runtime_env(self) -> Mapping[str, str]:

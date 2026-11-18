@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.catalog import hf_client
+from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.fleet.model_memory import (
     kv_per_token_from_config,
     safetensors_chat_estimate,
@@ -62,7 +63,7 @@ def _launch_ctx(repo: str, config: dict[str, Any] | None, engine: EngineAdapter)
 
 
 def chat_pull_fit(
-    repo: str, engine: EngineAdapter, *, token: str | bool | None = None, slots: int = 1
+    repo: str, engine: EngineAdapter, *, token: HfToken = None, slots: int = 1
 ) -> PullFit:
     """The fit of *repo* as a chat model at the context *engine* launches it with.
 

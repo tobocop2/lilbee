@@ -8,8 +8,9 @@ import re
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.catalog.xdna import read_checkpoint
 from lilbee.core.config import cfg
@@ -247,7 +248,7 @@ class LemonadeAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

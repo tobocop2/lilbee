@@ -6,8 +6,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.adapters import RoleServerSpec
@@ -248,7 +249,7 @@ class TeiAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

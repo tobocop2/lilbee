@@ -6,10 +6,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.adapters import (
     FLAG_DEVICE,
@@ -316,7 +317,7 @@ class LlamaCppAdapter:
             return None
         return read_gguf_metadata(path)
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         assert_engine_can_load(repo, filename, token)
 
     def runtime_env(self) -> Mapping[str, str]:

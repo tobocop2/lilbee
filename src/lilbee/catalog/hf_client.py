@@ -226,7 +226,7 @@ _HUB_READ_ERRORS = (
 )
 
 
-def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[str, int]:
+def read_parameter_count(repo: str, *, token: HfToken = None) -> dict[str, int]:
     """The per-dtype tensor count of a Hub repo, from one request for its safetensors figures.
 
     Returns an empty dict when the repo has no figures or the Hub cannot be read, so the
@@ -241,7 +241,7 @@ def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[
         return {}
 
 
-def read_model_config(repo: str, *, token: str | bool | None = None) -> dict[str, Any] | None:
+def read_model_config(repo: str, *, token: HfToken = None) -> dict[str, Any] | None:
     """The ``config.json`` of a Hub repo, or None when it is missing, unreadable or no mapping."""
     try:
         resp = get_session().get(
