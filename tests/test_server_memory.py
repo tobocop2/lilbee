@@ -196,6 +196,7 @@ class TestMemoryRoutesRequireAuth:
                 f"{route.fn.__name__} bypasses authentication"
             )
 
+    @pytest.mark.usefixtures("store")
     async def test_listing_memories_without_a_token_is_rejected(self):
         from litestar.testing import AsyncTestClient
 

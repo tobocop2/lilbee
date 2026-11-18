@@ -326,6 +326,21 @@ class _ConfigFileReload(ASGIMiddleware):
         await next_app(scope, receive, send)
 
 
+def _start_services() -> None:
+    """Build the services before the server serves; a failed build ends the startup."""
+    try:
+        services = get_services()
+    except ServicesStoppingError:
+        log.info("A stop arrived during the services build, so the server does not start")
+        raise
+    except Exception:
+        log.error("The services build failed, so the server does not start", exc_info=True)
+        raise
+    log.info("LLM provider pre-loaded")
+    _log_embedding_model_state(services.embedder)
+    services.store.open_in_background()
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
@@ -335,14 +350,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     session_manager.load_or_generate()
 
     try:
-        services = get_services()  # pre-load all services (provider, embedder, etc.)
-        log.info("LLM provider pre-loaded")
-    except Exception:
-        log.warning("Failed to pre-load LLM provider", exc_info=True)
-    else:
-        _log_embedding_model_state(services.embedder)
-        services.store.open_in_background()
-    try:
+        _start_services()
         yield
     finally:
         _server_loop.set(None)

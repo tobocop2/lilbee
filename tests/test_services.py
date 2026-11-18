@@ -285,6 +285,79 @@ class TestBuildServices:
         finally:
             services.store.close()
 
+    @staticmethod
+    def _a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store):
+        """Make ``build_services`` fail on the concept graph, after the store exists."""
+        import lilbee.retrieval.canary_probe as canary_mod
+        import lilbee.retrieval.concepts as concepts_mod
+        from lilbee.app import services as services_mod
+
+        cfg.data_root = tmp_path
+        cfg.documents_dir = tmp_path / "documents"
+        cfg.data_dir = tmp_path / "data"
+        cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+        monkeypatch.setattr(canary_mod, "canary_probe", MagicMock())
+        monkeypatch.setattr(services_mod, "_new_store", lambda *_args: new_store)
+        monkeypatch.setattr(concepts_mod, "ConceptGraph", MagicMock(side_effect=OSError("boom")))
+
+    def test_a_failed_build_closes_its_store_and_leaves_a_supplied_provider_open(
+        self, monkeypatch, tmp_path
+    ):
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+        provider = MagicMock()
+
+        with pytest.raises(OSError, match="boom"):
+            build_services(cfg, provider=provider)
+
+        new_store.close.assert_called_once_with()
+        provider.shutdown.assert_not_called()
+
+    def test_a_failed_build_shuts_down_the_provider_it_created(self, monkeypatch, tmp_path):
+        import lilbee.providers.factory as factory_mod
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+        created = MagicMock()
+        monkeypatch.setattr(factory_mod, "create_provider", lambda *_a, **_k: created)
+
+        with pytest.raises(OSError, match="boom"):
+            build_services(cfg)
+
+        new_store.close.assert_called_once_with()
+        created.shutdown.assert_called_once_with()
+
+    def test_an_interrupt_during_the_build_still_cleans_up(self, monkeypatch, tmp_path):
+        import lilbee.retrieval.concepts as concepts_mod
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+        monkeypatch.setattr(concepts_mod, "ConceptGraph", MagicMock(side_effect=KeyboardInterrupt))
+        provider = MagicMock()
+
+        with pytest.raises(KeyboardInterrupt):
+            build_services(cfg, provider=provider)
+
+        new_store.close.assert_called_once_with()
+
+    def test_a_cleanup_error_is_logged_and_the_build_error_stays(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        new_store.close.side_effect = RuntimeError("close failed")
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+
+        with caplog.at_level("WARNING"), pytest.raises(OSError, match="boom"):
+            build_services(cfg, provider=MagicMock())
+
+        assert "Cleanup after a failed services build failed" in caplog.text
+
 
 class TestServicesScope:
     """``services_scope`` shadows the singleton for the block without touching it."""
