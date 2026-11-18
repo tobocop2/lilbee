@@ -21,18 +21,23 @@ from tests.conftest import make_mock_services
 @pytest.fixture(autouse=True)
 def mock_services():
     """Mock services for every chunker test: the sizer reads the provider's embed cap
-    and binds its tokenizer to the provider; the binding is dropped after each test."""
+    and binds its tokenizer to the provider; each test starts and ends with no binding,
+    since a test in another file that chunks text leaves one in the worker."""
     import xberg
 
     import lilbee.app.services as svc_mod
     from lilbee.data.types import TokenizerBackendName
 
+    def drop_binding() -> None:
+        if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
+            xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+
+    drop_binding()
     services = make_mock_services()
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
-    if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
-        xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+    drop_binding()
 
 
 @dataclass
