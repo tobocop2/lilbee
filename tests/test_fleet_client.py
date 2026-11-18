@@ -3954,8 +3954,10 @@ def test_json_schema_refused_on_mlx() -> None:
             [{"role": "user", "content": "hi"}], options={"response_format": _SCHEMA_FORMAT}
         )
     assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
-    assert "mlx-lm" in str(refused.value)
-    assert "llama.cpp" in str(refused.value)
+    assert str(refused.value) == (
+        "mlx-lm does not enforce a JSON schema. Use a llama.cpp model for structured output."
+    )
+    assert refused.value.provider == "mlx-lm"
     assert sent == []
 
 
