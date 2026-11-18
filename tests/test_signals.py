@@ -36,7 +36,7 @@ def _child_report(preexec: Callable[[], None] | None) -> str:
     done = subprocess.run(
         [sys.executable, "-I", "-c", _REPORT],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=30,
         preexec_fn=preexec,
         check=True,
