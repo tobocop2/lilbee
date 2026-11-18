@@ -15,7 +15,12 @@ from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
-from lilbee.catalog.formats import formats_from_tags, select_files
+from lilbee.catalog.formats import (
+    SAFETENSORS_INDEX,
+    formats_from_tags,
+    require_declared_shards,
+    select_files,
+)
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HfToken,
@@ -533,6 +538,12 @@ def fetch_format_files(
     selected = select_files(entry.format, _repo_sibling_files(entry.hf_repo))
     if not selected:
         raise RuntimeError(f"No {entry.format} model files found in {entry.hf_repo}")
+    if SAFETENSORS_INDEX in selected:
+        index_path = (
+            _cached_path(entry.hf_repo, SAFETENSORS_INDEX, models_dir)
+            or _fetch_files(entry, models_dir, token, [SAFETENSORS_INDEX], None, on_probe)[0]
+        )
+        require_declared_shards(index_path.read_text(encoding="utf-8"), selected)
     cached = {
         name: path
         for name in selected

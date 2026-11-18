@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -10,8 +11,12 @@ import httpx
 import pytest
 
 from lilbee.app.services import get_services
-from lilbee.catalog import download
-from lilbee.catalog.formats import formats_from_tags, hf_listing_params, select_files
+from lilbee.catalog import download, formats
+from lilbee.catalog.formats import (
+    formats_from_tags,
+    hf_listing_params,
+    select_files,
+)
 from lilbee.catalog.models import CatalogModel, estimate_size_gb
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 from lilbee.core.config.model import cfg
@@ -506,6 +511,67 @@ class TestDownloadRouting:
                 on_progress=lambda a, b: seen.append((a, b)),
             )
         assert seen == [(15, 15)]
+
+
+_INDEX = "model.safetensors.index.json"
+
+
+def _index_text(*shards: str) -> str:
+    return json.dumps({"weight_map": {f"layer{n}": shard for n, shard in enumerate(shards)}})
+
+
+class TestIndexDeclaredShards:
+    def test_a_shard_the_index_names_and_the_listing_lacks_is_refused(self) -> None:
+        selected = [_INDEX, "part-a.safetensors", "config.json"]
+        with pytest.raises(ValueError, match=r"Incomplete model: part-b\.safetensors is missing"):
+            formats.require_declared_shards(
+                _index_text("part-a.safetensors", "part-b.safetensors"), selected
+            )
+
+    def test_a_complete_declared_set_passes(self) -> None:
+        selected = [_INDEX, "part-a.safetensors", "part-b.safetensors"]
+        formats.require_declared_shards(
+            _index_text("part-a.safetensors", "part-b.safetensors"), selected
+        )
+
+    @pytest.mark.parametrize("text", ["not json", "[]", "{}", '{"weight_map": []}'])
+    def test_an_index_without_a_weight_map_is_refused(self, text: str) -> None:
+        with pytest.raises(ValueError, match="lists no weight_map"):
+            formats.require_declared_shards(text, [_INDEX])
+
+    def test_a_pull_refuses_a_missing_declared_shard_before_any_weight_fetch(
+        self, tmp_path: Path
+    ) -> None:
+        listing = [_INDEX, "part-a.safetensors", "config.json"]
+        entry = _entry(ModelFormat.SAFETENSORS)
+        probe = mock.Mock()
+        index = mock.Mock(spec=Path)
+        index.read_text.return_value = _index_text("part-a.safetensors", "part-b.safetensors")
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=listing),
+            mock.patch.object(download, "_cached_path", return_value=None) as cached,
+            mock.patch.object(download, "_fetch_files", return_value=[index]) as fetch,
+            pytest.raises(ValueError, match=r"part-b\.safetensors is missing"),
+        ):
+            download.fetch_format_files(entry, tmp_path, "token", on_probe=probe)
+        cached.assert_called_once_with("org/repo", _INDEX, tmp_path)
+        fetch.assert_called_once_with(entry, tmp_path, "token", [_INDEX], None, probe)
+        index.read_text.assert_called_once_with(encoding="utf-8")
+
+    def test_a_cached_index_is_read_without_a_fetch(self, tmp_path: Path) -> None:
+        listing = [_INDEX, "part-a.safetensors", "part-b.safetensors"]
+        index = tmp_path / _INDEX
+        index.write_text(_index_text("part-a.safetensors", "part-b.safetensors"), encoding="utf-8")
+        for name in listing[1:]:
+            (tmp_path / name).write_bytes(b"x")
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=listing),
+            mock.patch.object(download, "_cached_path", side_effect=lambda _r, n, d: d / n),
+            mock.patch.object(download, "_fetch_files") as fetch,
+        ):
+            path = download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+        assert path == tmp_path / "part-a.safetensors"
+        fetch.assert_not_called()
 
 
 def _seed_snapshot(models_dir: Path, files: dict[str, bytes]) -> dict[str, Path]:
