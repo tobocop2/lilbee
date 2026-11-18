@@ -288,9 +288,9 @@ def _width_readable(meta: LanceTable) -> bool:
     return meta.count_rows("updated_at IS NULL") == 0
 
 
-def stored_width(value: int | None) -> int | None:
-    """The width a ``_meta`` row holds, or ``None`` when it holds none above 0."""
-    return value if value is not None and value > 0 else None
+def stored_width(value: int | str | None) -> int | None:
+    """The width a ``_meta`` row holds, or ``None`` when it holds no integer above 0."""
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
