@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
-from pydantic import BaseModel, Field, create_model, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
@@ -1181,6 +1181,17 @@ _M = TypeVar("_M", bound=BaseModel)
 def refusing_wheel(model: type[_M]) -> type[_M]:
     """A subclass of *model* that refuses a ``wheel`` entry."""
     return cast("type[_M]", create_model(model.__name__, __base__=(model, RefusesWheel)))
+
+
+class HidesInput(BaseModel):
+    """Mixin for an input model whose validation errors never echo the rejected input."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+
+def hiding_input(model: type[_M]) -> type[_M]:
+    """A subclass of *model* whose validation errors leave out the rejected input."""
+    return cast("type[_M]", create_model(model.__name__, __base__=(model, HidesInput)))
 
 
 class EngineInstallBody(RefusesWheel):

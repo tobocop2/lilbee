@@ -1,5 +1,7 @@
 """Tests for the MCP preset tools, run against the real service and a temp config."""
 
+import ast
+import inspect
 import json
 
 import pytest
@@ -193,3 +195,22 @@ async def test_a_search_validation_error_still_shows_the_input():
     with pytest.raises(ToolError, match="input_value=") as caught:
         await server.call_tool("search", {"query": ["PLANT"]})
     assert "PLANT" in str(caught.value)
+
+
+def test_the_server_build_reaches_no_private_attribute_of_the_library_server():
+    tree = ast.parse(inspect.getsource(mcp_server))
+    private = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "_tool_manager"
+    }
+    assert private == set()
+
+
+@pytest.mark.parametrize("tool", ["preset_add", "preset_edit"])
+async def test_a_missing_field_error_leaves_the_sent_key_out(tool):
+    server = mcp_server.build_mcp_server()
+    with pytest.raises(ToolError, match="Field required") as caught:
+        await server.call_tool(tool, {"api_key": KEY})
+    assert KEY not in str(caught.value)
+    assert KEY not in repr(caught.value.__cause__)

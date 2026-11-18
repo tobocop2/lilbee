@@ -24,6 +24,7 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.tools import Tool
 from mcp.types import CallToolResult, ContentBlock, TextContent
 from mcp.types import Tool as MCPTool
 from pydantic import BaseModel, Field
@@ -2448,21 +2449,22 @@ def build_mcp_server() -> LilbeeMCP:
     so a shared server cannot back two apps in one process. Gates registered
     via ``_tool_if`` are evaluated here, against current config.
     """
-    server = LilbeeMCP("lilbee", instructions=_INSTRUCTIONS)
-    for fn, name, gate in _REGISTRATIONS:
-        if gate is None or gate():
-            server.add_tool(fn, name=name)
-    for tool in server._tool_manager.list_tools():
-        if tool.name in _PRESET_TOOL_NAMES:
-            # A key sent as the wrong type must not come back in the validation error.
-            tool.fn_metadata.arg_model.model_config["hide_input_in_errors"] = True
-            tool.fn_metadata.arg_model.model_rebuild(force=True)
-        if tool.name == "engine_install":
-            # The wheel option is CLI only: a call that sets it is refused, not dropped.
-            from lilbee.server.models import refusing_wheel
+    tools = [_build_tool(fn, name) for fn, name, gate in _REGISTRATIONS if gate is None or gate()]
+    return LilbeeMCP("lilbee", instructions=_INSTRUCTIONS, tools=tools)
 
-            tool.fn_metadata.arg_model = refusing_wheel(tool.fn_metadata.arg_model)
-    return server
+
+def _build_tool(fn: Callable[..., Any], name: str | None) -> Tool:
+    """Build the tool for *fn*, with the argument model its wire name needs."""
+    from lilbee.server.models import hiding_input, refusing_wheel
+
+    tool = Tool.from_function(fn, name=name)
+    if tool.name in _PRESET_TOOL_NAMES:
+        # A key sent as the wrong type must not come back in the validation error.
+        tool.fn_metadata.arg_model = hiding_input(tool.fn_metadata.arg_model)
+    if tool.name == "engine_install":
+        # The wheel option is CLI only: a call that sets it is refused, not dropped.
+        tool.fn_metadata.arg_model = refusing_wheel(tool.fn_metadata.arg_model)
+    return tool
 
 
 _PARENT_DEATH_CLEANUP_S = 5.0
