@@ -3343,6 +3343,49 @@ class TestFlashAttentionParity:
             is False
         )
 
+    @pytest.mark.parametrize(
+        ("flash", "backend", "on_cpu", "role", "mode", "expected"),
+        [
+            pytest.param(True, "CUDA", False, WorkerRole.CHAT, None, True, id="on-card"),
+            pytest.param(True, "CUDA", True, WorkerRole.CHAT, None, True, id="on-cpu"),
+            pytest.param(None, "Vulkan", False, WorkerRole.CHAT, None, False, id="auto-card"),
+            pytest.param(None, "Vulkan", True, WorkerRole.CHAT, None, True, id="auto-cpu"),
+            pytest.param(False, "CUDA", True, WorkerRole.CHAT, None, False, id="off-cpu"),
+            pytest.param(None, "Vulkan", True, WorkerRole.EMBED, None, False, id="auto-cpu-embed"),
+            pytest.param(
+                None,
+                "Vulkan",
+                True,
+                WorkerRole.RERANK,
+                RerankMode.CROSS_ENCODER,
+                False,
+                id="auto-cpu-cross-encoder",
+            ),
+            pytest.param(
+                None,
+                "Vulkan",
+                True,
+                WorkerRole.RERANK,
+                RerankMode.LLM,
+                True,
+                id="auto-cpu-llm-reranker",
+            ),
+        ],
+    )
+    def test_auto_is_assumed_on_only_where_the_weights_load_on_the_cpu(
+        self,
+        monkeypatch,
+        flash: bool | None,
+        backend: str,
+        on_cpu: bool,
+        role: WorkerRole,
+        mode: RerankMode | None,
+        expected: bool,
+    ) -> None:
+        monkeypatch.setattr(cfg, "flash_attention", flash)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda engine: backend)
+        assert planning_mod._role_flash(role, mode, engine=LLAMA, on_cpu=on_cpu) is expected
+
     def test_auto_is_still_estimated_as_though_off(self, monkeypatch) -> None:
         # Under auto the engine decides at load, so the estimate must assume the
         # larger no-flash cache rather than the one it might not get.

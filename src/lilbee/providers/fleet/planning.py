@@ -517,6 +517,7 @@ def _fit_slots(
     from lilbee.providers.base import ProviderError
 
     layers = _role_gpu_layers(role)
+    on_cpu = unified and _weights_on_cpu(engine, layers)
     for slots in range(ceiling, 1, -1):
         try:
             est = engine.estimate_memory(
@@ -525,8 +526,8 @@ def _fit_slots(
                     ctx=ctx,
                     slots=slots,
                     gpu_layers=layers,
-                    on_cpu=unified and _weights_on_cpu(engine, layers),
-                    flash_attn=_role_flash(role, rerank_mode, engine=engine),
+                    on_cpu=on_cpu,
+                    flash_attn=_role_flash(role, rerank_mode, engine=engine, on_cpu=on_cpu),
                     kv_cache_type=_role_kv_cache_type(role, engine=engine),
                     mmproj_path=mmproj_path,
                     expert_offload=_role_expert_offload(model_path, engine=engine),
@@ -559,6 +560,7 @@ def fit_chat_ctx(
     """
     layers = _role_gpu_layers(WorkerRole.CHAT)
     unified = plan_sizing_is_unified(engine)
+    on_cpu = unified and _weights_on_cpu(engine, layers)
     ctx = fleet_ctx.fit_single_ctx(
         model_path,
         engine=engine,
@@ -566,10 +568,10 @@ def fit_chat_ctx(
         slots=1,
         available_bytes=available_bytes,
         gpu_layers=layers,
-        flash_attn=_role_flash(WorkerRole.CHAT, engine=engine),
+        flash_attn=_role_flash(WorkerRole.CHAT, engine=engine, on_cpu=on_cpu),
         kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT, engine=engine),
         unified=unified,
-        on_cpu=unified and _weights_on_cpu(engine, layers),
+        on_cpu=on_cpu,
         ctx_ceiling=ctx_ceiling,
         expert_offload=_role_expert_offload(model_path, engine=engine),
     )
@@ -884,18 +886,21 @@ def _role_launches_with_flash(
 
 
 def _role_flash(
-    role: WorkerRole, rerank_mode: RerankMode | None = None, *, engine: EngineAdapter
+    role: WorkerRole,
+    rerank_mode: RerankMode | None = None,
+    *,
+    engine: EngineAdapter,
+    on_cpu: bool = False,
 ) -> bool:
     """Whether the estimate may assume flash attention for *role*.
 
-    The launch's own answer, narrowed to a definite ``on``. Under ``auto`` the
-    engine decides at load time, and assuming it would size the KV cache below
-    what the launch may need.
+    A definite ``on``, or ``auto`` for a role whose weights load on the CPU, where
+    the engine resolves ``auto`` to ``on``. Elsewhere ``auto`` stays unassumed.
     """
-    return (
-        _role_launches_with_flash(role, rerank_mode, engine=engine)
-        and flash_attn_flag(engine) == _FLASH_ON
-    )
+    if not _role_launches_with_flash(role, rerank_mode, engine=engine):
+        return False
+    flag = flash_attn_flag(engine)
+    return flag == _FLASH_ON or (on_cpu and flag == _FLASH_AUTO)
 
 
 def _role_kv_cache_type(role: WorkerRole, *, engine: EngineAdapter) -> KvCacheType:
@@ -1026,18 +1031,19 @@ def _estimate_role(
         )
     layers = _role_gpu_layers(role) if gpu_layers is None else gpu_layers
     one_pool = unified_budget is not None or gpu_layers == 0
+    on_cpu = one_pool and _weights_on_cpu(engine, layers)
     est = engine.estimate_memory(
         MemoryRequest(
             model_path=path,
             ctx=ctx,
             slots=slots,
             gpu_layers=layers,
-            flash_attn=_role_flash(role, rerank_mode, engine=engine),
+            flash_attn=_role_flash(role, rerank_mode, engine=engine, on_cpu=on_cpu),
             kv_cache_type=_role_kv_cache_type(role, engine=engine),
             mmproj_path=mmproj,
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
             expert_offload=_role_expert_offload(path, engine=engine),
-            on_cpu=one_pool and _weights_on_cpu(engine, layers),
+            on_cpu=on_cpu,
         )
     )
     fp = est.resident_footprint(unified=one_pool)
