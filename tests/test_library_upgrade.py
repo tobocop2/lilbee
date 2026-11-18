@@ -11,7 +11,7 @@ import sys
 import textwrap
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest import mock
 
 import lancedb
@@ -295,7 +295,6 @@ class TestStoreReportsTheUpgrade:
         assert store.upgrade_progress() is None
         assert store.is_open is False
 
-
     def test_an_upgrade_in_a_step_with_no_event_is_reported_until_it_ends(self, library):
         store = Store(library)
         entered, release = threading.Event(), threading.Event()
@@ -313,6 +312,56 @@ class TestStoreReportsTheUpgrade:
         assert [w.code for w in warnings] == [WarningCode.LIBRARY_UPGRADING]
         assert store.upgrade_progress() is None
         assert store.health_warnings() == []
+
+    def test_an_upgrade_that_took_the_lock_after_a_wait_no_longer_says_waiting(self, library):
+        store = Store(library)
+        entered, release = threading.Event(), threading.Event()
+
+        def _lock(lancedb_dir=None, timeout=None):
+            if timeout == 0.0:
+                raise LockTimeoutError("busy")
+            return nullcontext()
+
+        with (
+            _event_free_upgrade_held(entered, release),
+            mock.patch.object(core_mod, "write_lock", _lock),
+        ):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            progress = store.upgrade_progress()
+            warnings = store.health_warnings()
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert progress is not None
+        assert "Waiting for another lilbee process" not in progress.text
+        assert "Waiting for another lilbee process" not in warnings[0].message
+
+    def test_an_upgrade_past_its_last_table_no_longer_names_a_table(self, library):
+        store = Store(library)
+        entered, release = threading.Event(), threading.Event()
+
+        def _migrate(self, db):
+            step = core_mod._TableStep(TableWork.ADDING_IDS, "citations", 2, 5, 6)
+            self._report_upgrade(UpgradePhase.TABLE, step)
+
+        def _held(db, locations):
+            entered.set()
+            release.wait(timeout=30)
+
+        with (
+            mock.patch.object(Store, "_migrate_unlocked", _migrate),
+            mock.patch.object(core_mod, "_fill_locations", _held),
+        ):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            progress = store.upgrade_progress()
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert progress is not None
+        assert progress.phase is UpgradePhase.STARTING
+        assert progress.table == ""
 
 
 class TestOthersWaitForTheUpgrade:
@@ -1066,7 +1115,9 @@ class TestServerShowsTheUpgrade:
         assert read_text(body) == "lilbee is opening the library. Try again in a few seconds."
         assert body["upgrade"] is None
 
-    async def test_a_request_held_in_a_step_with_no_event_says_upgrading(self, library, monkeypatch):
+    async def test_a_request_held_in_a_step_with_no_event_says_upgrading(
+        self, library, monkeypatch
+    ):
         from lilbee.server import app as app_mod
         from lilbee.server.app import create_app
         from tests.conftest import make_mock_services
