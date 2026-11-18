@@ -15,7 +15,7 @@ import pytest
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "gen_engine_packs.py"
 TEI = "lilbee_engine_tei-1.9.4-1.cpu-py3-none-manylinux_2_34_x86_64.whl"
 LLAMA = "lilbee_engine_llama_cpp-1.0-1.cpu-py3-none-win_amd64.whl"
-BASE = "https://github.com/tobocop2/lilbee/releases/download/"
+BASE = "https://github.com/tobocop2/lilbee-engine-packs/releases/download/"
 
 
 @pytest.fixture(scope="module")
@@ -173,7 +173,7 @@ def test_the_releases_come_from_the_github_api_one_object_per_line(
     monkeypatch.setattr(tool.subprocess, "run", fake_run)
     assert [r["tag_name"] for r in tool.fetch_releases()] == ["a", "b"]
     assert seen[0][:3] == ["gh", "api", "--paginate"]
-    assert "repos/tobocop2/lilbee/releases" in seen[0]
+    assert "repos/tobocop2/lilbee-engine-packs/releases" in seen[0]
 
 
 def test_the_tool_reads_the_repository_that_the_pack_url_names(tool: ModuleType) -> None:

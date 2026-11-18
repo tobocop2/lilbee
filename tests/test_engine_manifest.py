@@ -171,7 +171,7 @@ def test_tei_digest_follows_the_host_cell(monkeypatch: pytest.MonkeyPatch) -> No
     assert _pin(monkeypatch, EngineName.TEI, "Windows", "AMD64")["sha256"] is None
 
 
-_TEI_RELEASE = "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261116-tei-2/"
+_TEI_RELEASE = PACKAGES_URL + "engine-packs-20261118/"
 _TEI_CELLS = {
     "cpu": "linux-x86_64-cpu",
     "metal": "macos-arm64-metal",
@@ -325,19 +325,19 @@ SHIPPED_LLAMA = {
     ("Darwin", "arm64"): (
         "macos-arm64-metal",
         "07d954f73523abfe72c10ed61fa21d3e1877610be0991b7901e400841db7d8ce",
-        "engine-packs-20261115",
+        "engine-packs-20261118",
         1,
     ),
     ("Linux", "x86_64"): (
         "linux-x86_64-cpu",
         "7955bb3f571422fbe4789e7f50a4b56b6a05f723b65babad8c3e1d4426b8be80",
-        "engine-packs-20261115",
+        "engine-packs-20261118",
         1,
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cpu",
         "da9133af67820251f669e53d44e8adf0f2d59ce9a11107127348cbf5a68e15f9",
-        "engine-packs-20261116-llama-win",
+        "engine-packs-20261118",
         2,
     ),
 }
@@ -363,12 +363,12 @@ SHIPPED_LLAMA_CUDA = {
     ("Linux", "x86_64"): (
         "linux-x86_64-cuda",
         "12ea17e67f6931d3bb95ee529d729baadcbe0a0726ebd86501a3d1477fcab785",
-        "engine-packs-20261115",
+        "engine-packs-20261118",
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cuda",
         "f535f6d7a796c957df2bc9799c9a82c86457202d229985bd633a0cd32cc84d69",
-        "engine-packs-20261116-llama-win",
+        "engine-packs-20261118",
     ),
 }
 
@@ -387,7 +387,7 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     assert pin["platforms"][cell]["url"].startswith(
-        f"https://github.com/tobocop2/lilbee/releases/download/{release}/"
+        f"https://github.com/tobocop2/lilbee-engine-packs/releases/download/{release}/"
     )
 
 
@@ -413,7 +413,7 @@ def test_each_host_resolves_its_own_mistral_pack_from_the_shipped_table(
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     assert pin["platforms"][cell]["url"].startswith(
-        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261115-mistralrs/"
+        "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261118/"
     )
 
 
@@ -439,19 +439,20 @@ def _fetch(monkeypatch: pytest.MonkeyPatch, url: str, tmp_path: Path) -> None:
     engine_store.fetch_frozen(lock, "linux-x86_64-cpu", dest=tmp_path)
 
 
-def test_the_shipped_pack_base_is_the_release_downloads_of_lilbee() -> None:
-    assert PACKAGES_URL == "https://github.com/tobocop2/lilbee/releases/download/"
+def test_the_shipped_pack_base_is_the_release_downloads_of_the_packs_repository() -> None:
+    assert PACKAGES_URL == "https://github.com/tobocop2/lilbee-engine-packs/releases/download/"
 
 
 @pytest.mark.parametrize(
     "url",
     [
         "https://github.com/other/repo/releases/download/x/y.whl",
-        "https://github.com/tobocop2/lilbee/archive/y.whl",
-        "https://raw.githubusercontent.com/tobocop2/lilbee/main/y.whl",
+        "https://github.com/tobocop2/lilbee/releases/download/x/y.whl",
+        "https://github.com/tobocop2/lilbee-engine-packs/archive/y.whl",
+        "https://raw.githubusercontent.com/tobocop2/lilbee-engine-packs/main/y.whl",
     ],
 )
-def test_the_shipped_pack_base_refuses_a_url_outside_the_lilbee_releases(
+def test_the_shipped_pack_base_refuses_a_url_outside_the_packs_releases(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str
 ) -> None:
     with pytest.raises(engine_store.PackUrlError, match="not on the pack index"):

@@ -199,5 +199,8 @@ def test_a_record_that_is_not_json_is_refused(monkeypatch: pytest.MonkeyPatch) -
         load_manifests()
 
 
-def test_the_pack_base_is_the_release_downloads_of_lilbee() -> None:
-    assert engine_record.PACKAGES_URL == "https://github.com/tobocop2/lilbee/releases/download/"
+def test_the_pack_base_is_the_release_downloads_of_the_packs_repository() -> None:
+    assert (
+        engine_record.PACKAGES_URL
+        == "https://github.com/tobocop2/lilbee-engine-packs/releases/download/"
+    )
