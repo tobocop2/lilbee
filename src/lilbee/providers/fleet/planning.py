@@ -3883,9 +3883,10 @@ def _placement_or_auto(
     caller just asked for and a silent substitution would be the surprise. A spec
     that names a device target also fails loud on a pin error: the target is a
     refusal to run anywhere else, and automatic placement would put that role on a
-    card. A role whose target the engine cannot run, an auto role with no room beside
-    the named roles, or a named role its card cannot hold in a spec that has a role off
-    the cards, raises for :func:`_placement_that_runs` to refuse alone.
+    card. A role with no entry, a role whose target the engine cannot run, an auto
+    role with no room beside the named roles, or a named role its card cannot hold in
+    a spec that has a role off the cards, raises for :func:`_placement_that_runs` to
+    refuse alone.
     """
     if placement is None:
         return _resolve_placement(

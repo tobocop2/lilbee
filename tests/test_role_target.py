@@ -621,7 +621,7 @@ class TestARefusedRoleDoesNotStopTheOthers:
 
 
 class TestAGoneCardRefusesOnlyItsRole:
-    """With a target in the spec, a pin to a missing card refuses that role and no other."""
+    """With a target in the spec, a missing card or a missing entry refuses that role alone."""
 
     ROLES = (WorkerRole.CHAT, WorkerRole.VISION, WorkerRole.EMBED)
 
@@ -717,6 +717,46 @@ class TestAGoneCardRefusesOnlyItsRole:
         spec = '{"chat": {"devices": [0]}, "vision": {"devices": [1]}, "embed": {"devices": [0]}}'
         with caplog.at_level(logging.WARNING):
             plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert sorted(launch.role for launch in plan.launches) == sorted(self.ROLES)
+        assert plan.refused_roles == {}
+        assert "using automatic placement instead" in caplog.text
+
+    @staticmethod
+    def _no_entry(role: str) -> str:
+        return (
+            f"{role} has a model but the placement has no entry for it. "
+            f"Add an entry for {role} with devices or a target, or clear the placement."
+        )
+
+    def test_a_role_with_no_entry_is_refused_and_the_rest_launch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spec = '{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}'
+        with caplog.at_level(logging.WARNING):
+            plan = self._fleet(monkeypatch, tmp_path, spec)
+        assert sorted(launch.role for launch in plan.launches) == [
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+        ]
+        assert plan.refused_roles == {WorkerRole.VISION: self._no_entry("vision")}
+        assert self._no_entry("vision") in caplog.messages
+        assert "automatic placement" not in caplog.text
+
+    def test_every_role_with_no_entry_is_refused_by_name(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        plan = self._fleet(monkeypatch, tmp_path, '{"embed": {"target": "cpu"}}')
+        assert [launch.role for launch in plan.launches] == [WorkerRole.EMBED]
+        assert plan.refused_roles == {
+            WorkerRole.CHAT: self._no_entry("chat"),
+            WorkerRole.VISION: self._no_entry("vision"),
+        }
+
+    def test_a_spec_of_cards_with_no_entry_for_a_role_still_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            plan = self._fleet(monkeypatch, tmp_path, '{"chat": {"devices": [0]}}')
         assert sorted(launch.role for launch in plan.launches) == sorted(self.ROLES)
         assert plan.refused_roles == {}
         assert "using automatic placement instead" in caplog.text
@@ -832,11 +872,13 @@ class TestMessagesNameTheFix:
 
     def test_role_with_no_entry_names_the_entry_to_add(self) -> None:
         spec = PlacementSpec.from_json('{"embed": {"target": "cpu"}}')
-        with pytest.raises(PlacementError) as caught:
+        with pytest.raises(TargetRefusedError) as caught:
             placement_from_spec(
                 spec, (WorkerRole.CHAT, WorkerRole.EMBED), {0: 8 * GIB}, estimate_peak=_no_estimate
             )
-        assert str(caught.value) == (
+        reason = (
             "chat has a model but the placement has no entry for it. "
             "Add an entry for chat with devices or a target, or clear the placement."
         )
+        assert str(caught.value) == reason
+        assert caught.value.reasons == {WorkerRole.CHAT: reason}

@@ -806,8 +806,9 @@ def placement_from_spec(
     the other roles leave. It never names a card, so a card the machine lacks
     cannot refuse it.
 
-    A role its card cannot hold raises a plain error when the automatic plan can
-    replace the spec. Otherwise it raises :class:`TargetRefusedError`, naming the role.
+    A role with no entry, or one its card cannot hold, raises a plain error when the
+    automatic plan can replace the spec. Otherwise it raises
+    :class:`TargetRefusedError`, naming the role.
     """
     from lilbee.providers.fleet.engines.base import SplitRefusedError
 
@@ -818,7 +819,9 @@ def placement_from_spec(
     card_roles: list[WorkerRole] = []
     held: dict[int, list[RoomHolder]] = {}
     for role in active_roles:
-        rp = _required_entry(spec, role, device_capacity, lost_card)
+        rp = _required_entry(
+            spec, role, device_capacity, lost_card, refuse_alone=not spec.all_on_cards
+        )
         if rp.device_target is RoleTarget.AUTO:
             auto_roles.append(role)
             continue
@@ -991,14 +994,20 @@ def _required_entry(
     role: WorkerRole,
     device_capacity: dict[int, int],
     lost_card: LostCardWording | None = None,
+    *,
+    refuse_alone: bool,
 ) -> RolePlacement:
-    """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
+    """Return *role*'s placement entry, failing loud if absent or pinned off-hardware.
+
+    With *refuse_alone* a missing entry refuses that role alone.
+    """
     rp = spec.roles.get(role)
     if rp is None:
-        raise PlacementError(
+        reason = (
             f"{role.value} has a model but the placement has no entry for it. "
             f"Add an entry for {role.value} with devices or a target, or clear the placement."
         )
+        raise _spec_refusal(role, reason, refuse_alone=refuse_alone)
     lost = [idx for idx in rp.devices if idx not in device_capacity]
     if lost:
         word = lost_card or functools.partial(lost_card_reason, listed=list(device_capacity))
