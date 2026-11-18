@@ -1662,9 +1662,48 @@ class TestBuildFleetWiring:
             ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
         ]
         reserved = planning_mod._non_chat_reservation(
-            instances, inputs, frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+            instances, inputs, (frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION}))
         )
         assert reserved == {0: 3 * _GB}
+
+    def test_non_chat_reservation_charges_chats_class_mates(self) -> None:
+        # Rerank stays loaded beside chat (one class), so its VRAM is held back from
+        # the chat shard's KV; only the evicted vision is not.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 2 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances,
+            inputs,
+            (frozenset({WorkerRole.CHAT, WorkerRole.RERANK}), frozenset({WorkerRole.VISION})),
+        )
+        assert reserved == {0: 2 * _GB}
+
+    def test_room_beside_placed_charges_the_largest_class_sum(self) -> None:
+        # Chat 3 + rerank 2 stay loaded together (5 GiB); vision (4 GiB) is evicted by
+        # them, so the card holds the larger class, not the largest single role.
+        placement = Placement(
+            instances=(
+                InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+                InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+                InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            ),
+            unplaceable_roles=(),
+            swap_classes=(
+                frozenset({WorkerRole.CHAT, WorkerRole.RERANK}),
+                frozenset({WorkerRole.VISION}),
+            ),
+        )
+        charges = {WorkerRole.CHAT: 3 * _GB, WorkerRole.RERANK: 2 * _GB, WorkerRole.VISION: 4 * _GB}
+        room = planning_mod._room_beside_placed(placement, charges, {0: 10 * _GB})
+        assert room == pytest.approx(10 * _GB * planning_mod.usable_vram_fraction() - 5 * _GB)
 
     def test_non_chat_reservation_charges_a_co_tenant_group_without_chat(self) -> None:
         # A vision/rerank swap group that excludes chat runs behind its own process
@@ -1683,7 +1722,7 @@ class TestBuildFleetWiring:
             ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
         ]
         reserved = planning_mod._non_chat_reservation(
-            instances, inputs, frozenset({WorkerRole.VISION, WorkerRole.RERANK})
+            instances, inputs, (frozenset({WorkerRole.VISION}), frozenset({WorkerRole.RERANK}))
         )
         assert reserved == {0: (6 + 2 + 3) * _GB}
 
@@ -2237,7 +2276,7 @@ class TestBuildFleetWiring:
             lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
                 unplaceable_roles=(),
-                co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+                swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
             ),
         )
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
@@ -2246,8 +2285,7 @@ class TestBuildFleetWiring:
             plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
 
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
-        assert "chat, vision" in caplog.text
-        assert "only one is resident" in caplog.text
+        assert "chat, vision: share memory, one loaded at a time" in caplog.text
 
     @staticmethod
     def _chat_launch_kwargs(monkeypatch, sizes: dict[WorkerRole, int]) -> dict:

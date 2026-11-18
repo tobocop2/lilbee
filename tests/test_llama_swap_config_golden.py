@@ -1,4 +1,4 @@
-"""The llama-swap config of the llama.cpp adapter equals the one origin/main writes."""
+"""The llama-swap config of the llama.cpp adapter equals the recorded golden."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import build_swap_config
 from tests._llama_swap_scenario import BASE_PORT, BINARY, CONFIGS, LOG_DIR, THREADS, members
 
-# The text origin/main writes for the same model set, one string per config.
+# The text recorded for the same model set, one string per config. The default entry
+# is what origin/main writes; the swap entry has one group per launch.
 GOLDEN = Path(__file__).parent / "llama_swap_config_main_golden.json"
 _GOLDEN_WORKERS = 14
 
@@ -67,7 +68,7 @@ def test_the_scenario_paths_render_the_same_on_every_host() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(CONFIGS))
-def test_the_config_is_byte_identical_to_origin_main(name: str) -> None:
+def test_the_config_is_byte_identical_to_the_golden(name: str) -> None:
     launches = _launches()
     ports = {launch.model_id: BASE_PORT + i for i, launch in enumerate(launches)}
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))

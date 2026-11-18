@@ -470,15 +470,52 @@ class TestTheBoundChargesWhatTheCardsCommit:
             InstancePlan(role=WorkerRole.VISION, devices=(0,)),
             InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU),
         ]
-        swapped = frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        swapped = (frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION}))
         assert (
             planning._cpu_roles_past_memory(
-                spec, inputs, instances, unified=True, co_tenants=swapped
+                spec, inputs, instances, unified=True, swap_classes=swapped
             )
             == {}
         )
         refused = planning._cpu_roles_past_memory(
-            spec, inputs, instances, unified=True, co_tenants=frozenset()
+            spec, inputs, instances, unified=True, swap_classes=()
+        )
+        assert list(refused) == [WorkerRole.EMBED]
+
+    def test_a_class_of_two_roles_commits_the_sum_of_its_members(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 32 * GIB)
+        spec = PlacementSpec.from_json(
+            '{"chat": {"target": "auto"}, "rerank": {"target": "auto"}, '
+            '"vision": {"target": "auto"}, "embed": {"target": "cpu"}}'
+        )
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 14 * GIB),
+            ModelPlacementInput(WorkerRole.RERANK, 10 * GIB),
+            ModelPlacementInput(WorkerRole.VISION, 10 * GIB),
+            ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=12 * GIB),
+        ]
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU),
+        ]
+        apart = (
+            frozenset({WorkerRole.CHAT}),
+            frozenset({WorkerRole.RERANK}),
+            frozenset({WorkerRole.VISION}),
+        )
+        together = (frozenset({WorkerRole.CHAT, WorkerRole.RERANK}), frozenset({WorkerRole.VISION}))
+        assert (
+            planning._cpu_roles_past_memory(
+                spec, inputs, instances, unified=True, swap_classes=apart
+            )
+            == {}
+        )
+        refused = planning._cpu_roles_past_memory(
+            spec, inputs, instances, unified=True, swap_classes=together
         )
         assert list(refused) == [WorkerRole.EMBED]
 

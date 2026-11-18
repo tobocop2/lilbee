@@ -205,6 +205,15 @@ def test_est_host_bytes_round_trips_through_the_state_file() -> None:
     assert InstanceLaunch.from_state(legacy).est_host_bytes == 0
 
 
+def test_swap_class_round_trips_through_the_state_file() -> None:
+    launch = _launch(WorkerRole.CHAT, "m-chat", slots=1)
+    launch.swap_class = "1"
+    assert InstanceLaunch.from_state(launch.to_state()).swap_class == "1"
+    legacy = launch.to_state()
+    del legacy["swap_class"]
+    assert InstanceLaunch.from_state(legacy).swap_class == ""
+
+
 def test_swap_extras_and_settings_round_trip_through_the_state_file() -> None:
     launch = _launch(WorkerRole.CHAT, "m-chat", slots=1)
     launch.swap_extras = {"ttl": 30}

@@ -23,6 +23,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.runtime.console import styled
 
@@ -116,9 +117,8 @@ def _render_view(view: PlacementView) -> None:
             soft_wrap=True,
         )
 
-    if view.co_tenants:
-        names = ", ".join(role.value for role in view.co_tenants)
-        console.print(f"  {names}: share memory, one loaded at a time", style=theme.MUTED)
+    if view.swap_classes:
+        console.print(f"  {swap_summary(view.swap_classes)}", style=theme.MUTED)
 
     for role in view.unplaceable:
         console.print(f"  {role.value}: does not fit, no server", style=theme.ERROR)

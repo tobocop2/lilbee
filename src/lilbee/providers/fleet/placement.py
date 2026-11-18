@@ -16,12 +16,13 @@ from __future__ import annotations
 import functools
 import itertools
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import reduce
 from math import ceil, gcd
 from types import MappingProxyType
 
+from lilbee.providers.fleet.groups import class_roles, residency_classes
 from lilbee.providers.fleet.memory_types import MemoryKind
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
@@ -33,6 +34,12 @@ from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import ROLE_REGISTRY, RoleTarget, WorkerRole
 
 log = logging.getLogger(__name__)
+
+# The one device key of the shared memory pool, where a plan has no cards.
+_POOL = 0
+# Float slack when a merged class is tested against the room left: charges are whole bytes
+# summed as floats, so an exact fit can read a rounding error short.
+_ROUNDING_BYTES = 1.0
 
 # (role, per-device tensor-split ratio) -> the instance's per-device VRAM footprint
 # vector aligned to that ratio. A split is accepted only when every card's entry
@@ -108,15 +115,20 @@ class Placement:
     ``ProviderError`` (there is no in-process fallback); the shared-memory path
     and a plan with several engines produce them. On GPUs a plan with one engine
     places a role that fits nowhere anyway and lists it in ``tight_roles`` with
-    its estimated shortfall in bytes. ``co_tenants`` share one llama-swap group
-    and evict each other on demand, so only one is resident at a time; each runs
-    a single instance.
+    its estimated shortfall in bytes. ``swap_classes`` split the co-tenants of one
+    swap process: roles in one class stay loaded together, and loading a
+    role of another class evicts them. Each co-tenant runs a single instance.
     """
 
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
-    co_tenants: frozenset[WorkerRole] = frozenset()
+    swap_classes: tuple[frozenset[WorkerRole], ...] = ()
     tight_roles: dict[WorkerRole, int] = field(default_factory=dict)
+
+    @property
+    def co_tenants(self) -> frozenset[WorkerRole]:
+        """Every role that runs in the shared swap process."""
+        return class_roles(self.swap_classes)
 
 
 def plan_placement(
@@ -136,7 +148,8 @@ def plan_placement(
     a 90% headroom per GPU. A model that fits one GPU takes a single instance; one
     too big for any single GPU is tensor-split. Chat is charged last: when it fits
     only if vision's VRAM is refunded, the two become ``co_tenants`` of one swap
-    group instead of either becoming unplaceable. A model that fits nowhere, even
+    process instead of either becoming unplaceable; ``swap_classes`` splits them into
+    the classes that stay loaded together. A model that fits nowhere, even
     alone beside the pinned tier, is still placed tight and reported in
     ``tight_roles``, unless ``refuse_oversize`` is set: it is then refused and takes
     no card.
@@ -191,15 +204,15 @@ def plan_placement(
         _persistent_single(m) for m in replicated
     ]
 
-    instances, co_tenants, tight = _place_persistent(
+    instances, swap_classes, tight = _place_persistent(
         persistent_singles, placer(remaining), remaining
     )
-    instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
+    instances.extend(_place_elastic(replicated, instances, remaining, class_roles(swap_classes)))
 
     return Placement(
         instances=tuple(instances),
         unplaceable_roles=(),
-        co_tenants=co_tenants,
+        swap_classes=swap_classes,
         tight_roles=tight,
     )
 
@@ -221,7 +234,7 @@ class _RefusingPack:
     """One pass of the refusing packer over fresh cards."""
 
     instances: list[InstancePlan]
-    co_tenants: frozenset[WorkerRole]
+    swap: _SwapGroup
     refused: list[WorkerRole]
     remaining: dict[int, float]
 
@@ -244,12 +257,14 @@ def _place_refusing(
     by_size = sorted(singles, key=lambda m: -m.est_vram_bytes)
     packed = _fewest_refusals(by_priority, by_size, cards, placer)
     replicated = [m for m in on_cards if m.replicas > 1]
-    elastic = _place_elastic(replicated, packed.instances, packed.remaining, packed.co_tenants)
+    packed.swap.merge(packed.remaining)
+    classes = packed.swap.classes
+    elastic = _place_elastic(replicated, packed.instances, packed.remaining, class_roles(classes))
     unpinned = _place_ungated([m for m in models if m.est_vram_bytes == 0])
     return Placement(
         instances=(*packed.instances, *elastic, *unpinned.instances),
         unplaceable_roles=tuple(packed.refused),
-        co_tenants=packed.co_tenants,
+        swap_classes=classes,
     )
 
 
@@ -281,26 +296,26 @@ def _pack_refusing(
     place = placer(remaining)
     instances: list[InstancePlan] = []
     charges: dict[WorkerRole, dict[int, float]] = {}
-    co_tenants: set[WorkerRole] = set()
+    swap = _SwapGroup()
     refused: list[WorkerRole] = []
     for model in singles:
         placed = place(model)
-        if placed is None:
-            placed, group = _place_beside_disjoint(model, place, remaining, charges)
-            co_tenants |= group
+        if placed is not None:
+            charges[model.role] = placed.charges
+        else:
+            placed = _place_beside_disjoint(model, place, remaining, charges, swap)
         if placed is None:
             refused.append(model.role)
             continue
         instances.append(placed.plan)
-        charges[model.role] = placed.charges
-    return _RefusingPack(instances, frozenset(co_tenants), refused, remaining)
+    return _RefusingPack(instances, swap, refused, remaining)
 
 
 def _place_persistent(
     persistent_singles: list[ModelPlacementInput],
     place: Callable[[ModelPlacementInput], _Placed | None],
     remaining: dict[int, float],
-) -> tuple[list[InstancePlan], frozenset[WorkerRole], dict[WorkerRole, int]]:
+) -> tuple[list[InstancePlan], tuple[frozenset[WorkerRole], ...], dict[WorkerRole, int]]:
     """Charge every persistent single in ``placement_rank`` order.
 
     A role that does not fit refunds every already-charged role it is phase-disjoint
@@ -312,20 +327,135 @@ def _place_persistent(
     """
     instances: list[InstancePlan] = []
     charges: dict[WorkerRole, dict[int, float]] = {}
-    co_tenants: set[WorkerRole] = set()
+    swap = _SwapGroup()
     tight: dict[WorkerRole, int] = {}
     for model in sorted(persistent_singles, key=_shared_pool_order):
         placed = place(model)
+        if placed is not None:
+            charges[model.role] = placed.charges
+        else:
+            placed = _place_beside_disjoint(model, place, remaining, charges, swap)
         if placed is None:
-            placed, group = _place_beside_disjoint(model, place, remaining, charges)
-            co_tenants |= group
-        if placed is None:
-            placed, group, shortfall = _place_tight(model, remaining, charges)
-            co_tenants |= group
-            tight[model.role] = shortfall
+            placed, tight[model.role] = _place_tight(model, remaining, charges, swap)
         instances.append(placed.plan)
-        charges[model.role] = placed.charges
-    return instances, frozenset(co_tenants), tight
+    swap.merge(remaining)
+    return instances, swap.classes, tight
+
+
+def _class_slot(
+    own: Mapping[WorkerRole, Mapping[int, float]],
+    classes: tuple[frozenset[WorkerRole], ...],
+) -> dict[int, float]:
+    """Per device, the most VRAM one class holds: its members' charges added up."""
+    slot: dict[int, float] = {}
+    for members in classes:
+        held: dict[int, float] = {}
+        for role in members:
+            for idx, charge in own[role].items():
+                held[idx] = held.get(idx, 0.0) + charge
+        for idx, total in held.items():
+            slot[idx] = max(slot.get(idx, 0.0), total)
+    return slot
+
+
+@dataclass
+class _SwapGroup:
+    """The swap group a pack builds: each member's own charge, the holder and the classes.
+
+    Roles of one class stay loaded together; loading a role of another class evicts
+    them. The group holds, per device, the largest class sum. ``holder`` is the member
+    placed last: a later role takes the group's room back when the holder never runs
+    with it. ``tight`` roles hold what was left of a card, so they join no class.
+    """
+
+    own: dict[WorkerRole, dict[int, float]] = field(default_factory=dict)
+    holder: WorkerRole | None = None
+    tight: set[WorkerRole] = field(default_factory=set)
+    classes: tuple[frozenset[WorkerRole], ...] = ()
+
+    def slot(self) -> dict[int, float]:
+        """The VRAM the group holds on each device."""
+        return _class_slot(self.own, self.classes)
+
+    def frees_for(self, role: WorkerRole) -> bool:
+        """True when the group gives *role* its room: the holder never runs with *role*."""
+        return self.holder is not None and _phase_disjoint(self.holder, role)
+
+    def form(
+        self,
+        members: dict[WorkerRole, dict[int, float]],
+        holder: WorkerRole,
+        remaining: dict[int, float],
+    ) -> None:
+        """Make *members* the group, one class each, and charge its slot beyond the holder's own."""
+        self.own = members
+        self.holder = holder
+        self.classes = _by_first_role(frozenset({role}) for role in members)
+        for idx, amount in self.slot().items():
+            remaining[idx] -= amount - members[holder].get(idx, 0.0)
+
+    def merge(self, remaining: dict[int, float]) -> None:
+        """Merge each set of phase-sharing members whose extra room fits what is left.
+
+        Runs once the pack has placed every role, so a merge never takes room the
+        base plan gives a later role. A tight member holds what its card had left and
+        joins no class.
+        """
+        held = self.slot()
+        for component in residency_classes(role for role in self.own if role not in self.tight):
+            candidate = (*(c for c in self.classes if not c <= component), component)
+            grown = _class_slot(self.own, candidate)
+            growth = {idx: amount - held.get(idx, 0.0) for idx, amount in grown.items()}
+            if all(remaining[idx] - extra >= -_ROUNDING_BYTES for idx, extra in growth.items()):
+                for idx, extra in growth.items():
+                    remaining[idx] -= extra
+                self.classes, held = candidate, grown
+        self.classes = _by_first_role(self.classes)
+
+
+def _by_first_role(
+    classes: Iterable[frozenset[WorkerRole]],
+) -> tuple[frozenset[WorkerRole], ...]:
+    """The classes in a fixed order: by the smallest role value in each."""
+    return tuple(sorted(classes, key=lambda c: min(r.value for r in c)))
+
+
+def _refundable(
+    role: WorkerRole,
+    charges: dict[WorkerRole, dict[int, float]],
+    swap: _SwapGroup,
+) -> tuple[dict[WorkerRole, dict[int, float]], bool]:
+    """The charged roles phase-disjoint from *role*, and whether the swap group yields too."""
+    refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, role)}
+    return refunds, swap.frees_for(role)
+
+
+def _free_room(
+    remaining: dict[int, float],
+    refunds: dict[WorkerRole, dict[int, float]],
+    swap: _SwapGroup,
+    group_yields: bool,
+) -> dict[WorkerRole, dict[int, float]]:
+    """Add the refunds' and a yielding group's VRAM back to *remaining*; the roles freed."""
+    returned = [*refunds.values(), *([swap.slot()] if group_yields else [])]
+    for charged in returned:
+        for idx, held in charged.items():
+            remaining[idx] += held
+    return {**(swap.own if group_yields else {}), **refunds}
+
+
+def _regroup(
+    model: WorkerRole,
+    charge: dict[int, float],
+    freed: dict[WorkerRole, dict[int, float]],
+    remaining: dict[int, float],
+    charges: dict[WorkerRole, dict[int, float]],
+    swap: _SwapGroup,
+) -> None:
+    """Make *model* and the *freed* roles the swap group; they leave the standalone charges."""
+    for role in freed:
+        charges.pop(role, None)
+    swap.form({**freed, model: charge}, model, remaining)
 
 
 def _place_beside_disjoint(
@@ -333,31 +463,26 @@ def _place_beside_disjoint(
     place: Callable[[ModelPlacementInput], _Placed | None],
     remaining: dict[int, float],
     charges: dict[WorkerRole, dict[int, float]],
-) -> tuple[_Placed | None, frozenset[WorkerRole]]:
+    swap: _SwapGroup,
+) -> _Placed | None:
     """Retry *model* with every phase-disjoint charged role's VRAM refunded.
 
     Phase-disjoint roles are never resident together, so they can share one swap
-    group: only the resident one is charged. On success *model* and the refunded
-    roles form the group and the refunded roles drop out of ``charges`` (their VRAM
-    is now the group's shared budget). On failure every refund is rolled back and
-    *model* is genuinely oversize.
+    group: only the resident class is charged. On success *model* and the refunded
+    roles form the group and leave ``charges`` (their VRAM is now the group's slot).
+    On failure every refund is rolled back and *model* is genuinely oversize.
     """
-    refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
-    if not refunds:
-        return None, frozenset()
-    for charged in refunds.values():
-        for idx, held in charged.items():
-            remaining[idx] += held
+    refunds, group_yields = _refundable(model.role, charges, swap)
+    if not refunds and not group_yields:
+        return None
+    before = dict(remaining)
+    freed = _free_room(remaining, refunds, swap, group_yields)
     placed = place(model)
-    if placed is not None:
-        slot = _group_slot(placed.charges, refunds, remaining)
-        for role in refunds:
-            del charges[role]
-        return _Placed(plan=placed.plan, charges=slot), frozenset(refunds) | {model.role}
-    for charged in refunds.values():
-        for idx, held in charged.items():
-            remaining[idx] -= held
-    return None, frozenset()
+    if placed is None:
+        remaining.update(before)
+        return None
+    _regroup(model.role, placed.charges, freed, remaining, charges, swap)
+    return placed
 
 
 def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, ...]:
@@ -422,7 +547,8 @@ def _place_tight(
     model: ModelPlacementInput,
     remaining: dict[int, float],
     charges: dict[WorkerRole, dict[int, float]],
-) -> tuple[_Placed, frozenset[WorkerRole], int]:
+    swap: _SwapGroup,
+) -> tuple[_Placed, int]:
     """Place an oversize *model* best-effort instead of refusing it.
 
     Refunds every phase-disjoint charged role (they become *model*'s swap group),
@@ -436,10 +562,8 @@ def _place_tight(
     split it does not need costs it interconnect bandwidth. A fixed reserve takes the
     roomiest card alone: it has no share per card to check before the launch.
     """
-    refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
-    for charged in refunds.values():
-        for idx, held in charged.items():
-            remaining[idx] += held
+    refunds, group_yields = _refundable(model.role, charges, swap)
+    freed = _free_room(remaining, refunds, swap, group_yields)
     devices = _tight_device_group(model.est_vram_bytes, remaining)
     if model.kind is MemoryKind.FIXED_RESERVE:
         devices = devices[:1]
@@ -447,38 +571,13 @@ def _place_tight(
     available = sum(claimed.values())
     for idx in devices:
         remaining[idx] = 0.0
-    slot = _group_slot(claimed, refunds, remaining)
-    for role in refunds:
-        del charges[role]
-    placed = _Placed(
-        plan=InstancePlan(role=model.role, devices=devices),
-        charges=slot,
-    )
-    group = frozenset(refunds) | {model.role} if refunds else frozenset()
-    return placed, group, ceil(model.est_vram_bytes - available)
-
-
-def _group_slot(
-    trigger: dict[int, float],
-    refunds: dict[WorkerRole, dict[int, float]],
-    remaining: dict[int, float],
-) -> dict[int, float]:
-    """Charge each device the swap group's largest member, not just the trigger.
-
-    Only one member is resident at a time, but every evicted member must be able to
-    swap back in, so the group's per-device slot is the max across members. The
-    shortfall beyond the trigger's own charge is deducted from *remaining* here so
-    the elastic replica tier cannot claim VRAM an evicted member needs to return to.
-    The returned slot is recorded as the trigger's charge, so a later trigger that
-    refunds this group reclaims the whole slot.
-    """
-    slot = dict(trigger)
-    for charged in refunds.values():
-        for idx, held in charged.items():
-            need = max(slot.get(idx, 0.0), held)
-            remaining[idx] -= need - slot.get(idx, 0.0)
-            slot[idx] = need
-    return slot
+    swap.tight.add(model.role)
+    if freed:
+        _regroup(model.role, claimed, freed, remaining, charges, swap)
+    else:
+        charges[model.role] = claimed
+    placed = _Placed(plan=InstancePlan(role=model.role, devices=devices), charges=claimed)
+    return placed, ceil(model.est_vram_bytes - available)
 
 
 def _phase_disjoint(a: WorkerRole, b: WorkerRole) -> bool:
@@ -693,10 +792,8 @@ def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Plac
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
     charged: dict[WorkerRole, int] = {}
-    # A charged role's swap-back need: its single-instance footprint, or, for the
-    # role holding a swap group's budget, the whole group slot.
-    swap_need = {m.role: m.est_vram_bytes for m in models}
-    co_tenants: set[WorkerRole] = set()
+    footprints = {m.role: m.est_vram_bytes for m in models}
+    swap = _SwapGroup()
     for model in sorted(models, key=_shared_pool_order):
         placed = 0
         for _ in range(model.replicas):
@@ -708,16 +805,19 @@ def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Plac
         if placed:
             charged[model.role] = placed * model.est_vram_bytes
             continue
-        remaining, group = _shared_beside_disjoint(model, remaining, charged, swap_need, instances)
-        if group:
+        remaining, joined = _shared_beside_disjoint(
+            model, remaining, charged, footprints, swap, instances
+        )
+        if joined:
             instances.append(InstancePlan(role=model.role, devices=()))
-            co_tenants |= group
         else:
             unplaceable.append(model.role)
+    room = {_POOL: float(remaining)}
+    swap.merge(room)
     return Placement(
         instances=tuple(instances),
         unplaceable_roles=tuple(unplaceable),
-        co_tenants=frozenset(co_tenants),
+        swap_classes=swap.classes,
     )
 
 
@@ -725,32 +825,35 @@ def _shared_beside_disjoint(
     model: ModelPlacementInput,
     remaining: int,
     charged: dict[WorkerRole, int],
-    swap_need: dict[WorkerRole, int],
+    footprints: dict[WorkerRole, int],
+    swap: _SwapGroup,
     instances: list[InstancePlan],
-) -> tuple[int, frozenset[WorkerRole]]:
+) -> tuple[int, bool]:
     """Refund the shared-pool roles phase-disjoint from *model* and cap them to one instance.
 
-    The refunded roles and *model* become one swap group: only one member is resident
-    at a time, but every member must be able to swap back in, so the group is charged
-    its largest member's footprint (the slot), recorded under *model*'s role so a
-    later trigger reclaims the whole slot. Returns the budget after reclaiming the
-    refunded VRAM and charging the slot, plus the group; when even the slot does not
-    fit the reclaimed budget the group is empty and the budget unchanged.
+    The refunded roles and *model* become one swap group on the one pool. Every member
+    must be able to swap back in, so the group holds its largest class sum (see
+    :class:`_SwapGroup`). Returns the budget after reclaiming the refunded memory and
+    charging the group, and whether *model* joined; when even the group's slot does
+    not fit the reclaimed budget the budget is unchanged.
     """
-    refunds = [r for r in list(charged) if _phase_disjoint(r, model.role)]
-    if not refunds:
-        return remaining, frozenset()
-    reclaim = sum(charged[r] for r in refunds)
-    slot = max(model.est_vram_bytes, *(swap_need[r] for r in refunds))
-    if slot > remaining + reclaim:
-        return remaining, frozenset()
+    refunds = [r for r in charged if _phase_disjoint(r, model.role)]
+    group_yields = swap.frees_for(model.role)
+    if not refunds and not group_yields:
+        return remaining, False
+    members = {r: {_POOL: float(footprints[r])} for r in refunds}
+    members = {**(swap.own if group_yields else {}), **members}
+    members[model.role] = {_POOL: float(model.est_vram_bytes)}
+    reclaim = sum(charged[r] for r in refunds) + (int(swap.slot()[_POOL]) if group_yields else 0)
+    if max(charge[_POOL] for charge in members.values()) > remaining + reclaim:
+        return remaining, False
     for role in refunds:
         del charged[role]
         instances[:] = [plan for plan in instances if plan.role is not role]
         instances.append(InstancePlan(role=role, devices=(), replica=0))
-    charged[model.role] = slot
-    swap_need[model.role] = slot
-    return remaining + reclaim - slot, frozenset(refunds) | {model.role}
+    room = {_POOL: float(remaining + reclaim - model.est_vram_bytes)}
+    swap.form(members, model.role, room)
+    return int(room[_POOL]), True
 
 
 def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int, int]:

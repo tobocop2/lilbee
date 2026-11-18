@@ -36,6 +36,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import REPLICATED_ROLES, RoleTarget, WorkerRole
 
@@ -323,9 +324,8 @@ class FleetBody(Widget):
         self._refresh_title(dirty=False)
         self._update_fleet_panel(view)
         self._render_skipped(view)
-        if view.co_tenants:
-            names = ", ".join(role.value for role in view.co_tenants)
-            self.notify(f"Sharing memory, one loaded at a time: {names}", severity="information")
+        if view.swap_classes:
+            self.notify(swap_summary(view.swap_classes), severity="information")
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")

@@ -354,11 +354,12 @@ def _tensor_split(plan) -> tuple[int, ...]:
 
 
 def _charge_on_card(plan, row: Row, card: int) -> float:
-    """GiB resident on *card*: every lone role, plus a swap group's largest member."""
+    """GiB resident on *card*: every lone role, plus a swap group's largest class."""
     sizes = {r.role: r.gib for r in row.roles}
     on_card = [launch.role for launch in plan.launches if card in _cards_of_launch(launch)]
     alone = sum(sizes[role] for role in on_card if role not in plan.co_tenants)
-    return alone + max((sizes[role] for role in on_card if role in plan.co_tenants), default=0)
+    classes = [sum(sizes[role] for role in on_card if role in c) for c in plan.swap_classes]
+    return alone + max(classes, default=0)
 
 
 class TestMixedPlanAcrossCards:
@@ -729,13 +730,16 @@ def _some_assignment_fits(sizes: dict[WorkerRole, float], cards: list[int]) -> b
 
 
 def _overcommits(placement, sizes, cards) -> bool:
-    """Whether a card holds more than its usable part, a swap group charged at its largest."""
+    """Whether a card holds more than its usable part, a swap group charged at its largest class."""
     for card, size in enumerate(cards):
         on_card = [plan.role for plan in placement.instances if card in plan.devices]
         for phase in {p for role in on_card for p in ROLE_REGISTRY[role].phases}:
             in_phase = [role for role in on_card if phase in ROLE_REGISTRY[role].phases]
             lone = sum(sizes[r] for r in in_phase if r not in placement.co_tenants)
-            group = max((sizes[r] for r in on_card if r in placement.co_tenants), default=0)
+            group = max(
+                (sum(sizes[r] for r in on_card if r in c) for c in placement.swap_classes),
+                default=0,
+            )
             if lone + group > size * 0.9 + 1e-6:
                 return True
     return False
@@ -862,9 +866,10 @@ class TestMixedCoTenantGroup:
         ]
         ports = {launch.model_id: 5900 + i for i, launch in enumerate(members)}
         config = json.loads(build_swap_config(members, ports, swap=True))
-        (group,) = config["groups"].values()
-        assert group["swap"] is True
-        assert sorted(group["members"]) == sorted(launch.model_id for launch in members)
+        groups = config["groups"].values()
+        assert all(group["exclusive"] is True for group in groups)
+        listed = [mid for group in groups for mid in group["members"]]
+        assert sorted(listed) == sorted(launch.model_id for launch in members)
         commands = {mid: entry["cmd"] for mid, entry in config["models"].items()}
         chat_id = next(launch.model_id for launch in members if launch.role is WorkerRole.CHAT)
         vision_id = next(launch.model_id for launch in members if launch.role is WorkerRole.VISION)

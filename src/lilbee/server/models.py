@@ -993,6 +993,7 @@ class PlacementResponse(BaseModel):
     skipped_not_installed: list[SkippedRoleResponse] = []
     skipped_no_engine: list[SkippedNoEngineResponse] = []
     co_tenants: list[str] = []
+    swap_classes: list[list[str]] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
@@ -1036,6 +1037,7 @@ class PlacementResponse(BaseModel):
                 for s in view.skipped_no_engine
             ],
             co_tenants=[r.value for r in view.co_tenants],
+            swap_classes=[sorted(r.value for r in members) for members in view.swap_classes],
             rejected_spec_json=view.rejected_spec_json,
             refusal=view.refusal,
             engine_backend=view.engine_backend,

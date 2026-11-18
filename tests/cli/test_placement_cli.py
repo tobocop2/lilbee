@@ -281,7 +281,7 @@ def test_show_reports_co_tenant_roles(monkeypatch: object) -> None:
         unplaceable=(),
         manual=False,
         spec_json=None,
-        co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+        swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
     )
     monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
     result = runner.invoke(placement_app, ["show"])
