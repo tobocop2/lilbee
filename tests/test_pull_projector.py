@@ -266,20 +266,24 @@ class TestListingRead:
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             dl._repo_sibling_files(_REPO)
 
-    @pytest.mark.parametrize("error_code", [None, "RepoNotFound"])
     def test_a_private_or_missing_repo_is_not_called_gated(
-        self,
-        listing_server: _ListingServer,
-        monkeypatch: pytest.MonkeyPatch,
-        error_code: str | None,
+        self, listing_server: _ListingServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(dl, "hf_token", lambda: None)
         listing_server.status = 401
-        listing_server.error_code = error_code
+        listing_server.error_code = "RepoNotFound"
         with pytest.raises(dl.ListingFailedError, match="missing, private or gated") as caught:
             dl._repo_sibling_files(_REPO)
         assert "Set HF_TOKEN" in str(caught.value)
         assert "\n" not in str(caught.value)
+
+    def test_an_unmarked_401_from_a_plain_http_hub_is_a_failed_listing(
+        self, listing_server: _ListingServer
+    ) -> None:
+        """The hub client reads an unmarked 401 as a missing repo only on an https hub url."""
+        listing_server.status = 401
+        with pytest.raises(dl.ListingFailedError, match="Cannot query files for acme"):
+            dl._repo_sibling_files(_REPO)
 
     def test_an_unexpected_listing_fault_is_a_failed_fetch(
         self, monkeypatch: pytest.MonkeyPatch
