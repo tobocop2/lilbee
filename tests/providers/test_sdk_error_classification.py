@@ -7,6 +7,7 @@ not required to verify the table.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
@@ -188,23 +189,65 @@ def _embed_error(sdk: fakes.FakeSdk, exc: BaseException) -> ProviderError:
     return caught.value
 
 
+_SECRET = "SECRET PROMPT TEXT"
+_MODEL = "openai/text-embedding-3-small"
+_NO_REASON = (
+    f"The server for {_MODEL} refused the request with HTTP 422 and gave no readable reason. "
+    "Check the request limits of the server."
+)
+
+
+def _quoted(reason: str) -> str:
+    return (
+        f'The server for {_MODEL} refused the request with HTTP 422: "{reason}". '
+        "Check the request limits of the server."
+    )
+
+
 @pytest.mark.parametrize(
-    ("body", "reply"),
+    ("body", "expected"),
     [
-        ('{"error":"batch size 33 > maximum allowed batch size 32"}', "batch size 33 > maximum"),
-        ("batch size 33 > maximum allowed batch size 32", "batch size 33 > maximum"),
-        ('{"detail":"batch size 33 > maximum allowed"}', '{"detail":"batch size 33 > maximum'),
-        ('{"error":{"code":7}}', '{"error":{"code":7}}'),
-        ("[1, 2]", "[1, 2]"),
+        pytest.param(
+            '{"error":"batch size 33 > maximum allowed batch size 32","error_type":"Validation"}',
+            _quoted("batch size 33 > maximum allowed batch size 32"),
+            id="tei-string-error",
+        ),
+        pytest.param(
+            '{"error":{"message":"too many inputs","type":"invalid_request_error"}}',
+            _quoted("too many inputs"),
+            id="openai-nested-error",
+        ),
+        pytest.param(
+            '{"detail":[{"type":"too_long","loc":["body","input"],"msg":"List too long",'
+            f'"input":["{_SECRET}"]}},"junk",{{"msg":"  "}},{{"msg":"Second reason"}}]}}',
+            _quoted("List too long; Second reason"),
+            id="fastapi-detail-list-with-input-echo",
+        ),
+        pytest.param('{"detail":"too many inputs"}', _quoted("too many inputs"), id="detail-text"),
+        pytest.param('{"message":"too many inputs"}', _quoted("too many inputs"), id="message"),
+        pytest.param(
+            '{"error":"line one\\n   line two"}', _quoted("line one line two"), id="whitespace"
+        ),
+        pytest.param(f"<html><body>502 {_SECRET}</body></html>", _NO_REASON, id="html-proxy-body"),
+        pytest.param(f'{{"input":"{_SECRET}"}}', _NO_REASON, id="unknown-json"),
+        pytest.param('{"error":{"code":7},"detail":[]}', _NO_REASON, id="no-text-field"),
+        pytest.param(f'["{_SECRET}"]', _NO_REASON, id="json-list"),
+        pytest.param("", _NO_REASON, id="empty-body"),
     ],
 )
-def test_a_422_quotes_the_server_reply_not_the_model_name(
-    sdk: fakes.FakeSdk, body: str, reply: str
+def test_a_422_shows_only_the_reason_of_the_reply(
+    sdk: fakes.FakeSdk, body: str, expected: str
 ) -> None:
     error = _embed_error(sdk, sdk.error("BadRequestError", body, status=422))
-    assert f'HTTP 422 ("{reply}' in str(error)
-    assert "Check the model name" not in str(error)
+    assert str(error) == expected
+    assert _SECRET not in str(error)
     assert error.kind is ProviderErrorKind.BAD_REQUEST
+
+
+def test_a_422_reason_is_capped(sdk: fakes.FakeSdk) -> None:
+    body = json.dumps({"error": "word " * 200})
+    error = _embed_error(sdk, sdk.error("BadRequestError", body, status=422))
+    assert str(error) == _quoted(("word " * 40).rstrip()[:200].rstrip() + "...")
 
 
 def test_a_400_bad_request_still_names_the_model(sdk: fakes.FakeSdk) -> None:
