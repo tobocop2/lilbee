@@ -23,6 +23,7 @@ from lilbee.app.models import (
     ShowModelResult,
 )
 from lilbee.app.settings import SettingsUpdateResult
+from lilbee.catalog.refs import canonical_ref
 from lilbee.catalog.types import ModelSource
 from lilbee.cli import app
 from lilbee.core.config import cfg
@@ -104,6 +105,7 @@ class _FakeManager:
         return list(self._remote)
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
+        model = canonical_ref(model)
         if source is None:
             return model in self._native or model in self._remote
         if source is ModelSource.NATIVE:
@@ -111,9 +113,11 @@ class _FakeManager:
         return model in self._remote
 
     def is_registered(self, model: str) -> bool:
+        model = canonical_ref(model)
         return model in self._native and model not in self.cache_only
 
     def get_source(self, model: str) -> ModelSource | None:
+        model = canonical_ref(model)
         if model in self._native:
             return ModelSource.NATIVE
         if model in self._remote:
@@ -282,6 +286,29 @@ class TestRemoveModelDataFreedSize:
         registry.shard_paths.assert_not_called()  # recorded total used directly
 
 
+class TestRemoveModelDataGgufQualifier:
+    def test_gguf_qualified_ref_removes_the_plain_ref_and_reports_its_size(
+        self, fake_manager, native_manifests
+    ):
+        result = model_mod.remove_model_data(f"{_CHAT_REF}#gguf")
+        assert fake_manager.remove_calls == [(_CHAT_REF, None)]
+        assert result.model == _CHAT_REF
+        assert result.freed_gb == model_mod._bytes_to_gb(5 * 1024**3)
+
+
+class TestMalformedQualifierStaysAsWritten:
+    def test_remove_passes_a_malformed_qualifier_on_unchanged(self, empty_manager):
+        result = model_mod.remove_model_data("ghost#nope")
+        assert empty_manager.remove_calls == [("ghost#nope", None)]
+        assert result.model == "ghost#nope"
+
+    def test_pull_passes_a_malformed_qualifier_on_unchanged(self, empty_manager, monkeypatch):
+        monkeypatch.setattr(model_mod, "ensure_vision_projector", lambda ref, **_: None)
+        result = model_mod.pull_model_data("ghost#nope", ModelSource.NATIVE)
+        assert empty_manager.pull_calls == [("ghost#nope", ModelSource.NATIVE)]
+        assert result.model == "ghost#nope"
+
+
 class TestListNoEagerWarm:
     def test_model_list_disables_eager_warm(self, monkeypatch):
         """`model list` reads installed files and must not warm the fleet."""
@@ -426,6 +453,26 @@ class TestShowModelData:
         assert data.manifest is not None
         assert data.manifest.task == "chat"
 
+    def test_gguf_qualified_ref_reads_as_the_plain_ref(self, fake_manager, native_manifests):
+        with (
+            patch("lilbee.catalog.find_pick", return_value=None),
+            patch("lilbee.app.models._resolve_native_path", return_value="/fake/path.gguf"),
+        ):
+            data = model_mod.show_model_data(f"{_CHAT_REF}#gguf")
+        assert data.model == _CHAT_REF
+        assert data.installed is True
+        assert data.manifest is not None
+        assert data.manifest.task == "chat"
+        assert data.path == "/fake/path.gguf"
+
+    def test_malformed_qualifier_is_not_found_as_written(self, empty_manager):
+        with (
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
+            patch("lilbee.catalog.find_pick", return_value=None),
+            pytest.raises(ModelNotFoundError, match="model not found: ghost#nope"),
+        ):
+            model_mod.show_model_data("ghost#nope")
+
     def test_catalog_only_not_installed(self, empty_manager):
         entry = _catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
         with (
@@ -525,6 +572,13 @@ class TestPullModelData:
         assert isinstance(result, PullResult)
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
+
+    def test_gguf_qualified_ref_names_the_plain_ref_in_the_result(
+        self, fake_manager, native_manifests
+    ):
+        result = model_mod.pull_model_data(f"{_CHAT_REF}#gguf", ModelSource.NATIVE)
+        assert result.status == PullStatus.ALREADY_INSTALLED
+        assert result.model == _CHAT_REF
 
     def test_cache_only_model_is_pulled_again_not_reported_installed(
         self, fake_manager, native_manifests

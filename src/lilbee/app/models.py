@@ -334,6 +334,7 @@ def show_model_data(ref: str) -> ShowModelResult:
     from lilbee.catalog import find_pick
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
+    ref = canonical_ref(ref)
     if ModelRegistry(cfg.models_dir).has_unreadable_ticket(ref):
         raise ModelNotFoundError(
             f"model not found: {ref}. Its ticket is unreadable. Pull it again."
@@ -437,6 +438,7 @@ def pull_model_data(
     from lilbee.catalog import make_download_callback
     from lilbee.catalog.download import ListingOfflineError
 
+    ref = canonical_ref(ref)
     manager = get_services().model_manager
 
     # A GGUF found only in the HF cache is not listed until a manifest records it.
@@ -501,6 +503,7 @@ def remove_model_data(
     source: ModelSource | None = None,
 ) -> RemoveResult:
     """Remove *ref* and return a typed result with freed size."""
+    ref = canonical_ref(ref)
     manager = get_services().model_manager
     manifests = _native_manifest_index()
     # disk_size_bytes is the full multi-shard total; size_bytes alone would report
