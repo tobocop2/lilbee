@@ -1310,7 +1310,7 @@ class Store:
         state = self.canary_state() if isinstance(canary, str) else canary
         db = self.get_db()
         table = ensure_table(db, META_TABLE, _meta_schema())
-        if CANARY_VECTORS_COLUMN in table.schema.names:
+        if table.schema.remove_metadata().equals(_meta_schema()):
             _safe_delete_unlocked(table, META_DELETE_ALL_PREDICATE)
         else:
             db.drop_table(META_TABLE)
