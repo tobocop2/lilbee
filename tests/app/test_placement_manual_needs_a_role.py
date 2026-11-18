@@ -168,6 +168,15 @@ def test_a_spec_that_places_a_role_is_manual_with_no_refusal() -> None:
 
 
 @pytest.mark.usefixtures("engine_host")
+def test_preview_of_auto_is_not_manual_and_carries_no_spec() -> None:
+    view = app_placement.preview_placement(None)
+    assert view.manual is False
+    assert view.spec_json is None
+    assert view.rejected_spec_json is None
+    assert view.refusal is None
+
+
+@pytest.mark.usefixtures("engine_host")
 def test_set_and_clear_keep_their_views() -> None:
     saved = app_placement.set_placement(SPEC)
     assert saved.manual is True
