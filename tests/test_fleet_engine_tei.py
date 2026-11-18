@@ -865,7 +865,7 @@ def test_an_input_the_router_cuts_only_with_its_special_tokens_gives_a_warning(
 
 
 @pytest.mark.parametrize("special", [0, 1, 2, 3])
-def test_an_input_that_fits_with_the_special_tokens_is_not_counted(special, caplog) -> None:
+def test_an_input_that_fits_with_the_special_tokens_gives_no_warning(special, caplog) -> None:
     router = _Embedder(special=special, by_char=True)
     client = _tei_client(router, WorkerRole.EMBED)
     with caplog.at_level("WARNING"):
