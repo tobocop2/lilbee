@@ -10,7 +10,7 @@ from conftest import stub_hf_listing
 from lilbee.catalog import query as _query
 from lilbee.catalog import runnable
 from lilbee.catalog.formatting import enrich_catalog
-from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.query import get_catalog
 from lilbee.catalog.runnable import (
     EngineOffer,
@@ -317,7 +317,7 @@ def test_a_failing_host_read_leaves_the_catalog_open_and_says_why(
         raise OSError("uname refused")
 
     monkeypatch.setattr(runnable, "detect", _refuse)
-    runnable.session_host.cache_clear()
+    runnable._read_host.cache_clear()
     try:
         monkeypatch.setattr(_query, "get_picks", lambda: [])
         stub_hf_listing(
@@ -327,28 +327,115 @@ def test_a_failing_host_read_leaves_the_catalog_open_and_says_why(
             result = get_catalog(task=ModelTask.CHAT)
         host = runnable.session_host()
     finally:
-        runnable.session_host.cache_clear()
+        runnable._read_host.cache_clear()
     assert [m.hf_repo for m in result.models] == ["a/ok"]
     assert "uname refused" in caplog.text
     assert (host.avx2.known, host.nvidia_known) == (False, False)
     assert host.nvidia_reason == host_caps.NVIDIA_UNREADABLE
 
 
-def test_a_host_read_that_raises_something_else_is_not_swallowed(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_host_read_that_raises_something_else_leaves_the_catalog_open(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     from lilbee.catalog import runnable
 
     def _bug() -> HostCaps:
-        raise KeyError("a bug, not a host answer")
+        raise KeyError("nvml table missing")
 
     monkeypatch.setattr(runnable, "detect", _bug)
-    runnable.session_host.cache_clear()
+    runnable._read_host.cache_clear()
     try:
-        with pytest.raises(KeyError, match="a bug"):
-            runnable.session_host()
+        monkeypatch.setattr(_query, "get_picks", lambda: [])
+        stub_hf_listing(
+            monkeypatch, {"text-generation": [_row("a/ok", frozenset({ModelFormat.GGUF}))]}
+        )
+        with caplog.at_level("WARNING", logger="lilbee.catalog.runnable"):
+            result = get_catalog(task=ModelTask.CHAT)
     finally:
-        runnable.session_host.cache_clear()
+        runnable._read_host.cache_clear()
+    assert [m.hf_repo for m in result.models] == ["a/ok"]
+    assert "nvml table missing" in caplog.text
+
+
+def test_a_failed_host_read_is_read_again_on_the_next_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.catalog import runnable
+
+    real = host_caps.collect(system="Linux", machine="x86_64", cpu_info={}, nvidia=None)
+    answers: list[HostCaps | OSError] = [OSError("uname refused"), real]
+
+    def _detect() -> HostCaps:
+        answer = answers.pop(0)
+        if isinstance(answer, OSError):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(runnable, "detect", _detect)
+    runnable._read_host.cache_clear()
+    try:
+        first = runnable.session_host()
+        second = runnable.session_host()
+        third = runnable.session_host()
+    finally:
+        runnable._read_host.cache_clear()
+    assert first is not real
+    assert second is real
+    assert third is real
+    assert answers == []
+
+
+def _format_row(repo: str, fmt: ModelFormat) -> CatalogModel:
+    return CatalogModel(
+        hf_repo=repo,
+        gguf_filename="*.gguf",
+        size_gb=1.0,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=10,
+        task=ModelTask.CHAT,
+        format=fmt,
+        formats=frozenset({fmt}),
+    )
+
+
+def test_a_gguf_install_does_not_mark_the_same_repos_mlx_row_installed() -> None:
+    result = CatalogResult(
+        total=2,
+        limit=20,
+        offset=0,
+        models=[_format_row("a/dual", ModelFormat.GGUF), _format_row("a/dual", ModelFormat.MLX)],
+    )
+    enriched = enrich_catalog(result, {"a/dual/model-Q4_K_M.gguf"})
+    assert [(e.hf_repo, e.installed) for e in enriched] == [("a/dual", True), ("a/dual", False)]
+    both = enrich_catalog(result, {"a/dual/model-Q4_K_M.gguf", "a/dual#mlx"})
+    assert [e.installed for e in both] == [True, True]
+
+
+def test_installed_keys_read_each_ref_by_repo_and_format() -> None:
+    from lilbee.catalog.refs import installed_keys
+
+    keys = installed_keys(["a/b/m.gguf", "a/b#mlx", "a/b", "a/b#bogus"])
+    assert keys == {
+        ("a/b", ModelFormat.GGUF),
+        ("a/b", ModelFormat.MLX),
+        ("a/b#bogus", ModelFormat.GGUF),
+    }
+
+
+def test_the_installed_filter_keys_a_row_by_repo_and_format() -> None:
+    class Manager:
+        def list_installed(self) -> list[str]:
+            return ["a/dual/model-Q4_K_M.gguf"]
+
+    gguf_row = _format_row("a/dual", ModelFormat.GGUF)
+    mlx_row = _format_row("a/dual", ModelFormat.MLX)
+    installed = _query._installed_filter(True, Manager())
+    missing = _query._installed_filter(False, Manager())
+    assert installed is not None and missing is not None
+    assert (installed(gguf_row), installed(mlx_row)) == (True, False)
+    assert (missing(gguf_row), missing(mlx_row)) == (False, True)
 
 
 def test_ref_with_a_format_resolves_to_an_entry_of_that_format() -> None:

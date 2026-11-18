@@ -21,7 +21,7 @@ from lilbee.catalog.models import (
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
-    hf_repo_from_ref,
+    installed_keys,
     is_native_gguf_shape,
     parse_model_ref,
 )
@@ -220,9 +220,9 @@ def _installed_filter(
     if installed is None or model_manager is None:
         return None
     refs = _get_installed_models(model_manager)
-    # A repo is installed if any of its quants has a manifest.
-    installed_repos = {hf_repo_from_ref(ref) for ref in refs}
-    return lambda m: (m.hf_repo in installed_repos or m.pull_ref in refs) == installed
+    # A row is installed if its repo has a manifest in the row's own format.
+    keys = installed_keys(refs)
+    return lambda m: ((m.hf_repo, m.format) in keys) == installed
 
 
 def _row_filter(

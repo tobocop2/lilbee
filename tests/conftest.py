@@ -375,7 +375,7 @@ def _fresh_session_host(request, monkeypatch):
     from lilbee.catalog import runnable
     from lilbee.providers.fleet.host_caps import collect
 
-    session_host = runnable.session_host
+    session_host = runnable._read_host
     session_host.cache_clear()
     if "real_host_read" not in {m.name for m in request.node.iter_markers()}:
         fixed = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)

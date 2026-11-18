@@ -305,6 +305,18 @@ def hf_repo_from_ref(ref: str) -> str:
     return _gguf_ref(ref).hf_repo
 
 
+def installed_keys(refs: Iterable[str]) -> frozenset[tuple[str, ModelFormat]]:
+    """The ``(repo, format)`` of each installed ref; a malformed format qualifier reads as GGUF."""
+    keys: set[tuple[str, ModelFormat]] = set()
+    for ref in refs:
+        try:
+            parsed = parse_model_ref(ref)
+        except ValueError:
+            parsed = _gguf_ref(ref)
+        keys.add((parsed.hf_repo, parsed.format))
+    return frozenset(keys)
+
+
 def gguf_filename_from_ref(ref: str) -> str:
     """Return the filename portion of a native GGUF ref (after ``<org>/<repo>/``).
 

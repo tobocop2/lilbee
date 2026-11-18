@@ -66,16 +66,20 @@ def default_offers() -> list[EngineOffer]:
 
 
 @functools.cache
+def _read_host() -> HostCaps:
+    """Read the live host; a failed read raises, so the cache keeps no answer for it."""
+    return detect()
+
+
 def session_host() -> HostCaps:
     """The host answer, read once for the session; a read that fails leaves every field unknown.
 
-    Detection reads ``platform`` (``OSError`` when the OS refuses the query) and parses the
-    answers (``ValueError``). Neither may close the catalog: the gates treat an unknown field
-    as a pass, so every row stays listed.
+    A failed read is not kept: the next call reads the host again. The gates treat an unknown
+    field as a pass, so a failed read never closes the catalog.
     """
     try:
-        return detect()
-    except (OSError, ValueError) as exc:
+        return _read_host()
+    except Exception as exc:
         log.warning("Host detection failed, the catalog lists every row: %s", exc)
         unreadable = {"cuda_driver": None, "gpus": None}
         return collect(system="", machine="", cpu_info={}, nvidia=unreadable)
@@ -83,7 +87,7 @@ def session_host() -> HostCaps:
 
 def refresh_session_host() -> HostCaps:
     """Read the host now and make it the session host; an engine install calls this."""
-    session_host.cache_clear()
+    _read_host.cache_clear()
     return session_host()
 
 

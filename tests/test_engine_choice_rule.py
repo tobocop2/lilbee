@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from lilbee.app.engine_choice import _choice_for
-from lilbee.catalog.runnable import session_host
+from lilbee.catalog.runnable import _read_host
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet.engines import LLAMA
@@ -289,7 +289,7 @@ def _config(override: str | None = None, preferred: str = "auto") -> SimpleNames
 def _choose_at_run(config: SimpleNamespace, detected: HostCaps | Exception) -> EngineChoice:
     """The run's choice for org/m, with the host read through the session cache."""
     side_effect = detected if isinstance(detected, Exception) else None
-    session_host.cache_clear()
+    _read_host.cache_clear()
     try:
         with (
             patch("lilbee.catalog.runnable.detect", return_value=detected, side_effect=side_effect),
@@ -298,7 +298,7 @@ def _choose_at_run(config: SimpleNamespace, detected: HostCaps | Exception) -> E
         ):
             return _choice_for(config, "org/m", WorkerRole.CHAT)
     finally:
-        session_host.cache_clear()
+        _read_host.cache_clear()
 
 
 def test_engine_the_host_refuses_falls_back_with_the_reason() -> None:
@@ -356,7 +356,7 @@ def test_an_engine_that_is_not_installed_reads_nothing_about_the_host() -> None:
 
 
 def test_the_host_is_read_once_for_many_choices() -> None:
-    session_host.cache_clear()
+    _read_host.cache_clear()
     try:
         with (
             patch("lilbee.catalog.runnable.detect", return_value=NO_AVX2) as detect,
@@ -367,11 +367,11 @@ def test_the_host_is_read_once_for_many_choices() -> None:
                 _choice_for(_config(override=IK), "org/m", WorkerRole.CHAT)
         assert detect.call_count == 1
     finally:
-        session_host.cache_clear()
+        _read_host.cache_clear()
 
 
 def test_a_process_on_the_bundled_engine_never_reads_the_host() -> None:
-    session_host.cache_clear()
+    _read_host.cache_clear()
     with (
         patch("lilbee.catalog.runnable.detect") as detect,
         patch("lilbee.app.engine_choice.installed_engines", return_value=LLAMA_AND_IK),
