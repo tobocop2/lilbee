@@ -302,11 +302,12 @@ class TestAssistantMessageAsync:
             am = app._am
             am.append_reasoning("a ")
             assert am._reasoning_static is not None
+            # The first append fired an update on its own. Keep the debounce
+            # window open for the burst, so a slow host cannot let it lapse.
+            am._last_reasoning_update = float("inf")
             with mock.patch.object(am._reasoning_static, "update") as mock_update:
                 am.append_reasoning("b ")
                 am.append_reasoning("c ")
-                # The first append fired an update on its own; subsequent
-                # bursts inside the 0.1 s debounce window do not.
                 assert mock_update.call_count == 0
                 am.finish()
                 # finish() flushes the buffered tail.
