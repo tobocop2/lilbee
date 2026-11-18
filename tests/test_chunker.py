@@ -770,6 +770,41 @@ class Greeter:
         assert len(chunks) == 1
         assert chunks[0].chunk.endswith("\n\nx")
 
+    def test_a_symbol_list_over_half_the_budget_is_dropped_from_the_header(
+        self, monkeypatch, mock_services
+    ):
+        """A class of 150 methods does not split into a chunk for each character."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        methods = [f"method_with_a_long_name_{i}" for i in range(150)]
+        body = "class Wide:\n" + "".join(f"    def {m}(self):\n        return 1\n" for m in methods)
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=301, symbols=methods)])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert 1 < len(chunks) < 100
+        assert max(_wordpiece_like(c.chunk) for c in chunks) <= 64
+        assert all(c.chunk.startswith("# File: pkg/mod.py (lines ") for c in chunks)
+        body_lines = [ln for c in chunks for ln in c.chunk.split("\n\n", 1)[1].splitlines()]
+        assert body_lines == body.splitlines()
+
+    def test_a_symbol_list_within_half_the_budget_stays_in_the_header(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        mock_services.provider.count_tokens.side_effect = _wordpiece_like
+        body = "".join(f"value_{i:03d} = compute({i}, {i + 1})\n" for i in range(20))
+        result = _FakeResult([_FakeTSChunk(body, start_line=0, end_line=20, symbols=["compute"])])
+
+        chunks = self._chunk_with_parser_result(result)
+
+        assert len(chunks) > 1
+        assert all("# File: pkg/mod.py | compute (lines" in c.chunk for c in chunks)
+
     def test_chunk_code_budget_is_bytes_not_tokens(self):
         """tree-sitter's chunk_max_size is documented in BYTES while
         cfg.chunk_size is a token budget, so the parser path must convert the

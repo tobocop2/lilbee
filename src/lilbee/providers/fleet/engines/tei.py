@@ -106,9 +106,10 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
 def _longest_input_tokens() -> int:
     """The token ceiling of the longest input lilbee sends: a chunk, plus a rerank query.
 
-    The chunker counts tokens with this server's tokenizer, special tokens included, so a
-    chunk never has more than ``chunk_size``. The router warms up with one batch of this
-    length, so it must not grow with the context.
+    The chunker counts tokens with this server's tokenizer, so a chunk has about ``chunk_size``
+    tokens, and up to 2 more when the sizing leaves out the special tokens. The rerank margin
+    absorbs the difference. The router warms up with one batch of this length, so it must not
+    grow with the context.
     """
     return cfg.chunk_size + _RERANK_QUERY_TOKENS
 
