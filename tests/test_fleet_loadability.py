@@ -143,6 +143,17 @@ class TestArgv:
         assert_engine_can_load(_REPO, _FILE, "")
         assert "--token" not in calls[-1]
 
+    @pytest.mark.parametrize("anonymous", [False, None])
+    def test_an_anonymous_token_sends_no_token_flag(
+        self, monkeypatch: pytest.MonkeyPatch, anonymous: bool | None
+    ) -> None:
+        """False means anonymous by choice; it is not a token and must not reach the argv."""
+        calls = _returns(monkeypatch, "{}", 0)
+        assert_engine_can_load(_REPO, _FILE, anonymous)
+        argv = calls[-1]
+        assert "--token" not in argv
+        assert all(isinstance(arg, str) for arg in argv)
+
 
 class TestNamedQuant:
     def test_reads_the_type_out_of_the_message(self) -> None:
