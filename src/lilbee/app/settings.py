@@ -53,6 +53,7 @@ from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import is_header_safe
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
@@ -183,12 +184,17 @@ def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
     return ocr + _no_engine_notices(changed_keys)
 
 
-def _is_write_only(key: str) -> bool:
-    """Return True for fields persisted but never read back (API keys, hf_token)."""
+def _field_flag(key: str, flag: str) -> bool:
+    """Return True when the declaration of *key* carries the marker *flag*."""
     extra = Config.model_fields[key].json_schema_extra
     if isinstance(extra, dict):
-        return bool(extra.get("write_only", False))
+        return bool(extra.get(flag, False))
     return False
+
+
+def _is_write_only(key: str) -> bool:
+    """Return True for fields persisted but never read back (API keys, hf_token)."""
+    return _field_flag(key, "write_only")
 
 
 def _secret_refusal(key: str, error: ValidationError) -> str:
@@ -371,6 +377,15 @@ def _validate_crawl_login(updates: dict[str, Any]) -> None:
     )
 
 
+def _validate_header_values(updates: dict[str, Any]) -> None:
+    """Reject a secret that a header cannot carry; the field declaration names such secrets."""
+    for key, value in updates.items():
+        if not isinstance(value, str) or not _field_flag(key, "header_value"):
+            continue
+        if not is_header_safe(value):
+            raise ValueError(f"{key} holds a character that cannot be sent. Copy it again.")
+
+
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
@@ -381,6 +396,7 @@ def _validate(updates: dict[str, Any]) -> None:
     if refusal is not None:
         raise ValueError(refusal)
     _validate_crawl_login(updates)
+    _validate_header_values(updates)
     hf_token = updates.get("hf_token")
     if isinstance(hf_token, str) and not is_hf_token_sendable(hf_token):
         raise ValueError("hf_token holds a character that cannot be sent. Copy it again.")

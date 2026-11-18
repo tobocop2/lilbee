@@ -481,14 +481,22 @@ class Config(BaseSettings):
     # URL literal lives only in the spec, which core must not import.
     ollama_base_url: str = ConfigField(default="", writable=True)
     lm_studio_base_url: str = ConfigField(default="", writable=True)
-    llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    mistral_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    deepseek_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    hf_token: str = ConfigField(default="", writable=True, write_only=True)
+    llm_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    openrouter_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    anthropic_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    openai_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    mistral_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    deepseek_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    hf_token: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
 
     # Retrieval quality knobs.
 

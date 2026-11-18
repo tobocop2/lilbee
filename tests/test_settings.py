@@ -16,6 +16,7 @@ from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.keys import PROVIDER_API_KEYS
 from lilbee.core.config.model import toml_value as _toml_value
 from lilbee.core.config.model import toml_values as _toml_values
 from lilbee.core.config.resolve import _read_toml, builtin_value, read_layers, resolve
@@ -2823,6 +2824,68 @@ class TestEmbedPickNeedsRebuild:
         store.index_mismatch.assert_called_once_with(
             model="not-a-model", dim=appset.cfg.embedding_dim
         )
+
+
+HEADER_SECRET_KEYS = sorted([*PROVIDER_API_KEYS, "hf_token"])
+
+
+class TestHeaderSecretWrite:
+    @pytest.mark.parametrize("key", HEADER_SECRET_KEYS)
+    @pytest.mark.parametrize("bad", ["sk-fake\nsecret", "sk-fake\x00secret", "sk-fäke"])
+    def test_write_refuses_a_secret_a_header_cannot_carry(
+        self, key: str, bad: str, monkeypatch, caplog
+    ) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, key, "")
+        with (
+            mock.patch.object(appset.persistent_settings, "update_values") as written,
+            caplog.at_level("DEBUG"),
+            pytest.raises(ValueError, match="cannot be sent") as exc,
+        ):
+            appset.apply_settings_update({key: bad})
+        assert key in str(exc.value)
+        assert "secret" not in str(exc.value)
+        assert "secret" not in caplog.text
+        assert getattr(appset.cfg, key) == ""
+        written.assert_not_called()
+
+    @pytest.mark.parametrize("key", HEADER_SECRET_KEYS)
+    def test_write_keeps_a_valid_secret_byte_identical(self, key: str, monkeypatch) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, key, "")
+        with mock.patch.object(
+            appset.persistent_settings,
+            "update_values",
+            wraps=appset.persistent_settings.update_values,
+        ) as written:
+            appset.apply_settings_update({key: "sk-FakeKey-0123_abc"})  # pragma: allowlist secret
+        assert getattr(appset.cfg, key) == "sk-FakeKey-0123_abc"  # pragma: allowlist secret
+        written.assert_called_once_with(
+            appset.cfg.data_root,
+            {key: "sk-FakeKey-0123_abc"},  # pragma: allowlist secret
+        )
+
+    def test_a_bad_secret_in_a_batch_refuses_the_whole_batch(self, monkeypatch) -> None:
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "openai_api_key", "")
+        with pytest.raises(ValueError, match="mistral_api_key"):
+            appset.apply_settings_update(
+                {"openai_api_key": "sk-ok", "mistral_api_key": "sk-bad\nkey"}
+            )
+        assert appset.cfg.openai_api_key == ""
+
+    def test_the_marker_covers_every_secret_that_reaches_a_header(self) -> None:
+        """A new write-only secret must be marked, or named here as one that no header carries."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config
+
+        write_only = {key for key in Config.model_fields if appset._is_write_only(key)}
+        marked = {key for key in write_only if appset._field_flag(key, "header_value")}
+        assert marked == set(HEADER_SECRET_KEYS)
+        assert write_only - marked == {"crawl_authorization", "crawl_password", "crawl_cookie"}
 
 
 class TestHfTokenWrite:
