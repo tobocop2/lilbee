@@ -1123,7 +1123,8 @@ class LlamaServerClient:
         """*options* without the fields this server's engine does not read or enforce.
 
         A ``json_schema`` request is a promise that the reply fits the schema, so it is
-        refused. Any other format is advice, so it is dropped.
+        refused. A ``json_object`` request is advice, so it is dropped. Any other format
+        goes to the server as sent, as on an engine that enforces formats.
         """
         wire = dict(options or {})
         if not self._profile.takes_cache_prompt:
@@ -1132,8 +1133,12 @@ class LlamaServerClient:
             wire.pop("seed")
         if self._profile.structured_output or "response_format" not in wire:
             return wire
-        reply_format = wire.pop("response_format")
-        if not (isinstance(reply_format, Mapping) and reply_format.get("type") == "json_schema"):
+        reply_format = wire["response_format"]
+        # The caller's value is untyped: a non-mapping goes to the server, which answers it.
+        reply_type = reply_format.get("type") if isinstance(reply_format, Mapping) else None
+        if reply_type == "json_object":
+            del wire["response_format"]
+        if reply_type != "json_schema":
             return wire
         raise ProviderError(
             f"{self._profile.label} does not enforce a JSON schema. "

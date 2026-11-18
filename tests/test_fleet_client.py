@@ -3973,6 +3973,20 @@ def test_json_object_dropped_on_mlx() -> None:
     assert options["response_format"] == {"type": "json_object"}
 
 
+@pytest.mark.parametrize("reply_format", [{"type": "text"}, {"type": "xml"}, {}, "json"])
+def test_other_response_formats_reach_the_mlx_server_as_sent(reply_format: object) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    options = {"response_format": reply_format}
+    messages = [{"role": "user", "content": "hi"}]
+    mlx, mlx_sent = _recording_client(MLX)
+    mlx.chat_result(messages, options=dict(options))
+    llama, llama_sent = _recording_client(LLAMA)
+    llama.chat_result(messages, options=dict(options))
+    assert mlx_sent[0]["response_format"] == reply_format
+    assert llama_sent[0]["response_format"] == reply_format
+
+
 def test_json_schema_passes_through_on_llama() -> None:
     client, sent = _recording_client(LLAMA)
     client.chat_result(

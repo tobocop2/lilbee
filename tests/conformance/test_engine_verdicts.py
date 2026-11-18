@@ -61,6 +61,12 @@ PROFILE_CASES = [
         expect={"E12": F},
     ),
     Case(
+        "mlx_lm_claiming_json",
+        _profile("mlx_lm", json_mode="ignored"),
+        claims=frozenset({"chat", "reasoning", "json"}),
+        expect={"E12": F, "E14": F},
+    ),
+    Case(
         "tei_embed",
         PROFILES["tei_embed"].behaviour,
         claims=frozenset({"embed"}),
