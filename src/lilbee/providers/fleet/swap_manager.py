@@ -1,7 +1,7 @@
 """Supervise the single llama-swap process that fronts every fleet role.
 
 llama-swap owns each role's llama-server lifecycle; this manages the one proxy
-process and exposes its endpoint and readiness. See docs/architecture.md.
+process and exposes its endpoint and readiness. See docs/internals/engine.md.
 """
 
 from __future__ import annotations

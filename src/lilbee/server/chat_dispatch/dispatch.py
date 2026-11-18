@@ -95,7 +95,8 @@ _TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
 # Token allowances for template text the request does not carry. Survey of
 # 47 chat templates across 51 repositories, taken 2026-09-18. Widest value
 # measured beside each constant: preamble 1216, per message 17, tool block
-# 608, per tool 45. See docs/architecture.md for what this means for accuracy.
+# 608, per tool 45. See docs/internals/interfaces.md (Schema-size discipline)
+# for what this means for accuracy.
 # The preamble a template renders around any request, including a system block
 # it substitutes when the request carries none.
 _TEMPLATE_PREAMBLE_TOKENS = 300

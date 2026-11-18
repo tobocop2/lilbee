@@ -981,7 +981,7 @@ def _chat_split_ctx_objective(
 
     The fitter sizes a candidate shard's served context exactly as the launch does
     (:func:`fit_split_ctx`), so the planner widens chat onto idle cards only when a
-    tighter shard would starve KV below the target. See docs/architecture.md.
+    tighter shard would starve KV below the target. See docs/internals/engine.md.
     """
     if WorkerRole.CHAT not in model_refs:
         return None, 0

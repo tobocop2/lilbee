@@ -1,6 +1,6 @@
 """gguf-parser-backed, UMA-aware memory estimation for one llama-server instance.
 
-See docs/architecture.md (VRAM estimation).
+See docs/internals/engine.md (VRAM estimation).
 """
 
 from __future__ import annotations

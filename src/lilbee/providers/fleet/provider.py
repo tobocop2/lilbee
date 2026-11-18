@@ -7,7 +7,7 @@ groups whose launches changed, so a placement or model change never unloads an
 untouched group's model. There is no in-process fallback, so a missing role
 surfaces a user-facing ``ProviderError``. Model management
 (list/show/capabilities) reads the registry and GGUF headers directly and needs no
-running server. See docs/architecture.md for swap tenancy.
+running server. See docs/internals/engine.md for swap tenancy.
 """
 
 from __future__ import annotations

@@ -46,7 +46,7 @@ for i in 1 2 3 4; do
   PROJ="$AGENTS_ROOT/proj$i"
   rm -rf "$PROJ/kb" "$PROJ/.lilbee/data" "$PROJ/home"
   mkdir -p "$PROJ/.lilbee" "$PROJ/kb" "$PROJ/home"
-  cp "$REPO_DIR/docs/usage.md" "$REPO_DIR/docs/architecture.md" "$PROJ/kb/" 2>/dev/null
+  cp "$REPO_DIR/docs/usage.md" "$REPO_DIR/docs/architecture.md" "$REPO_DIR"/docs/internals/*.md "$PROJ/kb/" 2>/dev/null
   # documents_dir stays default (.lilbee/documents): pointing it at kb/ would
   # make "lilbee add kb/" copy kb into itself.
   cat > "$PROJ/.lilbee/config.toml" <<EOF
