@@ -315,6 +315,38 @@ def test_a_snapshot_that_links_into_the_shared_blob_store_still_names_its_blob(
     assert argv[-4:] == ["-m", str(snapshot), "-f", "Qwen3-4B-Q4_K_M.gguf"]
 
 
+def test_a_gguf_in_a_snapshot_subfolder_goes_by_that_folder_and_file_name(tmp_path: Path) -> None:
+    repo = tmp_path / "models" / "models--Qwen--Qwen3-4B-GGUF"
+    blob = repo / "blobs" / "93" / "9375c1fd"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"gguf")
+    folder = repo / "snapshots" / "rev1" / "Q4_K_M"
+    folder.mkdir(parents=True)
+    (folder / "Qwen3-4B-Q4_K_M.gguf").symlink_to(blob)
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=blob))
+    assert argv[-4:] == ["-m", str(folder), "-f", "Qwen3-4B-Q4_K_M.gguf"]
+
+
+@pytest.mark.parametrize("quant", ["Q2_K", "Q4_K_M", "Q8_0"])
+def test_each_blob_of_a_snapshot_with_several_quants_goes_by_its_own_file(
+    tmp_path: Path, quant: str
+) -> None:
+    repo = tmp_path / "models" / "models--Qwen--Qwen3-4B-GGUF"
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    blobs = {}
+    for name in ("Q2_K", "Q4_K_M", "Q8_0"):
+        blob = repo / "blobs" / f"hash-{name}"
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(name.encode())
+        (snapshot / f"Qwen3-4B-{name}.gguf").symlink_to(blob)
+        blobs[name] = blob
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=blobs[quant]))
+    assert argv[-4:] == ["-m", str(snapshot), "-f", f"Qwen3-4B-{quant}.gguf"]
+
+
 def test_a_blob_that_no_snapshot_names_stays_as_given(tmp_path: Path) -> None:
     repo = tmp_path / "models--org--repo"
     blob = repo / "blobs" / "abc"

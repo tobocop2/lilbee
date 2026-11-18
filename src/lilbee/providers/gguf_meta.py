@@ -351,7 +351,7 @@ def snapshot_entry_of_blob(model_path: Path) -> Path:
     if snapshots_dir is None:
         return model_path
     for snapshot in sorted(snapshots_dir.iterdir()):
-        for entry in sorted(snapshot.glob("*.gguf")):
+        for entry in sorted(snapshot.rglob("*.gguf")):
             # The blob name is its content hash; the link chain may end in a shared store
             # beside the repo folders, so the folder cannot be compared.
             if entry.resolve().name == model_path.name:
