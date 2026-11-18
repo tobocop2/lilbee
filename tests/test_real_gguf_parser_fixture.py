@@ -55,6 +55,17 @@ def test_the_fixture_skips_with_the_missing_binary_named_when_no_pack_is_planted
 ) -> None:
     empty_models = tmp_path / "empty" / "models"
     monkeypatch.setattr(suite_conftest, "REAL_MODELS_DIR", empty_models)
+    monkeypatch.delenv("LILBEE_REQUIRE_GGUF_PARSER", raising=False)
 
     with pytest.raises(pytest.skip.Exception, match="gguf-parser is not on PATH"):
+        request.getfixturevalue("real_gguf_parser")
+
+
+def test_the_fixture_fails_instead_of_skipping_when_the_parser_is_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    monkeypatch.setattr(suite_conftest, "REAL_MODELS_DIR", tmp_path / "empty" / "models")
+    monkeypatch.setenv("LILBEE_REQUIRE_GGUF_PARSER", "1")
+
+    with pytest.raises(pytest.fail.Exception, match="gguf-parser is not on PATH"):
         request.getfixturevalue("real_gguf_parser")

@@ -69,7 +69,7 @@ imports-check:
 # Every test that needs the library lives in tests/integration/ and imports it plainly,
 # so a job without the extra fails here and the plain test job never collects them.
 test-integration:
-	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py -v
+	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/test_estimator_real_binary.py -v
 
 # The preset replay needs the client library, so the plain test job cannot collect it.
 # It is offline and takes about a minute, so the local gate runs it by name.

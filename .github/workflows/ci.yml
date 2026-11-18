@@ -534,6 +534,9 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: auto
+          # The estimator test runs the gguf-parser built at the pin above: a
+          # missing parser fails this job instead of skipping the test.
+          LILBEE_REQUIRE_GGUF_PARSER: "1"
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
           LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

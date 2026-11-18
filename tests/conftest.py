@@ -511,7 +511,8 @@ def real_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> Path:
 
     The product lookup runs first, with no install: the bundled wheel, then PATH.
     If it raises, the fixture reads the installed engine pack itself, in the real
-    engine store. Nothing is installed: a host with no gguf-parser skips.
+    engine store. Nothing is installed: a host with no gguf-parser skips, unless
+    LILBEE_REQUIRE_GGUF_PARSER is set, which turns the skip into a failure.
     """
     monkeypatch.setattr(cfg, "models_dir", REAL_MODELS_DIR)
     try:
@@ -519,10 +520,13 @@ def real_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> Path:
     except ProviderError:
         packed = installed_tool(EngineTool.GGUF_PARSER.value)
     if packed is None:
-        pytest.skip(
+        message = (
             "gguf-parser is not on PATH and the engine pack is not installed under "
             f"{REAL_MODELS_DIR.parent}. {engine_install_hint()}"
         )
+        if os.environ.get("LILBEE_REQUIRE_GGUF_PARSER"):
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
     return packed
 
 

@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -14,6 +16,23 @@ def test_integration_target_runs_the_integration_directory() -> None:
     match = re.search(r"^test-integration:\n\t(.+)$", makefile, re.MULTILINE)
     assert match, "Makefile has no test-integration target"
     assert "tests/integration/" in match.group(1).split()
+
+
+def test_integration_target_runs_the_estimator_test_against_the_real_parser() -> None:
+    estimator = "tests/test_estimator_real_binary.py"
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(r"^test-integration:\n\t(.+)$", makefile, re.MULTILINE)
+    assert match, "Makefile has no test-integration target"
+    assert estimator in match.group(1).split()
+    assert (ROOT / estimator).is_file()
+
+
+def test_the_integration_job_requires_the_parser_it_builds() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["integration"]["steps"]
+    run_step = next(step for step in steps if step.get("name") == "Run integration tests")
+    assert run_step["run"] == "make test-integration"
+    assert run_step["env"]["LILBEE_REQUIRE_GGUF_PARSER"] == "1"
 
 
 def test_check_runs_pytest_on_the_preset_replay() -> None:
