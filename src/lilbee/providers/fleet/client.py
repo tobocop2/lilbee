@@ -1329,11 +1329,15 @@ class LlamaServerClient:
         (XML, code), so an estimate-trusted input may still exceed the server's
         context. On that error -- and only that -- redo the batch with exact
         server-side tokenization, which truncates the oversize input to the cap.
+        An engine with no tokenize route cannot truncate more exactly than the
+        estimate did, so it raises the overflow with no resend.
         """
         try:
             return self._embeddings_call(sub_batch)
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW:
+                raise
+            if self._profile.tokenize_path is None:
                 raise
             data: list[dict[str, Any]] = []
             for exact in self._truncate_and_subbatch(sub_batch, estimate=False):
@@ -1442,12 +1446,15 @@ class LlamaServerClient:
 
         The char estimate under-counts token-dense pairs, so an over-cap pair
         can slip through untruncated; the server rejects it as CONTEXT_OVERFLOW
-        and the batch is redone with exact server-side tokenization.
+        and the batch is redone with exact server-side tokenization. An engine
+        with no tokenize route raises the overflow with no resend.
         """
         try:
             return self._embeddings_call(batch)
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or self._token_cap is None:
+                raise
+            if self._profile.tokenize_path is None:
                 raise
             cap = self._token_cap
             exact = [self._fit_input(text, cap, estimate=False)[0] for text in batch]

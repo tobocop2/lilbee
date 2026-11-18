@@ -3626,18 +3626,32 @@ def test_embed_without_tokenize_route_keeps_input_within_cap() -> None:
     assert sent == ["x" * 12]
 
 
-def test_embed_without_tokenize_route_resends_the_same_input_on_context_overflow() -> None:
-    calls: list[list[str]] = []
-
+def _overflowing_handler(calls: list[list[str]]):
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(json.loads(request.content)["input"])
-        if len(calls) == 1:
-            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
-        return httpx.Response(200, json=_embed_body([[0.5]]))
+        return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
 
-    out = _no_route_client(handler, cap=4).embed(["x" * 12])
-    assert _as_lists(out) == [[0.5]]
-    assert calls == [["x" * 12], ["x" * 12]]
+    return handler
+
+
+def test_embed_without_tokenize_route_raises_the_overflow_without_a_resend() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    calls: list[list[str]] = []
+    with pytest.raises(ProviderError) as excinfo:
+        _no_route_client(_overflowing_handler(calls), cap=4).embed(["x" * 12])
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert calls == [["x" * 12]]
+
+
+def test_rerank_without_tokenize_route_raises_the_overflow_without_a_resend() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    calls: list[list[str]] = []
+    with pytest.raises(ProviderError) as excinfo:
+        _no_route_client(_overflowing_handler(calls), cap=100).rerank("q", ["alpha"])
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert calls == [[f"q{_RERANK_PAIR_SEPARATOR}alpha"]]
 
 
 def test_tokenize_without_tokenize_route_names_the_missing_route() -> None:
