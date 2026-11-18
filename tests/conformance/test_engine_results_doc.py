@@ -50,15 +50,40 @@ def _log_text(name: str) -> str:
     return (FIXTURES / name).with_suffix(".log").read_text(encoding="utf-8")
 
 
+HARNESS_ROWS = [row for row in JSON_ROWS if "results" in _doc(row.fixture)]
+HAND_ROWS = [row for row in JSON_ROWS if "results" not in _doc(row.fixture)]
+
+
+def _field(log: str, key: str) -> str:
+    """The value of the `key: value` line of a harness log."""
+    lines = [line for line in log.split("\n") if line.startswith(f"{key}: ")]
+    assert lines, f"the log has no {key} line"
+    return lines[0].removeprefix(f"{key}: ")
+
+
 def _machine(log: str) -> str:
-    """The machine a harness log names: the GPU when it has one, else the CPU host."""
-    gpu = [line for line in log.split("\n") if line.startswith("gpu: ")]
-    return gpu[0].removeprefix("gpu: ").split(",")[0] if gpu else "CPU host"
+    """The machine a harness log names: the CPU host for a cpu backend, else the GPU."""
+    if _field(log, "backend") == "cpu":
+        return "CPU host"
+    return _field(log, "gpu").split(",")[0]
+
+
+def _device_lines(log: str, device: str) -> int:
+    return sum(1 for line in log.split("\n") if f"GGML_OPENVINO_DEVICE={device}" in line)
+
+
+_COUNT_WORDS = {1: "one", 2: "two", 3: "three"}
 
 
 def test_the_table_has_recorded_and_unrecorded_rows() -> None:
     assert len(RECORDED) >= 8
     assert any(row.result.startswith(NOT_RECORDED) for row in ROWS)
+
+
+def test_each_kind_of_recorded_row_is_present() -> None:
+    assert HARNESS_ROWS
+    assert HAND_ROWS
+    assert [row.recording for row in RECORDED if row.fixture.endswith(".log")]
 
 
 @pytest.mark.parametrize("row", RECORDED, ids=lambda row: row.recording)
@@ -67,11 +92,7 @@ def test_a_recorded_row_names_a_fixture_that_exists(row: Row) -> None:
     assert not row.result.startswith(NOT_RECORDED)
 
 
-@pytest.mark.parametrize(
-    "row",
-    [row for row in JSON_ROWS if "results" in _doc(row.fixture)],
-    ids=lambda row: row.recording,
-)
+@pytest.mark.parametrize("row", HARNESS_ROWS, ids=lambda row: row.recording)
 def test_a_harness_row_matches_its_recorded_steps(row: Row) -> None:
     doc = _doc(row.fixture)
     steps = doc["results"]
@@ -83,20 +104,20 @@ def test_a_harness_row_matches_its_recorded_steps(row: Row) -> None:
     assert row.result == expected
     assert row.roles == ", ".join(doc["roles"])
     assert row.version == doc["version"]
-    assert row.machine == _machine(_log_text(row.fixture))
+    log = _log_text(row.fixture)
+    assert row.machine == _machine(log)
+    if row.machine == "CPU host":
+        assert "gcp" in _field(log, "host"), f"{row.recording} did not run on a cloud host"
     assert row.recording == doc["server"]
 
 
-@pytest.mark.parametrize(
-    "row",
-    [row for row in JSON_ROWS if "results" not in _doc(row.fixture)],
-    ids=lambda row: row.recording,
-)
-def test_a_hand_run_row_matches_its_exchanges(row: Row) -> None:
+@pytest.mark.parametrize("row", HAND_ROWS, ids=lambda row: row.recording)
+def test_a_manual_run_row_matches_its_exchanges(row: Row) -> None:
     doc = _doc(row.fixture)
     [exchange] = doc["exchanges"]
     assert exchange["path"] == "/v1/chat/completions"
-    assert row.result == f"hand run: 1 chat request, HTTP {exchange['status']}, no strict steps"
+    expected = f"manual run: 1 chat request, HTTP {exchange['status']}, no strict steps"
+    assert row.result == expected
     assert row.roles == ", ".join(doc["roles"])
     assert row.version == doc["version"]
     assert row.machine in doc["source"]
@@ -112,16 +133,25 @@ def test_a_log_only_row_matches_its_log(row: Row) -> None:
     log = (FIXTURES / row.fixture).read_text(encoding="utf-8")
     assert row.machine in log
     assert row.version in log
-    assert row.result.startswith("fail") == ("Aborted (core dumped)" in log)
+    assert "Aborted (core dumped)" in log
+    assert "No CPU fallback" in log
+    assert row.result == "fail: the server aborts and does not fall back to the CPU"
+    assert row.roles == "none"
+    assert "STEP " not in log
 
 
 def test_the_device_list_row_matches_its_log() -> None:
     [row] = [r for r in RECORDED if r.fixture == "openvino-two-gpu.list-devices.log"]
     log = (FIXTURES / row.fixture).read_text(encoding="utf-8")
+    cpus = _device_lines(log, "CPU")
+    gpus = _device_lines(log, "GPU")
     assert row.machine in log
-    assert log.count("GGML_OPENVINO_DEVICE=") == 3
+    assert cpus + gpus == log.count("GGML_OPENVINO_DEVICE=")
     assert "[exit 0]" in log
-    assert row.result.startswith("pass")
+    shown = f"{_COUNT_WORDS[cpus]} CPU and {_COUNT_WORDS[gpus]} GPU devices"
+    assert row.result == f"pass: `--list-devices` shows {shown}"
+    assert row.roles == "none"
+    assert "STEP " not in log
 
 
 @pytest.mark.parametrize(
