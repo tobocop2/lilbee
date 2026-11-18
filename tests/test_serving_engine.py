@@ -237,7 +237,7 @@ def test_a_pin_that_cannot_be_read_is_reported_as_unknown() -> None:
     engine.name = "llama.cpp"
     engine.pin_record.side_effect = OSError("gone")
     served = served_by(NATIVE, engine, native=True)
-    assert served == ServingEngine("llama.cpp", UNKNOWN_VERSION, UNKNOWN_VERSION)
+    assert served == ServingEngine("llama.cpp", UNKNOWN_VERSION, UNKNOWN_VERSION, "OSError: gone")
 
 
 def test_a_pin_with_no_upstream_ref_has_no_build() -> None:

@@ -282,7 +282,7 @@ def test_the_served_by_version_is_the_version_the_engine_list_shows(
     resolve_llama_server()
     listed = [b.version for b in engine_service.engine_list().builds if b.engine == "llama.cpp"]
     assert listed == [_WHEEL_VERSION]
-    provider = RoutingProvider.__new__(RoutingProvider)
+    provider = RoutingProvider()
     served = served_by("org/chat-GGUF/chat.gguf", LLAMA, native=True)
     with caplog.at_level("INFO", logger="lilbee.providers.routing_provider"):
         provider._log_served(WorkerRole.CHAT, "org/chat-GGUF/chat.gguf", served)

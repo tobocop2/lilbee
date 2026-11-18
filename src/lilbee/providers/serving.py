@@ -30,6 +30,9 @@ REMOTE_VERSION = "remote"
 """The version reported for a built-in hosted or local-server provider."""
 
 
+PIN_LOOKUP_ERRORS = (OSError, KeyError, RuntimeError)
+"""The errors an adapter can raise while it reads its pin record."""
+
 NO_BUILD = "none"
 """The build reported when the engine has no upstream ref apart from its version."""
 
@@ -41,6 +44,8 @@ class ServingEngine:
     engine: str
     version: str
     build: str = NO_BUILD
+    unread: str = ""
+    """Why the pin could not be read; empty when it was read."""
 
 
 def log_name(model: str) -> str:
@@ -53,8 +58,9 @@ def _pinned(engine: EngineAdapter) -> ServingEngine:
     name = str(engine.name)
     try:
         pin = engine.pin_record()
-    except OSError:
-        return ServingEngine(name, UNKNOWN_VERSION, UNKNOWN_VERSION)
+    except PIN_LOOKUP_ERRORS as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        return ServingEngine(name, UNKNOWN_VERSION, UNKNOWN_VERSION, reason)
     return ServingEngine(
         name, str(pin.get("version", UNKNOWN_VERSION)), str(pin.get("upstream_ref") or NO_BUILD)
     )

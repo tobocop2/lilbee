@@ -56,6 +56,7 @@ class RoutingProvider(LLMProvider):
         config_refresh: Callable[[], None] | None = None,
     ) -> None:
         self._noticed: dict[WorkerRole, str] = {}
+        self._unread: dict[WorkerRole, str] = {}
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
@@ -106,6 +107,15 @@ class RoutingProvider(LLMProvider):
             role.value,
             log_name(model),
         )
+        if not served.unread:
+            self._unread.pop(role, None)
+        elif self._unread.get(role) != served.unread:
+            self._unread[role] = served.unread
+            log.warning(
+                "Cannot read the pin of engine %s, reporting it unknown: %s",
+                served.engine,
+                served.unread,
+            )
 
     def _warn_once(self, role: WorkerRole) -> None:
         """Log why *role* did not get the engine asked for, once for each notice text."""

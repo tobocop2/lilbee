@@ -484,6 +484,7 @@ class _Served:
     engine = "llama.cpp"
     version = "1"
     build = "none"
+    unread = ""
 
 
 _SERVED = _Served()
