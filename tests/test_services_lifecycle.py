@@ -531,6 +531,40 @@ def test_a_container_built_while_the_stop_begins_is_shut_down_not_kept(monkeypat
     assert peek_services() is None
 
 
+def test_a_store_rebuilt_while_the_stop_begins_is_closed_not_kept(monkeypatch):
+    """A /reset store rebuild must not bring back the container the stop cleared."""
+    import dataclasses
+
+    import lilbee.retrieval.canary_probe as canary_mod
+    import lilbee.retrieval.clustering as clustering_mod
+    import lilbee.retrieval.concepts as concepts_mod
+    import lilbee.retrieval.query as query_mod
+
+    _without_a_stop_thread(monkeypatch)
+    _install_stub_services()
+    new_store = MagicMock()
+
+    def _rebuild_as_the_stop_begins(*_args: object) -> MagicMock:
+        services_mod._lifecycle.stop_requested = True
+        reset_services()
+        return new_store
+
+    monkeypatch.setattr(services_mod, "_new_store", _rebuild_as_the_stop_begins)
+    monkeypatch.setattr(canary_mod, "canary_probe", MagicMock())
+    monkeypatch.setattr(concepts_mod, "ConceptGraph", MagicMock())
+    monkeypatch.setattr(clustering_mod, "Clusterer", MagicMock())
+    monkeypatch.setattr(query_mod, "Searcher", MagicMock())
+    monkeypatch.setattr(dataclasses, "replace", lambda svc, **_changes: MagicMock())
+
+    with pytest.raises(ServicesStoppingError):
+        services_mod.reset_store()
+
+    new_store.close.assert_called_once_with()
+    assert peek_services() is None
+    with pytest.raises(ServicesStoppingError):
+        get_services()
+
+
 @pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
 def test_a_signal_during_an_exit_stop_joins_it_and_sets_the_exit_status(sig):
     """A signal that lands during a clean exit's stop gives its status once the stop ends."""

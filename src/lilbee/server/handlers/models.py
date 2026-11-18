@@ -18,7 +18,7 @@ from lilbee.app.models import (
     list_models_data,
     refreshes_safetensors_files,
 )
-from lilbee.app.services import get_services
+from lilbee.app.services import ServicesStoppingError, get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
     CatalogResult,
@@ -682,6 +682,8 @@ async def list_external_models() -> ExternalModelsResponse:
         result = ExternalModelsResponse(models=models)
         _external_cache[key] = result
         return result
+    except ServicesStoppingError:
+        raise
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)
         return ExternalModelsResponse(models=[], error=str(exc))

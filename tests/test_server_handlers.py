@@ -5566,6 +5566,14 @@ class TestListExternalModels:
         assert result.error is None
 
     @patch("lilbee.server.handlers.models.get_services")
+    async def test_a_stopping_server_raises_for_the_503(self, mock_svc):
+        from lilbee.app.services import ServicesStoppingError
+
+        mock_svc.side_effect = ServicesStoppingError()
+        with pytest.raises(ServicesStoppingError):
+            await handlers.list_external_models()
+
+    @patch("lilbee.server.handlers.models.get_services")
     async def test_error_returns_empty_with_message(self, mock_svc):
         mock_svc.return_value.provider.list_models.side_effect = RuntimeError("connection refused")
         result = await handlers.list_external_models()
