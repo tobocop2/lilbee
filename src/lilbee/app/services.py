@@ -608,7 +608,9 @@ class _EngineLifecycle:
         server that is already stopping joins that stop. A SystemExit raised
         into the loop cancels the ASGI lifespan with it, which logs a
         traceback, or dies inside a request's ASGI wrapper. With no server the
-        SystemExit unwinds the main thread. Signal handlers
+        SystemExit unwinds the main thread. The stop state is read before the
+        teardown thread starts, because that thread marks the server as
+        stopping. Signal handlers
         all run on the main thread, and a second signal can interrupt this one
         mid-teardown: the kernel pairs SIGCONT with SIGHUP for an orphaned
         process group, and Textual's SIGCONT handler raises once the event loop
@@ -618,9 +620,9 @@ class _EngineLifecycle:
         """
         del frame
         status = _SIGNAL_EXIT_BASE + signum
-        serving = request_server_exit(status)
+        joining = request_server_exit(status) or server_is_stopping()
         _start_signal_teardown(signum)
-        if not serving and not server_is_stopping():
+        if not joining:
             raise SystemExit(status)
 
 

@@ -220,6 +220,26 @@ def test_a_ctrl_c_before_any_server_runs_still_unwinds_the_main_thread():
     assert exit_info.value.code == 128 + signal.SIGINT
 
 
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_a_first_terminate_signal_with_no_server_raises_even_when_the_teardown_wins_the_race(
+    sig, monkeypatch
+):
+    """The teardown marks the server stopping; the first signal must not read that as a stop."""
+    _install_stub_services()
+    started: list[int] = []
+
+    def _teardown_marks_stopping_at_once(signum: int) -> None:
+        started.append(signum)
+        services_mod.answer_provider_waiters()
+
+    monkeypatch.setattr(services_mod, "_start_signal_teardown", _teardown_marks_stopping_at_once)
+    install_engine_lifecycle_hooks()
+    with pytest.raises(SystemExit) as exit_info:
+        signal.getsignal(sig)(sig, None)
+    assert exit_info.value.code == 128 + sig
+    assert started == [sig]
+
+
 def test_cli_entry_point_installs_the_hooks():
     """Every surface enters through the Typer callback, so the hooks install there."""
     import inspect
