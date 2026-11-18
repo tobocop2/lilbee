@@ -1,6 +1,7 @@
 """Event type enums and Pydantic models for the progress protocol."""
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, field_serializer
 
@@ -323,6 +324,14 @@ _UPGRADE_TEXT: dict[UpgradePhase, str] = {
     UpgradePhase.FAILED: "Library upgrade stopped after {elapsed_s:.1f} s.",
 }
 _RUNNING_PHASES = frozenset({UpgradePhase.STARTING, UpgradePhase.WAITING, UpgradePhase.TABLE})
+WirePhase = Literal["waiting", "table", "done", "failed"]
+_WIRE_PHASE: dict[UpgradePhase, WirePhase] = {
+    UpgradePhase.STARTING: "table",
+    UpgradePhase.WAITING: "waiting",
+    UpgradePhase.TABLE: "table",
+    UpgradePhase.DONE: "done",
+    UpgradePhase.FAILED: "failed",
+}
 
 
 class LibraryUpgradeEvent(BaseModel):
@@ -342,9 +351,9 @@ class LibraryUpgradeEvent(BaseModel):
     elapsed_s: float = 0.0
 
     @field_serializer("phase")
-    def serialize_phase(self, phase: UpgradePhase) -> UpgradePhase:
+    def serialize_phase(self, phase: UpgradePhase) -> WirePhase:
         """The starting phase goes out as the table phase, the running value every client reads."""
-        return UpgradePhase.TABLE if phase is UpgradePhase.STARTING else phase
+        return _WIRE_PHASE[phase]
 
     @property
     def running(self) -> bool:

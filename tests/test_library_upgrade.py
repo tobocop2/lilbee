@@ -630,13 +630,20 @@ class TestUpgradeText:
     def test_only_the_wait_and_a_table_are_running(self, phase, running):
         assert LibraryUpgradeEvent(phase=phase).running is running
 
+    def test_the_phases_the_wire_pin_covers_are_not_empty(self):
+        assert len(list(UpgradePhase)) == 5
+
     @pytest.mark.parametrize("phase", list(UpgradePhase))
     def test_the_wire_phase_stays_inside_the_set_clients_read(self, phase):
         released = {"waiting", "table", "done", "failed"}
 
-        assert len(list(UpgradePhase)) > 0
         assert LibraryUpgradeEvent(phase=phase).model_dump(mode="json")["phase"] in released
         assert LibraryUpgradeEvent(phase=phase).phase is phase
+
+    def test_the_published_schema_lists_only_the_phases_the_wire_sends(self):
+        schema = LibraryUpgradeEvent.model_json_schema(mode="serialization")
+
+        assert set(schema["properties"]["phase"]["enum"]) == {"waiting", "table", "done", "failed"}
 
     def test_the_starting_phase_goes_out_as_the_table_phase(self):
         event = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
@@ -1338,3 +1345,21 @@ class TestMcpWaitsForTheUpgrade:
         assert "document_count" not in during
         assert after["document_count"] == 2
         assert "upgrade" not in after
+
+    def test_the_status_tool_answers_with_the_upgrade_in_a_step_with_no_event(self, library):
+        from lilbee import mcp_server
+        from tests.conftest import make_mock_services
+
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        entered, release = threading.Event(), threading.Event()
+        with _event_free_upgrade_held(entered, release):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            during = mcp_server.status()
+            release.set()
+            store.wait_for_open(30)
+
+        assert during["detail"] == UPGRADE_HEADLINE
+        assert during["upgrade"]["phase"] == "table"
+        assert "document_count" not in during
