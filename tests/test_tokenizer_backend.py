@@ -125,6 +125,24 @@ def test_zero_count_for_non_empty_text_falls_back_to_estimate():
     assert backend.count_tokens(text) == _estimate_tokens(text)
 
 
+def test_a_services_sync_leaves_a_bound_tokenizer_registered():
+    import xberg
+
+    from lilbee.data.extract.backends import BackendKind, bind_backend, sync_xberg_backend
+
+    class _Provider:
+        def count_tokens(self, text: str) -> int:
+            return max(1, len(text.split()))
+
+    provider = _Provider()
+    bind_backend(BackendKind.TOKENIZER, provider)
+    try:
+        sync_xberg_backend(BackendKind.TOKENIZER, provider)
+        assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
+    finally:
+        xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+
+
 def test_estimate_is_conservative_and_at_least_one():
     assert _estimate_tokens("") == 1
     assert _estimate_tokens("abc") == 1
