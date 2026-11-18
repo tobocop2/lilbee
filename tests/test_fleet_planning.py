@@ -4969,8 +4969,8 @@ class TestWarnWhenChatDownsized:
             built_ctx_target=target,
         )
 
-    def test_stays_quiet_when_token_sizing_self_corrects(self, caplog, monkeypatch) -> None:
-        """The chunker already switches to token sizing on its own below this cap,
+    def test_stays_quiet_when_plain_chunking_sizes_to_the_cap(self, caplog, monkeypatch) -> None:
+        """Plain chunking sizes chunks by the model's tokens up to this cap,
         so there is nothing left for the adoption log to flag."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
