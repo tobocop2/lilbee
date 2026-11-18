@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import operator
+import re
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,7 +25,10 @@ _NOT_A_FILE_SIZE = frozenset(
         ("_hang_watchdog.py", "handle", "size"),  # a cursor in the small hang-dump file
     }
 )
-_EXEMPT_RECEIVERS = frozenset((name, receiver) for name, receiver, _ in _NOT_A_FILE_SIZE)
+_CUTTING_NAMES = frozenset({*_FILE_METHODS, *_OS_FUNCTIONS})
+# The parser reads identifiers in NFKC form, so a source is searched in that form.
+_MENTIONS = re.compile("|".join(sorted(_CUTTING_NAMES)))
+_EXEMPT_RECEIVERS =frozenset((name, receiver) for name, receiver, _ in _NOT_A_FILE_SIZE)
 _OPERATORS: dict[type[ast.operator], Callable[[int, int], int]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -79,17 +84,10 @@ def _argument(call: ast.Call, position: int, keyword: str) -> ast.expr | None:
     return next((kw.value for kw in call.keywords if kw.arg == keyword), None)
 
 
-def _size_argument(
-    call: ast.Call, file_name: str, modules: set[str], functions: dict[str, str]
+def _method_argument(
+    call: ast.Call, func: ast.Attribute, file_name: str, modules: set[str]
 ) -> ast.expr | None:
-    """The size argument of a call that cuts or moves within a file, else None."""
-    func = call.func
-    if isinstance(func, ast.Name) and functions.get(func.id) in _OS_FUNCTIONS:
-        return _argument(call, *_OS_FUNCTIONS[functions[func.id]])
-    if not isinstance(func, ast.Attribute):
-        return None
-    if func.attr not in _FILE_METHODS and func.attr not in _OS_FUNCTIONS:
-        return None
+    """The size argument of ``receiver.method(...)`` when it cuts or moves within a file."""
     receiver = ast.unparse(func.value)
     if receiver in modules and func.attr in _OS_FUNCTIONS:
         return _argument(call, *_OS_FUNCTIONS[func.attr])
@@ -105,9 +103,23 @@ def _size_argument(
     return argument
 
 
+def _size_argument(
+    call: ast.Call, file_name: str, modules: set[str], functions: dict[str, str]
+) -> ast.expr | None:
+    """The size argument of a call that cuts or moves within a file, else None."""
+    func = call.func
+    if isinstance(func, ast.Name) and functions.get(func.id) in _OS_FUNCTIONS:
+        return _argument(call, *_OS_FUNCTIONS[functions[func.id]])
+    if isinstance(func, ast.Attribute) and func.attr in _CUTTING_NAMES:
+        return _method_argument(call, func, file_name, modules)
+    return None
+
+
 def large_file_sites(source: str, file_name: str) -> list[tuple[int, str]]:
     """``(line, reason)`` for each size argument above the limit or not stated as a number."""
     tree = ast.parse(source)
+    if not _MENTIONS.search(unicodedata.normalize("NFKC", source)):
+        return []
     names = _module_constants(tree)
     modules, functions = _os_names(tree)
     sites: list[tuple[int, str]] = []
@@ -123,6 +135,19 @@ def large_file_sites(source: str, file_name: str) -> list[tuple[int, str]]:
         elif size > LIMIT_BYTES:
             sites.append((node.lineno, f"{size} bytes is above {LIMIT_BYTES}"))
     return sites
+
+
+def test_a_source_without_a_cutting_name_is_not_walked(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(node: ast.AST) -> object:
+        raise AssertionError("walked a source with no cutting name")
+
+    monkeypatch.setattr(ast, "walk", refuse)
+    assert large_file_sites("handle.write(b'x')\n", "test_x.py") == []
+
+
+def test_a_source_without_a_cutting_name_still_has_to_parse() -> None:
+    with pytest.raises(SyntaxError):
+        large_file_sites("def (:\n", "test_x.py")
 
 
 def test_the_scan_unparses_only_a_cutting_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,6 +188,7 @@ def test_no_test_truncates_or_seeks_past_the_limit() -> None:
         "import os as system\nsystem.truncate(path, 20 * 1024**3)",
         "os.lseek(fd, 20 * 1024**3, 0)",
         "os.ftruncate(fd, 20 * 1024**3)",
+        "os.ｔruncate(path, 20 * 1024**3)",
     ],
     ids=[
         "truncate",
@@ -178,6 +204,7 @@ def test_no_test_truncates_or_seeks_past_the_limit() -> None:
         "module-alias",
         "lseek",
         "ftruncate",
+        "fullwidth-name",
     ],
 )
 def test_the_scan_flags_a_large_or_unstated_size(source: str) -> None:
