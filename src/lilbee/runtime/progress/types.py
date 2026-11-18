@@ -291,6 +291,7 @@ class AnalyzeEvent(BaseModel):
 class UpgradePhase(StrEnum):
     """Stage of a first open that upgrades the library's format."""
 
+    STARTING = "starting"
     WAITING = "waiting"
     TABLE = "table"
     DONE = "done"
@@ -311,6 +312,7 @@ UPGRADE_HEADLINE = (
 )
 
 _UPGRADE_TEXT: dict[UpgradePhase, str] = {
+    UpgradePhase.STARTING: "Upgrading the library · {seconds} s",
     UpgradePhase.WAITING: (
         "Waiting for another lilbee process to finish with the library · {seconds} s"
     ),
@@ -320,7 +322,7 @@ _UPGRADE_TEXT: dict[UpgradePhase, str] = {
     UpgradePhase.DONE: "Library upgrade finished in {elapsed_s:.1f} s.",
     UpgradePhase.FAILED: "Library upgrade stopped after {elapsed_s:.1f} s.",
 }
-_RUNNING_PHASES = frozenset({UpgradePhase.WAITING, UpgradePhase.TABLE})
+_RUNNING_PHASES = frozenset({UpgradePhase.STARTING, UpgradePhase.WAITING, UpgradePhase.TABLE})
 
 
 class LibraryUpgradeEvent(BaseModel):

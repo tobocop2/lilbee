@@ -165,6 +165,21 @@ def _upgrade_held(release: threading.Event):
         yield
 
 
+@contextmanager
+def _event_free_upgrade_held(entered: threading.Event, release: threading.Event):
+    """Hold an upgrade inside a step that reports no event, such as the held-record import."""
+
+    def _held(self, db):
+        entered.set()
+        release.wait(timeout=30)
+
+    with (
+        mock.patch.object(Store, "_upgrade_needed", return_value=True),
+        mock.patch.object(Store, "_upgrade_unlocked", _held),
+    ):
+        yield
+
+
 class TestStoreReportsTheUpgrade:
     def test_each_table_is_reported_in_order_then_the_time_it_took(self, library):
         events, record = _recorder()
@@ -279,6 +294,25 @@ class TestStoreReportsTheUpgrade:
         assert store.health_warnings() == []
         assert store.upgrade_progress() is None
         assert store.is_open is False
+
+
+    def test_an_upgrade_in_a_step_with_no_event_is_reported_until_it_ends(self, library):
+        store = Store(library)
+        entered, release = threading.Event(), threading.Event()
+
+        with _event_free_upgrade_held(entered, release):
+            store.open_in_background()
+            assert entered.wait(timeout=10)
+            progress = store.upgrade_progress()
+            warnings = store.health_warnings()
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert progress is not None
+        assert progress.phase is UpgradePhase.STARTING
+        assert [w.code for w in warnings] == [WarningCode.LIBRARY_UPGRADING]
+        assert store.upgrade_progress() is None
+        assert store.health_warnings() == []
 
 
 class TestOthersWaitForTheUpgrade:
@@ -449,6 +483,10 @@ class TestUpgradeText:
         ("event", "text"),
         [
             (
+                LibraryUpgradeEvent(phase=UpgradePhase.STARTING, elapsed_s=2.4),
+                "Upgrading the library · 2 s",
+            ),
+            (
                 LibraryUpgradeEvent(phase=UpgradePhase.WAITING, elapsed_s=4.9),
                 "Waiting for another lilbee process to finish with the library · 4 s",
             ),
@@ -498,6 +536,7 @@ class TestUpgradeText:
     @pytest.mark.parametrize(
         ("phase", "running"),
         [
+            (UpgradePhase.STARTING, True),
             (UpgradePhase.WAITING, True),
             (UpgradePhase.TABLE, True),
             (UpgradePhase.DONE, False),
@@ -1026,6 +1065,28 @@ class TestServerShowsTheUpgrade:
         assert sent[0]["status"] == 503
         assert read_text(body) == "lilbee is opening the library. Try again in a few seconds."
         assert body["upgrade"] is None
+
+    async def test_a_request_held_in_a_step_with_no_event_says_upgrading(self, library, monkeypatch):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        entered, release = threading.Event(), threading.Event()
+        with _event_free_upgrade_held(entered, release):
+            async with AsyncTestClient(create_app()) as client:
+                assert await asyncio.to_thread(entered.wait, 10)
+                held = await client.get("/api/status", headers=_headers())
+                health = await client.get("/api/health", headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+
+        assert held.status_code == 503
+        assert "upgrading the library" in held.json()["detail"]
+        assert held.json()["upgrade"]["phase"] == "starting"
+        assert [w["code"] for w in health.json()["warnings"]] == ["library_upgrading"]
 
     async def test_a_request_past_the_limit_is_answered_in_the_error_shape_of_its_api(
         self, library, monkeypatch

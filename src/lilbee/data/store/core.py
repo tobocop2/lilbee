@@ -1817,6 +1817,8 @@ class Store:
         """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
         self._upgrade_started = time.monotonic()
         try:
+            # Recorded, not reported: health and the 503 name the upgrade from its first moment.
+            self._upgrade = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
             with ExitStack() as held:
                 try:
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=0.0))
