@@ -16,11 +16,13 @@ from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
 from lilbee.providers.backends.liter_llm.errors import (
     _ERROR_KINDS,
     _KIND_MESSAGES,
+    PresetCall,
     _classify_error,
     _provider_error,
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest
 from tests import _fake_sdk as fakes
 
@@ -312,3 +314,73 @@ def test_a_422_that_names_the_prompt_length_stays_a_context_overflow(sdk: fakes.
 def test_a_content_policy_refusal_keeps_the_bad_request_text(sdk: fakes.FakeSdk) -> None:
     error = _embed_error(sdk, sdk.error("ContentPolicyError", "blocked"))
     assert "Check the model name and your settings" in str(error)
+
+
+_PRESET = PresetCall("http://box:8080/v1", WorkerRole.EMBED)
+
+
+@pytest.mark.parametrize(
+    ("exc_name", "preset", "expected_kind", "expected_text"),
+    [
+        pytest.param(
+            "NotFoundError",
+            _PRESET,
+            ProviderErrorKind.NOT_FOUND,
+            "The server for m answered 404 to the embed request at http://box:8080/v1. "
+            "Check the base URL and the route prefix of the server. "
+            "Check that the server has a model loaded for the embed role.",
+            id="not-found-on-a-preset-names-role-and-url",
+        ),
+        pytest.param(
+            "NotFoundError",
+            None,
+            ProviderErrorKind.NOT_FOUND,
+            "The provider doesn't offer m on your account. "
+            "Pick a different model or check the name.",
+            id="not-found-without-a-preset",
+        ),
+        pytest.param(
+            "RateLimitedError",
+            _PRESET,
+            ProviderErrorKind.RATE_LIMIT,
+            _KIND_MESSAGES[ProviderErrorKind.RATE_LIMIT].format(model="m"),
+            id="a-kind-message-names-the-model",
+        ),
+        pytest.param(
+            "OutboundForbiddenError",
+            None,
+            ProviderErrorKind.BAD_REQUEST,
+            "The server for m resolves to an address that a server preset cannot use. "
+            "Fix the URL of the preset or pick a different model.",
+            id="a-type-message-wins-over-the-kind-message",
+        ),
+        pytest.param(
+            "InternalError",
+            None,
+            ProviderErrorKind.UNKNOWN,
+            "Embedding failed: boom",
+            id="an-unmapped-class-keeps-the-raw-error",
+        ),
+    ],
+)
+def test_the_error_text_and_kind_of_each_mapping(
+    sdk: fakes.FakeSdk,
+    exc_name: str,
+    preset: PresetCall | None,
+    expected_kind: ProviderErrorKind,
+    expected_text: str,
+) -> None:
+    error = _provider_error("Embedding failed", sdk.error(exc_name), "m", preset=preset)
+    assert str(error) == expected_text
+    assert error.kind is expected_kind
+    assert error.provider == "remote"
+
+
+def test_a_422_error_names_the_remote_provider_and_the_bad_request_kind(
+    sdk: fakes.FakeSdk,
+) -> None:
+    error = _provider_error(
+        "Embedding failed", sdk.error("BadRequestError", "too many", status=422), "m"
+    )
+    assert error.provider == "remote"
+    assert error.kind is ProviderErrorKind.BAD_REQUEST
