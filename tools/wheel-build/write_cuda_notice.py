@@ -1,11 +1,12 @@
 """Write NOTICE-NVIDIA-CUDA with the text of the NVIDIA CUDA Toolkit EULA.
 
-Usage: write_cuda_notice.py <output> <cuda-version> <cargo-build-log>
+Usage: write_cuda_notice.py <output> <cuda-version> <cargo-build-log | sha256-list>
 
 <cuda-version> is a full toolkit version such as 12.9.1; the EULA text is read from the archive
-page of that version. <cargo-build-log> is the output of `cargo build -vv`: the notice names the
-NVIDIA libraries that the log shows linked, and the script stops when Attachment A of the EULA does
-not list one of them (cuDNN, for example).
+page of that version. The last argument is the output of `cargo build -vv`: the notice names the
+NVIDIA libraries that the log shows linked. It can also be the sha256sum list of the shared
+libraries that a wheel carries unchanged (such as libcudart.so.12): the notice names those. The
+script stops when Attachment A of the EULA does not list one of them (cuDNN, for example).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ FILE_NAME = re.compile(r"\b(lib[\w.+-]*?\.(?:so|a))\b")
 NVIDIA_LIB = re.compile(
     r"cud|cublas|curand|cufft|cusparse|cusolver|culibos|nvrtc|nvptx|nvJit|nvvm|nccl|npp"
 )
+SHIPPED_LINE = re.compile(r"[0-9a-f]{64} \*?(lib[\w+-]+)\.so(?:\.\d+)*")
 DRIVER_LIBS = frozenset({"cuda"})
 
 
@@ -79,6 +81,16 @@ def linked_nvidia_files(build_log: str) -> list[str]:
     return sorted(files)
 
 
+def shipped_nvidia_files(sha_list: str) -> list[str]:
+    """The NVIDIA shared libraries of a sha256sum list, as the .so names Attachment A uses."""
+    files: set[str] = set()
+    for line in sha_list.splitlines():
+        match = SHIPPED_LINE.fullmatch(line.strip())
+        if match and NVIDIA_LIB.search(match[1]):
+            files.add(f"{match[1]}.so")
+    return sorted(files)
+
+
 def disallowed(files: list[str], allowed: set[str]) -> list[str]:
     """The files in *files* that Attachment A does not list."""
     return [name for name in files if name not in allowed]
@@ -89,17 +101,25 @@ def main(argv: list[str]) -> None:
         raise SystemExit(__doc__)
     output, version, log_path = argv[1:]
     with open(log_path, encoding="utf-8", errors="replace") as handle:
-        files = linked_nvidia_files(handle.read())
+        text = handle.read()
+    shipped = shipped_nvidia_files(text)
+    files = shipped or linked_nvidia_files(text)
     if not files:
         raise SystemExit(f"{log_path} shows no NVIDIA library linked")
     url, body = eula_text(version)
     refused = disallowed(files, attachment_a_files(body))
     if refused:
         raise SystemExit(f"Attachment A of the EULA does not list: {', '.join(refused)}")
-    description = (
-        f"This wheel links NVIDIA CUDA {version} libraries into the router as static or shared "
-        f"libraries: {', '.join(files)}."
-    )
+    if shipped:
+        description = (
+            f"This wheel carries NVIDIA CUDA {version} shared libraries without change: "
+            f"{', '.join(files)}."
+        )
+    else:
+        description = (
+            f"This wheel links NVIDIA CUDA {version} libraries into the router as static or "
+            f"shared libraries: {', '.join(files)}."
+        )
     if "libcublas_static.a" in files:
         description += " The cublas library keeps the GPU code of this build's architecture only."
     head = (
