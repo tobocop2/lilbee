@@ -6,6 +6,8 @@
 # In the blocks of engine-packs-20261119-ik and engine-packs-20261119-ik2, each line is the
 # sha256sum of the wheel on the build host before the upload. An anonymous download of each
 # asset gave the same sum.
+# In the block of engine-packs-20261119-llama, each line is the digest that GitHub gives the
+# release asset. The sha256sum of an anonymous download of each asset gave the same sum.
 # release engine-packs-20261118
 # source release engine-packs-20261104
 8bba9afef14daa860692e6011f5cee892c544e9e0f43bb774dbe39ec83e575b5  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl
@@ -45,3 +47,12 @@ adef1ba024f7fd18e65f335820cd9d6169eee5a3ca823108650bf67a45afed04  lilbee_engine_
 # release engine-packs-20261119-ik2
 4407cb7986ceb42ce2c1c2c743be5f074317af37ab88f0f33ab17ab589142d1d  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cuda-py3-none-manylinux_2_34_x86_64.whl
 96d7a448b522bde5c970767094cb4d8c0e6add596e9ed5f9bb681dfde97e734c  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-3.cpu-py3-none-manylinux_2_34_x86_64.whl
+# release engine-packs-20261119-llama
+cfa58ff9f48b238d187b8bf06c6914cec4ff30378a047cf4aa7707e222194d06  lilbee_engine_llama_cpp-1.12032.1-2.cpu-py3-none-manylinux_2_34_x86_64.whl
+4ff9e1a52a6d50762458a497307f7b0e775a9346a6b5a5eb8e9ff88c39ff6bcd  lilbee_engine_llama_cpp-1.12032.1-2.cuda-py3-none-manylinux_2_34_x86_64.whl
+ae859d55e57d58a1f59de4084adbf41a9d5e84a7cb993562abd838ec2d17c5ab  lilbee_engine_llama_cpp-1.12032.1-2.metal-py3-none-macosx_14_0_arm64.whl
+6616907f7c5c49065767ecd59a1912a8b7df454d6e459593faff08e0f59bd674  lilbee_engine_llama_cpp-1.12032.1-2.rocm-py3-none-manylinux_2_34_x86_64.whl
+03b16d8054726674c63a61b924f470c4d9ffe0cf86b4d4c23c34f2cbf7f1e094  lilbee_engine_llama_cpp-1.12032.1-2.vulkan-py3-none-manylinux_2_34_x86_64.whl
+14a0039d4348f19017aaa23549b7fac2c4b1515071214e9ec98b225e5fdae18d  lilbee_engine_llama_cpp-1.12032.1-3.cpu-py3-none-win_amd64.whl
+aa34661441f26d8e964d33ddf9c1f68c69c45d314dc8f42fa3f7d3fb69679107  lilbee_engine_llama_cpp-1.12032.1-3.cuda-py3-none-win_amd64.whl
+a01a032c23e41f51d696d0ce6bb80bfeb87994cb5d56afc2819f30bca4296ce9  lilbee_engine_llama_cpp-1.12032.1-3.vulkan-py3-none-win_amd64.whl

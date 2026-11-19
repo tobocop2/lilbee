@@ -16,7 +16,7 @@ VERSION = "1.12032.1"
 AMD = 0x1002
 _CARD = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "card", "cc": [8, 6]}]}
 
-# License-Expression of each wheel in release engine-packs-20261118, read from its METADATA.
+# License-Expression of each wheel in release engine-packs-20261119-llama, read from its METADATA.
 _UNIX = "MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT-0 AND Unlicense"
 _WINDOWS = (
     "MIT AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime AND Apache-2.0 "

@@ -356,21 +356,21 @@ def test_no_adapter_keeps_a_single_pack_digest() -> None:
 SHIPPED_LLAMA = {
     ("Darwin", "arm64"): (
         "macos-arm64-metal",
-        "07d954f73523abfe72c10ed61fa21d3e1877610be0991b7901e400841db7d8ce",
-        "engine-packs-20261118",
-        1,
+        "ae859d55e57d58a1f59de4084adbf41a9d5e84a7cb993562abd838ec2d17c5ab",
+        "engine-packs-20261119-llama",
+        2,
     ),
     ("Linux", "x86_64"): (
         "linux-x86_64-cpu",
-        "7955bb3f571422fbe4789e7f50a4b56b6a05f723b65babad8c3e1d4426b8be80",
-        "engine-packs-20261118",
-        1,
+        "cfa58ff9f48b238d187b8bf06c6914cec4ff30378a047cf4aa7707e222194d06",
+        "engine-packs-20261119-llama",
+        2,
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cpu",
-        "da9133af67820251f669e53d44e8adf0f2d59ce9a11107127348cbf5a68e15f9",
-        "engine-packs-20261118",
-        2,
+        "14a0039d4348f19017aaa23549b7fac2c4b1515071214e9ec98b225e5fdae18d",
+        "engine-packs-20261119-llama",
+        3,
     ),
 }
 
@@ -394,13 +394,13 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
 SHIPPED_LLAMA_CUDA = {
     ("Linux", "x86_64"): (
         "linux-x86_64-cuda",
-        "12ea17e67f6931d3bb95ee529d729baadcbe0a0726ebd86501a3d1477fcab785",
-        "engine-packs-20261118",
+        "4ff9e1a52a6d50762458a497307f7b0e775a9346a6b5a5eb8e9ff88c39ff6bcd",
+        "engine-packs-20261119-llama",
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cuda",
-        "f535f6d7a796c957df2bc9799c9a82c86457202d229985bd633a0cd32cc84d69",
-        "engine-packs-20261118",
+        "aa34661441f26d8e964d33ddf9c1f68c69c45d314dc8f42fa3f7d3fb69679107",
+        "engine-packs-20261119-llama",
     ),
 }
 
