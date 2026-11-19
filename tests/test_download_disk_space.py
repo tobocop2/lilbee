@@ -203,7 +203,8 @@ def test_a_partial_that_will_not_delete_is_reported(
 
     blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
     blobs.mkdir(parents=True)
-    (blobs / "abc123.4f2a91cc.incomplete").write_bytes(b"x" * 16)
+    partial = blobs / "abc123.4f2a91cc.incomplete"
+    partial.write_bytes(b"x" * 16)
 
     def _refuse(self: Path, missing_ok: bool = False) -> None:
         raise PermissionError("the file is open in another process")
@@ -213,7 +214,7 @@ def test_a_partial_that_will_not_delete_is_reported(
     with caplog.at_level(logging.WARNING):
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
-    assert "Left a partial download behind" in caplog.text
+    assert caplog.messages == [f"Left a partial download behind: {partial}"]
 
 
 def test_an_unreadable_cache_folder_is_named_in_a_plain_error(
