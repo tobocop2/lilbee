@@ -68,20 +68,26 @@ class _ProviderEmbedders:
         self._lock = threading.Lock()
 
     def name_for(self, provider: LLMProvider) -> str:
-        """The registered embedding name for *provider*, registering it on first use."""
+        """The registered embedding name for *provider*, registering it on first use.
+
+        The lock guards the name table only, so a slow registration never blocks the
+        name of a provider that is already registered. Two first uses at once both
+        register; the first name stored wins and the other backend stays unused.
+        """
         with self._lock:
             name = self._names.get(provider)
-            if name is None:
-                name = f"{EmbeddingBackendName.LILBEE}-{next(self._serial)}"
-                _register(
-                    LilbeeEmbeddingBackend(
-                        name=name,
-                        embed_fn=self._embedder(provider),
-                        dim_fn=lambda: cfg.embedding_dim,
-                    )
-                )
-                self._names[provider] = name
-            return name
+            if name is not None:
+                return name
+            name = f"{EmbeddingBackendName.LILBEE}-{next(self._serial)}"
+        _register(
+            LilbeeEmbeddingBackend(
+                name=name,
+                embed_fn=self._embedder(provider),
+                dim_fn=lambda: cfg.embedding_dim,
+            )
+        )
+        with self._lock:
+            return self._names.setdefault(provider, name)
 
     @staticmethod
     def _embedder(provider: LLMProvider) -> Callable[[list[str]], list[Vector]]:

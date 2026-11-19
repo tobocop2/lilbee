@@ -148,9 +148,37 @@ class TestProviderEmbedders:
         assert register.call_count == 2
         assert embedders.name_for(first) == register.call_args_list[0].args[0].name()
 
-    def test_the_backend_routes_to_its_providers_embed_and_reports_the_dimension(
-        self, monkeypatch
-    ):
+    def test_two_first_uses_at_once_agree_on_the_name_stored_first(self, monkeypatch):
+        import xberg
+
+        from lilbee.data.extract.backends.embedding import _ProviderEmbedders
+
+        entered, release = threading.Event(), threading.Event()
+        registered: list[str] = []
+
+        def held_register(backend):
+            registered.append(backend.name())
+            if len(registered) == 1:
+                entered.set()
+                assert release.wait(60)
+
+        monkeypatch.setattr(xberg, "register_embedding_backend", held_register)
+        embedders = _ProviderEmbedders()
+        provider = MagicMock()
+        names: list[str] = []
+        first = threading.Thread(target=lambda: names.append(embedders.name_for(provider)))
+        first.start()
+        try:
+            assert entered.wait(60)
+            names.append(embedders.name_for(provider))
+        finally:
+            release.set()
+            first.join(60)
+        assert len(registered) == 2
+        assert len(set(names)) == 1
+        assert names[0] == registered[1]
+
+    def test_the_backend_routes_to_its_providers_embed_and_reports_the_dimension(self, monkeypatch):
         import xberg
 
         from lilbee.data.extract.backends.embedding import _ProviderEmbedders
