@@ -1143,7 +1143,7 @@ class TestServerShowsTheUpgrade:
         assert json.loads(sent[1]["body"])["upgrade"] == _table(1).model_dump(mode="json")
 
     @pytest.mark.parametrize(
-        ("path", "read_text"),
+        ("path", "message_of"),
         [
             ("/api/status", lambda body: body["detail"]),
             ("/v1/models", lambda body: body["error"]["message"]),
@@ -1151,7 +1151,7 @@ class TestServerShowsTheUpgrade:
         ],
         ids=["plugin", "openai", "anthropic"],
     )
-    async def test_a_slow_open_with_no_upgrade_says_opening_not_upgrading(self, path, read_text):
+    async def test_a_slow_open_with_no_upgrade_says_opening_not_upgrading(self, path, message_of):
         from lilbee.server import app as app_mod
         from tests.conftest import make_mock_services
 
@@ -1172,7 +1172,7 @@ class TestServerShowsTheUpgrade:
 
         body = json.loads(sent[1]["body"])
         assert sent[0]["status"] == 503
-        assert read_text(body) == "lilbee is opening the library. Try again in a few seconds."
+        assert message_of(body) == "lilbee is opening the library. Try again in a few seconds."
         assert body["upgrade"] is None
 
     async def test_a_request_held_in_a_step_with_no_event_says_upgrading(
