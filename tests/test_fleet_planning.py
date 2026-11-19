@@ -4405,6 +4405,7 @@ def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
         spoke_protocol=False,
         refused_all=False,
         backend=EngineBackend.UNKNOWN,
+        has_listing=True,
     )
     monkeypatch.setattr(llama_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
@@ -4439,6 +4440,24 @@ def test_a_build_without_list_devices_falls_back_to_the_host_loader(
 
     assert [(d.backend, d.index, d.from_loader) for d in devices] == [("Vulkan", 0, True)]
     assert any("does not appear to support the flag" in r.getMessage() for r in caplog.records)
+    assert any("device probe returned nothing" in r.getMessage() for r in caplog.records)
+
+
+def test_an_engine_with_no_device_listing_gets_no_loader_warning(monkeypatch, caplog) -> None:
+    """ik_llama.cpp never runs a listing, so "the probe returned nothing" would be false."""
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+    with caplog.at_level("WARNING"):
+        devices = planning_mod.resolve_devices(_Path("/fake/ik-server"), engine=IK_LLAMA)
+
+    assert [(d.backend, d.index, d.from_loader) for d in devices] == [("Vulkan", 0, True)]
+    assert caplog.records == []
 
 
 def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkeypatch) -> None:
@@ -4458,6 +4477,7 @@ def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkey
         spoke_protocol=False,
         refused_all=False,
         backend=EngineBackend.UNKNOWN,
+        has_listing=True,
     )
     monkeypatch.setattr(llama_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
@@ -4609,6 +4629,7 @@ class TestLoaderDerivedDevicesAreSizedAgainstButNeverPinned:
             spoke_protocol=False,
             refused_all=False,
             backend=EngineBackend.UNKNOWN,
+            has_listing=True,
         )
         monkeypatch.setattr(llama_mod, "probe_devices", lambda _b: probe)
         monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)

@@ -455,7 +455,7 @@ exit 1
 
 
 def _server_without_listing(tmp_path: Path) -> tuple[Path, Path]:
-    """A server that exits 1 on --list-devices, as this engine's server does, and records each run."""
+    """A server that exits 1 on --list-devices, as this engine's server does; it records runs."""
     ran = tmp_path / "ran.txt"
     server = tmp_path / "llama-server"
     server.write_text(_SERVER_WITHOUT_LISTING.format(ran=ran), encoding="utf-8")
@@ -471,7 +471,12 @@ def test_the_device_probe_never_runs_the_listing_this_server_lacks(
     with caplog.at_level("DEBUG"):
         probe = IK_LLAMA.discover_devices(server)
     assert not ran.exists()
-    assert (probe.devices, probe.output, probe.spoke_protocol) == ([], "", False)
+    assert (probe.devices, probe.output, probe.spoke_protocol, probe.has_listing) == (
+        [],
+        "",
+        False,
+        False,
+    )
     assert [r.levelname for r in caplog.records] == ["DEBUG"]
     assert "no --list-devices option" in caplog.text
 

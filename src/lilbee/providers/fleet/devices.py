@@ -145,6 +145,9 @@ class DeviceProbe:
     # Which backend the engine selected. Defaults to UNKNOWN so a probe that never
     # ran reports no claim rather than CPU.
     backend: EngineBackend = EngineBackend.UNKNOWN
+    # False when the engine has no device listing to ask. Its empty result is then
+    # not a probe that failed, so planning does not warn about it.
+    has_listing: bool = True
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
