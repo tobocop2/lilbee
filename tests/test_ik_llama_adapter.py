@@ -935,7 +935,13 @@ def _publish(
         "CREATED": str(tmp_path / "created.txt"),
     }
     return subprocess.run(
-        ["bash", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, check=False
+        ["bash", str(script)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
 
 
