@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
@@ -48,13 +50,14 @@ def test_a_card_with_a_uuid_maps_by_the_uuid_when_two_cards_read_alike(
     assert planning._in_engine_reading((second,), LLAMA) == (engine_second,)
 
 
-def test_a_card_the_engine_does_not_list_keeps_its_own_reading(
+def test_a_card_the_engine_does_not_list_is_refused_not_pinned_by_its_fleet_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gone = FleetDevice("CUDA", 0, "Gone card", 24 * _GIB, 20 * _GIB)
     other = FleetDevice("CUDA", 0, "Other card", 8 * _GIB, 6 * _GIB)
     _engine_reads(monkeypatch, other)
-    assert planning._in_engine_reading((gone,), LLAMA) == (gone,)
+    with pytest.raises(ProviderError, match="does not list the GPU Gone card"):
+        planning._in_engine_reading((gone,), LLAMA)
 
 
 def test_two_cards_that_read_alike_map_to_two_engine_cards(
@@ -76,24 +79,70 @@ def test_an_engine_with_no_snapshot_leaves_the_devices_as_given(
     assert planning._in_engine_reading((card,), LLAMA) == (card,)
 
 
-def test_a_launch_pins_the_engines_own_number_for_the_planned_card(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _opposite_numbering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[int, FleetDevice]:
+    """The fleet's two cards, with the engine reading them in the opposite order.
+
+    The fleet numbers the big card 0 and the small card 1; the engine numbers the small
+    card 0 and the big card 1, with its own free figures.
+    """
     model = tmp_path / "chat.gguf"
     model.write_bytes(b"x" * 2048)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.engine_advertises", lambda _b, _flag: True
+    )
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a, **_k: 8192)
     monkeypatch.setattr(planning, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
     monkeypatch.setattr(llama_mod, "llama_server_runtime_env", lambda: {})
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server",
         lambda: Path("/bin/llama-server"),
     )
-    planned = FleetDevice("CUDA", 0, "Planned card", 24 * _GIB, 20 * _GIB)
-    other = FleetDevice("CUDA", 1, "Other card", 16 * _GIB, 12 * _GIB)
-    engine_other = FleetDevice("CUDA", 0, "Other card", 16 * _GIB, 12 * _GIB)
-    engine_planned = FleetDevice("CUDA", 1, "Planned card", 24 * _GIB, 20 * _GIB)
-    _engine_reads(monkeypatch, engine_other, engine_planned)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    big = FleetDevice("CUDA", 0, "Big card", 24 * _GIB, 20 * _GIB)
+    small = FleetDevice("CUDA", 1, "Small card", 16 * _GIB, 12 * _GIB)
+    engine_small = FleetDevice("CUDA", 0, "Small card", 16 * _GIB, 11 * _GIB)
+    engine_big = FleetDevice("CUDA", 1, "Big card", 24 * _GIB, 19 * _GIB)
+    _engine_reads(monkeypatch, engine_small, engine_big)
+    return {0: big, 1: small}
+
+
+def test_a_launch_pins_the_engines_own_number_for_the_planned_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    by_index = _opposite_numbering(tmp_path, monkeypatch)
     plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
-    launch = planning._launch_for(plan, "ref", {0: planned, 1: other}, engine=LLAMA)
+    launch = planning._launch_for(plan, "ref", by_index, engine=LLAMA)
     assert launch.env_overrides["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_split_chat_subtracts_the_reservation_of_the_card_it_sits_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    by_index = _opposite_numbering(tmp_path, monkeypatch)
+    seen: dict[str, list[int]] = {}
+
+    def _fit(_path: Path, *, per_device_free_bytes: list[int], **_k: object) -> int:
+        seen["free"] = per_device_free_bytes
+        return 5000
+
+    monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fit)
+    plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+    # The fleet's card 1 is the small one; an embed server holds 3 GiB of it.
+    planning._launch_for(plan, "ref", by_index, reserved_by_device={1: 3 * _GIB}, engine=LLAMA)
+    # In plan order: the big card is untouched, the small card loses its 3 GiB.
+    assert seen["free"] == [19 * _GIB, 8 * _GIB]
+
+
+def test_a_chat_fit_target_charges_the_reservation_of_the_card_it_sits_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    by_index = _opposite_numbering(tmp_path, monkeypatch)
+    plan = InstancePlan(role=WorkerRole.CHAT, devices=(1,))
+    # A later role holds 3 GiB on the fleet's card 1, the small card the chat sits on.
+    launch = planning._launch_for(
+        plan, "ref", by_index, reserved_after_chat={1: 3 * _GIB}, engine=LLAMA
+    )
+    assert launch.argv[launch.argv.index("--fit-target") + 1] == str(1024 + 3 * 1024)

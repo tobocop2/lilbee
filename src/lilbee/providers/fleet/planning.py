@@ -2021,7 +2021,10 @@ def _launch_for(
     meta = engine.model_meta(model_path)
     from lilbee.core.config import cfg
 
-    chosen = _in_engine_reading(tuple(by_index[i] for i in plan.devices), engine)
+    planned = tuple(by_index[i] for i in plan.devices)
+    chosen = _in_engine_reading(planned, engine)
+    reserved = _reserved_by_engine_index(reserved_by_device or {}, planned, chosen)
+    reserved_after = _reserved_by_engine_index(reserved_after_chat or {}, planned, chosen)
     # ctx and slots are sized against the card this role landed on, not the fleet's
     # smallest, which is all the pre-placement estimate had to go on. A role spread
     # over several cards has no one budget; the split chat, the only such role today,
@@ -2051,7 +2054,6 @@ def _launch_for(
             list(plan.devices),
         )
     split_slots = _SPLIT_CHAT_SLOTS
-    reserved = reserved_by_device or {}
     if split_chat:
         # Headroom left after the embed/rerank servers on each shared card, not the
         # card's raw free VRAM, so the chat KV doesn't over-commit.
@@ -2136,7 +2138,7 @@ def _launch_for(
         replica=plan.replica,
         memory_endpoint=engine.check_readback(binary),
         fit_target_mib=(
-            _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}, engine=engine)
+            _chat_fit_target_mib(binary, chosen, reserved_after, engine=engine)
             if is_chat
             else ()
         ),
@@ -3086,14 +3088,33 @@ def _no_device_pin(engine: EngineAdapter) -> tuple[str, ...]:
 def _in_engine_reading(
     devices: tuple[FleetDevice, ...], engine: EngineAdapter
 ) -> tuple[FleetDevice, ...]:
-    """*devices* as *engine* itself read them, each paired by the card it is."""
+    """*devices* as *engine* itself read them, each paired by the card it is.
+
+    Raises when the engine does not list one of the cards: its pin would name another card.
+    """
     probe = _current_plan_probe(engine)
     if probe is None:
         return devices
-    return tuple(
-        card if own is None else own
-        for card, own in zip(devices, _matched(probe.devices, devices), strict=True)
-    )
+    own: list[FleetDevice] = []
+    for card, hit in zip(devices, _matched(probe.devices, devices), strict=True):
+        if hit is None:
+            raise ProviderError(
+                f"The {engine.name} engine does not list the GPU {card.name} that this role "
+                "was planned on. Reload the models so the GPUs are read again."
+            )
+        own.append(hit)
+    return tuple(own)
+
+
+def _reserved_by_engine_index(
+    reserved: Mapping[int, int],
+    planned: tuple[FleetDevice, ...],
+    chosen: tuple[FleetDevice, ...],
+) -> dict[int, int]:
+    """*reserved*, keyed by the fleet's index, re-keyed by the engine's index of each card."""
+    return {
+        own.index: reserved.get(card.index, 0) for card, own in zip(planned, chosen, strict=True)
+    }
 
 
 def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
