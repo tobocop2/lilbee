@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from lilbee.providers.base import ProviderError
@@ -100,7 +101,16 @@ def test_a_connection_blip_after_an_old_failure_shows_no_notice(
     with pytest.raises(ProviderError, match="engine refused"):
         local.replan_fleet(wait=True)
     assert local.reload_notice() == RELOAD_FAILED_NOTICE
-    local._drop_swap_refs()
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("blip")
+        return "ok"
+
+    assert local._with_rediscover(_call) == "ok"
+    assert calls["n"] == 2
     assert not local._swaps
     assert local.reload_notice() is None
 
