@@ -841,6 +841,19 @@ class TestMergeLeavesTheBasePlan:
         assert plan.unplaceable_roles == ()
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
 
+    def test_refusing_mode_merges_chat_and_rerank_that_fit_the_vision_slot(self) -> None:
+        # The same card and roles as the persistent plan, which merges them into one class.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never, refuse_oversize=True)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.swap_classes == (_CHAT_RERANK, _VISION)
+
     def _group(self, tight: frozenset[WorkerRole] = frozenset()) -> _SwapGroup:
         own = {
             WorkerRole.CHAT: {0: 3.0 * _GB},
