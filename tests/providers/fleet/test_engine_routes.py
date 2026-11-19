@@ -20,7 +20,6 @@ from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineDiskError,
     EngineStore,
-    InstallTool,
     LicenceRefusedError,
     MissingPackError,
     PackUrlError,
@@ -29,9 +28,6 @@ from lilbee.providers.fleet.engine_store import (
     UnsafeWheelError,
     UnsupportedPlatformError,
     fetch_frozen,
-    package_name,
-    pip_install_argv,
-    pip_requirement,
 )
 from tests._release_server import release_server
 from tests.providers.fleet.test_engine_store import make_wheel
@@ -273,32 +269,6 @@ def test_a_missing_release_file_is_a_missing_pack_after_one_request(store: Engin
             store.ensure(lock, lambda pin, dest: fetch_frozen(pin, CELL, dest=dest))
     assert len(server.requests) == 1
     slept.assert_not_called()
-
-
-def test_uv_argv_installs_pinned_hashes_into_the_stage_from_the_engines_index(
-    tmp_path: Path,
-) -> None:
-    lock = PinLock("llama.cpp", "1", "cu125", {}, ("MIT",), "A" * 64, "server")
-    argv = pip_install_argv(lock, tmp_path / "stage")
-    assert argv[:3] == ["uv", "pip", "install"]
-    assert argv[argv.index("--target") + 1] == str(tmp_path / "stage")
-    assert argv[argv.index("--index-url") + 1] == "https://lilbee.sh/engines/simple/"
-    assert {"--no-deps", "--require-hashes", "--only-binary=:all:"} <= set(argv)
-    assert argv[-2:] == ["-r", "-"]
-    assert pip_requirement(lock) == f"lilbee-engine-llama-cpp==1 --hash=sha256:{'a' * 64}\n"
-
-
-def test_pip_argv_runs_pip_through_the_current_interpreter(tmp_path: Path) -> None:
-    argv = pip_install_argv(lock_of("a" * 64), tmp_path, tool=InstallTool.PIP)
-    assert argv[1:4] == ["-m", "pip", "install"]
-
-
-@pytest.mark.parametrize(
-    ("engine", "name"),
-    [("llama.cpp", "lilbee-engine-llama-cpp"), ("mistralrs", "lilbee-engine-mistralrs")],
-)
-def test_package_name_is_the_index_name_of_the_engine(engine: str, name: str) -> None:
-    assert package_name(PinLock(engine, "1", "cpu", {}, ("MIT",), "a" * 64, "server")) == name
 
 
 def scratch_dirs(store: EngineStore) -> list[str]:

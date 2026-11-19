@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 import zipfile
 from functools import partial
 from pathlib import Path
@@ -19,6 +20,7 @@ from unittest import mock
 
 import pytest
 
+from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet import engine_store
 from lilbee.providers.fleet.engine_store import (
     LOCK_DIR,
@@ -259,6 +261,39 @@ def test_lock_is_taken_around_the_unpack(store: EngineStore, wheel: tuple[Path, 
     with mock.patch.object(engine_store, "file_lock", spy):
         store.install_from_wheel(pin(sha), path)
     assert held == [False, True]
+
+
+def test_install_gives_up_when_another_process_holds_the_engine_lock(
+    store: EngineStore, wheel: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, sha = wheel
+    monkeypatch.setattr(engine_store, "_LOCK_TIMEOUT_S", 0.2)
+    refusals: list[FileLockUnavailableError] = []
+
+    def attempt() -> None:
+        with pytest.raises(FileLockUnavailableError) as caught:
+            store.install_from_wheel(pin(sha), path)
+        refusals.append(caught.value)
+
+    worker = threading.Thread(target=attempt)
+    with file_lock(store.root / LOCK_DIR / "fx", 30):
+        worker.start()
+        worker.join(timeout=10)
+        gave_up = not worker.is_alive()
+    worker.join(timeout=10)
+    assert gave_up
+    assert [str(r) for r in refusals] == [
+        "another lilbee process held the lock on fx for 0.2 seconds"
+    ]
+    assert not (store.root / "fx").exists()
+
+
+def test_install_takes_the_engine_lock_file_in_the_lock_folder(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    store.install_from_wheel(pin(sha), path)
+    assert (store.root / LOCK_DIR / "fx.lock").is_file()
 
 
 @pytest.mark.parametrize(
@@ -733,62 +768,6 @@ def test_a_pin_with_another_nvidia_term_is_refused() -> None:
         engine_store._check_licences(pin("0" * 64, licences=("MIT AND LicenseRef-NVIDIA-Other",)))
 
 
-def _staged_cuda_tree(stage: Path, *, notice: bool) -> None:
-    (stage / "p" / "bin").mkdir(parents=True)
-    server = stage / "p" / "bin" / "server"
-    server.write_text("#!/bin/sh\n", encoding="utf-8")
-    server.chmod(0o755)
-    (stage / "p-1.dist-info" / "licenses").mkdir(parents=True)
-    (stage / "p-1.dist-info" / "METADATA").write_text(
-        f"Name: p\nLicense-Expression: {_CUDA_EXPRESSION}\n", encoding="utf-8"
-    )
-    if notice:
-        (stage / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
-            "notice", encoding="utf-8"
-        )
-
-
-def test_a_staged_cuda_tree_with_its_notice_passes_the_check(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=True)
-    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
-
-
-def test_a_staged_cuda_notice_with_a_stray_byte_still_passes(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=True)
-    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_bytes(b"notice \xff")
-    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
-
-
-def test_a_staged_tree_without_metadata_is_refused(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=True)
-    (tmp_path / "p-1.dist-info" / "METADATA").unlink()
-    with pytest.raises(LicenceRefusedError, match="declares the licence ''"):
-        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
-
-
-def test_a_staged_cuda_tree_with_an_empty_notice_is_refused(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=True)
-    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
-        "", encoding="utf-8"
-    )
-    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
-        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
-
-
-def test_a_staged_mpl_tree_needs_its_source_pointer(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=False)
-    metadata = tmp_path / "p-1.dist-info" / "METADATA"
-    metadata.write_text("Name: p\nLicense-Expression: MIT AND MPL-2.0\n", encoding="utf-8")
-    with pytest.raises(LicenceRefusedError, match=r"MPL-2\.0"):
-        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
-    pointer = tmp_path / "p-1.dist-info" / "licenses" / "SOURCE-MPL-2.0"
-    pointer.write_text("https://github.com/mozilla/option-ext", encoding="utf-8")
-    with pytest.raises(LicenceRefusedError, match=r"MPL-2\.0"):
-        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
-    pointer.write_text(f"{_CRATE_URL} {_CHECKSUM}\n", encoding="utf-8")
-    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
-
-
 def test_a_pin_may_state_a_vendor_term_and_mpl_without_a_notice() -> None:
     engine_store._check_licences(pin("0" * 64, licences=(_VC_EXPRESSION + " AND MPL-2.0",)))
 
@@ -917,39 +896,6 @@ def test_a_wheel_with_permissive_licence_files_still_installs(
 
 
 @pytest.mark.parametrize(
-    ("member", "text"),
-    [
-        ("p-1.dist-info/licenses/COPYING.LESSER", "any text"),
-        ("p-1.dist-info/licenses/COPYING", _GPL_TEXT),
-        ("p.libs/libquadmath-96973f99.so.0.0.0", "ELF"),
-        ("p/docs/gpl-3.0.txt", _GPL_TEXT),
-        ("p/THIRD-PARTY-LICENSES.txt", _LGPL_TEXT),
-        ("p/COPYING.GPLv2", "x"),
-        ("p/COPYING", _WRAPPED_GPL),
-        ("p/COPYING", _UTF16_GPL),
-        ("p/lib/libhistory.so.8", "ELF"),
-        ("p/lib/libgmp.a", "ar archive"),
-        ("p/lib/gmp-COPYING", _GPL_TEXT),
-        ("p/COPYING", _GPL_TEXT.encode("utf-16-le")),
-        ("p/gpl/README", _GPL_TEXT),
-        pytest.param("p/notice-model.bin", _NUL_PADDED_GPL, id="nul-padded-utf8-title"),
-    ],
-)
-def test_a_staged_tree_with_a_copyleft_file_is_refused_whatever_it_declares(
-    tmp_path: Path, member: str, text: str | bytes
-) -> None:
-    _staged_cuda_tree(tmp_path, notice=False)
-    (tmp_path / "p-1.dist-info" / "METADATA").write_text(
-        "Name: p\nLicense-Expression: MIT\n", encoding="utf-8"
-    )
-    target = tmp_path / member
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
-    with pytest.raises(LicenceRefusedError, match="GPL"):
-        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
-
-
-@pytest.mark.parametrize(
     ("data", "expected"),
     [
         (b"", [""]),
@@ -995,23 +941,6 @@ def test_the_real_nvidia_cuda_notice_names_the_gpl_and_still_installs(
     sha = _cuda_wheel(path, notice=True, notice_text=notice)
     store.install_from_wheel(pin(sha), path)
     assert len(store.installed()) == 1
-
-
-def test_the_real_nvidia_cuda_notice_in_a_staged_tree_passes(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=True)
-    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_bytes(
-        _CUDA_NOTICE.read_bytes()
-    )
-    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
-
-
-def test_a_staged_tree_with_a_permissive_licence_file_passes(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=False)
-    (tmp_path / "p-1.dist-info" / "METADATA").write_text(
-        "Name: p\nLicense-Expression: MIT\n", encoding="utf-8"
-    )
-    (tmp_path / "p-1.dist-info" / "licenses" / "COPYING").write_text("MIT", encoding="utf-8")
-    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
 
 
 def test_a_wheel_with_two_entries_of_one_notice_is_refused(
@@ -1066,12 +995,6 @@ def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
     # The llama.cpp job and the mistral.rs job each write the notice and each check the listing.
     assert workflow.count(name) == 4
     assert workflow.lower().count(name.lower()) == 4
-
-
-def test_a_staged_cuda_tree_without_its_notice_is_refused(tmp_path: Path) -> None:
-    _staged_cuda_tree(tmp_path, notice=False)
-    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
-        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
 
 
 @pytest.mark.parametrize("bad", ["../x", "a/b", ".hidden", "", "a b"])
@@ -1330,145 +1253,6 @@ def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: 
     assert_no_build_or_copy(store.root)
 
 
-# --- package route -----------------------------------------------------------------------
-
-
-def extract_into_target(wheel_path: Path):
-    """A stand-in for the installer: unpack the wheel into the folder named by --target."""
-    seen: list[list[str]] = []
-
-    def run(argv: list[str], requirements: str) -> None:
-        seen.append(argv)
-        with zipfile.ZipFile(wheel_path) as archive:
-            archive.extractall(argv[argv.index("--target") + 1])
-        for tool in Path(argv[argv.index("--target") + 1]).glob("*/bin/*"):
-            tool.chmod(0o755)
-
-    return run, seen
-
-
-def test_package_route_installs_the_staged_tree(
-    store: EngineStore, wheel: tuple[Path, str]
-) -> None:
-    path, sha = wheel
-    run, seen = extract_into_target(path)
-    build = store.install_via_package(pin(sha), run=run)
-    assert build == store.root / "fx" / "1-cpu"
-    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
-    assert "--require-hashes" in seen[0]
-    assert names(store.root / "fx") == ["1-cpu"]
-
-
-def test_package_route_skips_the_installer_for_a_complete_build(
-    store: EngineStore, wheel: tuple[Path, str]
-) -> None:
-    path, sha = wheel
-    store.install_from_wheel(pin(sha), path)
-    run = mock.Mock()
-    assert store.install_via_package(pin(sha), run=run) == store.root / "fx" / "1-cpu"
-    run.assert_not_called()
-
-
-def test_package_route_refuses_a_licence_before_it_runs_the_installer(
-    store: EngineStore,
-) -> None:
-    run = mock.Mock()
-    with pytest.raises(LicenceRefusedError, match=r"GPL-3\.0-only"):
-        store.install_via_package(pin("0" * 64, licences=("GPL-3.0-only",)), run=run)
-    run.assert_not_called()
-
-
-def test_package_route_refuses_a_wheel_licence_the_pin_does_not_show(
-    store: EngineStore, tmp_path: Path
-) -> None:
-    path = tmp_path / "gpl.whl"
-    sha = make_wheel(path, licence="GPL-3.0-only")
-    run, _ = extract_into_target(path)
-    with pytest.raises(LicenceRefusedError, match=r"GPL-3\.0-only"):
-        store.install_via_package(pin(sha), run=run)
-    assert names(store.root / "fx") == []
-
-
-def test_package_route_refuses_a_wheel_without_a_licence(
-    store: EngineStore, tmp_path: Path
-) -> None:
-    path = tmp_path / "none.whl"
-    sha = make_wheel(path, licence=None)
-    run, _ = extract_into_target(path)
-    with pytest.raises(LicenceRefusedError, match="declares the licence ''"):
-        store.install_via_package(pin(sha), run=run)
-    assert names(store.root / "fx") == []
-
-
-def test_package_route_refuses_a_link_that_leaves_the_stage(
-    store: EngineStore, wheel: tuple[Path, str], tmp_path: Path
-) -> None:
-    path, sha = wheel
-    outside = tmp_path / "outside.txt"
-    outside.write_text("secret", encoding="utf-8")
-    inner, _ = extract_into_target(path)
-
-    def run(argv: list[str], requirements: str) -> None:
-        inner(argv, requirements)
-        (Path(argv[argv.index("--target") + 1]) / "escape").symlink_to(outside)
-
-    with pytest.raises(UnsafeWheelError, match="escape"):
-        store.install_via_package(pin(sha), run=run)
-    assert names(store.root / "fx") == []
-    assert outside.read_text(encoding="utf-8") == "secret"
-
-
-def test_package_route_refuses_a_tool_that_is_a_link(
-    store: EngineStore, wheel: tuple[Path, str]
-) -> None:
-    path, sha = wheel
-    inner, _ = extract_into_target(path)
-
-    def run(argv: list[str], requirements: str) -> None:
-        inner(argv, requirements)
-        stage = Path(argv[argv.index("--target") + 1])
-        tool = stage / "lilbee_engine_fx" / "bin" / "server"
-        tool.unlink()
-        tool.symlink_to(stage / "lilbee_engine_fx" / "data.txt")
-
-    with pytest.raises(UnsafeWheelError, match="symbolic link"):
-        store.install_via_package(pin(sha), run=run)
-    assert names(store.root / "fx") == []
-
-
-def test_package_route_leaves_nothing_when_the_installer_fails(store: EngineStore) -> None:
-    def run(argv: list[str], requirements: str) -> None:
-        raise engine_store.PackageInstallError("The engine installer failed: no index")
-
-    with pytest.raises(engine_store.PackageInstallError, match="no index"):
-        store.install_via_package(pin("0" * 64), run=run)
-    assert names(store.root / "fx") == []
-
-
-def test_installer_runner_passes_the_requirement_on_standard_input(tmp_path: Path) -> None:
-    out = tmp_path / "stdin.txt"
-    script = f"import sys, pathlib; pathlib.Path({str(out)!r}).write_text(sys.stdin.read())"
-    engine_store._run_installer([sys.executable, "-c", script], "pkg==1 --hash=sha256:ab\n")
-    assert out.read_text(encoding="utf-8") == "pkg==1 --hash=sha256:ab\n"
-
-
-def test_installer_runner_reports_the_last_line_of_a_failure() -> None:
-    script = "import sys; sys.stderr.write('warn\\nno matching index\\n'); sys.exit(2)"
-    with pytest.raises(engine_store.PackageInstallError, match="no matching index"):
-        engine_store._run_installer([sys.executable, "-c", script], "")
-
-
-def test_installer_runner_reports_a_failure_without_output() -> None:
-    with pytest.raises(engine_store.PackageInstallError, match="no output"):
-        engine_store._run_installer([sys.executable, "-c", "import sys; sys.exit(1)"], "")
-
-
-@pytest.mark.parametrize(("uv", "want"), [("/bin/uv", "uv"), (None, "pip")])
-def test_installer_prefers_uv_then_pip(uv: str | None, want: str) -> None:
-    with mock.patch.object(engine_store.shutil, "which", return_value=uv):
-        assert engine_store.installer() == want
-
-
 # --- removal, prune, sweep ---------------------------------------------------------------
 
 
@@ -1495,7 +1279,7 @@ def _damage_build(store: EngineStore, tmp_path: Path) -> Path:
     return build
 
 
-@pytest.mark.parametrize("route", ["wheel", "fetch", "package"])
+@pytest.mark.parametrize("route", ["wheel", "fetch"])
 def test_install_refuses_to_replace_a_damaged_build_while_a_launch_holds_it(
     route: str, store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1509,7 +1293,6 @@ def test_install_refuses_to_replace_a_damaged_build_while_a_launch_holds_it(
     install = {
         "wheel": lambda: store.install_from_wheel(lock, path),
         "fetch": lambda: store.ensure(lock, lambda _pin, _scratch: path),
-        "package": lambda: store.install_via_package(lock, run=lambda _argv, _req: None),
     }[route]
     with pytest.raises(engine_store.EngineInUseError, match="lilbee engine stop"):
         install()
@@ -2039,17 +1822,6 @@ def test_a_linked_server_is_refused_beside_a_regular_helper(
     assert_no_build_or_copy(store.root)
 
 
-def test_package_route_records_the_server_when_a_helper_sorts_first(
-    store: EngineStore, tmp_path: Path
-) -> None:
-    path = tmp_path / "h.whl"
-    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
-    run, _ = extract_into_target(path)
-    store.install_via_package(pin(sha), run=run)
-    [found] = store.installed()
-    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
-
-
 def test_a_pin_with_no_tool_is_refused_when_read() -> None:
     record = {
         "engine": "fx",
@@ -2150,32 +1922,6 @@ def test_zip_route_records_bin_server_beside_a_bin_lib_folder(
     assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
 
 
-def test_package_route_records_bin_server_beside_a_bin_lib_folder(
-    store: EngineStore, tmp_path: Path
-) -> None:
-    path = tmp_path / "pack.whl"
-    sha = make_pack_wheel(path)
-    run, _ = extract_into_target(path)
-    build = store.install_via_package(pin(sha), run=run)
-    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
-
-
-def test_package_route_does_not_take_a_folder_named_like_the_tool(
-    store: EngineStore, wheel: tuple[Path, str]
-) -> None:
-    path, sha = wheel
-    inner, _ = extract_into_target(path)
-
-    def run(argv: list[str], requirements: str) -> None:
-        inner(argv, requirements)
-        tool = Path(argv[argv.index("--target") + 1]) / "lilbee_engine_fx" / "bin" / "server"
-        tool.unlink()
-        tool.mkdir()
-
-    store.install_via_package(pin(sha), run=run)
-    assert [b.binary for b in store.installed()] == [None]
-
-
 class _PinnedAdapter:
     """A stand-in adapter that is not bundled and pins one build."""
 
@@ -2261,8 +2007,6 @@ def test_prune_engines_reads_no_pin_with_nothing_installed(tmp_path: Path, monke
 
 
 def test_prune_keeps_a_build_an_installer_holds_locked(store: EngineStore, tmp_path: Path) -> None:
-    from lilbee.core.security import FileLockUnavailableError
-
     installed_store(store, tmp_path, ("1",))
     with mock.patch.object(engine_store, "file_lock", side_effect=FileLockUnavailableError("held")):
         assert store.prune(keep={("fx", "9", "cpu")}, in_use=lambda *_: False) == []

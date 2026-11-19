@@ -10,7 +10,6 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import uuid
 import zipfile
@@ -19,7 +18,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email import message_from_string
-from enum import StrEnum
 from functools import partial
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -138,13 +136,10 @@ _DOWNLOAD_PREFIX = ".download-"
 _TRASH_PREFIX = ".trash-"
 _BUNDLED = "bundled"
 _NO_WAIT_S = 0.0
-_INSTALL_TIMEOUT_S = 1800.0
 _ENGINES_DIRNAME = "engines"
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
-_PACKAGE_INDEX = "https://lilbee.sh"
-_PACKAGE_PREFIX = "lilbee-engine-"
 
 
 class ChecksumError(Exception):
@@ -179,10 +174,6 @@ class EngineDiskError(Exception):
     """The volume of the engines root has too little free space for the wheel."""
 
 
-class PackageInstallError(Exception):
-    """The installer of the package route exited with an error."""
-
-
 class EngineInUseError(Exception):
     """A running launch uses the build, so removing it would pull files from under it."""
 
@@ -197,13 +188,6 @@ class EngineNotInstalledError(Exception):
 
 class StorePathError(Exception):
     """A name or path resolves outside the engines root, so the store does not touch it."""
-
-
-class InstallTool(StrEnum):
-    """The installer that runs the package route."""
-
-    UV = "uv"
-    PIP = "pip"
 
 
 @dataclass(frozen=True)
@@ -441,48 +425,6 @@ def _check_declared_licence(
         )
 
 
-def _check_staged_tree(lock: PinLock, stage: Path) -> str | None:
-    """Run the wheel checks on a tree the package route unpacked; return the tool path."""
-    root = stage.resolve()
-    for path in sorted(stage.rglob("*")):
-        if path.is_symlink() and not path.resolve().is_relative_to(root):
-            raise UnsafeWheelError(
-                f"The install for engine {lock.engine} {lock.version} holds the entry "
-                f"{path.relative_to(stage).as_posix()!r}, which points outside the engine "
-                f"directory."
-            )
-    _refuse_copyleft_files(
-        lock,
-        (
-            (path.relative_to(stage).as_posix(), path.read_bytes)
-            for path in sorted(stage.rglob("*"))
-            if path.is_file()
-        ),
-    )
-    metadata = sorted(stage.glob("*.dist-info/METADATA"))
-    notices = _verified_notices(
-        (rule.file, path.read_text(encoding="utf-8", errors="replace"))
-        for rule in NOTICE_RULES.values()
-        for path in stage.glob(f"*.dist-info/licenses/{rule.file}")
-        if path.is_file()
-    )
-    _check_declared_licence(
-        lock, metadata[0].read_text(encoding="utf-8") if metadata else None, notices
-    )
-    tools = sorted(
-        path.relative_to(stage).as_posix()
-        for path in stage.glob("*/bin/*")
-        if (path.is_file() or path.is_symlink())
-        and _is_server(path.relative_to(stage).as_posix(), lock.tool)
-    )
-    if tools and (stage / tools[0]).is_symlink():
-        raise UnsafeWheelError(
-            f"The install for engine {lock.engine} {lock.version} holds the tool {tools[0]!r} "
-            f"as a symbolic link."
-        )
-    return tools[0] if tools else None
-
-
 def _leaves_directory(name: str) -> bool:
     """True when the zip entry *name* is absolute, has a drive, or climbs out with ``..``."""
     flat = name.replace("\\", "/")
@@ -517,11 +459,6 @@ def _refuse_unusable_server(lock: PinLock, archive: zipfile.ZipFile) -> None:
         raise UnsafeWheelError(
             f"The wheel for engine {lock.engine} {lock.version} {'; '.join(problems)}."
         )
-
-
-def _is_server(path: str, tool: str) -> bool:
-    """True for a file of ``<package>/bin/`` named *tool*."""
-    return server_entry([path], tool) is not None
 
 
 def _binary_of(archive: zipfile.ZipFile, tool: str) -> str | None:
@@ -690,27 +627,6 @@ class EngineStore:
                 with zipfile.ZipFile(wheel) as archive:
                     binary = _binary_of(archive, lock.tool)
                 self._swap_in(lock, stage, binary)
-            finally:
-                shutil.rmtree(stage, ignore_errors=True)
-        return final
-
-    def install_via_package(
-        self, lock: PinLock, run: Callable[[list[str], str], None] | None = None
-    ) -> Path:
-        """Install *lock* with the package installer, then run the wheel checks on the stage."""
-        _check_licences(lock)
-        final = self.build_dir(lock)
-        with file_lock(self.root / LOCK_DIR / lock.engine, _INSTALL_TIMEOUT_S):
-            if self.complete_build(lock) is not None:
-                return final
-            self._refuse_held_replace(lock)
-            stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
-            final.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                stage.mkdir()
-                argv = pip_install_argv(lock, stage, installer())
-                (run or _run_installer)(argv, pip_requirement(lock))
-                self._swap_in(lock, stage, _check_staged_tree(lock, stage))
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
         return final
@@ -900,20 +816,6 @@ class EngineStore:
         (stage / RECORD_NAME).write_text(json.dumps(record), encoding="utf-8")
 
 
-def installer() -> InstallTool:
-    """uv when it is on the path, else pip of the running Python."""
-    return InstallTool.UV if shutil.which("uv") else InstallTool.PIP
-
-
-def _run_installer(argv: list[str], requirements: str) -> None:
-    done = subprocess.run(  # noqa: S603 - argv is built from a validated pin
-        argv, input=requirements, capture_output=True, text=True, encoding="utf-8", check=False
-    )
-    if done.returncode != 0:
-        detail = (done.stderr or done.stdout).strip().splitlines()[-1:] or ["no output"]
-        raise PackageInstallError(f"The engine installer failed: {detail[0]}")
-
-
 def _unlink_lock_file(lock_path: Path) -> None:
     lock_path.with_name(lock_path.name + ".lock").unlink(missing_ok=True)
 
@@ -974,34 +876,6 @@ def prune_engines(models_dir: Path) -> list[Path]:
         return []
 
 
-def package_name(lock: PinLock) -> str:
-    """The name of the engine's wheel on the package index."""
-    return _PACKAGE_PREFIX + re.sub(r"[^a-z0-9]+", "-", lock.engine.lower()).strip("-")
-
-
-def pip_requirement(lock: PinLock) -> str:
-    """The pinned, hashed requirement line the package route reads from standard input."""
-    return f"{package_name(lock)}=={lock.version} --hash=sha256:{lock.sha256.lower()}\n"
-
-
-def pip_install_argv(lock: PinLock, stage: Path, tool: InstallTool = InstallTool.UV) -> list[str]:
-    """The command that installs the pinned wheel of *lock* into *stage* from the package index."""
-    runner = ["uv", "pip"] if tool == InstallTool.UV else [sys.executable, "-m", "pip"]
-    return [
-        *runner,
-        "install",
-        "--target",
-        str(stage),
-        "--no-deps",
-        "--only-binary=:all:",
-        "--require-hashes",
-        "--index-url",
-        f"{_PACKAGE_INDEX}/engines/simple/",
-        "-r",
-        "-",
-    ]
-
-
 def fetch_frozen(
     lock: PinLock,
     platform: str,
@@ -1049,12 +923,10 @@ __all__ = [
     "EngineInUseError",
     "EngineNotInstalledError",
     "EngineStore",
-    "InstallTool",
     "InstalledEngine",
     "LicenceRefusedError",
     "MissingPackError",
     "PackUrlError",
-    "PackageInstallError",
     "PinLock",
     "PlatformAsset",
     "RemoveResult",
@@ -1063,12 +935,8 @@ __all__ = [
     "UnsupportedPlatformError",
     "engines_root",
     "fetch_frozen",
-    "installer",
     "launch_uses_engine",
     "licence_permitted",
-    "package_name",
-    "pip_install_argv",
-    "pip_requirement",
     "prune_engines",
     "sweep_engines",
 ]
