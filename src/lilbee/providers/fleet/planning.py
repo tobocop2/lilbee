@@ -3086,12 +3086,14 @@ def _no_device_pin(engine: EngineAdapter) -> tuple[str, ...]:
 def _in_engine_reading(
     devices: tuple[FleetDevice, ...], engine: EngineAdapter
 ) -> tuple[FleetDevice, ...]:
-    """*devices* as *engine* itself read them, so its pin speaks its own backend."""
+    """*devices* as *engine* itself read them, each paired by the card it is."""
     probe = _current_plan_probe(engine)
     if probe is None:
         return devices
-    own = {d.index: d for d in probe.devices}
-    return tuple(own.get(d.index, d) for d in devices)
+    return tuple(
+        card if own is None else own
+        for card, own in zip(devices, _matched(probe.devices, devices), strict=True)
+    )
 
 
 def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
