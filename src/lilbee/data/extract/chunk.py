@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config import active_config
-from lilbee.data.types import EmbeddingBackendName
 
 if TYPE_CHECKING:
     from xberg import (
@@ -85,12 +84,16 @@ def _size_params(max_tokens: int | None = None) -> tuple[int, int, ChunkSizing]:
 
 def _semantic_embedding_config() -> EmbeddingConfig:
     """EmbeddingConfig for semantic chunking. Boundary-detection embeddings route to
-    lilbee's embedder, registered as xberg's plugin backend in
-    ``lilbee.data.extract.backends.registry`` (embedding binding), so the model that
-    vectorizes chunks for retrieval is the one that decides where they split."""
+    the current provider's embedder, registered as xberg's plugin backend in
+    ``lilbee.data.extract.backends.embedding``, so the model that vectorizes
+    chunks for retrieval is the one that decides where they split."""
     from xberg import EmbeddingConfig, EmbeddingModelType
 
-    model = EmbeddingModelType.plugin(EmbeddingBackendName.LILBEE)
+    from lilbee.app.services import get_services
+
+    from .backends.embedding import provider_embedders
+
+    model = EmbeddingModelType.plugin(provider_embedders.name_for(get_services().provider))
     return EmbeddingConfig(model=model)
 
 

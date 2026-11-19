@@ -233,10 +233,14 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.max_characters == 512 * CHARS_PER_TOKEN
         assert result.embedding is not None
-        # Boundary detection routes to lilbee's embedder via xberg's plugin backend
-        # (registered in lilbee.data.extract.backends.registry), not the ONNX preset.
+        # Boundary detection routes to the current provider's embedder via xberg's plugin
+        # backend (registered in lilbee.data.extract.backends.embedding), not the ONNX preset.
+        from lilbee.app.services import get_services
+        from lilbee.data.extract.backends.embedding import provider_embedders
+
         assert result.embedding.model.type == "plugin"
-        assert str(result.embedding.model) == '{"type":"plugin","name":"lilbee"}'
+        name = provider_embedders.name_for(get_services().provider)
+        assert str(result.embedding.model) == f'{{"type":"plugin","name":"{name}"}}'
 
     def test_token_budget_when_semantic_disabled(self, monkeypatch):
         from lilbee.core.config import cfg

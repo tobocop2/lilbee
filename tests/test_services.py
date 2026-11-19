@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 
 from lilbee.app.engine_choice import EngineBook
@@ -84,67 +83,6 @@ class TestSyncVisionOcrBackend:
             reg.assert_called_once()
         finally:
             set_services(None)
-
-
-class TestSyncEmbeddingBackend:
-    def _patch_xberg(self, monkeypatch, *, listed):
-        reg = MagicMock()
-        unreg = MagicMock()
-        monkeypatch.setattr("xberg.list_embedding_backends", lambda: listed)
-        monkeypatch.setattr("xberg.register_embedding_backend", reg)
-        monkeypatch.setattr("xberg.unregister_embedding_backend", unreg)
-        return reg, unreg
-
-    def test_registers_when_absent(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
-        sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
-        reg.assert_called_once()
-        unreg.assert_not_called()
-
-    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
-        """A rebuilt provider must replace the stale binding: unregister then re-register,
-        else xberg keeps embedding through the shut-down provider after reset_services."""
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
-        sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
-        unreg.assert_called_once_with("lilbee")
-        reg.assert_called_once()
-
-    def test_registered_backend_routes_to_provider_embed(self, monkeypatch):
-        """The registered backend must call provider.embed and report cfg.embedding_dim."""
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
-        monkeypatch.setattr(cfg, "embedding_dim", 7)
-        provider = MagicMock()
-        # The backend passes the provider's numpy vectors straight through; xberg accepts them.
-        vectors = [np.zeros(7, dtype=np.float32)]
-        provider.embed.return_value = vectors
-        sync_xberg_backend(BackendKind.EMBEDDING, provider)
-        backend = reg.call_args.args[0]
-        assert backend.name() == "lilbee"
-        assert backend.dimensions() == 7
-        assert backend.embed(["hello"]) is vectors
-        provider.embed.assert_called_once_with(["hello"])
-        provider.embed.assert_called_once_with(["hello"])
-        # Lifecycle hooks are no-ops but must exist (xberg calls initialize).
-        assert backend.initialize() is None
-        assert backend.shutdown() is None
-
-    def test_bind_backend_registers_once_per_provider(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-
-        listed: list[str] = []
-        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
-        reg.side_effect = lambda backend: listed.append(backend.name())
-        provider = MagicMock()
-        bind_backend(BackendKind.EMBEDDING, provider)
-        bind_backend(BackendKind.EMBEDDING, provider)
-        reg.assert_called_once()
-        unreg.assert_not_called()
 
 
 class TestServicesDataclass:
