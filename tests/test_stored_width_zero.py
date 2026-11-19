@@ -384,10 +384,34 @@ def test_an_ingest_with_no_meta_row_and_chunks_of_another_width_shows_the_rebuil
     before = _library_rows()
     assert set(_chunk_sources()) == {"a.md", "b.md"}
 
-    with pytest.raises(EmbeddingModelMismatchError, match="dim 16"):
+    with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
         ingest(store)
 
     assert _library_rows() == before
+    assert str(refused.value) == (
+        f"This index was built with embedding model '{MODEL}' (dim 16), which differs "
+        f"from the current '{MODEL}' (dim 8). The dimensions differ, so rebuild the "
+        f"index under '{MODEL}' to use it."
+    )
+
+
+@pytest.mark.parametrize("ingest", INGEST_ENTRY_POINTS)
+def test_an_ingest_after_a_model_change_names_both_models_in_the_rebuild_advice(ingest):
+    _store_with_stored_width(STORED_WIDTH, chunks=True, chunk_width=STORED_WIDTH)
+    old_model = "ollama/older-embed:latest"
+    lancedb.connect(str(cfg.lancedb_dir)).open_table(META_TABLE).update(
+        values={"embedding_model": old_model}
+    )
+    store = Store(cfg)
+
+    with pytest.raises(EmbeddingModelMismatchError) as refused:
+        ingest(store)
+
+    assert str(refused.value) == (
+        f"This index was built with embedding model '{old_model}' (dim 16), which differs "
+        f"from the current '{MODEL}' (dim 8). The dimensions differ, so rebuild the "
+        f"index under '{MODEL}' to use it."
+    )
 
 
 SAME_WIDTH_INGESTS = [
