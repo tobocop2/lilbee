@@ -3090,10 +3090,11 @@ def _in_engine_reading(
 ) -> tuple[FleetDevice, ...]:
     """*devices* as *engine* itself read them, each paired by the card it is.
 
-    Raises when the engine does not list one of the cards: its pin would name another card.
+    An engine that lists no card reads none of its own, so the cards stay as given. Raises
+    when it lists some cards but not one of these: its pin would name another card.
     """
     probe = _current_plan_probe(engine)
-    if probe is None:
+    if probe is None or not probe.devices:
         return devices
     own: list[FleetDevice] = []
     for card, hit in zip(devices, _matched(probe.devices, devices), strict=True):

@@ -79,6 +79,14 @@ def test_an_engine_with_no_snapshot_leaves_the_devices_as_given(
     assert planning._in_engine_reading((card,), LLAMA) == (card,)
 
 
+def test_an_engine_whose_snapshot_lists_no_card_leaves_the_devices_as_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card = FleetDevice("CUDA", 1, "Card", 24 * _GIB, 20 * _GIB)
+    _engine_reads(monkeypatch)
+    assert planning._in_engine_reading((card,), LLAMA) == (card,)
+
+
 def _opposite_numbering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[int, FleetDevice]:
     """The fleet's two cards, with the engine reading them in the opposite order.
 
