@@ -20,13 +20,53 @@ from typing import NamedTuple
 from lilbee.core.config import Config
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.data.store import SearchChunk
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.dedup import fusion_norms as compute_fusion_norms
 from lilbee.retrieval.query.dedup import normalize_scores
 
 log = logging.getLogger(__name__)
 
 
-_RERANK_REMEDY = "Search again, or clear reranker_model. Check the reranker with lilbee status."
+_UNKNOWN = ProviderErrorKind.UNKNOWN
+
+# The cause and remedy a user reads for each error kind. Error text never reaches a client:
+# it can hold a server address with credentials, so the full error goes to the log only.
+_FAILURE_TEXTS: dict[ProviderErrorKind, tuple[str, str]] = {
+    ProviderErrorKind.AUTH: (
+        "The reranker refused the credentials.",
+        "Check the API key of the reranker preset.",
+    ),
+    ProviderErrorKind.RATE_LIMIT: ("The reranker is rate limited.", "Wait, then search again."),
+    ProviderErrorKind.NOT_FOUND: (
+        "The reranker model or preset was not found.",
+        "Check reranker_model and the preset with lilbee status.",
+    ),
+    ProviderErrorKind.BAD_REQUEST: (
+        "The reranker refused the request.",
+        "Check reranker_model with lilbee status.",
+    ),
+    ProviderErrorKind.CONNECTION: (
+        "The reranker did not answer.",
+        "Check that the reranker server runs, then search again.",
+    ),
+    ProviderErrorKind.SERVER: (
+        "The reranker reported a server error.",
+        "Search again, or check the reranker server log.",
+    ),
+    ProviderErrorKind.CONTEXT_OVERFLOW: (
+        "A candidate is longer than the reranker window.",
+        "Use a reranker with a longer window.",
+    ),
+    ProviderErrorKind.CAPACITY: (
+        "The reranker has no free capacity.",
+        "Search again when other work ends.",
+    ),
+    ProviderErrorKind.STARTING: ("The reranker is still starting.", "Search again in a moment."),
+    _UNKNOWN: (
+        "The reranker raised an error.",
+        "Search again, or clear reranker_model. Check the reranker with lilbee status.",
+    ),
+}
 
 
 class ScoredChunk(NamedTuple):
@@ -91,11 +131,12 @@ class Reranker:
         query: str,
         results: list[SearchChunk],
         candidates: int | None = None,
-        degraded: list[HealthWarning] | None = None,
+        *,
+        degraded: list[HealthWarning],
     ) -> list[SearchChunk]:
         """Rerank search results through the provider's ``rerank`` method.
 
-        A failed pass returns *results* unchanged and appends the reason to *degraded*.
+        A failed pass returns *results* unchanged and appends a warning to *degraded*.
         """
         if not self._config.reranker_model:
             return results
@@ -145,28 +186,35 @@ class Reranker:
         return reranked + remainder
 
 
-def _rerank_failed(degraded: list[HealthWarning] | None, reason: str) -> None:
-    """Record that the pass was skipped, with the reason, for the caller to show."""
-    if degraded is None:
-        return
+def _error_kind(exc: Exception) -> ProviderErrorKind:
+    """The provider error kind of *exc*; a network or timeout error is a connection failure."""
+    if isinstance(exc, ProviderError):
+        return exc.kind
+    if isinstance(exc, OSError):
+        return ProviderErrorKind.CONNECTION
+    return ProviderErrorKind.UNKNOWN
+
+
+def _rerank_failed(degraded: list[HealthWarning], cause: str, remedy: str) -> None:
+    """Record that the pass was skipped, with a fixed cause and remedy, once."""
     warning = HealthWarning(
         code=WarningCode.RERANK_FAILED,
-        message=f"Reranking failed: results keep their retrieval order. {reason}",
-        remedy=_RERANK_REMEDY,
+        message=f"Reranking failed: results keep their retrieval order. {cause}",
+        remedy=remedy,
     )
     if warning not in degraded:
         degraded.append(warning)
 
 
 def _score_candidates(
-    query: str, to_rerank: list[SearchChunk], degraded: list[HealthWarning] | None
+    query: str, to_rerank: list[SearchChunk], degraded: list[HealthWarning]
 ) -> list[float] | None:
     """Call the active provider's rerank; return None on error after logging.
 
     A provider that returns the wrong number of scores is contained here
     like any other failure: the scores cannot be paired with the candidates,
-    so the pass is skipped and retrieval order stands. Each failure is also
-    recorded in *degraded* with its reason.
+    so the pass is skipped and retrieval order stands. The full error goes to
+    the log; *degraded* gets a fixed text for the error kind.
     """
     # circular: services -> reranker via Searcher; deferred so test-time
     # monkeypatching of ``lilbee.app.services.get_services`` stays effective.
@@ -181,7 +229,8 @@ def _score_candidates(
         )
     except Exception as exc:
         log.warning("Reranker failed; skipping rerank pass: %s", exc, exc_info=True)
-        _rerank_failed(degraded, str(exc) or type(exc).__name__)
+        cause, remedy = _FAILURE_TEXTS.get(_error_kind(exc), _FAILURE_TEXTS[_UNKNOWN])
+        _rerank_failed(degraded, cause, remedy)
         return None
     if len(scores) != len(to_rerank):
         log.warning(
@@ -190,7 +239,9 @@ def _score_candidates(
             len(to_rerank),
         )
         _rerank_failed(
-            degraded, f"It returned {len(scores)} scores for {len(to_rerank)} candidates."
+            degraded,
+            f"The reranker returned {len(scores)} scores for {len(to_rerank)} candidates.",
+            _FAILURE_TEXTS[_UNKNOWN][1],
         )
         return None
     return scores

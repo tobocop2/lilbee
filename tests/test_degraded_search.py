@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.retrieval.reranker import Reranker
@@ -28,8 +28,12 @@ STEPS = {
     "concept_expansion": ("concept_expansion_failed", "concept expansion"),
     "rerank": ("rerank_failed", "reranking failed"),
 }
-# The step whose warning names the cause; the others keep a fixed text.
-RERANK_REASON = "preset not found (404)"
+# The rerank error carries a server address with credentials; no client may read it.
+RERANK_SECRETS = ("user:pass", "secret9", "gpu.internal.example")
+RERANK_ERROR = (
+    "preset 'm' not found at https://user:pass@gpu.internal.example:8443/v1?key=SECRET9"
+)
+RERANK_CAUSE = "the reranker model or preset was not found."
 SURFACES = [
     "searcher_report",
     "cli_search_text",
@@ -95,7 +99,9 @@ def _arrange(mock_svc, step, rows):  # noqa: F811
     elif step == "rerank":
         # the real reranker runs, so its own failure handling is what the surfaces see
         mock_svc.searcher._reranker = Reranker(cfg)
-        mock_svc.provider.rerank.side_effect = ConnectionError(RERANK_REASON)
+        mock_svc.provider.rerank.side_effect = ProviderError(
+            RERANK_ERROR, provider="sdk", kind=ProviderErrorKind.NOT_FOUND
+        )
         patches.append(mock.patch.object(cfg, "reranker_model", "org/repo/rerank-Q4.gguf"))
     else:
         mock_svc.concepts.expand_query.side_effect = err
@@ -194,7 +200,9 @@ def test_failed_step_reaches_the_user(mock_svc, step, rows, surface):  # noqa: F
     else:
         assert codes == [want_code]
     if step == "rerank":
-        assert RERANK_REASON in text.lower()
+        assert RERANK_CAUSE in text.lower()
+        assert not any(secret in text.lower() for secret in RERANK_SECRETS)
+        assert any("Reranker failed" in line and "user:pass" in line for line in seen)
     assert seen, "the log record is still written"
 
 

@@ -8,6 +8,7 @@ import pytest
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
 
@@ -77,7 +78,7 @@ class TestPureOrderRerank:
             _chunk("reranker_pick.md", "cross-encoder favourite", distance=0.9),
         ]
         with _patch_provider(lambda q, docs: [0.1, 0.5, 0.9]):
-            reranked = reranker.rerank("query", results)
+            reranked = reranker.rerank("query", results, degraded=[])
         assert [r.source for r in reranked] == ["reranker_pick.md", "mid.md", "fusion_top.md"]
         # rerank_score carries the normalized reranker score, unblended.
         assert reranked[0].rerank_score == pytest.approx(1.0)
@@ -93,7 +94,7 @@ class TestPureOrderRerank:
             _chunk("reranker_pick.md", "cross-encoder favourite", distance=0.9),
         ]
         with _patch_provider(lambda q, docs: [0.1, 0.5, 0.9]):
-            reranked = reranker.rerank("query", results)
+            reranked = reranker.rerank("query", results, degraded=[])
         assert reranked[0].source == "fusion_top.md"
 
 
@@ -101,7 +102,7 @@ class TestRerank:
     def test_returns_unchanged_when_no_model(self, reranker):
         cfg.reranker_model = ""
         results = [_chunk("a.md", "text")]
-        assert reranker.rerank("query", results) == results
+        assert reranker.rerank("query", results, degraded=[]) == results
 
     def test_reranks_with_provider_scores(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
@@ -113,7 +114,7 @@ class TestRerank:
         # Fusion is min-max normalized across the set ([0.3,0.8,0.5] -> [0,1,0.4])
         # then blended 0.7/0.3 with the normalized reranker scores at the top slots.
         with _patch_provider(lambda query, cands: [0.9, 0.1, 0.5]):
-            reranked = reranker.rerank("test query", results)
+            reranked = reranker.rerank("test query", results, degraded=[])
         assert [c.chunk for c in reranked] == ["chunk B", "chunk C", "chunk A"]
 
     def test_strong_fusion_hit_resists_reranker_demotion(self, reranker):
@@ -127,7 +128,7 @@ class TestRerank:
             _chunk("c.md", "mid", relevance=0.004),
         ]
         with _patch_provider(lambda query, cands: [0.0, 1.0, 0.5]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert reranked[0].chunk == "exact match"
 
     def test_mixed_pool_does_not_demote_strong_hybrid_top(self, reranker):
@@ -142,7 +143,7 @@ class TestRerank:
         ]
         # The cross-encoder favours the HyDE chunk; the hybrid top must still win.
         with _patch_provider(lambda query, cands: [0.5, 0.5, 0.9]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert reranked[0].chunk == "exact match"
 
     def test_perfect_vector_match_not_penalized(self, reranker):
@@ -154,7 +155,7 @@ class TestRerank:
             _chunk("perfect.md", "perfect match", distance=0.0, relevance=None),
         ]
         with _patch_provider(lambda query, cands: [0.5, 0.5]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert reranked[0].chunk == "perfect match"
 
     def test_handles_remainder(self, reranker):
@@ -166,19 +167,19 @@ class TestRerank:
             _chunk("c.md", "chunk C"),
         ]
         with _patch_provider(lambda query, cands: [0.5, 0.8]):
-            reranked = reranker.rerank("test", results, candidates=2)
+            reranked = reranker.rerank("test", results, candidates=2, degraded=[])
         assert len(reranked) == 3
         assert reranked[-1].chunk == "chunk C"
 
     def test_empty_results(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
-        assert reranker.rerank("query", []) == []
+        assert reranker.rerank("query", [], degraded=[]) == []
 
     def test_equal_scores(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
         with _patch_provider(lambda query, cands: [0.5, 0.5]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert len(reranked) == 2
         chunks = {r.chunk for r in reranked}
         assert chunks == {"A", "B"}
@@ -191,16 +192,16 @@ class TestRerank:
             raise RuntimeError("backend down")
 
         with _patch_provider(explode):
-            out = reranker.rerank("test", results)
+            out = reranker.rerank("test", results, degraded=[])
         assert [c.chunk for c in out] == ["A", "B"]
         assert all(r.rerank_score is None for r in out)
 
-    def test_provider_error_is_recorded_with_its_reason(self, reranker):
+    def test_a_provider_error_is_recorded_once_and_keeps_the_order(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
 
         def explode(query: str, cands: list[str]) -> list[float]:
-            raise RuntimeError("preset not found (404)")
+            raise RuntimeError("backend down")
 
         degraded: list = []
         with _patch_provider(explode):
@@ -208,18 +209,113 @@ class TestRerank:
             reranker.rerank("test", results, degraded=degraded)
         assert [c.chunk for c in out] == ["A", "B"]
         assert [w.code.value for w in degraded] == ["rerank_failed"]
-        assert "preset not found (404)" in degraded[0].message
 
-    def test_provider_error_without_text_names_its_type(self, reranker):
+    def test_the_error_text_reaches_the_log_and_never_the_warning(self, reranker, caplog):
+        cfg.reranker_model = _RERANKER_MODEL
+        planted = (
+            "preset 'm' not found at https://user:pass@gpu.internal.example:8443/v1?key=SECRET9"
+        )
+
+        def explode(query: str, cands: list[str]) -> list[float]:
+            raise ProviderError(planted, provider="sdk", kind=ProviderErrorKind.NOT_FOUND)
+
+        degraded: list = []
+        with _patch_provider(explode), caplog.at_level("WARNING"):
+            reranker.rerank("test", [_chunk("a.md", "A")], degraded=degraded)
+        shown = degraded[0].line
+        for leaked in ("user:pass", "SECRET9", "gpu.internal.example", "key="):
+            assert leaked not in shown
+        assert "user:pass" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("error", "cause", "remedy"),
+        [
+            (
+                ProviderError("x", kind=ProviderErrorKind.AUTH),
+                "The reranker refused the credentials.",
+                "Check the API key of the reranker preset.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.RATE_LIMIT),
+                "The reranker is rate limited.",
+                "Wait, then search again.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.NOT_FOUND),
+                "The reranker model or preset was not found.",
+                "Check reranker_model and the preset with lilbee status.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.BAD_REQUEST),
+                "The reranker refused the request.",
+                "Check reranker_model with lilbee status.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.CONNECTION),
+                "The reranker did not answer.",
+                "Check that the reranker server runs, then search again.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.SERVER),
+                "The reranker reported a server error.",
+                "Search again, or check the reranker server log.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+                "A candidate is longer than the reranker window.",
+                "Use a reranker with a longer window.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.CAPACITY),
+                "The reranker has no free capacity.",
+                "Search again when other work ends.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.STARTING),
+                "The reranker is still starting.",
+                "Search again in a moment.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.UNKNOWN),
+                "The reranker raised an error.",
+                "Search again, or clear reranker_model. Check the reranker with lilbee status.",
+            ),
+            (
+                ProviderError("x", kind=ProviderErrorKind.PORT_CONFLICT),
+                "The reranker raised an error.",
+                "Search again, or clear reranker_model. Check the reranker with lilbee status.",
+            ),
+            (
+                TimeoutError("x"),
+                "The reranker did not answer.",
+                "Check that the reranker server runs, then search again.",
+            ),
+            (
+                RuntimeError("x"),
+                "The reranker raised an error.",
+                "Search again, or clear reranker_model. Check the reranker with lilbee status.",
+            ),
+        ],
+    )
+    def test_each_error_kind_has_its_own_fixed_cause_and_remedy(
+        self, reranker, error, cause, remedy
+    ):
         cfg.reranker_model = _RERANKER_MODEL
 
         def explode(query: str, cands: list[str]) -> list[float]:
-            raise TimeoutError
+            raise error
 
         degraded: list = []
         with _patch_provider(explode):
             reranker.rerank("test", [_chunk("a.md", "A")], degraded=degraded)
-        assert "TimeoutError" in degraded[0].message
+        assert [(w.message, w.remedy) for w in degraded] == [
+            (f"Reranking failed: results keep their retrieval order. {cause}", remedy)
+        ]
+
+    def test_a_caller_must_pass_the_warning_list(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        with pytest.raises(TypeError, match="degraded"):
+            reranker.rerank("test", [_chunk("a.md", "A")])
 
     def test_score_count_mismatch_is_recorded_with_the_counts(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
@@ -227,7 +323,7 @@ class TestRerank:
         with _patch_provider(lambda query, cands: [0.9]):
             reranker.rerank("test", [_chunk("a.md", "A"), _chunk("b.md", "B")], degraded=degraded)
         assert [w.code.value for w in degraded] == ["rerank_failed"]
-        assert "1 scores for 2 candidates" in degraded[0].message
+        assert degraded[0].message.endswith("The reranker returned 1 scores for 2 candidates.")
 
     def test_a_healthy_pass_records_nothing(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
@@ -244,7 +340,7 @@ class TestRerank:
         cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
         with _patch_provider(lambda query, cands: returned), caplog.at_level("WARNING"):
-            out = reranker.rerank("test", results)
+            out = reranker.rerank("test", results, degraded=[])
         assert [c.chunk for c in out] == ["A", "B"]
         assert all(r.rerank_score is None for r in out)
         assert any("score" in rec.message for rec in caplog.records)
@@ -254,7 +350,7 @@ class TestRerank:
         cfg.rerank_blend = False
         results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
         with _patch_provider(lambda query, cands: [0.9]):
-            out = reranker.rerank("test", results)
+            out = reranker.rerank("test", results, degraded=[])
         assert [c.chunk for c in out] == ["A", "B"]
 
     def test_stamps_rerank_score_on_candidates_only(self, reranker):
@@ -265,7 +361,7 @@ class TestRerank:
             _chunk("c.md", "chunk C"),
         ]
         with _patch_provider(lambda query, cands: [0.9, 0.1]):
-            reranked = reranker.rerank("test", results, candidates=2)
+            reranked = reranker.rerank("test", results, candidates=2, degraded=[])
         scored = [r.chunk for r in reranked if r.rerank_score is not None]
         unscored = [r.chunk for r in reranked if r.rerank_score is None]
         assert sorted(scored) == ["chunk A", "chunk B"]
@@ -280,7 +376,7 @@ class TestRerank:
             _chunk("c.md", "mid", relevance=0.004),
         ]
         with _patch_provider(lambda query, cands: [0.0, 1.0, 0.5]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert reranked[0].chunk == "exact match"
         assert len(reranked) == 3  # no duplication
         # Every stamped score is a real blended value in [0, 1], no sentinel.
@@ -297,7 +393,7 @@ class TestRerank:
             return [0.1, 0.2]
 
         with _patch_provider(capture):
-            reranker.rerank("q", results)
+            reranker.rerank("q", results, degraded=[])
         assert captured["query"] == "q"
         assert captured["cands"] == ["alpha", "beta"]
 
@@ -367,7 +463,7 @@ class TestRerankerBlendPositions:
 
         results = [_chunk(f"s{i}.md", f"chunk {i}", relevance=0.5 - i * 0.02) for i in range(12)]
         with _patch_provider(lambda query, cands: scores):
-            reranked = r.rerank("test", results, candidates=12)
+            reranked = r.rerank("test", results, candidates=12, degraded=[])
         assert len(reranked) == 12
 
     def test_reranker_wins_when_fusion_field_is_flat(self):
@@ -381,7 +477,7 @@ class TestRerankerBlendPositions:
             _chunk("c.md", "trailing", relevance=0.001),
         ]
         with _patch_provider(lambda query, cands: [0.0, 1.0, 0.0]):
-            reranked = r.rerank("test", results)
+            reranked = r.rerank("test", results, degraded=[])
         assert reranked[0].chunk == "high rerank"
 
 
@@ -401,14 +497,14 @@ class TestGoldenOrdering:
         ]
         # Equal fusion isolates the reranker signal: 0.2 < 0.6 < 0.95.
         with _patch_provider(lambda query, cands: [0.2, 0.95, 0.6]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert [c.chunk for c in reranked] == ["most", "middle", "least"]
 
     def test_all_equal_scores_preserve_input_order(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         results = [_chunk(f"{i}.md", f"chunk {i}", relevance=0.5) for i in range(5)]
         with _patch_provider(lambda query, cands: [0.5] * len(cands)):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         # Stable sort on equal blended scores keeps retrieval order intact.
         assert [c.chunk for c in reranked] == [f"chunk {i}" for i in range(5)]
 
@@ -432,7 +528,7 @@ class TestGoldenOrdering:
         # Both fusion signals default to 0.5 and normalize equal, so the reranker
         # scores decide order: B over A.
         with _patch_provider(lambda query, cands: [0.1, 0.9]):
-            reranked = reranker.rerank("test", results)
+            reranked = reranker.rerank("test", results, degraded=[])
         assert [c.chunk for c in reranked] == ["B", "A"]
 
 
@@ -469,7 +565,7 @@ class TestRerankChangesContext:
         assert "grounding.md" not in {r.source for r in baseline}
 
         with _patch_provider(lambda query, cands: [0.1, 0.2, 0.1, 1.0]):
-            reranked = reranker.rerank(self._QUESTION, self._candidates())
+            reranked = reranker.rerank(self._QUESTION, self._candidates(), degraded=[])
         selected = searcher.select_context(reranked, self._QUESTION, max_sources=3)
         sources = {r.source for r in selected}
         assert "grounding.md" in sources
@@ -509,7 +605,7 @@ class TestMixedPoolBias:
         # Identical provider scores. Tie-break falls to blended fusion
         # weighting; no systematic wiki or raw bias should drop either.
         with _patch_provider(lambda query, cands: [0.5] * len(cands)):
-            reranked = reranker.rerank("query", results)
+            reranked = reranker.rerank("query", results, degraded=[])
         assert len(reranked) == 4
         chunk_types = {r.chunk_type for r in reranked}
         assert chunk_types == {"wiki", "raw"}
@@ -525,7 +621,7 @@ class TestRerankMinScore:
         ]
         try:
             with _patch_provider(lambda q, docs: [0.9, 0.1]):
-                reranked = reranker.rerank("query", results)
+                reranked = reranker.rerank("query", results, degraded=[])
         finally:
             cfg.rerank_min_score = None
         assert [r.source for r in reranked] == ["keep.md"]
@@ -536,7 +632,7 @@ class TestRerankMinScore:
         results = [_chunk(f"{i}.md", f"text {i}", distance=0.4) for i in range(3)]
         try:
             with _patch_provider(lambda q, docs: [0.1] * len(docs)):
-                reranked = reranker.rerank("query", results, candidates=2)
+                reranked = reranker.rerank("query", results, candidates=2, degraded=[])
         finally:
             cfg.rerank_min_score = None
         assert [r.source for r in reranked] == ["2.md"]
@@ -546,7 +642,7 @@ class TestRerankMinScore:
         cfg.rerank_min_score = None
         results = [_chunk("a.md", "text a", distance=0.3), _chunk("b.md", "text b", distance=0.4)]
         with _patch_provider(lambda q, docs: [-5.0, -9.0]):
-            reranked = reranker.rerank("query", results)
+            reranked = reranker.rerank("query", results, degraded=[])
         assert len(reranked) == 2
 
     def test_negative_floor_works_for_logit_scale_rerankers(self, reranker):
@@ -559,7 +655,7 @@ class TestRerankMinScore:
         ]
         try:
             with _patch_provider(lambda q, docs: [1.5, -6.0]):
-                reranked = reranker.rerank("query", results)
+                reranked = reranker.rerank("query", results, degraded=[])
         finally:
             cfg.rerank_min_score = None
         assert [r.source for r in reranked] == ["keep.md"]
@@ -579,5 +675,5 @@ class TestRerankInputComposition:
             return [0.5, 0.4]
 
         with _patch_provider(capture):
-            reranker.rerank("query", [titled, bare])
+            reranker.rerank("query", [titled, bare], degraded=[])
         assert seen[0] == ["Annual Report\nbody text", "other text"]
