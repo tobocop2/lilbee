@@ -257,7 +257,12 @@ def terminal(monkeypatch):
 
 def test_a_refusal_prints_unwrapped_and_styled_then_the_clear_instruction(terminal):
     cli_placement._render_rejected(
-        SimpleNamespace(refusal=LONG_REFUSAL, rejected_spec_json="{}", pins_dropped="")
+        SimpleNamespace(
+            refusal=LONG_REFUSAL,
+            refusal_kind=app_placement.PlacementRefusal.UNREADABLE,
+            rejected_spec_json="{}",
+            pins_dropped="",
+        )
     )
 
     lines = terminal.getvalue().splitlines()
@@ -271,6 +276,7 @@ def test_the_waiting_refusal_prints_without_the_clear_instruction(terminal):
     cli_placement._render_rejected(
         SimpleNamespace(
             refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE,
+            refusal_kind=app_placement.PlacementRefusal.WAITING,
             rejected_spec_json="{}",
             pins_dropped="",
         )
@@ -279,9 +285,22 @@ def test_the_waiting_refusal_prints_without_the_clear_instruction(terminal):
     assert "placement clear" not in terminal.getvalue()
 
 
+def test_a_refused_roles_refusal_prints_the_clear_instruction(terminal):
+    cli_placement._render_rejected(
+        SimpleNamespace(
+            refusal="chat needs more memory",
+            refusal_kind=app_placement.PlacementRefusal.REFUSED,
+            rejected_spec_json="{}",
+            pins_dropped="",
+        )
+    )
+
+    assert CLEAR_INSTRUCTION in terminal.getvalue()
+
+
 def test_the_does_not_fit_note_is_indented_two_spaces(terminal):
     cli_placement._render_rejected(
-        SimpleNamespace(refusal=None, rejected_spec_json="{}", pins_dropped="")
+        SimpleNamespace(refusal=None, refusal_kind=None, rejected_spec_json="{}", pins_dropped="")
     )
 
     out = terminal.getvalue()

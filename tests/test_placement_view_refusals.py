@@ -62,6 +62,7 @@ class TestAChatBelowTheFloor:
         view = app_placement.get_placement()
         assert view.refusal is not None
         assert FLOOR_TEXT in view.refusal
+        assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
         assert [r.role for r in view.roles] == [WorkerRole.EMBED]
 
     def test_a_manual_view_keeps_its_spec_and_lists_the_refusal(
@@ -74,6 +75,7 @@ class TestAChatBelowTheFloor:
         assert view.rejected_spec_json is None
         assert view.refusal is not None
         assert FLOOR_TEXT in view.refusal
+        assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
         assert [r.role for r in view.roles] == [WorkerRole.EMBED]
 
     def test_the_preview_lists_it_as_refused(self, host: CardEngine) -> None:
@@ -95,6 +97,7 @@ class TestEverySurfaceListsTheRefusal:
         with create_test_client([placement_route]) as client:
             body = client.get("/api/placement").json()
         assert FLOOR_TEXT in body["refusal"]
+        assert body["refusal_kind"] == "refused"
         assert [r["role"] for r in body["roles"]] == ["embed"]
 
     def test_rest_preview_carries_the_refusal(self, host: CardEngine) -> None:

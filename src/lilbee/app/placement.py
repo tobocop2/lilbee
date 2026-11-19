@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 from lilbee.app.engine_choice import BookReading, EngineBook
 from lilbee.app.services import Services, peek_services
@@ -45,6 +46,14 @@ class PlacementConfigWriteError(OSError):
 _CHAT_READY_TIMEOUT_S = 1800.0
 _CHAT_READY_POLL_S = 0.5
 _CHAT_READY_GRACE_S = 3.0
+
+
+class PlacementRefusal(StrEnum):
+    """Why a placement reads as refused: the spec waits, cannot be read, or an engine refuses."""
+
+    WAITING = "waiting"
+    UNREADABLE = "unreadable"
+    REFUSED = "refused"
 
 
 @dataclass(frozen=True)
@@ -147,6 +156,8 @@ class PlacementView:
     # the planner, or waiting for an engine or a model. The spec itself is in
     # ``rejected_spec_json`` so it can be corrected.
     refusal: str | None = None
+    # Which case ``refusal`` is, so a client never reads the sentence to tell them apart.
+    refusal_kind: PlacementRefusal | None = None
     # Where each pinned role runs once the auto plan replaced the saved spec; empty
     # when the spec applies or none of its roles is pinned to a card.
     pins_dropped: str = ""
@@ -188,8 +199,11 @@ def _view(
     spec_json: str | None,
     rejected_spec_json: str | None = None,
     refusal: str | None = None,
+    refusal_kind: PlacementRefusal | None = None,
     pins_dropped: str = "",
 ) -> PlacementView:
+    if refusal_kind is None and resolved.unlaunched_roles:
+        refusal_kind = PlacementRefusal.REFUSED
     gpus = tuple(
         GpuInfo(
             index=d.index,
@@ -250,6 +264,7 @@ def _view(
             )
         )
         or None,
+        refusal_kind=refusal_kind,
         pins_dropped=pins_dropped,
         hidden_gpus=tuple(v.label for v in resolved.hidden.hidden) if resolved.hidden else (),
         hidden_note=resolved.hidden.note() if resolved.hidden else None,
@@ -345,6 +360,7 @@ def _read_placement(reading: BookReading) -> PlacementView:
             spec_json=None,
             rejected_spec_json=cfg.placement,
             refusal=str(exc),
+            refusal_kind=PlacementRefusal.UNREADABLE,
         )
     engines = reading.adapters
     if spec is None:
@@ -366,6 +382,7 @@ def _read_placement(reading: BookReading) -> PlacementView:
             spec_json=None,
             rejected_spec_json=spec.to_json(),
             refusal=" ".join(resolved.refused_roles.values()),
+            refusal_kind=PlacementRefusal.REFUSED,
         )
     return _spec_view(resolved, engines, spec)
 
@@ -387,6 +404,7 @@ def _spec_view(
         spec_json=None,
         rejected_spec_json=spec.to_json(),
         refusal=refusal,
+        refusal_kind=PlacementRefusal.WAITING,
     )
 
 
@@ -521,13 +539,16 @@ def _no_engine_view(
     notices = {**(running or {}), **reading.notices}
     rejected_spec_json: str | None = None
     refusal: str | None = None
+    refusal_kind: PlacementRefusal | None = None
     try:
         spec = _active_spec()
     except PlacementError as exc:
         rejected_spec_json, refusal = cfg.placement, str(exc)
+        refusal_kind = PlacementRefusal.UNREADABLE
     else:
         if spec is not None:
             rejected_spec_json, refusal = spec.to_json(), SAVED_PLACEMENT_WAITS_FOR_ENGINE
+            refusal_kind = PlacementRefusal.WAITING
     return PlacementView(
         gpus=(),
         roles=(),
@@ -536,6 +557,7 @@ def _no_engine_view(
         spec_json=None,
         rejected_spec_json=rejected_spec_json,
         refusal=refusal,
+        refusal_kind=refusal_kind,
         skipped_no_engine=tuple(
             SkippedNoEngine(
                 role=role,

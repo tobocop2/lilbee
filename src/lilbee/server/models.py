@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
+from lilbee.app.placement import PlacementRefusal
 from lilbee.app.profiles import (
     ActiveProfile,
     ApplyResult,
@@ -1005,6 +1006,9 @@ class PlacementResponse(BaseModel):
     notice: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
+    # waiting: the saved spec applies once an engine or model is installed; unreadable: the
+    # saved text cannot be parsed; refused: an engine refuses roles. Null without a refusal.
+    refusal_kind: PlacementRefusal | None = None
     # Where each pinned role runs after the auto plan replaced the saved spec; empty otherwise.
     pins_dropped: str = ""
     # The backend the engine selected, reported rather than inferred. ``gpus``
@@ -1051,6 +1055,7 @@ class PlacementResponse(BaseModel):
             swap_classes=[sorted(r.value for r in members) for members in view.swap_classes],
             rejected_spec_json=view.rejected_spec_json,
             refusal=view.refusal,
+            refusal_kind=view.refusal_kind,
             pins_dropped=view.pins_dropped,
             engine_backend=view.engine_backend,
             hidden_gpus=list(view.hidden_gpus),
