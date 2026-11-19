@@ -199,6 +199,17 @@ class TestProviderTokenizers:
         assert tokenizers.failures(first_name) == 1
         assert tokenizers.failures(second_name) == 0
 
+    def test_every_failed_count_adds_to_the_failures_of_its_name(self, monkeypatch):
+        registered: list[LilbeeTokenizerBackend] = []
+        monkeypatch.setattr(tokenizer_module, "_register", registered.append)
+        tokenizers = _ProviderTokenizers()
+        provider = _StopsAfterTheProbe()
+        name = tokenizers.name_for(provider)
+        for expected in (1, 2, 3):
+            with pytest.raises(ProviderError, match="The embedding server stopped"):
+                registered[0].count_tokens("two words")
+            assert tokenizers.failures(name) == expected
+
     def test_each_provider_registers_one_name_of_its_own(self):
         import xberg
 
@@ -497,6 +508,16 @@ def test_a_batch_whose_counts_succeed_returns_its_documents(services_with):
     (doc,) = asyncio.run(aextract_batch(items, config))
     assert not isinstance(doc, Exception)
     assert doc.chunks
+
+
+def test_the_token_count_error_tells_the_user_what_failed_and_what_to_do():
+    error = TokenCountError()
+
+    assert str(error) == (
+        "The embedding model failed to count tokens while sizing chunks, so the text "
+        "was not indexed. Check that the embedding model is running, then try again."
+    )
+    assert error.kind == ProviderErrorKind.CONNECTION
 
 
 def test_estimate_is_conservative_and_at_least_one():

@@ -121,7 +121,96 @@ class TestChunkText:
         assert enabled.chunker_type == "semantic"
 
 
+class TestChunkTextHandsXbergItsArguments:
+    """What chunk_text asks xberg to extract: the mime type and the chunker it picks."""
+
+    @pytest.fixture
+    def asked(self, monkeypatch):
+        calls: list[tuple[str, str]] = []
+
+        def fake_extract_document(data, mime_type, *, config):
+            calls.append((mime_type, config.chunking.chunker_type))
+            return SimpleNamespace(chunks=[])
+
+        monkeypatch.setattr("lilbee.data.extract.xberg.extract_document", fake_extract_document)
+        return calls
+
+    def test_a_plain_call_extracts_plain_text_with_the_semantic_chunker(self, monkeypatch, asked):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+
+        chunk_text("Some text to split.")
+
+        assert asked == [("text/plain", "semantic")]
+
+    def test_the_mime_type_of_the_caller_reaches_the_extraction(self, asked):
+        chunk_text("# Title\n\nSome text.", mime_type="text/markdown")
+
+        assert [mime for mime, _chunker in asked] == ["text/markdown"]
+
+    def test_use_semantic_true_reaches_the_chunker_choice(self, monkeypatch, asked):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+
+        chunk_text("Some text to split.", use_semantic=True)
+        chunk_text("Some text to split.", use_semantic=False)
+
+        assert [chunker for _mime, chunker in asked] == ["semantic", "text"]
+
+    def test_text_of_only_whitespace_is_never_extracted(self, asked):
+        assert chunk_text("   \n\t ") == []
+        assert asked == []
+
+
 class TestBuildChunkingConfig:
+    def test_semantic_chunker_overlaps_by_the_character_budget(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 37)
+
+        result = build_chunking_config()
+
+        assert result.overlap == 37 * CHARS_PER_TOKEN
+
+    @pytest.mark.parametrize("semantic", [True, False])
+    def test_table_extraction_repeats_the_header_row_on_every_chunker(self, monkeypatch, semantic):
+        from xberg import TableChunkingMode
+
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        monkeypatch.setattr(cfg, "chunk_size", 300)
+
+        result = build_chunking_config()
+
+        assert result.table_chunking == TableChunkingMode.REPEAT_HEADER
+        assert result.chunker_type == ("semantic" if semantic else "text")
+        assert result.max_characters == (1200 if semantic else 300)
+
+    @pytest.mark.parametrize("semantic", [True, False])
+    def test_without_table_extraction_the_table_mode_stays_at_the_default(
+        self, monkeypatch, semantic
+    ):
+        from xberg import ChunkingConfig, TableChunkingMode
+
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import build_chunking_config
+
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        monkeypatch.setattr(cfg, "table_extraction", False)
+
+        result = build_chunking_config()
+
+        assert result.table_chunking == ChunkingConfig().table_chunking
+        assert result.table_chunking != TableChunkingMode.REPEAT_HEADER
+
     def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
         """Semantic path requires an EmbeddingConfig or xberg silently falls back."""
         from lilbee.core.config import cfg
@@ -323,6 +412,17 @@ class TestTokenSizing:
         _max_size, overlap, _sizing = _size_params()
         assert overlap == 50
 
+    def test_the_overlap_cap_of_an_odd_budget_is_a_whole_number_of_tokens(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import _size_params
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 50)
+
+        _max_size, overlap, _sizing = _size_params(7)
+
+        assert overlap == 3
+        assert isinstance(overlap, int)
+
     def test_semantic_chunker_keeps_the_character_budget(self, monkeypatch):
         """The semantic chunker sizes by characters (xberg's ChunkSizing has no
         effect on that path)."""
@@ -443,6 +543,32 @@ class TestFitBreadcrumb:
         assert len(pieces) > 1
         assert all(p.startswith("# p0 p1 p2 p3\n\n") for p in pieces)
         assert max(len(p.split()) for p in pieces) <= 10
+
+    def test_a_path_of_exactly_half_an_odd_budget_stays_on_every_piece(self):
+        from lilbee.data.extract.chunk import _fit_breadcrumb
+
+        pieces = _fit_breadcrumb(_words(8), _headings(_words(3, "p")), 7)
+
+        assert len(pieces) > 1
+        assert all(p.startswith("# p0 p1 p2\n\n") for p in pieces)
+        assert max(len(p.split()) for p in pieces) <= 7
+
+    def test_the_re_split_reads_markdown_and_sizes_by_the_embedder_tokenizer(self, monkeypatch):
+        from lilbee.data.extract import chunk
+        from lilbee.data.extract import xberg as xberg_bridge
+
+        real = xberg_bridge.extract_document
+        asked: list[tuple[str, str]] = []
+
+        def spy(data, mime_type, *, config):
+            asked.append((mime_type, str(config.chunking.sizing)))
+            return real(data, mime_type, config=config)
+
+        monkeypatch.setattr(xberg_bridge, "extract_document", spy)
+
+        chunk._fit_breadcrumb(_words(20), _headings("Install"), 10)
+
+        assert asked == [("text/markdown", _current_provider_sizing())]
 
     def test_a_chunk_that_exactly_fills_the_budget_with_its_path_is_not_re_split(self, monkeypatch):
         from lilbee.data.extract import chunk
@@ -1000,6 +1126,17 @@ class Greeter:
 
         proc.assert_called_once()
         assert config_cls.call_args.kwargs["chunk_max_size"] == cfg.chunk_size * CHARS_PER_TOKEN
+
+    def test_a_parser_chunk_without_metadata_has_no_symbols(self):
+        result = SimpleNamespace(
+            chunks=[SimpleNamespace(content="x = 1\n", start_line=0, end_line=1, metadata=None)]
+        )
+
+        chunks = self._chunk_with_parser_result(result, source_name="m.py")
+
+        assert len(chunks) == 1
+        assert chunks[0].chunk.startswith("# File: m.py (lines 1-1)")
+        assert "|" not in chunks[0].chunk
 
     def test_chunk_header_omits_symbols_and_never_says_none(self):
         """A symbol-free (anonymous) chunk omits the symbol segment entirely

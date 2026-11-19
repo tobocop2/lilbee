@@ -115,6 +115,55 @@ async def test_aextract_batch_passes_per_file_ocr_override():
     assert captured["configs"][1] is None
 
 
+@pytest.mark.asyncio
+async def test_aextract_batch_gives_xberg_each_inputs_bytes_mime_and_filename():
+    captured = {}
+
+    async def fake_batch(inputs, _config, _on_progress):
+        captured["inputs"] = [(i.bytes, i.mime_type, i.filename) for i in inputs]
+        return _FakeResult([object() for _ in inputs])
+
+    items = [
+        xberg_extract.BatchItem(b"a", "text/plain", "a.txt", None),
+        xberg_extract.BatchItem(b"b", "application/pdf", "b.pdf", None),
+    ]
+    with mock.patch("xberg.progress.extract_batch", fake_batch):
+        await xberg_extract.aextract_batch(items, ExtractionConfig())
+    assert captured["inputs"] == [
+        (b"a", "text/plain", "a.txt"),
+        (b"b", "application/pdf", "b.pdf"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_aextract_batch_refuses_a_result_count_that_differs_from_the_successes():
+    """A document lost between xberg and the caller is an error, not a missing slot."""
+
+    async def fake_batch(_inputs, _config, _on_progress):
+        return _FakeResult([object(), object()])
+
+    with (
+        mock.patch("xberg.progress.extract_batch", fake_batch),
+        pytest.raises(ValueError, match="shorter"),
+    ):
+        await xberg_extract.aextract_batch(_items(3), ExtractionConfig())
+
+
+@pytest.mark.asyncio
+async def test_aextract_document_gives_xberg_the_bytes_mime_and_filename():
+    captured = {}
+
+    async def fake_extract(inp, _config, _on_progress):
+        captured["input"] = (inp.bytes, inp.mime_type, inp.filename)
+        return _FakeResult([object()])
+
+    with mock.patch("xberg.progress.extract", fake_extract):
+        await xberg_extract.aextract_document(
+            b"data", "text/markdown", filename="notes.md", config=ExtractionConfig()
+        )
+    assert captured["input"] == (b"data", "text/markdown", "notes.md")
+
+
 def _page_event(page, input_index=None):
     return ProgressEvent("ocr_page", page, 9, page, "tesseract", input_index)
 
