@@ -1364,7 +1364,7 @@ class TestMain:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The proactor loop sets its own wakeup fd")
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    def test_the_stdio_loop_wakes_for_a_signal_on_any_thread(self, mock_build):
+    def test_the_stdio_loop_holds_the_signal_wakeup_fd_while_it_serves(self, mock_build):
         """The idle loop holds the signal wakeup fd while it serves and gives it back after."""
         before = signal.set_wakeup_fd(-1)
         signal.set_wakeup_fd(before)
