@@ -10,8 +10,9 @@
 #   BIN_DIR                         the wheel bin/ directory (bind mounted)
 #   OWNER                           uid:gid that owns the files left behind
 #   SHA_FILE                        cuda only: where to write the sha256 of the three toolkit libraries
+#   NOTICE_FILE                     cuda only: where to write NOTICE-NVIDIA-CUDA (beside the wheel project)
 #   SRC_DIR                         where to leave the source checkout for the licence collector
-# Writes BIN_DIR/*, SHA_FILE (the byte check compares the wheel against it) and SRC_DIR.
+# Writes BIN_DIR/*, SHA_FILE (the byte check compares the wheel against it), NOTICE_FILE and SRC_DIR.
 #
 # The NVIDIA files are copied as they are: no strip, no patchelf, no auditwheel graft (EULA 2.3).
 
@@ -22,8 +23,9 @@ case "${BACKEND}" in
   cpu | cuda) ;;
   *) echo "BACKEND must be cpu or cuda, not ${BACKEND}" >&2; exit 1 ;;
 esac
-if [ "${BACKEND}" = cuda ]; then : "${SHA_FILE:?}"; fi
+if [ "${BACKEND}" = cuda ]; then : "${SHA_FILE:?}" "${NOTICE_FILE:?}"; fi
 cuda_dash=12-4
+cuda_full=12.4.1
 cuda_dir=/usr/local/cuda-12.4
 jobs="$(nproc)"
 
@@ -61,10 +63,12 @@ else
   export PATH="${cuda_dir}/bin:${PATH}"
   nvcc --version | tail -2
   # Each real architecture adds about 1 GB of GPU code, and the linker refuses more than 2 GB in one
-  # library. Code for 8.0 runs on every 8.x card (A100, A10, RTX 30, L4, RTX 40); the PTX of 7.5
-  # serves Turing and newer cards by driver compilation at the first start.
+  # library. Code for 8.0 runs on every 8.x card (A100, A10, RTX 30, L4, RTX 40). A card above the
+  # real architectures runs the PTX of the highest virtual one (9.0), compiled by the driver at the
+  # first start, and the host code of the engine picks its kernels for that same architecture. A
+  # virtual architecture below a real one would make the host pick kernels that the PTX lacks.
   args+=(-DBUILD_SHARED_LIBS=ON -DGGML_CUDA=ON -DGGML_OPENMP=OFF
-    "-DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-real"
+    "-DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-real;90-virtual"
     -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++")
 fi
 cmake -S "${SRC_DIR}" -B "${SRC_DIR}/build" "${args[@]}"
@@ -94,6 +98,8 @@ if [ "${BACKEND}" = cuda ]; then
   done
   (cd "${cuda_dir}/targets/x86_64-linux/lib" && sha256sum -b libcudart.so.12 libcublas.so.12 libcublasLt.so.12) \
     > "${SHA_FILE}"
+  # The notice names the libraries just copied and stops on one that Attachment A does not list.
+  python "$(dirname "${BASH_SOURCE[0]}")/write_cuda_notice.py" "${NOTICE_FILE}" "${cuda_full}" "${SHA_FILE}"
 fi
 
 # glibc the wheel needs: 2.34 is the floor of the manylinux_2_34 tag.
@@ -126,4 +132,4 @@ if ldd "${BIN_DIR}/llama-server" | grep 'not found' | grep -v 'libcuda\.so\.1'; 
 fi
 
 chown -R "${OWNER}" "${BIN_DIR}" "${SRC_DIR}"
-if [ "${BACKEND}" = cuda ]; then chown "${OWNER}" "${SHA_FILE}"; fi
+if [ "${BACKEND}" = cuda ]; then chown "${OWNER}" "${SHA_FILE}" "${NOTICE_FILE}"; fi

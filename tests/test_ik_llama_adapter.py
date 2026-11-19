@@ -611,6 +611,15 @@ def test_the_driver_floor_is_the_cuda_version_the_build_script_installs() -> Non
     assert dash is not None
     assert (int(dash[1]), int(dash[2])) == ik_llama._CUDA_DRIVER_FLOOR
     assert f"/usr/local/cuda-{dash[1]}.{dash[2]}" in text
+    assert re.search(rf"^cuda_full={dash[1]}\.{dash[2]}\.\d+$", text, re.MULTILINE)
+
+
+def test_the_build_script_writes_the_nvidia_notice_from_the_libraries_it_copies() -> None:
+    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
+    call = re.search(r"^\s+python .*/write_cuda_notice\.py\" (.*)$", text, re.MULTILINE)
+    assert call is not None
+    assert call[1] == '"${NOTICE_FILE}" "${cuda_full}" "${SHA_FILE}"'
+    assert (_BUILD_SCRIPT.parent / "write_cuda_notice.py").is_file()
 
 
 def test_the_compute_floor_is_the_lowest_architecture_the_build_script_compiles() -> None:
@@ -621,3 +630,16 @@ def test_the_compute_floor_is_the_lowest_architecture_the_build_script_compiles(
     assert (lowest // 10, lowest % 10) == ik_llama._CUDA_MIN_COMPUTE
     assert "-DGGML_NATIVE=OFF" in text
     assert "-DGGML_NCCL=OFF" in text
+
+
+def test_the_build_script_holds_a_virtual_architecture_at_or_above_hopper() -> None:
+    """A card above the real architectures runs the PTX of the highest virtual one."""
+    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
+    listed = re.search(r'-DCMAKE_CUDA_ARCHITECTURES=([\d;a-z-]+)"', text)
+    assert listed is not None
+    archs = listed[1].split(";")
+    virtual = [int(a.removesuffix("-virtual")) for a in archs if a.endswith("-virtual")]
+    real = [int(a.removesuffix("-real")) for a in archs if a.endswith("-real")]
+    assert real
+    assert max(virtual) >= 90
+    assert max(virtual) >= max(real)
