@@ -1123,8 +1123,9 @@ class LlamaServerClient:
         """*options* without the fields this server's engine does not read or enforce.
 
         A ``json_schema`` request is a promise that the reply fits the schema, so it is
-        refused. A ``json_object`` request is advice, so it is dropped. Any other format
-        goes to the server as sent, as on an engine that enforces formats.
+        refused. A ``json_object`` request is advice, so it is dropped. A ``text`` request
+        asks for nothing and goes through. Any other format is refused, because the server
+        ignores it.
         """
         wire = dict(options or {})
         if not self._profile.takes_cache_prompt:
@@ -1134,18 +1135,25 @@ class LlamaServerClient:
         if self._profile.structured_output or "response_format" not in wire:
             return wire
         reply_format = wire["response_format"]
-        # The caller's value is untyped: a non-mapping goes to the server, which answers it.
+        # The caller's value is untyped: a non-mapping has no type.
         reply_type = reply_format.get("type") if isinstance(reply_format, Mapping) else None
         if reply_type == "json_object":
             del wire["response_format"]
-        if reply_type != "json_schema":
-            return wire
-        raise ProviderError(
-            f"{self._profile.label} does not enforce a JSON schema. "
-            "Use a llama.cpp model for structured output.",
-            provider=self._profile.label,
-            kind=ProviderErrorKind.BAD_REQUEST,
-        )
+        elif reply_type != "text":
+            raise self._refused_reply_format(reply_format, reply_type)
+        return wire
+
+    def _refused_reply_format(self, reply_format: object, reply_type: object) -> ProviderError:
+        """The 400 for a ``response_format`` this server's engine ignores."""
+        label = self._profile.label
+        if reply_type == "json_schema":
+            message = (
+                f"{label} does not enforce a JSON schema. "
+                "Use a llama.cpp model for structured output."
+            )
+        else:
+            message = f"{label} does not support response_format {reply_format!r}. Use type text."
+        return ProviderError(message, provider=label, kind=ProviderErrorKind.BAD_REQUEST)
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]

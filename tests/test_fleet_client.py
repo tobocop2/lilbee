@@ -3975,17 +3975,34 @@ def test_json_object_dropped_on_mlx() -> None:
     assert options["response_format"] == {"type": "json_object"}
 
 
-@pytest.mark.parametrize("reply_format", [{"type": "text"}, {"type": "xml"}, {}, "json"])
-def test_other_response_formats_reach_the_mlx_server_as_sent(reply_format: object) -> None:
+def test_text_response_format_reaches_the_mlx_server_as_sent() -> None:
     from lilbee.providers.fleet.engines.mlx import MLX
 
-    options = {"response_format": reply_format}
     messages = [{"role": "user", "content": "hi"}]
     mlx, mlx_sent = _recording_client(MLX)
-    mlx.chat_result(messages, options=dict(options))
+    mlx.chat_result(messages, options={"response_format": {"type": "text"}})
+    assert mlx_sent[0]["response_format"] == {"type": "text"}
+
+
+@pytest.mark.parametrize("reply_format", [{"type": "xml"}, {}, "json"])
+def test_unsupported_response_format_refused_on_mlx_and_sent_on_llama(
+    reply_format: object,
+) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    messages = [{"role": "user", "content": "hi"}]
+    mlx, mlx_sent = _recording_client(MLX)
+    with pytest.raises(ProviderError) as refused:
+        mlx.chat_result(messages, options={"response_format": reply_format})
+    assert str(refused.value) == (
+        f"mlx-lm does not support response_format {reply_format!r}. Use type text."
+    )
+    assert refused.value.provider == "mlx-lm"
+    assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert mlx_sent == []
     llama, llama_sent = _recording_client(LLAMA)
-    llama.chat_result(messages, options=dict(options))
-    assert mlx_sent[0]["response_format"] == reply_format
+    llama.chat_result(messages, options={"response_format": reply_format})
     assert llama_sent[0]["response_format"] == reply_format
 
 
