@@ -28,8 +28,9 @@ class BackendKind(Enum):
 class XbergBinding:
     """How to bind one lilbee backend into xberg. Declared by each backend module.
 
-    ``enabled`` gates registration at services init on live cfg (OCR is opt-in). ``make`` builds the backend from the current
-    provider, capturing the provider callable the binding routes through.
+    ``enabled`` gates registration at services init on live cfg (OCR is opt-in).
+    ``make`` builds the backend from the current provider, capturing the provider
+    callable the binding routes through.
     """
 
     kind: BackendKind
