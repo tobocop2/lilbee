@@ -96,9 +96,33 @@ _ROCM_GFX = frozenset(
     }
 )
 _PACK_LICENCES = ["MIT"]
-_BACKEND_LICENCES = {
-    _CUDA_BACKEND: ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"],
-    _ROCM_BACKEND: ["MIT AND BSD-3-Clause AND NCSA AND Apache-2.0 WITH LLVM-exception"],
+_UNIX_PACK_TERMS = (
+    "MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT-0 AND Unlicense"
+)
+_WINDOWS_PACK_TERMS = (
+    "MIT AND Apache-2.0 WITH LLVM-exception AND LicenseRef-Microsoft-VC-Runtime AND Apache-2.0 "
+    "AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT-0 AND Unlicense"
+)
+# Each list is the License-Expression of the published wheel of that cell.
+_CELL_LICENCES = {
+    "linux-x86_64-cpu": [_UNIX_PACK_TERMS],
+    "linux-x86_64-vulkan": [_UNIX_PACK_TERMS],
+    "macos-arm64-metal": [_UNIX_PACK_TERMS],
+    "linux-x86_64-cuda": [
+        "MIT AND LicenseRef-NVIDIA-CUDA-EULA AND Apache-2.0 AND Apache-2.0 WITH LLVM-exception "
+        "AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND ISC AND MIT-0 AND Unlicense"
+    ],
+    "linux-x86_64-rocm": [
+        "MIT AND BSD-3-Clause AND NCSA AND Apache-2.0 WITH LLVM-exception AND Apache-2.0 "
+        "AND BSD-2-Clause AND ISC AND MIT-0 AND Unlicense"
+    ],
+    "windows-x86_64-cpu": [_WINDOWS_PACK_TERMS],
+    "windows-x86_64-vulkan": [_WINDOWS_PACK_TERMS],
+    "windows-x86_64-cuda": [
+        "MIT AND LicenseRef-NVIDIA-CUDA-EULA AND Apache-2.0 WITH LLVM-exception "
+        "AND LicenseRef-Microsoft-VC-Runtime AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause "
+        "AND BSL-1.0 AND ISC AND MIT-0 AND Unlicense"
+    ],
 }
 # The engines repo names the wheel 1.<N>.<build> for the upstream tag b<N> in
 # engines/llama.cpp.toml (b12032, release build 1). Move it with that tag.
@@ -210,7 +234,7 @@ class LlamaCppAdapter:
 
     def pin_record(self) -> Mapping[str, Any]:
         from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engine_manifest import pack_platforms
+        from lilbee.providers.fleet.engine_manifest import cell_key, pack_platforms
 
         host = session_host()
         backend = pack_backend(host)
@@ -225,7 +249,7 @@ class LlamaCppAdapter:
             "launch": _PIN_LAUNCH,
             "platforms": platforms,
             "memory": {"sizing": _PIN_SIZING, "rule": None},
-            "licenses": _BACKEND_LICENCES.get(backend, _PACK_LICENCES),
+            "licenses": _CELL_LICENCES.get(cell_key(host, backend) or "", _PACK_LICENCES),
         }
 
     def pack_pin(self) -> Mapping[str, Any]:
