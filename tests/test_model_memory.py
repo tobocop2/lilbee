@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -378,6 +379,25 @@ class TestInstalledEncoder:
     def test_the_on_disk_sum_still_counts_a_cut_off_file(self, tmp_path: Path) -> None:
         (tmp_path / "model.safetensors").write_bytes(_CUT_FILES["cut-in-the-data"])
         assert mm.installed_safetensors_bytes(tmp_path) == 1100
+
+    def test_a_cut_folder_over_the_reserve_is_charged_its_bytes_on_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        on_disk = RESERVE * 2
+        (tmp_path / "model.safetensors").write_bytes(_CUT_FILES["cut-in-the-data"])
+        monkeypatch.setattr(mm, "_installed_sizes", lambda _path: {"model.safetensors": on_disk})
+        _write_small_config(tmp_path)
+        encoder = mm.estimate_installed_encoder(tmp_path, narrow_f32=False)
+        chat = mm.estimate_memory(ModelFormat.SAFETENSORS, _request(tmp_path))
+        assert [(e.device_bytes, e.size_known) for e in (encoder, chat)] == [(on_disk, False)] * 2
+
+    def test_a_header_of_escaped_quotes_is_read_in_linear_time(self, tmp_path: Path) -> None:
+        raw_header = b'{"a":"' + b'\\"' * 524_288 + b'"}'
+        blob = len(raw_header).to_bytes(8, "little") + raw_header
+        (tmp_path / "model.safetensors").write_bytes(blob)
+        start = time.monotonic()
+        assert mm.whole_safetensors_bytes(tmp_path) == 0
+        assert time.monotonic() - start < 5
 
 
 class TestWeightsFromFiles:

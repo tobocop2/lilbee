@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import posixpath
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -25,10 +24,6 @@ _MAX_SAFETENSORS_HEADER_BYTES = 100 * 1024 * 1024
 _SAFETENSORS_METADATA_KEY = "__metadata__"
 _SAFETENSORS_OFFSETS_KEY = "data_offsets"
 _SAFETENSORS_OFFSET_COUNT = 2
-_SAFETENSORS_HEADER_DEPTH = 3
-_JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
-_INNERMOST_GROUP = re.compile(rb"[\[{][^\[\]{}]*[\]}]")
-_BRACKET = re.compile(rb"[\[\]{}]")
 _IR_MODEL_STEM = "openvino_model"
 _IR_SUFFIXES = (".xml", ".bin")
 _IR_WEIGHTS_SUFFIX = ".bin"
@@ -346,26 +341,12 @@ def _is_whole_safetensors(path: Path, size: int) -> bool:
             raw_header = stream.read(header_bytes)
     except OSError:
         return False
-    if not _is_flat_header(raw_header):
-        return False
     try:
         header = json.loads(raw_header)
-    except ValueError:
+    except (ValueError, RecursionError):
         return False
     data_end = _header_data_end(header)
     return data_end is not None and size == _SAFETENSORS_PREFIX_BYTES + len(raw_header) + data_end
-
-
-def _is_flat_header(raw_header: bytes) -> bool:
-    """Whether the JSON text nests no deeper than a safetensors header does.
-
-    The header is one object of tensor entries, each holding a shape list: three levels.
-    Each pass removes the innermost groups, so a deeper text still has brackets left.
-    """
-    rest = _JSON_STRING.sub(b"", raw_header)
-    for _ in range(_SAFETENSORS_HEADER_DEPTH):
-        rest = _INNERMOST_GROUP.sub(b"", rest)
-    return _BRACKET.search(rest) is None
 
 
 def _header_data_end(header: object) -> int | None:
@@ -425,16 +406,21 @@ def _is_float32(config: Mapping[str, Any] | None) -> bool:
 def estimate_installed_encoder(model_path: Path, *, narrow_f32: bool) -> MemoryEstimate:
     """The encoder figure of an installed folder, its float32 weights halved when *narrow_f32*."""
     weights = whole_safetensors_bytes(model_path)
+    if not weights:
+        return _unknown_estimate(installed_safetensors_bytes(model_path))
     if narrow_f32 and _is_float32(installed_config(model_path)):
         weights //= 2
-    return encoder_estimate(weights or None)
+    return encoder_estimate(weights)
 
 
 def _estimate_installed_chat(request: MemoryRequest) -> MemoryEstimate:
     """The chat figure of an installed folder: its weight files and the cache its config implies."""
+    weights = whole_safetensors_bytes(request.model_path)
+    if not weights:
+        return _unknown_estimate(installed_safetensors_bytes(request.model_path))
     config = installed_config(request.model_path)
     return safetensors_chat_estimate(
-        whole_safetensors_bytes(request.model_path) or None,
+        weights,
         kv_per_token_from_config(config) if config is not None else None,
         request.ctx,
         request.slots,
