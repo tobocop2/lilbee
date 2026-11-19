@@ -2303,9 +2303,7 @@ def _launch_for(
         replica=plan.replica,
         memory_endpoint=engine.check_readback(binary),
         fit_target_mib=(
-            _chat_fit_target_mib(binary, chosen, reserved_after, engine=engine)
-            if is_chat
-            else ()
+            _chat_fit_target_mib(binary, chosen, reserved_after, engine=engine) if is_chat else ()
         ),
         kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary, engine=engine) else None,
     )
