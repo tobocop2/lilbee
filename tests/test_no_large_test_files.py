@@ -28,7 +28,7 @@ _NOT_A_FILE_SIZE = frozenset(
 _CUTTING_NAMES = frozenset({*_FILE_METHODS, *_OS_FUNCTIONS})
 # The parser reads identifiers in NFKC form, so a source is searched in that form.
 _MENTIONS = re.compile("|".join(sorted(_CUTTING_NAMES)))
-_EXEMPT_RECEIVERS =frozenset((name, receiver) for name, receiver, _ in _NOT_A_FILE_SIZE)
+_EXEMPT_RECEIVERS = frozenset((name, receiver) for name, receiver, _ in _NOT_A_FILE_SIZE)
 _OPERATORS: dict[type[ast.operator], Callable[[int, int], int]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -117,9 +117,9 @@ def _size_argument(
 
 def large_file_sites(source: str, file_name: str) -> list[tuple[int, str]]:
     """``(line, reason)`` for each size argument above the limit or not stated as a number."""
-    tree = ast.parse(source)
     if not _MENTIONS.search(unicodedata.normalize("NFKC", source)):
         return []
+    tree = ast.parse(source)
     names = _module_constants(tree)
     modules, functions = _os_names(tree)
     sites: list[tuple[int, str]] = []
@@ -137,17 +137,13 @@ def large_file_sites(source: str, file_name: str) -> list[tuple[int, str]]:
     return sites
 
 
-def test_a_source_without_a_cutting_name_is_not_walked(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(node: ast.AST) -> object:
-        raise AssertionError("walked a source with no cutting name")
-
-    monkeypatch.setattr(ast, "walk", refuse)
-    assert large_file_sites("handle.write(b'x')\n", "test_x.py") == []
+def test_a_source_without_a_cutting_name_is_not_parsed() -> None:
+    assert large_file_sites("def (:\n", "test_x.py") == []
 
 
-def test_a_source_without_a_cutting_name_still_has_to_parse() -> None:
+def test_a_source_with_a_cutting_name_has_to_parse() -> None:
     with pytest.raises(SyntaxError):
-        large_file_sites("def (:\n", "test_x.py")
+        large_file_sites("def (:\nhandle.seek(0)\n", "test_x.py")
 
 
 def test_the_scan_unparses_only_a_cutting_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,7 +184,7 @@ def test_no_test_truncates_or_seeks_past_the_limit() -> None:
         "import os as system\nsystem.truncate(path, 20 * 1024**3)",
         "os.lseek(fd, 20 * 1024**3, 0)",
         "os.ftruncate(fd, 20 * 1024**3)",
-        "os.ｔruncate(path, 20 * 1024**3)",
+        "os.\N{FULLWIDTH LATIN SMALL LETTER T}runcate(path, 20 * 1024**3)",
     ],
     ids=[
         "truncate",
