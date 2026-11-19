@@ -1,9 +1,8 @@
 """Event type enums and Pydantic models for the progress protocol."""
 
 from enum import StrEnum
-from typing import Literal
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel
 
 from lilbee.core.config.enums import OcrMode
 
@@ -292,7 +291,6 @@ class AnalyzeEvent(BaseModel):
 class UpgradePhase(StrEnum):
     """Stage of a first open that upgrades the library's format."""
 
-    STARTING = "starting"
     WAITING = "waiting"
     TABLE = "table"
     DONE = "done"
@@ -312,8 +310,8 @@ UPGRADE_HEADLINE = (
     "Large libraries take about a minute; nothing is re-embedded."
 )
 
+_UPGRADE_START_TEXT = "Upgrading the library · {seconds} s"
 _UPGRADE_TEXT: dict[UpgradePhase, str] = {
-    UpgradePhase.STARTING: "Upgrading the library · {seconds} s",
     UpgradePhase.WAITING: (
         "Waiting for another lilbee process to finish with the library · {seconds} s"
     ),
@@ -323,15 +321,7 @@ _UPGRADE_TEXT: dict[UpgradePhase, str] = {
     UpgradePhase.DONE: "Library upgrade finished in {elapsed_s:.1f} s.",
     UpgradePhase.FAILED: "Library upgrade stopped after {elapsed_s:.1f} s.",
 }
-_RUNNING_PHASES = frozenset({UpgradePhase.STARTING, UpgradePhase.WAITING, UpgradePhase.TABLE})
-WirePhase = Literal["waiting", "table", "done", "failed"]
-_WIRE_PHASE: dict[UpgradePhase, WirePhase] = {
-    UpgradePhase.STARTING: "table",
-    UpgradePhase.WAITING: "waiting",
-    UpgradePhase.TABLE: "table",
-    UpgradePhase.DONE: "done",
-    UpgradePhase.FAILED: "failed",
-}
+_RUNNING_PHASES = frozenset({UpgradePhase.WAITING, UpgradePhase.TABLE})
 
 
 class LibraryUpgradeEvent(BaseModel):
@@ -339,7 +329,8 @@ class LibraryUpgradeEvent(BaseModel):
 
     ``tables_done`` of ``tables_total`` counts finished tables, so it only rises;
     ``work``, ``table`` and ``rows`` say what is done to the one in progress;
-    ``elapsed_s`` is the time since the upgrade began, wait included.
+    ``elapsed_s`` is the time since the upgrade began, wait included. A table event that
+    names no table says the upgrade runs a step that reports no table.
     """
 
     phase: UpgradePhase
@@ -350,11 +341,6 @@ class LibraryUpgradeEvent(BaseModel):
     tables_total: int = 0
     elapsed_s: float = 0.0
 
-    @field_serializer("phase")
-    def serialize_phase(self, phase: UpgradePhase) -> WirePhase:
-        """The starting phase goes out as the table phase, the running value every client reads."""
-        return _WIRE_PHASE[phase]
-
     @property
     def running(self) -> bool:
         """Whether the upgrade is still going, so its time keeps rising."""
@@ -363,6 +349,8 @@ class LibraryUpgradeEvent(BaseModel):
     def line_at(self, elapsed_s: float) -> str:
         """The line every surface shows for this event, *elapsed_s* into the upgrade."""
         fields = self.model_dump() | {"elapsed_s": elapsed_s, "seconds": int(elapsed_s)}
+        if self.phase is UpgradePhase.TABLE and not self.table:
+            return _UPGRADE_START_TEXT.format(**fields)
         return _UPGRADE_TEXT[self.phase].format(**fields)
 
     @property

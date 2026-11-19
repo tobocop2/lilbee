@@ -1840,7 +1840,7 @@ class Store:
                 except LockTimeoutError:
                     self._report_upgrade(UpgradePhase.WAITING)
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
-                    self._report_upgrade(UpgradePhase.STARTING)
+                    self._report_upgrade(UpgradePhase.TABLE)
                 # Another process can have upgraded it during the wait.
                 if self._upgrade_needed(db):
                     self._upgrade_unlocked(db)
@@ -1867,7 +1867,7 @@ class Store:
 
     def _record_upgrade_running(self) -> None:
         """Record the upgrade as running with no table in hand, without reporting an event."""
-        self._upgrade = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
+        self._upgrade = LibraryUpgradeEvent(phase=UpgradePhase.TABLE)
 
     def _report_upgrade(self, phase: UpgradePhase, step: _TableStep | None = None) -> None:
         """Pass *phase* to the reporter, timed from the upgrade's start; record it while it runs."""

@@ -130,6 +130,12 @@ def _stays(out) -> bool:
     return out.getvalue() == written
 
 
+def _table_reported(store: Store) -> bool:
+    """Whether the upgrade has reported its first table, so the count of tables is known."""
+    progress = store.upgrade_progress()
+    return progress is not None and progress.tables_total > 0
+
+
 def _poll(predicate, timeout: float = 5.0) -> bool:
     """Whether *predicate* turns true within *timeout* seconds, checked every 50 ms."""
     deadline = time.monotonic() + timeout
@@ -308,7 +314,7 @@ class TestStoreReportsTheUpgrade:
             assert store.wait_for_open(30) is True
 
         assert progress is not None
-        assert progress.phase is UpgradePhase.STARTING
+        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, "")
         assert [w.code for w in warnings] == [WarningCode.LIBRARY_UPGRADING]
         assert store.upgrade_progress() is None
         assert store.health_warnings() == []
@@ -339,7 +345,7 @@ class TestStoreReportsTheUpgrade:
         assert "Waiting for another lilbee process" not in warnings[0].message
         assert [e.phase for e in events] == [
             UpgradePhase.WAITING,
-            UpgradePhase.STARTING,
+            UpgradePhase.TABLE,
             UpgradePhase.DONE,
         ]
 
@@ -362,7 +368,7 @@ class TestStoreReportsTheUpgrade:
 
         assert [e.phase for e in events] == [
             UpgradePhase.WAITING,
-            UpgradePhase.STARTING,
+            UpgradePhase.TABLE,
             UpgradePhase.DONE,
         ]
         assert store.upgrade_progress() is None
@@ -391,8 +397,7 @@ class TestStoreReportsTheUpgrade:
             assert store.wait_for_open(30) is True
 
         assert progress is not None
-        assert progress.phase is UpgradePhase.STARTING
-        assert progress.table == ""
+        assert (progress.phase, progress.table) == (UpgradePhase.TABLE, "")
 
 
 class TestOthersWaitForTheUpgrade:
@@ -470,7 +475,7 @@ class TestOthersWaitForTheUpgrade:
         assert waited > _SHORT_LOCK_S
         assert [e.phase for e in events] == [
             UpgradePhase.WAITING,
-            UpgradePhase.STARTING,
+            UpgradePhase.TABLE,
             UpgradePhase.DONE,
         ]
         assert (
@@ -567,10 +572,6 @@ class TestUpgradeText:
         ("event", "text"),
         [
             (
-                LibraryUpgradeEvent(phase=UpgradePhase.STARTING, elapsed_s=2.4),
-                "Upgrading the library · 2 s",
-            ),
-            (
                 LibraryUpgradeEvent(phase=UpgradePhase.WAITING, elapsed_s=4.9),
                 "Waiting for another lilbee process to finish with the library · 4 s",
             ),
@@ -620,7 +621,6 @@ class TestUpgradeText:
     @pytest.mark.parametrize(
         ("phase", "running"),
         [
-            (UpgradePhase.STARTING, True),
             (UpgradePhase.WAITING, True),
             (UpgradePhase.TABLE, True),
             (UpgradePhase.DONE, False),
@@ -631,25 +631,29 @@ class TestUpgradeText:
         assert LibraryUpgradeEvent(phase=phase).running is running
 
     def test_the_phases_the_wire_pin_covers_are_not_empty(self):
-        assert len(list(UpgradePhase)) == 5
+        assert len(list(UpgradePhase)) == 4
 
     @pytest.mark.parametrize("phase", list(UpgradePhase))
     def test_the_wire_phase_stays_inside_the_set_clients_read(self, phase):
         released = {"waiting", "table", "done", "failed"}
 
         assert LibraryUpgradeEvent(phase=phase).model_dump(mode="json")["phase"] in released
-        assert LibraryUpgradeEvent(phase=phase).phase is phase
 
-    def test_the_published_schema_lists_only_the_phases_the_wire_sends(self):
-        schema = LibraryUpgradeEvent.model_json_schema(mode="serialization")
+    def test_the_published_schema_lists_only_the_phases_clients_read(self):
+        schema = LibraryUpgradeEvent.model_json_schema()
 
-        assert set(schema["properties"]["phase"]["enum"]) == {"waiting", "table", "done", "failed"}
+        assert set(schema["$defs"]["UpgradePhase"]["enum"]) == {
+            "waiting",
+            "table",
+            "done",
+            "failed",
+        }
 
-    def test_the_starting_phase_goes_out_as_the_table_phase(self):
-        event = LibraryUpgradeEvent(phase=UpgradePhase.STARTING)
+    def test_a_table_event_that_names_no_table_says_the_upgrade_started(self):
+        event = LibraryUpgradeEvent(phase=UpgradePhase.TABLE, elapsed_s=2.4)
 
-        assert event.model_dump(mode="json")["phase"] == "table"
-        assert json.loads(event.model_dump_json())["phase"] == "table"
+        assert event.text == "Upgrading the library · 2 s"
+        assert event.running is True
 
 
 class TestServicesForwardTheUpgrade:
@@ -1042,7 +1046,7 @@ class TestServerShowsTheUpgrade:
                 health: dict = {}
                 for _ in range(200):
                     health = (await client.get("/api/health", headers=_headers())).json()
-                    if health["warnings"]:
+                    if health["upgrade"] and health["upgrade"]["tables_total"]:
                         break
                     await asyncio.sleep(0.05)
                 threading.Timer(0.5, release.set).start()
@@ -1210,7 +1214,8 @@ class TestServerShowsTheUpgrade:
         with _upgrade_held(release):
             async with AsyncTestClient(create_app()) as client:
                 for _ in range(200):
-                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                    health = (await client.get("/api/health", headers=_headers())).json()
+                    if health["upgrade"] and health["upgrade"]["tables_total"]:
                         break
                     await asyncio.sleep(0.05)
                 plugin = await client.get("/api/status", headers=_headers())
@@ -1332,7 +1337,7 @@ class TestMcpWaitsForTheUpgrade:
         release = threading.Event()
         with _upgrade_held(release):
             store.open_in_background()
-            assert _poll(lambda: store.upgrade_progress() is not None)
+            assert _poll(lambda: _table_reported(store))
             during = mcp_server.status()
             release.set()
             store.wait_for_open(30)
