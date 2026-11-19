@@ -709,8 +709,10 @@ class Config(BaseSettings):
     )
 
     # Reranker model ref. Empty disables reranking. Native GGUFs run on
-    # llama-server (rank pooling or LLM logprob scoring); hosted refs
-    # (cohere/voyage/jina/together/hf-tei) need the backend extra.
+    # llama-server (rank pooling or LLM logprob scoring). A ref runs hosted only
+    # when its prefix is a built-in provider (openrouter, openai, ...) or a
+    # stored server preset; any other ref, such as cohere/x, runs locally, as
+    # for the embedding model.
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
