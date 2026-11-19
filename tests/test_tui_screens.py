@@ -9986,10 +9986,11 @@ async def test_an_unknown_command_keeps_the_draft_and_says_so():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press(*"/sync", "enter")
-        await pilot.pause()
+        unknown = msg.CMD_UNKNOWN.format(cmd="/sync")
+        assert await wait_until(
+            pilot, lambda: any(n.message == unknown for n in app._notifications)
+        )
         assert app.screen._chat_input.value == "/sync"
-        notes = [note.message for note in app._notifications]
-        assert msg.CMD_UNKNOWN.format(cmd="/sync") in notes
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):
