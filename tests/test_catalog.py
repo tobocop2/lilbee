@@ -3127,6 +3127,33 @@ class TestResolveMmprojFilename:
         with pytest.raises(_download.ProjectorListingError, match="authentication"):
             _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
 
+    @pytest.mark.parametrize(
+        ("error_code", "reason"),
+        [
+            (
+                "RepoNotFound",
+                "Repository 'repo' is missing, private or gated on HuggingFace. "
+                "Set HF_TOKEN to get access if it exists",
+            ),
+            (
+                "GatedRepo",
+                "repo requires HuggingFace authentication. "
+                "Set HF_TOKEN env var or visit the repo page to request access",
+            ),
+        ],
+    )
+    def test_the_projector_refusal_reads_as_whole_sentences(
+        self, monkeypatch: pytest.MonkeyPatch, error_code: str, reason: str
+    ) -> None:
+        monkeypatch.setattr(_download, "hf_token", lambda: None)
+        _stub_listing(monkeypatch, error=_hub_http_error(401, error_code))
+        with pytest.raises(_download.ProjectorListingError) as raised:
+            _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert str(raised.value) == (
+            f"Could not look for the vision projector of repo: {reason}. "
+            "Run the pull again to fetch it."
+        )
+
     def test_returns_none_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_listing(monkeypatch, "model-Q4_K_M.gguf")
 

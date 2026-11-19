@@ -790,7 +790,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
         names = _repo_sibling_files(hf_repo, timeout=PROJECTOR_LISTING_TIMEOUT)
     except (PermissionError, RuntimeError) as exc:
         raise ProjectorListingError(
-            f"Could not look for the vision projector of {hf_repo}: {exc}. "
+            f"Could not look for the vision projector of {hf_repo}: {str(exc).rstrip('.')}. "
             "Run the pull again to fetch it."
         ) from exc
     matches = [name for name in names if fnmatch.fnmatch(name, pattern)]
