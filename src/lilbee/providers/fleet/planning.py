@@ -2022,6 +2022,7 @@ def _launch_for(
     from lilbee.core.config import cfg
 
     chosen = _in_engine_reading(tuple(by_index[i] for i in plan.devices), engine)
+    pinned = _pinned_devices(chosen, plan, engine)
     # ctx and slots are sized against the card this role landed on, not the fleet's
     # smallest, which is all the pre-placement estimate had to go on. A role spread
     # over several cards has no one budget; the split chat, the only such role today,
@@ -2131,7 +2132,7 @@ def _launch_for(
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         cpu_moe=expert_offload_all(meta),
         n_cpu_moe=expert_offload_layers(meta),
-        device_names=_device_names(chosen) or _no_device_pin(engine),
+        device_names=_device_names(pinned) or _no_device_pin(engine),
         target=plan.target,
         replica=plan.replica,
         memory_endpoint=engine.check_readback(binary),
@@ -2160,7 +2161,7 @@ def _launch_for(
     launch = InstanceLaunch(
         role=plan.role,
         argv=engine.launch_argv(spec, request),
-        env_overrides=_launch_env(engine, chosen, plan.target),
+        env_overrides=_launch_env(engine, pinned, plan.target),
         model=model_ref,
         # token_cap drives cross-encoder/embed input truncation; the LLM rerank path
         # doesn't truncate (it relies on the per-slot ctx headroom), so leave it None.
@@ -3050,6 +3051,48 @@ def _in_engine_reading(
         return devices
     own = {d.index: d for d in probe.devices}
     return tuple(own.get(d.index, d) for d in devices)
+
+
+def _pinned_devices(
+    chosen: tuple[FleetDevice, ...], plan: InstancePlan, engine: EngineAdapter
+) -> tuple[FleetDevice, ...]:
+    """The cards to pin *plan*'s launch to: none when *engine* itself lists no card.
+
+    The planner may have put the role on a card that only another engine lists. An
+    engine with no GPU backend ignores a CUDA or ROCm pin and runs on the CPU, so
+    the pin only hides that; the role is left unpinned. Only the launch says so, in
+    :func:`_log_roles_left_unpinned`, since the placement view builds launches too.
+    """
+    probe = _current_plan_probe(engine)
+    if not chosen or probe is None or probe.devices or plan.target is RoleTarget.CPU:
+        return chosen
+    return ()
+
+
+def _log_roles_left_unpinned(
+    placement: Placement,
+    by_index: dict[int, FleetDevice],
+    engines: Mapping[WorkerRole, EngineAdapter],
+) -> None:
+    """Warn once for each role whose engine lists no card and so runs on the CPU.
+
+    An engine whose cards were all refused is left out: its refusal notice says so.
+    """
+    told: set[WorkerRole] = set()
+    for inst in placement.instances:
+        engine = engines[inst.role]
+        probe = _current_plan_probe(engine)
+        if inst.role in told or probe is None or probe.engine_devices_all_refused:
+            continue
+        chosen = tuple(by_index[i] for i in inst.devices)
+        if chosen and not _pinned_devices(chosen, inst, engine):
+            told.add(inst.role)
+            log.warning(
+                "The %s engine lists no GPU, so the %s role runs on the CPU. "
+                "Install a GPU build of the engine to run the role on a card.",
+                engine.name,
+                inst.role.value,
+            )
 
 
 def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
@@ -4303,6 +4346,7 @@ def _planned_launches(
         capacity=capacity,
     )
     _log_placement_findings(placement, model_refs)
+    _log_roles_left_unpinned(placement, by_index, engines)
     for inp in inputs:
         if not inp.size_known:
             log.warning(
