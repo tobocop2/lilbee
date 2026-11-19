@@ -11,6 +11,7 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -739,31 +740,38 @@ def _pinned_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     return ceiling
 
 
-_PinKey: TypeAlias = tuple[str, int | None, int]
-_warned_pins: contextvars.ContextVar[set[_PinKey] | None] = contextvars.ContextVar(
-    "lilbee_warned_pins", default=None
+class _LaunchWarning(StrEnum):
+    """The launch warnings that print once per plan."""
+
+    PINNED_WINDOW = "pinned_window"
+    NETWORK_FS = "network_fs"
+    PCIE_SPLIT = "pcie_split"
+
+
+_WarningKey: TypeAlias = tuple[object, ...]
+_warned_in_plan: contextvars.ContextVar[set[_WarningKey] | None] = contextvars.ContextVar(
+    "lilbee_warned_in_plan", default=None
 )
 
 
 @contextmanager
-def _one_warning_per_pin() -> Iterator[None]:
-    """Open a plan's pin-warning scope; a nested one keeps the outer scope's record."""
-    if _warned_pins.get() is not None:
+def _one_warning_per_plan() -> Iterator[None]:
+    """Open a plan's warning scope; a nested one keeps the outer scope's record."""
+    if _warned_in_plan.get() is not None:
         yield
         return
-    token = _warned_pins.set(set())
+    token = _warned_in_plan.set(set())
     try:
         yield
     finally:
-        _warned_pins.reset(token)
+        _warned_in_plan.reset(token)
 
 
-def _first_pin_warning(model: str, pinned: int | None, served: int) -> bool:
-    """Whether the plan has not yet warned about this pin; outside a plan every call is first."""
-    warned = _warned_pins.get()
+def _first_warning(*key: object) -> bool:
+    """Whether the plan has not yet warned for this key; outside a plan every call is first."""
+    warned = _warned_in_plan.get()
     if warned is None:
         return True
-    key = (model, pinned, served)
     if key in warned:
         return False
     warned.add(key)
@@ -775,7 +783,9 @@ def _served_pinned_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     from lilbee.core.config import cfg
 
     served = _pinned_chat_ctx(model_path, meta)
-    if served != cfg.num_ctx and _first_pin_warning(model_path.name, cfg.num_ctx, served):
+    if served != cfg.num_ctx and _first_warning(
+        _LaunchWarning.PINNED_WINDOW, model_path.name, cfg.num_ctx, served
+    ):
         log.warning(
             "num_ctx is set to %d but %s was trained for %d, so %d is what will be served. "
             "Lower num_ctx to stop planning against a window this model does not have.",
@@ -2083,7 +2093,11 @@ def _launch_for(
     is_vision = plan.role is WorkerRole.VISION
     mmproj = vision_mmproj(model_ref) if is_vision else None
     chat_on_network_fs = is_chat and is_network_path(model_path)
-    if chat_on_network_fs and not _chat_no_mmap(weights_bytes, on_network_fs=True):
+    if (
+        chat_on_network_fs
+        and not _chat_no_mmap(weights_bytes, on_network_fs=True)
+        and _first_warning(_LaunchWarning.NETWORK_FS, model_ref)
+    ):
         log.warning(
             "Chat model %s is served from a network filesystem and is too large to load "
             "into host RAM; mmap over the network can stall the load in uninterruptible "
@@ -2094,7 +2108,11 @@ def _launch_for(
     # card's headroom. A cfg.num_ctx pin overrides the fit (handled by _role_ctx).
     multi_card_chat = is_chat and len(chosen) > 1
     split_chat = multi_card_chat and cfg.num_ctx is None
-    if multi_card_chat and host_lacks_nvlink():
+    if (
+        multi_card_chat
+        and host_lacks_nvlink()
+        and _first_warning(_LaunchWarning.PCIE_SPLIT, model_ref, plan.devices)
+    ):
         log.warning(
             "Chat model %s is tensor-split across GPUs %s on a host without NVLink; "
             "generation is PCIe all-reduce bound and can be very slow. A model that fits "
@@ -4002,7 +4020,7 @@ class ResolvedPlacement:
     charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
 
 
-@_one_warning_per_pin()
+@_one_warning_per_plan()
 def resolve_placement_plan(
     placement: PlacementSpec | None,
     *,
@@ -4324,7 +4342,7 @@ def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]
     )
 
 
-@_one_warning_per_pin()
+@_one_warning_per_plan()
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     by_index: dict[int, FleetDevice],

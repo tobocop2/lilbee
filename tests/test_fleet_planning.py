@@ -1632,6 +1632,47 @@ class TestBuildFleetWiring:
             planning_mod._launch_for(plan, "ref", {0: d0, 1: d1}, engine=LLAMA)
         assert "nvlink" in caplog.text.lower()
 
+    def test_a_plan_warns_once_for_each_network_chat_model(self, tmp_path, monkeypatch, caplog):
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+        monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 200 * 10**9)
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
+        device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            with planning_mod._one_warning_per_plan():
+                for ref in ("ref-a", "ref-a", "ref-b"):
+                    planning_mod._launch_for(plan, ref, {0: device}, engine=LLAMA)
+        lines = [r.getMessage() for r in caplog.records if "network filesystem" in r.getMessage()]
+        assert [ln.split()[2] for ln in lines] == ["ref-a", "ref-b"]
+
+    def test_a_plan_warns_once_for_each_split_of_a_chat_model(self, tmp_path, monkeypatch, caplog):
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(planning_mod, "host_lacks_nvlink", lambda: True)
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 5000)
+        devices = {
+            index: FleetDevice("CUDA", index, "gpu", 80 * _GB, 70 * _GB) for index in range(3)
+        }
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            with planning_mod._one_warning_per_plan():
+                for pair in ((0, 1), (0, 1), (1, 2)):
+                    plan = InstancePlan(role=WorkerRole.CHAT, devices=pair, tensor_split=(1, 1))
+                    planning_mod._launch_for(plan, "ref", devices, engine=LLAMA)
+        lines = [r.getMessage() for r in caplog.records if "without NVLink" in r.getMessage()]
+        assert [ln.split("GPUs ")[1].split(" on")[0] for ln in lines] == ["[0, 1]", "[1, 2]"]
+
     def test_non_chat_reservation_sums_per_device(self) -> None:
         instances = [
             InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1)),

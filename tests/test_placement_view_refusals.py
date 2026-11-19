@@ -422,7 +422,7 @@ class TestAPinnedWindowWarnsOnce:
     def test_a_plan_scope_warns_once_per_window_across_nested_plans(
         self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with planning._one_warning_per_pin():
+        with planning._one_warning_per_plan():
             for _ in range(2):
                 planning.plan_all_launches(engines=engines_for_all_roles(pinned))
         assert len(self._warnings(caplog)) == 1
@@ -430,7 +430,7 @@ class TestAPinnedWindowWarnsOnce:
     def test_a_scope_warns_again_for_another_model_or_another_pin(
         self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        with planning._one_warning_per_pin():
+        with planning._one_warning_per_plan():
             planning._served_pinned_ctx(Path("/m/a.gguf"), None)
             planning._served_pinned_ctx(Path("/m/a.gguf"), None)
             assert len(self._warnings(caplog)) == 1
@@ -473,7 +473,7 @@ class TestAPinnedWindowWarnsOnce:
     def test_a_scope_warns_again_when_the_served_window_moves(
         self, pinned: CardEngine, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        with planning._one_warning_per_pin():
+        with planning._one_warning_per_plan():
             planning._served_pinned_ctx(Path("/m/a.gguf"), None)
             monkeypatch.setattr(planning, "_known_chat_ceiling", lambda *_a, **_k: 1024)
             planning._served_pinned_ctx(Path("/m/a.gguf"), None)
@@ -482,10 +482,113 @@ class TestAPinnedWindowWarnsOnce:
     def test_a_scope_prints_one_line_for_two_files_of_one_name(
         self, pinned: CardEngine, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with planning._one_warning_per_pin():
+        with planning._one_warning_per_plan():
             planning._served_pinned_ctx(Path("/x/a.gguf"), None)
             planning._served_pinned_ctx(Path("/y/a.gguf"), None)
         assert len(self._warnings(caplog)) == 1
+
+
+class TestTheLaunchWarningsWarnOncePerPlan:
+    """The network-filesystem and no-NVLink lines print once per plan on every launch path."""
+
+    NETWORK = "served from a network filesystem"
+    PCIE = "without NVLink"
+
+    def _host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        cards: tuple[int, ...],
+        chat_gib: float,
+    ) -> CardEngine:
+        roles = (Role(WorkerRole.CHAT, chat_gib), Role(WorkerRole.EMBED, 6))
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
+        monkeypatch.setattr(cfg, "placement", CPU_EMBED)
+        engine = CardEngine(
+            "engine-a", tmp_path / "engine-server", roles, cards_of(cards), spans=True
+        )
+        reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
+        monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
+        caplog.set_level("WARNING")
+        return engine
+
+    @pytest.fixture
+    def network(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> CardEngine:
+        engine = self._host(monkeypatch, tmp_path, caplog, (24,), 10)
+        monkeypatch.setattr(planning, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning.model_cache, "total_system_memory", lambda: 1000)
+        return engine
+
+    @pytest.fixture
+    def split(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> CardEngine:
+        engine = self._host(monkeypatch, tmp_path, caplog, (24, 24), 30)
+        monkeypatch.setattr(planning, "host_lacks_nvlink", lambda: True)
+        return engine
+
+    def _lines(self, caplog: pytest.LogCaptureFixture, text: str) -> list[str]:
+        return [r.getMessage() for r in caplog.records if text in r.getMessage()]
+
+    def test_a_launch_prints_the_network_line_once(
+        self, network: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(network))
+        assert {ln.role for ln in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert len(self._lines(caplog, self.NETWORK)) == 1
+
+    def test_the_view_prints_the_network_line_once(
+        self, network: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        view = app_placement.get_placement()
+        assert {r.role for r in view.roles} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert len(self._lines(caplog, self.NETWORK)) == 1
+
+    def test_the_next_launch_prints_the_network_line_again(
+        self, network: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        for _ in range(2):
+            planning.plan_all_launches(engines=engines_for_all_roles(network))
+        assert len(self._lines(caplog, self.NETWORK)) == 2
+
+    def test_a_launch_prints_the_split_line_once(
+        self, split: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(split))
+        assert WorkerRole.CHAT in {ln.role for ln in plan.launches}
+        assert len(self._lines(caplog, self.PCIE)) == 1
+
+    def test_the_view_prints_the_split_line_once(
+        self, split: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        app_placement.get_placement()
+        assert len(self._lines(caplog, self.PCIE)) == 1
+
+    def test_the_next_launch_prints_the_split_line_again(
+        self, split: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        for _ in range(2):
+            planning.plan_all_launches(engines=engines_for_all_roles(split))
+        assert len(self._lines(caplog, self.PCIE)) == 2
+
+    def test_a_scope_keeps_one_record_for_each_kind_of_line_and_each_key(self) -> None:
+        kind = planning._LaunchWarning
+        with planning._one_warning_per_plan():
+            assert planning._first_warning(kind.NETWORK_FS, "m")
+            assert not planning._first_warning(kind.NETWORK_FS, "m")
+            assert planning._first_warning(kind.NETWORK_FS, "other")
+            assert planning._first_warning(kind.PCIE_SPLIT, "m", (0, 1))
+            assert not planning._first_warning(kind.PCIE_SPLIT, "m", (0, 1))
+            assert planning._first_warning(kind.PCIE_SPLIT, "m", (0, 2))
+            assert planning._first_warning(kind.PCIE_SPLIT, "m")
+
+    def test_outside_a_plan_every_line_prints(self) -> None:
+        kind = planning._LaunchWarning
+        assert planning._first_warning(kind.NETWORK_FS, "m")
+        assert planning._first_warning(kind.NETWORK_FS, "m")
 
 
 class TestASharedMemoryHostBudget:
