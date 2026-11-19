@@ -2708,7 +2708,8 @@ class Store:
         """The persisted entity schema row, or ``None`` when never induced.
 
         The schema is machine state induced from the corpus and lives inside
-        the index, so it travels with the data.
+        the index, so it travels with the data. A row written before the
+        document count was recorded reads as 0 (corpus size unknown).
         """
         table = self.open_table(ENTITY_SCHEMA_TABLE)
         if table is None:
@@ -2721,7 +2722,7 @@ class Store:
         return EntitySchemaState(
             schema_json=str(row["schema_json"]),
             applied=bool(row["applied"]),
-            source_count=int(row["source_count"]),
+            source_count=int(row.get("source_count") or 0),
             updated_at=str(row["updated_at"]),
         )
 
