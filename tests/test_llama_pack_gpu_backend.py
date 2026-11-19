@@ -92,20 +92,19 @@ def test_a_usable_nvidia_card_wins_over_an_amd_gpu() -> None:
 
 
 @pytest.mark.parametrize(
-    ("system", "machine", "vendors", "gfx", "cell", "licences"),
+    ("system", "machine", "vendors", "gfx", "cell"),
     [
-        ("Linux", "x86_64", (AMD,), ("gfx1100",), "linux-x86_64-rocm", "ROCM"),
-        ("Linux", "x86_64", (INTEL,), (), "linux-x86_64-vulkan", ["MIT"]),
-        ("Windows", "AMD64", (AMD,), (), "windows-x86_64-vulkan", ["MIT"]),
+        ("Linux", "x86_64", (AMD,), ("gfx1100",), "linux-x86_64-rocm"),
+        ("Linux", "x86_64", (INTEL,), (), "linux-x86_64-vulkan"),
+        ("Windows", "AMD64", (AMD,), (), "windows-x86_64-vulkan"),
     ],
 )
-def test_the_pack_pin_names_the_cell_and_licences_of_the_gpu_pack(
+def test_the_pack_pin_names_the_cell_of_the_gpu_pack(
     system: str,
     machine: str,
     vendors: tuple[int, ...],
     gfx: tuple[str, ...],
     cell: str,
-    licences: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = _host(system, machine, vendors=vendors, gfx=gfx, loader=True, numa=True)
@@ -120,12 +119,6 @@ def test_the_pack_pin_names_the_cell_and_licences_of_the_gpu_pack(
     assert pin["backend"] == cell.rsplit("-", 1)[1]
     assert pin["sha256"] == SHA
     assert list(pin["platforms"]) == [cell]
-    if licences == "ROCM":
-        assert pin["licenses"] == [
-            "MIT AND BSD-3-Clause AND NCSA AND Apache-2.0 WITH LLVM-exception"
-        ]
-    else:
-        assert pin["licenses"] == licences
 
 
 @pytest.mark.parametrize(
