@@ -633,7 +633,7 @@ def test_the_driver_floor_is_the_cuda_version_the_build_script_installs() -> Non
 
 
 def test_the_vendored_apache_text_is_the_canonical_licence() -> None:
-    """The text from https://www.apache.org/licenses/LICENSE-2.0.txt, which section 4(a) requires."""
+    """The file is the text at apache.org/licenses/LICENSE-2.0.txt, which section 4(a) requires."""
     text = (_BUILD_SCRIPT.parent / "LICENSE-Apache-2.0").read_bytes()
     assert hashlib.sha256(text).hexdigest() == (
         "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
