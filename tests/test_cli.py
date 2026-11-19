@@ -6168,17 +6168,66 @@ class TestSigintCancel:
             monkeypatch.undo()
             assert token.is_set()
 
-    def test_a_second_sigint_is_left_to_the_default_handler(self) -> None:
-        """A pass that ignores the token must still be interruptible."""
+    def test_the_handler_stays_installed_after_the_first_sigint(self) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
 
+        with sigint_cancel():
+            scoped = signal.getsignal(signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
+            assert signal.getsignal(signal.SIGINT) is scoped
+
+    def test_the_handler_never_changes_signal_handlers(self, monkeypatch) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel() as token:
+            handler = signal.getsignal(signal.SIGINT)
+
+            def _forbidden(*_args: object, **_kwargs: object) -> None:
+                raise AssertionError("the SIGINT handler called signal.signal")
+
+            monkeypatch.setattr(signal, "signal", _forbidden)
+            handler(signal.SIGINT, None)
+            with pytest.raises(KeyboardInterrupt):
+                handler(signal.SIGINT, None)
+            monkeypatch.undo()
+            assert token.is_set()
+
+    def test_a_second_sigint_reaches_the_scoped_handler_and_interrupts(self) -> None:
+        """A pass that ignores the token must still be interruptible."""
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        outer_calls: list[int] = []
+
+        def outer(signum: int, _frame: object) -> None:
+            outer_calls.append(signum)
+
+        original = signal.signal(signal.SIGINT, outer)
+        try:
+            with sigint_cancel() as token:
+                signal.raise_signal(signal.SIGINT)
+                assert token.is_set()
+                with pytest.raises(KeyboardInterrupt):
+                    signal.raise_signal(signal.SIGINT)
+            assert outer_calls == []
+        finally:
+            signal.signal(signal.SIGINT, original)
+
+    def test_the_previous_handler_is_restored_after_a_fired_scope(self) -> None:
         from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
         with sigint_cancel():
             signal.raise_signal(signal.SIGINT)
-            assert signal.getsignal(signal.SIGINT) is previous, (
-                "the handler stayed installed, so a second Ctrl-C would be swallowed"
-            )
+        assert signal.getsignal(signal.SIGINT) is previous
+
+    def test_the_previous_handler_is_restored_when_the_body_raises(self) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        previous = signal.getsignal(signal.SIGINT)
+        with pytest.raises(RuntimeError, match="boom"):
+            with sigint_cancel():
+                raise RuntimeError("boom")
+        assert signal.getsignal(signal.SIGINT) is previous
 
     def test_off_the_main_thread_it_installs_no_handler(self) -> None:
         """signal.signal raises off the main thread (xdist workers run there),
