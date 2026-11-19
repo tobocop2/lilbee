@@ -324,6 +324,9 @@ class TestRerank:
             reranker.rerank("test", [_chunk("a.md", "A"), _chunk("b.md", "B")], degraded=degraded)
         assert [w.code.value for w in degraded] == ["rerank_failed"]
         assert degraded[0].message.endswith("The reranker returned 1 scores for 2 candidates.")
+        assert degraded[0].remedy == (
+            "Search again, or clear reranker_model. Check the reranker with lilbee status."
+        )
 
     def test_a_healthy_pass_records_nothing(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
