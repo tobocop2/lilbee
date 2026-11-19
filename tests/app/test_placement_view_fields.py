@@ -138,10 +138,10 @@ def test_cli_show_prints_the_split_and_the_model_of_each_role(busy_machine, tmp_
     shown = _shown(tmp_path)
 
     assert (
-        "chat: target=gpu devices=[0, 1] replicas=1 split=[24, 48] charge=30.0 GiB  org/chat.gguf"
+        "chat: target=gpu devices=[0, 1] replicas=1 split=[24, 48] charge=30.0 GiB org/chat.gguf"
         in shown
     )
-    assert "embed: target=gpu devices=[0] replicas=1 charge=2.0 GiB  org/embed.gguf" in shown
+    assert "embed: target=gpu devices=[0] replicas=1 charge=2.0 GiB org/embed.gguf" in shown
     assert "rerank: target=gpu devices=[1] replicas=1 charge=none" in shown
     assert "rerank: target=gpu devices=[1] replicas=1 split=" not in shown
 
