@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 import lilbee
+from lilbee.app.engine_service import EmbedConfirmRequiredError
 from lilbee.cli import app
 from lilbee.core.config import cfg
 
@@ -83,6 +84,20 @@ def _remove_glob(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], MagicMock]
     return ["remove", "docs"], removal
 
 
+def _engine_prefer(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], MagicMock]:
+    monkeypatch.setattr(cfg, "json_mode", False)
+    monkeypatch.setattr("lilbee.cli.engine._interactive", lambda: True)
+    write = MagicMock(return_value="openvino")
+
+    def prefer(name: str, confirmed: bool = False) -> str:
+        if not confirmed:
+            raise EmbedConfirmRequiredError("library", 3)
+        return write(name)
+
+    monkeypatch.setattr("lilbee.app.engine_service.prefer", prefer)
+    return ["engine", "prefer", "openvino"], write
+
+
 # Every confirm call site, keyed by file under src/lilbee and the function that holds the call.
 CASES: dict[str, Arm] = {
     "cli/model.py::_confirm_remove_or_exit": _model_rm,
@@ -92,14 +107,12 @@ CASES: dict[str, Arm] = {
     "cli/commands/setup.py::login": _login,
     "cli/commands/meta.py::reset": _reset,
     "cli/commands/ingest_sync.py::remove": _remove_glob,
+    "cli/engine.py::_confirming": _engine_prefer,
 }
 
 EXEMPT: dict[str, str] = {
     "cli/launchers/setup_gate.py::confirm_first_run_setup": (
         "the setup question defaults to yes by design and runs no destructive action"
-    ),
-    "cli/engine.py::_confirming": (
-        "the embed prompt is pinned by the engine embed test on the fix-121 branch, not landed here"
     ),
 }
 
