@@ -25,7 +25,7 @@ from lilbee.providers.fleet.engines.llama import (
     pack_backend,
 )
 from lilbee.providers.fleet.host_caps import HostCaps, collect
-from tests._pack_workflow import pack_workflow
+from tests._pack_workflow import pack_workflow, published_builds
 from tests._published import render_table, wheel_name
 
 VERSION = "1.12032.1"
@@ -313,17 +313,34 @@ def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow()
     assert shipped - built == set()
 
 
-def test_every_shipped_llama_url_names_the_wheel_that_its_cell_builds() -> None:
+def test_every_shipped_llama_url_names_the_wheel_of_its_cell_at_an_earlier_build_number() -> None:
     cells = {cell["cell"]: cell for cell in _pack_matrix(_pack_cells())}
     shipped = MANIFESTS["llama.cpp"][_WHEEL_VERSION]
     assert shipped
     for key, row in shipped.items():
         cell = cells[key]
-        built = (
+        built = re.sub(
+            r"-\d+\.(\w+)-py3",
+            rf"-{cell['build_number']}.\1-py3",
+            row["url"].rsplit("/", 1)[1],
+        )
+        assert built == (
             f"lilbee_engine_llama_cpp-{_WHEEL_VERSION}-{cell['build_number']}.{cell['backend']}"
             f"-py3-none-{cell['platform']}.whl"
+        ), key
+
+
+def test_every_llama_cell_builds_a_higher_number_than_every_published_wheel_of_its_name() -> None:
+    """A file name that a release ships is never built again: two releases with one name hold two
+    digests, and the record keeps the digest of the later one. A rebuild takes the next number."""
+    cells = _pack_matrix(_pack_cells())
+    assert cells
+    for cell in cells:
+        published = published_builds(
+            "lilbee_engine_llama_cpp", _WHEEL_VERSION, cell["backend"], cell["platform"]
         )
-        assert row["url"].rsplit("/", 1)[1] == built, key
+        assert published, cell["cell"]
+        assert cell["build_number"] > max(published), cell["cell"]
 
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:

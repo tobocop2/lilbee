@@ -6,6 +6,7 @@ import fnmatch
 import hashlib
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -42,7 +43,7 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import NO_NVIDIA_DRIVER, collect
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import RoleTarget, WorkerRole
-from tests._pack_workflow import pack_workflow
+from tests._pack_workflow import pack_workflow, published_builds
 from tests._published import publish
 from tests._workflow_steps import commands, steps
 
@@ -741,14 +742,16 @@ def test_the_ik_job_has_one_cell_for_each_build_of_the_pack() -> None:
         assert pinned[: len(stated)] == stated
 
 
-def test_a_cell_never_builds_a_lower_number_than_its_shipped_wheel() -> None:
-    """A rebuild with new content takes a new build number, so one file name holds one digest."""
-    shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
+def test_a_cell_builds_a_higher_number_than_every_published_wheel_of_its_name() -> None:
+    """A file name that a release ships is never built again: two releases with one name hold two
+    digests, and the record keeps the digest of the later one. A rebuild takes the next number."""
+    platform = _workflow_job("ik")["env"]["PLATFORM"]
     for name, cell in _ik_cells().items():
-        found = re.search(r"-(\d+)\.(\w+)-py3", shipped[name]["url"])
-        assert found is not None
-        assert found[2] == cell["backend"]
-        assert cell["build_number"] >= int(found[1])
+        published = published_builds(
+            "lilbee_engine_ik_llama_cpp", ik_llama.VERSION, cell["backend"], platform
+        )
+        assert published, name
+        assert cell["build_number"] > max(published), name
 
 
 def test_the_ik_job_runs_for_its_own_engine_only_and_its_wheels_are_published() -> None:
@@ -811,6 +814,160 @@ def test_the_ik_check_runs_the_server_and_the_cuda_byte_check_from_the_installed
     assert "sha256sum -c" in run and "cuda-libs.sha256" in run
     assert "check_glibc_floor.sh" in run
     assert run.rstrip().endswith("cd / ${exe} --version")
+
+
+def _shell_lines(script: str) -> list[tuple[int, str]]:
+    """Each command line of *script* with its block depth; comments and heredoc bodies are dropped."""
+    lines: list[tuple[int, str]] = []
+    depth = 0
+    heredoc_end = None
+    for raw in script.replace("\\\n", " ").splitlines():
+        text = raw.strip()
+        if heredoc_end is not None:
+            heredoc_end = None if text == heredoc_end else heredoc_end
+            continue
+        if not text or text.startswith("#"):
+            continue
+        words = shlex.split(text, comments=True)
+        if words[0] in ("fi", "done", "esac", "}", ")"):
+            depth -= 1
+        lines.append((depth, text))
+        if words[0] in ("if", "for", "while", "until", "case", "{", "(") and words[-1] != "fi":
+            depth += 1
+        found = re.search(r"<<-?\s*'?(\w+)'?", text)
+        heredoc_end = found[1] if found else None
+    return lines
+
+
+def test_the_ik_check_is_a_top_level_command_that_nothing_skips() -> None:
+    """The step has no condition, the shell stops on an error, and nothing before the check call
+    can leave the step: no exit, no return, no block around it."""
+    step = next(s for s in steps(pack_workflow(), "ik") if s.get("name") == _CHECK_STEP)
+    assert "if" not in step
+    assert "continue-on-error" not in step
+    assert "continue-on-error" not in _workflow_job("ik")
+    lines = _shell_lines(step["run"])
+    assert lines[0] == (0, "set -euo pipefail")
+    (call,) = [i for i, (_, text) in enumerate(lines) if text.startswith("python - out/*.whl")]
+    assert lines[call][0] == 0
+    assert lines[call][1].endswith("<<'PY'")
+    for depth, text in lines[:call]:
+        assert depth == 0, text
+        assert not {"exit", "return", "trap"} & set(shlex.split(text, comments=True)), text
+    assert not [text for _, text in lines if text.startswith("set +")]
+
+
+def test_the_ik_job_stops_a_build_that_runs_longer_than_the_cuda_build_needs() -> None:
+    assert _workflow_job("ik")["timeout-minutes"] == 350
+
+
+def test_the_ik_job_frees_disk_space_before_the_build() -> None:
+    free, build = "Free disk space for the build", "Build ik_llama.cpp in the manylinux_2_34 image"
+    names = [step.get("name") for step in steps(pack_workflow(), "ik")]
+    assert names.index(free) < names.index(build)
+    removed = "sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache"
+    assert removed in commands(_ik_step(free))
+
+
+def test_the_ik_wheel_takes_its_build_number_from_the_cell() -> None:
+    env = _workflow_job("ik")["env"]
+    assert env["BUILD_NUMBER"] == "${{ matrix.build_number }}"
+    assert env["BACKEND"] == "${{ matrix.backend }}"
+    build = "python -m build --wheel -C--build-option=--build-number=${BUILD_NUMBER}.${BACKEND}"
+    assert build in commands(_ik_step("Build the wheel"))
+
+
+def test_the_ik_wheel_carries_the_platform_tag_of_the_shipped_names() -> None:
+    env = _workflow_job("ik")["env"]
+    run = commands(_ik_step("Build the wheel"))
+    tags = "python -m wheel tags --remove --platform-tag ${PLATFORM} dist/*.whl"
+    assert run.index("python -m build --wheel") < run.index(tags)
+    shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
+    assert shipped
+    for name, row in shipped.items():
+        assert row["url"].endswith(f"-py3-none-{env['PLATFORM']}.whl"), name
+
+
+def test_the_cuda_driver_stub_comes_from_one_package_version() -> None:
+    run = commands(_ik_step("Fetch the CUDA driver stub"))
+    assert re.search(r"dnf install -y cuda-driver-devel-12-4-\d+\.\d+\.\d+-\d+ ", run)
+
+
+_PUBLISH_STEP = "Create the release and upload the wheels"
+_FAKE_GH = """#!/bin/bash
+case "$1" in
+  api) echo "$@" > "${API_ARGS}"; cat "${ASSET_NAMES}" ;;
+  release)
+    case "$2" in
+      view) exit 1 ;;
+      create) echo "$@" > "${CREATED}" ;;
+      *) exit 2 ;;
+    esac ;;
+  *) exit 2 ;;
+esac
+"""
+
+
+def _publish(tmp_path: Path, wheels: list[str], assets: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run the publish step of the workflow with a gh that lists *assets* and records the release."""
+    (run,) = (
+        s["run"] for s in steps(pack_workflow(), "publish") if s.get("name") == _PUBLISH_STEP
+    )
+    (tmp_path / "bin").mkdir()
+    gh = tmp_path / "bin" / "gh"
+    gh.write_text(_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    (tmp_path / "assets.txt").write_text("".join(f"{a}\n" for a in assets), encoding="utf-8")
+    (tmp_path / "packs").mkdir()
+    for wheel in wheels:
+        (tmp_path / "packs" / wheel).write_bytes(b"")
+    script = tmp_path / "publish.sh"
+    script.write_text(run, encoding="utf-8")
+    env = {
+        "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "owner/packs",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "SUFFIX": "",
+        "LILBEE_TAG": "pin",
+        "LILBEE_COMMIT": "abc",
+        "ASSET_NAMES": str(tmp_path / "assets.txt"),
+        "API_ARGS": str(tmp_path / "api-args.txt"),
+        "CREATED": str(tmp_path / "created.txt"),
+    }
+    return subprocess.run(
+        ["bash", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, check=False
+    )
+
+
+_WHEEL_3 = "lilbee_engine_ik_llama_cpp-0+gitabc-3.cpu-py3-none-manylinux_2_34_x86_64.whl"
+_WHEEL_4 = "lilbee_engine_ik_llama_cpp-0+gitabc-4.cpu-py3-none-manylinux_2_34_x86_64.whl"
+_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="the step is bash")
+
+
+@_posix_only
+def test_publish_refuses_a_wheel_whose_name_is_an_asset_of_any_release(tmp_path: Path) -> None:
+    other = "lilbee_engine_llama_cpp-1-1.cpu-py3-none-win_amd64.whl"
+    done = _publish(tmp_path, [_WHEEL_3, _WHEEL_4], [other, _WHEEL_3])
+    assert done.returncode == 1
+    assert f"The file {_WHEEL_3} is already an asset of a release" in done.stdout
+    assert _WHEEL_4 not in done.stdout
+    assert not (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+def test_publish_creates_the_release_for_names_that_no_release_holds(tmp_path: Path) -> None:
+    done = _publish(tmp_path, [_WHEEL_4], [_WHEEL_3, "notes.txt"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    created = (tmp_path / "created.txt").read_text(encoding="utf-8")
+    assert f"packs/{_WHEEL_4}" in created
+
+
+@_posix_only
+def test_publish_reads_every_page_of_the_release_list(tmp_path: Path) -> None:
+    _publish(tmp_path, [_WHEEL_4], [])
+    args = (tmp_path / "api-args.txt").read_text(encoding="utf-8")
+    assert "repos/owner/packs/releases" in args
+    assert "--paginate" in args
 
 
 def _wheel_check() -> str:
