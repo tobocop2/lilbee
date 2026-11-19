@@ -1,9 +1,15 @@
 [
   {
-    "file": "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
-    "url": "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261118/lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl",
-    "sha256": "8bba9afef14daa860692e6011f5cee892c544e9e0f43bb774dbe39ec83e575b5",
-    "size": 15073566
+    "file": "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cuda-py3-none-manylinux_2_34_x86_64.whl",
+    "url": "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261119-ik/lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cuda-py3-none-manylinux_2_34_x86_64.whl",
+    "sha256": "150058088c79a6c7f3499ee5245ca5cdda4071ea8ecc473070e21990e835ee64",
+    "size": 961186455
+  },
+  {
+    "file": "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cpu-py3-none-manylinux_2_34_x86_64.whl",
+    "url": "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261119-ik/lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cpu-py3-none-manylinux_2_34_x86_64.whl",
+    "sha256": "352e2eebd989d3075a283f910cf98854de655e8f0cb4396882f2d7e06473dedc",
+    "size": 14947015
   },
   {
     "file": "lilbee_engine_llama_cpp-1.12032.1-1.cpu-py3-none-manylinux_2_34_x86_64.whl",

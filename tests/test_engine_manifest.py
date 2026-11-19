@@ -292,8 +292,40 @@ def test_ik_llama_pin_record_holds_its_own_fields(monkeypatch: pytest.MonkeyPatc
     assert pin["licenses"] == ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
     assert pin["memory"]["rule"] is None
     shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
-    assert pin["platforms"] == shipped
+    assert pin["platforms"] == {"linux-x86_64-cpu": shipped["linux-x86_64-cpu"]}
     assert pin["sha256"] == shipped["linux-x86_64-cpu"]["sha256"]
+
+
+_IK_L4 = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "NVIDIA L4", "cc": [8, 9]}]}
+SHIPPED_IK = {
+    "cpu": (
+        None,
+        "linux-x86_64-cpu",
+        "352e2eebd989d3075a283f910cf98854de655e8f0cb4396882f2d7e06473dedc",
+        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cpu-py3-none-manylinux_2_34_x86_64.whl",
+    ),
+    "cuda": (
+        _IK_L4,
+        "linux-x86_64-cuda",
+        "150058088c79a6c7f3499ee5245ca5cdda4071ea8ecc473070e21990e835ee64",
+        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cuda-py3-none-manylinux_2_34_x86_64.whl",
+    ),
+}
+
+
+@pytest.mark.parametrize("build", SHIPPED_IK)
+def test_each_linux_host_resolves_its_own_ik_pack_from_the_shipped_table(
+    build: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nvidia, cell, digest, file = SHIPPED_IK[build]
+    cpu_info = {"flags": ["avx2"], "brand_raw": "Test CPU"}
+    host = host_caps.collect(system="Linux", machine="x86_64", cpu_info=cpu_info, nvidia=nvidia)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    pin = ADAPTERS[EngineName.IK_LLAMA].pin_record()
+    assert pin["backend"] == build
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    assert pin["platforms"][cell]["url"] == f"{PACKAGES_URL}engine-packs-20261119-ik/{file}"
 
 
 def test_ik_llama_pin_record_does_not_read_the_llama_record(

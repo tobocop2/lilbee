@@ -131,6 +131,9 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         _NO_RECORD,
     ),
     _deferred(EngineName.IK_LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _deferred(
+        EngineName.IK_LLAMA, "linux-x86_64-cuda", Device.CUDA, Route.PACK, _CUDA_HOST, _NO_RECORD
+    ),
     _deferred(EngineName.MISTRAL, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
     _deferred(
         EngineName.MISTRAL, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST

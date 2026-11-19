@@ -1,9 +1,10 @@
 # SHA256SUMS of the engine pack wheels that engine_packs.json names.
-# The release engine-packs-20261118 of tobocop2/lilbee-engine-packs holds a copy of each wheel.
-# Each line comes from the SHA256SUMS asset of the source release of the wheel,
-# fetched on 2026-11-17 with: gh release download <tag> -p SHA256SUMS
+# A line '# release <tag>' starts the block of that release of tobocop2/lilbee-engine-packs.
+# In the block of engine-packs-20261118, each line comes from the SHA256SUMS asset of the
+# source release of the wheel, fetched on 2026-11-17 with: gh release download <tag> -p SHA256SUMS
 # The copy was checked against these lines with sha256sum before the upload.
-# A line '# release <tag>' starts the block of that release.
+# In the block of engine-packs-20261119-ik, each line is the sha256sum of the wheel on the
+# build host before the upload. An anonymous download of each asset gave the same sum.
 # release engine-packs-20261118
 # source release engine-packs-20261104
 8bba9afef14daa860692e6011f5cee892c544e9e0f43bb774dbe39ec83e575b5  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl
@@ -37,3 +38,6 @@ a92f666c0cdc825f173c3e29486c409a4b5435d037f57d3a60f970844eaf09b8  lilbee_engine_
 e697869e269c936a99e39244a2098d2c0c5ee7e8ae7798de48d3714ad4a4a19b  lilbee_engine_tei-1.9.4-1.cuda_sm89-py3-none-manylinux_2_34_x86_64.whl
 61258fdcccd2322665ab3523c309204a986c2f461e843449cf1e53aeac63dca7  lilbee_engine_tei-1.9.4-1.cuda_sm90-py3-none-manylinux_2_34_x86_64.whl
 adef1ba024f7fd18e65f335820cd9d6169eee5a3ca823108650bf67a45afed04  lilbee_engine_tei-1.9.4-1.metal-py3-none-macosx_14_0_arm64.whl
+# release engine-packs-20261119-ik
+150058088c79a6c7f3499ee5245ca5cdda4071ea8ecc473070e21990e835ee64  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cuda-py3-none-manylinux_2_34_x86_64.whl
+352e2eebd989d3075a283f910cf98854de655e8f0cb4396882f2d7e06473dedc  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cpu-py3-none-manylinux_2_34_x86_64.whl
