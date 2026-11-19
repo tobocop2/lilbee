@@ -1041,6 +1041,24 @@ def _vision_ref_needs_projector(model_ref: str) -> bool:
         return True
 
 
+def _text_only_vision_reason(role: WorkerRole, model_ref: str) -> str | None:
+    """Why a text-only model folder cannot serve the vision role, else ``None``."""
+    from lilbee.providers.gguf_meta import declares_vision_config, needs_sidecar_projector
+
+    if role is not WorkerRole.VISION:
+        return None
+    try:
+        path = engine_params.resolve_model_path(model_ref)
+    except (ProviderError, OSError, ValueError, KeyError):
+        return None
+    if needs_sidecar_projector(path) or declares_vision_config(path):
+        return None
+    return (
+        f"The vision model {model_ref} is a text-only model: its config.json has no "
+        "vision_config section. Choose a vision model for the vision role."
+    )
+
+
 def _estimate_role(
     role: WorkerRole,
     model_ref: str,
@@ -4568,6 +4586,9 @@ def _launches_and_refusals(
     launches: list[InstanceLaunch] = []
     refused: dict[WorkerRole, str] = {}
     for plan in placement.instances:
+        if text_only := _text_only_vision_reason(plan.role, model_refs[plan.role]):
+            refused[plan.role] = text_only
+            continue
         try:
             launch = _launch_for(
                 plan,
