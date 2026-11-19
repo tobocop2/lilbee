@@ -392,7 +392,9 @@ def test_a_reload_with_a_low_card_read_keeps_each_engines_clean_figure(
     for name in set(fleet.engines.values()):
         probe = planning._plan_probe_store.get(name)
         assert probe is not None
-        assert [d.free_bytes for d in probe.devices] == [_FREE]
+        # The ik server has no device listing, so it has no card figure to keep clean.
+        expected = [] if name is EngineName.IK_LLAMA else [_FREE]
+        assert [d.free_bytes for d in probe.devices] == expected
     for swap in provider._swaps.values():
         swap._close_log()
 

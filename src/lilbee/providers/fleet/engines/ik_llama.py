@@ -167,7 +167,7 @@ class IkLlamaAdapter:
     def discover_devices(self, binary: Path) -> DeviceProbe:
         """An empty probe: this engine's server has no device listing to run."""
         log.debug("%s has no --list-devices option, so no device probe runs.", binary.name)
-        return DeviceProbe([], "")
+        return DeviceProbe([], "", has_listing=False)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         return LLAMA.device_targets(binary)

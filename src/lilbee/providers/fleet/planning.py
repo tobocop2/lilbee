@@ -2374,7 +2374,7 @@ def _read_devices(binary: Path, engine: EngineAdapter) -> DeviceReading:
             )
             for idx, vram, free in (enumerate_gpu_vram() or [])
         ]
-        if devices:
+        if devices and probe.has_listing:
             log.warning(
                 "The engine's device probe returned nothing, so placement is using "
                 "the host's Vulkan loader instead and found %d device(s). If the "
