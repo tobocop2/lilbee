@@ -41,6 +41,14 @@ class TestADeliberateCpuOptOutSurvives:
             gpu_env._clear_empty_visible_device_vars(env)
         assert "CUDA_VISIBLE_DEVICES" not in env
 
+    def test_a_mask_that_names_devices_is_kept_when_the_runtime_exposes_a_gpu(
+        self, monkeypatch
+    ) -> None:
+        # Only an empty mask contradicts the runtime. A mask that names a card is a choice.
+        env = {"CUDA_VISIBLE_DEVICES": "1", "NVIDIA_VISIBLE_DEVICES": "all"}
+        gpu_env._clear_empty_visible_device_vars(env)
+        assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
     def test_a_void_runtime_marker_is_not_a_gpu(self, monkeypatch) -> None:
         # "void" and "none" are the container runtime's own words for no GPU.
         env = {"CUDA_VISIBLE_DEVICES": "", "NVIDIA_VISIBLE_DEVICES": "void"}
