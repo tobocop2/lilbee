@@ -115,6 +115,36 @@ _CASES = [
 ]
 
 
+_NO_WHEEL_CASES = [
+    pytest.param(
+        collect(system="Linux", machine="aarch64", cpu_info={}, nvidia=None),
+        id="linux-arm64-cpu",
+    ),
+    pytest.param(
+        collect(system="Darwin", machine="x86_64", cpu_info={}, nvidia=None, mac_ver="15.1"),
+        id="macos-x86_64-cpu",
+    ),
+    pytest.param(
+        collect(system="Windows", machine="ARM64", cpu_info={}, nvidia=None),
+        id="windows-arm64-cpu",
+    ),
+    pytest.param(
+        collect(system="Plan9", machine="mips", cpu_info={}, nvidia=None),
+        id="unread-host",
+    ),
+]
+
+
+@pytest.mark.parametrize("host", _NO_WHEEL_CASES)
+def test_a_cell_with_no_published_wheel_pins_the_mit_terms(
+    host: HostCaps, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    pin = LlamaCppAdapter().pin_record()
+    assert pin["platforms"] == {}
+    assert pin["licenses"] == ["MIT"]
+
+
 @pytest.mark.parametrize(("host", "cell", "terms"), _CASES)
 def test_the_pin_of_each_cell_equals_the_terms_of_its_wheel(
     host: HostCaps, cell: str, terms: str, monkeypatch: pytest.MonkeyPatch
