@@ -46,11 +46,9 @@ def _restore_handlers():
     for sig in saved:
         # A nohup or background launch must not change what the lifecycle routes.
         signal.signal(sig, signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL)
-    services_mod._lifecycle.reset()
     yield
     for sig, handler in saved.items():
         signal.signal(sig, handler)
-    services_mod._lifecycle.reset()
     reset_services()
 
 

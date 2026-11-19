@@ -297,19 +297,29 @@ def _restore_server_stop_flag():
 
 
 @pytest.fixture(autouse=True)
-def _forget_engine_stop():
+def _forget_engine_stop(_restore_server_stop_flag):
     """Clear every engine stop request after each test.
 
     A stop runs once per process and refuses new containers, so a leak breaks
     every later test that builds the services. A stop still running would set
     its done event during the next test, so it fails this test instead.
+
+    The stop thread sets the server-stopping flag before it sets its done
+    event. Asking for the flag fixture makes this teardown run first, so the
+    flag is restored after the wait and not before a late stop sets it.
+
+    The fixture holds the process's own lifecycle from before the test. Fixture
+    teardown order depends on which autouse fixture asks for ``monkeypatch``
+    first, and a test that swaps in a lifecycle of its own must not become the
+    one this fixture waits on.
     """
     from lilbee.app import services as services_mod
 
+    lifecycle = services_mod._lifecycle
     yield
-    if services_mod._lifecycle.stop_requested:
-        assert services_mod._lifecycle.wait_stopped(5.0), "the test left an engine stop running"
-    services_mod._lifecycle.reset()
+    if lifecycle.stop_requested:
+        assert lifecycle.wait_stopped(5.0), "the test left an engine stop running"
+    lifecycle.reset()
 
 
 @pytest.fixture(autouse=True)
