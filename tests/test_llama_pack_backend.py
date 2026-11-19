@@ -25,7 +25,12 @@ from lilbee.providers.fleet.engines.llama import (
     pack_backend,
 )
 from lilbee.providers.fleet.host_caps import HostCaps, collect
-from tests._pack_workflow import pack_workflow
+from tests._pack_workflow import (
+    Cell,
+    cells_below_the_record,
+    pack_workflow,
+    record_after_publish,
+)
 from tests._published import render_table, wheel_name
 
 VERSION = "1.12032.1"
@@ -313,17 +318,40 @@ def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow()
     assert shipped - built == set()
 
 
-def test_every_shipped_llama_url_names_the_wheel_that_its_cell_builds() -> None:
+def test_every_shipped_llama_url_names_the_wheel_of_its_cell_apart_from_the_build_number() -> None:
     cells = {cell["cell"]: cell for cell in _pack_matrix(_pack_cells())}
     shipped = MANIFESTS["llama.cpp"][_WHEEL_VERSION]
     assert shipped
     for key, row in shipped.items():
         cell = cells[key]
-        built = (
+        built = re.sub(
+            r"-\d+\.(\w+)-py3",
+            rf"-{cell['build_number']}.\1-py3",
+            row["url"].rsplit("/", 1)[1],
+        )
+        assert built == (
             f"lilbee_engine_llama_cpp-{_WHEEL_VERSION}-{cell['build_number']}.{cell['backend']}"
             f"-py3-none-{cell['platform']}.whl"
-        )
-        assert row["url"].rsplit("/", 1)[1] == built, key
+        ), key
+
+
+def _llama_builds() -> list[Cell]:
+    cells = _pack_matrix(_pack_cells())
+    assert cells
+    return [(c["cell"], c["backend"], c["platform"], c["build_number"]) for c in cells]
+
+
+def test_no_llama_cell_builds_a_number_below_a_published_wheel_of_its_name() -> None:
+    """The publish step refuses an existing file name, and that keeps one name to one wheel."""
+    assert cells_below_the_record("lilbee_engine_llama_cpp", _WHEEL_VERSION, _llama_builds()) == []
+
+
+def test_the_llama_cell_numbers_hold_after_the_rows_of_the_batch_are_written() -> None:
+    dist, cells = "lilbee_engine_llama_cpp", _llama_builds()
+    after = record_after_publish(dist, _WHEEL_VERSION, cells)
+    assert cells_below_the_record(dist, _WHEEL_VERSION, cells, after) == []
+    lowered = [(n, backend, platform, build - 1) for n, backend, platform, build in cells]
+    assert cells_below_the_record(dist, _WHEEL_VERSION, lowered, after) == [c[0] for c in cells]
 
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:

@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
+import json
+import os
 import re
+import shlex
+import shutil
 import stat
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from lilbee.app import engine_choice, engine_service
@@ -37,7 +45,14 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import NO_NVIDIA_DRIVER, collect
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from tests._pack_workflow import (
+    Cell,
+    cells_below_the_record,
+    pack_workflow,
+    record_after_publish,
+)
 from tests._published import publish
+from tests._workflow_steps import commands, steps
 
 COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
 runner = CliRunner()
@@ -687,3 +702,555 @@ def test_the_build_script_holds_a_virtual_architecture_at_or_above_hopper() -> N
     assert real
     assert max(virtual) >= 90
     assert max(virtual) >= max(real)
+
+
+# The ik job of the packs repository workflow builds the wheels that the shipped table names.
+
+_IK_IMAGE = re.compile(r"manylinux_2_34_x86_64@sha256:[0-9a-f]{64}")
+_CHECK_STEP = "Check the wheel and start the server from it"
+_THIRD = "licenses/THIRD-PARTY/ik_llama.cpp/"
+_GRANT = "Permission is hereby granted, free of charge, to any person obtaining a copy"
+_DIST = "lilbee_engine_ik_llama_cpp-0+git13cffc006b82.dist-info/"
+
+
+def _workflow_job(name: str) -> dict[str, Any]:
+    parsed = yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))
+    return cast(dict[str, Any], parsed["jobs"][name])
+
+
+def _ik_step(name: str) -> str:
+    """The shell of the one step of the ik job with this name."""
+    (run,) = (s["run"] for s in steps(pack_workflow(), "ik") if s.get("name") == name)
+    return cast(str, run)
+
+
+def _ik_cells() -> dict[str, dict[str, Any]]:
+    matrix = _workflow_job("ik")["strategy"]["matrix"]["include"]
+    return {cell["cell"]: cell for cell in matrix}
+
+
+def test_the_ik_job_builds_the_commit_the_adapter_pins() -> None:
+    env = _workflow_job("ik")["env"]
+    assert env["UPSTREAM_REPO"] == "ikawrakow/ik_llama.cpp"
+    assert env["UPSTREAM_COMMIT"] == ik_llama.IK_LLAMA_COMMIT
+    assert "0+git${UPSTREAM_COMMIT:0:12}" in commands(_ik_step("Build the wheel"))
+    assert f"0+git{env['UPSTREAM_COMMIT'][:12]}" == ik_llama.VERSION
+
+
+def test_the_ik_job_has_one_cell_for_each_build_of_the_pack() -> None:
+    cells = _ik_cells()
+    assert set(cells) == {"linux-x86_64-cpu", "linux-x86_64-cuda"}
+    for name, cell in cells.items():
+        assert cell["backend"] == name.rsplit("-", 1)[1]
+        assert cell["backend"] in {backend.value for backend in ik_llama.IkBackend}
+        licences = ik_llama._CUDA_LICENCES if cell["backend"] == "cuda" else ik_llama._CPU_LICENCES
+        pinned = licences[0].split(" AND ")
+        stated = cell["license"].split(" AND ")
+        assert pinned[: len(stated)] == stated
+
+
+def _ik_builds() -> list[Cell]:
+    platform = _workflow_job("ik")["env"]["PLATFORM"]
+    return [(n, c["backend"], platform, c["build_number"]) for n, c in _ik_cells().items()]
+
+
+def test_a_cell_builds_no_number_below_a_published_wheel_of_its_name() -> None:
+    """The publish step refuses an existing file name, and that keeps one name to one wheel."""
+    below = cells_below_the_record("lilbee_engine_ik_llama_cpp", ik_llama.VERSION, _ik_builds())
+    assert below == []
+
+
+def test_the_cell_numbers_hold_after_the_rows_of_the_batch_are_written() -> None:
+    dist, version, cells = "lilbee_engine_ik_llama_cpp", ik_llama.VERSION, _ik_builds()
+    after = record_after_publish(dist, version, cells)
+    assert cells_below_the_record(dist, version, cells, after) == []
+    lowered = [(n, backend, platform, build - 1) for n, backend, platform, build in cells]
+    assert cells_below_the_record(dist, version, lowered, after) == [c[0] for c in cells]
+
+
+def test_the_ik_job_runs_for_its_own_engine_only_and_its_wheels_are_published() -> None:
+    workflow = yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))
+    assert "ik" in workflow[True]["workflow_dispatch"]["inputs"]["engine"]["options"]
+    assert _workflow_job("ik")["if"] == "needs.plan.outputs.engine == 'ik'"
+    assert "ik" in _workflow_job("publish")["needs"]
+    (download,) = (
+        s for s in steps(pack_workflow(), "publish") if s.get("uses", "").startswith("actions/down")
+    )
+    (upload,) = (
+        s for s in steps(pack_workflow(), "ik") if s.get("uses", "").startswith("actions/upload")
+    )
+    assert fnmatch.fnmatch(upload["with"]["name"].replace("${{ matrix.cell }}", "x"), "*-pack-*")
+    assert download["with"]["pattern"] == "*-pack-*"
+
+
+def test_the_ik_job_calls_the_build_script_in_the_image_of_the_llama_cell() -> None:
+    run = commands(_ik_step("Build ik_llama.cpp in the manylinux_2_34 image"))
+    assert "bash /work/tools/wheel-build/ik_llama_manylinux.sh" in run
+    llama = commands(
+        next(
+            s["run"]
+            for s in steps(pack_workflow(), "cell")
+            if s.get("name", "").startswith("Build llama.cpp with CUDA")
+        )
+    )
+    assert set(_IK_IMAGE.findall(run)) == set(_IK_IMAGE.findall(llama)) != set()
+    required = set(re.findall(r"\$\{(\w+):\?\}", _active_script()))
+    assert {"UPSTREAM_COMMIT", "SRC_DIR", "SHA_FILE", "NOTICE_FILE"} <= required
+    for name in required:
+        assert re.search(rf"-e {name}(?:=|\s|$)", run), name
+
+
+def test_the_ik_licence_step_ships_both_pages_and_the_sqlite_headers() -> None:
+    run = commands(_ik_step("Collect the licences of the server and the code it carries"))
+    ships = re.findall(r"--ship (\S+)", run)
+    assert ships == [
+        "examples/server/public/index.html.gz",
+        "examples/server/public_llamacpp/index_llamacpp.html.gz",
+        "examples/server/sqlite_modern_cpp",
+    ]
+    assert "--skip" not in run
+    assert " ik-src " in run[run.rindex("--ship") :]
+
+
+def test_the_ik_job_reads_the_source_epoch_before_it_builds_the_wheel() -> None:
+    runs = [commands(step.get("run", "")) for step in steps(pack_workflow(), "ik")]
+    (epoch,) = (i for i, run in enumerate(runs) if "source_date_epoch.sh" in run)
+    (build,) = (i for i, run in enumerate(runs) if "python -m build --wheel" in run)
+    assert epoch < build
+    assert "bash tools/wheel-build/source_date_epoch.sh ik-src >> $GITHUB_ENV" in runs[epoch]
+
+
+def test_the_ik_check_runs_the_server_and_the_cuda_byte_check_from_the_installed_wheel() -> None:
+    run = commands(_ik_step(_CHECK_STEP))
+    assert "pip install -q out/*.whl" in run
+    adapter = Path(ik_llama.__file__).relative_to(_BUILD_SCRIPT.parents[2]).as_posix()
+    assert f"python - out/*.whl ${{LICENSE_EXPRESSION}} {adapter}" in run
+    assert "sha256sum -c" in run and "cuda-libs.sha256" in run
+    assert "check_glibc_floor.sh" in run
+    assert run.rstrip().endswith("cd / ${exe} --version")
+
+
+def _shell_lines(script: str) -> list[tuple[int, str]]:
+    """Each command line of *script* with its block depth, without comments and heredoc bodies."""
+    lines: list[tuple[int, str]] = []
+    depth = 0
+    heredoc_end = None
+    for raw in script.replace("\\\n", " ").splitlines():
+        text = raw.strip()
+        if heredoc_end is not None:
+            heredoc_end = None if text == heredoc_end else heredoc_end
+            continue
+        if not text or text.startswith("#"):
+            continue
+        words = shlex.split(text, comments=True)
+        if words[0] in ("fi", "done", "esac", "}", ")"):
+            depth -= 1
+        lines.append((depth, text))
+        if words[0] in ("if", "for", "while", "until", "case", "{", "(") and words[-1] != "fi":
+            depth += 1
+        found = re.search(r"<<-?\s*'?(\w+)'?", text)
+        heredoc_end = found[1] if found else None
+    return lines
+
+
+def test_the_ik_check_is_a_top_level_command_that_nothing_skips() -> None:
+    """The step has no condition, the shell stops on an error, and nothing before the check call
+    can leave the step: no exit, no return, no block around it."""
+    step = next(s for s in steps(pack_workflow(), "ik") if s.get("name") == _CHECK_STEP)
+    assert "if" not in step
+    assert "continue-on-error" not in step
+    assert "continue-on-error" not in _workflow_job("ik")
+    lines = _shell_lines(step["run"])
+    assert lines[0] == (0, "set -euo pipefail")
+    (call,) = [i for i, (_, text) in enumerate(lines) if text.startswith("python - out/*.whl")]
+    assert lines[call][0] == 0
+    assert lines[call][1].endswith("<<'PY'")
+    for depth, text in lines[:call]:
+        assert depth == 0, text
+        assert not {"exit", "return", "trap"} & set(shlex.split(text, comments=True)), text
+    assert not [text for _, text in lines if text.startswith("set +")]
+
+
+def test_the_ik_job_gives_the_cuda_build_350_minutes() -> None:
+    assert _workflow_job("ik")["timeout-minutes"] == 350
+
+
+def test_the_ik_job_frees_disk_space_before_the_build() -> None:
+    free, build = "Free disk space for the build", "Build ik_llama.cpp in the manylinux_2_34 image"
+    names = [step.get("name") for step in steps(pack_workflow(), "ik")]
+    assert names.index(free) < names.index(build)
+    removed = "sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache"
+    assert removed in commands(_ik_step(free))
+
+
+def test_the_ik_wheel_takes_its_build_number_from_the_cell() -> None:
+    env = _workflow_job("ik")["env"]
+    assert env["BUILD_NUMBER"] == "${{ matrix.build_number }}"
+    assert env["BACKEND"] == "${{ matrix.backend }}"
+    build = "python -m build --wheel -C--build-option=--build-number=${BUILD_NUMBER}.${BACKEND}"
+    assert build in commands(_ik_step("Build the wheel"))
+
+
+def test_the_ik_wheel_carries_the_platform_tag_of_the_shipped_names() -> None:
+    env = _workflow_job("ik")["env"]
+    run = commands(_ik_step("Build the wheel"))
+    tags = "python -m wheel tags --remove --platform-tag ${PLATFORM} dist/*.whl"
+    assert run.index("python -m build --wheel") < run.index(tags)
+    shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
+    assert shipped
+    for name, row in shipped.items():
+        assert row["url"].endswith(f"-py3-none-{env['PLATFORM']}.whl"), name
+
+
+def test_the_cuda_driver_stub_comes_from_one_package_version() -> None:
+    run = commands(_ik_step("Fetch the CUDA driver stub"))
+    assert re.search(r"dnf install -y cuda-driver-devel-12-4-\d+\.\d+\.\d+-\d+ ", run)
+
+
+_LICENCE_STEP = "Collect the licences of the server and the code it carries"
+
+
+def test_the_ik_wheel_is_stamped_with_the_expression_of_the_cell_and_its_vendored_terms() -> None:
+    assert _workflow_job("ik")["env"]["LICENSE_TERMS"] == "${{ matrix.license }}"
+    collect = commands(_ik_step(_LICENCE_STEP))
+    assert "terms=${LICENSE_TERMS}" in collect
+    assert "terms=${terms} AND ${id}" in collect
+    assert "LICENSE_EXPRESSION=${terms} >> $GITHUB_ENV" in collect
+    stamp = "python tools/wheel-build/stamp_engine_wheel.py ${WHEEL_DIR}/pyproject.toml"
+    assert f"{stamp} 0+git${{UPSTREAM_COMMIT:0:12}} ${{LICENSE_EXPRESSION}}" in commands(
+        _ik_step("Build the wheel")
+    )
+    names = [step.get("name") for step in steps(pack_workflow(), "ik")]
+    assert names.index(_LICENCE_STEP) < names.index("Build the wheel")
+
+
+def test_the_ik_wheel_ships_the_licence_file_of_the_source_it_builds() -> None:
+    collect = commands(_ik_step(_LICENCE_STEP))
+    assert "lic=${PWD}/${WHEEL_DIR}" in collect
+    assert "cp ik-src/LICENSE ${lic}/LICENSE-ik_llama.cpp" in collect
+    build = commands(_ik_step("Build ik_llama.cpp in the manylinux_2_34 image"))
+    assert "-e SRC_DIR=/work/ik-src" in build
+
+
+_PUBLISH_STEP = "Create the release and upload the wheels"
+# The fake answers the release list the way gh does: it serves one JSON file for each page, applies
+# the --jq filter that the step passes to each page with real jq, and serves page 1 only without
+# --paginate. API_FAIL makes the call fail at once (now) or after page 1 (after-first-page).
+_FAKE_GH = """#!/bin/bash
+case "$1" in
+  api)
+    echo "$@" > "${API_ARGS}"
+    shift
+    paginate=0
+    filter=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --paginate) paginate=1 ;;
+        --jq) filter="$2"; shift ;;
+      esac
+      shift
+    done
+    [ "${API_FAIL}" = now ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    for page in "${PAGES}"/*.json; do
+      if [ -n "${filter}" ]; then jq -r "${filter}" "${page}"; else cat "${page}"; fi
+      [ "${API_FAIL}" = after-first-page ] && { echo "gh: HTTP 502" >&2; exit 1; }
+      [ "${paginate}" = 1 ] || break
+    done ;;
+  release)
+    case "$2" in
+      view) exit 1 ;;
+      create) echo "$@" > "${CREATED}" ;;
+      *) exit 2 ;;
+    esac ;;
+  *) exit 2 ;;
+esac
+"""
+
+_Page = list[dict[str, Any]]
+
+
+def _release(*names: str, draft: bool = False) -> dict[str, Any]:
+    """A release of the GitHub API: the fields of a release that the filter of the step reads."""
+    return {
+        "tag_name": "engine-packs-1",
+        "draft": draft,
+        "assets": [{"name": name, "size": 1} for name in names],
+    }
+
+
+def _publish(
+    tmp_path: Path, wheels: list[str], pages: list[_Page], api_fail: str = ""
+) -> subprocess.CompletedProcess[str]:
+    """Run the publish step with a gh that serves *pages* of releases and records the create."""
+    (run,) = (s["run"] for s in steps(pack_workflow(), "publish") if s.get("name") == _PUBLISH_STEP)
+    (tmp_path / "bin").mkdir()
+    gh = tmp_path / "bin" / "gh"
+    gh.write_text(_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    (tmp_path / "pages").mkdir()
+    for number, page in enumerate(pages, 1):
+        (tmp_path / "pages" / f"{number}.json").write_text(json.dumps(page), encoding="utf-8")
+    (tmp_path / "packs").mkdir()
+    for wheel in wheels:
+        (tmp_path / "packs" / wheel).write_bytes(b"")
+    script = tmp_path / "publish.sh"
+    script.write_text(run, encoding="utf-8")
+    env = {
+        "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "owner/packs",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "SUFFIX": "",
+        "LILBEE_TAG": "pin",
+        "LILBEE_COMMIT": "abc",
+        "PAGES": str(tmp_path / "pages"),
+        "API_FAIL": api_fail,
+        "API_ARGS": str(tmp_path / "api-args.txt"),
+        "CREATED": str(tmp_path / "created.txt"),
+    }
+    return subprocess.run(
+        ["bash", str(script)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+_WHEEL_3 = "lilbee_engine_ik_llama_cpp-0+gitabc-3.cpu-py3-none-manylinux_2_34_x86_64.whl"
+_WHEEL_4 = "lilbee_engine_ik_llama_cpp-0+gitabc-4.cpu-py3-none-manylinux_2_34_x86_64.whl"
+_OTHER = "lilbee_engine_llama_cpp-1-1.cpu-py3-none-win_amd64.whl"
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32" or (shutil.which("jq") is None and not os.environ.get("CI")),
+    reason="the step is bash and the fake gh runs jq",
+)
+
+
+@_posix_only
+def test_publish_refuses_a_wheel_whose_name_is_an_asset_of_any_release(tmp_path: Path) -> None:
+    done = _publish(tmp_path, [_WHEEL_3, _WHEEL_4], [[_release(_OTHER, _WHEEL_3)]])
+    assert done.returncode == 1
+    assert f"The file {_WHEEL_3} is already an asset of a release" in done.stdout
+    assert _WHEEL_4 not in done.stdout
+    assert not (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+@pytest.mark.parametrize("wheels", [[_WHEEL_3, _WHEEL_4], [_WHEEL_4, _WHEEL_3]])
+def test_publish_refuses_a_clashing_wheel_in_any_position(
+    tmp_path: Path, wheels: list[str]
+) -> None:
+    done = _publish(tmp_path, wheels, [[_release(_WHEEL_3), _release(_WHEEL_3)]])
+    assert done.returncode == 1
+    assert done.stdout.count("is already an asset of a release") == 1
+    assert not (tmp_path / "created.txt").exists()
+
+
+_HOLDERS = {
+    "the newest release": [[_release(_WHEEL_3), _release()], [_release()], [_release()]],
+    "a later release of the first page": [[_release(), _release(_WHEEL_3)], [_release()]],
+    "a release of a later page": [
+        [_release()],
+        [_release(), _release()],
+        [_release(), _release(_WHEEL_3)],
+    ],
+    "a draft release": [[_release()], [_release(), _release(_WHEEL_3, draft=True)]],
+    "the only release, a draft": [[_release(_WHEEL_3, draft=True)]],
+}
+
+
+@_posix_only
+@pytest.mark.parametrize("pages", _HOLDERS.values(), ids=_HOLDERS)
+def test_publish_refuses_a_name_that_any_release_on_any_page_holds(
+    tmp_path: Path, pages: list[_Page]
+) -> None:
+    done = _publish(tmp_path, [_WHEEL_4, _WHEEL_3], pages)
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert f"The file {_WHEEL_3} is already an asset of a release" in done.stdout
+    assert not (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+@pytest.mark.parametrize("api_fail", ["now", "after-first-page"])
+def test_publish_stops_before_any_create_when_the_release_list_fails(
+    tmp_path: Path, api_fail: str
+) -> None:
+    done = _publish(tmp_path, [_WHEEL_4], [[_release(_OTHER)], [_release(_WHEEL_3)]], api_fail)
+    assert done.returncode != 0
+    assert "HTTP 502" in done.stderr
+    assert not (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+def test_publish_matches_the_whole_file_name_of_an_asset(tmp_path: Path) -> None:
+    longer = _release(f"old-{_WHEEL_4}", f"{_WHEEL_4}.sha256")
+    done = _publish(tmp_path, [_WHEEL_4], [[longer]])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+def test_publish_creates_the_release_for_names_that_no_release_holds(tmp_path: Path) -> None:
+    pages = [[_release(_WHEEL_3, "notes.txt")], [_release(_OTHER, draft=True)]]
+    done = _publish(tmp_path, [_WHEEL_4], pages)
+    assert done.returncode == 0, done.stdout + done.stderr
+    created = (tmp_path / "created.txt").read_text(encoding="utf-8")
+    assert f"packs/{_WHEEL_4}" in created
+
+
+@_posix_only
+def test_publish_reads_every_page_of_the_release_list(tmp_path: Path) -> None:
+    _publish(tmp_path, [_WHEEL_4], [[_release()]])
+    args = (tmp_path / "api-args.txt").read_text(encoding="utf-8")
+    assert "repos/owner/packs/releases" in args
+    assert "--paginate" in args
+
+
+@_posix_only
+def test_publish_with_no_release_yet_creates_the_release(tmp_path: Path) -> None:
+    done = _publish(tmp_path, [_WHEEL_4], [[]])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "created.txt").exists()
+
+
+def _wheel_check() -> str:
+    """The program that the check step runs against the wheel."""
+    found = re.search(r"<<'PY'\n(.*?)\nPY\n", _ik_step(_CHECK_STEP), re.DOTALL)
+    assert found is not None
+    return found[1]
+
+
+def _notice_entries(backend: str) -> dict[str, str]:
+    """A wheel that holds every notice the check wants, each with the text it wants."""
+    apache = (_BUILD_SCRIPT.parent / "LICENSE-Apache-2.0").read_text(encoding="utf-8")
+    entries = {
+        "licenses/LICENSE-ik_llama.cpp": f"MIT License\n\n{_GRANT}",
+        _THIRD + "LICENSE-Apache-2.0": apache,
+        _THIRD + "examples/server/public/index.html.gz.NOTICE": f"@license React\n{_GRANT}",
+        _THIRD + "examples/server/public_llamacpp/index_llamacpp.html.gz.NOTICE": (
+            "Copyright 2024 Mozilla Foundation\nApache License, Version 2.0"
+        ),
+        _THIRD + "vendor/nlohmann/json.hpp.NOTICE": f"Niels Lohmann\n{_GRANT}",
+        _THIRD + "vendor/cpp-httplib/httplib.h.NOTICE": f"Yuji Hirose\n{_GRANT}",
+        _THIRD + "vendor/stb/stb_image_resize2.h.NOTICE": (
+            f"Sean Barrett\nALTERNATIVE A - MIT License\n{_GRANT}"
+        ),
+    }
+    if backend == "cuda":
+        eula = "Attachment A: libcudart libcublas libcublasLt\n" + "EULA text. " * 3000
+        entries["licenses/NOTICE-NVIDIA-CUDA"] = eula
+    return entries
+
+
+def _run_wheel_check(
+    tmp_path: Path,
+    backend: str,
+    *,
+    drop: str | None = None,
+    text: dict[str, str] | None = None,
+    built: str | None = None,
+    metadata: str | None = None,
+    pin_commit: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the check on a fake wheel: *built* is the job's expression, *metadata* the wheel's."""
+    pinned = (ik_llama._CUDA_LICENCES if backend == "cuda" else ik_llama._CPU_LICENCES)[0]
+    entries = _notice_entries(backend)
+    entries.update(text or {})
+    wheel = tmp_path / "ik.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, body in entries.items():
+            if drop is None or not name.endswith(drop):
+                archive.writestr(_DIST + name, body)
+        archive.writestr(_DIST + "METADATA", f"License-Expression: {metadata or pinned}\n")
+    adapter = Path(ik_llama.__file__)
+    if pin_commit is not None:
+        adapter = tmp_path / "ik_llama.py"
+        source = Path(ik_llama.__file__).read_text(encoding="utf-8")
+        assert ik_llama.IK_LLAMA_COMMIT in source
+        adapter.write_text(source.replace(ik_llama.IK_LLAMA_COMMIT, pin_commit), encoding="utf-8")
+    env = {**os.environ, "BACKEND": backend, "UPSTREAM_COMMIT": ik_llama.IK_LLAMA_COMMIT}
+    argv = [str(wheel), built or pinned, str(adapter)]
+    return subprocess.run(
+        [sys.executable, "-I", "-c", _wheel_check(), *argv],
+        capture_output=True,
+        encoding="utf-8",
+        env=env,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("backend", ["cpu", "cuda"])
+def test_the_wheel_check_accepts_a_wheel_with_every_notice(tmp_path: Path, backend: str) -> None:
+    done = _run_wheel_check(tmp_path, backend)
+    assert done.returncode == 0, done.stderr
+    assert "ok" in done.stdout
+
+
+_REQUIRED_NOTICES = [
+    "licenses/LICENSE-ik_llama.cpp",
+    "index.html.gz.NOTICE",
+    "index_llamacpp.html.gz.NOTICE",
+    "vendor/nlohmann/json.hpp.NOTICE",
+    "vendor/cpp-httplib/httplib.h.NOTICE",
+    "vendor/stb/stb_image_resize2.h.NOTICE",
+]
+
+
+@pytest.mark.parametrize("notice", _REQUIRED_NOTICES)
+def test_the_wheel_check_refuses_a_wheel_without_a_notice(tmp_path: Path, notice: str) -> None:
+    done = _run_wheel_check(tmp_path, "cpu", drop=notice)
+    assert done.returncode != 0
+    assert "the wheel holds 0 entries that end with " in done.stderr
+    assert notice in done.stderr
+
+
+@pytest.mark.parametrize("notice", [n for n in _REQUIRED_NOTICES if n.endswith("NOTICE")])
+def test_the_wheel_check_refuses_a_notice_that_holds_no_licence_text(
+    tmp_path: Path, notice: str
+) -> None:
+    name = next(n for n in _notice_entries("cpu") if n.endswith(notice))
+    done = _run_wheel_check(tmp_path, "cpu", text={name: "see the upstream project\n"})
+    assert done.returncode != 0
+    assert f"{notice} lacks the text" in done.stderr
+
+
+def test_the_wheel_check_refuses_a_cuda_notice_without_the_eula(tmp_path: Path) -> None:
+    done = _run_wheel_check(tmp_path, "cuda", text={"licenses/NOTICE-NVIDIA-CUDA": "NVIDIA\n"})
+    assert done.returncode != 0
+    assert "NOTICE-NVIDIA-CUDA lacks the text: Attachment A" in done.stderr
+    assert "NOTICE-NVIDIA-CUDA is shorter than the EULA" in done.stderr
+    assert _run_wheel_check(tmp_path, "cuda", drop="NOTICE-NVIDIA-CUDA").returncode != 0
+
+
+def test_the_wheel_check_wants_the_apache_text_once(tmp_path: Path) -> None:
+    missing = _run_wheel_check(tmp_path, "cpu", drop="LICENSE-Apache-2.0")
+    assert missing.returncode != 0
+    assert "the Apache-2.0 text is in 0 licence files" in missing.stderr
+    copy = _notice_entries("cpu")[_THIRD + "LICENSE-Apache-2.0"]
+    twice = _run_wheel_check(tmp_path, "cpu", text={"licenses/COPY-Apache": copy})
+    assert twice.returncode != 0
+    assert "the Apache-2.0 text is in 2 licence files" in twice.stderr
+
+
+def test_the_wheel_check_refuses_an_expression_that_the_pin_does_not_name(tmp_path: Path) -> None:
+    stated = "MIT AND Apache-2.0"
+    done = _run_wheel_check(tmp_path, "cpu", built=stated, metadata=stated)
+    assert done.returncode != 0
+    refusal = f"the lilbee pin names {ik_llama._CPU_LICENCES}, the wheel states {stated}"
+    assert refusal in done.stderr
+    assert "METADATA lacks" not in done.stderr
+
+
+def test_the_wheel_check_refuses_a_wheel_whose_metadata_differs_from_the_build(
+    tmp_path: Path,
+) -> None:
+    done = _run_wheel_check(tmp_path, "cpu", metadata="MIT")
+    assert done.returncode != 0
+    assert f"METADATA lacks License-Expression: {ik_llama._CPU_LICENCES[0]}" in done.stderr
+
+
+def test_the_wheel_check_refuses_a_pin_for_another_commit(tmp_path: Path) -> None:
+    done = _run_wheel_check(tmp_path, "cpu", pin_commit="0" * 40)
+    assert done.returncode != 0
+    assert "another ik_llama.cpp commit" in done.stderr
