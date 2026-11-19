@@ -244,3 +244,60 @@ make_ui() {
   [ -s "${OUT}/_deps/cccl/LICENSE" ]
   [ "$(sort "${TERMS}")" = "$(printf 'Apache-2.0 WITH LLVM-exception\nBSL-1.0\nMIT-0\nUnlicense')" ]
 }
+
+# The headers below are the first lines of the files in the ik_llama.cpp tree at the pinned commit.
+write_ik_vendored_tree() {
+  mkdir -p "${SRC}/vendor/nlohmann" "${SRC}/vendor/cpp-httplib" "${SRC}/ggml/src/llamafile"
+  printf '%s\n' "MIT License" "" "Copyright (c) 2023-2024 The ggml authors" "" \
+    "Permission is hereby granted, free of charge, to any person obtaining a copy" "of this software, to deal in the Software without restriction." \
+    "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND." > "${SRC}/LICENSE"
+  printf '%s\n' "//     __ _____ _____ _____" "//  __|  |   __|     |   | |  JSON for Modern C++" \
+    "//" "// SPDX-FileCopyrightText: 2013 - 2025 Niels Lohmann <https://nlohmann.me>" "// SPDX-License-Identifier: MIT" "" \
+    "/****************************************************************************\\" " * Note on documentation: see the online docs." \
+    "\\****************************************************************************/" "#include <algorithm>" > "${SRC}/vendor/nlohmann/json.hpp"
+  printf '%s\n' "//" "//  httplib.h" "//" "//  Copyright (c) 2026 Yuji Hirose. All rights reserved." "//  MIT License" "//" "" \
+    "#define CPPHTTPLIB_VERSION \"0.46.0\"" > "${SRC}/vendor/cpp-httplib/httplib.h"
+  printf '%s\n' "// Copyright 2024 Mozilla Foundation" "//" "// Permission is hereby granted, free of charge, to any person obtaining" \
+    "// a copy of this software." "" "#include <cstdint>" > "${SRC}/ggml/src/llamafile/sgemm.cpp"
+}
+
+@test "writes the notice of every vendored MIT file of the ik_llama.cpp tree" {
+  write_ik_vendored_tree
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  for path in vendor/nlohmann/json.hpp vendor/cpp-httplib/httplib.h ggml/src/llamafile/sgemm.cpp; do
+    [ -s "${OUT}/${path}.NOTICE" ]
+    grep -qx "${path}.NOTICE" "${OUT}/MANIFEST"
+    grep -q "Permission is hereby granted" "${OUT}/${path}.NOTICE"
+  done
+  grep -q "Niels Lohmann" "${OUT}/vendor/nlohmann/json.hpp.NOTICE"
+  grep -q "Yuji Hirose" "${OUT}/vendor/cpp-httplib/httplib.h.NOTICE"
+  grep -q "Mozilla Foundation" "${OUT}/ggml/src/llamafile/sgemm.cpp.NOTICE"
+}
+
+@test "takes the terms of a vendored MIT file from LICENSE and keeps code out of the notice" {
+  write_ik_vendored_tree
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  grep -q "WITHOUT WARRANTY" "${OUT}/vendor/nlohmann/json.hpp.NOTICE"
+  run grep -c -E "Note on documentation|CPPHTTPLIB_VERSION|ggml authors" "${OUT}/vendor/nlohmann/json.hpp.NOTICE" "${OUT}/vendor/cpp-httplib/httplib.h.NOTICE"
+  [ "${lines[0]}" = "${OUT}/vendor/nlohmann/json.hpp.NOTICE:0" ]
+  [ "${lines[1]}" = "${OUT}/vendor/cpp-httplib/httplib.h.NOTICE:0" ]
+}
+
+@test "fails when a vendored MIT file names no copyright holder" {
+  write_ik_vendored_tree
+  printf '%s\n' "// SPDX-License-Identifier: MIT" "" "int x;" > "${SRC}/vendor/nlohmann/json.hpp"
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"vendor/nlohmann/json.hpp: no copyright line in the header, or no MIT terms in LICENSE"* ]]
+}
+
+@test "fails when LICENSE holds no MIT terms for a vendored MIT file" {
+  write_ik_vendored_tree
+  echo "Some other licence" > "${SRC}/LICENSE"
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"vendor/cpp-httplib/httplib.h: no copyright line in the header, or no MIT terms in LICENSE"* ]] \
+    || [[ "$output" == *"vendor/nlohmann/json.hpp: no copyright line in the header, or no MIT terms in LICENSE"* ]]
+}
