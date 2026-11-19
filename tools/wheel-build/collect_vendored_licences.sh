@@ -16,7 +16,8 @@
 # A path named with --ship is shipped although it sits in a skipped folder. For a folder, its
 # licence files are copied. For a file, which is a web page that the server build compiles in
 # (plain or gzip), its licence comments are written as <path>.NOTICE by embedded_ui_notices.py, and
-# the SPDX names MIT and Apache-2.0 go to the terms file when those notices carry them.
+# the SPDX names MIT and Apache-2.0 go to the terms file when those notices carry them, and the
+# Apache-2.0 text (LICENSE-Apache-2.0, beside this script) is copied to the output directory.
 #
 # The list of copied files is written to MANIFEST in the output directory, so a later check
 # can tell that no file vanished.
@@ -172,7 +173,11 @@ if grep -rqF "Boost Software License - Version 1.0" "${out}"; then
 fi
 if [ "${#ui_notices[@]}" -gt 0 ]; then
   if grep -qiF "MIT license" "${ui_notices[@]}"; then echo MIT >> "${terms}"; fi
-  if grep -qF "Apache License, Version 2.0" "${ui_notices[@]}"; then echo Apache-2.0 >> "${terms}"; fi
+  if grep -qF "Apache License, Version 2.0" "${ui_notices[@]}"; then
+    echo Apache-2.0 >> "${terms}"
+    # Apache-2.0 section 4(a): a recipient gets a copy of the licence, not a link to it.
+    copy_to LICENSE-Apache-2.0 < "$(dirname "${BASH_SOURCE[0]}")/LICENSE-Apache-2.0"
+  fi
 fi
 manifest="$(cd "${out}" && find . -type f | sed 's|^\./||' | sort)"
 printf '%s\n' "${manifest}" | copy_to MANIFEST

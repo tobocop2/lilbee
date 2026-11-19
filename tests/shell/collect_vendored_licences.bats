@@ -132,6 +132,29 @@ make_ui() {
   grep -qx "examples/server/public/index.html.gz.NOTICE" "${OUT}/MANIFEST"
 }
 
+@test "ships the full Apache-2.0 text when a shipped page names Apache-2.0" {
+  make_ui
+  run "${SCRIPT}" --ship examples/server/public/index.html.gz "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  grep -qx "Apache-2.0" "${TERMS}"
+  cmp "${OUT}/LICENSE-Apache-2.0" "$(dirname "${SCRIPT}")/LICENSE-Apache-2.0"
+  grep -q "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" "${OUT}/LICENSE-Apache-2.0"
+  grep -qx "LICENSE-Apache-2.0" "${OUT}/MANIFEST"
+}
+
+@test "ships no Apache-2.0 text when no shipped page names Apache-2.0" {
+  mkdir -p "${SRC}/examples/server/public"
+  printf '%s\n' '<script>var a=1;/**' ' * @license React' ' * This source code is licensed under the MIT license found in the' ' */var b=2;' \
+    | gzip -c > "${SRC}/examples/server/public/index.html.gz"
+  run "${SCRIPT}" --ship examples/server/public/index.html.gz "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  grep -qx "MIT" "${TERMS}"
+  ! grep -qx "Apache-2.0" "${TERMS}"
+  [ ! -e "${OUT}/LICENSE-Apache-2.0" ]
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ ! -e "${OUT}/LICENSE-Apache-2.0" ]
+}
+
 @test "writes no notice of an embedded web page that is not named with --ship" {
   make_ui
   run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
