@@ -2382,6 +2382,9 @@ class FleetProvider:
             self._role_group = {}
             self._group_dirs = {}
             self._clients = {}
+            # No group is left to have failed: the next build records its own result.
+            # No group is left to have failed: the next build records its own result.
+            self._reload_failed = False
             if close_all:
                 doomed = live + self._retiring_clients
                 self._retiring_clients = []
