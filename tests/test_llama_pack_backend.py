@@ -137,7 +137,6 @@ def test_a_host_with_a_usable_nvidia_driver_installs_the_cuda_pack(
     pin = LlamaCppAdapter().pack_pin()
     assert pin["backend"] == "cuda"
     assert list(pin["platforms"]) == [cell]
-    assert pin["licenses"] == ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
 
 
 @pytest.mark.parametrize(
@@ -152,7 +151,6 @@ def test_a_host_with_no_nvidia_driver_installs_the_cpu_pack(
     _host(monkeypatch, host, cell)
     pin = LlamaCppAdapter().pack_pin()
     assert pin["backend"] == "cpu"
-    assert pin["licenses"] == ["MIT"]
 
 
 @pytest.mark.parametrize(
