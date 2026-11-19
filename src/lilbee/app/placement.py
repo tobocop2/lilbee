@@ -219,7 +219,17 @@ def _view(
         co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
         rejected_spec_json=rejected_spec_json,
         engine_backend=resolved.engine_backend,
-        refusal=" ".join(filter(None, (refusal, *resolved.unlaunched_roles.values()))) or None,
+        refusal=" ".join(
+            filter(
+                None,
+                (
+                    refusal,
+                    *resolved.unlaunched_roles.values(),
+                    *resolved.unplaceable_reasons.values(),
+                ),
+            )
+        )
+        or None,
         hidden_gpus=tuple(v.label for v in resolved.hidden.hidden) if resolved.hidden else (),
         hidden_note=resolved.hidden.note() if resolved.hidden else None,
         size_unknown=tuple(

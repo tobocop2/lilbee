@@ -163,7 +163,7 @@ def _render_rejected(view: PlacementView) -> None:
     """Print why a saved placement is not in use, when it is not."""
     if view.refusal:
         console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
-        if view.refusal not in _WAITING_REFUSALS:
+        if view.rejected_spec_json and view.refusal not in _WAITING_REFUSALS:
             console.print(Text(f"  {_CLEAR_INSTRUCTION}", style=theme.WARNING), soft_wrap=True)
     elif view.rejected_spec_json:
         console.print(

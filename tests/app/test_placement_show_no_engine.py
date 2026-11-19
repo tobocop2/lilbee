@@ -101,7 +101,8 @@ def test_the_cli_shows_the_saved_spec(saved_spec, tmp_path):
 def test_the_cli_shows_the_clear_instruction_for_an_unreadable_saved_spec(
     no_engine_host, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(cfg, "placement", '{"chat": {"devices": [0]}}')
+    # `show --data-dir` reloads the config, so the unreadable text must be saved there.
+    settings.update_values(tmp_path, {"placement": '{"chat": {"devices": [0]}}'})
     monkeypatch.setattr(app_placement, "_active_spec", _unreadable_spec)
     result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
