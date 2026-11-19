@@ -14,7 +14,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
@@ -616,6 +616,9 @@ class LlamaServerClient:
         self._check_resume_at = 0.0
         # Whether the check has warned of an unexpected answer; it warns once per client.
         self._check_warned = False
+        # The truncation-check requests in flight, one future for each distinct request.
+        self._flights_lock = threading.Lock()
+        self._flights: dict[tuple[Any, ...], Future[Any]] = {}
         self._in_flight_lock = threading.Lock()
         # Signalled under the count lock each time a request takes in_flight to zero.
         self._idle = threading.Condition(self._in_flight_lock)
@@ -1274,14 +1277,46 @@ class LlamaServerClient:
             )
         self._raise_for_status(resp)
 
+    def _single_flight(self, key: tuple[Any, ...], request: Callable[[], _T]) -> _T:
+        """The answer of *request*, sent once for all the threads that ask for *key* together.
+
+        The first thread to ask sends it. A thread that asks while it runs waits for that
+        answer, or its failure, so a hung route holds each caller once and takes one
+        request, not one for each thread. The slot clears when the request ends, whatever
+        way it ends, so a later caller sends a new one.
+        """
+        with self._flights_lock:
+            flight = self._flights.get(key)
+            leader = flight is None
+            if flight is None:
+                flight = self._flights[key] = Future()
+        if not leader:
+            waited: _T = flight.result()
+            return waited
+        try:
+            answer = request()
+        except BaseException as exc:
+            flight.set_exception(exc)
+            raise
+        else:
+            flight.set_result(answer)
+            return answer
+        finally:
+            with self._flights_lock:
+                del self._flights[key]
+
     def _input_limit(self) -> int | None:
         """The server's ``max_input_length``, read once per client."""
         path = self._profile.input_limit_path
-        if path is None or self._max_input is not None:
+        if path is None:
             return self._max_input
-        resp = self._http.get(self._native_route(path), timeout=_TRUNCATION_CHECK_TIMEOUT_S)
-        self._raise_for_side_route(resp)
-        self._max_input = int(resp.json()["max_input_length"])
+        return self._single_flight(("limit",), lambda: self._read_input_limit(path))
+
+    def _read_input_limit(self, path: str) -> int:
+        if self._max_input is None:
+            resp = self._http.get(self._native_route(path), timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            self._raise_for_side_route(resp)
+            self._max_input = int(resp.json()["max_input_length"])
         return self._max_input
 
     def _count_route_tokens(
@@ -1304,10 +1339,15 @@ class LlamaServerClient:
 
         Every text is counted, in one request: the route counts the special tokens, and
         a byte-level tokenizer makes more than one token from a character, so no
-        character count bounds the tokens.
+        character count bounds the tokens. Threads that count the same texts together
+        share one request.
         """
-        counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
-        return sum(len(tokens) > limit for tokens in counts)
+
+        def count() -> int:
+            counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            return sum(len(tokens) > limit for tokens in counts)
+
+        return self._single_flight(("count", tuple(texts)), count)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
