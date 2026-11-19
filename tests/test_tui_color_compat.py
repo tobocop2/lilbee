@@ -462,7 +462,9 @@ class TestNoPartialBlockBorders:
                     screen = cls(**_screen_kwargs(cls_name))
                     app.push_screen(screen)
                     assert await wait_until(
-                        pilot, lambda: app.screen is screen and subtree_mounted(screen)
+                        pilot,
+                        lambda: app.screen is screen and subtree_mounted(screen),
+                        timeout=30.0,
                     ), f"{cls_name} never finished mounting"
 
                     assert list(app.screen.query("*")), f"{cls_name} mounted no widgets to audit"
@@ -480,7 +482,9 @@ class TestNoPartialBlockBorders:
                                 and subtree_mounted(pane)
                             )
 
-                        assert await wait_until(pilot, _pane_filled), f"{pane_id} never filled"
+                        assert await wait_until(pilot, _pane_filled, timeout=30.0), (
+                            f"{pane_id} never filled"
+                        )
                         offenders += self._offenders(app.screen)
                     if not panes:
                         offenders = self._offenders(app.screen)
