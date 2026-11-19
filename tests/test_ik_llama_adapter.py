@@ -817,7 +817,7 @@ def test_the_ik_check_runs_the_server_and_the_cuda_byte_check_from_the_installed
 
 
 def _shell_lines(script: str) -> list[tuple[int, str]]:
-    """Each command line of *script* with its block depth; comments and heredoc bodies are dropped."""
+    """Each command line of *script* with its block depth, without comments and heredoc bodies."""
     lines: list[tuple[int, str]] = []
     depth = 0
     heredoc_end = None
@@ -857,7 +857,7 @@ def test_the_ik_check_is_a_top_level_command_that_nothing_skips() -> None:
     assert not [text for _, text in lines if text.startswith("set +")]
 
 
-def test_the_ik_job_stops_a_build_that_runs_longer_than_the_cuda_build_needs() -> None:
+def test_the_ik_job_gives_the_cuda_build_350_minutes() -> None:
     assert _workflow_job("ik")["timeout-minutes"] == 350
 
 
@@ -908,11 +908,11 @@ esac
 """
 
 
-def _publish(tmp_path: Path, wheels: list[str], assets: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run the publish step of the workflow with a gh that lists *assets* and records the release."""
-    (run,) = (
-        s["run"] for s in steps(pack_workflow(), "publish") if s.get("name") == _PUBLISH_STEP
-    )
+def _publish(
+    tmp_path: Path, wheels: list[str], assets: list[str]
+) -> subprocess.CompletedProcess[str]:
+    """Run the publish step with a gh that lists *assets* and records the release."""
+    (run,) = (s["run"] for s in steps(pack_workflow(), "publish") if s.get("name") == _PUBLISH_STEP)
     (tmp_path / "bin").mkdir()
     gh = tmp_path / "bin" / "gh"
     gh.write_text(_FAKE_GH, encoding="utf-8")

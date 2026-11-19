@@ -12,13 +12,16 @@ import pytest
 
 WORKFLOW_ENV = "ENGINE_PACKS_WORKFLOW"
 _WHEEL = re.compile(
-    r"^(?P<dist>[^-]+)-(?P<version>[^-]+)-(?P<build>\d+)\.(?P<backend>\w+)-py3-none-(?P<platform>.+)\.whl$"
+    r"^(?P<dist>[^-]+)-(?P<version>[^-]+)-(?P<build>\d+)\.(?P<backend>\w+)"
+    r"-py3-none-(?P<platform>.+)\.whl$"
 )
 
 
 def published_builds(dist: str, version: str, backend: str, platform: str) -> list[int]:
-    """The build numbers that the shipped record holds for wheels of this name, read from its rows."""
-    text = resources.files("lilbee.providers.fleet").joinpath("engine_packs.json").read_text("utf-8")
+    """The build numbers that the shipped record holds for wheels of this name."""
+    text = (
+        resources.files("lilbee.providers.fleet").joinpath("engine_packs.json").read_text("utf-8")
+    )
     key = (dist, version, backend, platform)
     found = (_WHEEL.match(row["file"]) for row in json.loads(text))
     return [
