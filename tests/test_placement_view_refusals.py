@@ -639,3 +639,72 @@ class TestASharedMemoryHostBudget:
         expected = planning._unified_memory_budget(devices, engine)
         assert expected is not None
         assert budgets == [expected, expected]
+
+
+class TestAnUnplaceableRoleCarriesTheLaunchReason:
+    """A role the shared-memory budget refuses shows the sentence the launch logs."""
+
+    BUDGET_ROLES = (Role(WorkerRole.CHAT, 40), Role(WorkerRole.EMBED, 1))
+    BUDGET_TEXT = "does not fit available memory and will not be served"
+
+    @pytest.fixture
+    def engine(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> CardEngine:
+        prepare_host(monkeypatch, tmp_path, self.BUDGET_ROLES, 16 * GIB)
+        devices = [FleetDevice("CUDA", 0, "igpu", 16 * GIB, 16 * GIB, True)]
+        engine = CardEngine("engine-a", tmp_path / "engine-server", self.BUDGET_ROLES, devices)
+        reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
+        monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
+        return engine
+
+    def _logged_reason(self, engine: CardEngine, caplog: pytest.LogCaptureFixture) -> str:
+        with caplog.at_level("WARNING", logger=planning.__name__):
+            planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        (reason,) = [r.getMessage() for r in caplog.records if self.BUDGET_TEXT in r.getMessage()]
+        return reason
+
+    def test_the_resolved_plan_carries_the_logged_sentence(
+        self, engine: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logged = self._logged_reason(engine, caplog)
+        resolved = planning.resolve_placement_plan(None, engines=engines_for_all_roles(engine))
+        assert resolved.unplaceable_roles == (WorkerRole.CHAT,)
+        assert resolved.unplaceable_reasons == {WorkerRole.CHAT: logged}
+
+    def test_the_view_refusal_is_the_logged_sentence(
+        self, engine: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logged = self._logged_reason(engine, caplog)
+        view = app_placement.get_placement()
+        assert view.unplaceable == (WorkerRole.CHAT,)
+        assert view.refusal == logged
+
+    def test_rest_carries_the_logged_sentence(
+        self, engine: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logged = self._logged_reason(engine, caplog)
+        with create_test_client([placement_route]) as client:
+            body = client.get("/api/placement").json()
+        assert body["unplaceable"] == ["chat"]
+        assert body["refusal"] == logged
+
+    def test_mcp_carries_the_logged_sentence(
+        self, engine: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logged = self._logged_reason(engine, caplog)
+        assert mcp_server.get_placement_tool()["refusal"] == logged
+
+    def test_the_cli_prints_the_sentence_without_a_clear_instruction(
+        self, engine: CardEngine
+    ) -> None:
+        result = CliRunner().invoke(placement_app, ["show"])
+        shown = " ".join(result.output.split())
+        assert self.BUDGET_TEXT in shown
+        assert "placement clear" not in shown
+
+    def test_a_role_that_fits_leaves_the_refusal_empty(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "chat_model", "")
+        view = app_placement.get_placement()
+        assert view.unplaceable == ()
+        assert view.refusal is None

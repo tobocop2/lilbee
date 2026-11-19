@@ -4102,6 +4102,9 @@ class ResolvedPlacement:
     # Roles the plan places and the launch refuses, each with its reason; ``instances``
     # leaves them out, as the launch starts no server for them.
     unlaunched_roles: dict[WorkerRole, str] = field(default_factory=dict)
+    # The sentence the launch logs for each role in ``unplaceable_roles``, made once
+    # by the planner so a surface shows the same text.
+    unplaceable_reasons: dict[WorkerRole, str] = field(default_factory=dict)
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
@@ -4185,6 +4188,7 @@ def resolve_placement_plan(
         if placement is not None and not spec_applied
         else ""
     )
+    capacity = _auto_capacity(devices, False, _named_cards(placement))
     _, unlaunched = _launches_and_refusals(
         resolved,
         inputs,
@@ -4193,7 +4197,7 @@ def resolve_placement_plan(
         engines=engines,
         unified_budget=unified_budget,
         chat_reservation=reservation,
-        capacity=_auto_capacity(devices, False, _named_cards(placement)),
+        capacity=capacity,
         clean_box=False,
     )
     return ResolvedPlacement(
@@ -4201,6 +4205,16 @@ def resolve_placement_plan(
         devices=tuple(devices),
         instances=tuple(inst for inst in resolved.instances if inst.role not in unlaunched),
         unlaunched_roles=unlaunched,
+        unplaceable_reasons=_unplaceable_reasons(
+            resolved,
+            model_refs,
+            engines,
+            inputs,
+            devices,
+            host_cards,
+            unified_budget=admission_budget,
+            capacity=capacity,
+        ),
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
         swap_classes=resolved.swap_classes,
@@ -4265,12 +4279,39 @@ def _log_refused_roles(
     unified_budget: int | None,
     capacity: dict[int, int],
 ) -> None:
-    """Warn for each role that gets no server, with its cause and the next step.
+    """Warn for each role that gets no server, with its cause and the next step."""
+    reasons = _unplaceable_reasons(
+        placement,
+        model_refs,
+        engines,
+        inputs,
+        devices,
+        host_cards,
+        unified_budget=unified_budget,
+        capacity=capacity,
+    )
+    for reason in reasons.values():
+        log.warning("%s", reason)
+
+
+def _unplaceable_reasons(
+    placement: Placement,
+    model_refs: dict[WorkerRole, str],
+    engines: Mapping[WorkerRole, EngineAdapter],
+    inputs: list[ModelPlacementInput],
+    devices: list[FleetDevice],
+    host_cards: HostCards,
+    *,
+    unified_budget: int | None,
+    capacity: dict[int, int],
+) -> dict[WorkerRole, str]:
+    """The sentence for each role that gets no server, with its cause and the next step.
 
     On one pool the budget is the cause. On discrete cards the causes are checked
     in order: a pin that cannot reach the engine, a role larger than the largest
     card with no split that holds it, and a role with no room beside the others.
     """
+    reasons: dict[WorkerRole, str] = {}
     mixed = _is_mixed(engines)
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget, host_cards)
     charges = {model.role: model.est_vram_bytes for model in inputs}
@@ -4286,47 +4327,35 @@ def _log_refused_roles(
         engine = engines[role].name
         model = f"{model_refs[role]} ({engine})" if mixed else model_refs[role]
         if unified_budget is not None:
-            log.warning(
-                "%s model %s does not fit available memory and will not be served; "
-                "free up memory or use a smaller model.",
-                role.value,
-                model,
+            reasons[role] = (
+                f"{role.value} model {model} does not fit available memory and will not be "
+                "served; free up memory or use a smaller model."
             )
         elif role in unpinnable:
-            log.warning(
-                "%s model %s will not be served: this host has %s GPUs and %s cannot be "
-                "told which one to use. Use another engine for this role.",
-                role.value,
-                model,
-                host_cards.said,
-                engine,
+            reasons[role] = (
+                f"{role.value} model {model} will not be served: this host has "
+                f"{host_cards.said} GPUs and {engine} cannot be told which one to use. "
+                "Use another engine for this role."
             )
         elif role not in fits_alone and (equal := _equal_split_refusal(role, inputs, placement)):
             log.warning("%s model %s %s", role.value, model, equal)
         elif role not in fits_alone:
-            log.warning(
-                "%s model %s needs %.1f GiB, more than any one GPU can hold (%.1f GiB "
-                "usable), and no split across the GPUs holds it, so it will not be "
-                "served. Use a smaller model.",
-                role.value,
-                model,
-                charges[role] / 1024**3,
-                largest_usable / 1024**3,
+            reasons[role] = (
+                f"{role.value} model {model} needs {charges[role] / 1024**3:.1f} GiB, more "
+                f"than any one GPU can hold ({largest_usable / 1024**3:.1f} GiB usable), and "
+                "no split across the GPUs holds it, so it will not be served. "
+                "Use a smaller model."
             )
         else:
             others = ", ".join(sorted({inst.role.value for inst in placement.instances}))
-            log.warning(
-                "%s model %s needs %.1f GiB, but the GPU with the most room has %.1f GiB "
-                "left beside the other models (%s), short by %.1f GiB, so it will not be served. "
-                "Use a smaller model for %s or for one of those.",
-                role.value,
-                model,
-                charges[role] / 1024**3,
-                room / 1024**3,
-                others,
-                max(charges[role] - room, 0) / 1024**3,
-                role.value,
+            reasons[role] = (
+                f"{role.value} model {model} needs {charges[role] / 1024**3:.1f} GiB, but the "
+                f"GPU with the most room has {room / 1024**3:.1f} GiB left beside the other "
+                f"models ({others}), short by {max(charges[role] - room, 0) / 1024**3:.1f} GiB, "
+                f"so it will not be served. Use a smaller model for {role.value} or for one "
+                "of those."
             )
+    return reasons
 
 
 def _equal_split_refusal(
