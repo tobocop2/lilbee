@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, create_model, field_validator, model_vali
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
+from lilbee.app.placement import PlacementRefusal
 from lilbee.app.profiles import (
     ActiveProfile,
     ApplyResult,
@@ -996,6 +997,9 @@ class PlacementResponse(BaseModel):
     notice: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
+    # waiting: the saved spec applies once an engine or model is installed; unreadable: the
+    # saved text cannot be parsed; refused: an engine refuses roles. Null without a refusal.
+    refusal_kind: PlacementRefusal | None = None
     # The backend the engine selected, reported rather than inferred. ``gpus``
     # being empty does not mean ``cpu``: a host whose device probe never answered
     # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
@@ -1038,6 +1042,7 @@ class PlacementResponse(BaseModel):
             co_tenants=[r.value for r in view.co_tenants],
             rejected_spec_json=view.rejected_spec_json,
             refusal=view.refusal,
+            refusal_kind=view.refusal_kind,
             engine_backend=view.engine_backend,
             hidden_gpus=list(view.hidden_gpus),
             size_unknown=[

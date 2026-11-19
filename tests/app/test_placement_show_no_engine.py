@@ -54,6 +54,7 @@ def test_show_with_a_saved_spec_keeps_it_but_places_nothing(saved_spec):
         "The saved placement is kept but not used: no installed engine can run the models. "
         "It applies once an engine is installed."
     )
+    assert view.refusal_kind is app_placement.PlacementRefusal.WAITING
     assert view.roles == ()
     assert view.gpus == ()
     skipped = {skip.role: skip for skip in view.skipped_no_engine}
@@ -78,8 +79,20 @@ def test_show_with_an_unreadable_saved_spec_keeps_the_text_and_the_reason(
     view = app_placement.get_placement()
     assert view.rejected_spec_json == '{"chat": {"devices": [0]}}'
     assert view.refusal == "the saved spec is unreadable"
+    assert view.refusal_kind is app_placement.PlacementRefusal.UNREADABLE
     assert view.spec_json is None
     assert view.manual is False
+
+
+def test_the_rest_reply_names_each_no_engine_case(no_engine_host, monkeypatch):
+    monkeypatch.setattr(cfg, "placement", _SPEC.to_json())
+    with create_test_client([placement_route]) as client:
+        waiting = client.get("/api/placement").json()
+    monkeypatch.setattr(app_placement, "_active_spec", _unreadable_spec)
+    with create_test_client([placement_route]) as client:
+        unreadable = client.get("/api/placement").json()
+    assert waiting["refusal_kind"] == "waiting"
+    assert unreadable["refusal_kind"] == "unreadable"
 
 
 def test_preview_with_no_engine_refuses_with_the_no_engine_message(no_engine_host):

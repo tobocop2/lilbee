@@ -167,6 +167,7 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
 
     assert view.manual is False
     assert view.rejected_spec_json == spec.to_json()
+    assert view.refusal_kind is app_placement.PlacementRefusal.UNREADABLE
     planning.clear_read_device_cache()
 
 
@@ -186,6 +187,8 @@ def test_get_placement_reports_a_saved_spec_that_did_not_apply_as_auto(monkeypat
 
     assert view.manual is False
     assert view.spec_json is None
+    assert view.refusal is None
+    assert view.refusal_kind is None
 
 
 def test_get_placement_reports_an_applied_spec_as_manual(monkeypatch):

@@ -12,8 +12,7 @@ from rich.text import Text
 
 from lilbee.app.placement import (
     PLACEMENT_READ_ERRORS,
-    SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
-    SAVED_PLACEMENT_WAITS_FOR_ENGINE,
+    PlacementRefusal,
     PlacementView,
     get_placement,
     preview_placement,
@@ -34,7 +33,6 @@ placement_app = typer.Typer(
 
 _GIB = 1024**3
 _CLEAR_INSTRUCTION = "run 'lilbee placement clear' or set a new one"
-_WAITING_REFUSALS = frozenset({SAVED_PLACEMENT_WAITS_FOR_ENGINE, SAVED_PLACEMENT_WAITS_FOR_A_MODEL})
 
 
 def _read_spec(spec: str | None) -> PlacementSpec | None:
@@ -163,7 +161,7 @@ def _render_rejected(view: PlacementView) -> None:
     """Print why a saved placement is not in use, when it is not."""
     if view.refusal:
         console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
-        if view.refusal not in _WAITING_REFUSALS:
+        if view.refusal_kind is not PlacementRefusal.WAITING:
             console.print(Text(f"  {_CLEAR_INSTRUCTION}", style=theme.WARNING), soft_wrap=True)
     elif view.rejected_spec_json:
         console.print(
