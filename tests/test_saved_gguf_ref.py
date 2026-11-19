@@ -82,9 +82,7 @@ class TestRoleValidator:
     def test_a_malformed_qualifier_is_refused_as_not_installed(self) -> None:
         install_fake_model(_CHAT_REPO, _CHAT_FILE, "chat")
         with pytest.raises(ValueError, match="not installed"):
-            validate_model_task_assignment(
-                "chat_model", f"{_CHAT_REPO}#nope", allow_bypass=False
-            )
+            validate_model_task_assignment("chat_model", f"{_CHAT_REPO}#nope", allow_bypass=False)
 
 
 class TestServingCheck:
