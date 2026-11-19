@@ -298,8 +298,12 @@ class TestViewAndLaunchSizeReplicasAlike:
     def test_an_auto_embed_knob_gets_one_replica_per_card_in_both(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        engine = _host(monkeypatch, tmp_path, (24, 24), "")
+        small = (Role(WorkerRole.CHAT, 4), Role(WorkerRole.EMBED, 1), Role(WorkerRole.VISION, 2))
+        prepare_host(monkeypatch, tmp_path, small, 64 * GIB)
         monkeypatch.setattr(cfg, "embed_replicas", 0)
+        engine = CardEngine(
+            "engine-a", tmp_path / "engine-server", small, cards_of((24, 24)), spans=True
+        )
         engines = engines_for_all_roles(engine)
 
         plan = planning.plan_all_launches(engines=engines)
