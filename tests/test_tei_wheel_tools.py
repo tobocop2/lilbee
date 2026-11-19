@@ -314,6 +314,48 @@ def test_main_refuses_a_log_with_no_nvidia_library(tmp_path: Path) -> None:
         notice_tool.main(["notice", str(tmp_path / "n"), "12.9.1", str(log)])
 
 
+_SHA_LIST = (
+    f"{'a' * 64} *libcudart.so.12\n{'b' * 64} *libcublas.so.12\n{'c' * 64} *libcublasLt.so.12\n"
+)
+
+
+def test_shipped_files_are_the_nvidia_libraries_of_the_sha_list_by_their_so_names() -> None:
+    other = f"{'d' * 64} *libgomp.so.1\n{'e' * 64}  libllama.so\nnot a sha line\n"
+    assert notice_tool.shipped_nvidia_files(_SHA_LIST + other) == [
+        "libcublas.so",
+        "libcublasLt.so",
+        "libcudart.so",
+    ]
+    assert notice_tool.shipped_nvidia_files(_BUILD_LOG) == []
+
+
+def test_main_writes_the_notice_for_the_libraries_a_wheel_carries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sums = tmp_path / "cuda-libs.sha256"
+    sums.write_text(_SHA_LIST, encoding="utf-8")
+    _fake_eula(monkeypatch)
+    out = tmp_path / "NOTICE-NVIDIA-CUDA"
+    notice_tool.main(["notice", str(out), "12.4.1", str(sums)])
+    text = out.read_text(encoding="utf-8")
+    assert "carries NVIDIA CUDA 12.4.1 shared libraries without change" in text
+    assert "libcublas.so, libcublasLt.so, libcudart.so." in text
+    assert "into the router" not in text
+    assert "NVIDIA CUDA Toolkit EULA, version 12.4.1, from https://eula.test" in text
+    assert "Attachment A" in text
+
+
+def test_main_refuses_a_carried_library_that_attachment_a_lacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sums = tmp_path / "cuda-libs.sha256"
+    sums.write_text(_SHA_LIST + f"{'f' * 64} *libcudnn.so.9\n", encoding="utf-8")
+    _fake_eula(monkeypatch)
+    with pytest.raises(SystemExit, match=r"does not list: libcudnn\.so"):
+        notice_tool.main(["notice", str(tmp_path / "n"), "12.4.1", str(sums)])
+    assert not (tmp_path / "n").exists()
+
+
 def test_main_needs_three_arguments_for_the_notice() -> None:
     with pytest.raises(SystemExit, match=r"Usage: write_cuda_notice\.py"):
         notice_tool.main(["notice"])
