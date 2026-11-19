@@ -79,9 +79,34 @@ def test_a_group_dropped_after_an_old_failure_does_not_show_that_failure(
     assert local.reload_notice() is None
 
 
+def test_a_failure_that_lands_after_shutdown_shows_no_notice(fleet: Any) -> None:
+    local = _local(fleet)
+    local.shutdown()
+    with local._lock:
+        local._end_fleet_work(_REFUSED)
+    assert local._reload_failed
+    assert local.reload_notice() is None
+
+
+def test_a_connection_blip_after_an_old_failure_shows_no_notice(
+    fleet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = _local(fleet)
+
+    def _no_plan(*, engines: Any) -> None:
+        raise _REFUSED
+
+    monkeypatch.setattr(planning, "plan_all_launches", _no_plan)
+    with pytest.raises(ProviderError, match="engine refused"):
+        local.replan_fleet(wait=True)
+    assert local.reload_notice() == RELOAD_FAILED_NOTICE
+    local._drop_swap_refs()
+    assert not local._swaps
+    assert local.reload_notice() is None
+
+
 def test_a_shut_down_provider_shows_no_notice_after_a_failure(fleet: Any) -> None:
     local = _local(fleet)
     _fail_a_pass_that_drops_every_group(local)
     local.shutdown()
-    assert local._reload_failed
     assert local.reload_notice() is None
