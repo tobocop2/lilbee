@@ -961,6 +961,25 @@ def test_publish_refuses_a_wheel_whose_name_is_an_asset_of_any_release(tmp_path:
 
 
 @_posix_only
+@pytest.mark.parametrize("wheels", [[_WHEEL_3, _WHEEL_4], [_WHEEL_4, _WHEEL_3]])
+def test_publish_refuses_a_clashing_wheel_in_any_position(
+    tmp_path: Path, wheels: list[str]
+) -> None:
+    done = _publish(tmp_path, wheels, [_WHEEL_3, _WHEEL_3])
+    assert done.returncode == 1
+    assert done.stdout.count("is already an asset of a release") == 1
+    assert not (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+def test_publish_matches_the_whole_file_name_of_an_asset(tmp_path: Path) -> None:
+    longer = [f"old-{_WHEEL_4}", f"{_WHEEL_4}.sha256"]
+    done = _publish(tmp_path, [_WHEEL_4], longer)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "created.txt").exists()
+
+
+@_posix_only
 def test_publish_creates_the_release_for_names_that_no_release_holds(tmp_path: Path) -> None:
     done = _publish(tmp_path, [_WHEEL_4], [_WHEEL_3, "notes.txt"])
     assert done.returncode == 0, done.stdout + done.stderr
