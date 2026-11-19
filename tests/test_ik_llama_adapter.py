@@ -20,7 +20,14 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import adapters as fleet_adapters
 from lilbee.providers.fleet import engine_manifest, host_caps
-from lilbee.providers.fleet.engine_store import EngineStore, PinLock, UnsafeWheelError, engines_root
+from lilbee.providers.fleet.engine_store import (
+    NOTICE_RULES,
+    EngineStore,
+    PinLock,
+    UnsafeWheelError,
+    engines_root,
+    licence_permitted,
+)
 from lilbee.providers.fleet.engines import choice, ik_llama
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import installed_engines
@@ -85,13 +92,21 @@ def build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
 
 
+def _pin_licences_are_permitted(pin: dict[str, Any]) -> bool:
+    """Whether the install screen accepts every licence expression of *pin*."""
+    notices = frozenset(rule.file for rule in NOTICE_RULES.values())
+    return bool(pin["licenses"]) and all(licence_permitted(e, notices) for e in pin["licenses"])
+
+
 def test_the_pin_names_the_commit_by_its_first_twelve_digits() -> None:
     pin = IK_LLAMA.pin_record()
     assert ik_llama.IK_LLAMA_COMMIT == COMMIT
     assert pin["version"] == f"0+git{COMMIT[:12]}"
     assert pin["upstream_ref"] == COMMIT
     assert pin["memory"] == {"sizing": ["gguf-parser", "--model", "{model}"], "rule": None}
-    assert (pin["engine"], pin["backend"], pin["licenses"]) == ("ik_llama.cpp", "cpu", ["MIT"])
+    assert (pin["engine"], pin["backend"]) == ("ik_llama.cpp", "cpu")
+    assert pin["licenses"] == ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
+    assert _pin_licences_are_permitted(pin)
     assert choice.pin_lock({**pin, "sha256": "a" * 64}).version == "0+git13cffc006b82"
 
 
@@ -586,7 +601,10 @@ def test_the_pin_of_a_cuda_host_names_the_cuda_cell_and_its_licences(
     assert pin["backend"] == "cuda"
     assert pin["sha256"] == "c" * 64
     assert list(pin["platforms"]) == ["linux-x86_64-cuda"]
-    assert pin["licenses"] == ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
+    assert pin["licenses"] == [
+        "MIT AND LicenseRef-NVIDIA-CUDA-EULA AND Apache-2.0 AND MIT-0 AND Unlicense"
+    ]
+    assert _pin_licences_are_permitted(pin)
 
 
 def test_binary_on_a_cuda_host_is_the_cuda_build_and_not_the_cpu_one(
@@ -614,19 +632,48 @@ def test_the_driver_floor_is_the_cuda_version_the_build_script_installs() -> Non
     assert re.search(rf"^cuda_full={dash[1]}\.{dash[2]}\.\d+$", text, re.MULTILINE)
 
 
+def test_the_vendored_apache_text_is_the_canonical_licence() -> None:
+    """The text from https://www.apache.org/licenses/LICENSE-2.0.txt, which section 4(a) requires."""
+    text = (_BUILD_SCRIPT.parent / "LICENSE-Apache-2.0").read_bytes()
+    assert hashlib.sha256(text).hexdigest() == (
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    )
+
+
+def _active_script() -> str:
+    """The build script without its comment lines."""
+    lines = _BUILD_SCRIPT.read_text(encoding="utf-8").splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+
+def _cuda_blocks() -> list[str]:
+    """The active lines of each multi-line `if` block that runs for the CUDA backend only."""
+    pattern = r'^if \[ "\$\{BACKEND\}" = cuda \]; then\n(.*?)^fi$'
+    return re.findall(pattern, _active_script(), re.MULTILINE | re.DOTALL)
+
+
+def _cuda_arch_set() -> list[str]:
+    """The architecture set in the `else` branch of the CPU test, which is the CUDA build."""
+    pattern = r'^if \[ "\$\{BACKEND\}" = cpu \]; then\n.*?^else\n(.*?)^fi$'
+    found = re.search(pattern, _active_script(), re.MULTILINE | re.DOTALL)
+    assert found is not None, "the build script has no active CUDA branch"
+    listed = re.findall(r'"-DCMAKE_CUDA_ARCHITECTURES=([\d;a-z-]+)"', found[1])
+    assert len(listed) == 1
+    return listed[0].split(";")
+
+
 def test_the_build_script_writes_the_nvidia_notice_from_the_libraries_it_copies() -> None:
-    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
-    call = re.search(r"^\s+python .*/write_cuda_notice\.py\" (.*)$", text, re.MULTILINE)
+    blocks = [block for block in _cuda_blocks() if "write_cuda_notice.py" in block]
+    assert len(blocks) == 1, "the notice call is not inside an active CUDA block"
+    call = re.search(r"^\s+python .*/write_cuda_notice\.py\" (.*)$", blocks[0], re.MULTILINE)
     assert call is not None
     assert call[1] == '"${NOTICE_FILE}" "${cuda_full}" "${SHA_FILE}"'
     assert (_BUILD_SCRIPT.parent / "write_cuda_notice.py").is_file()
 
 
 def test_the_compute_floor_is_the_lowest_architecture_the_build_script_compiles() -> None:
-    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
-    listed = re.search(r'-DCMAKE_CUDA_ARCHITECTURES=([\d;a-z-]+)"', text)
-    assert listed is not None
-    lowest = min(int(arch.split("-")[0]) for arch in listed[1].split(";"))
+    text = _active_script()
+    lowest = min(int(arch.split("-")[0]) for arch in _cuda_arch_set())
     assert (lowest // 10, lowest % 10) == ik_llama._CUDA_MIN_COMPUTE
     assert "-DGGML_NATIVE=OFF" in text
     assert "-DGGML_NCCL=OFF" in text
@@ -634,10 +681,7 @@ def test_the_compute_floor_is_the_lowest_architecture_the_build_script_compiles(
 
 def test_the_build_script_holds_a_virtual_architecture_at_or_above_hopper() -> None:
     """A card above the real architectures runs the PTX of the highest virtual one."""
-    text = _BUILD_SCRIPT.read_text(encoding="utf-8")
-    listed = re.search(r'-DCMAKE_CUDA_ARCHITECTURES=([\d;a-z-]+)"', text)
-    assert listed is not None
-    archs = listed[1].split(";")
+    archs = _cuda_arch_set()
     virtual = [int(a.removesuffix("-virtual")) for a in archs if a.endswith("-virtual")]
     real = [int(a.removesuffix("-real")) for a in archs if a.endswith("-real")]
     assert real
