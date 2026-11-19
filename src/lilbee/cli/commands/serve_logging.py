@@ -9,7 +9,6 @@ import os
 import signal
 import sys
 import threading
-import time
 from collections.abc import Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -106,8 +105,7 @@ def enable_fault_log() -> Path:
 
 
 def _exit_at_the_deadline(seconds: float) -> None:
-    """Wait out *seconds*, dump every thread while this one holds the GIL, then exit."""
-    time.sleep(seconds)
+    """Dump every thread to the fault log while this one holds the GIL, then exit."""
     try:
         with _fault_log_path().open("a", encoding="utf-8") as fault_log:
             fault_log.write(f"Timeout ({seconds:g} s)!\n")
@@ -117,15 +115,35 @@ def _exit_at_the_deadline(seconds: float) -> None:
         os._exit(_DEADLINE_EXIT_STATUS)
 
 
+class _ExitDeadline:
+    """Holds the one live exit timer; arming again cancels the earlier timer."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+
+    def arm(self, seconds: float) -> None:
+        timer = threading.Timer(seconds, _exit_at_the_deadline, args=(seconds,))
+        timer.name = "exit-deadline"
+        timer.daemon = True
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = timer
+            timer.start()
+
+
+_exit_deadline = _ExitDeadline()
+
+
 def arm_exit_deadline(seconds: float) -> None:
     """End the process with status 1 after *seconds*; the fault log names what held it.
 
-    A kernel timer kills the process shortly after, for a hang in finalization, and
-    writes every thread to the fault log first.
+    A later call replaces the earlier deadline. A kernel timer kills the process
+    shortly after, for a hang in finalization, and writes every thread to the
+    fault log first.
     """
-    threading.Thread(
-        target=_exit_at_the_deadline, args=(seconds,), name="exit-deadline", daemon=True
-    ).start()
+    _exit_deadline.arm(seconds)
     if sys.platform != "win32":  # pragma: no cover - Windows has no interval timer
         signal.setitimer(signal.ITIMER_REAL, seconds + _BACKSTOP_GRACE_S)
         _fault_log.dump_on_alarm()

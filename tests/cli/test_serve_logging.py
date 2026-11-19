@@ -6,6 +6,7 @@ import faulthandler
 import logging
 import logging.config
 import sys
+import threading
 from collections.abc import Iterator
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -25,6 +26,7 @@ from lilbee.cli.commands.serve_logging import (
     setup_server_logging,
 )
 from lilbee.core.config import cfg
+from tests._async_wait import poll_until
 
 
 @pytest.fixture()
@@ -386,33 +388,65 @@ def test_the_deadline_writes_the_held_threads_and_exits_with_status_1(
     assert "Timeout (0 s)!" in (tmp_path / "logs" / "server-fault.log").read_text(encoding="utf-8")
 
 
-def test_the_deadline_starts_one_named_daemon_thread_on_the_exit_function(
+def test_the_deadline_starts_one_named_daemon_timer_on_the_exit_function(
     monkeypatch: pytest.MonkeyPatch, alarm_registrations: list[dict[str, Any]]
 ) -> None:
-    built: list[dict[str, object]] = []
-    started: list[int] = []
+    built: list[tuple[float, object, tuple[object, ...]]] = []
+    started: list[tuple[str, bool]] = []
 
-    class RecordedThread:
-        """Records how the deadline builds its thread, and never runs it."""
+    class RecordedTimer:
+        """Records how the deadline builds its timer, and never runs it."""
 
-        def __init__(self, **kwargs: object) -> None:
-            built.append(kwargs)
+        def __init__(self, interval: float, function: object, args: tuple[object, ...]) -> None:
+            built.append((interval, function, args))
+            self.name = ""
+            self.daemon = False
 
         def start(self) -> None:
-            started.append(1)
+            started.append((self.name, self.daemon))
 
-    monkeypatch.setattr(serve_logging.threading, "Thread", RecordedThread)
+        def cancel(self) -> None:
+            raise AssertionError("the first arm has no earlier timer to cancel")
+
+    monkeypatch.setattr(serve_logging.threading, "Timer", RecordedTimer)
     monkeypatch.setattr(serve_logging.signal, "setitimer", lambda *_args: None, raising=False)
+    monkeypatch.setattr(serve_logging, "_exit_deadline", serve_logging._ExitDeadline())
     serve_logging.arm_exit_deadline(7.5)
-    assert built == [
-        {
-            "target": serve_logging._exit_at_the_deadline,
-            "args": (7.5,),
-            "name": "exit-deadline",
-            "daemon": True,
-        }
-    ]
-    assert started == [1]
+    assert built == [(7.5, serve_logging._exit_at_the_deadline, (7.5,))]
+    assert started == [("exit-deadline", True)]
+
+
+@pytest.fixture
+def exit_calls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[list[int]]:
+    """Record os._exit statuses from real timers, and cancel the live deadline at the end."""
+    statuses: list[int] = []
+    fresh = serve_logging._ExitDeadline()
+    monkeypatch.setattr(serve_logging.cfg, "data_root", tmp_path)
+    monkeypatch.setattr(serve_logging.os, "_exit", statuses.append)
+    monkeypatch.setattr(serve_logging.signal, "setitimer", lambda *_args: None, raising=False)
+    monkeypatch.setattr(serve_logging, "_exit_deadline", fresh)
+    monkeypatch.setattr(serve_logging._fault_log, "dump_on_alarm", lambda: None)
+    yield statuses
+    if fresh._timer is not None:
+        fresh._timer.cancel()
+
+
+def test_a_later_longer_deadline_replaces_the_earlier_one(exit_calls: list[int]) -> None:
+    serve_logging.arm_exit_deadline(0.2)
+    serve_logging.arm_exit_deadline(60.0)
+    threading.Event().wait(0.8)
+    assert exit_calls == []
+
+
+def test_a_later_shorter_deadline_exits_once_at_the_shorter_time(
+    exit_calls: list[int], tmp_path: Path
+) -> None:
+    serve_logging.arm_exit_deadline(60.0)
+    serve_logging.arm_exit_deadline(0.1)
+    assert poll_until(lambda: exit_calls == [1], timeout=5.0)
+    assert "Timeout (0.1 s)!" in (tmp_path / "logs" / "server-fault.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_the_deadline_sets_no_kernel_timer_on_windows(
