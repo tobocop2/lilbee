@@ -111,6 +111,60 @@ setup() {
   [ -s "${OUT}/tools/ui/vendors/LICENSE" ]
 }
 
+make_ui() {
+  mkdir -p "${SRC}/examples/server/public"
+  printf '%s\n' '<script>var a=1;/**' ' * @license React' ' * This source code is licensed under the MIT license found in the' ' */var b=2;' \
+    "var s='/**\\n * @licstart The following is the entire license notice\\n * Licensed under the Apache License, Version 2.0 (the \"License\");\\n */';" \
+    | gzip -c > "${SRC}/examples/server/public/index.html.gz"
+}
+
+@test "writes the licence comments of an embedded web page with --ship, and names MIT and Apache-2.0" {
+  make_ui
+  run "${SCRIPT}" --ship examples/server/public/index.html.gz "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  notice="${OUT}/examples/server/public/index.html.gz.NOTICE"
+  grep -q "@license React" "${notice}"
+  grep -q "Licensed under the Apache License, Version 2.0" "${notice}"
+  grep -q "Permission is hereby granted" "${notice}"
+  run grep -c "var b=2" "${notice}"
+  [ "$output" = "0" ]
+  [ "$(sort "${TERMS}")" = "$(printf 'Apache-2.0\nMIT\nMIT-0\nUnlicense')" ]
+  grep -qx "examples/server/public/index.html.gz.NOTICE" "${OUT}/MANIFEST"
+}
+
+@test "writes no notice of an embedded web page that is not named with --ship" {
+  make_ui
+  run "${SCRIPT}" "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  [ ! -e "${OUT}/examples/server/public/index.html.gz.NOTICE" ]
+}
+
+@test "fails when a shipped web page holds no licence notice" {
+  mkdir -p "${SRC}/examples/server/public"
+  echo "<html></html>" | gzip -c > "${SRC}/examples/server/public/index.html.gz"
+  run "${SCRIPT}" --ship examples/server/public/index.html.gz "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"holds no licence notice"* ]]
+}
+
+@test "copies the licence files of a folder named with --ship from a skipped folder" {
+  mkdir -p "${SRC}/examples/server/sqlite_modern_cpp"
+  echo "MIT" > "${SRC}/examples/server/sqlite_modern_cpp/License.txt"
+  run "${SCRIPT}" --ship examples/server/sqlite_modern_cpp "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -eq 0 ]
+  [ -s "${OUT}/examples/server/sqlite_modern_cpp/License.txt" ]
+}
+
+@test "fails when a --ship folder holds no licence file or a --ship path is missing" {
+  mkdir -p "${SRC}/examples/server/empty"
+  run "${SCRIPT}" --ship examples/server/empty "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"examples/server/empty holds no licence file"* ]]
+  run "${SCRIPT}" --ship examples/server/gone "${SRC}" "${OUT}" "${TERMS}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"examples/server/gone does not exist"* ]]
+}
+
 @test "copies the licence files of every tree that the build fetched" {
   DEPS="${BATS_TEST_TMPDIR}/_deps"
   mkdir -p "${DEPS}/boringssl-src/third_party/fiat" "${DEPS}/boringssl-src/crypto" "${DEPS}/other-subbuild"
