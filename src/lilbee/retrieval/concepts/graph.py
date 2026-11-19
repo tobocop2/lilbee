@@ -619,7 +619,7 @@ class ConceptGraph:
                 if table is None:
                     continue
                 try:
-                    table.optimize()
+                    data_store.prune_old_versions(table, keep_version=table.version)
                 except Exception:
                     log.debug("Concept table optimize failed on '%s'", name, exc_info=True)
 

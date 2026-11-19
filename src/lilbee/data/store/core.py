@@ -1977,7 +1977,7 @@ class Store:
                 self._fts_ready = True
                 try:
                     # One optimize folds new rows into every index on the table.
-                    table.optimize()
+                    prune_old_versions(table, keep_version=table.version)
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                     if _index_registry(table, self._config.lancedb_dir) is None:
                         # Suspected producer of an index without files; unconfirmed.
@@ -2236,7 +2236,7 @@ class Store:
             if _vector_index_dangling(table, indices, self._config.lancedb_dir):
                 return self._rebuild_dangling_vector_index(table)
             if _has_vector_index(indices):
-                table.optimize()
+                prune_old_versions(table, keep_version=table.version)
                 log.debug("Vector index optimized on '%s'", CHUNKS_TABLE)
                 if _index_registry(table, self._config.lancedb_dir) is None:
                     # Repair in the same step when the prune dropped FTS files.
@@ -3382,7 +3382,7 @@ class Store:
             if table is None:
                 return
             try:
-                table.optimize()
+                prune_old_versions(table, keep_version=table.version)
             except Exception:
                 log.debug("Sources table optimize failed", exc_info=True)
 

@@ -622,7 +622,7 @@ class TestEnsureFtsIndex:
         assert table is not None
 
         with mock.patch.object(
-            type(table), "optimize", side_effect=lambda: _remove_index_files(test_config)
+            type(table), "optimize", side_effect=lambda **_: _remove_index_files(test_config)
         ):
             store.ensure_fts_index()
 
@@ -1677,7 +1677,7 @@ class TestEnsureVectorIndex:
         with mock.patch.object(
             type(table),
             "optimize",
-            side_effect=lambda: _remove_index_files(test_config, index_types={"FTS"}),
+            side_effect=lambda **_: _remove_index_files(test_config, index_types={"FTS"}),
         ):
             assert store.ensure_vector_index() is True
 
@@ -3881,9 +3881,13 @@ class TestBatchedSourceUpserts:
 
     def test_optimize_sources_compacts(self, store):
         store.upsert_source("a.md", "h", 1)
-        with mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened:
+        with (
+            mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened,
+            mock.patch("lilbee.data.store.core.prune_old_versions") as prune,
+        ):
             store.optimize_sources()
-        opened.return_value.optimize.assert_called_once()
+        table = opened.return_value
+        prune.assert_called_once_with(table, keep_version=table.version)
 
     def test_optimize_sources_noop_without_table(self, store):
         with mock.patch.object(store, "open_table", return_value=None) as opened:
@@ -3891,11 +3895,15 @@ class TestBatchedSourceUpserts:
         opened.assert_called_once()
 
     def test_optimize_sources_survives_failure(self, store):
-        failing = mock.MagicMock()
-        failing.optimize.side_effect = RuntimeError("compaction failed")
-        with mock.patch.object(store, "open_table", return_value=failing):
+        with (
+            mock.patch.object(store, "open_table", return_value=mock.MagicMock()),
+            mock.patch(
+                "lilbee.data.store.core.prune_old_versions",
+                side_effect=RuntimeError("compaction failed"),
+            ) as prune,
+        ):
             store.optimize_sources()
-        failing.optimize.assert_called_once()
+        prune.assert_called_once()
 
 
 class TestDeleteBySourceConceptRows:
