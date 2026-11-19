@@ -256,11 +256,14 @@ def _run_one_attempt(
 
 
 def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> None:
-    """Delete the partial blobs the child reported owning, which nothing reads."""
+    """Delete the partial blobs the child reported owning; a failure is logged, never raised."""
     # heavy: lilbee.catalog.download (>50ms; huggingface_hub fanout)
     from lilbee.catalog.download import discard_partial_blobs
 
-    discard_partial_blobs(models_dir, hf_repo, owned)
+    try:
+        discard_partial_blobs(models_dir, hf_repo, owned)
+    except Exception:
+        log.warning("Could not clear the partial download of %s", hf_repo, exc_info=True)
 
 
 def _start_worker(
