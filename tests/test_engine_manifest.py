@@ -289,7 +289,7 @@ def test_ik_llama_version_is_a_pep_440_version() -> None:
 def test_ik_llama_pin_record_holds_its_own_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     pin = _pin(monkeypatch, EngineName.IK_LLAMA, "Linux", "x86_64")
     assert pin["launch"][0] == "{binary}"
-    assert pin["licenses"] == ["MIT"]
+    assert pin["licenses"] == ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
     assert pin["memory"]["rule"] is None
     shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
     assert pin["platforms"] == shipped
