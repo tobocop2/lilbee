@@ -647,6 +647,37 @@ def test_an_append_lock_the_system_refuses_fails_and_writes_nothing(
     assert path.read_bytes() == before
 
 
+def test_an_append_blocked_by_a_held_lock_fails_at_the_ten_second_bound(
+    store: SessionStore, tmp_path, monkeypatch
+) -> None:
+    import filelock
+
+    from lilbee.core.security import FileLockUnavailableError
+
+    sid = store.create(model_ref="m", scope="both")
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl"
+    before = path.read_bytes()
+
+    requested: list[float | None] = []
+    real_acquire = filelock.FileLock.acquire
+
+    def short_acquire(self, timeout=None, **kwargs):
+        # Records the bound the store asks for, then waits only briefly on the real lock.
+        requested.append(timeout)
+        return real_acquire(self, timeout=0.05, **kwargs)
+
+    holder = filelock.FileLock(Path(f"{path}.lock"))
+    holder.acquire()
+    monkeypatch.setattr(filelock.FileLock, "acquire", short_acquire)
+    try:
+        with pytest.raises(FileLockUnavailableError, match="for 10 seconds"):
+            store.add_message(sid, _msg("hello"))
+    finally:
+        holder.release()
+    assert requested == [10]
+    assert path.read_bytes() == before
+
+
 @posix_only
 @pytest.mark.parametrize("action", ["create", "fork"])
 def test_the_sessions_dir_is_owner_only(
