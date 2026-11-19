@@ -13,12 +13,18 @@
 # Files of the project itself (header names "The ggml authors") are skipped. So are the top-level
 # folders that hold no shipped code (tests, docs, examples, scripts, gguf-py, pocs, benches) and
 # every folder named with --skip.
+# A path named with --ship is shipped although it sits in a skipped folder. For a folder, its
+# licence files are copied. For a file, which is a web page that the server build compiles in
+# (plain or gzip), its licence comments are written as <path>.NOTICE by embedded_ui_notices.py, and
+# the SPDX names MIT and Apache-2.0 go to the terms file when those notices carry them.
 #
 # The list of copied files is written to MANIFEST in the output directory, so a later check
 # can tell that no file vanished.
 #
-# Usage: collect_vendored_licences.sh [--skip <folder>]... <checkout> <out> <terms> [<deps>]
+# Usage: collect_vendored_licences.sh [--skip <folder>]... [--ship <path>]... <checkout> <out> <terms> [<deps>]
 #   --skip   a folder of the checkout whose code the wheel does not ship, such as tools/ui
+#   --ship   a folder or an embedded web page of the checkout that the wheel ships although it
+#            sits in a skipped folder, such as examples/server/public/index.html.gz
 #   checkout the llama.cpp checkout at the tag the wheel ships
 #   out      the directory that receives the copies
 #   terms    a file that receives the SPDX names of the Unlicense, MIT-0, LLVM exception and Boost
@@ -29,8 +35,9 @@
 set -euo pipefail
 
 skips=()
-while [ "${1:-}" = --skip ]; do
-  skips+=("${2:?--skip needs a folder}")
+ships=()
+while [ "${1:-}" = --skip ] || [ "${1:-}" = --ship ]; do
+  if [ "$1" = --skip ]; then skips+=("${2:?--skip needs a folder}"); else ships+=("${2:?--ship needs a path}"); fi
   shift 2
 done
 src="${1:?the llama.cpp checkout is required}"
@@ -105,6 +112,27 @@ while IFS= read -r file; do
 done < <(tree_files "${src}" ${skips[@]+"${skips[@]}"})
 [ "${found}" -gt 0 ] || { echo "no licence file or header found under ${src}" >&2; exit 1; }
 
+ui_notices=()
+for path in ${ships[@]+"${ships[@]}"}; do
+  target="${src}/${path}"
+  if [ -d "${target}" ]; then
+    count=0
+    while IFS= read -r file; do
+      # A shipped folder is named by hand, so its file names are matched in any case (License.txt).
+      is_licence_name "$(dirname "${file}")/$(basename "${file}" | tr '[:lower:]' '[:upper:]')" || continue
+      copy_to "${file#"${src}"/}" < "${file}"
+      count=$((count + 1))
+    done < <(tree_files "${target}")
+    [ "${count}" -gt 0 ] || { echo "${path} holds no licence file" >&2; exit 1; }
+  elif [ -f "${target}" ]; then
+    python3 "$(dirname "${BASH_SOURCE[0]}")/embedded_ui_notices.py" "${target}" "${out}/${path}.NOTICE"
+    ui_notices+=("${out}/${path}.NOTICE")
+  else
+    echo "${path} does not exist in ${src}" >&2
+    exit 1
+  fi
+done
+
 tail_text "${src}/vendor/stb/stb_image.h" '^This software is available under 2 licenses' "ALTERNATIVE A - MIT License"
 tail_text "${src}/vendor/miniaudio/miniaudio.h" '^ALTERNATIVE 1 - Public Domain' "ALTERNATIVE 2 - MIT No Attribution"
 
@@ -141,6 +169,10 @@ if grep -rqF "LLVM Exceptions to the Apache 2.0 License" "${out}"; then
 fi
 if grep -rqF "Boost Software License - Version 1.0" "${out}"; then
   echo BSL-1.0 >> "${terms}"
+fi
+if [ "${#ui_notices[@]}" -gt 0 ]; then
+  if grep -qiF "MIT license" "${ui_notices[@]}"; then echo MIT >> "${terms}"; fi
+  if grep -qF "Apache License, Version 2.0" "${ui_notices[@]}"; then echo Apache-2.0 >> "${terms}"; fi
 fi
 manifest="$(cd "${out}" && find . -type f | sed 's|^\./||' | sort)"
 printf '%s\n' "${manifest}" | copy_to MANIFEST
