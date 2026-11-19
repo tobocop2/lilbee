@@ -12,6 +12,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.reasoning import RetrievalNotice
+from lilbee.retrieval.reranker import Reranker
 from tests.server.conftest import parse_sse_events
 from tests.test_query import (
     _make_result,
@@ -25,7 +26,10 @@ STEPS = {
     "llm_expansion": ("query_expansion_failed", "query expansion"),
     "concept_boost": ("concept_boost_failed", "concept boost"),
     "concept_expansion": ("concept_expansion_failed", "concept expansion"),
+    "rerank": ("rerank_failed", "reranking failed"),
 }
+# The step whose warning names the cause; the others keep a fixed text.
+RERANK_REASON = "preset not found (404)"
 SURFACES = [
     "searcher_report",
     "cli_search_text",
@@ -43,7 +47,7 @@ TEXT_SURFACES = {"cli_search_text", "cli_ask_text"}
 CELLS = [
     (step, rows)
     for step, rows in itertools.product(STEPS, ("rows", "empty"))
-    if not (step == "concept_boost" and rows == "empty")
+    if not (step in ("concept_boost", "rerank") and rows == "empty")
 ]
 OLD_KEYS = {
     "cli_search_json": {"command", "query", "results"},
@@ -88,6 +92,11 @@ def _arrange(mock_svc, step, rows):  # noqa: F811
         patches.append(mock.patch.object(Searcher, "_llm_expand", side_effect=err))
     elif step == "concept_boost":
         mock_svc.concepts.boost_results.side_effect = err
+    elif step == "rerank":
+        # the real reranker runs, so its own failure handling is what the surfaces see
+        mock_svc.searcher._reranker = Reranker(cfg)
+        mock_svc.provider.rerank.side_effect = ConnectionError(RERANK_REASON)
+        patches.append(mock.patch.object(cfg, "reranker_model", "org/repo/rerank-Q4.gguf"))
     else:
         mock_svc.concepts.expand_query.side_effect = err
     return patches
@@ -184,6 +193,8 @@ def test_failed_step_reaches_the_user(mock_svc, step, rows, surface):  # noqa: F
         assert want_text in text
     else:
         assert codes == [want_code]
+    if step == "rerank":
+        assert RERANK_REASON in text.lower()
     assert seen, "the log record is still written"
 
 

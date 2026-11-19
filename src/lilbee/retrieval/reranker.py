@@ -18,11 +18,15 @@ import logging
 from typing import NamedTuple
 
 from lilbee.core.config import Config
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query.dedup import fusion_norms as compute_fusion_norms
 from lilbee.retrieval.query.dedup import normalize_scores
 
 log = logging.getLogger(__name__)
+
+
+_RERANK_REMEDY = "Search again, or clear reranker_model. Check the reranker with lilbee status."
 
 
 class ScoredChunk(NamedTuple):
@@ -87,8 +91,12 @@ class Reranker:
         query: str,
         results: list[SearchChunk],
         candidates: int | None = None,
+        degraded: list[HealthWarning] | None = None,
     ) -> list[SearchChunk]:
-        """Rerank search results through the provider's ``rerank`` method."""
+        """Rerank search results through the provider's ``rerank`` method.
+
+        A failed pass returns *results* unchanged and appends the reason to *degraded*.
+        """
         if not self._config.reranker_model:
             return results
         if candidates is None:
@@ -99,7 +107,7 @@ class Reranker:
         if not to_rerank:
             return results
 
-        scores = _score_candidates(query, to_rerank)
+        scores = _score_candidates(query, to_rerank, degraded)
         if scores is None:
             return results
 
@@ -137,12 +145,28 @@ class Reranker:
         return reranked + remainder
 
 
-def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] | None:
+def _rerank_failed(degraded: list[HealthWarning] | None, reason: str) -> None:
+    """Record that the pass was skipped, with the reason, for the caller to show."""
+    if degraded is None:
+        return
+    warning = HealthWarning(
+        code=WarningCode.RERANK_FAILED,
+        message=f"Reranking failed: results keep their retrieval order. {reason}",
+        remedy=_RERANK_REMEDY,
+    )
+    if warning not in degraded:
+        degraded.append(warning)
+
+
+def _score_candidates(
+    query: str, to_rerank: list[SearchChunk], degraded: list[HealthWarning] | None
+) -> list[float] | None:
     """Call the active provider's rerank; return None on error after logging.
 
     A provider that returns the wrong number of scores is contained here
     like any other failure: the scores cannot be paired with the candidates,
-    so the pass is skipped and retrieval order stands.
+    so the pass is skipped and retrieval order stands. Each failure is also
+    recorded in *degraded* with its reason.
     """
     # circular: services -> reranker via Searcher; deferred so test-time
     # monkeypatching of ``lilbee.app.services.get_services`` stays effective.
@@ -157,12 +181,16 @@ def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] |
         )
     except Exception as exc:
         log.warning("Reranker failed; skipping rerank pass: %s", exc, exc_info=True)
+        _rerank_failed(degraded, str(exc) or type(exc).__name__)
         return None
     if len(scores) != len(to_rerank):
         log.warning(
             "Reranker returned %d scores for %d candidates; skipping rerank pass",
             len(scores),
             len(to_rerank),
+        )
+        _rerank_failed(
+            degraded, f"It returned {len(scores)} scores for {len(to_rerank)} candidates."
         )
         return None
     return scores

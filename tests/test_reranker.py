@@ -195,6 +195,47 @@ class TestRerank:
         assert [c.chunk for c in out] == ["A", "B"]
         assert all(r.rerank_score is None for r in out)
 
+    def test_provider_error_is_recorded_with_its_reason(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
+
+        def explode(query: str, cands: list[str]) -> list[float]:
+            raise RuntimeError("preset not found (404)")
+
+        degraded: list = []
+        with _patch_provider(explode):
+            out = reranker.rerank("test", results, degraded=degraded)
+            reranker.rerank("test", results, degraded=degraded)
+        assert [c.chunk for c in out] == ["A", "B"]
+        assert [w.code.value for w in degraded] == ["rerank_failed"]
+        assert "preset not found (404)" in degraded[0].message
+
+    def test_provider_error_without_text_names_its_type(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+
+        def explode(query: str, cands: list[str]) -> list[float]:
+            raise TimeoutError
+
+        degraded: list = []
+        with _patch_provider(explode):
+            reranker.rerank("test", [_chunk("a.md", "A")], degraded=degraded)
+        assert "TimeoutError" in degraded[0].message
+
+    def test_score_count_mismatch_is_recorded_with_the_counts(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        degraded: list = []
+        with _patch_provider(lambda query, cands: [0.9]):
+            reranker.rerank("test", [_chunk("a.md", "A"), _chunk("b.md", "B")], degraded=degraded)
+        assert [w.code.value for w in degraded] == ["rerank_failed"]
+        assert "1 scores for 2 candidates" in degraded[0].message
+
+    def test_a_healthy_pass_records_nothing(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        degraded: list = []
+        with _patch_provider(lambda query, cands: [0.1, 0.9]):
+            reranker.rerank("test", [_chunk("a.md", "A"), _chunk("b.md", "B")], degraded=degraded)
+        assert degraded == []
+
     @pytest.mark.parametrize("returned", [[0.9], [0.9, 0.5, 0.1], []])
     def test_score_count_mismatch_skips_the_pass(self, reranker, returned, caplog):
         """A provider returning the wrong number of scores is provider
@@ -285,7 +326,7 @@ class TestSearchAppliesReranker:
         cfg.reranker_model = _RERANKER_MODEL
         cfg.rerank_candidates = 100
         reranker = mock.MagicMock()
-        reranker.rerank.side_effect = lambda q, r: r
+        reranker.rerank.side_effect = lambda q, r, degraded: r
         searcher, store = self._searcher(reranker)
         self._isolate(monkeypatch, searcher)
         searcher.search("plain multi word query", top_k=5)

@@ -858,7 +858,7 @@ class Searcher:
         # MCP, CLI, ask) gets reranked order, not just the ask/chat path. A
         # mode: prefix returned earlier and stays unreranked by design.
         if self._config.reranker_model:
-            results = self._reranker.rerank(question, results)
+            results = self._reranker.rerank(question, results, degraded=degraded)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
