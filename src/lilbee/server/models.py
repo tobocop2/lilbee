@@ -998,7 +998,8 @@ class PlacementResponse(BaseModel):
     rejected_spec_json: str | None = None
     refusal: str | None = None
     # waiting: the saved spec applies once an engine or model is installed; unreadable: the
-    # saved text cannot be parsed; refused: an engine refuses roles. Null without a refusal.
+    # saved text cannot be parsed; refused: an engine refuses roles, or the spec places no
+    # role on this machine. Null without a refusal.
     refusal_kind: PlacementRefusal | None = None
     # The backend the engine selected, reported rather than inferred. ``gpus``
     # being empty does not mean ``cpu``: a host whose device probe never answered
