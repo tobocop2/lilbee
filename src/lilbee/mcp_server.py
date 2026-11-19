@@ -366,7 +366,7 @@ def _wiki_tool(fn: _F) -> _F:
             return _error(WIKI_DISABLED_ERROR)
         try:
             return fn(*args, **kwargs)
-        except LIBRARY_REFUSALS as exc:
+        except (*LIBRARY_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
 
     checked = cast("_F", guarded)
@@ -616,7 +616,7 @@ async def add(
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
         sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
-    except LIBRARY_REFUSALS as exc:
+    except (*LIBRARY_REFUSALS, ProviderError) as exc:
         return _error(str(exc))
     result: dict[str, Any] = {
         "command": "add",
@@ -979,7 +979,7 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 
         try:
             summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
-        except (DatasetError, *LIBRARY_REFUSALS) as exc:
+        except (DatasetError, *LIBRARY_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
     return summary.model_dump()
 
@@ -1527,7 +1527,7 @@ async def _rebuild_when(needed: bool) -> dict[str, Any]:
             result = await run_sync(
                 quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
             )
-        except LIBRARY_REFUSALS as exc:
+        except (*LIBRARY_REFUSALS, ProviderError) as exc:
             return {"rebuild": None, "rebuild_error": str(exc)}
     return {"rebuild": result.model_dump()}
 
@@ -2055,6 +2055,8 @@ def memory_remember(
         memory_id = remember(text, owner=owner, kind=kind, source=MemorySource.AGENT, shared=shared)
     except EmbeddingModelMismatchError as exc:
         return _embedding_mismatch_error(exc)
+    except ProviderError as exc:
+        return _error(str(exc))
     return {"ok": True, "id": memory_id, "owner": owner}
 
 
@@ -2070,6 +2072,8 @@ def memory_recall(
         memories = recall(query, owner, top_k=limit if limit > 0 else None)
     except EmbeddingModelMismatchError as exc:
         return _embedding_mismatch_error(exc)
+    except ProviderError as exc:
+        return _error(str(exc))
     return {
         "memories": [
             {"id": m.id, "text": m.text, "kind": m.kind.value, "owner": m.owner} for m in memories

@@ -25,6 +25,7 @@ from lilbee.core.config.resolve import builtin_value, read_layers, resolve
 from lilbee.crawler.models import CrawlLogin
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
+from lilbee.data.extract.backends.tokenizer import TokenCountError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, SearchChunk, Store
@@ -63,6 +64,7 @@ from lilbee.mcp_server import (
     wiki_update,
     wiki_wipe,
 )
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.progress import (
     CrawlPageFailedEvent,
@@ -1025,6 +1027,25 @@ class TestAdd:
         assert not result.get("error")
         assert "real.txt" in result["copied"]
         assert result["warning"] == "some files could not be processed"
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ProviderError("The embedder is not available.", kind=ProviderErrorKind.NOT_FOUND),
+            TokenCountError(),
+        ],
+        ids=["provider-error", "token-count-error"],
+    )
+    async def test_a_failed_sync_after_the_add_returns_the_failure_as_a_tool_error(
+        self, tmp_path, failure
+    ):
+        good = tmp_path / "real.txt"
+        good.write_text("hello", encoding="utf-8")
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=failure):
+            result = await add([str(good)])
+
+        assert result == {"error": str(failure)}
 
     @staticmethod
     async def _stop_add_mid_sync(src, *, agent_cancels: bool) -> None:
@@ -2039,6 +2060,19 @@ class TestWikiBuildTool:
         assert result["count"] == 1
         assert result["entities"][0]["slug"] == "ford"
         assert result["note"]
+
+
+class TestWikiProviderFailure:
+    def test_a_provider_failure_in_a_build_returns_a_tool_error(self, mock_svc, monkeypatch):
+        cfg.wiki = True
+        failure = ProviderError("The chat model is not running.", kind=ProviderErrorKind.CONNECTION)
+
+        def _fail(*a, **kw):
+            raise failure
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", _fail)
+
+        assert wiki_build() == {"error": str(failure)}
 
 
 class TestWikiUpdateTool:
@@ -3550,6 +3584,18 @@ class _ProgressStubEmbedder:
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
 
+class _RaisingEmbedder:
+    """Embedder whose every batch fails with the given error."""
+
+    truncated_total = 0
+
+    def __init__(self, failure: Exception) -> None:
+        self._failure = failure
+
+    def embed_batch(self, texts, **_kwargs):
+        raise self._failure
+
+
 class TestImportDataset:
     async def test_round_trip(self, dataset_store, tmp_path):
         out = tmp_path / "pages.jsonl"
@@ -3616,6 +3662,29 @@ class TestImportDataset:
         )
         result = await import_dataset(str(out))
         assert "error" not in result
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ProviderError("The embedder is not available.", kind=ProviderErrorKind.NOT_FOUND),
+            TokenCountError(),
+        ],
+        ids=["provider-error", "token-count-error"],
+    )
+    async def test_a_failed_re_embed_returns_the_failure_as_a_tool_error(
+        self, dataset_store, tmp_path, failure
+    ):
+        from tests.conftest import make_mock_services
+
+        out = tmp_path / "pages.jsonl"
+        assert "error" not in export_dataset(str(out))
+        svc_mod.set_services(
+            make_mock_services(store=dataset_store, embedder=_RaisingEmbedder(failure))
+        )
+
+        result = await import_dataset(str(out))
+
+        assert result == {"error": str(failure)}
 
 
 class TestMcpCommandExit:
