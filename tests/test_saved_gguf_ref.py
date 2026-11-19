@@ -10,6 +10,7 @@ from conftest import PICKS_CHAT, install_fake_model
 from lilbee.catalog.refs import canonical_ref
 from lilbee.modelhub.role_validator import validate_model_task_assignment
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.model_ref import is_native_gguf_ref, routes_to_native_gguf
 from lilbee.providers.serving import is_native_rerank_ref
 from lilbee.server import handlers
 
@@ -39,6 +40,25 @@ class TestCanonicalRef:
         self, raw: str, expected: str
     ) -> None:
         assert canonical_ref(raw) == expected
+
+
+class TestModelRefClassifier:
+    @pytest.mark.parametrize(
+        ("raw", "native"),
+        [
+            ("org/repo/f.gguf#gguf", True),
+            ("openai/repo/f.gguf#gguf", True),
+            ("/models/f.gguf#gguf", True),
+            ("org/repo#gguf", False),
+            ("org/repo/f.gguf#nope", False),
+        ],
+    )
+    def test_a_gguf_qualified_ref_classifies_as_its_bare_ref(self, raw: str, native: bool) -> None:
+        assert is_native_gguf_ref(raw) is native
+
+    def test_a_gguf_qualified_ref_routes_native_unless_a_local_server_owns_it(self) -> None:
+        assert routes_to_native_gguf("openai/repo/f.gguf#gguf") is True
+        assert routes_to_native_gguf("ollama/repo/f.gguf#gguf") is False
 
 
 class TestRoleValidator:

@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from lilbee.catalog.refs import is_gguf_filename, is_native_gguf_shape, model_format
+from lilbee.catalog.refs import (
+    canonical_ref,
+    is_gguf_filename,
+    is_native_gguf_shape,
+    model_format,
+)
 from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.providers.base import (
     ChosenSeed,
@@ -42,9 +47,12 @@ def is_native_gguf_ref(raw: str) -> bool:
     The suffix check is case-sensitive on purpose: repo extraction
     (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
     lowercase ``.gguf`` suffix, and classification must agree with it.
+
+    A ``#gguf`` qualifier reads as the bare ref: ``org/repo/f.gguf#gguf`` is native.
     """
-    return is_native_gguf_shape(raw) or (
-        is_gguf_filename(raw) and PureWindowsPath(raw).is_absolute()
+    ref = canonical_ref(raw)
+    return is_native_gguf_shape(ref) or (
+        is_gguf_filename(ref) and PureWindowsPath(ref).is_absolute()
     )
 
 
