@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
+import lilbee
 from lilbee.cli import app
 from lilbee.core.config import cfg
 
@@ -68,18 +71,67 @@ def _reset(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], MagicMock]:
     return ["reset"], reset
 
 
+def _remove_glob(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], MagicMock]:
+    _no_overrides(monkeypatch, "lilbee.cli.commands.ingest_sync")
+    documents = ["docs/a.pdf", "docs/b.pdf"]
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.removable_names", lambda: documents)
+    monkeypatch.setattr(
+        "lilbee.cli.commands.ingest_sync.expand_remove_targets", lambda names, known: documents
+    )
+    removal = MagicMock()
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync._remove_or_exit", removal)
+    return ["remove", "docs"], removal
+
+
+# Every confirm call site, keyed by file under src/lilbee and the function that holds the call.
 CASES: dict[str, Arm] = {
-    "model rm": _model_rm,
-    "sessions delete": _sessions_delete,
-    "preset remove": _preset_remove,
-    "wiki wipe": _wiki_wipe,
-    "login again": _login,
-    "reset": _reset,
+    "cli/model.py::_confirm_remove_or_exit": _model_rm,
+    "cli/sessions.py::delete_cmd": _sessions_delete,
+    "cli/preset.py::remove_cmd": _preset_remove,
+    "cli/commands/wiki.py::wiki_wipe": _wiki_wipe,
+    "cli/commands/setup.py::login": _login,
+    "cli/commands/meta.py::reset": _reset,
+    "cli/commands/ingest_sync.py::remove": _remove_glob,
+}
+
+EXEMPT: dict[str, str] = {
+    "cli/launchers/setup_gate.py::confirm_first_run_setup": (
+        "the setup question defaults to yes by design and runs no destructive action"
+    ),
+    "cli/engine.py::_confirming": (
+        "the embed prompt is pinned by the engine embed test on the fix-121 branch, not landed here"
+    ),
 }
 
 
-def test_the_census_covers_every_prompt_site() -> None:
-    assert len(CASES) == 6
+def _confirm_sites() -> set[str]:
+    """Find every call named confirm under src/lilbee, as file::enclosing function."""
+    root = Path(lilbee.__file__).parent
+    sites: set[str] = set()
+
+    def visit(node: ast.AST, label: str, holder: str) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            holder = node.name
+        if isinstance(node, ast.Call):
+            func = node.func
+            if (isinstance(func, ast.Attribute) and func.attr == "confirm") or (
+                isinstance(func, ast.Name) and func.id == "confirm"
+            ):
+                sites.add(f"{label}::{holder}")
+        for child in ast.iter_child_nodes(node):
+            visit(child, label, holder)
+
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        visit(tree, path.relative_to(root).as_posix(), "")
+    return sites
+
+
+def test_every_confirm_call_is_a_case_or_a_named_exemption() -> None:
+    sites = _confirm_sites()
+    assert sites
+    assert not CASES.keys() & EXEMPT.keys()
+    assert sites == CASES.keys() | EXEMPT.keys()
 
 
 @pytest.mark.parametrize("answer", ["\n", "n\n"], ids=["bare-enter", "explicit-n"])
