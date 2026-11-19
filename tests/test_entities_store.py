@@ -7,6 +7,7 @@ import pytest
 
 from lilbee.core.config import ENTITY_SCHEMA_TABLE, cfg
 from lilbee.data.store import Store
+from lilbee.data.store.schema import _entity_schema_state_schema
 
 
 @pytest.fixture()
@@ -153,3 +154,53 @@ class TestEntitySchemaReplaceHasNoGap:
         state = store.entity_schema_state()
         assert state is not None
         assert (state["schema_json"], state["applied"], state["source_count"]) == ("new", True, 2)
+
+
+_OLD_ROW = {
+    "schema_json": '{"types": []}',
+    "applied": True,
+    "updated_at": "2026-07-13T00:00:00",
+}
+
+
+def _write_schema_row(store, row, *, without=None):
+    """Create the schema table with the writer's column set, minus *without*."""
+    schema = _entity_schema_state_schema()
+    if without is not None:
+        schema = schema.remove(schema.get_field_index(without))
+    store.get_db().create_table(ENTITY_SCHEMA_TABLE, schema=schema).add([row])
+
+
+class TestEntitySchemaStateOlderColumns:
+    """A schema row written before a column existed still loads."""
+
+    def test_row_without_source_count_reads_as_unknown_corpus(self, store):
+        _write_schema_row(store, _OLD_ROW, without="source_count")
+        assert store.entity_schema_state() == {
+            "schema_json": '{"types": []}',
+            "applied": True,
+            "source_count": 0,
+            "updated_at": "2026-07-13T00:00:00",
+        }
+
+    def test_row_with_null_source_count_reads_as_unknown_corpus(self, store):
+        _write_schema_row(store, {**_OLD_ROW, "applied": False, "source_count": None})
+        state = store.entity_schema_state()
+        assert state["source_count"] == 0
+        assert state["applied"] is False
+
+    def test_save_over_an_old_row_writes_the_current_columns(self, store):
+        _write_schema_row(store, _OLD_ROW, without="source_count")
+
+        store.save_entity_schema('{"types": []}', applied=False, source_count=4)
+
+        table = store.open_table(ENTITY_SCHEMA_TABLE)
+        assert table.schema == _entity_schema_state_schema()
+        assert table.count_rows() == 1
+        state = store.entity_schema_state()
+        assert state is not None
+        assert (state["applied"], state["source_count"]) == (False, 4)
+
+    def test_row_with_source_count_keeps_it(self, store):
+        store.save_entity_schema('{"types": []}', applied=True, source_count=7)
+        assert store.entity_schema_state()["source_count"] == 7
