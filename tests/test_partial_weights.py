@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,7 @@ from lilbee.providers.fleet import model_memory as mm
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.vram import GgufVramEstimate
+from lilbee.providers.fleet.vram import AttentionShape, GgufVramEstimate
 from lilbee.providers.roles import WorkerRole
 from tests._gguf_fixture import GGUF_MAGIC, GGUF_VERSION
 from tests._stated_sizes import state_size
@@ -340,6 +341,57 @@ class TestACutFileLargerThanTheReserve:
         )
         est = mm.estimate_gguf(_request(first))
         assert (est.size_known, est.device_bytes) == (False, first.stat().st_size)
+
+
+@pytest.mark.usefixtures("stated_sizes")
+class TestACutFileOnTheCpuDecodePath:
+    """The CPU chat figure keeps the unknown charge and never reads the cut file's header."""
+
+    @pytest.fixture
+    def shape_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+        calls: list[Path] = []
+
+        def _shape(model_path: Path) -> AttentionShape:
+            calls.append(model_path)
+            return AttentionShape(heads=28, kv_heads=4, vocab=151_936)
+
+        monkeypatch.setattr(mm, "attention_shape", _shape)
+        return calls
+
+    @pytest.mark.parametrize("flash_attn", [True, False], ids=["flash-on", "flash-off"])
+    @pytest.mark.parametrize(
+        "size", [60, mm.UNKNOWN_SIZE_RESERVE_BYTES + _GIB], ids=["under-reserve", "over-reserve"]
+    )
+    def test_the_charge_is_the_unknown_charge_and_the_header_is_not_read(
+        self,
+        tmp_path: Path,
+        parser_calls: list[Path],
+        shape_calls: list[Path],
+        flash_attn: bool,
+        size: int,
+    ) -> None:
+        model = _cut_file_of(tmp_path / "m.gguf", declared_bytes=size + 4 * _GIB, size=size)
+        request = replace(_request(model), on_cpu=True, flash_attn=flash_attn)
+        est = LLAMA.estimate_memory(request)
+        charge = max(mm.UNKNOWN_SIZE_RESERVE_BYTES, size)
+        assert (est.kind, est.size_known, est.resident_footprint(unified=True)) == (
+            MemoryKind.FIXED_RESERVE,
+            False,
+            charge,
+        )
+        assert (parser_calls, shape_calls) == ([], [])
+
+    def test_a_whole_file_still_gets_the_cpu_figure(
+        self, tmp_path: Path, parser_calls: list[Path], shape_calls: list[Path]
+    ) -> None:
+        model = _write(tmp_path / "m.gguf", _gguf())
+        request = replace(_request(model), on_cpu=True, flash_attn=True)
+        est = LLAMA.estimate_memory(request)
+        unused_logits = (512 - 1) * 151_936 * 8
+        assert est.shared_bytes == (
+            _PARSED.unified_bytes - unused_logits + mm.CPU_RUNTIME_ALLOWANCE_BYTES
+        )
+        assert (parser_calls, shape_calls) == ([model], [model])
 
 
 class TestTheUnknownSizeText:
