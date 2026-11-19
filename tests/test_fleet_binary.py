@@ -444,6 +444,19 @@ class TestEngineHelp:
         assert binary_mod.engine_help(binary) == "--port PORT\n"
         assert len(calls) == 2
 
+    def test_a_timed_out_probe_is_not_run_a_second_time(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        def _hang(*_a, **_k):
+            calls.append(1)
+            raise binary_mod.subprocess.TimeoutExpired("llama-server", 15.0)
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _hang)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        assert binary_mod.engine_help(binary) == ""
+        assert len(calls) == 1
+
     def test_a_good_read_runs_the_binary_once_per_path(self, monkeypatch) -> None:
         calls: list[int] = []
 

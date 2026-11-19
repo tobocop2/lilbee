@@ -346,9 +346,10 @@ class _NoHelpTextError(Exception):
 def engine_help(binary: Path) -> str:
     """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
 
-    Empty when the binary cannot run, cannot answer in time or prints nothing. The
-    empty result is not cached, so the next call reads again. The optional flags are
-    all written meanwhile, since no help text proves them missing.
+    Empty when the binary cannot run, cannot answer in time or prints nothing. A
+    timeout is cached, so a hanging binary costs the probe time once; any other empty
+    result is not cached, so the next call reads again. The optional flags are all
+    written meanwhile, since no help text proves them missing.
     """
     try:
         return _read_help(binary)
@@ -358,7 +359,7 @@ def engine_help(binary: Path) -> str:
 
 @functools.lru_cache(maxsize=8)
 def _read_help(binary: Path) -> str:
-    """The ``--help`` text of *binary*, cached per path; raises when there is none."""
+    """The ``--help`` text of *binary*, cached per path; raises when a retry may succeed."""
     from lilbee.providers.fleet.gpu_env import engine_environ
 
     try:
@@ -371,6 +372,8 @@ def _read_help(binary: Path) -> str:
             timeout=_HELP_PROBE_TIMEOUT_S,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        return ""
     except (OSError, subprocess.SubprocessError) as exc:
         raise _NoHelpTextError from exc
     text = f"{done.stdout}\n{done.stderr}"
