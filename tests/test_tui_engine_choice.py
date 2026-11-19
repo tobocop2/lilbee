@@ -308,9 +308,12 @@ async def test_key_e_on_a_focused_pill_opens_the_picker_in_insert_mode(
         assert chat._chat_input.value == ""
 
 
-async def test_a_key_the_focused_pill_does_not_bind_still_types_into_the_prompt() -> None:
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_a_key_the_focused_pill_does_not_bind_still_types_into_the_prompt(
+    size: tuple[int, int],
+) -> None:
     app = _ChatApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=size) as pilot:
         chat = await await_chat(app, pilot)
         assert isinstance(chat, ChatScreen)
         chat.query_one("#model-pick-chat", ModelPickerButton).focus()
@@ -320,15 +323,51 @@ async def test_a_key_the_focused_pill_does_not_bind_still_types_into_the_prompt(
         assert not isinstance(app.screen, EnginePickerModal)
 
 
-async def test_key_e_off_the_strip_still_types_into_the_prompt() -> None:
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_key_e_off_the_strip_still_types_into_the_prompt(size: tuple[int, int]) -> None:
     app = _ChatApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=size) as pilot:
         chat = await await_chat(app, pilot)
         assert isinstance(chat, ChatScreen)
         chat._chat_log.focus()
         await pilot.press("e")
         assert await wait_until(pilot, lambda: chat._chat_input.value == "e")
         assert not isinstance(app.screen, EnginePickerModal)
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_a_key_a_fleet_toggle_binds_still_types_into_the_prompt(
+    monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    """Only the model strip keeps its keys: a Fleet toggle's space still goes to the prompt."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.cli.tui.widgets import fleet_body, gpu_fleet_panel
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * 1024**3, 44 * 1024**3),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+    monkeypatch.setattr(fleet_body, "get_placement", lambda: view)
+    monkeypatch.setattr(gpu_fleet_panel, "probe_gpu_stats", lambda devices: {})
+    app = _ChatApp()
+    async with app.run_test(size=size) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        await pilot.press("ctrl+g")
+        assert await wait_until(
+            pilot, lambda: bool(chat.query(FleetDrawer) and chat.query(".dev-toggle"))
+        )
+        toggle = chat.query(".dev-toggle").first()
+        toggle.focus()
+        assert await wait_until(pilot, lambda: chat.focused is toggle)
+        assert "space" in chat.active_bindings
+        await pilot.press("space")
+        assert await wait_until(pilot, lambda: chat._chat_input.value == " ")
+        assert chat._chat_input.has_focus
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
