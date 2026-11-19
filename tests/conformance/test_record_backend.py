@@ -234,3 +234,117 @@ class TestRecorderMain:
                 engine,
             )
         assert seen == [""]
+
+
+# Startup lines copied from the committed recording tests/conformance/fixtures/engines/tei-cuda.log
+# (an RTX 3090 run of one text-embeddings-router process per model, 2026-10-31).
+_TEI_CUDA_LOG = """\
+  2026-10-31T13:23:13.743093Z  INFO text_embeddings_router: router/src/lib.rs:284: Starting model backend
+  2026-10-31T13:23:14.261696Z  INFO text_embeddings_backend_candle: backends/candle/src/lib.rs:395: Starting FlashBert model on Cuda(CudaDevice(DeviceId(1)))
+  2026-10-31T13:23:14.657541Z  INFO text_embeddings_router::http::server: router/src/http/server.rs:1878: Starting HTTP server: 0.0.0.0:5801
+  2026-10-31T13:23:18.036296Z  INFO text_embeddings_backend_candle: backends/candle/src/lib.rs:424: Starting FlashBert model on Cuda(CudaDevice(DeviceId(1)))
+"""  # noqa: E501
+# The same recording without the line that names the device.
+_TEI_NO_DEVICE_LOG = "".join(
+    line for line in _TEI_CUDA_LOG.splitlines(keepends=True) if "model on" not in line
+)
+# Lines copied from tests/conformance/fixtures/engines/llama.cpp-cuda.log (RTX 3090 run).
+_LLAMA_CUDA_LOG = """\
+  [45325] 0.00.233.880 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 3090 (24126 MiB, 23861 MiB free)
+  [45325] 0.00.776.313 I llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090) (0000:a1:00.0) - 23861 MiB free
+"""  # noqa: E501
+
+
+def _log(tmp_path: Path, text: str) -> str:
+    path = tmp_path / "engine.log"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+class TestLoggedDevices:
+    def test_the_startup_line_of_a_gpu_engine_names_the_device(self, tmp_path: Path) -> None:
+        devices = record_presets.logged_devices(Path(_log(tmp_path, _TEI_CUDA_LOG)))
+        assert devices == ["Cuda1"]
+        assert record_presets.reported_backend(devices) == "cuda"
+
+    def test_the_device_line_of_the_llama_engine_names_the_label(self, tmp_path: Path) -> None:
+        devices = record_presets.logged_devices(Path(_log(tmp_path, _LLAMA_CUDA_LOG)))
+        assert devices == ["CUDA0"]
+
+    def test_a_log_without_a_device_line_names_no_device(self, tmp_path: Path) -> None:
+        assert record_presets.logged_devices(Path(_log(tmp_path, _TEI_NO_DEVICE_LOG))) == []
+
+    def test_a_log_that_cannot_be_read_stops_the_run(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit, match="--engine-log .*missing.log"):
+            record_presets.logged_devices(tmp_path / "missing.log")
+
+
+class TestRecorderWithAnEngineLog:
+    def test_a_gpu_label_is_accepted_on_the_log_of_an_engine_with_no_memory_route(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        with _engine(None) as url:
+            rc, out = _record(
+                monkeypatch, tmp_path, url, "cuda", "--engine-log", _log(tmp_path, _TEI_CUDA_LOG)
+            )
+        assert rc == 0
+        lines = out.with_suffix(".log").read_text(encoding="utf-8").splitlines()
+        assert "devices: Cuda1" in lines
+        assert "devices-from: engine-log" in lines
+        assert "reported-backend: cuda" in lines
+
+    def test_a_gpu_label_is_refused_when_the_log_names_no_device(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_NO_DEVICE_LOG)
+        with _engine(None) as url, pytest.raises(SystemExit, match="lists no device"):
+            _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", log)
+        assert not (tmp_path / "rec.json").exists()
+        assert not (tmp_path / "rec.log").exists()
+
+    def test_a_cpu_label_is_refused_when_the_log_names_a_gpu(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_CUDA_LOG)
+        with _engine(None) as url, pytest.raises(SystemExit, match="reports cuda"):
+            _record(monkeypatch, tmp_path, url, "cpu", "--engine-log", log)
+        assert not (tmp_path / "rec.log").exists()
+
+    def test_a_log_that_disagrees_with_the_engine_reply_stops_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_CUDA_LOG)
+        with (
+            _engine(_rows("CPU")) as url,
+            pytest.raises(SystemExit, match="the log names cuda, the engine reply names cpu"),
+        ):
+            _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", log)
+        assert not (tmp_path / "rec.json").exists()
+
+    def test_the_engine_reply_gives_the_devices_when_the_log_agrees(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_CUDA_LOG)
+        with _engine(_rows("CUDA0")) as url:
+            rc, out = _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", log)
+        assert rc == 0
+        lines = out.with_suffix(".log").read_text(encoding="utf-8").splitlines()
+        assert "devices: CUDA0" in lines
+        assert "devices-from: memory" in lines
+
+    def test_a_log_with_no_device_line_does_not_override_the_engine_reply(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_NO_DEVICE_LOG)
+        with _engine(_rows("CUDA0")) as url:
+            rc, out = _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", log)
+        assert rc == 0
+        assert "devices-from: memory" in out.with_suffix(".log").read_text(encoding="utf-8")
+
+    def test_a_run_with_no_evidence_is_recorded_as_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        with _engine(None) as url:
+            rc, out = _record(monkeypatch, tmp_path, url, "cpu")
+        assert rc == 0
+        assert "devices-from: none" in out.with_suffix(".log").read_text(encoding="utf-8")

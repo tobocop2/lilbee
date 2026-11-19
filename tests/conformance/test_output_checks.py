@@ -560,12 +560,13 @@ def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -
     parser = record_presets.build_parser()
     out = ["--out", str(tmp_path / "e.json")]
     results = {"chat": preset_check.Outcome(True, "Rome")}
-    plain = record_presets.run_log(parser.parse_args([*_ARGS, *out]), results, [])
+    none = record_presets.DeviceSource.NONE
+    plain = record_presets.run_log(parser.parse_args([*_ARGS, *out]), results, [], none)
     fronted = record_presets.run_log(
-        parser.parse_args([*_ARGS, "--front", "llama-swap v267", *out]), results, []
+        parser.parse_args([*_ARGS, "--front", "llama-swap v267", *out]), results, [], none
     )
     assert "front:" not in plain
-    assert fronted.splitlines()[7] == "front: llama-swap v267"
+    assert fronted.splitlines()[8] == "front: llama-swap v267"
 
 
 def test_a_failed_step_names_the_harness_address_not_its_random_port(
@@ -601,10 +602,12 @@ def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
     args = record_presets.build_parser().parse_args(
         [*_ARGS[:-2], "--backend", "cuda", "--out", str(tmp_path / "e.json")]
     )
-    log = record_presets.run_log(args, {"chat": preset_check.Outcome(True, "Rome")}, ["CUDA0"])
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    log = record_presets.run_log(args, results, ["CUDA0"], record_presets.DeviceSource.MEMORY)
     assert log.splitlines()[:2] == ["engine: e", "version: 1"]
     assert "backend: cuda" in log
     assert "reported-backend: cuda" in log
     assert "devices: CUDA0" in log
+    assert "devices-from: memory" in log
     assert "models: chat=a,embed=b" in log
     assert "STEP e chat ok=True Rome" in log

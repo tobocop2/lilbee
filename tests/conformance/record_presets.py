@@ -10,6 +10,7 @@ import re
 import socket
 import tempfile
 import urllib.request
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Server whose /memory reply lists the devices, when --url is a proxy without it.",
     )
+    parser.add_argument(
+        "--engine-log",
+        type=Path,
+        help="Startup output of the engine, for an engine whose server has no /memory route.",
+    )
     parser.add_argument("--front", default="", help="Proxy in front of the server, if any.")
     parser.add_argument("--out", required=True, type=Path)
     return parser
@@ -101,6 +107,20 @@ _LABEL_BACKENDS = {
 }
 
 
+# "Starting FlashBert model on Cuda(CudaDevice(DeviceId(1)))" names the device by kind and index.
+_LOG_DEVICE_ID = re.compile(r"\bmodel on (?P<kind>[A-Za-z]+)\(\w+\(DeviceId\((?P<index>\d+)\)\)\)")
+# "llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 3090)" names the label.
+_LOG_DEVICE_LABEL = re.compile(r"\busing device (?P<label>\S+)")
+
+
+class DeviceSource(StrEnum):
+    """Where the recorder read the devices of a run."""
+
+    MEMORY = "memory"
+    ENGINE_LOG = "engine-log"
+    NONE = "none"
+
+
 def reported_devices(url: str, token: str | None) -> list[str]:
     """The device labels in the ``/memory`` reply of the engine at *url*; empty if none."""
     # S310: the URL is the engine address the operator passes on the command line, never a reply.
@@ -113,6 +133,35 @@ def reported_devices(url: str, token: str | None) -> list[str]:
     except (OSError, ValueError):
         return []
     return sorted(label for label, size in parse_memory_rows(payload).items() if size > 0)
+
+
+def logged_devices(path: Path) -> list[str]:
+    """The device labels that the startup lines in *path* name; SystemExit if unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise SystemExit(f"--engine-log {path}: {exc.strerror}") from exc
+    labels = {f"{m['kind']}{m['index']}" for m in _LOG_DEVICE_ID.finditer(text)}
+    labels.update(m["label"] for m in _LOG_DEVICE_LABEL.finditer(text))
+    return sorted(labels)
+
+
+def device_evidence(
+    url: str, token: str | None, engine_log: Path | None
+) -> tuple[list[str], DeviceSource]:
+    """The device labels of the run and where they came from; the engine reply wins over the log."""
+    from_log = logged_devices(engine_log) if engine_log else []
+    from_reply = reported_devices(url, token)
+    if from_reply and from_log and reported_backend(from_reply) != reported_backend(from_log):
+        raise SystemExit(
+            f"--engine-log {engine_log}: the log names {reported_backend(from_log)}, "
+            f"the engine reply names {reported_backend(from_reply)}"
+        )
+    if from_reply:
+        return from_reply, DeviceSource.MEMORY
+    if from_log:
+        return from_log, DeviceSource.ENGINE_LOG
+    return [], DeviceSource.NONE
 
 
 def reported_backend(devices: list[str]) -> str:
@@ -141,7 +190,12 @@ def check_backend(asked: str, reported: str) -> None:
     raise SystemExit(f"--backend {asked}: the engine reports {reported}")
 
 
-def run_log(args: argparse.Namespace, results: dict[str, Outcome], devices: list[str]) -> str:
+def run_log(
+    args: argparse.Namespace,
+    results: dict[str, Outcome],
+    devices: list[str],
+    source: DeviceSource,
+) -> str:
     """The text saved beside a recording: engine, version, host, backends, devices, steps."""
     lines = [
         f"engine: {args.server}",
@@ -150,6 +204,7 @@ def run_log(args: argparse.Namespace, results: dict[str, Outcome], devices: list
         f"backend: {args.backend}",
         f"reported-backend: {reported_backend(devices)}",
         f"devices: {','.join(devices) or _NO_REPORT}",
+        f"devices-from: {source}",
         f"models: {args.models}",
     ]
     if args.front:
@@ -198,10 +253,12 @@ def main() -> int:
     ):
         results = run_steps(setup)
     device_url = args.device_url or args.url
-    devices = reported_devices(device_url, token if device_url == args.url else None)
+    devices, source = device_evidence(
+        device_url, token if device_url == args.url else None, args.engine_log
+    )
     check_backend(args.backend, reported_backend(devices))
     doc = fixture_json(args.server, args.version, setup, results, tape)
-    log = write_recording(args.out, doc, run_log(args, results, devices))
+    log = write_recording(args.out, doc, run_log(args, results, devices, source))
     print(log, end="")
     return 0 if all(o.ok for o in results.values()) else 1
 
