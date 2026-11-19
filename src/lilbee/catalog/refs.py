@@ -282,6 +282,17 @@ def model_format(ref: str) -> ModelFormat:
         return ModelFormat.GGUF
 
 
+def canonical_ref(ref: str) -> str:
+    """The canonical text of *ref*; a malformed format qualifier stays as written.
+
+    Total, like :func:`model_format`: the code that parses the ref for use refuses it.
+    """
+    try:
+        return parse_model_ref(ref).canonical
+    except ValueError:
+        return ref
+
+
 def _gguf_ref(raw: str) -> ModelRef:
     if is_native_gguf_shape(raw):
         parts = raw.split("/")

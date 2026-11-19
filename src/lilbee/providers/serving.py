@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from lilbee.app.engine_choice import EngineBook
 from lilbee.app.services import get_services
-from lilbee.catalog.refs import is_bare_hf_repo
+from lilbee.catalog.refs import canonical_ref, is_bare_hf_repo
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.local_servers import local_server_for_key
@@ -99,6 +99,7 @@ def is_native_rerank_ref(model: str, engine: EngineAdapter | None) -> bool:
     """
     if not model or engine is None or WorkerRole.RERANK not in engine.served_roles:
         return False
+    model = canonical_ref(model)
     if routes_to_native_gguf(model):
         return True
     if not is_bare_hf_repo(model) or parse_model_ref(model).is_preset:
