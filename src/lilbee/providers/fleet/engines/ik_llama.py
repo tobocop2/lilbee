@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Mapping
 from enum import StrEnum
 from pathlib import Path
@@ -28,6 +29,8 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
+
+log = logging.getLogger(__name__)
 
 # A commit of the upstream main branch, never "latest": a bump follows a passing harness run.
 IK_LLAMA_COMMIT = "13cffc006b82e03e4d89cbb8c7327f0255ae3d18"
@@ -162,7 +165,9 @@ class IkLlamaAdapter:
         return LLAMA.launch_argv(spec, request)
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return LLAMA.discover_devices(binary)
+        """An empty probe: this engine's server has no device listing to run."""
+        log.debug("%s has no --list-devices option, so no device probe runs.", binary.name)
+        return DeviceProbe([], "")
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         return LLAMA.device_targets(binary)

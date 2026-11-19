@@ -447,6 +447,47 @@ def test_the_engine_serves_chat_and_embed_and_loads_gguf() -> None:
     assert IK_LLAMA.supports_architecture("llama") == LLAMA.supports_architecture("llama")
 
 
+_SERVER_WITHOUT_LISTING = """#!/bin/sh
+echo "$@" >> "{ran}"
+echo "error: unknown argument: --list-devices"
+exit 1
+"""
+
+
+def _server_without_listing(tmp_path: Path) -> tuple[Path, Path]:
+    """A server that exits 1 on --list-devices, as this engine's server does, and records each run."""
+    ran = tmp_path / "ran.txt"
+    server = tmp_path / "llama-server"
+    server.write_text(_SERVER_WITHOUT_LISTING.format(ran=ran), encoding="utf-8")
+    server.chmod(0o755)
+    return server, ran
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in server is a shell script")
+def test_the_device_probe_never_runs_the_listing_this_server_lacks(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    server, ran = _server_without_listing(tmp_path)
+    with caplog.at_level("DEBUG"):
+        probe = IK_LLAMA.discover_devices(server)
+    assert not ran.exists()
+    assert (probe.devices, probe.output, probe.spoke_protocol) == ([], "", False)
+    assert [r.levelname for r in caplog.records] == ["DEBUG"]
+    assert "no --list-devices option" in caplog.text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in server is a shell script")
+def test_the_llama_cpp_probe_still_runs_the_listing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    server, ran = _server_without_listing(tmp_path)
+    with caplog.at_level("WARNING"):
+        probe = LLAMA.discover_devices(server)
+    assert ran.read_text(encoding="utf-8").strip() == "--list-devices"
+    assert probe.spoke_protocol is False
+    assert "does not appear to support the flag" in caplog.text
+
+
 def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -461,7 +502,6 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
 
     for method, result in [
         ("identity", "id"),
-        ("discover_devices", None),
         ("model_meta", None),
         ("assert_loadable", None),
         ("runtime_env", {}),
@@ -475,7 +515,6 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
         monkeypatch.setattr(type(LLAMA), method, spy(method, result))
     path = Path("/b/server")
     IK_LLAMA.identity(path)
-    IK_LLAMA.discover_devices(path)
     IK_LLAMA.model_meta(path)
     IK_LLAMA.assert_loadable("repo", "file", None)
     IK_LLAMA.runtime_env()
@@ -497,7 +536,6 @@ def test_the_adapter_delegates_what_the_engine_shares_with_llama_cpp(
     IK_LLAMA.swap_extras(None)  # type: ignore[arg-type]
     assert calls == [
         "identity",
-        "discover_devices",
         "model_meta",
         "assert_loadable",
         "runtime_env",
