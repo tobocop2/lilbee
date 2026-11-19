@@ -32,6 +32,7 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, fixed_weights_estimate
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
@@ -151,6 +152,18 @@ def spy(tmp_path: Path, model_file: Path, monkeypatch: pytest.MonkeyPatch) -> Sp
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 1.0)
     yield SpyEngine(binary)
     planning.clear_read_device_cache()
+
+
+class UnsizedSpy(SpyEngine):
+    """A spy that cannot read the model's size and answers with the unknown-size reserve."""
+
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        return fixed_weights_estimate(None)
+
+
+@pytest.fixture
+def unsized_spy(spy: SpyEngine) -> UnsizedSpy:
+    return UnsizedSpy(spy.binary())
 
 
 class FlakySpy(SpyEngine):
@@ -424,6 +437,39 @@ class TestMemoryEstimates:
         self, spy: SpyEngine, model_file: Path
     ) -> None:
         assert planning._chat_host_estimate(model_file, 100, 2, spy) == 100 * 2 * BYTES_PER_CTX + 7
+
+    def test_an_unsized_chat_has_no_host_estimate_to_compare_a_spill_against(
+        self, unsized_spy: SpyEngine, model_file: Path
+    ) -> None:
+        assert planning._chat_host_estimate(model_file, 100, 2, unsized_spy) == 0
+
+    def test_an_unknown_size_role_carries_the_reserve_as_host_bytes(
+        self, unsized_spy: SpyEngine
+    ) -> None:
+        placed = planning._estimate_role(WorkerRole.EMBED, "embed-ref", engine=unsized_spy)
+        assert not placed.size_known
+        assert placed.est_ram_bytes == UNKNOWN_SIZE_RESERVE_BYTES
+
+    def test_an_unknown_size_model_is_refused_on_a_host_smaller_than_its_reserve(
+        self, unsized_spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
+
+        def admitted(total_gib: int) -> object:
+            monkeypatch.setattr(planning, "total_system_memory", lambda: total_gib << 30)
+            return planning._estimate_or_fallback(
+                WorkerRole.EMBED,
+                "embed-ref",
+                engine=unsized_spy,
+                unified_budget=None,
+                chat_reservation=0,
+                device_count=0,
+                total_vram=0,
+                skipped_not_installed={},
+            )
+
+        assert admitted(64) is not None
+        assert admitted(4) is None
 
     def test_declared_reserve_is_the_engine_figure(self, spy: SpyEngine, model_file: Path) -> None:
         request = MemoryRequest(

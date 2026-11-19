@@ -54,6 +54,7 @@ from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import (
+    UNKNOWN_SIZE_RESERVE_BYTES,
     installed_safetensors_bytes,
     tight_memory_text,
     unknown_size_text,
@@ -640,7 +641,7 @@ def _chat_host_estimate(model_path: Path, ctx: int, slots: int, engine: EngineAd
         )
     except (ProviderError, OSError):
         return 0
-    return estimate.host_bytes
+    return estimate.host_bytes if estimate.size_known else 0
 
 
 def _declared_reserve(engine: EngineAdapter, request: MemoryRequest, *, unified: bool) -> int:
@@ -1855,9 +1856,10 @@ def _without_shared_file(
         charged_files.add(path)
         return estimate
     file_bytes = _weights_bytes(path)
+    floor = 0 if estimate.size_known else UNKNOWN_SIZE_RESERVE_BYTES
     if estimate.est_vram_bytes:
-        return replace(estimate, est_vram_bytes=max(0, estimate.est_vram_bytes - file_bytes))
-    return replace(estimate, est_ram_bytes=max(0, estimate.est_ram_bytes - file_bytes))
+        return replace(estimate, est_vram_bytes=max(floor, estimate.est_vram_bytes - file_bytes))
+    return replace(estimate, est_ram_bytes=max(floor, estimate.est_ram_bytes - file_bytes))
 
 
 def _server_model_inputs(

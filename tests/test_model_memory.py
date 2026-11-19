@@ -271,6 +271,23 @@ class TestFixedWeightsEstimate:
         assert (est.device_bytes, est.size_known) == (RESERVE, False)
 
 
+class TestAnUnknownSizeChargesHostMemory:
+    @pytest.mark.parametrize(
+        ("estimate", "charge"),
+        [
+            (mm.fixed_weights_estimate(None), RESERVE),
+            (mm.encoder_estimate(None), RESERVE),
+            (mm.safetensors_chat_estimate(None, None, 50, 3), RESERVE),
+            (mm.safetensors_chat_estimate(RESERVE + 5, None, 50, 3), RESERVE + 5),
+        ],
+    )
+    def test_the_host_figure_is_the_charge_not_zero(
+        self, estimate: MemoryEstimate, charge: int
+    ) -> None:
+        assert not estimate.size_known
+        assert (estimate.host_bytes, estimate.device_bytes) == (charge, charge)
+
+
 class TestInstalledConfig:
     def test_reads_the_config_beside_a_weight_file(self, tmp_path: Path) -> None:
         (tmp_path / "config.json").write_text('{"a": 1}', encoding="utf-8")

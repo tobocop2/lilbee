@@ -211,12 +211,12 @@ def kv_per_token_from_config(config: Mapping[str, Any]) -> KvPerToken | None:
 
 
 def _unknown_estimate(weights: int | None) -> MemoryEstimate:
-    """The stated reserve, or the weights when they are larger; the size is flagged unknown."""
+    """The stated reserve, or the weights when they are larger, on the card and in host memory."""
     charge = max(UNKNOWN_SIZE_RESERVE_BYTES, weights or 0)
     return MemoryEstimate(
         kind=MemoryKind.FIXED_RESERVE,
         device_bytes=charge,
-        host_bytes=0,
+        host_bytes=charge,
         shared_bytes=charge,
         size_known=False,
     )

@@ -251,6 +251,27 @@ class TestASharedFile:
         # The 4-byte file is larger than the 3-byte estimate.
         assert getattr(planning_mod._without_shared_file(estimate, "ref", charged), field) == 0
 
+    @pytest.mark.parametrize("field", ["est_vram_bytes", "est_ram_bytes"])
+    def test_an_unknown_size_never_drops_below_the_reserve(self, model: Path, field: str) -> None:
+        reserve = model_memory_mod.UNKNOWN_SIZE_RESERVE_BYTES
+        estimate = ModelPlacementInput(
+            WorkerRole.EMBED,
+            reserve if field == "est_vram_bytes" else 0,
+            est_ram_bytes=reserve if field == "est_ram_bytes" else 0,
+            size_known=False,
+        )
+        # The 4-byte file is a sliver of the reserve, which is a stated charge, not the file.
+        shared = planning_mod._without_shared_file(estimate, "ref", {model})
+        assert getattr(shared, field) == reserve
+
+    def test_an_unknown_size_over_the_reserve_loses_only_what_is_above_it(
+        self, model: Path
+    ) -> None:
+        reserve = model_memory_mod.UNKNOWN_SIZE_RESERVE_BYTES
+        estimate = ModelPlacementInput(WorkerRole.EMBED, reserve + 10, size_known=False)
+        shared = planning_mod._without_shared_file(estimate, "ref", {model})
+        assert shared.est_vram_bytes == reserve + 6
+
 
 class _RecordingEngine:
     """The llama engine, noting every memory request the planner sends it."""
