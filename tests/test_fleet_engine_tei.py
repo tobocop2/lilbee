@@ -11,6 +11,7 @@ import stat
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -1319,11 +1320,11 @@ def hung_side_route(monkeypatch: pytest.MonkeyPatch):
     server.start()
     paths: list[str] = []
 
-    def serve(hung: str) -> LlamaServerClient:
+    def serve(hung: str, hang_s: float = _HANG_S) -> LlamaServerClient:
         def answer(request: Request) -> Response:
             paths.append(request.path)
             if request.path.endswith(hung):
-                release.wait(_HANG_S)
+                release.wait(hang_s)
             if request.path.endswith("/info"):
                 return Response(json.dumps({"max_input_length": _ROUTER_LIMIT}))
             inputs = json.loads(request.data)
@@ -1362,3 +1363,137 @@ def test_a_hung_side_route_never_holds_an_embed_back(hung, hung_side_route) -> N
     assert second < _CHECK_BOUND_S, f"second embed took {second:.2f} s with {hung} hung"
     assert sum(path.endswith(hung) for path in paths) == 1
     assert sum(path.endswith("/embeddings") for path in paths) == 2
+
+
+def _run_together(calls: list[Callable[[], Any]]) -> list[Any]:
+    """The result of each call, with every call started at the same moment on its own thread."""
+    start = threading.Barrier(len(calls))
+    results: list[Any] = [None] * len(calls)
+
+    def run(i: int) -> None:
+        start.wait()
+        results[i] = calls[i]()
+
+    workers = [threading.Thread(target=run, args=(i,)) for i in range(len(calls))]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    return results
+
+
+@pytest.mark.parametrize("hung", ["/info", "/tokenize"])
+def test_four_first_embeds_make_one_request_to_a_hung_route(hung, hung_side_route) -> None:
+    serve, paths = hung_side_route
+    client = serve(hung)
+    seconds = _run_together([lambda: _timed_embed(client)] * 4)
+    assert max(seconds) < _CHECK_BOUND_S, f"slowest embed took {max(seconds):.2f} s"
+    assert sum(path.endswith(hung) for path in paths) == 1
+    assert sum(path.endswith("/embeddings") for path in paths) == 4
+
+
+@pytest.mark.parametrize("slow", ["/info", "/tokenize"])
+def test_embeds_that_wait_on_a_slow_route_use_its_one_answer(
+    slow, monkeypatch, hung_side_route, caplog
+) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    noted: list[int] = []
+    monkeypatch.setattr(fleet_client, "note_truncated", lambda cut, *_rest: noted.append(cut))
+    client = serve(slow, hang_s=0.4)
+    with caplog.at_level("DEBUG"):
+        _run_together([lambda: _timed_embed(client)] * 4)
+    assert sum(path.endswith(slow) for path in paths) == 1
+    assert not [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert noted == [1, 1, 1, 1]
+
+
+def test_embeds_of_different_texts_each_count_their_own(monkeypatch, hung_side_route) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    client = serve("/tokenize", hang_s=0.4)
+    long, short = [_words(30)], [_words(3)]
+    cuts = _run_together(
+        [
+            lambda: client._count_inputs_past_limit(long, _ROUTER_LIMIT, "/tokenize"),
+            lambda: client._count_inputs_past_limit(short, _ROUTER_LIMIT, "/tokenize"),
+        ]
+    )
+    assert cuts == [1, 0]
+    assert sum(path.endswith("/tokenize") for path in paths) == 2
+
+
+class _SingleFlightProbe:
+    """A request that blocks until released, and counts how often it was sent."""
+
+    def __init__(self) -> None:
+        self.sent = 0
+        self.release = threading.Event()
+
+    def __call__(self) -> int:
+        self.sent += 1
+        self.release.wait(5.0)
+        return 7
+
+
+def test_threads_that_ask_for_one_key_together_send_one_request() -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    probe = _SingleFlightProbe()
+    threading.Timer(0.3, probe.release.set).start()
+    results = _run_together([lambda: client._single_flight(("k",), probe)] * 4)
+    assert results == [7, 7, 7, 7]
+    assert probe.sent == 1
+
+
+def test_threads_that_wait_on_a_failed_request_get_its_failure() -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    release = threading.Event()
+    sent: list[int] = []
+
+    def boom() -> int:
+        sent.append(1)
+        release.wait(5.0)
+        raise ValueError("the route failed")
+
+    def ask() -> str:
+        try:
+            client._single_flight(("k",), boom)
+        except ValueError as exc:
+            return str(exc)
+        return "no failure"
+
+    threading.Timer(0.3, release.set).start()
+    assert _run_together([ask] * 3) == ["the route failed"] * 3
+    assert len(sent) == 1
+
+
+def test_a_request_for_another_key_does_not_wait_on_one_in_flight() -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    probe = _SingleFlightProbe()
+    holder = threading.Thread(target=lambda: client._single_flight(("a",), probe))
+    holder.start()
+    deadline = time.monotonic() + 5.0
+    while not probe.sent and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client._single_flight(("b",), lambda: 3) == 3
+    probe.release.set()
+    holder.join()
+
+
+def test_a_failed_request_clears_its_slot_so_the_next_caller_sends_a_new_one() -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+
+    def boom() -> int:
+        raise RuntimeError("not a router failure")
+
+    with pytest.raises(RuntimeError):
+        client._single_flight(("k",), boom)
+    assert client._flights == {}
+    assert client._single_flight(("k",), lambda: 5) == 5
+
+
+def test_a_finished_request_clears_its_slot() -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+    assert client._single_flight(("k",), lambda: 1) == 1
+    assert client._single_flight(("k",), lambda: 2) == 2
+    assert client._flights == {}
