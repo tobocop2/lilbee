@@ -2187,6 +2187,70 @@ class TestBuildFleetWiring:
         assert set(plan.refused_roles) == {WorkerRole.RERANK}
         assert "does not list --pooling" in plan.refused_roles[WorkerRole.RERANK]
 
+    def test_a_refused_chat_keeps_planning_the_roles_placed_after_it(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        refs = {
+            WorkerRole.CHAT: "org/repo/chat.gguf",
+            WorkerRole.EMBED: "org/repo/embed.gguf",
+            WorkerRole.RERANK: "org/repo/rank.gguf",
+        }
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [
+                    ModelPlacementInput(WorkerRole.CHAT, 5 * _GB),
+                    ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+                    ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+                ],
+                refs,
+                0,
+                {},
+            ),
+        )
+        # The chat is placed first, so every role the plan lists after it follows the refusal.
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(
+                    InstancePlan(WorkerRole.CHAT, (0,)),
+                    InstancePlan(WorkerRole.EMBED, (0,)),
+                    InstancePlan(WorkerRole.RERANK, (0,)),
+                ),
+                unplaceable_roles=(),
+            ),
+        )
+
+        def launch_with_chat_window_below_the_floor(plan, model, *_a, **_kw):
+            window = 512 if plan.role is WorkerRole.CHAT else min_usable_chat_ctx() * 4
+            return InstanceLaunch(
+                role=plan.role, argv=[], env_overrides={}, model=model, ctx=window
+            )
+
+        monkeypatch.setattr(planning_mod, "_launch_for", launch_with_chat_window_below_the_floor)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        engines = engines_for_all_roles(LLAMA)
+
+        plan = planning_mod.plan_all_launches(engines=engines)
+        resolved = planning_mod.resolve_placement_plan(None, engines=engines)
+
+        assert [launch.role for launch in plan.launches] == [WorkerRole.EMBED, WorkerRole.RERANK]
+        assert set(plan.refused_roles) == {WorkerRole.CHAT}
+        assert [inst.role for inst in resolved.instances] == [WorkerRole.EMBED, WorkerRole.RERANK]
+        assert set(resolved.unlaunched_roles) == {WorkerRole.CHAT}
+
     def test_plan_all_launches_refusal_names_the_trained_window(self, monkeypatch) -> None:
         from lilbee.providers.engine_params import min_usable_chat_ctx
         from lilbee.providers.fleet.launch import InstanceLaunch
