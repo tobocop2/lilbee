@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 from _pytest.outcomes import Failed, Skipped
 
-from tests._pack_workflow import WORKFLOW_ENV, pack_workflow, published_builds
+from tests._pack_workflow import (
+    WORKFLOW_ENV,
+    cells_below_the_record,
+    pack_workflow,
+    published_builds,
+    record_after_publish,
+)
 
 
 def test_the_helper_returns_the_named_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,3 +51,33 @@ def test_published_builds_reads_the_numbers_of_the_rows_that_name_the_wheel() ->
     assert all(isinstance(number, int) for number in builds)
     assert published_builds(dist, version, "cpu", "no_such_platform") == []
     assert published_builds(dist, "0", "cpu", "manylinux_2_34_x86_64") == []
+
+
+_ROWS = [
+    {"file": "lilbee_engine_x-1-2.cpu-py3-none-linux.whl"},
+    {"file": "lilbee_engine_x-1-3.cpu-py3-none-linux.whl"},
+    {"file": "lilbee_engine_x-1-9.cuda-py3-none-linux.whl"},
+]
+
+
+def test_a_cell_below_the_highest_row_of_its_wheel_name_is_below_the_record() -> None:
+    cells = [("old", "cpu", "linux", 2), ("equal", "cpu", "linux", 3), ("next", "cpu", "linux", 4)]
+    assert cells_below_the_record("lilbee_engine_x", "1", cells, _ROWS) == ["old"]
+
+
+def test_a_cell_is_compared_with_the_rows_of_its_own_backend_only() -> None:
+    cells = [("cpu", "cpu", "linux", 3), ("cuda", "cuda", "linux", 3)]
+    assert cells_below_the_record("lilbee_engine_x", "1", cells, _ROWS) == ["cuda"]
+
+
+def test_a_cell_with_no_row_is_refused_for_proving_nothing() -> None:
+    with pytest.raises(AssertionError, match="orphan"):
+        cells_below_the_record("lilbee_engine_x", "1", [("orphan", "cpu", "win", 1)], _ROWS)
+
+
+def test_the_record_after_a_publish_holds_one_row_for_each_cell_at_its_number() -> None:
+    cells = [("a", "cpu", "linux", 4)]
+    after = record_after_publish("lilbee_engine_x", "1", cells, _ROWS)
+    assert published_builds("lilbee_engine_x", "1", "cpu", "linux", after) == [4]
+    assert after[0] == _ROWS[2]
+    assert published_builds("lilbee_engine_x", "1", "cpu", "linux", _ROWS) == [2, 3]

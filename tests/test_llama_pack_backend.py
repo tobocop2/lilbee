@@ -25,7 +25,12 @@ from lilbee.providers.fleet.engines.llama import (
     pack_backend,
 )
 from lilbee.providers.fleet.host_caps import HostCaps, collect
-from tests._pack_workflow import pack_workflow, published_builds
+from tests._pack_workflow import (
+    Cell,
+    cells_below_the_record,
+    pack_workflow,
+    record_after_publish,
+)
 from tests._published import render_table, wheel_name
 
 VERSION = "1.12032.1"
@@ -313,7 +318,7 @@ def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow()
     assert shipped - built == set()
 
 
-def test_every_shipped_llama_url_names_the_wheel_of_its_cell_at_an_earlier_build_number() -> None:
+def test_every_shipped_llama_url_names_the_wheel_of_its_cell_apart_from_the_build_number() -> None:
     cells = {cell["cell"]: cell for cell in _pack_matrix(_pack_cells())}
     shipped = MANIFESTS["llama.cpp"][_WHEEL_VERSION]
     assert shipped
@@ -330,17 +335,23 @@ def test_every_shipped_llama_url_names_the_wheel_of_its_cell_at_an_earlier_build
         ), key
 
 
-def test_every_llama_cell_builds_a_higher_number_than_every_published_wheel_of_its_name() -> None:
-    """A file name that a release ships is never built again: two releases with one name hold two
-    digests, and the record keeps the digest of the later one. A rebuild takes the next number."""
+def _llama_builds() -> list[Cell]:
     cells = _pack_matrix(_pack_cells())
     assert cells
-    for cell in cells:
-        published = published_builds(
-            "lilbee_engine_llama_cpp", _WHEEL_VERSION, cell["backend"], cell["platform"]
-        )
-        assert published, cell["cell"]
-        assert cell["build_number"] > max(published), cell["cell"]
+    return [(c["cell"], c["backend"], c["platform"], c["build_number"]) for c in cells]
+
+
+def test_no_llama_cell_builds_a_number_below_a_published_wheel_of_its_name() -> None:
+    """The publish step refuses an existing file name, and that keeps one name to one wheel."""
+    assert cells_below_the_record("lilbee_engine_llama_cpp", _WHEEL_VERSION, _llama_builds()) == []
+
+
+def test_the_llama_cell_numbers_hold_after_the_rows_of_the_batch_are_written() -> None:
+    dist, cells = "lilbee_engine_llama_cpp", _llama_builds()
+    after = record_after_publish(dist, _WHEEL_VERSION, cells)
+    assert cells_below_the_record(dist, _WHEEL_VERSION, cells, after) == []
+    lowered = [(n, backend, platform, build - 1) for n, backend, platform, build in cells]
+    assert cells_below_the_record(dist, _WHEEL_VERSION, lowered, after) == [c[0] for c in cells]
 
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:

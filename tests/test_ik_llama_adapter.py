@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -43,7 +45,12 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.host_caps import NO_NVIDIA_DRIVER, collect
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import RoleTarget, WorkerRole
-from tests._pack_workflow import pack_workflow, published_builds
+from tests._pack_workflow import (
+    Cell,
+    cells_below_the_record,
+    pack_workflow,
+    record_after_publish,
+)
 from tests._published import publish
 from tests._workflow_steps import commands, steps
 
@@ -742,16 +749,23 @@ def test_the_ik_job_has_one_cell_for_each_build_of_the_pack() -> None:
         assert pinned[: len(stated)] == stated
 
 
-def test_a_cell_builds_a_higher_number_than_every_published_wheel_of_its_name() -> None:
-    """A file name that a release ships is never built again: two releases with one name hold two
-    digests, and the record keeps the digest of the later one. A rebuild takes the next number."""
+def _ik_builds() -> list[Cell]:
     platform = _workflow_job("ik")["env"]["PLATFORM"]
-    for name, cell in _ik_cells().items():
-        published = published_builds(
-            "lilbee_engine_ik_llama_cpp", ik_llama.VERSION, cell["backend"], platform
-        )
-        assert published, name
-        assert cell["build_number"] > max(published), name
+    return [(n, c["backend"], platform, c["build_number"]) for n, c in _ik_cells().items()]
+
+
+def test_a_cell_builds_no_number_below_a_published_wheel_of_its_name() -> None:
+    """The publish step refuses an existing file name, and that keeps one name to one wheel."""
+    below = cells_below_the_record("lilbee_engine_ik_llama_cpp", ik_llama.VERSION, _ik_builds())
+    assert below == []
+
+
+def test_the_cell_numbers_hold_after_the_rows_of_the_batch_are_written() -> None:
+    dist, version, cells = "lilbee_engine_ik_llama_cpp", ik_llama.VERSION, _ik_builds()
+    after = record_after_publish(dist, version, cells)
+    assert cells_below_the_record(dist, version, cells, after) == []
+    lowered = [(n, backend, platform, build - 1) for n, backend, platform, build in cells]
+    assert cells_below_the_record(dist, version, lowered, after) == [c[0] for c in cells]
 
 
 def test_the_ik_job_runs_for_its_own_engine_only_and_its_wheels_are_published() -> None:
@@ -893,10 +907,55 @@ def test_the_cuda_driver_stub_comes_from_one_package_version() -> None:
     assert re.search(r"dnf install -y cuda-driver-devel-12-4-\d+\.\d+\.\d+-\d+ ", run)
 
 
+_LICENCE_STEP = "Collect the licences of the server and the code it carries"
+
+
+def test_the_ik_wheel_is_stamped_with_the_expression_of_the_cell_and_its_vendored_terms() -> None:
+    assert _workflow_job("ik")["env"]["LICENSE_TERMS"] == "${{ matrix.license }}"
+    collect = commands(_ik_step(_LICENCE_STEP))
+    assert "terms=${LICENSE_TERMS}" in collect
+    assert "terms=${terms} AND ${id}" in collect
+    assert "LICENSE_EXPRESSION=${terms} >> $GITHUB_ENV" in collect
+    stamp = "python tools/wheel-build/stamp_engine_wheel.py ${WHEEL_DIR}/pyproject.toml"
+    assert f"{stamp} 0+git${{UPSTREAM_COMMIT:0:12}} ${{LICENSE_EXPRESSION}}" in commands(
+        _ik_step("Build the wheel")
+    )
+    names = [step.get("name") for step in steps(pack_workflow(), "ik")]
+    assert names.index(_LICENCE_STEP) < names.index("Build the wheel")
+
+
+def test_the_ik_wheel_ships_the_licence_file_of_the_source_it_builds() -> None:
+    collect = commands(_ik_step(_LICENCE_STEP))
+    assert "lic=${PWD}/${WHEEL_DIR}" in collect
+    assert "cp ik-src/LICENSE ${lic}/LICENSE-ik_llama.cpp" in collect
+    build = commands(_ik_step("Build ik_llama.cpp in the manylinux_2_34 image"))
+    assert "-e SRC_DIR=/work/ik-src" in build
+
+
 _PUBLISH_STEP = "Create the release and upload the wheels"
+# The fake answers the release list the way gh does: it serves one JSON file for each page, applies
+# the --jq filter that the step passes to each page with real jq, and serves page 1 only without
+# --paginate. API_FAIL makes the call fail at once (now) or after page 1 (after-first-page).
 _FAKE_GH = """#!/bin/bash
 case "$1" in
-  api) echo "$@" > "${API_ARGS}"; cat "${ASSET_NAMES}" ;;
+  api)
+    echo "$@" > "${API_ARGS}"
+    shift
+    paginate=0
+    filter=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --paginate) paginate=1 ;;
+        --jq) filter="$2"; shift ;;
+      esac
+      shift
+    done
+    [ "${API_FAIL}" = now ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    for page in "${PAGES}"/*.json; do
+      if [ -n "${filter}" ]; then jq -r "${filter}" "${page}"; else cat "${page}"; fi
+      [ "${API_FAIL}" = after-first-page ] && { echo "gh: HTTP 502" >&2; exit 1; }
+      [ "${paginate}" = 1 ] || break
+    done ;;
   release)
     case "$2" in
       view) exit 1 ;;
@@ -907,17 +966,30 @@ case "$1" in
 esac
 """
 
+_Page = list[dict[str, Any]]
+
+
+def _release(*names: str, draft: bool = False) -> dict[str, Any]:
+    """A release of the GitHub API: the fields of a release that the filter of the step reads."""
+    return {
+        "tag_name": "engine-packs-1",
+        "draft": draft,
+        "assets": [{"name": name, "size": 1} for name in names],
+    }
+
 
 def _publish(
-    tmp_path: Path, wheels: list[str], assets: list[str]
+    tmp_path: Path, wheels: list[str], pages: list[_Page], api_fail: str = ""
 ) -> subprocess.CompletedProcess[str]:
-    """Run the publish step with a gh that lists *assets* and records the release."""
+    """Run the publish step with a gh that serves *pages* of releases and records the create."""
     (run,) = (s["run"] for s in steps(pack_workflow(), "publish") if s.get("name") == _PUBLISH_STEP)
     (tmp_path / "bin").mkdir()
     gh = tmp_path / "bin" / "gh"
     gh.write_text(_FAKE_GH, encoding="utf-8")
     gh.chmod(0o755)
-    (tmp_path / "assets.txt").write_text("".join(f"{a}\n" for a in assets), encoding="utf-8")
+    (tmp_path / "pages").mkdir()
+    for number, page in enumerate(pages, 1):
+        (tmp_path / "pages" / f"{number}.json").write_text(json.dumps(page), encoding="utf-8")
     (tmp_path / "packs").mkdir()
     for wheel in wheels:
         (tmp_path / "packs" / wheel).write_bytes(b"")
@@ -930,7 +1002,8 @@ def _publish(
         "SUFFIX": "",
         "LILBEE_TAG": "pin",
         "LILBEE_COMMIT": "abc",
-        "ASSET_NAMES": str(tmp_path / "assets.txt"),
+        "PAGES": str(tmp_path / "pages"),
+        "API_FAIL": api_fail,
         "API_ARGS": str(tmp_path / "api-args.txt"),
         "CREATED": str(tmp_path / "created.txt"),
     }
@@ -947,13 +1020,16 @@ def _publish(
 
 _WHEEL_3 = "lilbee_engine_ik_llama_cpp-0+gitabc-3.cpu-py3-none-manylinux_2_34_x86_64.whl"
 _WHEEL_4 = "lilbee_engine_ik_llama_cpp-0+gitabc-4.cpu-py3-none-manylinux_2_34_x86_64.whl"
-_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="the step is bash")
+_OTHER = "lilbee_engine_llama_cpp-1-1.cpu-py3-none-win_amd64.whl"
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32" or (shutil.which("jq") is None and not os.environ.get("CI")),
+    reason="the step is bash and the fake gh runs jq",
+)
 
 
 @_posix_only
 def test_publish_refuses_a_wheel_whose_name_is_an_asset_of_any_release(tmp_path: Path) -> None:
-    other = "lilbee_engine_llama_cpp-1-1.cpu-py3-none-win_amd64.whl"
-    done = _publish(tmp_path, [_WHEEL_3, _WHEEL_4], [other, _WHEEL_3])
+    done = _publish(tmp_path, [_WHEEL_3, _WHEEL_4], [[_release(_OTHER, _WHEEL_3)]])
     assert done.returncode == 1
     assert f"The file {_WHEEL_3} is already an asset of a release" in done.stdout
     assert _WHEEL_4 not in done.stdout
@@ -965,23 +1041,59 @@ def test_publish_refuses_a_wheel_whose_name_is_an_asset_of_any_release(tmp_path:
 def test_publish_refuses_a_clashing_wheel_in_any_position(
     tmp_path: Path, wheels: list[str]
 ) -> None:
-    done = _publish(tmp_path, wheels, [_WHEEL_3, _WHEEL_3])
+    done = _publish(tmp_path, wheels, [[_release(_WHEEL_3), _release(_WHEEL_3)]])
     assert done.returncode == 1
     assert done.stdout.count("is already an asset of a release") == 1
     assert not (tmp_path / "created.txt").exists()
 
 
+_HOLDERS = {
+    "the newest release": [[_release(_WHEEL_3), _release()], [_release()], [_release()]],
+    "a later release of the first page": [[_release(), _release(_WHEEL_3)], [_release()]],
+    "a release of a later page": [
+        [_release()],
+        [_release(), _release()],
+        [_release(), _release(_WHEEL_3)],
+    ],
+    "a draft release": [[_release()], [_release(), _release(_WHEEL_3, draft=True)]],
+    "the only release, a draft": [[_release(_WHEEL_3, draft=True)]],
+}
+
+
+@_posix_only
+@pytest.mark.parametrize("pages", _HOLDERS.values(), ids=_HOLDERS)
+def test_publish_refuses_a_name_that_any_release_on_any_page_holds(
+    tmp_path: Path, pages: list[_Page]
+) -> None:
+    done = _publish(tmp_path, [_WHEEL_4, _WHEEL_3], pages)
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert f"The file {_WHEEL_3} is already an asset of a release" in done.stdout
+    assert not (tmp_path / "created.txt").exists()
+
+
+@_posix_only
+@pytest.mark.parametrize("api_fail", ["now", "after-first-page"])
+def test_publish_stops_before_any_create_when_the_release_list_fails(
+    tmp_path: Path, api_fail: str
+) -> None:
+    done = _publish(tmp_path, [_WHEEL_4], [[_release(_OTHER)], [_release(_WHEEL_3)]], api_fail)
+    assert done.returncode != 0
+    assert "HTTP 502" in done.stderr
+    assert not (tmp_path / "created.txt").exists()
+
+
 @_posix_only
 def test_publish_matches_the_whole_file_name_of_an_asset(tmp_path: Path) -> None:
-    longer = [f"old-{_WHEEL_4}", f"{_WHEEL_4}.sha256"]
-    done = _publish(tmp_path, [_WHEEL_4], longer)
+    longer = _release(f"old-{_WHEEL_4}", f"{_WHEEL_4}.sha256")
+    done = _publish(tmp_path, [_WHEEL_4], [[longer]])
     assert done.returncode == 0, done.stdout + done.stderr
     assert (tmp_path / "created.txt").exists()
 
 
 @_posix_only
 def test_publish_creates_the_release_for_names_that_no_release_holds(tmp_path: Path) -> None:
-    done = _publish(tmp_path, [_WHEEL_4], [_WHEEL_3, "notes.txt"])
+    pages = [[_release(_WHEEL_3, "notes.txt")], [_release(_OTHER, draft=True)]]
+    done = _publish(tmp_path, [_WHEEL_4], pages)
     assert done.returncode == 0, done.stdout + done.stderr
     created = (tmp_path / "created.txt").read_text(encoding="utf-8")
     assert f"packs/{_WHEEL_4}" in created
@@ -989,10 +1101,17 @@ def test_publish_creates_the_release_for_names_that_no_release_holds(tmp_path: P
 
 @_posix_only
 def test_publish_reads_every_page_of_the_release_list(tmp_path: Path) -> None:
-    _publish(tmp_path, [_WHEEL_4], [])
+    _publish(tmp_path, [_WHEEL_4], [[_release()]])
     args = (tmp_path / "api-args.txt").read_text(encoding="utf-8")
     assert "repos/owner/packs/releases" in args
     assert "--paginate" in args
+
+
+@_posix_only
+def test_publish_with_no_release_yet_creates_the_release(tmp_path: Path) -> None:
+    done = _publish(tmp_path, [_WHEEL_4], [[]])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "created.txt").exists()
 
 
 def _wheel_check() -> str:
