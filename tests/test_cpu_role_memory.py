@@ -39,7 +39,7 @@ from lilbee.providers.fleet.placement_spec import (
     TargetRefusedError,
 )
 from lilbee.providers.fleet.readback import check_launch
-from lilbee.providers.roles import RoleTarget, WorkerRole
+from lilbee.providers.roles import EngineBackend, RoleTarget, WorkerRole
 from lilbee.server import auth as auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.routes.placement import placement_preview_route, placement_route
@@ -914,3 +914,236 @@ class TestAChatWithChatRefusedAnswersAReadable4xx:
             },
         )
         assert {role for batch in _StubSwap.started for role, _m in batch} == {WorkerRole.EMBED}
+
+
+def _pool(
+    monkeypatch: pytest.MonkeyPatch,
+    roles: list[tuple[WorkerRole, int]],
+    *,
+    free_gib: float,
+    on_cpu: tuple[WorkerRole, ...] | None = None,
+    counts: dict[WorkerRole, int] | None = None,
+    launching: tuple[WorkerRole, ...] | None = None,
+) -> tuple[Placement, list[ModelPlacementInput], dict[WorkerRole, MagicMock]]:
+    """A shared-pool plan of *roles* in GiB, with the weights of *on_cpu* on the CPU backend."""
+    cpu = {role for role, _ in roles} if on_cpu is None else set(on_cpu)
+    count = counts or {}
+    inputs = [ModelPlacementInput(role, int(gib * GIB)) for role, gib in roles]
+    instances = tuple(
+        InstancePlan(role=role, devices=(), replica=replica)
+        for role, _ in roles
+        for replica in range(count.get(role, 1))
+    )
+    started = {role for role, _ in roles} if launching is None else set(launching)
+    monkeypatch.setattr(
+        planning,
+        "_weights_on_cpu",
+        lambda engine, _layers: engine.role in cpu,
+    )
+    monkeypatch.setattr(
+        planning,
+        "_launching_instances",
+        lambda placed, *_a, **_k: [i for i in placed.instances if i.role in started],
+    )
+    monkeypatch.setattr(planning, "snapshot_engine", lambda _engines: MagicMock())
+    monkeypatch.setattr(planning, "_plan_free_system_memory", lambda _engine: int(free_gib * GIB))
+    engines = {role: MagicMock(role=role) for role, _ in roles}
+    return Placement(instances=instances, unplaceable_roles=()), inputs, engines
+
+
+def _auto_findings(
+    placed: Placement,
+    inputs: list[ModelPlacementInput],
+    engines: dict[WorkerRole, MagicMock],
+    *,
+    unified_budget: int | None = 64 * GIB,
+) -> Placement:
+    return planning._with_auto_cpu_findings(
+        placed, inputs, {}, [], engines=engines, unified_budget=unified_budget
+    )
+
+
+class TestAnAutoPlacedCpuRoleWarnsAtLowFreeMemory:
+    """An auto plan that loads a role on the CPU reports the same finding as a cpu pin."""
+
+    def test_the_role_that_crosses_the_free_memory_is_listed(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 2)], free_gib=3
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert found.low_free_memory == {
+            WorkerRole.RERANK: LowFreeMemory(wanted=4 * GIB, free=3 * GIB)
+        }
+
+    def test_a_plan_that_fits_the_free_memory_lists_nothing(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 2)], free_gib=5
+        )
+        assert _auto_findings(placed, inputs, engines).low_free_memory == {}
+
+    def test_an_unread_free_figure_of_zero_lists_nothing(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(monkeypatch, [(WorkerRole.EMBED, 2)], free_gib=0)
+        assert _auto_findings(placed, inputs, engines).low_free_memory == {}
+
+    def test_a_role_off_the_cpu_counts_toward_the_figure_and_is_not_listed(
+        self, monkeypatch
+    ) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch,
+            [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 2)],
+            free_gib=3,
+            on_cpu=(WorkerRole.RERANK,),
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert list(found.low_free_memory) == [WorkerRole.RERANK]
+
+    def test_a_role_off_the_cpu_that_crosses_alone_is_not_listed(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch,
+            [(WorkerRole.EMBED, 4), (WorkerRole.RERANK, 1)],
+            free_gib=3,
+            on_cpu=(WorkerRole.RERANK,),
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert found.low_free_memory == {
+            WorkerRole.RERANK: LowFreeMemory(wanted=5 * GIB, free=3 * GIB)
+        }
+
+    def test_every_replica_of_a_role_is_charged(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 1)], free_gib=2, counts={WorkerRole.EMBED: 3}
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert found.low_free_memory == {
+            WorkerRole.EMBED: LowFreeMemory(wanted=3 * GIB, free=2 * GIB)
+        }
+
+    def test_a_role_that_does_not_launch_holds_nothing(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch,
+            [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 2)],
+            free_gib=3,
+            launching=(WorkerRole.RERANK,),
+        )
+        assert _auto_findings(placed, inputs, engines).low_free_memory == {}
+
+    def test_a_swap_group_is_charged_its_largest_member_and_each_member_is_listed(
+        self, monkeypatch
+    ) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 3)], free_gib=2
+        )
+        placed = Placement(
+            instances=placed.instances,
+            unplaceable_roles=(),
+            co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.RERANK}),
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert found.low_free_memory == {
+            WorkerRole.EMBED: LowFreeMemory(wanted=3 * GIB, free=2 * GIB),
+            WorkerRole.RERANK: LowFreeMemory(wanted=3 * GIB, free=2 * GIB),
+        }
+
+    def test_a_pool_with_no_shared_memory_budget_is_left_alone(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(monkeypatch, [(WorkerRole.EMBED, 9)], free_gib=1)
+        assert _auto_findings(placed, inputs, engines, unified_budget=None) is placed
+
+    def test_a_role_pinned_to_the_cpu_by_a_spec_is_left_to_the_spec_check(
+        self, monkeypatch
+    ) -> None:
+        _placed, inputs, engines = _pool(monkeypatch, [(WorkerRole.EMBED, 9)], free_gib=1)
+        pinned = Placement(
+            instances=(InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU),),
+            unplaceable_roles=(),
+        )
+        assert _auto_findings(pinned, inputs, engines) is pinned
+
+    def test_a_role_on_a_card_is_left_alone(self, monkeypatch) -> None:
+        _placed, inputs, engines = _pool(monkeypatch, [(WorkerRole.EMBED, 9)], free_gib=1)
+        on_card = Placement(
+            instances=(InstancePlan(role=WorkerRole.EMBED, devices=(0,)),),
+            unplaceable_roles=(),
+        )
+        assert _auto_findings(on_card, inputs, engines) is on_card
+
+    def test_the_findings_a_spec_already_made_are_kept(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 2)], free_gib=3
+        )
+        pinned = LowFreeMemory(wanted=9 * GIB, free=3 * GIB)
+        seeded = Placement(
+            instances=placed.instances,
+            unplaceable_roles=(),
+            low_free_memory={WorkerRole.VISION: pinned},
+        )
+        found = _auto_findings(seeded, inputs, engines)
+        assert set(found.low_free_memory) == {WorkerRole.VISION, WorkerRole.RERANK}
+        assert found.low_free_memory[WorkerRole.VISION] is pinned
+
+    def test_the_free_memory_is_not_read_when_no_role_loads_on_the_cpu(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(monkeypatch, [(WorkerRole.EMBED, 9)], free_gib=1, on_cpu=())
+        monkeypatch.setattr(
+            planning, "_plan_free_system_memory", lambda _e: pytest.fail("free read")
+        )
+        assert _auto_findings(placed, inputs, engines) is placed
+
+
+CPU_ONLY_ROLES = (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1))
+AUTO_BOTH = '{"chat": {"target": "auto"}, "embed": {"target": "auto"}}'
+
+
+def _cpu_only_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spec: str | None, free_gib: float
+) -> CardEngine:
+    """A host with no card whose engine runs on the CPU backend, with *free_gib* GiB free."""
+    prepare_host(monkeypatch, tmp_path, CPU_ONLY_ROLES, 64 * GIB)
+    monkeypatch.setattr(cfg, "placement", spec)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    monkeypatch.setattr(planning, "_plan_free_system_memory", lambda _e: int(free_gib * GIB))
+    return CardEngine(
+        "engine-a",
+        tmp_path / "engine-server",
+        CPU_ONLY_ROLES,
+        [],
+        backend=EngineBackend.CPU,
+        cpu_only=True,
+    )
+
+
+class TestTheLaunchWarnsAboutAnAutoCpuRole:
+    """The auto plan and an auto role inside a spec reach the same launch warning."""
+
+    @pytest.mark.parametrize("spec", [None, AUTO_BOTH])
+    def test_the_launch_warns_once_that_the_plan_passes_the_free_memory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        spec: str | None,
+    ) -> None:
+        engine = _cpu_only_host(monkeypatch, tmp_path, spec, 1.5)
+        with caplog.at_level("WARNING"):
+            plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert set(_launched(plan)) == {WorkerRole.CHAT, WorkerRole.EMBED}
+        warned = [r.getMessage() for r in caplog.records if "is free" in r.getMessage()]
+        assert len(warned) == 1
+        assert warned[0].startswith("Running the embed model org/repo/embed.gguf brings this plan")
+        assert "only 1.5 GiB is free" in warned[0]
+
+    def test_a_plan_that_fits_the_free_memory_does_not_warn(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        engine = _cpu_only_host(monkeypatch, tmp_path, None, 8)
+        with caplog.at_level("WARNING"):
+            plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert set(_launched(plan)) == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert "is free" not in caplog.text
+
+    def test_the_placement_view_logs_no_low_memory_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        engine = _cpu_only_host(monkeypatch, tmp_path, None, 1.5)
+        with caplog.at_level("WARNING"):
+            view = planning.resolve_placement_plan(None, engines=engines_for_all_roles(engine))
+        assert {inst.role for inst in view.instances} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert "is free" not in caplog.text
