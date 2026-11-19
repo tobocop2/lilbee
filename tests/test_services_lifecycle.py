@@ -768,37 +768,43 @@ def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(si
     provider.shutdown.assert_called_once()
 
 
-class _Woken(Exception):
-    """Raised by the test handler once the main thread runs it."""
+def _signal_once_the_loop_idles() -> None:
+    # The main thread is asleep in the loop's select by now. raise_signal from this
+    # thread delivers the signal to this thread, so nothing interrupts that select.
+    time.sleep(0.5)
+    signal.raise_signal(signal.SIGINT)
 
 
 def test_a_signal_on_another_thread_wakes_an_idle_loop():
     """The handler runs on the main thread only; the wakeup fd must end the loop's wait."""
     previous = signal.getsignal(signal.SIGINT)
-    # raise_signal from a thread delivers the signal to that thread, not the main one.
-    sender = threading.Thread(target=signal.raise_signal, args=(signal.SIGINT,))
+    sender = threading.Thread(target=_signal_once_the_loop_idles)
+    heard: list[asyncio.Future[None]] = []
 
     def _handler(_signum: int, _frame: object) -> None:
-        raise _Woken
+        heard[0].get_loop().call_soon_threadsafe(heard[0].set_result, None)
 
     async def idle() -> None:
+        heard.append(asyncio.get_running_loop().create_future())
         with loop_wakes_on_signals(asyncio.get_running_loop()):
             sender.start()
-            await asyncio.sleep(30)
+            # Without the wakeup fd the main thread sleeps until this timeout ends.
+            await asyncio.wait_for(heard[0], 10)
 
     signal.signal(signal.SIGINT, _handler)
     started = time.monotonic()
     try:
-        with (
-            asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner,
-            pytest.raises(_Woken),
-        ):
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
             runner.run(idle())
     finally:
         signal.signal(signal.SIGINT, previous)
         sender.join(timeout=5)
 
-    assert time.monotonic() - started < 10
+    assert time.monotonic() - started < 5
+
+
+def test_the_thread_seam_lists_the_running_threads():
+    assert threading.current_thread() in services_mod._all_threads()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
