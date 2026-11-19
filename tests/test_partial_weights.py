@@ -382,12 +382,19 @@ class TestACutFileOnTheCpuDecodePath:
         assert (parser_calls, shape_calls) == ([], [])
 
     def test_a_whole_file_still_gets_the_cpu_figure(
-        self, tmp_path: Path, parser_calls: list[Path], shape_calls: list[Path]
+        self,
+        tmp_path: Path,
+        parser_calls: list[Path],
+        shape_calls: list[Path],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        repacked = 5
+        monkeypatch.setattr(mm, "repacked_weight_bytes", lambda _path: repacked)
         model = _write(tmp_path / "m.gguf", _gguf())
         request = replace(_request(model), on_cpu=True, flash_attn=True)
         est = LLAMA.estimate_memory(request)
         unused_logits = (512 - 1) * 151_936 * 8
+        assert est.mapped_weights_bytes == _PARSED.mapped_weights_bytes + repacked
         assert est.shared_bytes == (
             _PARSED.unified_bytes - unused_logits + mm.CPU_RUNTIME_ALLOWANCE_BYTES
         )
