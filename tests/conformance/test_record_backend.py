@@ -61,6 +61,8 @@ class TestReportedBackend:
             (["MTL0"], "metal"),
             (["Vulkan1"], "vulkan"),
             (["CPU", "CPU_Mapped"], "cpu"),
+            (["CUDA_Host"], "cpu"),
+            (["Host"], "cpu"),
             (["CUDA0", "Vulkan0"], "cuda+vulkan"),
             (["Wibble0"], "wibble"),
             (["7"], "7"),
@@ -86,6 +88,11 @@ class TestReportedBackend:
 
 
 class TestReportedDevices:
+    def test_a_row_with_no_bytes_is_a_listed_device_not_a_used_one(self) -> None:
+        payload = {"data": [{"name": "CUDA0", "model": 0}, {"name": "CPU", "model": 5}]}
+        with _engine(payload) as url:
+            assert record_presets.reported_devices(url, None) == ["CPU"]
+
     def test_the_labels_come_from_the_engine_reply(self) -> None:
         with _engine(_rows("CUDA0", "CPU")) as url:
             assert record_presets.reported_devices(url, None) == ["CPU", "CUDA0"]
@@ -165,6 +172,21 @@ class TestRecorderMain:
     ) -> None:
         with _engine(_rows("CUDA0")) as url, pytest.raises(SystemExit, match="reports cuda"):
             _record(monkeypatch, tmp_path, url, "cpu")
+
+    def test_a_gpu_label_with_only_a_pinned_host_row_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        with _engine(_rows("CUDA_Host")) as url, pytest.raises(SystemExit, match="reports cpu"):
+            _record(monkeypatch, tmp_path, url, "cuda")
+        assert not (tmp_path / "rec.log").exists()
+
+    def test_a_gpu_label_with_a_device_that_holds_no_bytes_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        payload = {"data": [{"name": "CUDA0", "model": 0}]}
+        with _engine(payload) as url, pytest.raises(SystemExit, match="lists no device"):
+            _record(monkeypatch, tmp_path, url, "cuda")
+        assert not (tmp_path / "rec.log").exists()
 
     def test_a_confirmed_label_is_written_with_the_reported_devices(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

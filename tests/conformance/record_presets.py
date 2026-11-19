@@ -15,7 +15,7 @@ from typing import Any
 
 from tools.qa.engine_demo.scrub import scrub_recording
 
-from lilbee.providers.fleet.readback import parse_memory_rows
+from lilbee.providers.fleet.readback import _is_host_device, parse_memory_rows
 from tests.conformance.preset_check import (
     Outcome,
     Setup,
@@ -98,14 +98,12 @@ _LABEL_BACKENDS = {
     "hip": "rocm",
     "sycl": "sycl",
     "openvino": "openvino",
-    "cpu": _CPU,
-    "amx": _CPU,
-    "host": _CPU,
 }
 
 
 def reported_devices(url: str, token: str | None) -> list[str]:
     """The device labels in the ``/memory`` reply of the engine at *url*; empty if none."""
+    # S310: the URL is the engine address the operator passes on the command line, never a reply.
     request = urllib.request.Request(url.rstrip("/") + "/memory")  # noqa: S310
     if token:
         request.add_header("Authorization", f"Bearer {token}")
@@ -114,20 +112,21 @@ def reported_devices(url: str, token: str | None) -> list[str]:
             payload = json.loads(resp.read())
     except (OSError, ValueError):
         return []
-    return sorted(parse_memory_rows(payload))
+    return sorted(label for label, size in parse_memory_rows(payload).items() if size > 0)
 
 
 def reported_backend(devices: list[str]) -> str:
-    """The backend the device labels name: the one GPU backend among them, else cpu."""
-    names: set[str] = set()
+    """The backend of the device labels that hold GPU memory; cpu when only host rows remain."""
+    gpus: set[str] = set()
     for label in devices:
+        if _is_host_device(label):
+            continue
         word = re.match(r"[A-Za-z]+", label)
         key = word.group().lower() if word else label.lower()
-        names.add(_LABEL_BACKENDS.get(key, key))
-    gpus = sorted(names - {_CPU})
+        gpus.add(_LABEL_BACKENDS.get(key, key))
     if gpus:
-        return "+".join(gpus)
-    return _CPU if names else _NO_REPORT
+        return "+".join(sorted(gpus))
+    return _CPU if devices else _NO_REPORT
 
 
 def check_backend(asked: str, reported: str) -> None:
