@@ -387,10 +387,7 @@ _NOT_WIKI_CHUNK = f"({_CHUNK_TYPE} IS NULL OR NOT ({_WIKI_CHUNK}))"
 _WIKI_ID_SUFFIX = "wiki"
 _WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
 # The source rows a move found by a sync carries: the listed ones and every failure.
-_MOVABLE = (
-    f"{_SOURCE_TYPE} != '{SourceType.WIKI}'"
-    f" AND ({_HELD_OUT} IS NULL OR {_INGEST_FAILED})"
-)
+_MOVABLE = f"{_SOURCE_TYPE} != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL OR {_INGEST_FAILED})"
 # The source rows an upgrade compares a document key with: any row whose type is not wiki.
 _NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR NOT ({_WIKI}))"
 

@@ -1075,16 +1075,17 @@ def _persist_failures(
     reasons: dict[str, str],
     failed: Iterable[str],
     retry: Mapping[str, str],
-    owns: Callable[[str], bool] | None,
+    shard: ShardId | None,
 ) -> None:
     """Hold each of *failed* out of later syncs, and mark each of *retry* to try again.
 
     Each record is at the hash this sync planned the file at. A file that ingests
     cleanly needs no step: its new source row records nothing. Every other retry
-    record of the paths *owns* takes is released, so no record outlives a moved or
-    deleted file. A write that cannot take the lock is logged, and those files are
-    tried again next sync.
+    record of the *shard*'s paths (all paths with no shard) is released, so no
+    record outlives a moved or deleted file. A write that cannot take the lock is
+    logged, and those files are tried again next sync.
     """
+    owns = shard.owns if shard is not None else None
     held = {
         name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
         for name in failed
@@ -1694,9 +1695,8 @@ async def sync(
 
     # A flush or engine failure is not a verdict on the file: it is planned again next sync.
     held = [name for name in (*failed, *skipped) if name not in retry_next]
-    owns = shard.owns if shard is not None else None
     await to_ingest_thread(
-        _persist_failures, _store, pending_hashes, reasons, held, retry_next, owns
+        _persist_failures, _store, pending_hashes, reasons, held, retry_next, shard
     )
 
     vanished = (

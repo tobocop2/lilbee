@@ -1221,7 +1221,7 @@ class TestSync:
         )
         skipped: dict[str, None] = {"blank.pdf": None}
         failed: dict[str, None] = {}
-        pipeline._flush_writes([result], {}, {}, failed, skipped, set())
+        pipeline._flush_writes([result], {}, {}, failed, skipped, {})
 
         assert list(failed) == ["blank.pdf"]
         assert "blank.pdf" not in skipped  # not double-listed
@@ -1290,8 +1290,8 @@ class TestSync:
         assert retry_next == {"a.txt": "the write to the index failed"}
 
     async def test_flush_failure_does_not_hold_the_file_out(self, _mock_extract_file, isolated_env):
-        # End-to-end: a hard flush failure records the file as failed but writes
-        # no held-out record, so the next sync re-plans it.
+        # End-to-end: a hard flush failure records the file as failed and as a retry,
+        # never as held out, so the next sync re-plans it.
         from lilbee.app.services import get_services
         from lilbee.data.ingest import sync
 
@@ -1300,9 +1300,9 @@ class TestSync:
 
         result = await sync(quiet=True)
         assert "doc.txt" in result.failed
-        assert "doc.txt" not in held_hashes()
+        assert held_kinds() == {"doc.txt": HeldOut.RETRY}
 
-        # Next sync re-plans the file (no record, hash unchanged but never stored).
+        # Next sync re-plans the file (a retry, hash unchanged but never stored).
         get_services().store.write_chunks_batch.side_effect = None
         retry = await sync(quiet=True)
         assert "doc.txt" in retry.added
@@ -1315,11 +1315,11 @@ class TestSync:
 
         store = _install_real_store()
         result = _real_ingest_result("a.pdf", file_hash="h1")
-        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, {}, set())
+        pipeline._flush_writes([result], {"a.pdf": None}, {}, {}, {}, {})
         assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one of a.pdf"]
 
         replanned = _real_ingest_result("a.pdf", file_hash="h2", page_text="page one, edited")
-        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, {}, set())
+        pipeline._flush_writes([replanned], {"a.pdf": None}, {}, {}, {}, {})
         assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
         sources = {s["filename"]: s for s in store.get_sources()}
         assert sources["a.pdf"]["file_hash"] == "h2"
@@ -2386,9 +2386,8 @@ class TestAnswerAfterEveryIngestFailed:
 
     async def test_a_worker_keeps_the_retries_of_the_other_slice(self):
         """A worker of two releases only its own slice's retries; the sibling's survive."""
-        from lilbee.data.types import ShardId
-
         from lilbee.data.store import Store
+        from lilbee.data.types import ShardId
 
         shard = ShardId(index=0, count=2, corpus_root=cfg.data_root)
         names = [f"file{number}.txt" for number in range(32)]
@@ -2496,12 +2495,18 @@ class TestAnswerAfterEveryIngestFailed:
         """A fan-out worker leaves the same rows a single sync does, and no other file."""
         from lilbee.data.types import ShardId
 
-        before = sorted(path.name for path in cfg.data_root.iterdir())
+        def _entries() -> set[str]:
+            # Two levels: the data root's folders and what each holds, not the table files.
+            found = [*cfg.data_root.glob("*"), *cfg.data_root.glob("*/*")]
+            return {str(path.relative_to(cfg.data_root)) for path in found}
+
+        await fail_every_ingest(self._NAMES)
+        single = _entries()
         shard = ShardId(index=0, count=1, corpus_root=cfg.data_root)
         result = await fail_every_ingest(self._NAMES, shard=shard)
 
         assert sorted(result.failed) == sorted(self._NAMES)
-        assert sorted(path.name for path in cfg.data_root.iterdir()) == before
+        assert _entries() - single == set()
         assert held_kinds() == dict.fromkeys(self._NAMES, HeldOut.RETRY)
         assert self._answer() == FAILED_ANSWER
 
