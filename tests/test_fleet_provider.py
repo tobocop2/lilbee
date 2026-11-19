@@ -3393,6 +3393,23 @@ def test_role_device_sets_unions_replicas_and_skips_unpinned() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "var",
+    [
+        "CUDA_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "GGML_VK_VISIBLE_DEVICES",
+        "ONEAPI_DEVICE_SELECTOR",
+    ],
+)
+def test_role_device_sets_reads_every_backends_pin_variable(var: str) -> None:
+    launch = InstanceLaunch(
+        role=WorkerRole.EMBED, argv=[], env_overrides={var: "2"}, model="embed-0"
+    )
+    assert prov_mod._role_device_sets([launch]) == {WorkerRole.EMBED: frozenset({f"{var}=2"})}
+
+
 def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     # Chat and embed pinned to the same card must warm one at a time, embed
     # first: concurrent loads on a shared device race each other for VRAM and
