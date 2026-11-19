@@ -43,7 +43,7 @@ class WarningCode(StrEnum):
     """A search ran without concept query variants because that step failed."""
     RERANK_FAILED = "rerank_failed"
     """A search kept its retrieval order because the reranker failed."""
-    GPU_NOT_SERVED ="gpu_not_served"
+    GPU_NOT_SERVED = "gpu_not_served"
     """The engine pack that installed on first use cannot use this computer's GPU."""
 
 
