@@ -38,8 +38,8 @@ VERSION = f"0+git{IK_LLAMA_COMMIT[:_VERSION_HEX_DIGITS]}"
 # A test reads the build script and fails when it stops agreeing with these two.
 _CUDA_DRIVER_FLOOR = (12, 4)
 _CUDA_MIN_COMPUTE = (7, 5)
-_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA"]
-_CPU_LICENCES = ["MIT"]
+_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA AND Apache-2.0 AND MIT-0 AND Unlicense"]
+_CPU_LICENCES = ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
