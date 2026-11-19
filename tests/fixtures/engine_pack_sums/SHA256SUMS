@@ -3,8 +3,9 @@
 # In the block of engine-packs-20261118, each line comes from the SHA256SUMS asset of the
 # source release of the wheel, fetched on 2026-11-17 with: gh release download <tag> -p SHA256SUMS
 # The copy was checked against these lines with sha256sum before the upload.
-# In the block of engine-packs-20261119-ik, each line is the sha256sum of the wheel on the
-# build host before the upload. An anonymous download of each asset gave the same sum.
+# In the blocks of engine-packs-20261119-ik and engine-packs-20261119-ik2, each line is the
+# sha256sum of the wheel on the build host before the upload. An anonymous download of each
+# asset gave the same sum.
 # release engine-packs-20261118
 # source release engine-packs-20261104
 8bba9afef14daa860692e6011f5cee892c544e9e0f43bb774dbe39ec83e575b5  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cpu-py3-none-manylinux_2_34_x86_64.whl
@@ -41,3 +42,6 @@ adef1ba024f7fd18e65f335820cd9d6169eee5a3ca823108650bf67a45afed04  lilbee_engine_
 # release engine-packs-20261119-ik
 150058088c79a6c7f3499ee5245ca5cdda4071ea8ecc473070e21990e835ee64  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cuda-py3-none-manylinux_2_34_x86_64.whl
 352e2eebd989d3075a283f910cf98854de655e8f0cb4396882f2d7e06473dedc  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cpu-py3-none-manylinux_2_34_x86_64.whl
+# release engine-packs-20261119-ik2
+4407cb7986ceb42ce2c1c2c743be5f074317af37ab88f0f33ab17ab589142d1d  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cuda-py3-none-manylinux_2_34_x86_64.whl
+96d7a448b522bde5c970767094cb4d8c0e6add596e9ed5f9bb681dfde97e734c  lilbee_engine_ik_llama_cpp-0+git13cffc006b82-3.cpu-py3-none-manylinux_2_34_x86_64.whl
