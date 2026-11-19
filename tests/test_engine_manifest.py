@@ -301,14 +301,14 @@ SHIPPED_IK = {
     "cpu": (
         None,
         "linux-x86_64-cpu",
-        "352e2eebd989d3075a283f910cf98854de655e8f0cb4396882f2d7e06473dedc",
-        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cpu-py3-none-manylinux_2_34_x86_64.whl",
+        "96d7a448b522bde5c970767094cb4d8c0e6add596e9ed5f9bb681dfde97e734c",
+        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-3.cpu-py3-none-manylinux_2_34_x86_64.whl",
     ),
     "cuda": (
         _IK_L4,
         "linux-x86_64-cuda",
-        "150058088c79a6c7f3499ee5245ca5cdda4071ea8ecc473070e21990e835ee64",
-        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-1.cuda-py3-none-manylinux_2_34_x86_64.whl",
+        "4407cb7986ceb42ce2c1c2c743be5f074317af37ab88f0f33ab17ab589142d1d",
+        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cuda-py3-none-manylinux_2_34_x86_64.whl",
     ),
 }
 
@@ -325,7 +325,7 @@ def test_each_linux_host_resolves_its_own_ik_pack_from_the_shipped_table(
     assert pin["backend"] == build
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
-    assert pin["platforms"][cell]["url"] == f"{PACKAGES_URL}engine-packs-20261119-ik/{file}"
+    assert pin["platforms"][cell]["url"] == f"{PACKAGES_URL}engine-packs-20261119-ik2/{file}"
 
 
 def test_ik_llama_pin_record_does_not_read_the_llama_record(
