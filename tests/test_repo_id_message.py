@@ -77,6 +77,15 @@ class TestPullSurfaces:
             real_manager.pull(_BAD_REF, ModelSource.NATIVE)
         assert f"Model '{_BAD_REF}' not recognized. {REPO_ID_HINT}" in str(caught.value)
 
+    def test_manager_pull_refusal_text(self, real_manager: ModelManager) -> None:
+        with pytest.raises(ModelNotFoundError) as caught:
+            real_manager.pull(_BAD_REF, ModelSource.NATIVE)
+        assert str(caught.value) == (
+            "Model 'standalone' not recognized. "
+            "Write a repo id as '<org>/<repo>', for example 'Qwen/Qwen3-0.6B-GGUF'. "
+            "Or give a featured model name."
+        )
+
     def test_cli_json(self, real_manager: ModelManager) -> None:
         result = _runner.invoke(app, ["--json", "model", "pull", _BAD_REF])
         assert result.exit_code == 1, result.output

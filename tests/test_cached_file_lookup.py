@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,6 +70,12 @@ class TestExactLookup:
     def test_a_name_under_another_directory_is_not_a_hit(self, cache: Path) -> None:
         assert cached_file_path(_REPO, "other/a.gguf", cache) is None
 
+    def test_a_file_the_hub_recorded_as_missing_gives_none(self, cache: Path) -> None:
+        marker = cache / "models--org--repo" / ".no_exist" / "rev1" / "gone.gguf"
+        marker.parent.mkdir(parents=True)
+        marker.write_bytes(b"")
+        assert cached_file_path(_REPO, "gone.gguf", cache) is None
+
 
 class TestCachedShard:
     """The shard lookup reads the cache through the shared exact lookup."""
@@ -125,6 +132,16 @@ class TestRegistryLookup:
         (_snapshot(cache) / "evil.gguf").symlink_to(outside)
         assert cached_file_path(_REPO, "evil.gguf", cache) == _snapshot(cache) / "evil.gguf"
         assert ModelRegistry(cache)._snapshot_gguf_path(_REPO, "evil.gguf") is None
+
+    def test_exact_step_follows_the_main_ref_not_the_newest_revision(self, cache: Path) -> None:
+        blobs = cache / "models--org--repo" / "blobs"
+        newer = cache / "models--org--repo" / "snapshots" / "rev2"
+        newer.mkdir()
+        _link(newer, blobs, _ROOT_FILE, "blob-a2")
+        os.utime(_snapshot(cache) / _ROOT_FILE, (1_000, 1_000), follow_symlinks=False)
+        os.utime(newer / _ROOT_FILE, (2_000, 2_000), follow_symlinks=False)
+        found = ModelRegistry(cache)._snapshot_gguf_path(_REPO, _ROOT_FILE)
+        assert found == _snapshot(cache) / _ROOT_FILE
 
     def test_exact_step_is_the_shared_lookup(self, cache: Path) -> None:
         shared = _snapshot(cache) / _ROOT_FILE
