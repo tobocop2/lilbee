@@ -2208,6 +2208,51 @@ def test_chat_with_tools_client_is_not_closed_by_reloads_during_its_request() ->
     assert client.in_flight == 0
 
 
+def test_chat_forwards_the_whole_request_to_the_reserved_client() -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+    client.chat_result.return_value = ChatResult(
+        text="a", tool_calls=(), finish_reason=FinishReason.STOP
+    )
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    p.chat(messages, tools=tools, tool_choice="auto", options={"temperature": 0.2})
+    client.chat_result.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+def test_chat_stream_forwards_the_whole_request_to_the_reserved_client() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    stream = p.chat(
+        messages, stream=True, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+    assert list(stream) == ["a"]
+    client.chat_stream_items.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+def test_chat_with_tools_forwards_the_whole_request_to_the_reserved_client() -> None:
+    from lilbee.providers.base import ChatToolResult
+
+    client = _counting_client()
+    client.chat_tools.return_value = ChatToolResult(content="a", tool_calls=[])
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    p.chat_with_tools(messages, tools=tools, tool_choice="auto", options={"temperature": 0.2})
+    client.chat_tools.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
 def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
     client = _counting_client()
     seen: list[int] = []
