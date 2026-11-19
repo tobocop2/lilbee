@@ -444,17 +444,70 @@ class TestEngineHelp:
         assert binary_mod.engine_help(binary) == "--port PORT\n"
         assert len(calls) == 2
 
-    def test_a_timed_out_probe_is_not_run_a_second_time(self, monkeypatch) -> None:
+    @staticmethod
+    def _clocked_timeouts(monkeypatch) -> list[float]:
+        """Run the timeout memory on a fake clock; the list's one item is now."""
+        now = [0.0]
+        monkeypatch.setattr(binary_mod._help_timeouts, "clock", lambda: now[0])
+        return now
+
+    @staticmethod
+    def _hang_then_answer(monkeypatch, *, hangs: int) -> list[int]:
+        """Make the probe time out *hangs* times, then print ``--port PORT``; the call log."""
         calls: list[int] = []
 
-        def _hang(*_a, **_k):
+        def _run(*_a, **_k):
             calls.append(1)
-            raise binary_mod.subprocess.TimeoutExpired("llama-server", 15.0)
+            if len(calls) <= hangs:
+                raise binary_mod.subprocess.TimeoutExpired("llama-server", 15.0)
+            return SimpleNamespace(stdout="--port PORT", stderr="")
 
-        monkeypatch.setattr(binary_mod.subprocess, "run", _hang)
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+        return calls
+
+    def test_a_timed_out_probe_is_not_run_again_before_its_expiry(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=1)
         binary = Path("/bin/llama-server")
         assert binary_mod.engine_help(binary) == ""
+        now[0] = binary_mod._HELP_TIMEOUT_MEMORY_S - 1
         assert binary_mod.engine_help(binary) == ""
+        assert len(calls) == 1
+
+    def test_a_timed_out_probe_runs_again_after_its_expiry(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=1)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        now[0] = binary_mod._HELP_TIMEOUT_MEMORY_S + 1
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_probe_that_times_out_again_is_remembered_for_a_new_period(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=2)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        now[0] = binary_mod._HELP_TIMEOUT_MEMORY_S + 1
+        assert binary_mod.engine_help(binary) == ""
+        now[0] += binary_mod._HELP_TIMEOUT_MEMORY_S - 1
+        assert binary_mod.engine_help(binary) == ""
+        assert len(calls) == 2
+
+    def test_a_timeout_on_one_path_does_not_hold_back_another(self, monkeypatch) -> None:
+        self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=1)
+        assert binary_mod.engine_help(Path("/bin/llama-server")) == ""
+        assert binary_mod.engine_help(Path("/opt/other/llama-server")) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_good_read_stays_cached_long_after_the_expiry(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=0)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        now[0] = 100 * binary_mod._HELP_TIMEOUT_MEMORY_S
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
         assert len(calls) == 1
 
     def test_a_good_read_runs_the_binary_once_per_path(self, monkeypatch) -> None:

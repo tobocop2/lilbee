@@ -6,10 +6,14 @@ import functools
 import hashlib
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from enum import StrEnum
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+
+from cachetools import TTLCache
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engine_install import engine_install_hint
@@ -18,6 +22,10 @@ from lilbee.providers.fleet.engine_install import engine_install_hint
 # generous; a binary that cannot even print usage in this time is not one the
 # fleet should silently trust either way.
 _HELP_PROBE_TIMEOUT_S = 15.0
+# A cold disk or a GPU runtime start can make the first probe slow. A minute is long
+# enough that a slow engine does not pay the probe time on every call, and short enough
+# that the next launch after the engine warms up probes again.
+_HELP_TIMEOUT_MEMORY_S = 60.0
 
 
 class EngineTool(StrEnum):
@@ -343,16 +351,52 @@ class _NoHelpTextError(Exception):
     """The binary printed no ``--help`` text, so nothing is cached for it."""
 
 
+class _HelpTimedOutError(Exception):
+    """The binary did not print ``--help`` text in time."""
+
+
+class _TimeoutMemory:
+    """The binaries whose ``--help`` probe timed out lately; each is forgotten after *ttl_s*."""
+
+    def __init__(self, ttl_s: float) -> None:
+        self.clock: Callable[[], float] = time.monotonic
+        self._seen: TTLCache[Path, None] = TTLCache(
+            maxsize=8, ttl=ttl_s, timer=lambda: self.clock()
+        )
+        self._lock = threading.Lock()
+
+    def holds(self, binary: Path) -> bool:
+        with self._lock:
+            return binary in self._seen
+
+    def add(self, binary: Path) -> None:
+        with self._lock:
+            self._seen[binary] = None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+
+_help_timeouts = _TimeoutMemory(_HELP_TIMEOUT_MEMORY_S)
+
+
 def engine_help(binary: Path) -> str:
     """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
 
     Empty when the binary cannot run, cannot answer in time or prints nothing. A
-    timeout is cached, so a hanging binary costs the probe time once; any other empty
-    result is not cached, so the next call reads again. The optional flags are all
-    written meanwhile, since no help text proves them missing.
+    timeout is remembered for ``_HELP_TIMEOUT_MEMORY_S``, so a slow binary does not cost
+    the probe time on every call; any other empty result is not cached, so the next
+    call reads again. The optional flags are all written meanwhile, since no help text
+    proves them missing.
     """
+    if _help_timeouts.holds(binary):
+        return ""
     try:
         return _read_help(binary)
+    except _HelpTimedOutError:
+        _help_timeouts.add(binary)
+        return ""
     except _NoHelpTextError:
         return ""
 
@@ -372,8 +416,8 @@ def _read_help(binary: Path) -> str:
             timeout=_HELP_PROBE_TIMEOUT_S,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        return ""
+    except subprocess.TimeoutExpired as exc:
+        raise _HelpTimedOutError from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise _NoHelpTextError from exc
     text = f"{done.stdout}\n{done.stderr}"
