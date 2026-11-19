@@ -3699,6 +3699,37 @@ def test_embed_redo_after_overflow_sends_the_input_truncated_by_the_server_token
     assert sent == [["dense"], ["cut"]]
 
 
+def test_rerank_redo_after_overflow_sends_the_pair_truncated_by_the_server_tokenizer() -> None:
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/detokenize"):
+            assert json.loads(request.content)["tokens"] == list(range(10))
+            return httpx.Response(200, json={"content": "cut"})
+        if path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        sent.append(json.loads(request.content)["input"])
+        if len(sent) == 1:
+            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    assert _capped_client(handler, 10).rerank("q", ["dense"]) == [0.5]
+    assert sent == [[f"q{_RERANK_PAIR_SEPARATOR}dense"], ["cut"]]
+
+
+def test_rerank_does_not_redo_an_error_that_is_not_an_overflow() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(ProviderError, match="500"):
+        _capped_client(handler, 10).rerank("q", ["dense"])
+    assert calls == ["/v1/embeddings"]
+
+
 def test_count_text_tokens_without_tokenize_route_is_none() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"no request expected, got {request.url.path}")
