@@ -422,9 +422,11 @@ def estimate_gguf_cpu_decode(request: MemoryRequest) -> MemoryEstimate:
     """The CPU chat figure: one logits row per slot, scores when flash is off.
 
     A header whose head counts are absent or per layer (a hybrid recurrent model), or that has
-    no vocabulary, keeps the parser's own figure.
+    no vocabulary, keeps the parser's own figure. An estimate of unknown size is returned unchanged.
     """
     estimate = estimate_gguf(request)
+    if not estimate.size_known:
+        return estimate
     shape = attention_shape(request.model_path)
     if shape is None:
         return estimate
