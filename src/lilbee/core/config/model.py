@@ -351,7 +351,8 @@ class Config(BaseSettings):
     # Outer wall-clock budget for the streamed pool drain: load grace plus
     # per_page * pages. Tune up for slow hardware (M1 Pro vision is
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
-    # per-page expectation that drives the total budget.
+    # per-page expectation that drives the total budget. With ocr_timeout 0 it also
+    # bounds a page's wait for a reload to bring vision back (0: no wait).
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
     # Hard cap on tokens generated per OCR page. A real page is well under this;
     # the vision request's repeat penalty stops a page looping one line, and the cap

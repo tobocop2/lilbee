@@ -2566,20 +2566,24 @@ def test_vision_ocr_waits_out_a_reload_and_runs_on_the_new_client(monkeypatch) -
     new.chat_abortable.return_value = "new text"
     p = _provider_with_clients({WorkerRole.VISION: [old]})
     _start_vision_reload(p, monkeypatch)
-    waits: list[float] = []
-    wait = p._await_vision_clients
 
-    def _counted_wait(cancel: object, deadline: float) -> None:
-        waits.append(deadline)
-        wait(cancel, deadline)
+    class _CountedCondition(threading.Condition):
+        """The reload condition; counts the wait slices that start on it."""
 
-    monkeypatch.setattr(p, "_await_vision_clients", _counted_wait)
+        waits = 0
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.waits += 1
+            return super().wait(timeout)
+
+    reload_done = _CountedCondition(p._lock)
+    monkeypatch.setattr(p, "_reload_done", reload_done)
     results: list[str] = []
     page = threading.Thread(
         target=lambda: results.append(p.vision_ocr(b"png", "org/repo/v.gguf")), daemon=True
     )
     page.start()
-    assert poll_until(lambda: len(waits) >= 2)  # one recheck passed with the reload owed
+    assert poll_until(lambda: reload_done.waits >= 2)  # one recheck passed, still owed
     with p._lock:
         p._clients[WorkerRole.VISION] = [new]
         p._reload_owed = frozenset()
@@ -2609,37 +2613,116 @@ def test_vision_ocr_raises_when_a_reload_left_no_vision_server(monkeypatch) -> N
     client.chat_abortable.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("ocr_timeout", "load_budget"),
-    [pytest.param(None, 0.3, id="no-page-limit"), pytest.param(0.2, 0.1, id="page-limit")],
-)
-def test_vision_ocr_ends_a_reload_that_never_finishes_at_the_deadline(
-    monkeypatch, ocr_timeout: float | None, load_budget: float
-) -> None:
-    # The reload owes vision and never brings it back. Without a page limit the
-    # wait ends at the model-load budget; with one it ends at the page deadline.
+class _ReloadClock:
+    """A fake clock and reload condition: each wait slice moves the clock by its timeout.
+
+    The reload never brings vision back, so only a deadline ends the wait; a wait
+    with no end fails after *max_waits* slices instead of hanging the test.
+    """
+
+    def __init__(self, max_waits: int = 50) -> None:
+        self.now = 0.0
+        self.waits: list[float] = []
+        self._max_waits = max_waits
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def wait(self, timeout: float | None = None) -> bool:
+        assert timeout is not None, "a reload wait slice has no timeout"
+        self.waits.append(timeout)
+        assert len(self.waits) <= self._max_waits, "the reload wait never ended"
+        self.now += timeout
+        return False
+
+    def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
+        if not predicate():
+            self.wait(timeout)
+        return predicate()
+
+    def notify_all(self) -> None:
+        return None
+
+
+def _install_reload_clock(p: FleetProvider, monkeypatch) -> _ReloadClock:
+    clock = _ReloadClock()
+    monkeypatch.setattr("lilbee.providers.fleet.provider.time.monotonic", clock.monotonic)
+    monkeypatch.setattr(p, "_reload_done", clock)
+    return clock
+
+
+def _owed_vision_page(
+    monkeypatch, load_budget: float
+) -> tuple[FleetProvider, MagicMock, _ReloadClock]:
+    """A vision provider whose call meets a reload that owes vision and never ends."""
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     monkeypatch.setattr(cfg, "vision_load_budget_s", load_budget)
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     _start_vision_reload(p, monkeypatch)
-    errors: list[BaseException] = []
+    return p, client, _install_reload_clock(p, monkeypatch)
 
-    def _page() -> None:
-        try:
-            p.vision_ocr(b"png", "org/repo/v.gguf", timeout=ocr_timeout)
-        except BaseException as exc:
-            errors.append(exc)
 
-    page = threading.Thread(target=_page, daemon=True)
-    page.start()
-    page.join(10)
-    assert not page.is_alive(), "the page still waits for a reload that never finishes"
-    [error] = errors
-    assert isinstance(error, ProviderError)
-    assert error.kind is ProviderErrorKind.STARTING
-    assert "did not come back from its reload in time" in str(error)
+def _assert_reload_timeout(raised: pytest.ExceptionInfo[ProviderError]) -> None:
+    assert raised.value.kind is ProviderErrorKind.STARTING
+    assert "did not come back from its reload in time" in str(raised.value)
+
+
+def test_vision_reload_wait_with_no_page_limit_ends_at_the_load_budget(monkeypatch) -> None:
+    # Slices of the 0.5 s recheck, the last one cut to the time left.
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=1.25)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5, 0.5, 0.25]
+    assert clock.now == 1.25
     client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_wait_with_a_page_limit_ends_at_the_page_deadline(monkeypatch) -> None:
+    # The page deadline is ocr_timeout plus the load budget: 1.0 + 0.25. The wait
+    # runs to it, not to the load budget alone (0.25).
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=0.25)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=1.0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5, 0.5, 0.25]
+    assert clock.now == 1.25
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_wait_with_a_zero_load_budget_does_not_wait(monkeypatch) -> None:
+    # A load budget of 0 reserves no time for a load, as in the PDF budget.
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=0.0)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == []
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_budget_counts_from_the_start_of_the_wait(monkeypatch) -> None:
+    # A page with no limit generates for 1000 s, hits a gateway error and meets a
+    # reload. Its reload wait still gets the whole load budget.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 0.5)
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    clock = _install_reload_clock(p, monkeypatch)
+
+    def _generate_then_meet_a_reload(*_args: object, **_kwargs: object) -> str:
+        clock.now += 1000.0
+        p._clients.pop(WorkerRole.VISION)
+        p._reload_owed = frozenset({WorkerRole.VISION})
+        raise ProviderError("bad gateway", kind=ProviderErrorKind.SERVER)
+
+    client.chat_abortable.side_effect = _generate_then_meet_a_reload
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5]
+    assert clock.now == 1000.5
+    assert client.chat_abortable.call_count == 1
 
 
 def test_embed_failover_after_two_reloads_retries_on_a_live_client() -> None:

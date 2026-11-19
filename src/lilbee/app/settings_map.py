@@ -114,7 +114,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.OCR_TUNING,
-        help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
+        help_text=(
+            "Per-page timeout in seconds for vision OCR (0 = no limit; a wait for a"
+            " reload of the vision model still ends at vision_load_budget_s)"
+        ),
         advanced=True,
     ),
     "vision_load_budget_s": SettingDef(
@@ -124,6 +127,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Wall-clock seconds reserved for the vision worker to load the"
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
+            " With ocr_timeout 0, a page waits this long for a reload to bring the"
+            " vision model back (0 = no wait)."
         ),
         advanced=True,
     ),
