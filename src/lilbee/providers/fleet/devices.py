@@ -9,7 +9,6 @@ fallback when the binary can't enumerate. See docs/architecture.md.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import re
 import signal
@@ -673,19 +672,11 @@ def visible_nvidia_cards() -> list[FleetDevice]:
     """
     # circular: nvidia -> devices via MIB
     from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
-    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, gpu_environ
+    from lilbee.providers.fleet.gpu_env import cuda_visible_cards
 
-    cards = read_cards()
-    mask = gpu_environ().get(CUDA_VISIBLE_VAR)
-    if mask is not None:
-        named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}
-        wanted = [token.strip() for token in mask.split(",")]
-        cards = [named[token] for token in itertools.takewhile(named.__contains__, wanted)]
-        if len({card.index for card in cards}) != len(cards):
-            return []
     return [
         FleetDevice("CUDA", index, card.name, card.total_bytes, card.free_bytes)
-        for index, card in enumerate(cards)
+        for index, card in enumerate(cuda_visible_cards(read_cards()))
     ]
 
 
