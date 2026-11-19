@@ -268,7 +268,7 @@ def test_a_spec_that_places_nothing_for_another_reason_says_so(
     assert view.manual is False
     assert view.spec_json is None
     assert view.refusal == PLACES_NO_ROLE
-    assert view.refusal_kind is app_placement.PlacementRefusal.WAITING
+    assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
     assert view.rejected_spec_json == SPEC.to_json()
 
 

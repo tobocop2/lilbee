@@ -49,7 +49,7 @@ _CHAT_READY_GRACE_S = 3.0
 
 
 class PlacementRefusal(StrEnum):
-    """Why a placement reads as refused: the spec waits, cannot be read, or an engine refuses."""
+    """Why a placement reads as refused: the spec waits, cannot be read, or is refused."""
 
     WAITING = "waiting"
     UNREADABLE = "unreadable"
@@ -394,9 +394,9 @@ def _spec_view(
     if resolved.instances:
         return _view(resolved, engines, manual=True, spec_json=spec.to_json())
     if spec.roles.keys() & resolved.skipped_not_installed.keys():
-        refusal = SAVED_PLACEMENT_WAITS_FOR_A_MODEL
+        refusal, kind = SAVED_PLACEMENT_WAITS_FOR_A_MODEL, PlacementRefusal.WAITING
     else:
-        refusal = SAVED_PLACEMENT_PLACES_NO_ROLE
+        refusal, kind = SAVED_PLACEMENT_PLACES_NO_ROLE, PlacementRefusal.REFUSED
     return _view(
         resolved,
         engines,
@@ -404,7 +404,7 @@ def _spec_view(
         spec_json=None,
         rejected_spec_json=spec.to_json(),
         refusal=refusal,
-        refusal_kind=PlacementRefusal.WAITING,
+        refusal_kind=kind,
     )
 
 

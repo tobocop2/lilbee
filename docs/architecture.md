@@ -1008,9 +1008,11 @@ under the table.
 When a saved spec is not in use, `refusal` holds the reason in words and
 `refusal_kind` names the case: `waiting` when the spec applies once an engine or
 a model is installed, `unreadable` when the saved text cannot be parsed, and
-`refused` when an engine refuses roles. The field is null when there is no
-refusal. A client reads `refusal_kind`, not the sentence, to decide whether the
-spec is kept or must be corrected.
+`refused` when an engine refuses roles or the spec places no role on this
+machine. The field is null when there is no refusal, and also for a saved spec
+that does not fit the hardware: that reply carries `rejected_spec_json` alone.
+A client reads `refusal_kind`, not the sentence, to decide whether the spec is
+kept or must be corrected.
 
 - **Resident tiers and the elastic ingest pool**: placement charges roles in the
   registry's `placement_rank` order. The pinned tier goes first: one embed server

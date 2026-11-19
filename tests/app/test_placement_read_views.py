@@ -95,6 +95,7 @@ def test_a_spec_the_planner_raises_on_reports_the_message_and_the_saved_text(
     view = app_placement.get_placement()
 
     assert view.refusal == PIN_MESSAGE
+    assert view.refusal_kind is app_placement.PlacementRefusal.UNREADABLE
     assert view.rejected_spec_json == SAVED_RAW
     assert view.spec_json is None
     assert view.manual is False
@@ -119,6 +120,7 @@ def test_refused_roles_report_every_reason_in_one_sentence_run(monkeypatch, save
     view = app_placement.get_placement()
 
     assert view.refusal == f"{EMBED_REASON} {VISION_REASON}"
+    assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
     assert view.rejected_spec_json == SAVED_CANONICAL
     assert view.spec_json is None
     assert view.manual is False
@@ -176,6 +178,16 @@ def test_cli_show_prints_every_refused_role_reason_and_the_clear_instruction(
     assert "is being ignored" not in shown
 
 
+def test_cli_show_prints_the_clear_instruction_for_a_spec_that_places_no_role(
+    monkeypatch, saved_spec
+):
+    _stub_planner(monkeypatch, lambda spec, **_kw: replace(_auto_plan(), instances=()))
+
+    shown = _shown(saved_spec)
+
+    assert shown.endswith(f"{app_placement.SAVED_PLACEMENT_PLACES_NO_ROLE} {CLEAR_INSTRUCTION}")
+
+
 def test_cli_show_prints_the_ignored_note_and_no_refusal_for_a_spec_that_did_not_apply(
     monkeypatch, saved_spec
 ):
@@ -213,6 +225,7 @@ def test_the_placement_route_returns_the_refusal_and_the_rejected_spec(monkeypat
     assert response.status_code == 200
     body = response.json()
     assert body["refusal"] == f"{EMBED_REASON} {VISION_REASON}"
+    assert body["refusal_kind"] == "refused"
     assert body["rejected_spec_json"] == SAVED_CANONICAL
     assert body["spec_json"] is None
     assert body["manual"] is False
