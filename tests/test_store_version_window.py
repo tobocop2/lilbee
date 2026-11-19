@@ -15,19 +15,22 @@ from lilbee.core.config import (
     SOURCES_TABLE,
     cfg,
 )
-from lilbee.data.store import Store
+from lilbee.data.store import Store, lance_helpers
 from lilbee.retrieval.concepts import ConceptGraph
 from lilbee.retrieval.concepts.schema import _concept_edges_schema, _concept_nodes_schema
 from tests.test_store import _make_indexable_records, _make_records
 
-# The library prunes at 7 days when no window is named; the stand-in is short so a test can pass it.
+# The library prunes at 7 days when no window is named, and the store's floor is minutes;
+# the stand-ins are short so a test can idle past both.
 _STAND_IN_DEFAULT = timedelta(seconds=2)
+_SHORT_FLOOR = timedelta(seconds=1)
 _IDLE_SECONDS = 3
 _INDEXABLE_ROWS = 256
 
 
 @pytest.fixture()
-def store(tmp_path):
+def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", _SHORT_FLOOR)
     return Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb_test"}))
 
 
@@ -48,11 +51,24 @@ def unwindowed(monkeypatch):
 
 
 def _reader(store: Store, name: str) -> LanceTable:
-    """Open *name* after the table has sat idle past the stand-in default."""
-    time.sleep(_IDLE_SECONDS)
+    """A reader held on the latest version of *name*, idle past the floor and the stand-in."""
     reader = store.open_table(name)
     assert reader is not None
+    reader.checkout(reader.version)
+    time.sleep(_IDLE_SECONDS)
     return reader
+
+
+def _reopened_rows(store: Store, reader: LanceTable) -> int:
+    """Rows of the reader's version, opened again as a reader in another process would.
+
+    Lance keeps young data files after a prune, so the open reader reads either way; the
+    version itself is what the prune deletes, and a new handle cannot open a deleted one.
+    """
+    fresh = store.open_table(reader.name)
+    assert fresh is not None
+    fresh.checkout(reader.version)
+    return fresh.to_arrow().num_rows
 
 
 class TestChunksTable:
@@ -62,8 +78,11 @@ class TestChunksTable:
         store.add_chunks(_make_records())
         reader = _reader(store, CHUNKS_TABLE)
         rows = reader.count_rows()
+        # The sync writes on: Lance keeps the latest version on its own, not an older one.
+        store.add_chunks(_make_records())
         store.ensure_fts_index()
         assert reader.to_arrow().num_rows == rows
+        assert _reopened_rows(store, reader) == rows
         assert unwindowed == []
 
     def test_vector_optimize_keeps_the_version_a_reader_holds(self, store, unwindowed):
@@ -75,8 +94,11 @@ class TestChunksTable:
         store.add_chunks(_make_indexable_records(_INDEXABLE_ROWS, config.embedding_dim))
         reader = _reader(store, CHUNKS_TABLE)
         rows = reader.count_rows()
+        # The sync writes on: Lance keeps the latest version on its own, not an older one.
+        store.add_chunks(_make_indexable_records(_INDEXABLE_ROWS, config.embedding_dim))
         assert store.ensure_vector_index() is True
         assert reader.to_arrow().num_rows == rows
+        assert _reopened_rows(store, reader) == rows
         assert unwindowed == []
 
 
@@ -88,6 +110,7 @@ class TestSourcesTable:
         rows = reader.count_rows()
         store.optimize_sources()
         assert reader.to_arrow().num_rows == rows
+        assert _reopened_rows(store, reader) == rows
         assert unwindowed == []
 
 
@@ -109,8 +132,10 @@ class TestConceptTables:
         nodes = _reader(store, CONCEPT_NODES_TABLE)
         edges = store.open_table(CONCEPT_EDGES_TABLE)
         assert edges is not None
+        edges.checkout(edges.version)
         readers = {CONCEPT_NODES_TABLE: nodes, CONCEPT_EDGES_TABLE: edges}
         rows = {name: reader.count_rows() for name, reader in readers.items()}
         ConceptGraph(store._config, store).compact_tables()
         assert {name: reader.to_arrow().num_rows for name, reader in readers.items()} == rows
+        assert {name: _reopened_rows(store, reader) for name, reader in readers.items()} == rows
         assert unwindowed == []

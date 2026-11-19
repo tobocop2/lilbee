@@ -431,7 +431,9 @@ store.add_memory(
 """
 
 
-_PAST_THE_WINDOW = 11  # seconds: longer than the 10 s keep window of a replaced version
+# The production floor is minutes; the tests shorten it to this so an idle can pass it.
+_SHORT_FLOOR = timedelta(seconds=1)
+_PAST_THE_WINDOW = 2  # seconds: longer than the shortened floor
 
 
 def _table_bytes(store: Store) -> int:
@@ -443,6 +445,10 @@ def _table_bytes(store: Store) -> int:
 class TestRebuildPrunesVersions:
     """Each rebuild replaces the table; the replaced versions must not pile up on disk."""
 
+    @pytest.fixture(autouse=True)
+    def short_floor(self, monkeypatch):
+        monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", _SHORT_FLOOR)
+
     @pytest.fixture()
     def stocked(self, store):
         for axis in range(40):
@@ -450,8 +456,7 @@ class TestRebuildPrunesVersions:
         return store
 
     def test_rebuilds_spaced_past_the_window_keep_the_disk_flat(self, stocked, monkeypatch):
-        # The production window and slack are 10 s and 60 s; 1 s each keeps the test fast.
-        monkeypatch.setattr(lance_helpers, "_KEEP_VERSIONS", timedelta(seconds=1))
+        # The production slack is 60 s; 1 s keeps the test fast.
         monkeypatch.setattr(lance_helpers, "_CLOCK_SLACK", timedelta(seconds=1))
         dim = stocked._config.embedding_dim
 

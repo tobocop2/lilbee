@@ -29,10 +29,10 @@ log = logging.getLogger(__name__)
 # its sibling _TITLE_COLUMN.
 _CHUNK_COLUMN = "chunk"
 
-# The age at which a table version is deleted, counted from the version's own creation:
-# far longer than one read of the table, which takes milliseconds. Kept short, as each
-# kept version slows the check for the latest one (about 1 ms per 1,000 versions on a laptop).
-_KEEP_VERSIONS = timedelta(seconds=10)
+# The age at which a table version is deleted, counted from the version's own creation.
+# A reader keeps its version for one scan, and a full scan of a large table takes seconds
+# to minutes; each kept version slows the check for the latest one (about 1 ms per 1,000).
+_KEEP_VERSIONS = timedelta(minutes=5)
 # The time allowed between reading the clock and the cutoff the cleanup takes from it.
 _CLOCK_SLACK = timedelta(seconds=60)
 
