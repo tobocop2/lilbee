@@ -43,7 +43,7 @@ from lilbee.server.models import (
     ChatRequest,
     decode_chunk_type,
 )
-from lilbee.server.provider_status import CLIENT_FAULT_STATUSES
+from lilbee.server.provider_status import CLIENT_FAULT_STATUSES, retry_after_headers
 
 _BAD_REQUEST_STATUS = 400
 _NOT_FOUND_STATUS = 404
@@ -95,7 +95,10 @@ def _raise_chat_http_error(exc: Exception) -> NoReturn:
     """
     if isinstance(exc, ValueError):
         raise ValidationException(str(exc)) from exc
-    raise HTTPException(status_code=_api_chat_error_status(exc), detail=str(exc)) from exc
+    headers = retry_after_headers(exc.kind) if isinstance(exc, ProviderError) else {}
+    raise HTTPException(
+        status_code=_api_chat_error_status(exc), detail=str(exc), headers=headers
+    ) from exc
 
 
 def _api_chat_error_status(exc: Exception) -> int:

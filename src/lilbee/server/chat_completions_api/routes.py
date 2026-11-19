@@ -220,7 +220,9 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
             # Mirror _run_non_stream: an unclassified failure still rides the
             # OpenAI error envelope, not a bare framework 500.
             return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _error_response(
+            classified.http_status, classified.code, classified.message, headers=classified.headers
+        )
 
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
@@ -254,7 +256,9 @@ async def _run_non_stream(
         classified = classify_provider_error(exc)
         if classified is None:
             return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _error_response(
+            classified.http_status, classified.code, classified.message, headers=classified.headers
+        )
     finally:
         await guard.release()
     body: CompletionsResponse = canonical_to_completions_response(

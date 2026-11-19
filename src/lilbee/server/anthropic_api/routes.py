@@ -180,7 +180,9 @@ def _classified_error_response(exc: Exception) -> Response:
     classified = classify_provider_error(exc)
     if classified is None:
         return _internal_error_response()
-    return _error_response(classified.http_status, classified.code, classified.message)
+    return _error_response(
+        classified.http_status, classified.code, classified.message, headers=classified.headers
+    )
 
 
 async def _run_non_stream(
