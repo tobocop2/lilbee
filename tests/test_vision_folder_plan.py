@@ -14,6 +14,7 @@ from lilbee.app.engine_choice import BookReading
 from lilbee.cli.placement import placement_app
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.routes.placement import placement_route
@@ -32,6 +33,7 @@ ROLES = (Role(WorkerRole.CHAT, 4), Role(WorkerRole.VISION, 2))
 VISION_REF = f"org/repo/{model_file(WorkerRole.VISION)}"
 TEXT_ONLY_REASON = f"The vision model {VISION_REF} is a text-only model"
 MISSING_TEXT = "config.json has no vision_config section"
+NOT_INSTALLED_REF = "org/never-pulled/vision.gguf"
 
 
 def _folder(tmp_path: Path, name: str, config: object) -> Path:
@@ -183,3 +185,11 @@ class TestWhatStillPlans:
 
         monkeypatch.setattr(engine_params, "resolve_model_path", unresolved)
         assert planning._text_only_vision_reason(WorkerRole.VISION, VISION_REF) is None
+
+    def test_a_vision_ref_that_is_not_installed_is_left_to_the_not_installed_report(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        with pytest.raises(ProviderError, match="is not installed"):
+            engine_params.resolve_model_path(NOT_INSTALLED_REF)
+        assert planning._text_only_vision_reason(WorkerRole.VISION, NOT_INSTALLED_REF) is None

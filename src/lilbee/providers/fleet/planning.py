@@ -81,6 +81,7 @@ from lilbee.providers.fleet.placement_spec import (
 )
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import usable_vram_fraction
+from lilbee.providers.gguf_meta import declares_vision_config, needs_sidecar_projector
 from lilbee.providers.model_cache import total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import (
@@ -1043,8 +1044,6 @@ def _vision_ref_needs_projector(model_ref: str) -> bool:
 
 def _text_only_vision_reason(role: WorkerRole, model_ref: str) -> str | None:
     """Why a text-only model folder cannot serve the vision role, else ``None``."""
-    from lilbee.providers.gguf_meta import declares_vision_config, needs_sidecar_projector
-
     if role is not WorkerRole.VISION:
         return None
     try:
