@@ -1119,7 +1119,10 @@ def _first_event(lines: Iterator[str]) -> str:
 class _Seen:
     """Records what the served app reports, and wakes the test thread the moment it does."""
 
-    _HANG_GUARD = 120.0
+    # Half the per-test timeout in pyproject.toml. A test waits once at a time and stops
+    # at the first wait that fails, so the guard ends a hang before pytest-timeout does and
+    # the failure carries this test's own message.
+    _HANG_GUARD = 30.0
 
     def __init__(self) -> None:
         self._cond = threading.Condition()
@@ -1131,7 +1134,7 @@ class _Seen:
             self._cond.notify_all()
 
     def wait_for(self, predicate: Callable[[list[str]], bool]) -> bool:
-        """Block until *predicate* holds over the records; False only on a hang."""
+        """Block until *predicate* holds over the records; False after the hang guard."""
         with self._cond:
             return self._cond.wait_for(lambda: predicate(self.items), self._HANG_GUARD)
 
