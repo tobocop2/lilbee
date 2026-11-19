@@ -5,7 +5,7 @@ import contextlib
 import hashlib
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 from unittest.mock import Mock
@@ -1116,6 +1116,26 @@ def _first_event(lines: Iterator[str]) -> str:
     return next(line.split(":", 1)[1].strip() for line in lines if line.startswith("event:"))
 
 
+class _Seen:
+    """Records what the served app reports, and wakes the test thread the moment it does."""
+
+    _HANG_GUARD = 120.0
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self.items: list[str] = []
+
+    def add(self, *items: str) -> None:
+        with self._cond:
+            self.items.extend(items)
+            self._cond.notify_all()
+
+    def wait_for(self, predicate: Callable[[list[str]], bool]) -> bool:
+        """Block until *predicate* holds over the records; False only on a hang."""
+        with self._cond:
+            return self._cond.wait_for(lambda: predicate(self.items), self._HANG_GUARD)
+
+
 class TestAddDisconnect:
     """A client that closes the /api/add stream over real HTTP, as the Obsidian plugin does."""
 
@@ -1124,10 +1144,10 @@ class TestAddDisconnect:
         """A sync that reports its first file, then waits to be cancelled; counts its starts."""
         from lilbee.runtime.progress import EventType, FileStartEvent
 
-        started: list[None] = []
+        started = _Seen()
 
         async def _parked(*_args, on_progress, **_kwargs):
-            started.append(None)
+            started.add("sync")
             on_progress(
                 EventType.FILE_START, FileStartEvent(file="x", current_file=1, total_files=1)
             )
@@ -1141,13 +1161,13 @@ class TestAddDisconnect:
         """The source names whose ingest lock was released, which happens after the run unwinds."""
         from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-        names: list[str] = []
+        names = _Seen()
         release = IngestLockRegistry.release
 
         def _recording(registry, acquired):
             held = [name for name, _lock in acquired]
             release(registry, acquired)
-            names.extend(held)
+            names.add(*held)
 
         with mock.patch.object(IngestLockRegistry, "release", _recording):
             yield names
@@ -1161,7 +1181,7 @@ class TestAddDisconnect:
         with _ServedApp() as url, httpx.Client(base_url=url, timeout=30) as http:
             with http.stream("POST", "/api/add", json=body, headers=_auth_headers()) as resp:
                 assert _first_event(resp.iter_lines()) == "file_start"
-            assert poll_until(lambda: "scan.txt" in released), "the add never unwound"
+            assert released.wait_for(lambda names: "scan.txt" in names), "the add never unwound"
 
         assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
 
@@ -1183,8 +1203,9 @@ class TestAddDisconnect:
                 assert _first_event(held_lines) == "file_start"
                 with http.stream("POST", "/api/add", json=both, headers=_auth_headers()) as resp:
                     assert _first_event(resp.iter_lines()) == "already_ingesting"
-                    assert poll_until(lambda: len(parked_sync) == 2), "new.txt never started"
-                assert poll_until(lambda: "new.txt" in released), "the add never unwound"
+                    started_twice = parked_sync.wait_for(lambda starts: len(starts) == 2)
+                    assert started_twice, "new.txt never started"
+                assert released.wait_for(lambda names: "new.txt" in names), "the add never unwound"
 
         assert cfg.linked_roots["new.txt"] == str(new.resolve())
 
