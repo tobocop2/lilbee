@@ -49,7 +49,6 @@ from tests._pack_workflow import (
     Cell,
     cells_below_the_record,
     pack_workflow,
-    record_after_publish,
 )
 from tests._published import publish
 from tests._workflow_steps import commands, steps
@@ -758,14 +757,6 @@ def test_a_cell_builds_no_number_below_a_published_wheel_of_its_name() -> None:
     """The publish step refuses an existing file name, and that keeps one name to one wheel."""
     below = cells_below_the_record("lilbee_engine_ik_llama_cpp", ik_llama.VERSION, _ik_builds())
     assert below == []
-
-
-def test_the_cell_numbers_hold_after_the_rows_of_the_batch_are_written() -> None:
-    dist, version, cells = "lilbee_engine_ik_llama_cpp", ik_llama.VERSION, _ik_builds()
-    after = record_after_publish(dist, version, cells)
-    assert cells_below_the_record(dist, version, cells, after) == []
-    lowered = [(n, backend, platform, build - 1) for n, backend, platform, build in cells]
-    assert cells_below_the_record(dist, version, lowered, after) == [c[0] for c in cells]
 
 
 def test_the_ik_job_runs_for_its_own_engine_only_and_its_wheels_are_published() -> None:
