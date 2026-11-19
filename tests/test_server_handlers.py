@@ -1470,6 +1470,86 @@ class TestChat:
         assert extract_calls == []
 
 
+class TestChatTurnFields:
+    """What a one-shot chat turn carries from preparation into its response."""
+
+    @pytest.fixture(autouse=True)
+    def compacting(self, monkeypatch):
+        from lilbee.server.models import CompactionInfo
+
+        self.info = CompactionInfo(summary="notes", condensed=2, stranded=0)
+
+        def _managed(history, summary):
+            return history, self.info
+
+        monkeypatch.setattr(_rag_h, "_manage_history", _managed)
+        monkeypatch.setattr(_rag_h, "_persist_summary", lambda *args: None)
+
+    @staticmethod
+    def _answering(monkeypatch, text):
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        def _dispatch(req):
+            return CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text=text)],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            )
+
+        monkeypatch.setattr(_rag_h, "dispatch_chat", _dispatch)
+
+    async def test_a_canned_answer_carries_the_compaction(self, mock_svc):
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
+        result = await handlers.chat("how many?", [])
+        assert result.compaction == self.info
+
+    async def test_a_refusal_carries_the_compaction(self, mock_svc):
+        mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
+        result = await handlers.chat("q", [])
+        assert result.compaction == self.info
+
+    async def test_a_grounded_answer_carries_the_compaction(self, mock_svc, monkeypatch):
+        self._answering(monkeypatch, "ok")
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        result = await handlers.chat("q", [])
+        assert result.compaction == self.info
+
+    async def test_an_ungrounded_turn_sees_the_managed_history(self, mock_svc, monkeypatch):
+        self._answering(monkeypatch, "ok")
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+        await handlers.chat("q", history, top_k=0)
+        assert mock_svc.searcher.direct_messages.call_args.args == ("q", history)
+
+    async def test_shown_reasoning_stays_in_the_answer(self, mock_svc, monkeypatch):
+        text = "<think>plan</think>done"
+        self._answering(monkeypatch, text)
+        monkeypatch.setattr(cfg, "show_reasoning", True)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        result = await handlers.chat("q", [])
+        assert result.answer == text
+
+    async def test_memory_extraction_gets_the_question_and_the_answer(self, mock_svc, monkeypatch):
+        self._answering(monkeypatch, "ok")
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        extract_calls = []
+
+        async def _spy_extract(question, answer):
+            extract_calls.append((question, answer))
+            return []
+
+        monkeypatch.setattr(_rag_h, "_store_extracted_memories", _spy_extract)
+        await handlers.chat("what is x", [])
+        assert extract_calls == [("what is x", "ok")]
+
+
 class TestChatStream:
     async def test_no_results_yields_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = RagContext([], [], refused=True)
