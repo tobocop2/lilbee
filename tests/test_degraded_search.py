@@ -30,9 +30,7 @@ STEPS = {
 }
 # The rerank error carries a server address with credentials; no client may read it.
 RERANK_SECRETS = ("user:pass", "secret9", "gpu.internal.example")
-RERANK_ERROR = (
-    "preset 'm' not found at https://user:pass@gpu.internal.example:8443/v1?key=SECRET9"
-)
+RERANK_ERROR = "preset 'm' not found at https://user:pass@gpu.internal.example:8443/v1?key=SECRET9"
 RERANK_CAUSE = "the reranker model or preset was not found."
 SURFACES = [
     "searcher_report",
