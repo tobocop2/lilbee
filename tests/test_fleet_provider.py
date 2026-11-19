@@ -2253,6 +2253,77 @@ def test_chat_with_tools_forwards_the_whole_request_to_the_reserved_client() -> 
     )
 
 
+_CHAT_MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_TOOLS = [{"type": "function"}]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda p: p.chat(_CHAT_MESSAGES, tools=_CHAT_TOOLS, options={"temperature": 0.2}),
+        lambda p: p.chat_with_tools(
+            _CHAT_MESSAGES, tools=_CHAT_TOOLS, options={"temperature": 0.2}
+        ),
+    ],
+    ids=["chat", "chat_with_tools"],
+)
+def test_chat_fits_the_context_to_the_configured_model(monkeypatch, invoke) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_counting_client()]})
+    seen: list[tuple[object, ...]] = []
+
+    def _fit(*args: object) -> object:
+        seen.append(args)
+        return _CHAT_MESSAGES
+
+    monkeypatch.setattr(p, "_fit_chat_context", _fit)
+    invoke(p)
+    assert seen == [
+        (_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf")
+    ]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda p, model: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS, model=model),
+        lambda p, model: p.count_chat_prompt_tokens(_CHAT_MESSAGES, model=model),
+    ],
+    ids=["chat_with_tools", "count_chat_prompt_tokens"],
+)
+def test_chat_calls_accept_only_the_configured_model(monkeypatch, invoke) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_counting_client()]})
+    invoke(p, "org/repo/configured.gguf")
+    with pytest.raises(ProviderError, match=r"configured chat model \(org/repo/configured.gguf\)"):
+        invoke(p, "org/repo/other.gguf")
+
+
+@pytest.mark.parametrize(
+    ("method", "invoke"),
+    [
+        ("chat_result", lambda p: p.chat(_CHAT_MESSAGES)),
+        ("chat_stream_items", lambda p: p.chat(_CHAT_MESSAGES, stream=True)),
+        ("chat_tools", lambda p: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS)),
+        ("count_text_tokens", lambda p: p.count_chat_text_tokens("hi")),
+        ("count_chat_prompt_tokens", lambda p: p.count_chat_prompt_tokens(_CHAT_MESSAGES)),
+    ],
+)
+def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -> None:
+    client = _counting_client()
+    getattr(client, method).side_effect = ProviderError("no room", kind=ProviderErrorKind.CAPACITY)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    roles: list[WorkerRole] = []
+
+    def _rebuilt(_call: object, role: WorkerRole, _err: BaseException) -> str:
+        roles.append(role)
+        return "rebuilt"
+
+    monkeypatch.setattr(p, "_retry_rebuilt", _rebuilt)
+    assert invoke(p) == "rebuilt"
+    assert roles == [WorkerRole.CHAT]
+
+
 def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
     client = _counting_client()
     seen: list[int] = []
