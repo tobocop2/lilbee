@@ -537,6 +537,12 @@ def test_a_linux_host_with_a_turing_or_newer_card_and_the_driver_gets_the_cuda_b
             id="driver",
         ),
         pytest.param(
+            _nvidia_host(cards=((7, 5),), cuda=12030),
+            "The NVIDIA driver offers CUDA 12.3, and the CUDA build needs CUDA 12.4. "
+            "Update the driver.",
+            id="driver-with-the-oldest-served-card",
+        ),
+        pytest.param(
             _nvidia_host(cuda=None),
             "The NVIDIA driver offers CUDA 0.0, and the CUDA build needs CUDA 12.4. "
             "Update the driver.",
