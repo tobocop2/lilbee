@@ -336,6 +336,7 @@ def _slots_for(
     chat_reservation: int = 0,
     rerank_mode: RerankMode | None = None,
     device: FleetDevice | None = None,
+    cpu_target: bool = False,
 ) -> int:
     """Continuous-batching slots (--parallel) for a role's server.
 
@@ -346,7 +347,8 @@ def _slots_for(
     instead of overcommitting. ``unified_budget`` caps sizing against free system RAM
     with no discrete GPU; ``chat_reservation`` is the search-role footprint held back
     from chat; ``device`` is the card the role was placed on, whose memory the
-    budget comes from once placement has chosen one.
+    budget comes from once placement has chosen one. ``cpu_target`` sizes a role pinned
+    to the CPU against free system memory, with no layer on a card.
     """
     if role is WorkerRole.CHAT:
         return _resolve_chat_slots(
@@ -357,6 +359,7 @@ def _slots_for(
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             device=device,
+            cpu_target=cpu_target,
         )
     if role is WorkerRole.VISION:
         return _resolve_vision_slots(
@@ -366,10 +369,16 @@ def _slots_for(
             mmproj_path=mmproj_path,
             unified_budget=unified_budget,
             device=device,
+            cpu_target=cpu_target,
         )
     if role is WorkerRole.RERANK and rerank_mode is RerankMode.LLM:
         return _resolve_llm_rerank_slots(
-            model_path, ctx, engine=engine, unified_budget=unified_budget, device=device
+            model_path,
+            ctx,
+            engine=engine,
+            unified_budget=unified_budget,
+            device=device,
+            cpu_target=cpu_target,
         )
     return _AUX_SLOTS
 
@@ -416,6 +425,7 @@ def _resolve_chat_slots(
     unified_budget: int | None = None,
     chat_reservation: int = 0,
     device: FleetDevice | None = None,
+    cpu_target: bool = False,
 ) -> int:
     """Largest chat slot count (<= ``_CHAT_SLOTS``) whose footprint fits the budget
     after reserving the search roles; steps to 1 when none fit.
@@ -427,16 +437,20 @@ def _resolve_chat_slots(
     fraction on top charged that room twice and left a fifth of the card unused
     on a box with no search roles at all.
     """
-    budget = _slot_budget(unified_budget, device, engine=engine) - chat_reservation
+    budget = (
+        _slot_budget(unified_budget, device, engine=engine, cpu_target=cpu_target)
+        - chat_reservation
+    )
     return _fit_slots(
         _CHAT_SLOTS,
         WorkerRole.CHAT,
         model_path,
         ctx,
         mmproj_path=mmproj_path,
-        unified=unified_budget is not None,
+        unified=unified_budget is not None or cpu_target,
         budget=budget,
         engine=engine,
+        cpu_target=cpu_target,
     )
 
 
@@ -448,6 +462,7 @@ def _resolve_vision_slots(
     mmproj_path: Path | None = None,
     unified_budget: int | None = None,
     device: FleetDevice | None = None,
+    cpu_target: bool = False,
 ) -> int:
     """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
     the memory budget; 1 when the ceiling is 1 or nothing larger fits."""
@@ -462,11 +477,16 @@ def _resolve_vision_slots(
         model_path,
         ctx,
         mmproj_path=mmproj_path,
-        unified=unified_budget is not None,
+        unified=unified_budget is not None or cpu_target,
         budget=_slot_budget(
-            unified_budget, device, engine=engine, vram_fraction=_VISION_VRAM_FRACTION
+            unified_budget,
+            device,
+            engine=engine,
+            vram_fraction=_VISION_VRAM_FRACTION,
+            cpu_target=cpu_target,
         ),
         engine=engine,
+        cpu_target=cpu_target,
     )
 
 
@@ -477,6 +497,7 @@ def _resolve_llm_rerank_slots(
     engine: EngineAdapter,
     unified_budget: int | None = None,
     device: FleetDevice | None = None,
+    cpu_target: bool = False,
 ) -> int:
     """Largest LLM-reranker slot count (<= ``LLM_RERANK_CONCURRENCY``) that fits the
     memory budget; 1 when nothing larger fits. Matches the client's request fan-out."""
@@ -486,12 +507,17 @@ def _resolve_llm_rerank_slots(
         model_path,
         ctx,
         mmproj_path=None,
-        unified=unified_budget is not None,
+        unified=unified_budget is not None or cpu_target,
         budget=_slot_budget(
-            unified_budget, device, engine=engine, vram_fraction=_LLM_RERANK_VRAM_FRACTION
+            unified_budget,
+            device,
+            engine=engine,
+            vram_fraction=_LLM_RERANK_VRAM_FRACTION,
+            cpu_target=cpu_target,
         ),
         engine=engine,
         rerank_mode=RerankMode.LLM,
+        cpu_target=cpu_target,
     )
 
 
@@ -501,15 +527,19 @@ def _slot_budget(
     *,
     engine: EngineAdapter,
     vram_fraction: float = 1.0,
+    cpu_target: bool = False,
 ) -> int:
     """Memory budget for slot sizing: the usable memory on *device* (the fleet's
     smallest when placement has not chosen one yet), capped by ``unified_budget``
     (free system RAM) when there is no discrete GPU so the count steps down to fit
-    free memory instead of overcommitting.
+    free memory instead of overcommitting. A role pinned to the CPU (*cpu_target*)
+    has no card: its budget is the free system memory, whatever cards the host has.
 
     *vram_fraction* takes less than the whole for a role that shares its card by
     design. Chat takes all of it and subtracts what the search roles were sized
     at, which is the same room stated as a measurement rather than a share."""
+    if cpu_target:
+        return int(_free_system_budget(engine) * vram_fraction)
     budget = int(plan_sizing_budget(engine, device) * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
@@ -527,12 +557,13 @@ def _fit_slots(
     budget: int,
     engine: EngineAdapter,
     rerank_mode: RerankMode | None = None,
+    cpu_target: bool = False,
 ) -> int:
     """Largest slot count in ``1..ceiling`` whose instance footprint fits *budget*;
-    1 when none larger fit."""
+    1 when none larger fit. A *cpu_target* role puts no layer on a card."""
     from lilbee.providers.base import ProviderError
 
-    layers = _role_gpu_layers(role)
+    layers = 0 if cpu_target else _role_gpu_layers(role)
     on_cpu = unified and _weights_on_cpu(engine, layers)
     for slots in range(ceiling, 1, -1):
         try:
@@ -1096,6 +1127,7 @@ def _estimate_role(
             unified_budget=unified_budget,
             chat_reservation=chat_reservation,
             rerank_mode=rerank_mode,
+            cpu_target=gpu_layers == 0,
         )
     layers = _role_gpu_layers(role) if gpu_layers is None else gpu_layers
     one_pool = unified_budget is not None or gpu_layers == 0
@@ -2233,6 +2265,7 @@ def _launch_for(
             chat_reservation=chat_reservation,
             rerank_mode=rerank_mode,
             device=placed_device,
+            cpu_target=plan.target is RoleTarget.CPU,
         )
     )
     spec = engine.role_spec(plan.role, rerank_mode, meta)
@@ -3387,9 +3420,12 @@ def _unified_memory_budget(devices: list[FleetDevice], engine: EngineAdapter) ->
     # roughly the whole system footprint.
     if any(not device.unified for device in devices):
         return None
-    return _capped_by_device_memory(
-        max(0, _plan_free_system_memory(engine) - _system_memory_floor()), devices
-    )
+    return _capped_by_device_memory(_free_system_budget(engine), devices)
+
+
+def _free_system_budget(engine: EngineAdapter) -> int:
+    """Free system memory less the OS floor: what a load into system memory may use."""
+    return max(0, _plan_free_system_memory(engine) - _system_memory_floor())
 
 
 def _unified_admission_budget(devices: list[FleetDevice], engine: EngineAdapter) -> int | None:
