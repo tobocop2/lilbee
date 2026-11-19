@@ -3688,6 +3688,7 @@ def test_embed_redo_after_overflow_sends_the_input_truncated_by_the_server_token
             assert json.loads(request.content)["tokens"] == list(range(10))
             return httpx.Response(200, json={"content": "cut"})
         if path.endswith("/tokenize"):
+            assert json.loads(request.content)["content"] == "dense"
             return httpx.Response(200, json={"tokens": list(range(20))})
         sent.append(json.loads(request.content)["input"])
         if len(sent) == 1:
@@ -3708,6 +3709,7 @@ def test_rerank_redo_after_overflow_sends_the_pair_truncated_by_the_server_token
             assert json.loads(request.content)["tokens"] == list(range(10))
             return httpx.Response(200, json={"content": "cut"})
         if path.endswith("/tokenize"):
+            assert json.loads(request.content)["content"] == f"q{_RERANK_PAIR_SEPARATOR}dense"
             return httpx.Response(200, json={"tokens": list(range(20))})
         sent.append(json.loads(request.content)["input"])
         if len(sent) == 1:
