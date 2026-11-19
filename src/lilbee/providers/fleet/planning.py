@@ -3609,29 +3609,38 @@ def _resolve_placement(
             equal_split_roles=frozenset(m.role for m in inputs if m.equal_split_only),
         )
         cpu_present = _cpu_roles(placement).intersection(model_refs)
-        if not cpu_present:
-            return placed
-        past_memory, low_free = _cpu_roles_past_memory(
-            placement,
-            inputs,
-            _launching_instances(placed, inputs, model_refs, devices, engines=engines),
-            free=_plan_free_system_memory(engines[min(cpu_present, key=lambda r: r.value)]),
-            unified=unified_budget is not None,
-            swap_classes=placed.swap_classes,
+        if cpu_present:
+            past_memory, low_free = _cpu_roles_past_memory(
+                placement,
+                inputs,
+                _launching_instances(placed, inputs, model_refs, devices, engines=engines),
+                free=_plan_free_system_memory(engines[min(cpu_present, key=lambda r: r.value)]),
+                unified=unified_budget is not None,
+                swap_classes=placed.swap_classes,
+            )
+            if past_memory:
+                raise TargetRefusedError(past_memory)
+            placed = replace(placed, low_free_memory=low_free)
+        return _with_auto_cpu_findings(
+            placed, inputs, model_refs, devices, engines=engines, unified_budget=unified_budget
         )
-        if past_memory:
-            raise TargetRefusedError(past_memory)
-        return replace(placed, low_free_memory=low_free)
-    return _auto_placement(
+    return _with_auto_cpu_findings(
+        _auto_placement(
+            inputs,
+            auto_cards,
+            devices,
+            model_refs,
+            engines=engines,
+            estimate_peak=estimate_peak,
+            unified_budget=unified_budget,
+            unpinnable=unpinnable,
+            refuse_oversize=_is_mixed(engines),
+        ),
         inputs,
-        auto_cards,
-        devices,
         model_refs,
+        devices,
         engines=engines,
-        estimate_peak=estimate_peak,
         unified_budget=unified_budget,
-        unpinnable=unpinnable,
-        refuse_oversize=_is_mixed(engines),
     )
 
 
@@ -3728,6 +3737,66 @@ def _cpu_roles(spec: PlacementSpec | None) -> frozenset[WorkerRole]:
     )
 
 
+def _low_free(held: int, need: int, free: int) -> LowFreeMemory | None:
+    """The finding when *need* bytes beyond *held* pass the *free* memory, which is 0 if unread."""
+    if need > 0 and free and held + need > free:
+        return LowFreeMemory(wanted=held + need, free=free)
+    return None
+
+
+def _with_auto_cpu_findings(
+    placed: Placement,
+    inputs: list[ModelPlacementInput],
+    model_refs: Mapping[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    engines: Mapping[WorkerRole, EngineAdapter],
+    unified_budget: int | None,
+) -> Placement:
+    """*placed* with the low free memory finding of each role the auto planner loads on the CPU.
+
+    Only the shared memory pool puts a role in system memory without a spec: its weights
+    load into the CPU backend when the engine has no card or no layer goes to one. The
+    pool is admitted against total memory, so the free figure is read here, and only when
+    such a role launches. Every role in the pool, on the CPU or not, holds its footprint.
+    """
+    if unified_budget is None:
+        return placed
+    cpu = frozenset(
+        inst.role
+        for inst in placed.instances
+        if inst.target is RoleTarget.GPU
+        and not inst.devices
+        and _weights_on_cpu(engines[inst.role], _role_gpu_layers(inst.role))
+    )
+    if not cpu:
+        return placed
+    launching = _launching_instances(placed, inputs, model_refs, devices, engines=engines)
+    free = _plan_free_system_memory(snapshot_engine(engines))
+    count = Counter(inst.role for inst in launching)
+    slot = max(
+        (m.est_vram_bytes for m in inputs if m.role in placed.co_tenants and count[m.role]),
+        default=0,
+    )
+    held = 0
+    group_end: int | None = None
+    low_free = dict(placed.low_free_memory)
+    for inp in inputs:
+        if not count[inp.role]:
+            continue
+        if inp.role in placed.co_tenants:
+            if group_end is None:
+                group_end = held + slot
+            held, need = group_end, slot
+        else:
+            need = inp.est_vram_bytes * count[inp.role]
+            held += need
+        short = _low_free(held - need, need, free)
+        if short is not None and inp.role in cpu:
+            low_free[inp.role] = short
+    return replace(placed, low_free_memory=low_free)
+
+
 def _launching_instances(
     placed: Placement,
     inputs: list[ModelPlacementInput],
@@ -3815,8 +3884,9 @@ def _cpu_roles_past_memory(
                 "Choose a smaller model or a GPU."
             )
         elif inp.role in starts:
-            if need > 0 and free and held + need > free:
-                tight[inp.role] = LowFreeMemory(wanted=held + need, free=free)
+            short = _low_free(held, need, free)
+            if short is not None:
+                tight[inp.role] = short
             held += need
     return refused, tight
 
