@@ -7,6 +7,7 @@ import time
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -52,13 +53,18 @@ class _GatedRow(Static):
 async def test_subtree_mounted_is_false_until_the_inner_widgets_mount() -> None:
     app = App[None]()
     async with app.run_test() as pilot:
+        root = Vertical(id="root")
+        await app.mount(root)
+        assert root.is_mounted
         row = _GatedRow(id="row")
         row.gate = asyncio.Event()
-        app.mount(row)
+        root.mount(row)
         # No pilot pause here: a pause waits on every widget, and the gated row cannot answer.
         await asyncio.sleep(0.05)
-        assert not subtree_mounted(row)
+        # The root is mounted already; only its later child is not, so the walk must see it.
+        assert root.is_mounted
+        assert not subtree_mounted(root)
         assert not row.query("#inner")
         row.gate.set()
-        assert await wait_until(pilot, lambda: subtree_mounted(row))
+        assert await wait_until(pilot, lambda: subtree_mounted(root))
         assert row.query("#inner")

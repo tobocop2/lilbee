@@ -869,7 +869,10 @@ class TestPaneKeyboardAccess:
             body = screen.query_one(f"#{last_group}-body", VerticalScroll)
             # The rows join the body first and compose their editors later; the last field is
             # not known until every one of them has mounted.
-            assert await wait_until(pilot, lambda: subtree_mounted(body))
+            assert await wait_until(pilot, lambda: subtree_mounted(body), timeout=30.0), (
+                f"{last_group} body never finished mounting"
+            )
+            assert screen._focus_stops(body), f"{last_group} has no focus stops"
 
             def _on_last_field() -> bool:
                 last = screen._focus_stops(body)[-1]
@@ -877,7 +880,9 @@ class TestPaneKeyboardAccess:
                     screen._focus_pane_edge(last_group, -1)
                 return app.focused is last
 
-            assert await wait_until(pilot, _on_last_field)
+            assert await wait_until(pilot, _on_last_field, timeout=30.0), (
+                f"focus never reached the last field of {last_group}"
+            )
             await pilot.press("tab")
             assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
             assert await wait_until(
