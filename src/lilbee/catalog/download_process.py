@@ -244,15 +244,33 @@ def _run_one_attempt(
     owned: list[str] = []
     try:
         try:
-            return _relay_until_done(entry, worker, receiver, on_progress, cancel, owned)
-        finally:
-            _stop_worker(worker)
-            receiver.close()
-    # The inner finally must terminate the child before this delete runs, or the
-    # delete races the child's own writer.
+            path = _relay_until_done(entry, worker, receiver, on_progress, cancel, owned)
+        except BaseException:
+            _release_worker_keeping_error(entry.hf_repo, worker, receiver)
+            raise
+        _release_worker(worker, receiver)
+        return path
+    # The child must be stopped before this delete runs, or the delete races the
+    # child's own writer.
     except (Exception, KeyboardInterrupt):
         _discard_partial_blobs(models_dir, entry.hf_repo, owned)
         raise
+
+
+def _release_worker(worker: _Worker, receiver: Connection) -> None:
+    """Stop the child and close the pipe, closing it even when the stop fails."""
+    try:
+        _stop_worker(worker)
+    finally:
+        receiver.close()
+
+
+def _release_worker_keeping_error(hf_repo: str, worker: _Worker, receiver: Connection) -> None:
+    """Release the child for a failed attempt; a cleanup failure is logged, never raised."""
+    try:
+        _release_worker(worker, receiver)
+    except Exception:
+        log.warning("Could not stop the download process for %s", hf_repo, exc_info=True)
 
 
 def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> None:
