@@ -329,6 +329,19 @@ class TestWhatTheCpuChargeAsksFor:
         assert charge == figures.slot_uma + figures.slot_vram + MODELS[cell.model].file_bytes
 
 
+class TestTheDeviceBookedBuffer:
+    def test_a_device_below_its_unified_figure_books_nothing(self) -> None:
+        parsed = vram_mod.GgufVramEstimate(
+            vram_bytes=150,
+            ram_bytes=0,
+            unified_bytes=140,
+            per_device_vram=(100, 50),
+            per_device_unified=(60, 80),
+        )
+        # The second device reads below its unified figure: it takes no bytes off the first.
+        assert model_memory_mod._device_booked_buffer_bytes(parsed) == 40
+
+
 class TestTheScoreTerm:
     def _off_minus_on(self, cell: Cell, parser_for: ParserFor) -> int:
         path, _ = parser_for(cell.model)
