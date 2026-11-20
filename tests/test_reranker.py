@@ -10,8 +10,8 @@ from lilbee.core.config import cfg
 from lilbee.core.health_warnings import WarningCode
 from lilbee.data.store import SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval import rerank_failure as rerank_failure_module
+from lilbee.retrieval.query.searcher import Searcher
 from lilbee.retrieval.rerank_failure import RerankScoreError, rerank_failure
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
 
