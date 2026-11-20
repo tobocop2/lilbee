@@ -11,6 +11,7 @@ from lilbee.core.health_warnings import WarningCode
 from lilbee.data.store import SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import Searcher
+from lilbee.retrieval import rerank_failure as rerank_failure_module
 from lilbee.retrieval.rerank_failure import RerankScoreError, rerank_failure
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
 
@@ -375,6 +376,11 @@ class TestSearchAppliesReranker:
             assert warning.code is WarningCode.RERANK_FAILED
             assert warning.message.startswith("Reranking failed: results are in retrieval order.")
             assert warning.remedy
+
+    def test_the_remedies_of_the_rerank_failure_module_are_distinct(self):
+        remedies = [remedy for _, remedy in rerank_failure_module._FAILURE_TEXTS.values()]
+        remedies.append(rerank_failure_module._UNKNOWN_TEXT[1])
+        assert len(set(remedies)) == len(remedies)
 
     def test_a_working_rerank_reports_no_warning(self, monkeypatch):
         cfg.reranker_model = _RERANKER_MODEL
