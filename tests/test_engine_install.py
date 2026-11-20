@@ -828,6 +828,37 @@ def test_the_advice_names_the_command_only_for_an_engine_with_a_published_pack()
     )
 
 
+def _any_advice(monkeypatch: pytest.MonkeyPatch, adapters: dict[EngineName, StandIn]) -> str:
+    monkeypatch.setattr(choice, "ADAPTERS", adapters)
+    return choice.install_any_advice(_refusing_host(HostOS.LINUX, HostArch.X86_64))
+
+
+def test_the_advice_for_no_engine_names_the_command_of_each_engine_that_serves_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Second(StandIn):
+        name = EngineName.MLX.value
+
+    advice = _any_advice(
+        monkeypatch,
+        {ENGINE: StandIn("a" * 64), EngineName.MLX: Second("b" * 64)},
+    )
+    assert advice == f"Run lilbee engine install {ENGINE} or lilbee engine install mlx."
+
+
+def test_the_advice_for_no_engine_skips_an_engine_the_host_refuses_or_with_no_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoPack(StandIn):
+        name = EngineName.MLX.value
+
+    advice = _any_advice(
+        monkeypatch,
+        {ENGINE: StandIn("a" * 64, HostGate(False, NO_AVX2)), EngineName.MLX: NoPack(None)},
+    )
+    assert advice == choice.LIST_HINT
+
+
 def test_the_advice_names_an_unusable_pin_record() -> None:
     class NoBackend(StandIn):
         def pin_record(self) -> Mapping[str, Any]:

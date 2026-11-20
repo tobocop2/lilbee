@@ -5839,6 +5839,18 @@ class TestSnapshotEngineWithMixedReadings:
         with pytest.raises(ProviderError, match="No engine is assigned to any role"):
             planning_mod.snapshot_engine({})
 
+    def test_the_refusal_for_no_engine_names_the_install_advice_not_the_list_command(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(planning_mod, "install_any_advice", lambda _host: "Run the advice.")
+        with pytest.raises(ProviderError) as refused:
+            planning_mod.snapshot_engine({})
+        assert str(refused.value) == (
+            "No engine is assigned to any role, so there is nothing to plan. Run the advice."
+        )
+
     def test_a_configured_role_without_an_engine_is_recorded(self, monkeypatch, caplog) -> None:
         self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})
         monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
