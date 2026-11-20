@@ -701,6 +701,27 @@ class TestAnUnplaceableRoleCarriesTheLaunchReason:
         assert self.BUDGET_TEXT in shown
         assert "placement clear" not in shown
 
+    def test_the_view_reasons_are_asked_with_the_admission_budget_not_the_live_one(
+        self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for module in (planning, planning.model_cache):
+            monkeypatch.setattr(module, "free_system_memory", lambda: 8 * GIB)
+        devices = [FleetDevice("CUDA", 0, "igpu", 16 * GIB, 16 * GIB, True)]
+        admission = planning._unified_admission_budget(devices, engine)
+        live = planning._unified_memory_budget(devices, engine)
+        assert admission == 16 * GIB
+        assert live == 8 * GIB
+        budgets: list[int | None] = []
+        real = planning._unplaceable_reasons
+
+        def spy(*args: object, **kwargs: object) -> object:
+            budgets.append(kwargs["unified_budget"])  # type: ignore[arg-type]
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(planning, "_unplaceable_reasons", spy)
+        planning.resolve_placement_plan(None, engines=engines_for_all_roles(engine))
+        assert budgets == [admission]
+
     def test_a_role_that_fits_leaves_the_refusal_empty(
         self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
