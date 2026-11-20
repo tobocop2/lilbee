@@ -68,6 +68,10 @@ _GGUF_LAYERS_KEY = "block_count"
 _GGUF_HEADS_KEY = "head_count"
 _GGUF_KV_HEADS_KEY = "head_count_kv"
 _SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
+_DAMAGED_MODEL = (
+    "its model file is incomplete or damaged. "
+    "Run 'lilbee model list', remove that model with 'lilbee model rm', then pull it again."
+)
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
@@ -323,6 +327,8 @@ class MistralAdapter:
         argv += self._device_flags(request.target)
         self._check_split(request)
         path = snapshot_entry_of_blob(request.model_path)
+        if is_hf_cache_blob(path):
+            raise ProviderError(f"mistral.rs cannot launch this model: {_DAMAGED_MODEL}")
         context = request.ctx_per_slot
         if subcommand == _MULTIMODAL:
             context = _vision_context(path, context)
@@ -369,10 +375,7 @@ class MistralAdapter:
             )
         if is_hf_cache_blob(path):
             raise SplitRefusedError(
-                f"mistral.rs cannot split this model across {cards} cards: "
-                "its model file is incomplete or damaged. "
-                "Run 'lilbee model list', remove that model with 'lilbee model rm', "
-                "then pull it again."
+                f"mistral.rs cannot split this model across {cards} cards: {_DAMAGED_MODEL}"
             )
         heads = _head_counts(path)
         if heads is None or not _heads_divide(*heads, cards):
