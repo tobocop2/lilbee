@@ -6224,9 +6224,8 @@ class TestSigintCancel:
         from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
-        with pytest.raises(RuntimeError, match="boom"):
-            with sigint_cancel():
-                raise RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"), sigint_cancel():
+            raise RuntimeError("boom")
         assert signal.getsignal(signal.SIGINT) is previous
 
     def test_off_the_main_thread_it_installs_no_handler(self) -> None:

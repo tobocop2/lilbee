@@ -817,7 +817,7 @@ def _role_argv(monkeypatch, help_text: str, spec) -> list[str]:
     def _run(*_a, **_k):
         return SimpleNamespace(stdout=help_text, stderr="")
 
-    binary_mod.engine_help.cache_clear()
+    binary_mod._read_help.cache_clear()
     monkeypatch.setattr(binary_mod.subprocess, "run", _run)
     return build_server_argv(
         binary=Path("/bin/llama-server"),
