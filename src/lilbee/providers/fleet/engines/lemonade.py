@@ -226,7 +226,7 @@ class LemonadeAdapter:
         return frozenset({RoleTarget.NPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="", spoke_protocol=False)
+        return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(

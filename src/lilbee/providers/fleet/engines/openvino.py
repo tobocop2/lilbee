@@ -217,7 +217,7 @@ class OpenvinoAdapter:
         return frozenset({RoleTarget.CPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="", spoke_protocol=False)
+        return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return estimate_memory(ModelFormat.GGUF, request)

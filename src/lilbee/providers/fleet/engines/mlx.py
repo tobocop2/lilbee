@@ -155,7 +155,7 @@ class MlxAdapter:
         ]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="")
+        return DeviceProbe(devices=[], output="", has_listing=False)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         return frozenset({RoleTarget.GPU})
