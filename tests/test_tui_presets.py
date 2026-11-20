@@ -1072,6 +1072,7 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
             ("/add notes@v2.md", False),
             ("/add //u:p@h", False),
             ("/set ollama_base_url http://u@h", True),
+            ("/set ollama_base_url http://:p@h", True),
             ("/crawl example.com --depth 2 me@x.com", False),
             ("/crawl https://u:p@h --depth 2", True),
             ("/crawl", False),
