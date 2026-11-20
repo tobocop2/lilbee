@@ -265,6 +265,9 @@ class UserInstalled(Protocol):
     install_hint: str
     """How to get the engine, for a message that says it is missing."""
 
+    install_docs_url: str
+    """The page that tells how to install the engine; empty when there is none."""
+
     def user_binary(self) -> Path | None:
         """The executable the user installed, or ``None`` when there is none."""
         ...

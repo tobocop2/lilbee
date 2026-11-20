@@ -11,6 +11,7 @@ from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.host_caps import collect
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
@@ -90,3 +91,42 @@ def test_an_engine_with_no_published_pack_has_no_size(monkeypatch: pytest.Monkey
     monkeypatch.setattr(choice, "pin_lock", unpublished)
     row = _rows(GGUF)["ik_llama.cpp"]
     assert (row.installed, row.download_bytes, row.backend) == (False, None, "")
+    assert row.route is engine_service.InstallRoute.NO_PACK
+    assert row.offers_download is False
+
+
+def test_an_engine_with_a_pack_offers_a_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    _linux_cpu_host(monkeypatch)
+    row = _rows(GGUF)["ik_llama.cpp"]
+    assert row.route is engine_service.InstallRoute.DOWNLOAD
+    assert row.offers_download is True
+
+
+class _ByHand(BundledFakeAdapter):
+    """An engine that lilbee has no pack for: the user installs it."""
+
+    name = "lemonade"
+    formats = frozenset({"gguf"})
+    architectures = frozenset({"gguf_arch"})
+    bundled = False
+    install_hint = "Install it from the page."
+    install_docs_url = "https://example.org/install"
+
+    def host_gate(self, host: object) -> HostGate:
+        return PASS
+
+    def user_binary(self) -> None:
+        return None
+
+
+def test_an_engine_the_user_installs_is_a_row_with_its_docs_link_and_no_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.LEMONADE, _ByHand())  # type: ignore[arg-type]
+    row = _rows(GGUF)["lemonade"]
+    assert (row.installed, row.route, row.docs_url) == (
+        False,
+        engine_service.InstallRoute.BY_HAND,
+        "https://example.org/install",
+    )
+    assert row.offers_download is False

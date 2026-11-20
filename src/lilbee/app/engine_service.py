@@ -7,6 +7,7 @@ import logging
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
@@ -372,9 +373,15 @@ def not_installed() -> list[str]:
     return offered
 
 
-def engine_names(model: str) -> list[str]:
-    """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
-    return [AUTO, *engines_loading(model_format(model), offered_engines())]
+class InstallRoute(StrEnum):
+    """How a surface gets an engine that has no installed build."""
+
+    DOWNLOAD = "download"
+    """lilbee downloads the pack of the engine."""
+    NO_PACK = "no_pack"
+    """No pack of the engine is published yet, so nothing can be downloaded."""
+    BY_HAND = "by_hand"
+    """The user installs the engine; lilbee finds it."""
 
 
 @dataclass(frozen=True)
@@ -382,8 +389,10 @@ class EngineOption:
     """One row of the engine choice for a model: an engine it can run on, or ``auto``.
 
     ``download_bytes`` is set only for an engine that is not installed and has a pack for
-    this computer. The ``auto`` row carries the engine that ``auto`` picks now in
-    ``auto_now``, or None when no engine loads the model.
+    this computer. ``route`` says how an engine with no build is installed; ``docs_url``
+    is the install page of an engine the user installs by hand, or empty. The ``auto``
+    row carries the engine that ``auto`` picks now in ``auto_now``, or None when no
+    engine loads the model.
     """
 
     name: str
@@ -392,6 +401,13 @@ class EngineOption:
     backend: str = ""
     download_bytes: int | None = None
     auto_now: str | None = None
+    route: InstallRoute = InstallRoute.DOWNLOAD
+    docs_url: str = ""
+
+    @property
+    def offers_download(self) -> bool:
+        """True when the row is an engine with no build that lilbee can download."""
+        return not self.installed and self.route is InstallRoute.DOWNLOAD
 
 
 def _auto_now(model: str) -> str | None:
@@ -403,10 +419,19 @@ def _auto_now(model: str) -> str | None:
 
 
 def _missing_option(name: EngineName, adapter: EngineAdapter) -> EngineOption:
-    """The row of an engine with no installed build: its backend and the size of its pack."""
+    """The row of an engine with no installed build: how to get it, its backend, its pack size."""
+    if isinstance(adapter, UserInstalled):
+        return EngineOption(
+            str(name),
+            installed=False,
+            route=InstallRoute.BY_HAND,
+            docs_url=adapter.install_docs_url,
+        )
     host = runnable.session_host()
     try:
         lock = choice.pin_lock(adapter.pin_record())
+    except choice.NoPublishedPackError:
+        return EngineOption(str(name), installed=False, route=InstallRoute.NO_PACK)
     except (choice.PinError, OSError):
         return EngineOption(str(name), installed=False)
     backend = lock.backend or _bundled_backend(name)

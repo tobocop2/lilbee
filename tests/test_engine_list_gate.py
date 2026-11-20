@@ -67,6 +67,10 @@ def _install_mlx_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, tmp_path / "pack.whl")
 
 
+def _picker_names(model: str) -> list[str]:
+    return [option.name for option in engine_service.engine_options(model)]
+
+
 def test_an_installed_build_the_gate_refuses_is_not_listed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -79,7 +83,7 @@ def test_an_installed_build_the_gate_refuses_is_not_listed(
     assert "mlx" not in [b.engine for b in listed.builds]
     assert "mlx" not in listed.not_installed
     assert "mlx" not in installed_engines()
-    assert "mlx" not in engine_service.engine_names("org/repo#mlx")
+    assert "mlx" not in _picker_names("org/repo#mlx")
 
 
 def test_an_installed_build_the_gate_passes_stays_listed(
@@ -150,14 +154,15 @@ def test_the_picker_names_an_installed_engine_the_cpu_can_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _installed_ik_llama(monkeypatch, avx2=True)
-    assert "ik_llama.cpp" in engine_service.engine_names("org/repo.gguf")
+    rows = {option.name: option for option in engine_service.engine_options("org/repo.gguf")}
+    assert rows["ik_llama.cpp"].installed is True
 
 
 def test_the_picker_hides_an_installed_engine_the_cpu_cannot_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _installed_ik_llama(monkeypatch, avx2=False)
-    assert "ik_llama.cpp" not in engine_service.engine_names("org/repo.gguf")
+    assert "ik_llama.cpp" not in _picker_names("org/repo.gguf")
 
 
 def _refuse(choose: object, model: str, name: str) -> engine_service.EngineRefusedError:
