@@ -175,7 +175,9 @@
       "--port",
       "{port}",
       "--prompt-cache-bytes",
-      "1073741824"
+      "1073741824",
+      "--max-tokens",
+      "4096"
     ]
   },
   "tei": {
