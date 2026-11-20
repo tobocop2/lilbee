@@ -41,7 +41,7 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import EngineAdapter, LaunchRequest
 from lilbee.providers.fleet.engines.base import SplitChecked, engine_label
-from lilbee.providers.fleet.engines.choice import LIST_HINT
+from lilbee.providers.fleet.engines.choice import install_any_advice
 from lilbee.providers.fleet.gpu_backends import resolve_backend, util_backend_name
 from lilbee.providers.fleet.gpu_backends.nvidia import card_rows as nvidia_card_rows
 from lilbee.providers.fleet.gpu_env import (
@@ -4961,8 +4961,11 @@ def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[Engin
     """Each engine of a planned role once; raises when no role has an engine."""
     distinct = list({engine.name: engine for engine in _planned_engines(engines).values()}.values())
     if not distinct:
+        from lilbee.catalog.runnable import session_host
+
         raise ProviderError(
-            f"No engine is assigned to any role, so there is nothing to plan. {LIST_HINT}"
+            "No engine is assigned to any role, so there is nothing to plan. "
+            f"{install_any_advice(session_host())}"
         )
     return distinct
 

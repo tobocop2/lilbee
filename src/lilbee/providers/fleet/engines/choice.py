@@ -402,6 +402,23 @@ def install_advice(adapter: EngineAdapter) -> str:
     return f"Run lilbee engine install {adapter.name}."
 
 
+def install_any_advice(host: HostCaps) -> str:
+    """The install command of every shipped engine that serves *host* and has a pack to install.
+
+    Falls back to the list command when no engine qualifies.
+    """
+    commands = []
+    for name, adapter in ADAPTERS.items():
+        if not install_answer(adapter, host).ok:
+            continue
+        try:
+            pin_lock(adapter.pin_record())
+        except PinError:
+            continue
+        commands.append(f"lilbee engine install {name}")
+    return f"Run {' or '.join(commands)}." if commands else LIST_HINT
+
+
 BUILD_UNREADABLE = (
     OSError,
     EngineConflictError,
