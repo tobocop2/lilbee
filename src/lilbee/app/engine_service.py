@@ -11,7 +11,12 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
-from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
+from lilbee.app.engine_choice import (
+    CHOICES_KEY,
+    engine_for_format,
+    resolve_engines,
+    stored_choices,
+)
 from lilbee.app.services import peek_services
 from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
@@ -24,7 +29,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.binary import llama_server_ready
-from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
+from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, cell_key, host_cell
 from lilbee.providers.fleet.engine_store import (
     BundledEngineError,
     ChecksumError,
@@ -53,7 +58,7 @@ from lilbee.providers.fleet.engines.choice import (
     installed_engines,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.llama import LLAMA, pack_backend
 from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
 from lilbee.providers.fleet.router_install import ROUTER_REFUSALS, install_router
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
@@ -370,6 +375,71 @@ def not_installed() -> list[str]:
 def engine_names(model: str) -> list[str]:
     """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
     return [AUTO, *engines_loading(model_format(model), offered_engines())]
+
+
+@dataclass(frozen=True)
+class EngineOption:
+    """One row of the engine choice for a model: an engine it can run on, or ``auto``.
+
+    ``download_bytes`` is set only for an engine that is not installed and has a pack for
+    this computer. The ``auto`` row carries the engine that ``auto`` picks now in
+    ``auto_now``, or None when no engine loads the model.
+    """
+
+    name: str
+    installed: bool = True
+    bundled: bool = False
+    backend: str = ""
+    download_bytes: int | None = None
+    auto_now: str | None = None
+
+
+def _auto_now(model: str) -> str | None:
+    """The engine that ``auto`` picks for *model* now, or None when no engine loads it."""
+    try:
+        return engine_for_format(model_format(model), cfg).name
+    except choice.NoEngineError:
+        return None
+
+
+def _missing_option(name: EngineName, adapter: EngineAdapter) -> EngineOption:
+    """The row of an engine with no installed build: its backend and the size of its pack."""
+    host = runnable.session_host()
+    try:
+        lock = choice.pin_lock(adapter.pin_record())
+    except (choice.PinError, OSError):
+        return EngineOption(str(name), installed=False)
+    backend = lock.backend or _bundled_backend(name)
+    key = cell_key(host, backend)
+    asset = lock.platforms.get(key) if key else None
+    size = asset.size if asset is not None else None
+    return EngineOption(str(name), installed=False, backend=backend, download_bytes=size)
+
+
+def _bundled_backend(name: EngineName) -> str:
+    """The backend of the llama.cpp pack this host runs; empty for any other engine."""
+    return pack_backend(runnable.session_host()) if name is EngineName.LLAMA else ""
+
+
+def engine_options(model: str) -> list[EngineOption]:
+    """The rows a surface shows to choose the engine of *model*: ``auto``, then each engine.
+
+    An engine row appears for an engine that loads the format of *model* and that the host
+    gate lets this host run, whether or not a build of it is installed.
+    """
+    fmt = model_format(model)
+    present = offered_engines()
+    backends = {b.engine: b.backend for b in builds()}
+    rows = [EngineOption(AUTO, auto_now=_auto_now(model))]
+    for name, adapter in choice.ADAPTERS.items():
+        if fmt not in adapter.formats:
+            continue
+        if name in present:
+            backend = backends.get(str(name)) or _bundled_backend(name)
+            rows.append(EngineOption(str(name), bundled=adapter.bundled, backend=backend))
+        elif _install_gate(name).ok:
+            rows.append(_missing_option(name, adapter))
+    return rows
 
 
 def prefer(name: str, confirmed: bool = False) -> str:

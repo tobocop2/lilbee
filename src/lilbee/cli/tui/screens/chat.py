@@ -1583,7 +1583,7 @@ class ChatScreen(Screen[None]):
             if not result.ok:
                 raise RuntimeError(result.text)
 
-        self._task_bar.start_task(f"Install {name}", TaskType.DOWNLOAD, target)
+        self._task_bar.start_task(msg.ENGINE_TASK_NAME.format(engine=name), TaskType.ENGINE, target)
 
     @work(thread=True)
     def _run_engine_command(self, args: str) -> None:
