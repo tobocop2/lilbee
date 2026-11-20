@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from lilbee import mcp_server
 from lilbee.app import placement as app_placement
 from lilbee.app.engine_choice import BookReading
+from lilbee.cli import placement as cli_placement
 from lilbee.cli.placement import placement_app
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params
@@ -188,6 +191,42 @@ class TestTheRefusalText:
             resolved, reading.adapters, manual=False, spec_json=None, refusal="The spec is off."
         )
         assert view.refusal == f"The spec is off. {launch.refused_roles[WorkerRole.CHAT]}"
+
+    def test_a_waiting_spec_with_an_unlaunched_role_is_refused_and_prints_the_instruction(
+        self, host: CardEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        reading = app_placement._planning_engines()
+        resolved = app_placement._resolve(None, reading)
+        assert resolved.unlaunched_roles
+        view = app_placement._view(
+            resolved,
+            reading.adapters,
+            manual=True,
+            spec_json=None,
+            refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
+            refusal_kind=app_placement.PlacementRefusal.WAITING,
+        )
+        assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
+        buffer = io.StringIO()
+        monkeypatch.setattr(cli_placement, "console", Console(file=buffer, width=400))
+        cli_placement._render_rejected(view)
+        assert "lilbee placement clear" in buffer.getvalue()
+
+    def test_an_unreadable_spec_with_an_unlaunched_role_stays_unreadable(
+        self, host: CardEngine
+    ) -> None:
+        reading = app_placement._planning_engines()
+        resolved = app_placement._resolve(None, reading)
+        assert resolved.unlaunched_roles
+        view = app_placement._view(
+            resolved,
+            reading.adapters,
+            manual=True,
+            spec_json=None,
+            refusal="The saved placement cannot be read.",
+            refusal_kind=app_placement.PlacementRefusal.UNREADABLE,
+        )
+        assert view.refusal_kind is app_placement.PlacementRefusal.UNREADABLE
 
     def test_a_spec_refusal_stands_alone_without_a_launch_refusal(
         self, host: CardEngine, monkeypatch: pytest.MonkeyPatch
