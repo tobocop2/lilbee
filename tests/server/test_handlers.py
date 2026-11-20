@@ -975,6 +975,45 @@ class TestAddIngestMutex:
         assert "held.txt" not in summary["name_taken"]
         assert "held.txt" not in summary["overlapping"]
 
+    async def test_a_close_at_already_ingesting_keeps_the_free_source(self, isolated_env, tmp_path):
+        """A client that stops at the first already_ingesting event still gets the free path."""
+        from lilbee.app.services import get_services
+        from lilbee.core.config import cfg
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+        from lilbee.server.handlers import add_files_stream
+
+        held = tmp_path / "held.txt"
+        held.write_text("held payload")
+        free = tmp_path / "free.txt"
+        free.write_text("free payload")
+        unwound = asyncio.Event()
+        real_release = IngestLockRegistry.release
+
+        def _release(registry, acquired):
+            real_release(registry, acquired)
+            unwound.set()
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
+        assert lock is not None
+        gen = add_files_stream([str(held), str(free)])
+        try:
+            with (
+                mock.patch("lilbee.data.ingest.sync", new=_hang),
+                mock.patch.object(IngestLockRegistry, "release", _release),
+            ):
+                first = await gen.__anext__()
+                await gen.aclose()
+                # The add releases its locks after its run unwinds, and so after the registration.
+                await asyncio.wait_for(unwound.wait(), 30)
+        finally:
+            lock.release()
+
+        assert first.startswith("event: already_ingesting\n")
+        assert cfg.linked_roots == {"free.txt": str(free.resolve())}
+
     async def test_distinct_relative_paths_get_distinct_locks(self, isolated_env):
         """Two uploads that land at different paths must not share one lock.
 
@@ -1203,10 +1242,10 @@ class TestAddDisconnect:
         with mock.patch.object(ingest, "_ingest_stream", _slow):
             yield
 
-    def test_a_return_on_already_ingesting_keeps_the_sources_it_started(
+    def test_a_close_at_already_ingesting_still_starts_the_free_sources(
         self, tmp_path, parked_sync, released, slow_resume
     ):
-        """The plugin stops reading at already_ingesting; the sources that did start stay."""
+        """A close at already_ingesting still registers the free source and starts its sync."""
         busy = tmp_path / "busy.txt"
         busy.write_text("busy", encoding="utf-8")
         new = tmp_path / "new.txt"
@@ -1220,13 +1259,10 @@ class TestAddDisconnect:
                 held_lines = held.iter_lines()
                 assert _first_event(held_lines) == "file_start"
                 with http.stream("POST", "/api/add", json=both, headers=_auth_headers()) as resp:
-                    # The server starts new.txt only after it sends this event, and a closed
-                    # response before then ends the add first. Hold the iterator, so the
-                    # response stays open until new.txt has started.
-                    lines = resp.iter_lines()
-                    assert _first_event(lines) == "already_ingesting"
-                    started_twice = parked_sync.wait_for(lambda starts: len(starts) == 2)
-                    assert started_twice, "new.txt never started"
+                    assert _first_event(resp.iter_lines()) == "already_ingesting"
+                    resp.close()
+                started_twice = parked_sync.wait_for(lambda starts: len(starts) == 2)
+                assert started_twice, "new.txt never started"
                 assert released.wait_for(lambda names: "new.txt" in names), "the add never unwound"
 
         assert cfg.linked_roots["new.txt"] == str(new.resolve())
