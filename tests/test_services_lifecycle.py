@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -19,7 +20,7 @@ from lilbee.app.services import (
     exit_status_after_stop,
     get_services,
     install_engine_lifecycle_hooks,
-    loop_wakes_on_signals,
+    loop_takes_signals,
     peek_services,
     reset_services,
     reset_services_on_exit,
@@ -199,6 +200,46 @@ def test_an_inherited_ignore_of_sigterm_does_not_stop_install_from_routing_it():
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     install_engine_lifecycle_hooks()
     assert signal.getsignal(signal.SIGTERM) == services_mod._lifecycle._on_hard_exit
+
+
+_ORDER_CONFTEST = """
+from tests.conftest import _forget_engine_stop, _restore_server_stop_flag  # noqa: F401
+"""
+
+_ORDER_TEST = """
+from lilbee.app import services as services_mod
+
+
+def test_a_test_that_leaves_the_server_stopping():
+    life = services_mod._lifecycle
+    reset = type(life).reset
+
+    def reset_after_checking_the_flag():
+        # The wait fixture ends here. The restore fixture must not have run yet,
+        # or a stop that ends late sets the flag after it.
+        assert services_mod._server_exit.stopping is True
+        del life.__dict__["reset"]
+        reset(life)
+
+    life.reset = reset_after_checking_the_flag
+    services_mod._server_exit.stopping = True
+"""
+
+
+def test_the_stop_wait_tears_down_before_the_server_stop_flag_is_restored(pytester):
+    """The server-stopping flag is restored after the wait for the engine stop, not before.
+
+    A stop sets the flag before it ends, so a restore that ran first would let a
+    late stop set the flag again for the next test. The inner conftest sets the
+    fixtures up in the order that is wrong unless the wait fixture asks for the restore
+    fixture, so the check fails when that dependency goes.
+    """
+    pytester.makeconftest(_ORDER_CONFTEST)
+    pytester.makepyfile(_ORDER_TEST)
+
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+
+    result.assert_outcomes(passed=1)
 
 
 def test_install_routes_sigterm_to_the_stop_handler():
@@ -993,14 +1034,20 @@ class TestStragglerExit:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
 @pytest.mark.parametrize("sig", [signal.SIGINT, *_HARD_EXIT_SIGNALS], ids=lambda s: s.name.lower())
-def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(sig):
+@pytest.mark.parametrize("loop_owns_signals", [False, True], ids=["plain", "loop-owned"])
+def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(
+    sig, loop_owns_signals
+):
     """A loop blocked in select is interrupted by the signal and unwinds with its status."""
     provider = _install_stub_services()
     previous = signal.getsignal(signal.SIGINT)
 
     async def serve() -> None:
-        os.kill(os.getpid(), sig)
-        await asyncio.sleep(30)
+        with contextlib.ExitStack() as stack:
+            if loop_owns_signals:
+                stack.enter_context(loop_takes_signals(asyncio.get_running_loop()))
+            os.kill(os.getpid(), sig)
+            await asyncio.sleep(30)
 
     try:
         install_engine_lifecycle_hooks()
@@ -1015,48 +1062,54 @@ def test_a_signal_in_a_running_loop_stops_the_fleet_and_exits_with_its_status(si
     provider.shutdown.assert_called_once()
 
 
-def _signal_once_the_loop_idles() -> None:
-    # The main thread is asleep in the loop's select by now. raise_signal from this
-    # thread delivers the signal to this thread, so nothing interrupts that select.
-    time.sleep(0.5)
+def _signal_once_the_loop_runs(ready: threading.Event) -> None:
+    # raise_signal from this thread delivers the signal to this thread, so the main
+    # thread, asleep in the loop's select, is not interrupted by it.
+    assert ready.wait(10)
     signal.raise_signal(signal.SIGINT)
 
 
-def test_a_signal_on_another_thread_wakes_an_idle_loop():
-    """The handler runs on the main thread only; the wakeup fd must end the loop's wait."""
+def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
+    """The loop takes the signal as a callback, so it ends the loop wherever the signal lands."""
+    provider = _install_stub_services()
     previous = signal.getsignal(signal.SIGINT)
-    sender = threading.Thread(target=_signal_once_the_loop_idles)
-    heard: list[asyncio.Future[None]] = []
-
-    def _handler(_signum: int, _frame: object) -> None:
-        heard[0].get_loop().call_soon_threadsafe(heard[0].set_result, None)
+    ready = threading.Event()
+    sender = threading.Thread(target=_signal_once_the_loop_runs, args=(ready,))
 
     async def idle() -> None:
-        heard.append(asyncio.get_running_loop().create_future())
-        with loop_wakes_on_signals(asyncio.get_running_loop()):
+        loop = asyncio.get_running_loop()
+        with loop_takes_signals(loop):
+            loop.call_soon(ready.set)
             sender.start()
-            # Without the wakeup fd the main thread sleeps until this timeout ends.
-            await asyncio.wait_for(heard[0], 10)
+            await asyncio.sleep(30)
 
-    signal.signal(signal.SIGINT, _handler)
-    started = time.monotonic()
     try:
-        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        install_engine_lifecycle_hooks()
+        stop_on_interrupt()
+        interrupt_handler = signal.getsignal(signal.SIGINT)
+        with (
+            pytest.raises(SystemExit) as raised,
+            asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner,
+        ):
             runner.run(idle())
+        _join_teardown()
+        after = signal.getsignal(signal.SIGINT)
     finally:
         signal.signal(signal.SIGINT, previous)
         sender.join(timeout=5)
 
-    assert time.monotonic() - started < 5
+    assert raised.value.code == 128 + signal.SIGINT
+    assert after == interrupt_handler
+    provider.shutdown.assert_called_once()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP")
-def test_an_ignored_sighup_stays_ignored_inside_the_loop_wakeup():
-    """The wakeup context routes no signal of its own: a launch's ignore of SIGHUP holds."""
+def test_an_ignored_sighup_stays_ignored_inside_the_loop_signals():
+    """The loop takes no signal the launch ignored: an inherited ignore of SIGHUP holds."""
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     async def inside() -> signal.Handlers | object:
-        with loop_wakes_on_signals(asyncio.get_running_loop()):
+        with loop_takes_signals(asyncio.get_running_loop()):
             return signal.getsignal(signal.SIGHUP)
 
     with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
