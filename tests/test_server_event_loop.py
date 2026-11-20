@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import threading
 from pathlib import Path
@@ -273,6 +274,74 @@ _ANSWER = CanonicalResponse(
     stop_reason=StopReason.END_TURN,
     usage=CanonicalUsage(input_tokens=0, output_tokens=0),
 )
+
+
+class TestChatStreamWarmsBeforeRetrieval:
+    """The chat stream yields the warming notice from its own worker call, before retrieval."""
+
+    async def test_the_warming_probe_runs_off_the_loop(self, services):
+        threads: list[int] = []
+        with (
+            patch.object(
+                rag_handlers, "_chat_warming_events", side_effect=_recording(threads, returns=[])
+            ),
+            patch.object(services.searcher, "search_unavailable", return_value=True),
+        ):
+            [f async for f in rag_handlers.chat_stream("q", [])]
+        _assert_off_the_loop(threads, 1)
+
+    async def test_the_warming_notice_precedes_retrieval(self, services):
+        release = threading.Event()
+        retrieval_waited: list[bool] = []
+
+        def retrieve(question: str) -> str:
+            # The notice must reach the client while retrieval is still to run.
+            retrieval_waited.append(release.wait(timeout=5))
+            return "canned"
+
+        notice = "event: warming\n\n"
+        searcher = services.searcher
+        with (
+            patch.object(rag_handlers, "_chat_warming_events", return_value=[notice]),
+            patch.object(searcher, "search_unavailable", return_value=False),
+            patch.object(searcher, "skip_retrieval", return_value=False),
+            patch.object(searcher, "pre_retrieval_answer", side_effect=retrieve),
+        ):
+            frames = []
+            async for frame in rag_handlers.chat_stream("q", []):
+                frames.append(frame)
+                if frame == notice:
+                    release.set()
+        assert retrieval_waited == [True]
+        answer_at = next(i for i, frame in enumerate(frames) if "canned" in frame)
+        assert frames.count(notice) == 1
+        assert frames.index(notice) < answer_at
+
+    async def test_the_warming_notice_precedes_the_embedder_refusal(self, services):
+        notice = "event: warming\n\n"
+        with (
+            patch.object(rag_handlers, "_chat_warming_events", return_value=[notice]),
+            patch.object(services.searcher, "search_unavailable", return_value=True),
+        ):
+            frames = [f async for f in rag_handlers.chat_stream("q", [])]
+        refusal_at = next(i for i, frame in enumerate(frames) if SEARCH_NEEDS_EMBEDDER in frame)
+        assert frames.index(notice) < refusal_at
+
+    async def test_a_client_that_leaves_during_warming_never_starts_retrieval(self, services):
+        notice = "event: warming\n\n"
+        searcher = services.searcher
+        with (
+            patch.object(rag_handlers, "_chat_warming_events", return_value=[notice]),
+            patch.object(searcher, "search_unavailable", return_value=False),
+            patch.object(searcher, "skip_retrieval", return_value=False),
+            patch.object(searcher, "pre_retrieval_answer", return_value="canned") as retrieve,
+        ):
+            stream = rag_handlers.chat_stream("q", [])
+            async with asyncio.timeout(5):
+                first = await anext(stream)
+                await stream.aclose()
+        assert first == notice
+        retrieve.assert_not_called()
 
 
 class TestChatRetrievalStaysOffTheLoop:
