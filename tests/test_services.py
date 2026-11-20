@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,41 @@ def isolated_cfg():
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture()
+def parts(monkeypatch):
+    """Stand in for every part ``build_services`` and ``reset_store`` make, to see each call."""
+    import lilbee.data.extract.backends as backends_mod
+    import lilbee.modelhub.role_validator as validator_mod
+    import lilbee.retrieval.canary_probe as canary_mod
+    import lilbee.retrieval.clustering as clustering_mod
+    import lilbee.retrieval.concepts as concepts_mod
+    import lilbee.retrieval.embedder as embedder_mod
+    import lilbee.retrieval.query as query_mod
+    import lilbee.retrieval.reranker as reranker_mod
+    from lilbee.app import services as services_mod
+
+    made = SimpleNamespace(
+        store=MagicMock(name="new store"),
+        canary_probe=MagicMock(name="canary_probe"),
+        embedder=MagicMock(name="Embedder"),
+        reranker=MagicMock(name="Reranker"),
+        concepts=MagicMock(name="ConceptGraph"),
+        clusterer=MagicMock(name="Clusterer"),
+        searcher=MagicMock(name="Searcher"),
+    )
+    made.new_store = MagicMock(name="_new_store", return_value=made.store)
+    monkeypatch.setattr(services_mod, "_new_store", made.new_store)
+    monkeypatch.setattr(canary_mod, "canary_probe", made.canary_probe)
+    monkeypatch.setattr(embedder_mod, "Embedder", made.embedder)
+    monkeypatch.setattr(reranker_mod, "Reranker", made.reranker)
+    monkeypatch.setattr(concepts_mod, "ConceptGraph", made.concepts)
+    monkeypatch.setattr(clustering_mod, "Clusterer", made.clusterer)
+    monkeypatch.setattr(query_mod, "Searcher", made.searcher)
+    monkeypatch.setattr(backends_mod, "sync_xberg_backends", MagicMock())
+    monkeypatch.setattr(validator_mod, "warn_unregistered_role_refs", MagicMock())
+    return made
 
 
 class TestSyncVisionOcrBackend:
@@ -443,6 +479,40 @@ class TestResetStore:
             assert after.model_manager is old_model_manager
         finally:
             reset_services()
+
+    def test_rebuilds_the_graph_clusterer_searcher_and_services_from_the_config_and_new_store(
+        self, parts
+    ):
+        """The rebuilt parts take the config and the new store, and the services hold them."""
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        old = make_mock_services(
+            provider=MagicMock(name="provider"),
+            embedder=MagicMock(name="embedder"),
+            reranker=MagicMock(name="reranker"),
+            registry=MagicMock(name="registry"),
+            searcher=MagicMock(name="old searcher"),
+        )
+        services_mod.set_services(old)
+        concepts = parts.concepts.return_value
+        try:
+            services_mod.reset_store()
+            after = services_mod.peek_services()
+            parts.canary_probe.assert_called_once_with(cfg, old.embedder, old.registry)
+            parts.new_store.assert_called_once_with(cfg, parts.canary_probe.return_value)
+            parts.concepts.assert_called_once_with(cfg, parts.store)
+            parts.clusterer.assert_called_once_with(cfg, parts.store)
+            parts.searcher.assert_called_once_with(
+                cfg, old.provider, parts.store, old.embedder, old.reranker, concepts
+            )
+            assert after.store is parts.store
+            assert after.concepts is concepts
+            assert after.clusterer is parts.clusterer.return_value
+            assert after.searcher is parts.searcher.return_value
+            old.store.close.assert_called_once_with()
+        finally:
+            services_mod.set_services(None)
 
     def test_no_op_when_services_uncached(self):
         """``reset_store`` is a no-op if Services has not been built yet."""
