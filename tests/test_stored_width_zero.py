@@ -414,6 +414,26 @@ def test_an_ingest_after_a_model_change_names_both_models_in_the_rebuild_advice(
     )
 
 
+@pytest.mark.parametrize("ingest", INGEST_ENTRY_POINTS)
+def test_the_check_inside_the_write_lock_refuses_a_stamped_index_of_another_model(
+    monkeypatch, ingest
+):
+    # A model change that lands after the check before the lock is caught by the check in the lock.
+    _store_with_stored_width(STORED_WIDTH, chunks=True, chunk_width=STORED_WIDTH)
+    old_model = "ollama/older-embed:latest"
+    lancedb.connect(str(cfg.lancedb_dir)).open_table(META_TABLE).update(
+        values={"embedding_model": old_model}
+    )
+    store = Store(cfg)
+    monkeypatch.setattr(Store, "_ensure_embedding_servable", lambda self: None)
+    before = _library_rows()
+
+    with pytest.raises(EmbeddingModelMismatchError, match=old_model):
+        ingest(store)
+
+    assert _library_rows() == before
+
+
 SAME_WIDTH_INGESTS = [
     (_ingest_by_add, _a_chunk_is_added),
     (_ingest_by_replace, _a_chunk_replaces_the_old_rows),
