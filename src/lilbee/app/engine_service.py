@@ -7,6 +7,7 @@ import logging
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -310,7 +311,7 @@ def remove_build(engine: str, version: str, backend: str, config: Config = cfg) 
     """Remove one installed build and return its label; refuses a bundled, missing or busy one."""
     store = EngineStore(engines_root(config.models_dir))
     try:
-        store.remove(engine, version, backend, in_use=launch_uses_engine)
+        store.remove(engine, version, backend, in_use=partial(launch_uses_engine, store.root))
     except STORE_REFUSALS as exc:
         raise EngineRefusedError(str(exc)) from exc
     return BuildView(engine, version, backend).label

@@ -88,6 +88,7 @@ _STATE_KEY_ENGINE_PIN = "engine_pin"
 _STATE_KEY_CONFIG_ROOT = "config_root"
 _STATE_KEY_FLEET_VIEW = "fleet_view"
 _STATE_KEY_READY_AT = "ready_at"
+_STATE_KEY_SWAP_BINARY = "swap_binary"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -224,6 +225,7 @@ class SwapState:
     engine_pin: str | None = None
     origin: PlanOrigin | None = None
     ready_at: float | None = None
+    swap_binary: str = ""  # the llama-swap executable; empty in a record written before the field
 
 
 @dataclass(frozen=True)
@@ -278,6 +280,7 @@ class SwapManager:
         # The serving contract (per-role model/ctx/slots) persisted in every
         # state write, so a guest lilbee can bind to this live fleet.
         self._launches_payload: list[dict] = []
+        self._swap_binary = ""
         self._origin: PlanOrigin | None = None
         # True when this manager uses an engine another process built: it then
         # never writes state, never reaps, and never signals engine processes.
@@ -360,9 +363,10 @@ class SwapManager:
         if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
             log.warning("The engine at %s stops with this process.", self._data_dir)
             lifetime = EngineLifetime.BUILDER
+        self._swap_binary = str(resolve_llama_swap())
         self._proc = spawn_bound_child(
             [
-                str(resolve_llama_swap()),
+                self._swap_binary,
                 _CONFIG_FLAG,
                 str(self._config_path),
                 _LISTEN_FLAG,
@@ -416,6 +420,7 @@ class SwapManager:
             _STATE_KEY_PROXY_PORT: self._port,
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
+            _STATE_KEY_SWAP_BINARY: self._swap_binary,
         }
         if self._origin is not None:
             state[_STATE_KEY_CONFIG_ROOT] = self._origin.config_root
@@ -1036,6 +1041,29 @@ def _stop_recorded_engines(data_dir: Path, stop: Callable[[SwapState], bool]) ->
     return stopped
 
 
+def recorded_launch_binaries(data_dir: Path) -> list[Path] | None:
+    """The router binary and the server binary of every recorded launch, or None.
+
+    None covers no state file, an unreadable one, a record without launches, and a
+    router or launch written before its binary was recorded.
+    """
+    binaries = []
+    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
+        state = _load_state(state_path)
+        if state is None or not state.swap_binary or not state.launches:
+            return None
+        binaries.append(Path(state.swap_binary))
+        for item in state.launches:
+            try:
+                launch = InstanceLaunch.from_state(item)
+            except (KeyError, TypeError, ValueError):
+                return None
+            if not launch.server_binary:
+                return None
+            binaries.append(Path(launch.server_binary))
+    return binaries or None
+
+
 def unload_engine_models(data_dir: Path) -> bool:
     """Unload the models of every engine *data_dir* records; False when any proxy refused.
 
@@ -1252,6 +1280,7 @@ def _load_state(path: Path) -> SwapState | None:
             engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
             origin=origin,
             ready_at=float(raw_ready) if raw_ready is not None else None,
+            swap_binary=str(payload.get(_STATE_KEY_SWAP_BINARY) or ""),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

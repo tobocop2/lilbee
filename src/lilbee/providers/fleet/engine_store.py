@@ -6,6 +6,7 @@ import codecs
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import stat
@@ -910,11 +911,24 @@ def engines_root(models_dir: Path) -> Path:
     return models_dir.parent / _ENGINES_DIRNAME
 
 
-def launch_uses_engine(engine: str, version: str, backend: str) -> bool:
-    """True while any launch of this machine holds the shared engine."""
+def launch_uses_engine(root: Path, engine: str, version: str, backend: str) -> bool:
+    """True while a launch of this machine runs a binary from this build folder.
+
+    A user whose launches cannot all be named may run any build, so it counts as a user.
+    The paths are compared as written: a link inside the build counts as the build.
+    """
+    # circular: swap_manager -> binary -> first_use -> engine_store
+    from lilbee.providers.fleet.swap_manager import recorded_launch_binaries
     from lilbee.runtime.engine_lock import live_users_exist, machine_engine_dir
 
-    return live_users_exist(machine_engine_dir())
+    slot = machine_engine_dir()
+    if not live_users_exist(slot):
+        return False
+    binaries = recorded_launch_binaries(slot)
+    if binaries is None:
+        return True
+    build = Path(os.path.abspath(root / engine / f"{version}-{backend}"))
+    return any(Path(os.path.abspath(binary)).is_relative_to(build) for binary in binaries)
 
 
 def sweep_engines(models_dir: Path) -> list[Path]:
@@ -942,7 +956,7 @@ def prune_engines(models_dir: Path) -> list[Path]:
     if not keep:
         return []
     try:
-        return store.prune(keep, in_use=launch_uses_engine)
+        return store.prune(keep, in_use=partial(launch_uses_engine, store.root))
     except OSError as exc:
         log.warning("Skipped the engine prune of %s: %s", store.root, exc)
         return []

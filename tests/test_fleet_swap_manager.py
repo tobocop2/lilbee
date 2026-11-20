@@ -1707,6 +1707,23 @@ class TestEnginePinInState:
         assert state is not None
         assert state.engine_pin == "llama-cpp-1.2.3+swap-v9+gguf-v1"
 
+    def test_start_records_the_router_binary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)], engines=engines_for_all_roles(LLAMA))
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert state.swap_binary == str(Path("/fake/llama-swap"))
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(json.dumps({"pid": 123, "member_ports": [4000]}), encoding="utf-8")
+        old = sm._load_state(legacy)
+        assert old is not None
+        assert old.swap_binary == ""
+
     def test_legacy_state_without_a_pin_parses_as_none(self, tmp_path: Path) -> None:
         legacy = tmp_path / "legacy.json"
         legacy.write_text(json.dumps({"pid": 123, "member_ports": [4000]}))

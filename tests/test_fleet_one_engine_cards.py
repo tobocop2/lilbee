@@ -97,6 +97,26 @@ def test_one_engine_plan_equals_the_golden(monkeypatch, tmp_path, name) -> None:
     assert run_scenario(monkeypatch, tmp_path, SCENARIOS[name], plan_one_engine) == golden[name]
 
 
+class EnvLaunchEngine(CardEngine):
+    """An engine that starts its server behind env, as a device-pinned engine does."""
+
+    def launch_argv(self, spec, request) -> list[str]:
+        return ["/usr/bin/env", "DEVICE=GPU.0", *super().launch_argv(spec, request)]
+
+
+def test_an_env_prefixed_engine_records_the_binary_it_runs(monkeypatch, tmp_path) -> None:
+    scenario = SCENARIOS["two-fit"]
+    prepare_host(monkeypatch, tmp_path, scenario.roles, 64 * GIB)
+    monkeypatch.setattr(cfg, "num_ctx", scenario.num_ctx)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
+    binary = tmp_path / "engine-server"
+    engine = EnvLaunchEngine("engine-a", binary, scenario.roles, cards_of(scenario.cards))
+    launches = plan_one_engine(engine).launches
+    assert launches
+    assert {launch.argv[0] for launch in launches} == {"/usr/bin/env"}
+    assert {launch.server_binary for launch in launches} == {str(binary)}
+
+
 def test_every_scenario_has_a_golden() -> None:
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert SCENARIOS

@@ -13,6 +13,7 @@ import sys
 import textwrap
 import time
 import zipfile
+from functools import partial
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -1710,18 +1711,190 @@ def test_sweep_engines_is_a_no_op_with_nothing_installed(tmp_path: Path) -> None
     assert names(tmp_path) == []
 
 
-def test_launch_uses_engine_reads_the_user_locks_of_the_machine_engine(
+def record_launch(slot: Path, binary: Path | str, router: Path | str = "/r/llama-swap") -> None:
+    """Write the state file of a live engine whose one launch runs *binary* behind env."""
+    argv = ["/usr/bin/env", "OV_DEVICE=GPU.0", str(binary), "-m", "m.gguf"]
+    launch = {"role": "chat", "argv": argv, "model": "m", "server_binary": str(binary)}
+    write_state(slot, [launch], router=str(router))
+
+
+def write_state(
+    slot: Path, launches: list[dict], name: str = "chat.1", router: str = "/r/llama-swap"
+) -> None:
+    slot.mkdir(parents=True, exist_ok=True)
+    state = {"pid": 1, "launches": launches, "swap_binary": router}
+    (slot / f"llama-swap.state.{name}.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def test_launch_uses_engine_counts_the_router_a_live_engine_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    root = tmp_path / "engines"
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    record_launch(
+        tmp_path / "slot",
+        root / "other" / "1-cpu" / "bin" / "srv",
+        router=root / "llama.cpp" / "9-cpu" / "bin" / "llama-swap",
+    )
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.launch_uses_engine(root, "llama.cpp", "9", "cpu") is True
+        assert engine_store.launch_uses_engine(root, "other", "1", "cpu") is True
+        assert engine_store.launch_uses_engine(root, "llama.cpp", "8", "cpu") is False
+    finally:
+        hold.release_and_check_last()
+
+
+def test_recorded_launch_binaries_reads_the_binary_not_the_first_argv_word(
+    tmp_path: Path,
+) -> None:
+    from lilbee.providers.fleet.swap_manager import recorded_launch_binaries
+
+    record_launch(tmp_path, "/b/srv")
+    assert recorded_launch_binaries(tmp_path) == [Path("/r/llama-swap"), Path("/b/srv")]
+
+
+@pytest.mark.parametrize(
+    ("launches", "router"),
+    [
+        ([], "/r/llama-swap"),
+        ([{"role": "nonsense"}], "/r/llama-swap"),
+        ([{"role": "chat", "argv": ["/c/srv"], "model": "m"}], "/r/llama-swap"),
+        ([{"role": "chat", "model": "m", "argv": [], "server_binary": "/c/srv"}], ""),
+    ],
+    ids=["no-launch", "foreign-shape", "launch-without-binary", "record-without-router"],
+)
+def test_recorded_launch_binaries_is_none_when_a_binary_cannot_be_named(
+    tmp_path: Path, launches: list[dict], router: str
+) -> None:
+    from lilbee.providers.fleet.swap_manager import recorded_launch_binaries
+
+    record_launch(tmp_path, "/b/srv")
+    write_state(tmp_path, launches, name="chat.2", router=router)
+    assert recorded_launch_binaries(tmp_path) is None
+
+
+def test_recorded_launch_binaries_is_none_with_an_unreadable_file_or_no_file(
+    tmp_path: Path,
+) -> None:
+    from lilbee.providers.fleet.swap_manager import recorded_launch_binaries
+
+    assert recorded_launch_binaries(tmp_path) is None
+    (tmp_path / "llama-swap.state.chat.3.json").write_text("{", encoding="utf-8")
+    assert recorded_launch_binaries(tmp_path) is None
+
+
+def test_launch_uses_engine_counts_a_live_user_whose_state_file_is_unreadable(
     tmp_path: Path, monkeypatch
 ) -> None:
     from lilbee.runtime.engine_lock import hold_user_lock
 
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
-    assert engine_store.launch_uses_engine("fx", "1", "cpu") is False
+    (tmp_path / "slot").mkdir()
+    (tmp_path / "slot" / "llama-swap.state.chat.1.json").write_text("{", encoding="utf-8")
     hold = hold_user_lock(tmp_path / "slot")
     try:
-        assert engine_store.launch_uses_engine("fx", "1", "cpu") is True
+        assert engine_store.launch_uses_engine(tmp_path / "engines", "fx", "1", "cpu") is True
     finally:
         hold.release_and_check_last()
+
+
+def test_launch_uses_engine_reads_a_binary_path_as_written(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    root = tmp_path / "engines"
+    build = root / "fx" / "1-cpu"
+    (build / "bin").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (build / "bin" / "link").symlink_to(tmp_path / "outside")
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        record_launch(tmp_path / "slot", build / "bin" / "link" / "srv")
+        assert engine_store.launch_uses_engine(root, "fx", "1", "cpu") is True
+        record_launch(tmp_path / "slot", build / ".." / ".." / "outside" / "srv")
+        assert engine_store.launch_uses_engine(root, "fx", "1", "cpu") is False
+    finally:
+        hold.release_and_check_last()
+
+
+def test_launch_uses_engine_is_false_with_no_user_of_the_machine_engine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    record_launch(tmp_path / "slot", tmp_path / "engines" / "fx" / "1-cpu" / "bin" / "srv")
+    assert engine_store.launch_uses_engine(tmp_path / "engines", "fx", "1", "cpu") is False
+
+
+def test_launch_uses_engine_counts_a_user_that_recorded_no_launch_yet(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.launch_uses_engine(tmp_path / "engines", "fx", "1", "cpu") is True
+    finally:
+        hold.release_and_check_last()
+
+
+def test_launch_uses_engine_names_the_build_a_launch_runs(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    root = tmp_path / "engines"
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    record_launch(tmp_path / "slot", root / "fx" / "2-cpu" / "bin" / "srv")
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.launch_uses_engine(root, "fx", "2", "cpu") is True
+        assert engine_store.launch_uses_engine(root, "fx", "1", "cpu") is False
+        assert engine_store.launch_uses_engine(root, "fx", "2", "cuda") is False
+        assert engine_store.launch_uses_engine(root, "other", "2", "cpu") is False
+    finally:
+        hold.release_and_check_last()
+
+
+def test_remove_keeps_the_running_build_and_deletes_another_of_the_engine(
+    store: EngineStore, tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    installed_store(store, tmp_path, ("1", "2"))
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    record_launch(tmp_path / "slot", store.root / "fx" / "2-cpu" / "bin" / "srv")
+    in_use = partial(engine_store.launch_uses_engine, store.root)
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        store.remove("fx", "1", "cpu", in_use=in_use)
+        with pytest.raises(engine_store.EngineInUseError, match="is in use"):
+            store.remove("fx", "2", "cpu", in_use=in_use)
+    finally:
+        hold.release_and_check_last()
+    assert names(store.root / "fx") == ["2-cpu"]
+
+
+def test_prune_engines_keeps_the_running_build_and_removes_the_stale_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    store = EngineStore(engine_store.engines_root(tmp_path / "models"))
+    installed_store(store, tmp_path, ("1", "2", "3"))
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    record_launch(tmp_path / "slot", store.root / "fx" / "2-cpu" / "bin" / "srv")
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.choice.release_pins", lambda _b: {("fx", "3", "cpu")}
+    )
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        gone = engine_store.prune_engines(tmp_path / "models")
+    finally:
+        hold.release_and_check_last()
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert names(store.root / "fx") == ["2-cpu", "3-cpu"]
 
 
 def test_sweep_never_raises_when_the_root_cannot_be_read(store: EngineStore) -> None:

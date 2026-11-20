@@ -1354,6 +1354,13 @@ class TestBuildFleetWiring:
         launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
         assert launch.swap_extras == {"checkEndpoint": "/live"}
 
+    def test_launch_for_records_the_server_binary_it_was_built_for(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.server_binary == str(LLAMA.binary())
+        assert launch.server_binary != ""
+
     def test_launch_for_chat_alone_on_its_card_gets_the_engine_default_fit_target(
         self, tmp_path, monkeypatch
     ) -> None:

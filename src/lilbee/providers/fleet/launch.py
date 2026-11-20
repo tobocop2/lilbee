@@ -74,6 +74,11 @@ class InstanceLaunch:
     """
     swap_extras: Mapping[str, Any] = field(default_factory=dict)
     """Keys the engine adds to its llama-swap model entry; empty for llama.cpp."""
+    server_binary: str = ""
+    """The server executable the launch runs; argv may start with a wrapper such as env.
+
+    Empty in a record written before the field existed.
+    """
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -97,6 +102,7 @@ class InstanceLaunch:
             "est_host_bytes": self.est_host_bytes,
             "settings": self.settings,
             "swap_extras": dict(self.swap_extras),
+            "server_binary": self.server_binary,
         }
 
     @classmethod
@@ -124,6 +130,7 @@ class InstanceLaunch:
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
             settings=str(payload.get("settings") or ""),
             swap_extras=dict(payload.get("swap_extras") or {}),
+            server_binary=str(payload.get("server_binary") or ""),
         )
 
     @property
