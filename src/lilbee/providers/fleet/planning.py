@@ -3328,16 +3328,25 @@ def _log_roles_left_unpinned(
             )
 
 
-def _unseen_card_reason(plan: InstancePlan, engine: EngineAdapter) -> str | None:
-    """Why *plan* cannot launch: *engine* lists cards, and not one that placement chose for it.
+def _unseen_card_reason(
+    plan: InstancePlan, by_index: Mapping[int, FleetDevice], engine: EngineAdapter
+) -> str | None:
+    """Why *plan* cannot launch: a card placement chose for it is one *engine* does not list.
 
-    An engine that lists no card runs on the CPU and keeps its placement.
+    The card is identified as :func:`_in_engine_reading` does, so a refusal here is the
+    case in which that reading would raise. An engine that lists no card runs on the CPU
+    and keeps its placement.
     """
     probe = _current_plan_probe(engine)
     if probe is None or not probe.devices:
         return None
     listed = [d.index for d in probe.devices]
-    unseen = [index for index in plan.devices if index not in listed]
+    planned = [by_index[index] for index in plan.devices]
+    unseen = [
+        card.index
+        for card, hit in zip(planned, _matched(probe.devices, planned), strict=True)
+        if hit is None
+    ]
     return unseen_card_reason(plan.role, engine.name, unseen, listed) if unseen else None
 
 
@@ -4844,7 +4853,7 @@ def _launches_and_refusals(
         if text_only := _text_only_vision_reason(plan.role, model_refs[plan.role]):
             refused[plan.role] = text_only
             continue
-        unseen = _unseen_card_reason(plan, engines[plan.role])
+        unseen = _unseen_card_reason(plan, by_index, engines[plan.role])
         if unseen is not None:
             refused[plan.role] = unseen
             continue

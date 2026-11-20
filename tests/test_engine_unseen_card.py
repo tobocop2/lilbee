@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import gpu_hardware, planning
+from lilbee.providers.fleet.placement import unseen_card_reason
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import CardEngine, Role, cards_of, prepare_host
@@ -20,6 +21,10 @@ EMBED_ON_CARD_ONE = "{" + CHAT_ON_CARD_ZERO + ', "embed": {"devices": [1], "targ
 EMBED_ON_CARD_ZERO = "{" + CHAT_ON_CARD_ZERO + ', "embed": {"devices": [0], "target": "gpu"}}'
 REFUSAL = (
     "embed is placed on device 1, but the narrow engine lists only device 0. "
+    "Set the embed target to cpu, or choose an engine that lists that card."
+)
+OTHER_CARD_REFUSAL = (
+    "embed is placed on device 0, but the narrow engine lists a different card at device 0. "
     "Set the embed target to cpu, or choose an engine that lists that card."
 )
 
@@ -82,6 +87,53 @@ def test_the_placement_view_reports_the_same_refusal_as_the_launch(
     )
     assert resolved.unlaunched_roles == {WorkerRole.EMBED: REFUSAL}
     assert [inst.role for inst in resolved.instances] == [WorkerRole.CHAT]
+
+
+def test_a_role_on_a_card_its_engine_lists_as_another_card_is_refused_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The narrow engine lists a 16 GiB card 0; the plan's card 0 is a 4 GiB card."""
+    _host(tmp_path, monkeypatch, EMBED_ON_CARD_ZERO)
+    engines = _engines(tmp_path)
+    planning.capture_plan_probe(engines)
+    plan = planning.plan_all_launches(engines=engines)
+    assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+    assert plan.refused_roles == {WorkerRole.EMBED: OTHER_CARD_REFUSAL}
+
+
+def test_a_chat_on_a_card_its_engine_lists_as_another_card_is_refused_and_embed_is_planned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(tmp_path, monkeypatch, EMBED_ON_CARD_ZERO)
+    wide = CardEngine("wide", tmp_path / "wide-server", ROLES, cards_of((4, 4)))
+    narrow = CardEngine("narrow", tmp_path / "narrow-server", ROLES, cards_of((16,)))
+    engines = {WorkerRole.CHAT: narrow, WorkerRole.EMBED: wide}
+    planning.capture_plan_probe(engines)
+    plan = planning.plan_all_launches(engines=engines)
+    assert [launch.role for launch in plan.launches] == [WorkerRole.EMBED]
+    assert list(plan.refused_roles) == [WorkerRole.CHAT]
+
+
+def test_the_placement_view_reports_the_same_refusal_for_another_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(tmp_path, monkeypatch, EMBED_ON_CARD_ZERO)
+    engines = _engines(tmp_path)
+    planning.capture_plan_probe(engines)
+    resolved = planning.resolve_placement_plan(
+        PlacementSpec.from_json(EMBED_ON_CARD_ZERO), engines=engines
+    )
+    assert resolved.unlaunched_roles == {WorkerRole.EMBED: OTHER_CARD_REFUSAL}
+    assert [inst.role for inst in resolved.instances] == [WorkerRole.CHAT]
+
+
+def test_the_reason_names_both_a_different_card_and_a_missing_card() -> None:
+    reason = unseen_card_reason(WorkerRole.EMBED, "narrow", [0, 2], [0, 1])
+    assert reason == (
+        "embed is placed on devices 0 and 2, but the narrow engine lists a different card "
+        "at device 0 and no card at device 2. Set the embed target to cpu, or choose an "
+        "engine that lists that card."
+    )
 
 
 def test_a_cpu_only_engine_takes_no_card_and_is_not_refused(
