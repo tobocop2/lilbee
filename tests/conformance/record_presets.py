@@ -147,22 +147,30 @@ def require_engine_output(url: str, path: Path) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.hostname not in _LOOPBACK or parsed.port is None:
         raise SystemExit(f"--engine-log {path}: the engine at {url} is not a local port")
-    try:
-        pids = {
-            conn.pid
-            for conn in psutil.net_connections(kind="tcp")
-            if conn.status == psutil.CONN_LISTEN
-            and conn.pid
-            and conn.laddr
-            and conn.laddr.port == parsed.port
-        }
-    except psutil.AccessDenied as exc:
-        raise SystemExit(f"--engine-log {path}: the process table is not readable") from exc
-    if not any(_holds_open(pid, path) for pid in pids):
+    if not any(_holds_open(pid, path) for pid in _listeners(parsed.port)):
         raise SystemExit(
             f"--engine-log {path}: the engine at {url} does not hold this file open, "
             "so it is not the output of that engine"
         )
+
+
+def _listeners(port: int) -> set[int]:
+    """The processes this user can read that listen on TCP *port*.
+
+    Each process is asked for its own sockets: the system-wide psutil call needs root on macOS.
+    """
+    pids: set[int] = set()
+    for proc in psutil.process_iter():
+        try:
+            conns = proc.net_connections(kind="tcp")
+        except psutil.Error:
+            continue
+        if any(
+            conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port
+            for conn in conns
+        ):
+            pids.add(proc.pid)
+    return pids
 
 
 def _holds_open(pid: int, path: Path) -> bool:

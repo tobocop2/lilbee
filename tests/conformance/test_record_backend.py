@@ -380,14 +380,30 @@ class TestRecorderWithAnEngineLog:
         with pytest.raises(SystemExit, match="is not a local port"):
             record_presets.require_engine_output("http://gpu-box.example:5801", Path(log))
 
-    def test_an_unreadable_process_table_refuses_the_log(
+    def test_the_engine_is_found_where_the_system_wide_table_needs_root(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        """On macOS the system-wide socket table needs root; the engine of this user needs none."""
+
         def denied(**kwargs: object) -> list[object]:
             raise record_presets.psutil.AccessDenied()
 
+        log = _log(tmp_path, _TEI_CUDA_LOG)
         monkeypatch.setattr(record_presets.psutil, "net_connections", denied)
-        with pytest.raises(SystemExit, match="process table is not readable"):
+        with _engine(None) as url:
+            record_presets.require_engine_output(url, Path(log))
+
+    def test_a_process_this_user_cannot_read_is_not_the_engine(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class _Closed:
+            pid = 1
+
+            def net_connections(self, kind: str) -> list[object]:
+                raise record_presets.psutil.AccessDenied()
+
+        monkeypatch.setattr(record_presets.psutil, "process_iter", lambda: iter([_Closed()]))
+        with pytest.raises(SystemExit, match="does not hold this file open"):
             record_presets.require_engine_output("http://127.0.0.1:5801", tmp_path / "e.log")
 
     def test_a_process_that_vanished_holds_nothing_open(self, tmp_path: Path) -> None:
