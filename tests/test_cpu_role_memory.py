@@ -1124,7 +1124,7 @@ class TestAnAutoPlacedCpuRoleWarnsAtLowFreeMemory:
         placed = Placement(
             instances=placed.instances,
             unplaceable_roles=(),
-            co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.VISION}),
+            swap_classes=(frozenset({WorkerRole.EMBED}), frozenset({WorkerRole.VISION})),
         )
         found = _auto_findings(placed, inputs, engines)
         assert found.low_free_memory == {
@@ -1140,12 +1140,35 @@ class TestAnAutoPlacedCpuRoleWarnsAtLowFreeMemory:
         placed = Placement(
             instances=placed.instances,
             unplaceable_roles=(),
-            co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.RERANK}),
+            swap_classes=(frozenset({WorkerRole.EMBED}), frozenset({WorkerRole.RERANK})),
         )
         found = _auto_findings(placed, inputs, engines)
         assert found.low_free_memory == {
             WorkerRole.EMBED: LowFreeMemory(wanted=3 * GIB, free=2 * GIB),
             WorkerRole.RERANK: LowFreeMemory(wanted=3 * GIB, free=2 * GIB),
+        }
+
+    def test_a_class_of_two_members_is_charged_the_sum_of_its_members(self, monkeypatch) -> None:
+        # One class holds embed and rerank together (2 GiB + 3 GiB); vision is a class of
+        # its own (4 GiB). The group is charged its largest class, 5 GiB.
+        placed, inputs, engines = _pool(
+            monkeypatch,
+            [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 3), (WorkerRole.VISION, 4)],
+            free_gib=4,
+        )
+        placed = Placement(
+            instances=placed.instances,
+            unplaceable_roles=(),
+            swap_classes=(
+                frozenset({WorkerRole.EMBED, WorkerRole.RERANK}),
+                frozenset({WorkerRole.VISION}),
+            ),
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert {role: short.wanted for role, short in found.low_free_memory.items()} == {
+            WorkerRole.EMBED: 5 * GIB,
+            WorkerRole.RERANK: 5 * GIB,
+            WorkerRole.VISION: 5 * GIB,
         }
 
     def test_a_pool_with_no_shared_memory_budget_is_left_alone(self, monkeypatch) -> None:

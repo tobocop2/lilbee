@@ -3775,7 +3775,10 @@ def _with_auto_cpu_findings(
     free = _plan_free_system_memory(snapshot_engine(engines))
     count = Counter(inst.role for inst in launching)
     slot = max(
-        (m.est_vram_bytes for m in inputs if m.role in placed.co_tenants and count[m.role]),
+        (
+            sum(m.est_vram_bytes for m in inputs if m.role in members and count[m.role])
+            for members in placed.swap_classes
+        ),
         default=0,
     )
     held = 0
