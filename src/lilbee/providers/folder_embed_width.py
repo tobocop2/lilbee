@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 _CONFIG = "config.json"
+_GENERATION_CONFIG = "generation_config.json"
 _MODULES = "modules.json"
 _TEXT_CONFIG_KEY = "text_config"
 _HIDDEN_KEY = "hidden_size"
@@ -28,6 +29,11 @@ def _read_json(path: Path) -> object:
 def read_folder_config(folder: Path) -> dict[str, Any]:
     """The ``config.json`` object of a model folder, or an empty one when it is not an object."""
     return _read_object(folder / _CONFIG)
+
+
+def read_generation_config(folder: Path) -> dict[str, Any]:
+    """The ``generation_config.json`` object of a model folder, or an empty one."""
+    return _read_object(folder / _GENERATION_CONFIG)
 
 
 def _read_object(path: Path) -> dict[str, Any]:

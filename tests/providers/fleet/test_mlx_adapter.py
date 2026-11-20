@@ -131,6 +131,57 @@ def test_an_answer_may_run_to_the_window_not_to_the_server_default(tmp_path: Pat
     assert argv.count("--max-tokens") == 1
 
 
+def _launch_with_generation_config(tmp_path: Path, config: object) -> list[str]:
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "generation_config.json").write_text(json.dumps(config), encoding="utf-8")
+    return MLX.launch_argv(MLX.role_spec(WorkerRole.CHAT, None, None), request(tmp_path))
+
+
+def _flag(argv: list[str], flag: str) -> str | None:
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+
+def _sampling(argv: list[str]) -> tuple[str | None, ...]:
+    return tuple(_flag(argv, flag) for flag in ("--temp", "--top-p", "--top-k", "--min-p"))
+
+
+_LLAMA_SERVER_DEFAULTS = ("0.8", "0.95", "40", "0.05")
+
+
+def test_the_launch_samples_as_the_model_folder_says(tmp_path: Path) -> None:
+    """mlx-lm samples greedily by default, which loops a thinking model; the folder says how."""
+    config = {"do_sample": True, "temperature": 0.6, "top_p": 0.95, "top_k": 20}
+    argv = _launch_with_generation_config(tmp_path, config)
+    assert _sampling(argv) == ("0.6", "0.95", "20", "0.05")
+    assert argv.count("--temp") == 1
+
+
+@pytest.mark.parametrize(
+    "config",
+    [{"temperature": True, "top_p": "0.9"}, ["not", "an", "object"], {}],
+    ids=["not-numbers", "not-an-object", "empty"],
+)
+def test_a_folder_that_names_no_sampling_gets_the_llama_server_defaults(
+    tmp_path: Path, config: object
+) -> None:
+    """A request that names no sampling samples alike on MLX and llama.cpp."""
+    argv = _launch_with_generation_config(tmp_path, config)
+    assert _sampling(argv) == _LLAMA_SERVER_DEFAULTS
+
+
+def test_a_folder_without_generation_config_gets_the_llama_server_defaults(
+    tmp_path: Path,
+) -> None:
+    argv = MLX.launch_argv(MLX.role_spec(WorkerRole.CHAT, None, None), request(tmp_path))
+    assert _sampling(argv) == _LLAMA_SERVER_DEFAULTS
+
+
+def test_a_folder_that_turns_sampling_off_keeps_greedy_decoding(tmp_path: Path) -> None:
+    argv = _launch_with_generation_config(tmp_path, {"do_sample": False, "temperature": 0.6})
+    assert _sampling(argv) == (None, None, None, None)
+
+
 def test_the_swap_names_the_default_model_for_every_request() -> None:
     assert MLX.swap_extras(MagicMock()) == {"useModelName": "default_model"}
 
