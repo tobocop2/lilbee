@@ -530,8 +530,10 @@ async def test_the_fleet_body_repaints_after_an_engine_command() -> None:
 
 
 def test_the_picker_offers_only_the_engines_that_load_the_model() -> None:
-    assert engine_service.engine_names(GGUF_REF) == ["auto", "llama.cpp", "openvino"]
-    assert engine_service.engine_names("org/repo#mlx") == ["auto", "mlx"]
+    names = [option.name for option in engine_service.engine_options(GGUF_REF)]
+    assert names == ["auto", "llama.cpp", "openvino"]
+    names = [option.name for option in engine_service.engine_options("org/repo#mlx")]
+    assert names == ["auto", "mlx"]
 
 
 async def test_the_tooltip_and_the_help_panel_name_the_key_e() -> None:
@@ -749,7 +751,7 @@ async def test_a_failed_install_fails_the_task_and_keeps_the_engine(
     _offer_openvino_for_download(monkeypatch)
 
     def _refused(*_a: object, **_k: object) -> None:
-        raise engine_service.EngineInstallRefusedError("No pack of openvino is published yet.")
+        raise engine_service.EngineInstallRefusedError("The download of openvino failed.")
 
     monkeypatch.setattr(engine_service, "install", _refused)
     app = _BarApp()
@@ -760,8 +762,71 @@ async def test_a_failed_install_fails_the_task_and_keeps_the_engine(
         assert await wait_until(
             pilot, lambda: any(t.status is TaskStatus.FAILED for t in _engine_tasks(app))
         )
-        assert _engine_tasks(app)[0].detail == "No pack of openvino is published yet."
+        assert _engine_tasks(app)[0].detail == "The download of openvino failed."
         assert cfg.engine_choices is None
+
+
+_DOCS_URL = "https://example.org/install-lemonade"
+
+
+def _offer_engines_with_no_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """openvino has no published pack; lemonade is installed by hand."""
+    monkeypatch.setattr(
+        engine_service,
+        "engine_options",
+        lambda _model: [
+            engine_service.EngineOption("auto", auto_now="llama.cpp"),
+            engine_service.EngineOption("llama.cpp", bundled=True, backend="metal"),
+            engine_service.EngineOption(
+                "openvino", installed=False, route=engine_service.InstallRoute.NO_PACK
+            ),
+            engine_service.EngineOption(
+                "lemonade",
+                installed=False,
+                route=engine_service.InstallRoute.BY_HAND,
+                docs_url=_DOCS_URL,
+            ),
+        ],
+    )
+
+
+async def test_an_engine_with_no_download_is_listed_with_its_reason_and_the_docs_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_engines_with_no_download(monkeypatch)
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _open_picker(app, pilot)
+        options = app.screen.query_one(OptionList)
+        labels = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert labels[2:] == [
+            "■ openvino  no download yet",
+            f"■ lemonade  install it yourself · {_DOCS_URL}",
+        ]
+
+
+async def test_choosing_an_engine_with_no_download_asks_nothing_and_starts_no_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_engines_with_no_download(monkeypatch)
+    monkeypatch.setattr(engine_service, "install", mock.Mock())
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _open_picker(app, pilot)
+        options = app.screen.query_one(OptionList)
+        assert [options.get_option_at_index(i).disabled for i in range(4)] == [
+            False,
+            False,
+            True,
+            True,
+        ]
+        await pilot.press("down", "down", "down", "enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, ConfirmDialog)
+        assert _engine_tasks(app) == []
+        engine_service.install.assert_not_called()  # type: ignore[attr-defined]
 
 
 def _views(*pairs: tuple[WorkerRole, str, str]) -> list[engine_service.RoleView]:

@@ -61,9 +61,10 @@ _KEY_LABELS = "labels"
 _KEY_CTX = "ctx_size"
 _LABEL_EMBEDDINGS = "embeddings"
 _TMP_SUFFIX = ".tmp"
+_INSTALL_DOCS_URL = "https://lemonade-server.ai/docs/guide/install/"
 _INSTALL_HINT = (
-    "lilbee has no Lemonade pack. Install Lemonade from "
-    "https://lemonade-server.ai/docs/guide/install/ or unpack the lemonade-embeddable "
+    f"lilbee has no Lemonade pack. Install Lemonade from {_INSTALL_DOCS_URL} "
+    "or unpack the lemonade-embeddable "
     f"archive from https://github.com/lemonade-sdk/lemonade/releases/tag/v{_VERSION}, "
     f"then put the folder with {_TOOL} on PATH."
 )
@@ -144,6 +145,7 @@ class LemonadeAdapter:
     bundled = False
     server_process = ServerProcess(name=_TOOL, folder=data_root)
     install_hint = _INSTALL_HINT
+    install_docs_url = _INSTALL_DOCS_URL
     models_url = _MODELS_URL
 
     def parse_models(self, payload: Any) -> list[CatalogModel]:

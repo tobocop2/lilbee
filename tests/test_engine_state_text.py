@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.app import engine_service
-from lilbee.app.engine_service import EngineOption
+from lilbee.app.engine_service import EngineOption, InstallRoute
 from lilbee.cli.tui import engine_install_flow, engine_mark
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.engine_picker import state_text
@@ -25,6 +25,16 @@ def test_an_installed_engine_reads_installed() -> None:
 def test_a_missing_engine_of_unknown_size_reads_not_installed() -> None:
     option = EngineOption("openvino", installed=False)
     assert state_text(option) == msg.ENGINE_STATE_NOT_INSTALLED
+
+
+def test_an_engine_with_no_pack_reads_no_download_yet() -> None:
+    option = EngineOption("openvino", installed=False, route=InstallRoute.NO_PACK)
+    assert state_text(option) == msg.ENGINE_STATE_NO_DOWNLOAD == "no download yet"
+
+
+def test_an_engine_the_user_installs_reads_install_it_yourself() -> None:
+    option = EngineOption("lemonade", installed=False, route=InstallRoute.BY_HAND)
+    assert state_text(option) == msg.ENGINE_STATE_BY_HAND == "install it yourself"
 
 
 def test_a_missing_engine_shows_its_size() -> None:
