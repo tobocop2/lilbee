@@ -720,6 +720,14 @@ class TestAnUnplaceableRoleCarriesTheLaunchReason:
         assert view.unplaceable == (WorkerRole.CHAT,)
         assert view.refusal == logged
 
+    def test_the_view_names_a_budget_refusal_as_refused(
+        self, engine: CardEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._logged_reason(engine, caplog)
+        view = app_placement.get_placement()
+        assert view.refusal is not None
+        assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
+
     def test_rest_carries_the_logged_sentence(
         self, engine: CardEngine, caplog: pytest.LogCaptureFixture
     ) -> None:
