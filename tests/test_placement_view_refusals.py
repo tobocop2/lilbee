@@ -203,6 +203,7 @@ class TestTheRefusalText:
             reading.adapters,
             manual=True,
             spec_json=None,
+            rejected_spec_json='{"chat": {"target": "auto"}}',
             refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
             refusal_kind=app_placement.PlacementRefusal.WAITING,
         )
@@ -754,8 +755,7 @@ class TestAnUnplaceableRoleCarriesTheLaunchReason:
     def test_the_view_reasons_are_asked_with_the_admission_budget_not_the_live_one(
         self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        for module in (planning, planning.model_cache):
-            monkeypatch.setattr(module, "free_system_memory", lambda: 8 * GIB)
+        monkeypatch.setattr(planning.model_cache, "free_system_memory", lambda: 8 * GIB)
         devices = [FleetDevice("CUDA", 0, "igpu", 16 * GIB, 16 * GIB, True)]
         admission = planning._unified_admission_budget(devices, engine)
         live = planning._unified_memory_budget(devices, engine)
