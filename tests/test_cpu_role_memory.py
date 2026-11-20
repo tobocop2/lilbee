@@ -1094,6 +1094,43 @@ class TestAnAutoPlacedCpuRoleWarnsAtLowFreeMemory:
         )
         assert _auto_findings(placed, inputs, engines).low_free_memory == {}
 
+    def test_a_plan_that_needs_exactly_the_free_memory_lists_nothing(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 1)], free_gib=3
+        )
+        assert _auto_findings(placed, inputs, engines).low_free_memory == {}
+
+    def test_a_plan_one_byte_past_the_free_memory_lists_the_last_role(self, monkeypatch) -> None:
+        placed, inputs, engines = _pool(
+            monkeypatch, [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 1)], free_gib=3
+        )
+        inputs[1] = ModelPlacementInput(WorkerRole.RERANK, 1 * GIB + 1)
+        found = _auto_findings(placed, inputs, engines)
+        assert found.low_free_memory == {
+            WorkerRole.RERANK: LowFreeMemory(wanted=3 * GIB + 1, free=3 * GIB)
+        }
+
+    def test_a_swap_member_that_does_not_launch_does_not_move_the_group_end(
+        self, monkeypatch
+    ) -> None:
+        # The embed member is swapped out and starts nothing. The rerank role launches
+        # alone and holds 2 GiB, so the vision member of the group ends at 4 GiB.
+        placed, inputs, engines = _pool(
+            monkeypatch,
+            [(WorkerRole.EMBED, 2), (WorkerRole.RERANK, 2), (WorkerRole.VISION, 2)],
+            free_gib=3,
+            launching=(WorkerRole.RERANK, WorkerRole.VISION),
+        )
+        placed = Placement(
+            instances=placed.instances,
+            unplaceable_roles=(),
+            co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.VISION}),
+        )
+        found = _auto_findings(placed, inputs, engines)
+        assert found.low_free_memory == {
+            WorkerRole.VISION: LowFreeMemory(wanted=4 * GIB, free=3 * GIB)
+        }
+
     def test_a_swap_group_is_charged_its_largest_member_and_each_member_is_listed(
         self, monkeypatch
     ) -> None:
