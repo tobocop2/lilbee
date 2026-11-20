@@ -282,17 +282,24 @@ def _empty_tape():
 
 
 @contextmanager
-def _chat_server(content: str, bodies: list[dict], finish: str = "stop") -> Iterator[str]:
-    """A local chat server that keeps each request body and answers *content* to every one."""
+def _chat_server(
+    content: str, bodies: list[dict], finish: str = "stop", ask_status: int = 200
+) -> Iterator[str]:
+    """A local chat server that keeps each request body and answers *content* to every one.
+
+    The JSON ask gets *ask_status*; every other request gets 200.
+    """
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             size = int(self.headers.get("Content-Length") or 0)
-            bodies.append(json.loads(self.rfile.read(size)))
+            request = json.loads(self.rfile.read(size))
+            bodies.append(request)
             message = {"role": "assistant", "content": content}
             reply = {"choices": [{"message": message, "finish_reason": finish}]}
             body = json.dumps(reply).encode()
-            self.send_response(200)
+            asked = request.get("messages", [{}])[0].get("content") == JSON_ASK
+            self.send_response(ask_status if asked else 200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -317,13 +324,13 @@ _BARE = '{"city": "Paris", "pop": 2100000}'
 
 
 def _run_json_step(
-    tmp_path, engine: str, content: str, step: str, finish: str = "stop"
+    tmp_path, engine: str, content: str, step: str, finish: str = "stop", ask_status: int = 200
 ) -> tuple[Any, list[dict]]:
     from tests.conformance import preset_check
 
     bodies: list[dict] = []
     setup = Setup(("chat",), {"chat": "m"}, strict=True, engine=engine)
-    server = _chat_server(content, bodies, finish)
+    server = _chat_server(content, bodies, finish, ask_status)
     with server as url, preset_check.configured(url, setup, tmp_path):
         outcome = preset_check._STEP_FUNCTIONS[step](setup)
     return outcome, bodies
@@ -372,6 +379,16 @@ class TestEngineJsonSteps:
     def test_llama_cpp_sends_the_schema_and_judges_the_reply(self, tmp_path) -> None:
         outcome, bodies = _run_json_step(tmp_path, "llama.cpp", _BARE, "json_schema")
         assert outcome.ok
+        assert [f["type"] for f in _formats(bodies)] == ["json_schema"]
+
+    def test_a_server_error_on_the_schema_ask_fails_the_step(self, tmp_path) -> None:
+        """Only lilbee's own refusal on an engine without the format passes; an error fails."""
+        outcome, bodies = _run_json_step(
+            tmp_path, "llama.cpp", _BARE, "json_schema", ask_status=500
+        )
+        assert not outcome.ok
+        assert outcome.detail.startswith("refused kind=")
+        assert outcome.detail != "refused kind=bad_request"
         assert [f["type"] for f in _formats(bodies)] == ["json_schema"]
 
     def test_llama_cpp_fails_a_fenced_reply_to_json_object(self, tmp_path) -> None:
