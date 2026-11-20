@@ -4292,7 +4292,7 @@ def _unplaceable_reasons(
                 "Use another engine for this role."
             )
         elif role not in fits_alone and (equal := _equal_split_refusal(role, inputs, placement)):
-            log.warning("%s model %s %s", role.value, model, equal)
+            reasons[role] = f"{role.value} model {model} {equal}"
         elif role not in fits_alone:
             reasons[role] = (
                 f"{role.value} model {model} needs {charges[role] / 1024**3:.1f} GiB, more "
