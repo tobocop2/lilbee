@@ -583,6 +583,18 @@ def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
     ) from cause
 
 
+def _drain_deadline(clients: Sequence[LlamaServerClient], limit: float, *, waits: bool) -> float:
+    """When the drain of *clients* ends: at *limit*, or later for a restart that *waits*.
+
+    A restart that waits for its requests drains until the request timeout of the
+    clients: every request that still reads has ended by then, and a stream nobody
+    reads holds no timeout of its own, so it is cut there.
+    """
+    if not waits:
+        return limit
+    return time.monotonic() + max((client.timeout for client in clients), default=0.0)
+
+
 def _final_attempt(call: Callable[[], _T]) -> _T:
     """Run *call* as the last attempt: a connection failure becomes the no-healthy-replica error."""
     try:
@@ -1276,7 +1288,7 @@ class FleetProvider:
         # A read needs a fleet; clears when the build step ends.
         self._build_wanted = False
         # Roles whose group the next pass restarts with an unchanged plan. True: the pass
-        # stops the old server only once every request on it has ended, with no drain limit.
+        # drains the old server until the request timeout of its clients, not the drain limit.
         self._forced_roles: dict[WorkerRole, bool] = {}
         # How the last fleet work ended.
         self._reload_failed = False
@@ -2104,21 +2116,31 @@ class FleetProvider:
     def _left_working(self, err: BaseException, role: WorkerRole) -> bool:
         """Whether *err* timed out on a server that keeps working on the request it left.
 
-        The profile comes from the clients of the server that runs now, not from the
-        engine choice, so a changed or missing choice cannot change the answer.
+        Only a server that still serves *role* counts: a reload drops a replaced server's
+        clients first, so a late timeout from it restarts nothing. The profile is the one
+        of that server's clients, not the engine choice, which can change or be gone.
         """
         if not isinstance(err, httpx.TimeoutException):
             return False
+        try:
+            request = err.request
+        except RuntimeError:
+            # A timeout that names no request names no server to restart.
+            return False
         with self._lock:
             clients = self._clients.get(role, [])
-            return any(client.profile.works_on_after_disconnect for client in clients)
+            return any(
+                client.sent(request) and client.profile.works_on_after_disconnect
+                for client in clients
+            )
 
     def _restart_left_working(self, role: WorkerRole) -> None:
         """Start the restart of *role*'s server, which still works on a timed-out request.
 
         A retry would wait behind that request and time out the same way, so the
         timeout surfaces to the caller. New requests wait for the new server. The old
-        server stops only after every other request on it has ended.
+        server stops once every other request on it has ended, or at the request timeout
+        of its clients, by which every request that still reads has ended.
         """
         log.warning(
             "A %s request timed out on a server that keeps working on it after the client "
@@ -2172,8 +2194,8 @@ class FleetProvider:
     ) -> DaemonCall[None] | None:
         """Start the fleet work that restarts *role*'s group; None after a shutdown.
 
-        With *wait_for_requests*, the pass stops the old server only once every request
-        on the group has ended, with no drain limit. A shutdown still ends the wait.
+        With *wait_for_requests*, the pass drains the old server until the request timeout
+        of its clients instead of the drain limit. A shutdown still ends the wait.
         """
         with self._lock:
             if self._shut_down:
@@ -3395,19 +3417,15 @@ class FleetProvider:
             # Stop phase: free the changed groups' VRAM before their replacements
             # (or another group's grown plan) spawn against it. A group's engine
             # stops once its running requests end, or at the drain limit.
-            # A role forced to wait for its requests has no drain limit.
             drain_until = time.monotonic() + _SHUTDOWN_WORK_WAIT_S
-            with self._lock:
-                waiting = {
-                    group_for(role, plan.co_tenants)
-                    for role in force
-                    if self._forced_roles.get(role)
-                }
+            waiting = self._groups_waiting_for_requests(force, plan.co_tenants)
             for group in sorted(changed, key=lambda g: g.value):
                 with self._lock:
                     clients = self._group_clients(group)
                     swap = self._drop_group(group)
-                self._drain_clients(clients, None if group in waiting else drain_until)
+                self._drain_clients(
+                    clients, _drain_deadline(clients, drain_until, waits=group in waiting)
+                )
                 if swap is not None:
                     swap.shutdown()
             # Start phase: spawn the changed groups present in the new plan.
@@ -3437,20 +3455,21 @@ class FleetProvider:
             self._restamp_kept(running - changed, origin)
         self._preload_restarted(restarted)
 
-    def _drain_clients(self, clients: list[LlamaServerClient], until: float | None) -> None:
-        """Wait until *clients* run no request, the time *until* passes, or a shutdown starts.
+    def _groups_waiting_for_requests(
+        self, force: frozenset[WorkerRole], co_tenants: frozenset[WorkerRole]
+    ) -> set[SwapGroup]:
+        """The groups of the *force* roles whose restart waits for their requests."""
+        with self._lock:
+            return {group_for(role, co_tenants) for role in force if self._forced_roles.get(role)}
 
-        *until* None waits with no limit.
-        """
+    def _drain_clients(self, clients: list[LlamaServerClient], until: float) -> None:
+        """Wait until *clients* run no request, the time *until* passes, or a shutdown starts."""
         for client in clients:
             while True:
                 with self._lock:
                     if self._shut_down:
                         return
-                if until is None:
-                    remaining = _DRAIN_POLL_S
-                else:
-                    remaining = max(0.0, until - time.monotonic())
+                remaining = max(0.0, until - time.monotonic())
                 if client.wait_idle(min(remaining, _DRAIN_POLL_S)) or remaining == 0.0:
                     break
 
