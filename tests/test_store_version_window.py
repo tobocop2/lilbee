@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 from lancedb.table import LanceTable
@@ -139,3 +140,23 @@ class TestConceptTables:
         assert {name: reader.to_arrow().num_rows for name, reader in readers.items()} == rows
         assert {name: _reopened_rows(store, reader) for name, reader in readers.items()} == rows
         assert unwindowed == []
+
+
+class TestTheRealFloor:
+    """No fixture shortens the floor here: the window is the one the product ships."""
+
+    def test_the_floor_is_at_least_a_minute(self):
+        assert lance_helpers._KEEP_VERSIONS.total_seconds() >= 60
+
+    def test_an_optimize_with_no_kept_version_names_the_real_floor(self):
+        table = MagicMock()
+        lance_helpers.prune_old_versions(table)
+        window = table.optimize.call_args.kwargs["cleanup_older_than"]
+        assert window >= timedelta(minutes=1)
+
+    def test_an_optimize_with_a_fresh_kept_version_names_a_window_of_at_least_a_minute(self):
+        table = MagicMock()
+        table.list_versions.return_value = [{"version": 3, "timestamp": datetime.now()}]
+        lance_helpers.prune_old_versions(table, keep_version=3)
+        window = table.optimize.call_args.kwargs["cleanup_older_than"]
+        assert window >= timedelta(minutes=1)
