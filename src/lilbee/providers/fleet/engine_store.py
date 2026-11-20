@@ -667,7 +667,7 @@ class EngineStore:
     def _refuse_held_replace(self, lock: PinLock) -> None:
         """Refuse to replace a damaged build while a launch uses it, as remove does."""
         if self.build_dir(lock).exists() and launch_uses_engine(
-            lock.engine, lock.version, lock.backend
+            self.root, lock.engine, lock.version, lock.backend
         ):
             raise EngineInUseError(
                 f"Engine {lock.engine} {lock.version} ({lock.backend}) is in use. Stop the "

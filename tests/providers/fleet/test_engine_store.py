@@ -1502,7 +1502,7 @@ def test_install_refuses_to_replace_a_damaged_build_while_a_launch_holds_it(
     build = _damage_build(store, tmp_path)
     path = tmp_path / "fx.whl"
     lock = pin(hashlib.sha256(path.read_bytes()).hexdigest())
-    seen: list[tuple[str, str, str]] = []
+    seen: list[tuple[Path, str, str, str]] = []
     monkeypatch.setattr(
         engine_store, "launch_uses_engine", lambda *build_name: seen.append(build_name) or True
     )
@@ -1513,7 +1513,7 @@ def test_install_refuses_to_replace_a_damaged_build_while_a_launch_holds_it(
     }[route]
     with pytest.raises(engine_store.EngineInUseError, match="lilbee engine stop"):
         install()
-    assert seen == [("fx", "1", "cpu")]
+    assert seen == [(store.root, "fx", "1", "cpu")]
     assert (build / "survivor.txt").is_file()
 
 
