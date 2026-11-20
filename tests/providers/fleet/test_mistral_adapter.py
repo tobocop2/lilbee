@@ -1449,16 +1449,14 @@ def test_no_equal_split_refusal_is_worded_when_that_rule_did_not_refuse(
 def _refusal_text(
     placement: Any,
     card_gib: tuple[int, ...],
-    caplog: pytest.LogCaptureFixture,
     others: tuple[Any, ...] = (),
 ) -> str:
-    """The warning that the planner logs for the refused chat role of *placement*."""
+    """The reason that the planner gives for the refused chat role of *placement*."""
     cards = [
         FleetDevice("CUDA", i, f"gpu{i}", gib * GIB, gib * GIB) for i, gib in enumerate(card_gib)
     ]
     inputs = [_planner_chat_input(len(card_gib)), *others]
-    caplog.set_level("WARNING")
-    planning._log_refused_roles(
+    reasons = planning._unplaceable_reasons(
         placement,
         {inp.role: "ref" for inp in inputs},
         {inp.role: MISTRAL for inp in inputs},
@@ -1468,12 +1466,12 @@ def _refusal_text(
         unified_budget=None,
         capacity={i: gib * GIB for i, gib in enumerate(card_gib)},
     )
-    return caplog.text
+    return reasons[WorkerRole.CHAT]
 
 
 @_stated
 def test_the_refusal_of_an_equal_split_names_the_card_the_planner_missed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lilbee.providers.fleet.vram import usable_vram_fraction
 
@@ -1481,7 +1479,7 @@ def test_the_refusal_of_an_equal_split_names_the_card_the_planner_missed(
     miss = placed.split_misses[WorkerRole.CHAT]
     assert (miss.count, miss.device) == (2, 1)
     assert miss.room_bytes == pytest.approx(16 * GIB * usable_vram_fraction())
-    said = _refusal_text(placed, (24, 16), caplog)
+    said = _refusal_text(placed, (24, 16))
     need, room = miss.need_bytes / GIB, miss.room_bytes / GIB
     assert f"over 2 GPUs, device 1 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
     assert f"has {room:.1f} GiB left. It will not be served." in said
@@ -1490,7 +1488,7 @@ def test_the_refusal_of_an_equal_split_names_the_card_the_planner_missed(
 
 @_stated
 def test_the_refusal_of_an_equal_split_counts_the_room_other_roles_hold(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
     from lilbee.providers.fleet.vram import usable_vram_fraction
@@ -1506,7 +1504,7 @@ def test_the_refusal_of_an_equal_split_counts_the_room_other_roles_hold(
     room = 24 * usable_vram_fraction() - 12
     assert (miss.count, miss.device) == (2, 0)
     assert miss.room_bytes / GIB == pytest.approx(room)
-    said = _refusal_text(placed, (24, 24), caplog, (embed,))
+    said = _refusal_text(placed, (24, 24), (embed,))
     need = miss.need_bytes / GIB
     assert f"device 0 would need {need:.1f} GiB but has {room:.1f} GiB left" in said
     assert f"{room:.1f} GiB left beside the other models. It will not be served." in said
@@ -1533,7 +1531,6 @@ def test_the_first_pack_that_tries_a_role_keeps_its_nearest_miss() -> None:
 def test_the_refusal_of_an_equal_split_names_the_count_the_planner_came_nearest_with(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
     card_gib: tuple[int, ...],
     model_gib: int,
     count: int,
@@ -1541,7 +1538,7 @@ def test_the_refusal_of_an_equal_split_names_the_count_the_planner_came_nearest_
     placed = _placed_as_planned(tmp_path, monkeypatch, card_gib, model_gib, _TWELVE_HEADS)
     assert placed.unplaceable_roles == (WorkerRole.CHAT,)
     assert placed.split_misses[WorkerRole.CHAT].count == count
-    assert f"over {count} GPUs, device" in _refusal_text(placed, card_gib, caplog)
+    assert f"over {count} GPUs, device" in _refusal_text(placed, card_gib)
 
 
 @_stated
