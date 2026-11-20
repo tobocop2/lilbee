@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import IO
 
 import pytest
@@ -389,6 +390,44 @@ class TestRecorderWithAnEngineLog:
         monkeypatch.setattr(record_presets.psutil, "net_connections", denied)
         with pytest.raises(SystemExit, match="process table is not readable"):
             record_presets.require_engine_output("http://127.0.0.1:5801", tmp_path / "e.log")
+
+    def test_a_closed_system_socket_list_falls_back_to_each_process(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """macOS lists every socket only to root; each process still lists its own to its user."""
+
+        def denied(**kwargs: object) -> list[object]:
+            raise record_presets.psutil.AccessDenied()
+
+        log = _log(tmp_path, _TEI_CUDA_LOG)
+        monkeypatch.setattr(record_presets.psutil, "net_connections", denied)
+        with _engine(None) as url:
+            record_presets.require_engine_output(url, Path(log))
+
+    def test_the_process_scan_skips_a_process_that_refuses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        psutil = record_presets.psutil
+
+        class Proc:
+            def __init__(self, pid: int, conns: list[object] | None) -> None:
+                self.pid, self._conns = pid, conns
+
+            def net_connections(self, kind: str) -> list[object]:
+                if self._conns is None:
+                    raise psutil.AccessDenied(self.pid)
+                return self._conns
+
+        def sock(port: int, status: str = psutil.CONN_LISTEN) -> object:
+            return SimpleNamespace(status=status, laddr=SimpleNamespace(ip="127.0.0.1", port=port))
+
+        procs = [
+            Proc(11, None),
+            Proc(12, [sock(5801, psutil.CONN_ESTABLISHED), sock(6000)]),
+            Proc(13, [sock(5801)]),
+        ]
+        monkeypatch.setattr(psutil, "process_iter", lambda: iter(procs))
+        assert record_presets._own_listeners(5801) == {13}
 
     def test_a_process_that_vanished_holds_nothing_open(self, tmp_path: Path) -> None:
         assert not record_presets._holds_open(2**22 + 7, tmp_path / "e.log")

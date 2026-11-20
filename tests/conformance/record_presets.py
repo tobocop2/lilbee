@@ -159,18 +159,38 @@ def require_engine_output(url: str, path: Path) -> None:
         pids = {
             conn.pid
             for conn in psutil.net_connections(kind="tcp")
-            if conn.status == psutil.CONN_LISTEN
-            and conn.pid
-            and conn.laddr
-            and conn.laddr.port == parsed.port
+            if _listens_on(conn, parsed.port) and conn.pid
         }
-    except psutil.AccessDenied as exc:
-        raise SystemExit(f"--engine-log {path}: the process table is not readable") from exc
+    except psutil.AccessDenied:
+        pids = _own_listeners(parsed.port)
+        if not pids:
+            raise SystemExit(f"--engine-log {path}: the process table is not readable") from None
     if not any(_holds_open(pid, path) for pid in pids):
         raise SystemExit(
             f"--engine-log {path}: the engine at {url} does not hold this file open, "
             "so it is not the output of that engine"
         )
+
+
+def _listens_on(conn: Any, port: int) -> bool:
+    """Whether the socket *conn* listens on the TCP *port*."""
+    return bool(conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port)
+
+
+def _own_listeners(port: int) -> set[int]:
+    """The processes that list a socket listening on *port*, asked one process at a time.
+
+    macOS lists every socket only to root, but a process lists its own sockets to its user.
+    A process that refuses or exits is skipped.
+    """
+    pids: set[int] = set()
+    for proc in psutil.process_iter():
+        try:
+            if any(_listens_on(conn, port) for conn in proc.net_connections(kind="tcp")):
+                pids.add(proc.pid)
+        except psutil.Error:
+            continue
+    return pids
 
 
 def _holds_open(pid: int, path: Path) -> bool:
