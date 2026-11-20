@@ -25,7 +25,7 @@ def _warnings(services: Any) -> list[str]:
 def _fail_a_pass_that_drops_every_group(local: FleetProvider) -> None:
     _ProcessSwap.start_failure = _REFUSED
     with local._lock:
-        local._forced_roles.update({WorkerRole.CHAT, WorkerRole.EMBED})
+        local._forced_roles.update({WorkerRole.CHAT: False, WorkerRole.EMBED: False})
     with pytest.raises(ProviderError, match="engine refused"):
         local.replan_fleet(wait=True)
     assert not local._swaps

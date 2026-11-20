@@ -1275,8 +1275,9 @@ class FleetProvider:
         self._writes_done = 0
         # A read needs a fleet; clears when the build step ends.
         self._build_wanted = False
-        # Roles whose dead group the next pass restarts with an unchanged plan.
-        self._forced_roles: set[WorkerRole] = set()
+        # Roles whose group the next pass restarts with an unchanged plan. True: the pass
+        # stops the old server only once every request on it has ended, with no drain limit.
+        self._forced_roles: dict[WorkerRole, bool] = {}
         # How the last fleet work ended.
         self._reload_failed = False
         # Roles the running reload pass may still bring a server back for: every role
@@ -1405,7 +1406,8 @@ class FleetProvider:
             force = frozenset(self._forced_roles)
         self._reload_pass(force=force)
         with self._lock:
-            self._forced_roles -= force
+            for role in force:
+                self._forced_roles.pop(role, None)
 
     def _build_fleet(self) -> None:
         """Run the acquisition ladder unless a group came up or a shutdown latched."""
@@ -2100,24 +2102,31 @@ class FleetProvider:
                     log.warning("Hold sweep after a rediscover failed", exc_info=True)
 
     def _left_working(self, err: BaseException, role: WorkerRole) -> bool:
-        """Whether *err* timed out on a server that keeps working on the request it left."""
+        """Whether *err* timed out on a server that keeps working on the request it left.
+
+        The profile comes from the clients of the server that runs now, not from the
+        engine choice, so a changed or missing choice cannot change the answer.
+        """
         if not isinstance(err, httpx.TimeoutException):
             return False
-        return self._adopt_engine(role).request_profile(role).works_on_after_disconnect
+        with self._lock:
+            clients = self._clients.get(role, [])
+            return any(client.profile.works_on_after_disconnect for client in clients)
 
     def _restart_left_working(self, role: WorkerRole) -> None:
-        """Restart *role*'s server, which still works on a timed-out request.
+        """Start the restart of *role*'s server, which still works on a timed-out request.
 
-        A retry would wait behind that request and time out the same way, so the restart
-        comes first and the timeout surfaces to the caller.
+        A retry would wait behind that request and time out the same way, so the
+        timeout surfaces to the caller. New requests wait for the new server. The old
+        server stops only after every other request on it has ended.
         """
         log.warning(
             "A %s request timed out on a server that keeps working on it after the client "
-            "goes; restarting the %s server so the next request does not wait behind it",
+            "goes; restarting the %s server once its other requests end",
             role.value,
             role.value,
         )
-        self._rebuild_role(role)
+        self._force_restart(role, wait_for_requests=True)
 
     def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:
         """Rebuild *role* so the retry is a different launch, and run *call* again.
@@ -2154,12 +2163,23 @@ class FleetProvider:
         respawned. The fleet work runs the same diff-driven pass as a reload, forcing
         *role* into the restart set so an unchanged plan still replaces its dead swap.
         """
+        work = self._force_restart(role, wait_for_requests=False)
+        if work is not None:
+            self._join_fleet_work(work)
+
+    def _force_restart(
+        self, role: WorkerRole, *, wait_for_requests: bool
+    ) -> DaemonCall[None] | None:
+        """Start the fleet work that restarts *role*'s group; None after a shutdown.
+
+        With *wait_for_requests*, the pass stops the old server only once every request
+        on the group has ended, with no drain limit. A shutdown still ends the wait.
+        """
         with self._lock:
             if self._shut_down:
-                return
-            self._forced_roles.add(role)
-            work = self._start_fleet_work()
-        self._join_fleet_work(work)
+                return None
+            self._forced_roles[role] = self._forced_roles.get(role, False) or wait_for_requests
+            return self._start_fleet_work()
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role*'s upstream is loaded and ready, without starting the swap.
@@ -3375,12 +3395,19 @@ class FleetProvider:
             # Stop phase: free the changed groups' VRAM before their replacements
             # (or another group's grown plan) spawn against it. A group's engine
             # stops once its running requests end, or at the drain limit.
+            # A role forced to wait for its requests has no drain limit.
             drain_until = time.monotonic() + _SHUTDOWN_WORK_WAIT_S
+            with self._lock:
+                waiting = {
+                    group_for(role, plan.co_tenants)
+                    for role in force
+                    if self._forced_roles.get(role)
+                }
             for group in sorted(changed, key=lambda g: g.value):
                 with self._lock:
                     clients = self._group_clients(group)
                     swap = self._drop_group(group)
-                self._drain_clients(clients, drain_until)
+                self._drain_clients(clients, None if group in waiting else drain_until)
                 if swap is not None:
                     swap.shutdown()
             # Start phase: spawn the changed groups present in the new plan.
@@ -3410,14 +3437,20 @@ class FleetProvider:
             self._restamp_kept(running - changed, origin)
         self._preload_restarted(restarted)
 
-    def _drain_clients(self, clients: list[LlamaServerClient], until: float) -> None:
-        """Wait until *clients* run no request, the time *until* passes, or a shutdown starts."""
+    def _drain_clients(self, clients: list[LlamaServerClient], until: float | None) -> None:
+        """Wait until *clients* run no request, the time *until* passes, or a shutdown starts.
+
+        *until* None waits with no limit.
+        """
         for client in clients:
             while True:
                 with self._lock:
                     if self._shut_down:
                         return
-                remaining = max(0.0, until - time.monotonic())
+                if until is None:
+                    remaining = _DRAIN_POLL_S
+                else:
+                    remaining = max(0.0, until - time.monotonic())
                 if client.wait_idle(min(remaining, _DRAIN_POLL_S)) or remaining == 0.0:
                     break
 

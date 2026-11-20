@@ -105,7 +105,7 @@ A prompt longer than the context gets a 4xx answer within the timeout (default 6
 
 Evidence: row 8, row 28, row 43, row 52, row 66, row 75, row 86. mlx_lm.server hung until the client timeout (rows 8, 75). The wording of the 400 differs by engine (rows 43, 52, 66, 86). The caller is `src/lilbee/providers/fleet/client.py`.
 
-mlx_lm.server also keeps working on a request that is not streamed after its client goes, so every later request waits. Its profile sets `works_on_after_disconnect`. When a request to such a server times out, lilbee restarts that role's server and reports the timeout, with no retry.
+mlx_lm.server also keeps working on a request that is not streamed after its client goes, so every later request waits. Its profile sets `works_on_after_disconnect`. When a request to such a server times out, lilbee restarts that role's server and reports the timeout, with no retry. New requests wait for the new server. The old server stops only after every other request on it has ended.
 
 ### E13 Route not served
 

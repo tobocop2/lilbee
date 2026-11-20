@@ -643,6 +643,11 @@ class LlamaServerClient:
         self._unhealthy_since = 0.0
 
     @property
+    def profile(self) -> RequestProfile:
+        """The request profile of this server's engine."""
+        return self._profile
+
+    @property
     def healthy(self) -> bool:
         """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
         with self._in_flight_lock:

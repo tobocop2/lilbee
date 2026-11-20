@@ -2516,11 +2516,12 @@ def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -
 def _timing_out_chat(monkeypatch, adapter: object, method: str, error: Exception):
     """A chat provider whose *method* fails with *error*, served by *adapter*."""
     client = _counting_client()
+    client.profile = adapter.request_profile(WorkerRole.CHAT)
     getattr(client, method).side_effect = error
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
-    monkeypatch.setattr(p, "_adopt_engine", lambda _role: adapter)
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
     restarted: list[WorkerRole] = []
+    monkeypatch.setattr(p, "_force_restart", lambda role, **_k: restarted.append(role))
     monkeypatch.setattr(p, "_rebuild_role", restarted.append)
     return p, client, restarted
 
@@ -2555,6 +2556,23 @@ def test_a_timeout_on_llama_cpp_keeps_the_one_retry_and_no_restart(
         invoke(p)
     assert restarted == []
     assert getattr(client, method).call_count == 2
+
+
+def test_a_timeout_on_llama_cpp_keeps_its_retry_when_the_engine_choice_is_gone(
+    monkeypatch,
+) -> None:
+    p, client, restarted = _timing_out_chat(
+        monkeypatch, LLAMA, "chat_result", httpx.ReadTimeout("slow")
+    )
+
+    def gone(_role: WorkerRole) -> object:
+        raise ProviderError("The engine is gone.")
+
+    monkeypatch.setattr(p, "_adopt_engine", gone)
+    with pytest.raises(ProviderError, match="not responding"):
+        p.chat(_CHAT_MESSAGES)
+    assert restarted == []
+    assert client.chat_result.call_count == 2
 
 
 def test_a_refused_connection_on_mlx_takes_the_retry_and_no_restart(monkeypatch) -> None:

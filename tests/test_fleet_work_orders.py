@@ -261,7 +261,7 @@ def test_a_failed_forced_pass_keeps_the_role_for_the_rerun(
 ) -> None:
     local = _local(fleet)
     role = next(iter(local._role_group))
-    local._forced_roles.add(role)
+    local._forced_roles[role] = False
 
     def _fail(force: frozenset[WorkerRole]) -> None:
         raise _FAILED
@@ -269,7 +269,7 @@ def test_a_failed_forced_pass_keeps_the_role_for_the_rerun(
     monkeypatch.setattr(local, "_reload_pass", _fail)
     with pytest.raises(ProviderError, match="engine did not start"):
         local._forced_pass()
-    assert local._forced_roles == {role}
+    assert local._forced_roles == {role: False}
 
 
 def test_a_dead_group_rebuild_runs_as_a_step(fleet: Any, passes: list[int]) -> None:
@@ -279,7 +279,7 @@ def test_a_dead_group_rebuild_runs_as_a_step(fleet: Any, passes: list[int]) -> N
     local._rebuild_role(role)
     assert len(passes) == 1
     assert local._swaps[local._role_group[role]] is not old
-    assert local._forced_roles == set()
+    assert local._forced_roles == {}
     assert local._fleet_work is None
     assert _work_threads() == 0
 
@@ -290,7 +290,7 @@ def test_a_rebuild_after_the_latch_starts_nothing(fleet: Any) -> None:
     with local._lock:
         local._shut_down = True
     local._rebuild_role(role)
-    assert local._forced_roles == set()
+    assert local._forced_roles == {}
     assert local._fleet_work is None
 
 

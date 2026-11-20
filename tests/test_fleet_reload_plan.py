@@ -10,17 +10,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
 from lilbee.providers import engine_params
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.client import LlamaServerClient, StreamInterruptedError
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
+from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.roles import WorkerRole
 from tests._async_wait import poll_until
@@ -330,6 +333,26 @@ def engine_fleet(
     The engines of the first fleet hold each chat request until the test releases it. The
     engines a reload starts answer at once.
     """
+    yield from _serve_fake_engines(monkeypatch, tmp_path)
+
+
+@pytest.fixture
+def mlx_engine_fleet(
+    real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
+    """The engine fleet of ``engine_fleet``, with each chat server read as an MLX server."""
+
+    def adapter_of(_provider: FleetProvider, role: WorkerRole) -> object:
+        return MLX if role is WorkerRole.CHAT else LLAMA
+
+    monkeypatch.setattr(FleetProvider, "_adopt_engine", adapter_of)
+    yield from _serve_fake_engines(monkeypatch, tmp_path)
+
+
+def _serve_fake_engines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
+    """Serve the real plan from fake engines; see ``engine_fleet``."""
     swaps: list[_EngineSwap] = []
     fleet_up = threading.Event()
 
@@ -430,6 +453,37 @@ def test_a_chat_cut_by_the_drain_limit_is_sent_again_and_ends_on_the_new_engine_
     assert old.answers_at_stop == 0
     assert swaps[-1].engine.requests == 1
     assert swaps[-1].engine.completed == 1
+
+
+def test_a_timeout_restart_on_mlx_lets_the_other_chat_finish_on_the_old_engine(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One chat times out while another runs: the restart waits for it, past the drain limit."""
+    provider, swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    client = provider._clients[WorkerRole.CHAT][0]
+    answers: list[object] = []
+    caller = threading.Thread(target=lambda: answers.append(provider.chat(_QUESTION)), daemon=True)
+    caller.start()
+    assert old.engine.started.wait(_JOIN_S)
+
+    # httpx fixes a request's timeout when it sends it, so only the next request times out.
+    client._http.timeout = httpx.Timeout(_DRAIN_LIMIT_S)
+    with pytest.raises(ProviderError, match="not responding"):
+        provider.chat(_QUESTION)
+    assert poll_until(lambda: client not in provider._clients.get(WorkerRole.CHAT, []))
+    assert not poll_until(lambda: old.engine.stopped.is_set(), timeout=3 * _DRAIN_LIMIT_S)
+
+    old.engine.release.set()
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert [answer.text for answer in answers] == ["the answer"]
+    assert old.engine.stopped.is_set()
+    assert old.engine.requests == 2
+    assert swaps[-1] is not old
+    assert swaps[-1].engine.requests == 0
 
 
 def test_a_reload_lets_a_started_stream_finish_before_it_stops_the_old_engine(
