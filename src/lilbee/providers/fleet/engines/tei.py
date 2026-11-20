@@ -219,8 +219,10 @@ class TeiAdapter:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return DeviceProbe(devices=[], output="", spoke_protocol=False)
-        return DeviceProbe(devices=visible_nvidia_cards(), output="", spoke_protocol=False)
+            return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
+        return DeviceProbe(
+            devices=visible_nvidia_cards(), output="", spoke_protocol=False, has_listing=False
+        )
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host

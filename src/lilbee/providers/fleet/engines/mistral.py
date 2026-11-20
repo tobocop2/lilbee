@@ -393,8 +393,8 @@ class MistralAdapter:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return DeviceProbe(devices=[], output="")
-        return DeviceProbe(devices=visible_nvidia_cards(), output="")
+            return DeviceProbe(devices=[], output="", has_listing=False)
+        return DeviceProbe(devices=visible_nvidia_cards(), output="", has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         whole = self._whole_estimate(request)
