@@ -25,7 +25,7 @@ from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_info import ModelInfoModal
 from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.model_bar import ChatModePill, ModelBar, ModelPickerButton
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
@@ -368,6 +368,26 @@ async def test_a_key_a_fleet_toggle_binds_still_types_into_the_prompt(
         await pilot.press("space")
         assert await wait_until(pilot, lambda: chat._chat_input.value == " ")
         assert chat._chat_input.has_focus
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_space_on_a_focused_mode_pill_picks_the_mode_and_does_not_type(
+    monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    monkeypatch.setattr(cfg, "chat_mode", "search")
+    app = _ChatApp()
+    async with app.run_test(size=size) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        assert chat._insert_mode is True
+        pill = chat.query_one("#chat-mode-chat", ChatModePill)
+        pill.focus()
+        assert await wait_until(pilot, lambda: chat.focused is pill)
+        assert "space" in chat.active_bindings
+        await pilot.press("space")
+        assert await wait_until(pilot, lambda: cfg.chat_mode == "chat")
+        assert chat._chat_input.value == ""
+        assert chat.focused is pill
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
