@@ -12,6 +12,7 @@ from textual.style import Style
 
 from lilbee.app import engine_service
 from lilbee.app.engine_choice import CHOICES_KEY
+from lilbee.catalog.refs import canonical_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.core.config import cfg
@@ -164,6 +165,23 @@ def choose_engine_for_role(
         raise
     except engine_service.WRITE_FAILURES as exc:
         return EngineCommandResult(False, str(exc))
+
+
+def choose_engine_for_model(
+    model: str, engine: str, confirmed: bool = False
+) -> EngineCommandResult:
+    """Store *engine* for *model*, whatever role uses it; a refusal comes back as its text.
+
+    A change that needs the user's confirmation raises ``EmbedConfirmRequiredError``.
+    """
+    try:
+        chosen = engine_service.use(canonical_ref(model), engine, confirmed)
+    except engine_service.EmbedConfirmRequiredError:
+        raise
+    except engine_service.WRITE_FAILURES as exc:
+        return EngineCommandResult(False, str(exc))
+    text = msg.ENGINE_MODEL_USE_DONE.format(model=model, engine=chosen)
+    return EngineCommandResult(True, text, CHOICES_KEY)
 
 
 def install_name(args: str) -> str | None:
