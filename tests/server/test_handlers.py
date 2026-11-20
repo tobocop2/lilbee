@@ -1188,8 +1188,23 @@ class TestAddDisconnect:
 
         assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
 
+    @pytest.fixture()
+    def slow_resume(self):
+        """The server waits after it sends each event, as a loaded host does."""
+        from lilbee.server.handlers import ingest
+
+        original = ingest._ingest_stream
+
+        async def _slow(items, run, label):
+            async for event in original(items, run, label):
+                yield event
+                await asyncio.sleep(0.5)
+
+        with mock.patch.object(ingest, "_ingest_stream", _slow):
+            yield
+
     def test_a_return_on_already_ingesting_keeps_the_sources_it_started(
-        self, tmp_path, parked_sync, released
+        self, tmp_path, parked_sync, released, slow_resume
     ):
         """The plugin stops reading at already_ingesting; the sources that did start stay."""
         busy = tmp_path / "busy.txt"
@@ -1205,7 +1220,11 @@ class TestAddDisconnect:
                 held_lines = held.iter_lines()
                 assert _first_event(held_lines) == "file_start"
                 with http.stream("POST", "/api/add", json=both, headers=_auth_headers()) as resp:
-                    assert _first_event(resp.iter_lines()) == "already_ingesting"
+                    # The server starts new.txt only after it sends this event, and a closed
+                    # response before then ends the add first. Hold the iterator, so the
+                    # response stays open until new.txt has started.
+                    lines = resp.iter_lines()
+                    assert _first_event(lines) == "already_ingesting"
                     started_twice = parked_sync.wait_for(lambda starts: len(starts) == 2)
                     assert started_twice, "new.txt never started"
                 assert released.wait_for(lambda names: "new.txt" in names), "the add never unwound"
