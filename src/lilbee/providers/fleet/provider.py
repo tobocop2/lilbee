@@ -2299,7 +2299,7 @@ class FleetProvider:
         with self._lazy_warm_scope():
             self._require_clients(WorkerRole.CHAT)
             messages = self._fit_chat_context(
-                messages, tools, options, model or str(cfg.chat_model)
+                messages, tools, options, model or str(cfg.chat_model), tool_choice
             )
             # Translate options exactly as the in-process path did (validate via
             # LLMOptions, num_predict -> max_tokens, drop num_ctx) so the server
@@ -2341,7 +2341,7 @@ class FleetProvider:
         with self._lazy_warm_scope():
             self._require_clients(WorkerRole.CHAT)
             messages = self._fit_chat_context(
-                messages, tools, options, model or str(cfg.chat_model)
+                messages, tools, options, model or str(cfg.chat_model), tool_choice
             )
             server_options = chat_options_to_kwargs(options) or None
             return self._with_rediscover(
@@ -2357,8 +2357,13 @@ class FleetProvider:
         tools: list[dict[str, Any]] | None,
         options: dict[str, Any] | None,
         model: str,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> list[ChatMessage]:
         """Drop oldest turns so the prompt fits the served context.
+
+        A prompt that carries tools is counted as the engine renders it, because
+        the chat template adds a tool preamble the wire JSON does not show. An
+        engine with no render route falls back to the estimate.
 
         A ``num_predict`` reservation larger than the default generation room is
         capped to it, so an agent client that over-reserves keeps its history
@@ -2383,7 +2388,18 @@ class FleetProvider:
         requested = (options or {}).get("num_predict")
         reserve = min(requested, GENERATION_RESERVE_TOKENS) if requested else None
         budget = prompt_token_budget(self._chat_ctx, reserve)
-        result = window_messages(messages, tools, budget)
+        if tools:
+            try:
+                result = window_messages(
+                    messages,
+                    tools,
+                    budget,
+                    lambda kept: self._render_count(kept, tools, tool_choice, options),
+                )
+            except NotImplementedError:
+                result = window_messages(messages, tools, budget)
+        else:
+            result = window_messages(messages, tools, budget)
         if not result.fits:
             raise ProviderError(
                 f"Prompt of about {result.prompt_tokens} tokens exceeds the "
@@ -2394,6 +2410,26 @@ class FleetProvider:
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
         return result.messages
+
+    def _render_count(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+    ) -> int:
+        """Tokens the chat server prefills for *messages* with *tools*, template applied."""
+        from lilbee.providers.engine_params import chat_options_to_kwargs
+
+        server_options = chat_options_to_kwargs(options) or None
+        return self._with_rediscover(
+            lambda: _least_in_flight(
+                self._require_clients(WorkerRole.CHAT)
+            ).count_chat_prompt_tokens(
+                messages, tools=tools, tool_choice=tool_choice, options=server_options
+            ),
+            role=WorkerRole.CHAT,
+        )
 
     def embed(self, texts: list[str]) -> list[Vector]:
         return self._with_rediscover(lambda: self._embed_once(texts), role=WorkerRole.EMBED)
@@ -2443,19 +2479,9 @@ class FleetProvider:
         conversation is not fitted to the served window first, so the count
         covers the whole prompt the caller asked about.
         """
-        from lilbee.providers.engine_params import chat_options_to_kwargs
-
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
-        server_options = chat_options_to_kwargs(options) or None
         with self._lazy_warm_scope():
-            return self._with_rediscover(
-                lambda: _least_in_flight(
-                    self._require_clients(WorkerRole.CHAT)
-                ).count_chat_prompt_tokens(
-                    messages, tools=tools, tool_choice=tool_choice, options=server_options
-                ),
-                role=WorkerRole.CHAT,
-            )
+            return self._render_count(messages, tools, tool_choice, options)
 
     def vision_ocr(
         self,

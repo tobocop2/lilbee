@@ -31,6 +31,7 @@ from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
 from lilbee.providers.fleet.swap_manager import EngineLifetime, EngineReadiness
+from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from tests._exit_probe import assert_probe_exits
@@ -1204,6 +1205,186 @@ def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
     with pytest.raises(ProviderError) as excinfo:
         p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
     assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+_SEARCH_TOOL = {"type": "function", "function": {"name": "search", "parameters": {}}}
+
+
+def _tool_convo() -> list[dict]:
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for _ in range(4):
+        msgs.append({"role": "user", "content": "x" * 280})
+        msgs.append({"role": "assistant", "content": "y" * 280})
+    msgs.append({"role": "user", "content": "q"})
+    return msgs
+
+
+def _rendered_count(messages: list[dict], **_: object) -> int:
+    """A stand-in engine count: a 300-token tool preamble the wire JSON does not show."""
+    return 300 + sum(len(m["content"]) for m in messages) // 2
+
+
+def _tool_convo_near_budget_provider(client: MagicMock) -> FleetProvider:
+    """A provider whose 896-token budget the estimate of _tool_convo nearly fills (858)."""
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    return p
+
+
+def test_fit_chat_context_counts_tools_as_the_engine_renders_them() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048  # a prompt budget of 896 tokens
+    msgs = _tool_convo()
+
+    out = p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m")
+
+    assert len(out) < len(msgs)
+    assert _rendered_count(out) <= 896
+    assert out[0]["role"] == "system"
+    assert out[-1]["content"] == "q"
+
+
+def test_fit_chat_context_sends_the_tool_choice_to_the_render() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m", "required")
+
+    kwargs = client.count_chat_prompt_tokens.call_args.kwargs
+    assert kwargs["tools"] == [_SEARCH_TOOL]
+    assert kwargs["tool_choice"] == "required"
+
+
+def test_fit_chat_context_raises_when_the_rendered_prompt_cannot_fit() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    with pytest.raises(ProviderError, match="Prompt of about 5000 tokens") as excinfo:
+        p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_falls_back_to_the_estimate_with_no_render_route() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = NotImplementedError("no route")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m") == msgs
+
+
+def test_fit_chat_context_renders_twice_when_one_drop_clears_the_overshoot() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+
+    assert client.count_chat_prompt_tokens.call_count == 2
+
+
+def test_fit_chat_context_renders_once_far_under_the_budget() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 16_384
+    msgs = _tool_convo()
+
+    assert p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m") == msgs
+    assert client.count_chat_prompt_tokens.call_count == 1
+
+
+def _short_tool_convo() -> list[dict]:
+    """Two turns and a question: the estimate sits far under the 896 budget."""
+    return [
+        {"role": "system", "content": "s"},
+        *_tool_convo()[1:5],
+        {"role": "user", "content": "q"},
+    ]
+
+
+def test_fit_chat_context_refuses_a_tool_prompt_the_estimate_leaves_under_the_budget() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    estimate = window_messages(_short_tool_convo(), [_SEARCH_TOOL], 10**6).prompt_tokens
+    assert estimate < 0.8 * 896  # under any 0.937 ratio gate
+
+    with pytest.raises(ProviderError, match="Prompt of about 5000 tokens") as excinfo:
+        p._fit_chat_context(_short_tool_convo(), [_SEARCH_TOOL], None, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_does_not_render_an_empty_tool_list() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [], None, "m")
+
+    client.count_chat_prompt_tokens.assert_not_called()
+
+
+def test_fit_chat_context_surfaces_a_render_error() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = ProviderError(
+        "render failed", provider="llama-server", kind=ProviderErrorKind.BAD_REQUEST
+    )
+    p = _tool_convo_near_budget_provider(client)
+
+    with pytest.raises(ProviderError, match="render failed"):
+        p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+
+
+def test_render_count_passes_the_options_the_chat_call_sends() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], {"temperature": 0.25}, "m")
+
+    assert client.count_chat_prompt_tokens.call_args.kwargs["options"] == {"temperature": 0.25}
+
+
+def test_render_count_retries_through_the_chat_role(monkeypatch) -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    roles: list[WorkerRole | None] = []
+    real = p._with_rediscover
+
+    def spy(call, *, role=None):
+        roles.append(role)
+        return real(call, role=role)
+
+    monkeypatch.setattr(p, "_with_rediscover", spy)
+
+    assert p._render_count(_tool_convo(), [_SEARCH_TOOL], None, None) == 10
+    assert roles == [WorkerRole.CHAT]
+
+
+def test_fit_chat_context_does_not_render_a_prompt_without_tools() -> None:
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    p._fit_chat_context(_tool_convo(), None, None, "m")
+
+    client.count_chat_prompt_tokens.assert_not_called()
 
 
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
@@ -7105,6 +7286,85 @@ def test_chat_with_tools_resets_stale_tracker_after_eviction(monkeypatch) -> Non
     assert snap.phase is WarmPhase.READY
     assert begins == [str(cfg.chat_model)]
     assert not p._lazy_warming
+
+
+def test_chat_with_tools_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_tools.return_value = "tools-ok"
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p.chat_with_tools(msgs, tools=[_SEARCH_TOOL], tool_choice="auto") == "tools-ok"
+
+    sent = client.chat_tools.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+    assert client.count_chat_prompt_tokens.call_args.kwargs["tool_choice"] == "auto"
+
+
+def test_chat_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_result.return_value = "chat-ok"
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p.chat(msgs, tools=[_SEARCH_TOOL], tool_choice="required") == "chat-ok"
+
+    sent = client.chat_result.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+    assert client.count_chat_prompt_tokens.call_args.kwargs["tool_choice"] == "required"
+
+
+def test_chat_stream_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_stream_items.return_value = iter(["a", "b"])
+    p = _tool_convo_near_budget_provider(client)
+    msgs = _tool_convo()
+
+    assert list(p.chat(msgs, stream=True, tools=[_SEARCH_TOOL])) == ["a", "b"]
+
+    sent = client.chat_stream_items.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+
+
+def _call_chat(p: FleetProvider, entry: str, **kwargs: object) -> object:
+    """Call the chat entry point named *entry* with the search tool and the tool convo."""
+    if entry == "chat":
+        return p.chat(_tool_convo(), tools=[_SEARCH_TOOL], **kwargs)
+    return p.chat_with_tools(_tool_convo(), tools=[_SEARCH_TOOL], **kwargs)
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_with_tools"])
+def test_chat_entry_points_send_the_options_to_the_render(entry: str) -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _tool_convo_near_budget_provider(client)
+
+    _call_chat(p, entry, options={"temperature": 0.25})
+
+    assert client.count_chat_prompt_tokens.call_args.kwargs["options"] == {"temperature": 0.25}
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_with_tools"])
+def test_chat_entry_points_name_the_configured_model_in_an_overflow(
+    entry: str, monkeypatch
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _tool_convo_near_budget_provider(client)
+
+    with pytest.raises(ProviderError, match=r"org/repo/configured\.gguf"):
+        _call_chat(p, entry)
 
 
 def test_can_build_engine_false_when_nothing_placeable() -> None:
