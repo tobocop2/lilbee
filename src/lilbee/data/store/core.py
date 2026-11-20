@@ -1831,8 +1831,6 @@ class Store:
         except BaseException:
             self._report_upgrade(UpgradePhase.FAILED)
             raise
-        finally:
-            self._upgrade = None
         self._report_upgrade(UpgradePhase.DONE)
 
     def _upgrade_unlocked(self, db: LanceDBConnection) -> None:
