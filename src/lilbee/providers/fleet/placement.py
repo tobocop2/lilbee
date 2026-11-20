@@ -1214,11 +1214,22 @@ def lost_card_reason(
 def unseen_card_reason(
     role: WorkerRole, engine: str, unseen: Sequence[int], listed: Sequence[int]
 ) -> str:
-    """The sentence for *role* placed on *unseen* devices that the *engine* does not list."""
+    """The sentence for *role* placed on *unseen* devices that the *engine* does not list.
+
+    A device whose index the engine lists, but for another card, is named as that.
+    """
+    other = [index for index in unseen if index in listed]
+    missing = [index for index in unseen if index not in listed]
+    if other:
+        found = f"lists a different card at {_device_phrase(other)}"
+        if missing:
+            found += f" and no card at {_device_phrase(missing)}"
+    else:
+        found = f"lists only {_device_phrase(listed)}"
     return (
         f"{role.value} is placed on {_device_phrase(unseen)}, but the {engine} engine "
-        f"lists only {_device_phrase(listed)}. Set the {role.value} target to cpu, "
-        "or choose an engine that lists that card."
+        f"{found}. Set the {role.value} target to cpu, or choose an engine that lists "
+        "that card."
     )
 
 
