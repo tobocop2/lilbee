@@ -27,6 +27,7 @@ from lilbee.app.settings import SCANNED_PAGES_LABEL, scanned_pages_state
 from lilbee.app.status import held_out_sources, serving_roles
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
 from lilbee.core.text import strip_control_characters
@@ -123,7 +124,8 @@ def _build_config_content() -> Content:
         _kv_line(SCANNED_PAGES_LABEL, scanned_pages_state()),
         *(
             _kv_line(
-                f"{served.role.value.capitalize()} engine", f"{served.engine} {served.version}"
+                f"{served.role.value.capitalize()} engine",
+                Content.assemble(engine_mark(served.engine), f" {served.version}"),
             )
             for served in serving_roles()
         ),
@@ -153,7 +155,7 @@ def _build_arch_content(info: ModelArchInfo) -> Content:
     lines = [
         _kv_line("Chat arch", info.chat_arch),
         _kv_line("Embed arch", info.embed_arch),
-        _kv_line("Handler", pill(info.active_handler, "$accent", "$text")),
+        _kv_line("Handler", pill(info.active_handler, "$panel", "$text")),
     ]
     if info.vision_projector:
         lines.append(_kv_line("Vision proj", info.vision_projector))
