@@ -21,7 +21,7 @@ from typing import Any
 from lilbee.app import presets
 from lilbee.app.status import chat_engine, serving_roles
 from lilbee.core.config import Config, cfg
-from lilbee.providers.base import ChatResult, ProviderError
+from lilbee.providers.base import ChatResult, ProviderError, aux_options
 from lilbee.providers.factory import create_sdk_provider
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
@@ -252,6 +252,7 @@ def _engine_json_step(
     """
     from lilbee.core.llm_json import first_json_object
     from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.engine_params import chat_options_to_kwargs
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.engines.base import EngineName
     from lilbee.providers.fleet.engines.choice import discover_adapters
@@ -264,9 +265,11 @@ def _engine_json_step(
         profile=profile,
     )
     try:
+        # The options of lilbee's own JSON calls, a small cap with thinking off, put on the
+        # wire as the fleet provider puts them.
         result = client.chat_result(
             [{"role": "user", "content": JSON_ASK}],
-            options={"max_tokens": 256, "response_format": response_format},
+            options=chat_options_to_kwargs(aux_options(256, response_format=response_format)),
         )
     except ProviderError as exc:
         refused = not profile.structured_output and exc.kind is ProviderErrorKind.BAD_REQUEST

@@ -345,6 +345,14 @@ class TestEngineJsonSteps:
         assert _formats(bodies) == []
         assert any(body["messages"][0]["content"] == JSON_ASK for body in bodies)
 
+    @pytest.mark.parametrize("engine", ["mlx", "llama.cpp"])
+    def test_the_json_ask_goes_out_as_lilbee_sends_one(self, tmp_path, engine: str) -> None:
+        """lilbee asks for JSON with thinking off, so a thinking model does not spend the cap."""
+        _, bodies = _run_json_step(tmp_path, engine, _FENCED, "json_object")
+        ask = next(body for body in bodies if body["messages"][0]["content"] == JSON_ASK)
+        assert ask["chat_template_kwargs"] == {"enable_thinking": False}
+        assert ask["max_tokens"] == 256
+
     def test_mlx_fails_json_object_when_the_reply_holds_no_object(self, tmp_path) -> None:
         prose = "Paris has about two million people."
         outcome, _ = _run_json_step(tmp_path, "mlx", prose, "json_object")
