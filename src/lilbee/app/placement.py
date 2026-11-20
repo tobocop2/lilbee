@@ -183,7 +183,7 @@ def _view(
     refusal: str | None = None,
     refusal_kind: PlacementRefusal | None = None,
 ) -> PlacementView:
-    if refusal_kind is None and resolved.unlaunched_roles:
+    if resolved.unlaunched_roles and refusal_kind in (None, PlacementRefusal.WAITING):
         refusal_kind = PlacementRefusal.REFUSED
     gpus = tuple(
         GpuInfo(
