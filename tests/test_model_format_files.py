@@ -459,7 +459,7 @@ class TestDownloadRouting:
 
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
-            mock.patch.object(download, "_cached_path", return_value=None),
+            mock.patch.object(download, "cached_file_path", return_value=None),
             mock.patch.object(
                 download,
                 "fetch_remote_file",
@@ -549,7 +549,7 @@ class TestIndexDeclaredShards:
         index.read_text.return_value = _index_text("part-a.safetensors", "part-b.safetensors")
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=listing),
-            mock.patch.object(download, "_cached_path", return_value=None) as cached,
+            mock.patch.object(download, "cached_file_path", return_value=None) as cached,
             mock.patch.object(download, "_fetch_files", return_value=[index]) as fetch,
             pytest.raises(ValueError, match=r"part-b\.safetensors is missing"),
         ):
@@ -566,7 +566,7 @@ class TestIndexDeclaredShards:
             (tmp_path / name).write_bytes(b"x")
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=listing),
-            mock.patch.object(download, "_cached_path", side_effect=lambda _r, n, d: d / n),
+            mock.patch.object(download, "cached_file_path", side_effect=lambda _r, n, d: d / n),
             mock.patch.object(download, "_fetch_files") as fetch,
         ):
             path = download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)

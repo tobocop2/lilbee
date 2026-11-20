@@ -540,7 +540,7 @@ def fetch_format_files(
         raise RuntimeError(f"No {entry.format} model files found in {entry.hf_repo}")
     if SAFETENSORS_INDEX in selected:
         index_path = (
-            _cached_path(entry.hf_repo, SAFETENSORS_INDEX, models_dir)
+            cached_file_path(entry.hf_repo, SAFETENSORS_INDEX, models_dir)
             or _fetch_files(entry, models_dir, token, [SAFETENSORS_INDEX], None, on_probe)[0]
         )
         require_declared_shards(index_path.read_text(encoding="utf-8"), selected)
