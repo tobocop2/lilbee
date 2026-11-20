@@ -7,7 +7,7 @@ from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, assert_never, runtime_checkable
 
 from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.base import ProviderError
@@ -36,6 +36,17 @@ class EngineName(StrEnum):
     MLX = "mlx"
     OPENVINO = "openvino"
     LEMONADE = "lemonade"
+    OVMS = "ovms"
+
+
+class RerankShape(StrEnum):
+    """The request and answer shape of an engine's rerank route."""
+
+    TEXTS = "texts"
+    """The request holds ``query`` and ``texts``; the answer lists ``index`` and ``score``."""
+    DOCUMENTS = "documents"
+    """The Cohere shape: ``query`` and ``documents``; the answer holds ``results`` of ``index``
+    and ``relevance_score``."""
 
 
 @dataclass(frozen=True)
@@ -131,6 +142,37 @@ class RequestProfile:
     input_limit_path: str | None = None
     """The route that reports ``max_input_length``, or None. An engine with both routes cuts an
     over-limit embed input without a sign, so the client counts and warns."""
+    rerank_shape: RerankShape = RerankShape.TEXTS
+    """The shape of the rerank route; it matters only when ``rerank_path`` is set."""
+    rerank_model: str | None = None
+    """The model name the rerank request body carries, or None for a route that takes none."""
+
+    def rerank_body(
+        self, query: str, texts: list[str], extra: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """The rerank request body for *texts*; *extra* holds fields such as ``truncate``."""
+        extra = self.rerank_fields if extra is None else extra
+        match self.rerank_shape:
+            case RerankShape.TEXTS:
+                return {"query": query, "texts": texts, **extra}
+            case RerankShape.DOCUMENTS:
+                body: dict[str, Any] = {"query": query, "documents": texts, "top_n": len(texts)}
+                if self.rerank_model is not None:
+                    body["model"] = self.rerank_model
+                return {**body, **extra}
+        assert_never(self.rerank_shape)  # pragma: no cover
+
+    def rerank_scores(self, payload: Any) -> dict[int, float]:
+        """The score of each candidate by index, from the answer of the rerank route."""
+        match self.rerank_shape:
+            case RerankShape.TEXTS:
+                return {int(item["index"]): float(item["score"]) for item in payload}
+            case RerankShape.DOCUMENTS:
+                return {
+                    int(item["index"]): float(item["relevance_score"])
+                    for item in payload["results"]
+                }
+        assert_never(self.rerank_shape)  # pragma: no cover
 
 
 class EngineAdapter(Protocol, Hashable):

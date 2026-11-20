@@ -1,0 +1,19 @@
+# A per-platform wheel that holds the OpenVINO Model Server for lilbee. CI fills
+# lilbee_engine_ovms/bin/ and lilbee_engine_ovms/lib/, sets the version, the licence expression and
+# the licence files (tools/wheel-build/stamp_engine_wheel.py) and builds the wheel with a build tag
+# for the backend.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilbee-engine-ovms"
+version = "0.0.0"
+description = "OpenVINO Model Server for lilbee"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["lilbee_engine_ovms"]
+
+[tool.setuptools.package-data]
+lilbee_engine_ovms = ["bin/*", "lib/*"]

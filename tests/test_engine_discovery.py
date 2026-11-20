@@ -18,6 +18,7 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.engines.openvino import OPENVINO
+from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.fleet.engines.tei import TEI
 
 _EXTRA_MODULE = """\
@@ -44,6 +45,7 @@ def test_the_shipped_adapters_are_found() -> None:
         EngineName.MLX: MLX,
         EngineName.OPENVINO: OPENVINO,
         EngineName.LEMONADE: LEMONADE,
+        EngineName.OVMS: OVMS,
     }
 
 

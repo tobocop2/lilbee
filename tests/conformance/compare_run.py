@@ -193,7 +193,7 @@ def _rerank(model: str, engine: str) -> list[Body]:
     profile = _rerank_profile(engine)
     if profile.rerank_path is None:
         return [{"model": model, "query": RERANK_QUERY, "documents": RERANK_DOCS}]
-    return [{"query": RERANK_QUERY, "texts": RERANK_DOCS, **profile.rerank_fields}]
+    return [profile.rerank_body(RERANK_QUERY, list(RERANK_DOCS))]
 
 
 def _rerank_path(engine: str) -> str:

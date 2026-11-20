@@ -176,6 +176,18 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         "one hardware recording, no comparison record in git yet",
     ),
     _excluded(EngineName.OPENVINO, "linux-x86_64-openvino", Device.NPU, Route.UNPUBLISHED, _NO_NPU),
+    _deferred(
+        EngineName.OVMS,
+        "linux-x86_64-openvino",
+        Device.CPU,
+        Route.UNPUBLISHED,
+        _CPU_HOST,
+        _NO_RECORD,
+    ),
+    _excluded(
+        EngineName.OVMS, "linux-x86_64-openvino", Device.INTEL_GPU, Route.UNPUBLISHED, _NO_NPU
+    ),
+    _excluded(EngineName.OVMS, "linux-x86_64-openvino", Device.NPU, Route.UNPUBLISHED, _NO_NPU),
     _excluded(EngineName.LEMONADE, "linux-x86_64-npu", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
     _excluded(EngineName.LEMONADE, "windows-x86_64-npu", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
     _deferred(

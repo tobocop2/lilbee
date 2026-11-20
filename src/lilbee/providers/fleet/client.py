@@ -1476,10 +1476,10 @@ class LlamaServerClient:
 
         def _post(extra: Mapping[str, Any]) -> httpx.Response:
             return self._http.post(
-                self._native_route(path), json={"query": query, "texts": texts, **extra}
+                self._native_route(path), json=self._profile.rerank_body(query, texts, extra)
             )
 
-        def _call() -> tuple[list[dict[str, Any]], str | None]:
+        def _call() -> tuple[Any, str | None]:
             with self._track():
                 resp = _post(self._profile.rerank_fields)
                 overflow = None
@@ -1487,10 +1487,10 @@ class LlamaServerClient:
                     overflow = resp.text.strip()
                     resp = _post({})
                 self._raise_for_status(resp)
-                return list(resp.json()), overflow
+                return resp.json(), overflow
 
-        items, overflow = retry_on_gateway_error(_call)
-        by_index = {int(item["index"]): float(item["score"]) for item in items}
+        payload, overflow = retry_on_gateway_error(_call)
+        by_index = self._profile.rerank_scores(payload)
         if sorted(by_index) != list(range(len(texts))):
             raise ProviderError(
                 f"The reranker did not return one score for each of the {len(texts)} candidates.",

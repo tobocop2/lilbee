@@ -37,6 +37,7 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
 )
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.base import RerankShape
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.reasoning import ThinkInliner
@@ -3898,6 +3899,64 @@ def test_rerank_with_route_posts_query_and_texts_and_orders_scores_by_index() ->
     scores = _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
     assert scores == [0.1, 0.9]
     assert seen == [("/upstream/m/rerank", {"query": "q", "texts": ["alpha", "beta"]})]
+
+
+def test_rerank_in_the_documents_shape_posts_cohere_fields_and_reads_relevance_scores() -> None:
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 1, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 0.1},
+                ]
+            },
+        )
+
+    scores = _no_route_client(
+        handler,
+        rerank_path="/v3/rerank",
+        rerank_shape=RerankShape.DOCUMENTS,
+        rerank_model="default_model",
+    ).rerank("q", ["alpha", "beta"])
+    assert scores == [0.1, 0.9]
+    assert seen == [
+        (
+            "/upstream/m/v3/rerank",
+            {
+                "model": "default_model",
+                "query": "q",
+                "documents": ["alpha", "beta"],
+                "top_n": 2,
+            },
+        )
+    ]
+
+
+def test_rerank_in_the_documents_shape_without_a_model_name_sends_none() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.5}]})
+
+    _no_route_client(handler, rerank_path="/v3/rerank", rerank_shape=RerankShape.DOCUMENTS).rerank(
+        "q", ["alpha"]
+    )
+    assert "model" not in seen[0]
+
+
+def test_rerank_in_the_documents_shape_refuses_an_answer_missing_a_candidate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.5}]})
+
+    with pytest.raises(ProviderError, match="one score for each of the 2 candidates"):
+        _no_route_client(
+            handler, rerank_path="/v3/rerank", rerank_shape=RerankShape.DOCUMENTS
+        ).rerank("q", ["alpha", "beta"])
 
 
 def test_rerank_with_route_splits_candidates_at_the_batch_limit() -> None:
