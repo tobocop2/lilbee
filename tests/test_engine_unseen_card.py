@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.app import placement as app_placement
+from lilbee.app.engine_choice import BookReading
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import gpu_hardware, planning
 from lilbee.providers.fleet.placement import unseen_card_reason
@@ -130,6 +132,20 @@ def test_the_placement_view_reports_the_same_refusal_for_another_card(
     )
     assert resolved.unlaunched_roles == {WorkerRole.EMBED: OTHER_CARD_REFUSAL}
     assert [inst.role for inst in resolved.instances] == [WorkerRole.CHAT]
+
+
+def test_the_placement_view_lists_a_role_on_another_card_as_refused_and_keeps_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(tmp_path, monkeypatch, EMBED_ON_CARD_ZERO)
+    engines = _engines(tmp_path)
+    planning.capture_plan_probe(engines)
+    reading = BookReading(adapters=engines, notices={})
+    monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
+    view = app_placement.get_placement()
+    assert view.refusal == OTHER_CARD_REFUSAL
+    assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
+    assert [role.role for role in view.roles] == [WorkerRole.CHAT]
 
 
 def _chat_on_another_card_embed_on_cpu(tmp_path: Path) -> dict[WorkerRole, CardEngine]:
