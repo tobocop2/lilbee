@@ -4421,6 +4421,8 @@ def _unplaceable_reasons(
     card with no split that holds it, and a role with no room beside the others.
     """
     reasons: dict[WorkerRole, str] = {}
+    if not placement.unplaceable_roles:
+        return reasons
     mixed = _is_mixed(engines)
     unpinnable = _roles_without_a_pin(inputs, devices, engines, unified_budget, host_cards)
     charges = {model.role: model.est_vram_bytes for model in inputs}

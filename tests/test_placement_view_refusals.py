@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console
@@ -20,6 +21,7 @@ from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines.mistral import MistralAdapter
+from lilbee.providers.fleet.placement import InstancePlan, Placement
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.routes.placement import placement_preview_route, placement_route
@@ -771,6 +773,13 @@ class TestAnUnplaceableRoleCarriesTheLaunchReason:
         monkeypatch.setattr(planning, "_unplaceable_reasons", spy)
         planning.resolve_placement_plan(None, engines=engines_for_all_roles(engine))
         assert budgets == [admission]
+
+    def test_a_plan_with_no_unplaceable_role_needs_no_card_figures(self) -> None:
+        placed = Placement(instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=())
+        reasons = planning._unplaceable_reasons(
+            placed, {}, {}, [], [], MagicMock(), unified_budget=None, capacity={}
+        )
+        assert reasons == {}
 
     def test_a_role_that_fits_leaves_the_refusal_empty(
         self, engine: CardEngine, monkeypatch: pytest.MonkeyPatch
