@@ -2467,7 +2467,9 @@ def test_chat_fits_the_context_to_the_configured_model(monkeypatch, invoke) -> N
 
     monkeypatch.setattr(p, "_fit_chat_context", _fit)
     invoke(p)
-    assert seen == [(_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf")]
+    assert seen == [
+        (_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf", None)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -8203,7 +8205,7 @@ def test_chat_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
 def test_chat_stream_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
     client = _fake_client()
     client.count_chat_prompt_tokens.side_effect = _rendered_count
-    client.chat_stream_items.return_value = iter(["a", "b"])
+    client.chat_stream_items.return_value = _frames_of("a", "b")
     p = _tool_convo_near_budget_provider(client)
     msgs = _tool_convo()
 
