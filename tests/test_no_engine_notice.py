@@ -80,6 +80,29 @@ def test_a_group_dropped_after_an_old_failure_does_not_show_that_failure(
     assert local.reload_notice() is None
 
 
+def test_a_failed_pass_drops_the_groups_that_are_not_running(
+    fleet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = _local(fleet)
+    assert local._swaps
+    for swap in local._swaps.values():
+        monkeypatch.setattr(swap, "running", False)
+    with local._lock:
+        local._end_fleet_work(_REFUSED)
+    assert not local._swaps
+    assert local.reload_notice() == NO_ENGINE_NOTICE
+
+
+def test_a_failed_pass_keeps_a_group_that_is_running(fleet: Any) -> None:
+    local = _local(fleet)
+    groups = dict(local._swaps)
+    assert groups
+    with local._lock:
+        local._end_fleet_work(_REFUSED)
+    assert local._swaps == groups
+    assert local.reload_notice() == RELOAD_FAILED_NOTICE
+
+
 def test_a_failure_that_lands_after_shutdown_shows_no_notice(fleet: Any) -> None:
     local = _local(fleet)
     local.shutdown()
