@@ -619,6 +619,8 @@ class LlamaServerClient:
         # The truncation-check requests in flight, one future for each distinct request.
         self._flights_lock = threading.Lock()
         self._flights: dict[tuple[Any, ...], Future[Any]] = {}
+        # Whether the count route has answered once; until then one probe runs for the route.
+        self._count_route_answered = False
         self._in_flight_lock = threading.Lock()
         # Signalled under the count lock each time a request takes in_flight to zero.
         self._idle = threading.Condition(self._in_flight_lock)
@@ -1360,6 +1362,20 @@ class LlamaServerClient:
             counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
             return sum(len(tokens) > limit for tokens in counts)
 
+        if self._count_route_answered:
+            return self._single_flight(("count", tuple(texts)), count)
+
+        def first_probe() -> tuple[tuple[str, ...], int]:
+            probed = count()
+            self._count_route_answered = True
+            return tuple(texts), probed
+
+        # Until the route has answered once, one thread probes it, whatever it counts. The
+        # other threads wait for that probe: a failure reaches them. A success serves the
+        # threads that count the same texts, and each other thread counts its own.
+        probed_texts, probed = self._single_flight(("first-probe", path), first_probe)
+        if probed_texts == tuple(texts):
+            return probed
         return self._single_flight(("count", tuple(texts)), count)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:

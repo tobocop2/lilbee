@@ -1392,6 +1392,35 @@ def test_four_first_embeds_make_one_request_to_a_hung_route(hung, hung_side_rout
     assert sum(path.endswith("/embeddings") for path in paths) == 4
 
 
+def test_four_first_embeds_of_different_texts_make_one_request_to_a_hung_count_route(
+    hung_side_route,
+) -> None:
+    serve, paths = hung_side_route
+    client = serve("/tokenize")
+    calls = [lambda i=i: client.embed([_words(30 + i)]) for i in range(4)]
+    started = time.monotonic()
+    _run_together(calls)
+    total = time.monotonic() - started
+    assert sum(path.endswith("/tokenize") for path in paths) == 1
+    assert sum(path.endswith("/embeddings") for path in paths) == 4
+    assert total < _CHECK_BOUND_S, f"four embeds took {total:.2f} s in all with /tokenize hung"
+
+
+def test_once_the_count_route_has_answered_threads_count_without_waiting_on_each_other(
+    monkeypatch, hung_side_route
+) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    client = serve("/tokenize", hang_s=0.4)
+    client.embed([_words(30)])
+    paths.clear()
+    started = time.monotonic()
+    _run_together([lambda i=i: client.embed([_words(30 + i)]) for i in range(1, 3)])
+    total = time.monotonic() - started
+    assert sum(path.endswith("/tokenize") for path in paths) == 2
+    assert total < 0.7, f"two embeds took {total:.2f} s in all; each count waits 0.4 s"
+
+
 @pytest.mark.parametrize("slow", ["/info", "/tokenize"])
 def test_embeds_that_wait_on_a_slow_route_use_its_one_answer(
     slow, monkeypatch, hung_side_route, caplog
