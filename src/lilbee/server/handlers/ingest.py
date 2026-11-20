@@ -248,15 +248,15 @@ async def _ingest_stream(
     rejections = [_already_ingesting(label, name) for name in busy]
     try:
         if not acquired:
-            for frame in rejections:
-                yield frame
+            for rejection in rejections:
+                yield rejection
             return
 
         acquired_names = {name for name, _lock in acquired}
         locked = [payload for key, payload in items if key in acquired_names]
         sse = SseStream()
-        for frame in rejections:
-            sse.queue.put_nowait(frame)
+        for rejection in rejections:
+            sse.queue.put_nowait(rejection)
         task = asyncio.create_task(run(locked, sse))
         try:
             async for event in sse.drain(task, label):
