@@ -1,0 +1,181 @@
+name: MLX macos-15 output checks
+
+on:
+  push:
+    branches: [ci/mlx-macos15]
+
+permissions:
+  contents: read
+
+jobs:
+  mlx:
+    runs-on: macos-15
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash -eo pipefail {0}
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+      PORT: "18765"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Host facts
+        run: |
+          mkdir -p out
+          { sw_vers; uname -m; sysctl -n machdep.cpu.brand_string; sysctl -n hw.memsize; } | tee out/host.txt
+
+      - name: Install the MLX engine
+        run: |
+          uv python install 3.12
+          uv venv --python 3.12 "$RUNNER_TEMP/mlx"
+          uv pip install --python "$RUNNER_TEMP/mlx/bin/python" 'mlx-lm==0.32.2' huggingface_hub
+          uv pip list --python "$RUNNER_TEMP/mlx/bin/python" | tee out/mlx-packages.txt
+
+      - name: Metal probe
+        continue-on-error: true
+        run: |
+          "$RUNNER_TEMP/mlx/bin/python" - <<'PY' 2>&1 | tee out/metal-probe.txt
+          import mlx.core as mx
+          print("default_device:", mx.default_device())
+          print("metal_available:", mx.metal.is_available())
+          x = mx.ones((256, 256)) @ mx.ones((256, 256))
+          mx.eval(x)
+          print("gpu_matmul_ok:", float(x[0, 0]))
+          PY
+
+      - name: Download the model
+        run: |
+          "$RUNNER_TEMP/mlx/bin/python" - <<'PY'
+          from huggingface_hub import snapshot_download
+          p = snapshot_download("mlx-community/Qwen3-0.6B-4bit", local_dir="model")
+          print(p)
+          PY
+
+      - name: Install lilbee
+        run: uv sync --locked --extra providers
+
+      # The window and the server command come from lilbee's own MLX adapter, as a managed
+      # launch would build them: the window from the model's config.json and the chat target,
+      # the command from launch_argv with that window.
+      - name: Plan the launch with the MLX adapter
+        run: |
+          uv run python - "$RUNNER_TEMP/mlx/bin/mlx_lm.server" "$PWD/model" "$PORT" <<'PY' | tee out/launch.txt
+          import shlex
+          import sys
+          from pathlib import Path
+
+          from lilbee.providers.engine_params import resolve_chat_ctx
+          from lilbee.providers.fleet.engines.base import PORT_SLOT, LaunchRequest
+          from lilbee.providers.fleet.engines.mlx import MLX
+          from lilbee.providers.roles import WorkerRole
+
+          binary, model, port = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+          window = resolve_chat_ctx(model, MLX.model_meta(model), engine=MLX)
+          request = LaunchRequest(
+              binary=binary, model_path=model, devices=(), n_gpu_layers=0, slots=1,
+              ctx_per_slot=window,
+          )
+          argv = MLX.launch_argv(MLX.role_spec(WorkerRole.CHAT, None, None), request)
+          argv = [port if word == PORT_SLOT else word for word in argv]
+          Path("out/window.txt").write_text(str(window))
+          Path("out/argv.txt").write_text(shlex.join(argv))
+          Path("out/argv-args.txt").write_text(shlex.join(argv[1:]))
+          print("window:", window)
+          print("argv:", shlex.join(argv))
+          PY
+
+      # The server process first names the device mlx runs on, from mlx itself, so the
+      # recorder reads the backend from the engine's own output (mlx-lm has no /memory).
+      - name: Start the server
+        run: |
+          cat > out/serve.py <<'PY'
+          import sys
+
+          import mlx.core as mx
+
+          gpu = mx.metal.is_available() and mx.default_device().type == mx.gpu
+          name = mx.device_info().get("device_name", "") if gpu else ""
+          print(f"using device {'MTL0' if gpu else 'CPU'} ({name})", flush=True)
+          sys.argv = ["mlx_lm.server", *sys.argv[1:]]
+          from mlx_lm.server import main
+
+          main()
+          PY
+          HF_HUB_OFFLINE=1 nohup "$RUNNER_TEMP/mlx/bin/python" out/serve.py $(cat out/argv-args.txt) > out/server.log 2>&1 &
+          for i in $(seq 1 60); do
+            nc -z 127.0.0.1 "$PORT" && exit 0
+            sleep 2
+          done
+          echo "server did not open the port"; cat out/server.log; exit 1
+
+      - name: Warm-up request
+        run: |
+          curl -sS -m 300 -w '\nHTTP %{http_code}\n' "http://127.0.0.1:$PORT/v1/chat/completions" \
+            -H 'content-type: application/json' \
+            -d '{"model":"default_model","messages":[{"role":"user","content":"Say hi."}],"max_tokens":16}' \
+            | tee out/warmup.txt
+
+      - name: Run the output-check fixtures
+        id: fixtures
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          date -u +%s > out/fixtures.start
+          uv run python -m tests.conformance.record_presets \
+            --server mlx --version 0.32.2 --roles chat --models chat=default_model \
+            --strict --backend metal --engine mlx --window "$(cat out/window.txt)" \
+            --url "http://127.0.0.1:$PORT" --engine-log "$PWD/out/server.log" \
+            --out out/mlx-chat-metal.json 2>&1 | tee out/fixtures.out
+          echo "fixtures seconds: $(( $(date -u +%s) - $(cat out/fixtures.start) ))" | tee -a out/fixtures.out
+
+      # The reasoning ask with the defaults the launch sets (the window as the cap, the model's
+      # sampling), then with a request cap of 512.
+      - name: Measure the answer cap
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          ask='Think it through, then answer: what is 17 plus 25?'
+          # server: the launch defaults. lilbee: the sampling a lilbee chat sends by default.
+          # llamacpp: llama-server's own defaults, which the llama.cpp fixtures ran under.
+          lilbee=$(uv run python -c 'import json; from lilbee.core.config import cfg; o=cfg.generation_options(); print(json.dumps({k: o[k] for k in ("temperature","top_p","top_k") if k in o})[1:-1])')
+          echo "lilbee sampling: $lilbee" | tee -a out/measure-cap.txt
+          for cap in none 512 lilbee llamacpp; do
+            case "$cap" in
+              none) extra='' ;;
+              512) extra=',"max_tokens":512' ;;
+              lilbee) extra=",$lilbee" ;;
+              llamacpp) extra=',"temperature":0.8,"top_p":0.95,"top_k":40,"min_p":0.05' ;;
+            esac
+            start=$(date -u +%s)
+            curl -sS -m 600 "http://127.0.0.1:$PORT/v1/chat/completions" \
+              -H 'content-type: application/json' \
+              -d "{\"model\":\"default_model\",\"messages\":[{\"role\":\"user\",\"content\":\"$ask\"}]$extra}" \
+              > "out/reasoning-$cap.json"
+            secs=$(( $(date -u +%s) - start ))
+            "$RUNNER_TEMP/mlx/bin/python" -c 'import json,sys; d=json.load(open(sys.argv[1])); c=d["choices"][0]; print("cap", sys.argv[2], "finish", c.get("finish_reason"), "completion_tokens", d.get("usage",{}).get("completion_tokens"), "seconds", sys.argv[3], "answer", repr((c["message"].get("content") or "")[-80:]))' \
+              "out/reasoning-$cap.json" "$cap" "$secs" | tee -a out/measure-cap.txt
+          done
+
+      - name: Summarise each fixture
+        if: always()
+        run: |
+          { echo '## MLX fixtures on macos-15'
+            grep '^STEP' out/mlx-chat-metal.log 2>/dev/null || echo 'no recording'
+            cat out/launch.txt out/measure-cap.txt 2>/dev/null || true
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          test "${{ steps.fixtures.outcome }}" = success
+
+      - name: Save the artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlx-macos15-fixtures
+          path: out/
+          if-no-files-found: warn
