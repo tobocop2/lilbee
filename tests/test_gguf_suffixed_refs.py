@@ -35,6 +35,16 @@ def test_the_display_label_of_a_native_ref_is_the_clean_repo_name(ref: str) -> N
     assert catalog.display_label_for_ref(ref) == catalog.clean_display_name("org/Repo-GGUF")
 
 
+def test_the_display_label_of_a_provider_ref_drops_the_suffix() -> None:
+    assert catalog.display_label_for_ref("ollama/llama3#gguf") == "llama3"
+    assert catalog.display_label_for_ref("org/model.gguf#gguf") == "model.gguf"
+
+
+def test_a_one_slash_gguf_file_with_the_suffix_is_not_a_bare_repo() -> None:
+    assert is_bare_hf_repo("org/model.gguf") is False
+    assert is_bare_hf_repo("org/model.gguf#gguf") is False
+
+
 @pytest.mark.parametrize("ref", [_PLAIN, _SUFFIXED])
 def test_the_download_task_name_of_a_native_ref_is_the_clean_repo_name(ref: str) -> None:
     assert download_task_name(ref) == catalog.clean_display_name("org/Repo-GGUF")
