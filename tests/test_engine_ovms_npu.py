@@ -1,6 +1,7 @@
 """The OpenVINO Model Server adapter on an Intel NPU: when the target is offered and its argv.
 
-The NPU lists come from the recorded host fixtures. No NPU run is recorded yet.
+The NPU lists come from the host fixtures, which are written from PCI id tables in the docs and
+not recorded on a machine. No NPU run exists yet.
 """
 
 from __future__ import annotations
