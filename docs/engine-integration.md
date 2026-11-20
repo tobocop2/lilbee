@@ -105,6 +105,8 @@ A prompt longer than the context gets a 4xx answer within the timeout (default 6
 
 Evidence: row 8, row 28, row 43, row 52, row 66, row 75, row 86. mlx_lm.server hung until the client timeout (rows 8, 75). The wording of the 400 differs by engine (rows 43, 52, 66, 86). The caller is `src/lilbee/providers/fleet/client.py`.
 
+mlx_lm.server also keeps working on a request that is not streamed after its client goes, so every later request waits. Its profile sets `works_on_after_disconnect`. When a request to such a server times out, lilbee restarts that role's server and reports the timeout, with no retry.
+
 ### E13 Route not served
 
 A role the engine does not claim answers 400, 404, 405 or 501, or answers with a valid body of that role. A 200 with a degenerate body fails. Every other status fails, including 401, 403, 429 and 5xx. An embedding server that answers a chat call with 400 "model not found" passes.
