@@ -9,7 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from lilbee.catalog.refs import hf_repo_from_ref, is_gguf_filename
+from lilbee.catalog.refs import canonical_ref, hf_repo_from_ref, is_gguf_filename
 from lilbee.core.config import META_TABLE
 from lilbee.runtime.lock import write_lock
 
@@ -358,6 +358,8 @@ def refs_compatible(
     """
     if persisted_dim != current_dim:
         return False
+    persisted_ref = canonical_ref(persisted_ref)
+    current_ref = canonical_ref(current_ref)
     if persisted_ref == current_ref:
         return True
     if is_gguf_filename(persisted_ref):

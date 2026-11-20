@@ -223,13 +223,18 @@ def is_gguf_filename(name: str) -> bool:
     return name.endswith(GGUF_SUFFIX)
 
 
-def is_native_gguf_shape(ref: str) -> bool:
-    """True when *ref* has the ``<org>/<repo>/<file>.gguf`` shape."""
+def _has_native_shape(ref: str) -> bool:
     return is_gguf_filename(ref) and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+
+
+def is_native_gguf_shape(ref: str) -> bool:
+    """True when *ref* has the ``<org>/<repo>/<file>.gguf`` shape; ``#gguf`` reads as plain."""
+    return _has_native_shape(canonical_ref(ref))
 
 
 def is_bare_hf_repo(ref: str) -> bool:
     """True if *ref* has the bare ``<org>/<repo>`` shape (no filename segment)."""
+    ref = canonical_ref(ref)
     return ref.count("/") == 1 and not is_gguf_filename(ref)
 
 
@@ -301,7 +306,7 @@ def canonical_ref(ref: str) -> str:
 
 
 def _gguf_ref(raw: str) -> ModelRef:
-    if is_native_gguf_shape(raw):
+    if _has_native_shape(raw):
         parts = raw.split("/")
         return ModelRef(
             "/".join(parts[:NATIVE_GGUF_REF_MIN_SLASHES]),
@@ -320,7 +325,7 @@ def hf_repo_from_ref(ref: str) -> str:
     Provider-prefixed refs (``openai/gpt-4``, ``ollama/llama3:8b``) and bare
     repos lack the ``.gguf`` suffix and are returned unchanged.
     """
-    return _gguf_ref(ref).hf_repo
+    return _gguf_ref(canonical_ref(ref)).hf_repo
 
 
 def installed_keys(refs: Iterable[str]) -> frozenset[tuple[str, ModelFormat]]:
@@ -342,7 +347,7 @@ def gguf_filename_from_ref(ref: str) -> str:
     ``Q4_K_M/``), so everything past the first two segments is kept.
     Returns empty string for non-native refs (bare repos, provider-prefixed).
     """
-    return _gguf_ref(ref).filename
+    return _gguf_ref(canonical_ref(ref)).filename
 
 
 def format_native_gguf_ref(hf_repo: str, gguf_filename: str) -> str:

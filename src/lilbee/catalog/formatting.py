@@ -6,6 +6,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import (
+    canonical_ref,
     hf_repo_from_ref,
     installed_keys,
     is_gguf_filename,
@@ -68,6 +69,7 @@ def download_task_name(ref: str) -> str:
     ``Task.name``. Returns ``""`` for refs without an ``<owner>/<repo>``
     shape (empty, provider-prefixed without a slash, bare strings).
     """
+    ref = canonical_ref(ref)
     if not ref or "/" not in ref:
         return ""
     # A ``.gguf`` ref needs ``<owner>/<repo>/<file>`` (two slashes) to be a valid
@@ -86,6 +88,7 @@ def display_label_for_ref(ref: str) -> str:
     - Provider-prefixed (``ollama/``, ``openai/`` ...): the part after the prefix.
     - Anything else: returned unchanged.
     """
+    ref = canonical_ref(ref)
     if not ref:
         return ""
     if is_native_gguf_shape(ref):
