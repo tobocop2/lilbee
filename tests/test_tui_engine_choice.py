@@ -19,13 +19,23 @@ from textual.widgets._key_panel import BindingsTable
 from lilbee.app import engine_service
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.engine_commands import announce, install_name, run_engine_command
+from lilbee.cli.tui.engine_commands import (
+    announce,
+    engine_line,
+    install_name,
+    run_engine_command,
+)
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_info import ModelInfoModal
 from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.cli.tui.widgets.model_bar import ChatModePill, ModelBar, ModelPickerButton
+from lilbee.cli.tui.widgets.model_bar import (
+    ChatModePill,
+    EngineLine,
+    ModelBar,
+    ModelPickerButton,
+)
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
@@ -115,7 +125,7 @@ async def test_the_chips_show_the_engine_of_each_role_that_has_a_model(
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
         text = _text(app, "#model-bar-engine-chips")
-        assert text == "chat: llama.cpp  embed: llama.cpp"
+        assert text == "engine: chat ■ llama.cpp  embed ■ llama.cpp"
         assert "None" not in text
         assert app.query_one("#model-bar-engine-chips").region.width <= size[0]
 
@@ -126,7 +136,7 @@ async def test_the_chips_follow_the_stored_choice_without_a_restart() -> None:
         await pilot.pause()
         cfg.engine_choices = json.dumps({GGUF_REF: "openvino"})
         app.query_one(ModelBar).refresh_engines()
-        assert _text(app, "#model-bar-engine-chips") == "chat: openvino  embed: llama.cpp"
+        assert _text(app, "#model-bar-engine-chips") == "engine: chat ■ openvino  embed ■ llama.cpp"
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
@@ -148,7 +158,8 @@ async def test_the_key_e_opens_the_picker_and_saves_the_pick(size: tuple[int, in
         assert await wait_until(pilot, lambda: stored() is not None)
         assert json.loads(str(stored())) == {GGUF_REF: "openvino"}
         assert await wait_until(
-            pilot, lambda: _text(app, "#model-bar-engine-chips").startswith("chat: openvino")
+            pilot,
+            lambda: _text(app, "#model-bar-engine-chips").startswith("engine: chat ■ openvino"),
         )
         assert any(t.endswith("uses engine openvino.") for t in _toasts(app))
 
@@ -184,7 +195,7 @@ async def test_a_failed_write_shows_the_not_saved_text_and_keeps_the_live_choice
         )
         assert cfg.engine_choices is None
         assert "read-only" not in " ".join(_toasts(app))
-        assert _text(app, "#model-bar-engine-chips").startswith("chat: llama.cpp")
+        assert _text(app, "#model-bar-engine-chips").startswith("engine: chat ■ llama.cpp")
 
 
 async def test_escape_leaves_the_choice_alone() -> None:
@@ -408,12 +419,17 @@ async def test_the_slash_command_repaints_the_chips_and_clears_the_notice(
     async with app.run_test(size=size) as pilot:
         chat = await await_chat(app, pilot)
         assert isinstance(chat, ChatScreen)
-        assert _text(chat, "#model-bar-engine-chips") == "chat: no engine  embed: llama.cpp"
+        assert _text(chat, "#model-bar-engine-chips") == (
+            "engine: chat ▲ needs an engine  embed ■ llama.cpp"
+        )
         assert "cannot load the gguf format" in _text(chat, "#model-bar-engine-notice")
         chat._cmd_engine(f"use chat {GGUF_REF} openvino")
         assert await wait_until(
             pilot,
-            lambda: _text(chat, "#model-bar-engine-chips") == "chat: openvino  embed: llama.cpp",
+            lambda: (
+                _text(chat, "#model-bar-engine-chips")
+                == "engine: chat ■ openvino  embed ■ llama.cpp"
+            ),
         )
         assert _text(chat, "#model-bar-engine-notice") == ""
         assert any("uses engine openvino" in t for t in _toasts(app))
@@ -427,7 +443,10 @@ async def test_the_slash_prefer_repaints_the_chips() -> None:
         chat._cmd_engine("prefer openvino")
         assert await wait_until(
             pilot,
-            lambda: _text(chat, "#model-bar-engine-chips") == "chat: openvino  embed: openvino",
+            lambda: (
+                _text(chat, "#model-bar-engine-chips")
+                == "engine: chat ■ openvino  embed ■ openvino"
+            ),
         )
 
 
@@ -438,7 +457,9 @@ async def test_a_refused_slash_command_leaves_the_chips_alone() -> None:
         assert isinstance(chat, ChatScreen)
         chat._cmd_engine(f"use chat {GGUF_REF} mlx")
         assert await wait_until(pilot, lambda: any("cannot load" in t for t in _toasts(app)))
-        assert _text(chat, "#model-bar-engine-chips") == "chat: llama.cpp  embed: llama.cpp"
+        assert (
+            _text(chat, "#model-bar-engine-chips") == "engine: chat ■ llama.cpp  embed ■ llama.cpp"
+        )
 
 
 async def test_the_slash_install_shows_its_bytes_in_the_task_bar_and_each_retry_as_a_toast() -> (
@@ -697,7 +718,7 @@ async def test_a_missing_engine_asks_to_download_then_installs_as_a_task_then_ap
         assert task.name == "Install engine openvino"
         assert await wait_until(pilot, lambda: task.progress > 0)
         assert cfg.engine_choices is None
-        assert _text(app, "#model-bar-engine-chips").startswith("chat: llama.cpp")
+        assert _text(app, "#model-bar-engine-chips").startswith("engine: chat ■ llama.cpp")
         release.set()
         assert await wait_until(pilot, lambda: cfg.engine_choices is not None)
         assert installed == ["openvino"]
@@ -741,3 +762,44 @@ async def test_a_failed_install_fails_the_task_and_keeps_the_engine(
         )
         assert _engine_tasks(app)[0].detail == "No pack of openvino is published yet."
         assert cfg.engine_choices is None
+
+
+def _views(*pairs: tuple[WorkerRole, str, str]) -> list[engine_service.RoleView]:
+    return [
+        engine_service.RoleView(role=r, model=m, format="gguf", engine=e, notice="")
+        for r, m, e in pairs
+    ]
+
+
+def test_the_engine_line_colors_each_mark_and_warns_for_a_role_with_no_engine() -> None:
+    line = engine_line(_views((WorkerRole.CHAT, "m", ""), (WorkerRole.EMBED, "e", "llama.cpp")))
+    styles = {str(span.style) for span in line.spans}
+    assert "$warning" in styles
+    assert "$engine-llama-cpp" in styles
+    assert line.plain == "engine: chat ▲ needs an engine  embed ■ llama.cpp"
+
+
+def test_the_engine_line_is_empty_when_no_role_has_a_model() -> None:
+    assert engine_line(_views((WorkerRole.CHAT, " ", "llama.cpp"))).plain == ""
+
+
+async def test_the_e_key_shows_in_the_footer_for_a_role_button() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.query_one("#model-pick-chat", ModelPickerButton).focus()
+        await pilot.pause()
+        binding = app.screen.active_bindings["e"].binding
+        assert binding.show
+        assert binding.description == "Pick engine"
+
+
+async def test_a_click_on_a_role_in_the_engine_line_opens_the_picker_of_that_role() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        line = app.query_one(EngineLine)
+        assert str(line.render()).index("embed") == 26
+        await pilot.click(EngineLine, offset=(28, 0))
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert app.screen._view.role is WorkerRole.EMBED

@@ -29,7 +29,7 @@ from lilbee.cli.tui.engine_commands import (
     ENGINE_SETTING_KEYS,
     EngineCommandResult,
     announce,
-    chips_text,
+    engine_line,
 )
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
@@ -253,7 +253,7 @@ class ModelPickerButton(Static, can_focus=True):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "open_picker", "Pick model", show=False),
         Binding("space", "open_picker", "Pick model", show=False),
-        Binding("e", "pick_engine", "Pick engine", show=False),
+        Binding("e", "pick_engine", "Pick engine", show=True),
     ]
 
     def __init__(self, *, scope: PickerScope, button_id: str) -> None:
@@ -619,6 +619,13 @@ class RoleRow(Widget, can_focus=False):
             self.query_one(ModelPickerButton).repaint()
 
 
+class EngineLine(Static):
+    """The engine line of the bar; a click on a role opens the engine picker of that role."""
+
+    def action_pick(self, name: str) -> None:
+        self.query_ancestor(ModelBar).pick_engine(WorkerRole(name))
+
+
 class ModelBar(Widget, can_focus=False):
     """Horizontal band of the four role pickers + the Search/Chat toggle, below the input.
 
@@ -708,7 +715,7 @@ class ModelBar(Widget, can_focus=False):
             for scope in self._SCOPES:
                 yield RoleRow(scope=scope)
             yield ChatModeToggle()
-        yield Static("", id=_ENGINE_CHIPS_ID, classes="engine-chips", markup=False)
+        yield EngineLine("", id=_ENGINE_CHIPS_ID, classes="engine-chips")
         yield Static("", id=_ENGINE_NOTICE_ID, classes="engine-notice", markup=False)
         yield Static("", id=_CLOUD_WARNING_ID, classes="cloud-warning")
 
@@ -765,13 +772,19 @@ class ModelBar(Widget, can_focus=False):
                 self._options_cache[row.scope] = fingerprint
         self._refresh_cloud_warning()
 
+    def pick_engine(self, role: WorkerRole) -> None:
+        """Open the engine picker for *role*, as the ``e`` key does on its button."""
+        for row in self.query(RoleRow):
+            if row.scope == role.value:
+                row.query_one(ModelPickerButton).action_pick_engine()
+
     def refresh_engines(self) -> None:
         """Repaint the engine chips and the fallback notices from the engine service."""
         views = [v for v in engine_service.roles() if v.model.strip()]
-        chips = chips_text(views)
+        chips = engine_line(views)
         notices = list(dict.fromkeys(v.notice for v in views if v.notice))
         with contextlib.suppress(NoMatches):
-            self.query_one(f"#{_ENGINE_CHIPS_ID}", Static).update(chips)
+            self.query_one(f"#{_ENGINE_CHIPS_ID}", EngineLine).update(chips)
             notice = self.query_one(f"#{_ENGINE_NOTICE_ID}", Static)
             notice.update("\n".join(notices))
             notice.set_class(bool(notices), "-visible")
