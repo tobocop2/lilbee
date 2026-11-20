@@ -1146,6 +1146,52 @@ def test_an_ignored_sighup_stays_ignored_inside_the_loop_signals():
     assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_a_second_interrupt_in_a_loop_owned_loop_force_quits(monkeypatch):
+    """The loop's SIGINT callback counts presses, so the second Ctrl-C ends the process."""
+    _install_stub_services()
+    # A running server takes the first press, so the callback does not raise out of the loop.
+    set_server_exit_hook(lambda _status: None)
+    stop_on_interrupt()
+
+    async def serve() -> None:
+        pressed, forced = asyncio.Event(), asyncio.Event()
+        monkeypatch.setattr(services_mod._lifecycle, "request_stop", lambda _sig: pressed.set())
+        monkeypatch.setattr(services_mod, "_force_quit_from_handler", lambda: forced.set())
+        with loop_takes_signals(asyncio.get_running_loop()):
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.wait_for(pressed.wait(), 10)
+            assert not forced.is_set()
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.wait_for(forced.wait(), 10)
+
+    try:
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(serve())
+    finally:
+        set_server_exit_hook(None)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_the_handlers_come_back_when_the_body_of_the_loop_signals_raises():
+    """An ordinary exception, not only the exit, hands the signals back to the lifecycle."""
+    install_engine_lifecycle_hooks()
+    stop_on_interrupt()
+    before = {sig: signal.getsignal(sig) for sig in services_mod._lifecycle.routed_in_loop()}
+
+    async def inside() -> None:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            raise RuntimeError("the body failed")
+
+    with (
+        asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner,
+        pytest.raises(RuntimeError, match="the body failed"),
+    ):
+        runner.run(inside())
+
+    assert {sig: signal.getsignal(sig) for sig in before} == before
+
+
 def test_the_thread_seam_lists_the_running_threads():
     assert threading.current_thread() in services_mod._all_threads()
 
