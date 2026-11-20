@@ -3455,6 +3455,14 @@ class TestChunkTypePredicate:
 class TestEmbeddingModelGate:
     """Refuse search/ingest when cfg.embedding_model drifts from the persisted _meta row."""
 
+    def test_a_meta_table_with_no_row_reads_as_no_meta(self, store):
+        """A _meta table left empty by an older version holds no identity to read."""
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        meta_table.delete("embedding_model IS NOT NULL")
+        assert store.get_meta() is None
+
     def test_first_add_chunks_initializes_meta_from_cfg(self, store, test_config):
         """A fresh store has no _meta row; first ingest writes one from current cfg."""
         assert store.get_meta() is None

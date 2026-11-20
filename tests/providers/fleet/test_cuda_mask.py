@@ -55,7 +55,10 @@ def _set_mask(monkeypatch: pytest.MonkeyPatch, mask: str | None) -> None:
 
 
 def _totals() -> list[CardTotal]:
-    return [CardTotal(i, uuid, total) for i, (uuid, total) in enumerate(zip(_UUIDS, _TOTALS, strict=True))]
+    return [
+        CardTotal(i, uuid, total)
+        for i, (uuid, total) in enumerate(zip(_UUIDS, _TOTALS, strict=True))
+    ]
 
 
 def _smi_cards() -> list[NvidiaCard]:
