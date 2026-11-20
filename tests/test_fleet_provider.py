@@ -2513,6 +2513,61 @@ def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -
     assert roles == [WorkerRole.CHAT]
 
 
+def _timing_out_chat(monkeypatch, adapter: object, method: str, error: Exception):
+    """A chat provider whose *method* fails with *error*, served by *adapter*."""
+    client = _counting_client()
+    getattr(client, method).side_effect = error
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    monkeypatch.setattr(p, "_adopt_engine", lambda _role: adapter)
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    restarted: list[WorkerRole] = []
+    monkeypatch.setattr(p, "_rebuild_role", restarted.append)
+    return p, client, restarted
+
+
+_TIMED_CHATS = [
+    ("chat_result", lambda p: p.chat(_CHAT_MESSAGES)),
+    ("chat_tools", lambda p: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS)),
+]
+
+
+@pytest.mark.parametrize(("method", "invoke"), _TIMED_CHATS)
+def test_a_timeout_on_mlx_restarts_the_chat_server_and_sends_no_retry(
+    monkeypatch, method, invoke
+) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    timeout = httpx.ReadTimeout("no answer")
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, method, timeout)
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        invoke(p)
+    assert caught.value.__cause__ is timeout
+    assert restarted == [WorkerRole.CHAT]
+    assert getattr(client, method).call_count == 1
+
+
+@pytest.mark.parametrize(("method", "invoke"), _TIMED_CHATS)
+def test_a_timeout_on_llama_cpp_keeps_the_one_retry_and_no_restart(
+    monkeypatch, method, invoke
+) -> None:
+    p, client, restarted = _timing_out_chat(monkeypatch, LLAMA, method, httpx.ReadTimeout("slow"))
+    with pytest.raises(ProviderError, match="not responding"):
+        invoke(p)
+    assert restarted == []
+    assert getattr(client, method).call_count == 2
+
+
+def test_a_refused_connection_on_mlx_takes_the_retry_and_no_restart(monkeypatch) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    refused = httpx.ConnectError("refused")
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, "chat_result", refused)
+    with pytest.raises(ProviderError, match="not responding"):
+        p.chat(_CHAT_MESSAGES)
+    assert restarted == []
+    assert client.chat_result.call_count == 2
+
+
 def test_vision_ocr_client_is_not_closed_by_reloads_during_its_request(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _counting_client()
