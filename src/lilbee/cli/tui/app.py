@@ -48,6 +48,7 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.engine_mark import engine_variables
 from lilbee.cli.tui.screens.analyze_report import start_analysis
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -306,6 +307,7 @@ class LilbeeApp(App[None]):
         variables = super().get_css_variables()
         variables["rail"] = "solid" if self._plain_glyphs else "tall"
         variables["rail-heavy"] = "heavy" if self._plain_glyphs else "thick"
+        variables.update(engine_variables(variables))
         return variables
 
     def get_line_filters(self) -> Sequence[LineFilter]:
