@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -302,6 +303,9 @@ class SessionStore:
         self._clock = clock or (lambda: datetime.now(UTC))
         # path -> (size, mtime, meta) from the last fold of that file; see _meta_for.
         self._meta_cache: dict[Path, tuple[int, float, SessionMeta]] = {}
+        # Request threads list and write in parallel; every read, insert and prune of
+        # the cache takes this lock, so no thread iterates it while another inserts.
+        self._meta_lock = threading.Lock()
 
     @property
     def _dir(self) -> Path:
@@ -495,7 +499,8 @@ class SessionStore:
         # Drop cache entries for sessions that no longer exist, so a long-lived
         # store does not pin the meta of every session ever deleted.
         live = {path for path in paths}
-        self._meta_cache = {p: v for p, v in self._meta_cache.items() if p in live}
+        with self._meta_lock:
+            self._meta_cache = {p: v for p, v in self._meta_cache.items() if p in live}
         return sorted(metas, key=lambda meta: (meta.updated_at, meta.id), reverse=True)
 
     def _meta_for(self, path: Path) -> SessionMeta | None:
@@ -513,14 +518,16 @@ class SessionStore:
             stat = path.stat()
         except OSError:
             return None
-        cached = self._meta_cache.get(path)
+        with self._meta_lock:
+            cached = self._meta_cache.get(path)
         if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime:
             return cached[2]
         try:
             meta = self._replay(path.stem, path, collect_messages=False)[0]
         except OSError:
             return None
-        self._meta_cache[path] = (stat.st_size, stat.st_mtime, meta)
+        with self._meta_lock:
+            self._meta_cache[path] = (stat.st_size, stat.st_mtime, meta)
         return meta
 
     def _replay(
