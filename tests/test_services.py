@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -320,6 +321,61 @@ class TestBuildServices:
             assert services.searcher is not None
         finally:
             services.store.close()
+
+    def test_builds_each_part_from_the_config_and_hands_it_to_the_services(self, parts):
+        from lilbee.app.services import build_services
+
+        config = cfg.model_copy()
+        provider = MagicMock(name="provider")
+        registry = MagicMock(name="registry")
+
+        services = build_services(config, provider=provider, registry=registry)
+
+        embedder = parts.embedder.return_value
+        reranker = parts.reranker.return_value
+        concepts = parts.concepts.return_value
+        parts.embedder.assert_called_once_with(config, provider)
+        parts.canary_probe.assert_called_once_with(config, embedder, registry)
+        parts.new_store.assert_called_once_with(config, parts.canary_probe.return_value)
+        parts.reranker.assert_called_once_with(config)
+        parts.concepts.assert_called_once_with(config, parts.store)
+        parts.clusterer.assert_called_once_with(config, parts.store)
+        parts.searcher.assert_called_once_with(
+            config, provider, parts.store, embedder, reranker, concepts
+        )
+        assert services.provider is provider
+        assert services.registry is registry
+        assert services.store is parts.store
+        assert services.embedder is embedder
+        assert services.reranker is reranker
+        assert services.concepts is concepts
+        assert services.clusterer is parts.clusterer.return_value
+        assert services.searcher is parts.searcher.return_value
+
+    @pytest.mark.parametrize(("limit", "slots"), [(0, None), (1, 1), (2, 2)])
+    def test_the_crawl_semaphore_follows_crawl_max_concurrent(self, parts, limit, slots):
+        from lilbee.app.services import build_services
+
+        config = cfg.model_copy()
+        config.crawl_max_concurrent = limit
+
+        semaphore = build_services(config, provider=MagicMock()).crawler_semaphore
+
+        if slots is None:
+            assert semaphore is None
+            return
+        assert semaphore is not None
+
+        async def taken_while_free() -> list[bool]:
+            states = []
+            for _ in range(slots):
+                states.append(semaphore.locked())
+                await semaphore.acquire()
+            states.append(semaphore.locked())
+            return states
+
+        # Free until the last of its slots is taken, then full: one slot for a limit of one.
+        assert asyncio.run(taken_while_free()) == [False] * slots + [True]
 
     @staticmethod
     def _a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store):
