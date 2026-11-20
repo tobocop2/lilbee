@@ -51,6 +51,19 @@ class TestSyncVisionOcrBackend:
         unreg.assert_called_once_with("lilbee-vision")
         reg.assert_called_once()
 
+    def test_bind_backend_registers_once_per_provider(self, monkeypatch):
+        """A second bind of the provider that is already registered changes nothing."""
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+
+        listed: list[str] = []
+        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
+        reg.side_effect = lambda backend: listed.append(backend.name())
+        provider = MagicMock()
+        bind_backend(BackendKind.OCR, provider)
+        bind_backend(BackendKind.OCR, provider)
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
     def test_unregisters_when_model_cleared(self, monkeypatch):
         from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
