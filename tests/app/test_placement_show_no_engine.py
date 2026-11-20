@@ -54,7 +54,7 @@ def test_show_with_a_saved_spec_keeps_it_but_places_nothing(saved_spec):
         "The saved placement is kept but not used: no installed engine can run the models. "
         "It applies once an engine is installed."
     )
-    assert view.refusal_kind is app_placement.PlacementRefusal.WAITING
+    assert view.refusal_kind is app_placement.PlacementRefusal.WAITING_FOR_ENGINE
     assert view.roles == ()
     assert view.gpus == ()
     skipped = {skip.role: skip for skip in view.skipped_no_engine}
@@ -91,7 +91,7 @@ def test_the_rest_reply_names_each_no_engine_case(no_engine_host, monkeypatch):
     monkeypatch.setattr(app_placement, "_active_spec", _unreadable_spec)
     with create_test_client([placement_route]) as client:
         unreadable = client.get("/api/placement").json()
-    assert waiting["refusal_kind"] == "waiting"
+    assert waiting["refusal_kind"] == "waiting_for_engine"
     assert unreadable["refusal_kind"] == "unreadable"
 
 

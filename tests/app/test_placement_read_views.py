@@ -289,7 +289,7 @@ def test_the_waiting_refusal_prints_without_the_clear_instruction(terminal):
     cli_placement._render_rejected(
         SimpleNamespace(
             refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE,
-            refusal_kind=app_placement.PlacementRefusal.WAITING,
+            refusal_kind=app_placement.PlacementRefusal.WAITING_FOR_ENGINE,
             rejected_spec_json="{}",
             pins_dropped="",
         )

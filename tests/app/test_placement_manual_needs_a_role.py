@@ -76,7 +76,7 @@ def _assert_waits(view: app_placement.PlacementView) -> None:
     assert view.spec_json is None
     assert view.rejected_spec_json == SPEC.to_json()
     assert view.refusal == WAITS_FOR_A_MODEL
-    assert view.refusal_kind is app_placement.PlacementRefusal.WAITING
+    assert view.refusal_kind is app_placement.PlacementRefusal.WAITING_FOR_MODEL
     assert view.roles == ()
     assert [skip.role for skip in view.skipped_not_installed] == [WorkerRole.CHAT]
 
