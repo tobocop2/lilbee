@@ -33,6 +33,7 @@ from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, fixed_weights_estimate
+from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
@@ -630,6 +631,16 @@ class _NoFitSpy(SpyEngine):
         return False
 
 
+class _FitOfItsOwnBinarySpy(SpyEngine):
+    """A spy that supports a fit target for its own binary and for no other path."""
+
+    def supports_fit_target(self, binary: Path) -> bool:
+        return binary == self._binary
+
+
+_SPY_CARDS = {SPY_DEVICE.index: SPY_DEVICE}
+
+
 class TestLaunchBuild:
     @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
     def test_launch_is_built_from_the_engine_answers(
@@ -652,6 +663,18 @@ class TestLaunchBuild:
         launch = planning.build_single_role_launch(WorkerRole.CHAT, model_file, engine=spy)
         assert any(a.startswith("--spy-fit=(") and a != "--spy-fit=()" for a in launch.argv)
         assert f"--spy-kv={launch.ctx}" in launch.argv
+
+    def test_a_launch_for_a_role_other_than_chat_leaves_no_fit_target(self, spy: SpyEngine) -> None:
+        plan = InstancePlan(role=WorkerRole.EMBED, devices=(SPY_DEVICE.index,))
+        launch = planning._launch_for(plan, "org/repo/embed.gguf", _SPY_CARDS, engine=spy)
+        assert "--spy-fit=()" in launch.argv
+
+    def test_the_chat_fit_target_is_asked_about_the_engine_binary(self, spy: SpyEngine) -> None:
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(SPY_DEVICE.index,))
+        launch = planning._launch_for(
+            plan, "org/repo/chat.gguf", _SPY_CARDS, engine=_FitOfItsOwnBinarySpy(spy._binary)
+        )
+        assert any(a.startswith("--spy-fit=(") and a != "--spy-fit=()" for a in launch.argv)
 
     def test_the_launch_needs_the_engine_binary(self, spy: SpyEngine, model_file: Path) -> None:
         with pytest.raises(ProviderError, match="spy binary missing"):
