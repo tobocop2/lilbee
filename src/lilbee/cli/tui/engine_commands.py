@@ -7,9 +7,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from textual.content import Content
+from textual.style import Style
+
 from lilbee.app import engine_service
 from lilbee.app.engine_choice import CHOICES_KEY
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.core.config import cfg
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
@@ -122,6 +126,28 @@ def chips_text(views: list[engine_service.RoleView]) -> str:
         for v in views
         if v.model.strip()
     )
+
+
+def engine_line(views: list[engine_service.RoleView]) -> Content:
+    """The engine line of the model bar: a mark and a name per role, each a click target.
+
+    A click runs ``pick('<role>')`` on the widget that shows the line. A role with
+    no usable engine reads as a warning instead of a name.
+    """
+    chips = []
+    for view in views:
+        if not view.model.strip():
+            continue
+        if view.engine:
+            what = engine_mark(view.engine)
+        else:
+            what = Content.styled(msg.ENGINE_NEEDS, "$warning")
+        chip = Content.assemble(f"{view.role.value} ", what)
+        chips.append(chip.stylize(Style.from_meta({"@click": f"pick('{view.role.value}')"})))
+    if not chips:
+        return Content("")
+    label = Content.styled(msg.ENGINE_LINE_LABEL + " ", "$text-muted")
+    return Content.assemble(label, Content("  ").join(chips))
 
 
 def choose_engine_for_role(
