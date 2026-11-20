@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -88,7 +89,11 @@ def test_download_target_cache_plain_error_is_not_the_login_message(
         task=ModelTask.CHAT,
     )
 
-    def _refuse(self: Path, pattern: str) -> object:
+    real_glob = Path.glob
+
+    def _refuse(self: Path, pattern: str, **kwargs: Any) -> object:
+        if not self.is_relative_to(tmp_path):
+            return real_glob(self, pattern, **kwargs)
         raise PermissionError(13, "Permission denied")
 
     def _pull(*args: object, **kwargs: object) -> object:

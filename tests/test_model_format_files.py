@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import httpx
@@ -454,7 +455,11 @@ class TestDownloadRouting:
     ) -> None:
         names = ["model.safetensors"]
 
-        def _refuse(self: Path, pattern: str) -> object:
+        real_glob = Path.glob
+
+        def _refuse(self: Path, pattern: str, **kwargs: Any) -> object:
+            if not self.is_relative_to(tmp_path):
+                return real_glob(self, pattern, **kwargs)
             raise PermissionError(13, "Permission denied")
 
         with (

@@ -8,7 +8,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import httpx
@@ -1967,10 +1967,10 @@ class TestIterLinuxVulkanManifestPaths:
 
         real_glob = Path.glob
 
-        def _fake_glob(self: Path, pattern: str) -> object:
+        def _fake_glob(self: Path, pattern: str, **kwargs: Any) -> object:
             if self == unreadable:
                 raise OSError("simulated EACCES")
-            return real_glob(self, pattern)
+            return real_glob(self, pattern, **kwargs)
 
         with (
             mock.patch.object(Path, "glob", _fake_glob),
