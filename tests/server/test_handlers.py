@@ -983,9 +983,9 @@ class TestAddIngestMutex:
         from lilbee.server.handlers import add_files_stream
 
         held = tmp_path / "held.txt"
-        held.write_text("held payload")
+        held.write_text("held payload", encoding="utf-8")
         free = tmp_path / "free.txt"
-        free.write_text("free payload")
+        free.write_text("free payload", encoding="utf-8")
         unwound = asyncio.Event()
         real_release = IngestLockRegistry.release
 
