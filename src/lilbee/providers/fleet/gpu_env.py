@@ -240,8 +240,8 @@ def cuda_visible_cards(cards: Sequence[_C]) -> list[_C]:
     (zero-padded accepted) or a ``GPU-`` UUID prefix that names one card. Enumeration
     stops at the first entry that names no card, as the CUDA runtime does (see the CUDA
     programming guide, environment variables). An unset mask keeps every card and an empty
-    one keeps none. NVIDIA documents no rule for a repeated card, and the runtime reports no device for ``1,1``, so a mask that
-    names one card twice keeps none.
+    one keeps none. NVIDIA documents no rule for a repeated card, and the runtime reports
+    no device for ``1,1``, so a mask that names one card twice keeps none.
     """
     raw = gpu_environ().get(CUDA_VISIBLE_VAR)
     if raw is None:
