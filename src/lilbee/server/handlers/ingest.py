@@ -237,20 +237,26 @@ async def _ingest_stream(
     signalling the client to wait rather than retry. When only some are, the
     acquired subset still runs and the ``done`` summary names the contended ones
     in ``already_ingesting``, so a partial batch never reads as a full success.
+
+    The ``already_ingesting`` events of a partial batch go out through the
+    run's own queue, so the run has started before the client reads any
+    event. A client that closes the stream at ``already_ingesting`` then stops
+    the acquired subset as any close does, after its registration.
     """
     registry = get_services().ingest_lock_registry
     acquired, busy = await registry.acquire([key for key, _payload in items])
+    rejections = [_already_ingesting(label, name) for name in busy]
     try:
-        for name in busy:
-            log.info("Rejecting %s for %s: already ingesting", label, name)
-            yield sse_event(SseEvent.ALREADY_INGESTING, {"source": name})
-
         if not acquired:
+            for frame in rejections:
+                yield frame
             return
 
         acquired_names = {name for name, _lock in acquired}
         locked = [payload for key, payload in items if key in acquired_names]
         sse = SseStream()
+        for frame in rejections:
+            sse.queue.put_nowait(frame)
         task = asyncio.create_task(run(locked, sse))
         try:
             async for event in sse.drain(task, label):
@@ -269,6 +275,12 @@ async def _ingest_stream(
                     await task
     finally:
         registry.release(acquired)
+
+
+def _already_ingesting(label: str, name: str) -> str:
+    """The event that rejects *name*, whose ingest lock another run holds."""
+    log.info("Rejecting %s for %s: already ingesting", label, name)
+    return sse_event(SseEvent.ALREADY_INGESTING, {"source": name})
 
 
 async def add_files_stream(
