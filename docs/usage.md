@@ -867,7 +867,8 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   expansion, concept boost, concept expansion or reranking), the search still
   returns the rows it has, and `warnings` names each failed step with a `code`, a
   `message` and a `remedy`. The rows can miss matches, or stay in retrieval
-  order when reranking failed. The text CLI prints
+  order when reranking failed. A `rerank_failed` `message` names the kind of
+  failure in fixed text (the server log holds the full error). The text CLI prints
   the same warnings on stderr. `GET /api/search` keeps its array body and
   sends the list in the `X-Lilbee-Warnings` response header, only when it is
   not empty. `/api/ask` and `/api/chat` carry `warnings` in the body, the

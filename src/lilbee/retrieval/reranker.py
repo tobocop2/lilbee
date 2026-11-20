@@ -21,6 +21,7 @@ from lilbee.core.config import Config
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query.dedup import fusion_norms as compute_fusion_norms
 from lilbee.retrieval.query.dedup import normalize_scores
+from lilbee.retrieval.rerank_failure import RerankScoreError
 
 log = logging.getLogger(__name__)
 
@@ -141,8 +142,8 @@ class Reranker:
 def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float]:
     """Call the active provider's rerank and return one score for each candidate.
 
-    A provider that returns the wrong number of scores raises: the scores
-    cannot be paired with the candidates.
+    A provider that returns no scores, or the wrong number, raises
+    ``RerankScoreError``: the scores cannot be paired with the candidates.
     """
     # circular: services -> reranker via Searcher; deferred so test-time
     # monkeypatching of ``lilbee.app.services.get_services`` stays effective.
@@ -154,6 +155,6 @@ def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float]:
     scores = provider.rerank(
         query, [f"{c.title}\n{c.chunk}" if c.title else c.chunk for c in to_rerank]
     )
-    if len(scores) != len(to_rerank):
-        raise ValueError(f"Reranker returned {len(scores)} scores for {len(to_rerank)} candidates")
+    if scores is None or len(scores) != len(to_rerank):
+        raise RerankScoreError(None if scores is None else len(scores), len(to_rerank))
     return scores
