@@ -2513,10 +2513,14 @@ def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -
     assert roles == [WorkerRole.CHAT]
 
 
+_SERVED_CHAT_URL = "http://127.0.0.1:8080/v1/chat/completions"
+
+
 def _timing_out_chat(monkeypatch, adapter: object, method: str, error: Exception):
     """A chat provider whose *method* fails with *error*, served by *adapter*."""
     client = _counting_client()
     client.profile = adapter.request_profile(WorkerRole.CHAT)
+    client.sent.side_effect = lambda request: str(request.url) == _SERVED_CHAT_URL
     getattr(client, method).side_effect = error
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
@@ -2538,7 +2542,7 @@ def test_a_timeout_on_mlx_restarts_the_chat_server_and_sends_no_retry(
 ) -> None:
     from lilbee.providers.fleet.engines.mlx import MLX
 
-    timeout = httpx.ReadTimeout("no answer")
+    timeout = httpx.ReadTimeout("no answer", request=httpx.Request("POST", _SERVED_CHAT_URL))
     p, client, restarted = _timing_out_chat(monkeypatch, MLX, method, timeout)
     with pytest.raises(ProviderError, match="not responding") as caught:
         invoke(p)
@@ -2562,7 +2566,10 @@ def test_a_timeout_on_llama_cpp_keeps_its_retry_when_the_engine_choice_is_gone(
     monkeypatch,
 ) -> None:
     p, client, restarted = _timing_out_chat(
-        monkeypatch, LLAMA, "chat_result", httpx.ReadTimeout("slow")
+        monkeypatch,
+        LLAMA,
+        "chat_result",
+        httpx.ReadTimeout("slow", request=httpx.Request("POST", _SERVED_CHAT_URL)),
     )
 
     def gone(_role: WorkerRole) -> object:

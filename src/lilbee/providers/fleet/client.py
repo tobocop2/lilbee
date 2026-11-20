@@ -648,6 +648,15 @@ class LlamaServerClient:
         return self._profile
 
     @property
+    def timeout(self) -> float:
+        """The request timeout of this client, in seconds."""
+        return self._timeout
+
+    def sent(self, request: httpx.Request) -> bool:
+        """Whether *request* went to this client's server."""
+        return str(request.url).startswith(f"{self._base}/")
+
+    @property
     def healthy(self) -> bool:
         """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
         with self._in_flight_lock:

@@ -38,6 +38,7 @@ _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.g
 _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _OTHER_CHAT_REF = "Qwen/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf"
 _DRAIN_LIMIT_S = 0.3
+_STUCK_TIMEOUT_S = 1.0
 _QUESTION = [{"role": "user", "content": "hi"}]
 _NOTES_CHUNK_SIZE = 384
 _NOTES_CHUNK_OVERLAP = 64
@@ -341,6 +342,22 @@ def mlx_engine_fleet(
     real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
     """The engine fleet of ``engine_fleet``, with each chat server read as an MLX server."""
+    yield from _serve_mlx_chat(monkeypatch, tmp_path)
+
+
+@pytest.fixture
+def stuck_mlx_fleet(
+    real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
+    """``mlx_engine_fleet`` whose clients time out after ``_STUCK_TIMEOUT_S``."""
+    monkeypatch.setattr(prov_mod, "_request_timeout_s", lambda _launch: _STUCK_TIMEOUT_S)
+    yield from _serve_mlx_chat(monkeypatch, tmp_path)
+
+
+def _serve_mlx_chat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
+    """Serve the real plan from fake engines, each chat server read as an MLX server."""
 
     def adapter_of(_provider: FleetProvider, role: WorkerRole) -> object:
         return MLX if role is WorkerRole.CHAT else LLAMA
@@ -484,6 +501,54 @@ def test_a_timeout_restart_on_mlx_lets_the_other_chat_finish_on_the_old_engine(
     assert old.engine.requests == 2
     assert swaps[-1] is not old
     assert swaps[-1].engine.requests == 0
+
+
+def test_a_timeout_restart_stops_a_stream_nobody_reads_at_the_request_timeout(
+    stuck_mlx_fleet: tuple[FleetProvider, list[_EngineSwap]],
+) -> None:
+    """A stream holds its server with no timeout of its own while nobody reads it."""
+    provider, swaps = stuck_mlx_fleet
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    try:
+        assert old.engine.started.wait(_JOIN_S)
+        with pytest.raises(ProviderError, match="not responding"):
+            provider.chat(_QUESTION)
+
+        assert poll_until(lambda: old.engine.stopped.is_set(), timeout=5 * _STUCK_TIMEOUT_S)
+        with pytest.raises(StreamInterruptedError, match="answer is cut"):
+            list(stream)
+        _join_fleet_threads()
+    finally:
+        stream.close()
+
+    assert provider._swap_for(WorkerRole.CHAT) is swaps[-1]
+    assert swaps[-1] is not old
+
+
+def test_a_late_timeout_from_a_replaced_server_restarts_nothing(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
+) -> None:
+    provider, swaps = mlx_engine_fleet
+    old = provider._swap_for(WorkerRole.CHAT)
+    provider._clients[WorkerRole.CHAT][0]._http.timeout = httpx.Timeout(_DRAIN_LIMIT_S)
+    with pytest.raises(ProviderError, match="not responding"):
+        provider.chat(_QUESTION)
+    _join_fleet_threads()
+    fresh = provider._swap_for(WorkerRole.CHAT)
+    assert fresh is not old
+
+    sent = httpx.Request("POST", f"{old.engine.url}/v1/chat/completions")
+
+    def late_timeout() -> None:
+        raise httpx.ReadTimeout("late", request=sent)
+
+    with pytest.raises(ProviderError, match="not responding"):
+        provider._with_rediscover(late_timeout, role=WorkerRole.CHAT)
+    _join_fleet_threads()
+
+    assert not fresh.engine.stopped.is_set()
+    assert fresh is swaps[-1]
 
 
 def test_a_reload_lets_a_started_stream_finish_before_it_stops_the_old_engine(
