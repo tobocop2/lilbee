@@ -315,7 +315,12 @@ class ModelPickerButton(Static, can_focus=True):
         if not view.model.strip():
             self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")
             return
-        modal = EnginePickerModal(view, engine_service.engine_options(view.model))
+        modal = EnginePickerModal(
+            msg.ENGINE_PICKER_TITLE.format(role=role),
+            msg.ENGINE_PICKER_SUBTITLE.format(model=view.model, format=view.format),
+            view.engine,
+            engine_service.engine_options(view.model),
+        )
         self.app.push_screen(modal, lambda option: self._on_engine_picked(role, option))
 
     def _on_engine_picked(

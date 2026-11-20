@@ -256,7 +256,7 @@ async def test_the_catalog_dialog_names_the_engine_of_the_model() -> None:
         await pilot.pause()
         await app.push_screen(ModelInfoModal(row))
         await pilot.pause()
-        assert "**Engine:** openvino" in app.screen._build_markdown()  # type: ignore[attr-defined]
+        assert _text(app.screen, "#info-engine").splitlines()[1].startswith("■ openvino")
 
 
 class _FleetApp(LilbeeAppHost):
@@ -292,9 +292,7 @@ async def test_the_catalog_dialog_says_when_no_engine_loads_the_model(
         await pilot.pause()
         await app.push_screen(ModelInfoModal(row))
         await pilot.pause()
-        assert "**Engine:** No installed engine loads the mlx format" in str(
-            app.screen._build_markdown()  # type: ignore[attr-defined]
-        )
+        assert "No installed engine loads the mlx format" in _text(app.screen, "#info-engine")
 
 
 class _ChatApp(LilbeeAppHost):
@@ -802,4 +800,118 @@ async def test_a_click_on_a_role_in_the_engine_line_opens_the_picker_of_that_rol
         assert str(line.render()).index("embed") == 26
         await pilot.click(EngineLine, offset=(28, 0))
         assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
-        assert app.screen._view.role is WorkerRole.EMBED
+        assert _text(app.screen, "#engine-picker-title") == "Engine for the embed model"
+
+
+# --- model info: the Engine section and the e key
+
+_DOWNLOAD = engine_service.EngineOption("openvino", installed=False, download_bytes=180_000_000)
+
+
+async def _open_info(app: LilbeeAppHost, pilot) -> ModelInfoModal:
+    from lilbee.cli.tui.screens.model_picker import _browse_catalog_row
+
+    row = _browse_catalog_row()
+    row.ref = GGUF_REF  # type: ignore[misc]
+    row.installed = True  # type: ignore[misc]
+    modal = ModelInfoModal(row)
+    await app.push_screen(modal)
+    await pilot.pause()
+    return modal
+
+
+def _stored() -> dict[str, str]:
+    return json.loads(settings.load(cfg.data_root).get("engine_choices") or "{}")
+
+
+async def test_model_info_puts_the_engine_section_after_status_and_keeps_every_field() -> None:
+    from textual.widgets import Markdown
+
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        modal = await _open_info(app, pilot)
+        body = modal.query_one("#info-body").children
+        assert [type(w).__name__ for w in body] == ["Markdown", "Static", "Markdown"]
+        head, tail = (modal.query_one(i, Markdown).source for i in ("#info-md", "#info-md-tail"))
+        assert head.rstrip().endswith("**Status:** installed")
+        assert "huggingface.co/" in tail
+        assert _text(modal, "#info-engine") == (
+            "Engine\n■ llama.cpp  bundled · metal\nAlso loads it: ■ openvino bundled"
+        )
+        assert msg.MODEL_INFO_HINT.startswith("e to change the engine")
+        assert "e to change" not in _text(modal, "#info-engine")
+
+
+async def test_key_e_in_model_info_saves_the_pick_for_that_model() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        modal = await _open_info(app, pilot)
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        await pilot.press("down", "down", "enter")
+        assert await wait_until(pilot, lambda: _stored() == {GGUF_REF: "openvino"})
+        assert await wait_until(
+            pilot, lambda: _text(modal, "#info-engine").splitlines()[1].startswith("■ openvino")
+        )
+        assert any(t == f"Model {GGUF_REF} uses engine openvino." for t in _toasts(app))
+
+
+async def test_an_engine_that_is_not_installed_is_saved_only_after_the_confirm_and_install() -> (
+    None
+):
+    installed: list[str] = []
+
+    def install(name: str, _wheel: object = None, **_kw: Any) -> engine_service.InstalledBuild:
+        assert _stored() == {}
+        installed.append(name)
+        return engine_service.InstalledBuild(name, "1.0", "cpu", "")
+
+    options = [
+        engine_service.EngineOption("auto", auto_now="llama.cpp"),
+        engine_service.EngineOption("llama.cpp", bundled=True, backend="metal"),
+        _DOWNLOAD,
+    ]
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        modal = await _open_info(app, pilot)
+        with (
+            mock.patch.object(engine_service, "engine_options", return_value=options),
+            mock.patch.object(engine_service, "install", side_effect=install),
+        ):
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+            await pilot.press("down", "down", "enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+            assert installed == []
+            assert _stored() == {}
+            await pilot.press("y")
+            assert await wait_until(pilot, lambda: _stored() == {GGUF_REF: "openvino"})
+        assert installed == ["openvino"]
+        assert modal.is_attached
+
+
+async def test_declining_the_download_saves_nothing() -> None:
+    options = [
+        engine_service.EngineOption("auto", auto_now="llama.cpp"),
+        engine_service.EngineOption("llama.cpp", bundled=True, backend="metal"),
+        _DOWNLOAD,
+    ]
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _open_info(app, pilot)
+        with (
+            mock.patch.object(engine_service, "engine_options", return_value=options),
+            mock.patch.object(engine_service, "install") as install,
+        ):
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+            await pilot.press("down", "down", "enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+            await pilot.press("escape")
+            await pilot.pause()
+        install.assert_not_called()
+        assert _stored() == {}

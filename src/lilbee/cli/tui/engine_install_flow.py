@@ -13,10 +13,15 @@ from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineOption
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.engine_commands import (
+    EngineCommandResult,
+    announce,
+    choose_engine_for_model,
+)
 from lilbee.cli.tui.engine_mark import format_size
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 
 if TYPE_CHECKING:
@@ -50,6 +55,68 @@ def install_then(app: LilbeeApp, name: str, then: Callable[[], object]) -> None:
         target,
         on_success=lambda: call_from_thread(app, then),
     )
+
+
+def choose_for_model(
+    app: LilbeeApp, model: str, option: EngineOption, after: Callable[[], object]
+) -> None:
+    """Store the engine of *option* for *model*; run *after* once the choice is saved.
+
+    An engine that is not installed is saved only after the download confirm and the
+    install task end well. A refusal or a failed install leaves the choice as it was.
+    """
+    if option.installed:
+        _save_for_model(app, model, option.name, after)
+        return
+    confirm_and_install(app, option, lambda: _save_for_model(app, model, option.name, after))
+
+
+def _save_for_model(
+    app: LilbeeApp,
+    model: str,
+    name: str,
+    after: Callable[[], object],
+    confirmed: bool = False,
+) -> None:
+    """Write the choice off the UI thread, ask first when it can orphan the index vectors."""
+
+    def write() -> None:
+        try:
+            result = choose_engine_for_model(model, name, confirmed)
+        except engine_service.EmbedConfirmRequiredError as exc:
+            call_from_thread(app, _confirm_embed, app, model, name, exc, after)
+            return
+        call_from_thread(app, _announce_and_after, app, result, after)
+
+    app.run_worker(write, thread=True)
+
+
+def _announce_and_after(
+    app: LilbeeApp, result: EngineCommandResult, after: Callable[[], object]
+) -> None:
+    announce(app, result)
+    after()
+
+
+def _confirm_embed(
+    app: LilbeeApp,
+    model: str,
+    name: str,
+    asked: engine_service.EmbedConfirmRequiredError,
+    after: Callable[[], object],
+) -> None:
+    dialog = CancelFirstConfirmDialog(
+        msg.ENGINE_EMBED_CONFIRM_TITLE,
+        msg.ENGINE_EMBED_CONFIRM_MESSAGE.format(library=asked.library, documents=asked.documents),
+    )
+
+    def answered(yes: bool | None) -> None:
+        if yes:
+            _save_for_model(app, model, name, after, True)
+        else:
+            app.notify(msg.ENGINE_EMBED_CANCELLED)
+
+    app.push_screen(dialog, answered)
 
 
 def confirm_and_install(app: LilbeeApp, option: EngineOption, then: Callable[[], object]) -> None:
