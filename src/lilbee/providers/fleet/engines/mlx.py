@@ -140,7 +140,11 @@ class MlxAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The server command; mlx-lm places the model itself, so layers and context stay unset."""
+        """The server command; mlx-lm places the model itself, so layers and context stay unset.
+
+        mlx-lm stops an answer at 512 tokens when the request names no max_tokens. A chat
+        names none unless the user sets one, so the answer budget is the window.
+        """
         return [
             str(request.binary),
             "--model",
@@ -151,6 +155,8 @@ class MlxAdapter:
             PORT_SLOT,
             "--prompt-cache-bytes",
             str(_PROMPT_CACHE_BYTES),
+            "--max-tokens",
+            str(request.ctx_per_slot),
             *spec.extra_args,
         ]
 
