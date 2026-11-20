@@ -25,7 +25,7 @@ from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory
-from lilbee.providers.folder_embed_width import read_folder_config
+from lilbee.providers.folder_embed_width import read_folder_config, read_generation_config
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.32.2"
@@ -46,6 +46,20 @@ _PROMPT_CACHE_BYTES = 1024**3
 Not measured on a Mac yet.
 """
 _WINDOW_KEY = "max_position_embeddings"
+_SAMPLING_FLAGS = {
+    "temperature": "--temp",
+    "top_p": "--top-p",
+    "top_k": "--top-k",
+    "min_p": "--min-p",
+}
+"""The ``generation_config.json`` keys the launch passes on, and the server flag of each."""
+_LLAMA_SERVER_SAMPLING: dict[str, float | int] = {
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 40,
+    "min_p": 0.05,
+}
+"""llama-server's own sampling defaults, used for each key the model folder does not name."""
 
 _PROFILE = RequestProfile(
     embed_fields={},
@@ -65,6 +79,26 @@ _PROFILE = RequestProfile(
 
 def _floor_text() -> str:
     return ".".join(map(str, MACOS_FLOOR))
+
+
+def _sampling_args(model: Path) -> list[str]:
+    """The sampling defaults for a request that names none, as server flags.
+
+    mlx-lm samples greedily unless a request or a flag says otherwise, and greedy decoding
+    makes a thinking model repeat itself until the answer budget runs out. Each value comes
+    from the folder's ``generation_config.json``, else from llama-server's defaults, so both
+    engines sample alike. A folder that turns sampling off keeps greedy decoding.
+    """
+    config = read_generation_config(model)
+    if config.get("do_sample") is False:
+        return []
+    args: list[str] = []
+    for key, flag in _SAMPLING_FLAGS.items():
+        value = config.get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            value = _LLAMA_SERVER_SAMPLING[key]
+        args += [flag, str(value)]
+    return args
 
 
 class MlxAdapter:
@@ -143,7 +177,8 @@ class MlxAdapter:
         """The server command; mlx-lm places the model itself, so layers and context stay unset.
 
         mlx-lm stops an answer at 512 tokens when the request names no max_tokens. A chat
-        names none unless the user sets one, so the answer budget is the window.
+        names none unless the user sets one, so the answer budget is the window. The model
+        folder's own sampling defaults replace the server's greedy default.
         """
         return [
             str(request.binary),
@@ -157,6 +192,7 @@ class MlxAdapter:
             str(_PROMPT_CACHE_BYTES),
             "--max-tokens",
             str(request.ctx_per_slot),
+            *_sampling_args(request.model_path),
             *spec.extra_args,
         ]
 
