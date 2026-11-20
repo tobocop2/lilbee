@@ -8,8 +8,14 @@ import pytest
 
 from lilbee.app.status import STATUS_RECENT_LIMIT
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, ChunkType, SearchScope
+from lilbee.retrieval.query.searcher import SearchReport
 from tests._held import held_kinds, hold_failed
+
+_RERANK_WARNING = HealthWarning(
+    code=WarningCode.RERANK_FAILED, message="Reranking failed: results are in retrieval order."
+)
 
 
 def _fake_embed(text):
@@ -200,17 +206,45 @@ class TestSearch:
         from lilbee import Lilbee
 
         bee = Lilbee(tmp_path / "proj")
-        with mock.patch.object(bee.searcher, "search", return_value=[]) as search:
+        with mock.patch.object(bee.searcher, "search_report", return_value=SearchReport([])) as run:
             bee.search("authentication", scope=scope)
-        assert search.call_args.kwargs["chunk_type"] == expected
+        assert run.call_args.kwargs["chunk_type"] == expected
 
     def test_search_defaults_to_both_scopes(self, tmp_path):
         from lilbee import Lilbee
 
         bee = Lilbee(tmp_path / "proj")
-        with mock.patch.object(bee.searcher, "search", return_value=[]) as search:
+        with mock.patch.object(bee.searcher, "search_report", return_value=SearchReport([])) as run:
             bee.search("authentication")
-        assert search.call_args.kwargs["chunk_type"] is None
+        assert run.call_args.kwargs["chunk_type"] is None
+
+    def test_search_report_carries_the_failed_steps_to_the_caller(self, tmp_path):
+        """A library caller learns that the rerank failed, as REST, MCP and the CLI do."""
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        report = SearchReport([], (_RERANK_WARNING,))
+        with mock.patch.object(bee.searcher, "search_report", return_value=report):
+            got = bee.search_report("authentication")
+        assert [w.code for w in got.degraded] == [WarningCode.RERANK_FAILED]
+        assert "retrieval order" in got.degraded[0].message
+
+    def test_search_returns_the_rows_of_the_report(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        rows = [mock.MagicMock()]
+        report = SearchReport(rows, (_RERANK_WARNING,))
+        with mock.patch.object(bee.searcher, "search_report", return_value=report):
+            assert bee.search("authentication") is rows
+
+    def test_search_report_of_a_healthy_empty_index_has_no_warning(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        got = bee.search_report("anything")
+        assert got.rows == []
+        assert got.degraded == ()
 
     def test_search_respects_top_k(self, tmp_path):
         from lilbee import Lilbee
