@@ -276,6 +276,15 @@ def test_a_hosted_ref_is_served_by_the_first_segment_of_the_ref() -> None:
     )
 
 
+def test_a_preset_removed_after_the_ref_parsed_is_served_as_remote(
+    preset_cfg: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("lilbee.providers.serving.route_for", lambda prefix: None)
+    assert served_by("box/model-a", None, native=False) == ServingEngine(
+        "box", REMOTE_VERSION, NO_BUILD
+    )
+
+
 def test_chat_answers_when_the_pin_lookup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = MagicMock()
     engine.name = "llama.cpp"
