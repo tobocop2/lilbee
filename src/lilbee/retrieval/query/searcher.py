@@ -108,6 +108,7 @@ from lilbee.retrieval.reasoning import (
     stream_chat_with_cap,
     strip_reasoning,
 )
+from lilbee.retrieval.rerank_failure import rerank_failure
 
 if TYPE_CHECKING:
     from lilbee.retrieval.concepts import ConceptGraph
@@ -236,9 +237,6 @@ _EXPANSION_REMEDY = (
 _BOOST_REMEDY = (
     "Search again, or turn off the concept_graph setting. Run lilbee status to check it."
 )
-_RERANK_REMEDY = (
-    "Search again, or clear the reranker_model setting. Run lilbee status to check the reranker."
-)
 _CONCEPT_EXPANSION_REMEDY = (
     "Search again, or turn off the concept_graph setting. Check the embedding model with "
     "lilbee status."
@@ -283,14 +281,6 @@ _DEGRADED_STEPS: dict[WarningCode, _DegradedStep] = {
             code=WarningCode.CONCEPT_EXPANSION_FAILED,
             message="Concept expansion failed: results do not include related-concept queries.",
             remedy=_CONCEPT_EXPANSION_REMEDY,
-        ),
-    ),
-    WarningCode.RERANK_FAILED: _DegradedStep(
-        "Reranking",
-        HealthWarning(
-            code=WarningCode.RERANK_FAILED,
-            message="Reranking failed: results are in retrieval order.",
-            remedy=_RERANK_REMEDY,
         ),
     ),
 }
@@ -365,13 +355,25 @@ class SearchReport(NamedTuple):
     degraded: tuple[HealthWarning, ...] = ()
 
 
+def _record_degraded(
+    degraded: list[HealthWarning], label: str, warning: HealthWarning, exc: Exception
+) -> None:
+    """Log a failed search step with its cause and record its warning once for the user."""
+    log.warning("%s disabled for this call: %s", label, exc)
+    log.debug("%s exception", label, exc_info=True)
+    if warning not in degraded:
+        degraded.append(warning)
+
+
 def _degrade(degraded: list[HealthWarning], code: WarningCode, exc: Exception) -> None:
-    """Log a failed search step with its cause and record it once for the user."""
+    """Record a failed widening step: the step names its own warning."""
     step = _DEGRADED_STEPS[code]
-    log.warning("%s disabled for this call: %s", step.label, exc)
-    log.debug("%s exception", step.label, exc_info=True)
-    if step.warning not in degraded:
-        degraded.append(step.warning)
+    _record_degraded(degraded, step.label, step.warning, exc)
+
+
+def _degrade_rerank(degraded: list[HealthWarning], exc: Exception) -> None:
+    """Record a failed rerank: the warning names the kind of failure, never the error text."""
+    _record_degraded(degraded, "Reranking", rerank_failure(exc), exc)
 
 
 def _note_install_warnings(degraded: list[HealthWarning]) -> None:
@@ -875,7 +877,7 @@ class Searcher:
             try:
                 results = self._reranker.rerank(question, results)
             except Exception as exc:
-                _degrade(degraded, WarningCode.RERANK_FAILED, exc)
+                _degrade_rerank(degraded, exc)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:

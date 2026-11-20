@@ -9,7 +9,9 @@ from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.core.health_warnings import WarningCode
 from lilbee.data.store import SearchChunk
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import Searcher
+from lilbee.retrieval.rerank_failure import RerankScoreError, rerank_failure
 from lilbee.retrieval.reranker import _BLEND_SCHEDULE, Reranker
 
 _RERANKER_MODEL = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
@@ -204,6 +206,15 @@ class TestRerank:
         ):
             reranker.rerank("test", results)
 
+    def test_none_scores_raise_a_score_error_not_a_type_error(self, reranker):
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [_chunk("a.md", "A"), _chunk("b.md", "B")]
+        with (
+            _patch_provider(lambda query, cands: None),
+            pytest.raises(RerankScoreError, match="no scores for 2 candidates"),
+        ):
+            reranker.rerank("test", results)
+
     def test_score_count_mismatch_raises_without_blending(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
         cfg.rerank_blend = False
@@ -304,6 +315,66 @@ class TestSearchAppliesReranker:
         report = self._report(searcher, lambda query, cands: [0.9])
         assert [w.code for w in report.degraded] == [WarningCode.RERANK_FAILED]
         assert [r.chunk for r in report.rows] == ["A", "B"]
+
+    def test_a_reranker_that_returns_none_degrades_to_the_unranked_rows(self, monkeypatch):
+        cfg.reranker_model = _RERANKER_MODEL
+        searcher, _ = self._searcher(Reranker(cfg))
+        self._isolate(monkeypatch, searcher)
+        report = self._report(searcher, lambda query, cands: None)
+        assert [r.chunk for r in report.rows] == ["A", "B"]
+        assert [w.code for w in report.degraded] == [WarningCode.RERANK_FAILED]
+        assert "returned no scores for 2 candidates" in report.degraded[0].message
+
+    def test_a_score_count_mismatch_names_both_counts_and_a_remedy(self, monkeypatch):
+        cfg.reranker_model = _RERANKER_MODEL
+        searcher, _ = self._searcher(Reranker(cfg))
+        self._isolate(monkeypatch, searcher)
+        report = self._report(searcher, lambda query, cands: [0.9])
+        assert "returned 1 scores for 2 candidates" in report.degraded[0].message
+        assert "reranker_model" in (report.degraded[0].remedy or "")
+
+    @pytest.mark.parametrize(
+        ("error", "cause", "remedy"),
+        [
+            (
+                ProviderError("preset 404 at http://u:pw@host", kind=ProviderErrorKind.NOT_FOUND),
+                "model or preset was not found",
+                "reranker_model",
+            ),
+            (
+                ProviderError("bad key sk-secret", kind=ProviderErrorKind.AUTH),
+                "refused the credentials",
+                "API key",
+            ),
+            (OSError("refused by http://u:pw@host"), "did not answer", "server runs"),
+            (RuntimeError("boom http://u:pw@host"), "raised an error", "reranker_model"),
+        ],
+    )
+    def test_the_warning_names_the_kind_of_failure_and_never_the_error_text(
+        self, monkeypatch, caplog, error, cause, remedy
+    ):
+        cfg.reranker_model = _RERANKER_MODEL
+        searcher, _ = self._searcher(Reranker(cfg))
+        self._isolate(monkeypatch, searcher)
+
+        def explode(query: str, cands: list[str]) -> list[float]:
+            raise error
+
+        with caplog.at_level("WARNING"):
+            report = self._report(searcher, explode)
+        [warning] = report.degraded
+        assert cause in warning.message
+        assert remedy in (warning.remedy or "")
+        assert "u:pw" not in warning.line
+        assert "sk-secret" not in warning.line
+        assert str(error) in caplog.text
+
+    def test_every_provider_error_kind_has_a_warning_that_names_a_remedy(self):
+        for kind in ProviderErrorKind:
+            warning = rerank_failure(ProviderError("x", kind=kind))
+            assert warning.code is WarningCode.RERANK_FAILED
+            assert warning.message.startswith("Reranking failed: results are in retrieval order.")
+            assert warning.remedy
 
     def test_a_working_rerank_reports_no_warning(self, monkeypatch):
         cfg.reranker_model = _RERANKER_MODEL
