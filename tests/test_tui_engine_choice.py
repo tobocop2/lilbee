@@ -77,12 +77,17 @@ def _engines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.reranker_model = ""
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
-    for name, adapter in (
+    fakes = (
         (EngineName.LLAMA, _Gguf()),
         (EngineName.OPENVINO, _Openvino()),
         (EngineName.MLX, _Mlx()),
-    ):
+    )
+    # The picker also offers an engine with no build, so no real adapter may stay beside the fakes.
+    for name in set(choice.ADAPTERS) - {name for name, _ in fakes}:
+        monkeypatch.delitem(choice.ADAPTERS, name)  # type: ignore[attr-defined]
+    for name, adapter in fakes:
         monkeypatch.setitem(choice.ADAPTERS, name, adapter)  # type: ignore[arg-type]
+    monkeypatch.setattr(engine_service, "pack_backend", lambda _host: "metal")
     yield
     for field in type(snapshot).model_fields:
         setattr(cfg, field, getattr(snapshot, field))
@@ -132,7 +137,11 @@ async def test_the_key_e_opens_the_picker_and_saves_the_pick(size: tuple[int, in
         await _open_picker(app, pilot)
         options = app.screen.query_one(OptionList)
         labels = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-        assert labels == ["auto (let lilbee choose)", "llama.cpp (now)", "openvino"]
+        assert labels == [
+            "auto (now llama.cpp)",
+            "■ llama.cpp (now)  bundled · metal",
+            "■ openvino  bundled",
+        ]
         await pilot.press("down", "down", "enter")
         assert await wait_until(pilot, lambda: not isinstance(app.screen, EnginePickerModal))
         stored = lambda: settings.load(cfg.data_root).get("engine_choices")  # noqa: E731
@@ -455,7 +464,7 @@ async def test_the_slash_install_shows_its_bytes_in_the_task_bar_and_each_retry_
         with mock.patch.object(engine_service, "install", side_effect=install):
             chat._cmd_engine("install openvino")
             assert await wait_until(pilot, lambda: any("Installed" in t for t in _toasts(app)))
-        assert seen == [("Install openvino", "download", 40.0, "openvino: 4/10 MB")]
+        assert seen == [("Install engine openvino", "engine", 40.0, "openvino: 4/10 MB")]
         assert any("Attempt 1 of 3 failed; trying again." in t for t in _toasts(app))
 
 
@@ -608,3 +617,127 @@ async def test_the_confirm_opens_on_cancel_so_one_enter_writes_nothing_and_yes_t
         await pilot.press("enter")
         assert await wait_until(pilot, lambda: _stored_choices() is not None)
         assert json.loads(str(_stored_choices())) == {EMBED_REF: "openvino"}
+
+
+_DOWNLOAD_BYTES = 180_000_000
+
+
+def _offer_openvino_for_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The picker offers openvino as an engine with no build, 180 MB to download."""
+    monkeypatch.setattr(
+        engine_service,
+        "engine_options",
+        lambda _model: [
+            engine_service.EngineOption("auto", auto_now="llama.cpp"),
+            engine_service.EngineOption("llama.cpp", bundled=True, backend="metal"),
+            engine_service.EngineOption(
+                "openvino", installed=False, backend="cpu", download_bytes=_DOWNLOAD_BYTES
+            ),
+        ],
+    )
+
+
+def _engine_tasks(app: LilbeeAppHost) -> list[Any]:
+    queue = app.task_bar.queue
+    return [t for t in [*queue.active_tasks, *queue.history] if t.task_type == "engine"]
+
+
+async def _pick_the_download(app: LilbeeAppHost, pilot) -> None:
+    await _open_picker(app, pilot)
+    await pilot.press("down", "down", "enter")
+    assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+
+
+async def test_the_picker_rows_show_state_and_backend_and_the_size_of_a_missing_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_openvino_for_download(monkeypatch)
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _open_picker(app, pilot)
+        options = app.screen.query_one(OptionList)
+        labels = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert labels == [
+            "auto (now llama.cpp)",
+            "■ llama.cpp (now)  bundled · metal",
+            "■ openvino  download 180 MB · cpu",
+        ]
+        assert "The engine is the program that runs the model file." in _text(
+            app.screen, "#engine-picker-note"
+        )
+
+
+async def test_a_missing_engine_asks_to_download_then_installs_as_a_task_then_applies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    _offer_openvino_for_download(monkeypatch)
+    release = threading.Event()
+    installed: list[str] = []
+
+    def _install(name: str, **kwargs: Any) -> engine_service.InstalledBuild:
+        kwargs["on_update"](DownloadProgress(50.0, "90 MB of 180 MB", False))
+        assert release.wait(timeout=10)
+        installed.append(name)
+        return engine_service.InstalledBuild(name, "1", "cpu")
+
+    monkeypatch.setattr(engine_service, "install", _install)
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _pick_the_download(app, pilot)
+        assert _text(app.screen, "#confirm-message") == (
+            "Download openvino (180 MB) and use it for this model?"
+        )
+        await pilot.press("y")
+        assert await wait_until(pilot, lambda: bool(_engine_tasks(app)))
+        task = _engine_tasks(app)[0]
+        assert task.name == "Install engine openvino"
+        assert await wait_until(pilot, lambda: task.progress > 0)
+        assert cfg.engine_choices is None
+        assert _text(app, "#model-bar-engine-chips").startswith("chat: llama.cpp")
+        release.set()
+        assert await wait_until(pilot, lambda: cfg.engine_choices is not None)
+        assert installed == ["openvino"]
+        assert json.loads(str(cfg.engine_choices)) == {GGUF_REF: "openvino"}
+        assert task.status is TaskStatus.DONE
+
+
+async def test_declining_the_download_installs_nothing_and_keeps_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_openvino_for_download(monkeypatch)
+    monkeypatch.setattr(engine_service, "install", mock.Mock())
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _pick_the_download(app, pilot)
+        await pilot.press("n")
+        assert await wait_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
+        await pilot.pause()
+        assert _engine_tasks(app) == []
+        engine_service.install.assert_not_called()  # type: ignore[attr-defined]
+        assert cfg.engine_choices is None
+
+
+async def test_a_failed_install_fails_the_task_and_keeps_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_openvino_for_download(monkeypatch)
+
+    def _refused(*_a: object, **_k: object) -> None:
+        raise engine_service.EngineInstallRefusedError("No pack of openvino is published yet.")
+
+    monkeypatch.setattr(engine_service, "install", _refused)
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _pick_the_download(app, pilot)
+        await pilot.press("y")
+        assert await wait_until(
+            pilot, lambda: any(t.status is TaskStatus.FAILED for t in _engine_tasks(app))
+        )
+        assert _engine_tasks(app)[0].detail == "No pack of openvino is published yet."
+        assert cfg.engine_choices is None

@@ -96,3 +96,14 @@ def engine_mark(engine: str) -> Content:
     known = engine in set(EngineName)
     color = f"${variable_name(engine)}" if known else UNKNOWN_ENGINE_COLOR
     return Content.assemble((MARK, color), " ", engine)
+
+
+_MB = 1_000_000
+_GB = 1_000_000_000
+
+
+def format_size(size: int) -> str:
+    """A download size as one short figure, such as ``180 MB`` or ``1.2 GB``."""
+    if size >= _GB:
+        return f"{size / _GB:.1f} GB"
+    return f"{max(round(size / _MB), 1)} MB"

@@ -315,13 +315,22 @@ class ModelPickerButton(Static, can_focus=True):
         if not view.model.strip():
             self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")
             return
-        modal = EnginePickerModal(view, engine_service.engine_names(view.model))
-        self.app.push_screen(modal, lambda name: self._on_engine_picked(role, name))
+        modal = EnginePickerModal(view, engine_service.engine_options(view.model))
+        self.app.push_screen(modal, lambda option: self._on_engine_picked(role, option))
 
-    def _on_engine_picked(self, role: WorkerRole, name: str | None) -> None:
+    def _on_engine_picked(
+        self, role: WorkerRole, option: engine_service.EngineOption | None
+    ) -> None:
         self._focus_chat_prompt()
-        if name is not None:
-            self._save_engine(role, name)
+        if option is None:
+            return
+        if option.installed:
+            self._save_engine(role, option.name)
+            return
+        # The role keeps its model and engine until the install task ends.
+        from lilbee.cli.tui.engine_install_flow import confirm_and_install
+
+        confirm_and_install(self.app, option, lambda: self._save_engine(role, option.name))
 
     @work(thread=True)
     def _save_engine(self, role: WorkerRole, name: str, confirmed: bool = False) -> None:
