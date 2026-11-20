@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
@@ -22,6 +21,10 @@ def _probe(*devices: FleetDevice) -> planning._PlanProbe:
     return planning._PlanProbe(devices=devices, sizing_budget=0, free_system=0, engine="engine")
 
 
+def _read(devices: tuple[FleetDevice, ...]) -> tuple[FleetDevice, ...]:
+    return planning._in_engine_reading(devices, LLAMA, WorkerRole.CHAT)
+
+
 def _engine_reads(monkeypatch: pytest.MonkeyPatch, *devices: FleetDevice) -> None:
     monkeypatch.setattr(planning, "_current_plan_probe", lambda _engine: _probe(*devices))
 
@@ -34,8 +37,8 @@ def test_a_card_the_other_engine_numbers_differently_maps_by_name_and_total(
     engine_small = FleetDevice("Vulkan", 0, "Small card", 16 * _GIB - (300 << 20), 10 * _GIB)
     engine_big = FleetDevice("Vulkan", 1, "Big card", 24 * _GIB - (300 << 20), 18 * _GIB)
     _engine_reads(monkeypatch, engine_small, engine_big)
-    assert planning._in_engine_reading((big,), LLAMA) == (engine_big,)
-    assert planning._in_engine_reading((small, big), LLAMA) == (engine_small, engine_big)
+    assert _read((big,)) == (engine_big,)
+    assert _read((small, big)) == (engine_small, engine_big)
 
 
 def test_a_card_with_a_uuid_maps_by_the_uuid_when_two_cards_read_alike(
@@ -46,8 +49,8 @@ def test_a_card_with_a_uuid_maps_by_the_uuid_when_two_cards_read_alike(
     engine_second = FleetDevice("CUDA", 0, "GPU", 24 * _GIB, 11 * _GIB, uuid="GPU-b")
     engine_first = FleetDevice("CUDA", 1, "GPU", 24 * _GIB, 12 * _GIB, uuid="GPU-a")
     _engine_reads(monkeypatch, engine_second, engine_first)
-    assert planning._in_engine_reading((first,), LLAMA) == (engine_first,)
-    assert planning._in_engine_reading((second,), LLAMA) == (engine_second,)
+    assert _read((first,)) == (engine_first,)
+    assert _read((second,)) == (engine_second,)
 
 
 def test_a_card_the_engine_does_not_list_is_refused_not_pinned_by_its_fleet_index(
@@ -56,8 +59,8 @@ def test_a_card_the_engine_does_not_list_is_refused_not_pinned_by_its_fleet_inde
     gone = FleetDevice("CUDA", 0, "Gone card", 24 * _GIB, 20 * _GIB)
     other = FleetDevice("CUDA", 0, "Other card", 8 * _GIB, 6 * _GIB)
     _engine_reads(monkeypatch, other)
-    with pytest.raises(ProviderError, match="does not list the GPU Gone card"):
-        planning._in_engine_reading((gone,), LLAMA)
+    with pytest.raises(planning.CardNotListedError, match="lists a different card at device 0"):
+        _read((gone,))
 
 
 def test_two_cards_that_read_alike_map_to_two_engine_cards(
@@ -68,7 +71,7 @@ def test_two_cards_that_read_alike_map_to_two_engine_cards(
         FleetDevice("Vulkan", i, "Twin", 24 * _GIB, (10 + i) * _GIB) for i in (0, 1)
     )
     _engine_reads(monkeypatch, *reversed(engine_twins))
-    assert planning._in_engine_reading(twins, LLAMA) == (engine_twins[1], engine_twins[0])
+    assert _read(twins) == (engine_twins[1], engine_twins[0])
 
 
 def test_an_engine_with_no_snapshot_leaves_the_devices_as_given(
@@ -76,7 +79,7 @@ def test_an_engine_with_no_snapshot_leaves_the_devices_as_given(
 ) -> None:
     card = FleetDevice("CUDA", 0, "Card", 24 * _GIB, 20 * _GIB)
     monkeypatch.setattr(planning, "_current_plan_probe", lambda _engine: None)
-    assert planning._in_engine_reading((card,), LLAMA) == (card,)
+    assert _read((card,)) == (card,)
 
 
 def test_an_engine_whose_snapshot_lists_no_card_leaves_the_devices_as_given(
@@ -84,7 +87,7 @@ def test_an_engine_whose_snapshot_lists_no_card_leaves_the_devices_as_given(
 ) -> None:
     card = FleetDevice("CUDA", 1, "Card", 24 * _GIB, 20 * _GIB)
     _engine_reads(monkeypatch)
-    assert planning._in_engine_reading((card,), LLAMA) == (card,)
+    assert _read((card,)) == (card,)
 
 
 def _opposite_numbering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[int, FleetDevice]:

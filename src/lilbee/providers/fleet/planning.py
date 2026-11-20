@@ -2167,7 +2167,12 @@ def _launch_for(
     model_path: Path | None = None,
     engine: EngineAdapter,
 ) -> InstanceLaunch:
-    """Build the launch spec (argv + device-pinning env) for one planned instance."""
+    """Build the launch spec (argv + device-pinning env) for one planned instance.
+
+    Raises :class:`CardNotListedError` when the engine lists a planned card as another card.
+    """
+    planned = tuple(by_index[i] for i in plan.devices)
+    chosen = _in_engine_reading(planned, engine, plan.role)
     binary = engine.binary()
     # The self-check holds a downloaded file rather than a configured reference,
     # so it hands the path over instead of asking for one to be resolved.
@@ -2176,8 +2181,6 @@ def _launch_for(
     meta = engine.model_meta(model_path)
     from lilbee.core.config import cfg
 
-    planned = tuple(by_index[i] for i in plan.devices)
-    chosen = _in_engine_reading(planned, engine)
     pinned = _pinned_devices(chosen, plan, engine)
     reserved = _reserved_by_engine_index(reserved_by_device or {}, planned, chosen)
     reserved_after = _reserved_by_engine_index(reserved_after_chat or {}, planned, chosen)
@@ -3253,26 +3256,28 @@ def _no_device_pin(engine: EngineAdapter) -> tuple[str, ...]:
     return (NO_DEVICE,)
 
 
+class CardNotListedError(ProviderError):
+    """A role was planned on a card that its engine lists as another card, or not at all."""
+
+
 def _in_engine_reading(
-    devices: tuple[FleetDevice, ...], engine: EngineAdapter
+    devices: tuple[FleetDevice, ...], engine: EngineAdapter, role: WorkerRole
 ) -> tuple[FleetDevice, ...]:
     """*devices* as *engine* itself read them, each paired by the card it is.
 
     An engine that lists no card reads none of its own, so the cards stay as given. Raises
-    when it lists some cards but not one of these: its pin would name another card.
+    :class:`CardNotListedError`, worded as the refusal of *role*, when it lists some cards
+    but not one of these: its pin would name another card. Every launch passes through here.
     """
     probe = _current_plan_probe(engine)
     if probe is None or not probe.devices:
         return devices
-    own: list[FleetDevice] = []
-    for card, hit in zip(devices, _matched(probe.devices, devices), strict=True):
-        if hit is None:
-            raise ProviderError(
-                f"The {engine.name} engine does not list the GPU {card.name} that this role "
-                "was planned on. Reload the models so the GPUs are read again."
-            )
-        own.append(hit)
-    return tuple(own)
+    hits = _matched(probe.devices, devices)
+    unseen = [card.index for card, hit in zip(devices, hits, strict=True) if hit is None]
+    if unseen:
+        listed = [d.index for d in probe.devices]
+        raise CardNotListedError(unseen_card_reason(role, engine.name, unseen, listed))
+    return tuple(hit for hit in hits if hit is not None)
 
 
 def _reserved_by_engine_index(
@@ -3326,28 +3331,6 @@ def _log_roles_left_unpinned(
                 engine.name,
                 inst.role.value,
             )
-
-
-def _unseen_card_reason(
-    plan: InstancePlan, by_index: Mapping[int, FleetDevice], engine: EngineAdapter
-) -> str | None:
-    """Why *plan* cannot launch: a card placement chose for it is one *engine* does not list.
-
-    The card is identified as :func:`_in_engine_reading` does, so a refusal here is the
-    case in which that reading would raise. An engine that lists no card runs on the CPU
-    and keeps its placement.
-    """
-    probe = _current_plan_probe(engine)
-    if probe is None or not probe.devices:
-        return None
-    listed = [d.index for d in probe.devices]
-    planned = [by_index[index] for index in plan.devices]
-    unseen = [
-        card.index
-        for card, hit in zip(planned, _matched(probe.devices, planned), strict=True)
-        if hit is None
-    ]
-    return unseen_card_reason(plan.role, engine.name, unseen, listed) if unseen else None
 
 
 def _plan_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
@@ -3881,26 +3864,31 @@ def _launching_instances(
     *,
     engines: Mapping[WorkerRole, EngineAdapter],
 ) -> list[InstancePlan]:
-    """The instances of *placed* that get a server: a chat below the prompt floor gets none."""
+    """The instances of *placed* that get a server.
+
+    A chat below the prompt floor gets none, nor does a chat on a card its engine lists as
+    another card: the launch refuses it with the reason.
+    """
     by_index = {d.index: d for d in devices}
     reserved = _non_chat_reservation(placed.instances, inputs, placed.swap_classes)
-    return [
-        inst
-        for inst in placed.instances
-        if inst.role is not WorkerRole.CHAT
-        or _unusable_chat_ctx_reason(
-            _launch_for(
+
+    def launches(inst: InstancePlan) -> bool:
+        if inst.role is not WorkerRole.CHAT:
+            return True
+        try:
+            launch = _launch_for(
                 inst,
                 model_refs[inst.role],
                 by_index,
                 reserved_by_device=reserved,
                 est_vram_bytes=0,
                 engine=engines[inst.role],
-            ),
-            [],
-        )
-        is None
-    ]
+            )
+        except CardNotListedError:
+            return False
+        return _unusable_chat_ctx_reason(launch, []) is None
+
+    return [inst for inst in placed.instances if launches(inst)]
 
 
 def _cpu_roles_past_memory(
@@ -4853,10 +4841,6 @@ def _launches_and_refusals(
         if text_only := _text_only_vision_reason(plan.role, model_refs[plan.role]):
             refused[plan.role] = text_only
             continue
-        unseen = _unseen_card_reason(plan, by_index, engines[plan.role])
-        if unseen is not None:
-            refused[plan.role] = unseen
-            continue
         try:
             launch = _launch_for(
                 plan,
@@ -4869,7 +4853,7 @@ def _launches_and_refusals(
                 est_vram_bytes=charged.get(plan.role, 0),
                 engine=engines[plan.role],
             )
-        except RankPoolingMissingError as exc:
+        except (RankPoolingMissingError, CardNotListedError) as exc:
             refused[plan.role] = str(exc)
             continue
         launch.swap_class = class_label(plan.role, placement.swap_classes)
