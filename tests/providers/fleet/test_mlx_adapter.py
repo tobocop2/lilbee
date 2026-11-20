@@ -120,6 +120,17 @@ def test_the_argv_names_the_model_folder_and_leaves_the_port_to_the_swap(tmp_pat
     assert "--prompt-cache-bytes" in argv
 
 
+def test_an_answer_may_run_to_the_window_not_to_the_server_default(tmp_path: Path) -> None:
+    """mlx-lm stops an answer at 512 tokens unless a request or the launch says more.
+
+    A chat sends no max_tokens unless the user sets one, so the launch states the window.
+    """
+    spec = MLX.role_spec(WorkerRole.CHAT, None, None)
+    argv = MLX.launch_argv(spec, request(tmp_path, ctx_per_slot=40960))
+    assert argv[argv.index("--max-tokens") + 1] == "40960"
+    assert argv.count("--max-tokens") == 1
+
+
 def test_the_swap_names_the_default_model_for_every_request() -> None:
     assert MLX.swap_extras(MagicMock()) == {"useModelName": "default_model"}
 

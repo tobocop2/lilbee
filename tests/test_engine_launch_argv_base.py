@@ -16,6 +16,8 @@ from tests._engine_launch_argv import launch_argvs
 # Updated again after commits 37f0ca6eb and 1e7fbaf0e: the mistral.rs vision
 # subcommand is `multimodal`, and the TEI roles carry `--max-batch-tokens`.
 # The mistral.rs vision argv carries no context flag, as its multimodal loader refuses one.
+# The mlx chat argv carries `--max-tokens` at the window, because mlx-lm otherwise stops
+# every answer at 512 tokens.
 # No other line changed.
 BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 
