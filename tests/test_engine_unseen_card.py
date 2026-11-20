@@ -23,6 +23,11 @@ REFUSAL = (
     "embed is placed on device 1, but the narrow engine lists only device 0. "
     "Set the embed target to cpu, or choose an engine that lists that card."
 )
+CHAT_ON_CARD_ZERO_EMBED_ON_CPU = "{" + CHAT_ON_CARD_ZERO + ', "embed": {"target": "cpu"}}'
+CHAT_OTHER_CARD_REFUSAL = (
+    "chat is placed on device 0, but the narrow engine lists a different card at device 0. "
+    "Set the chat target to cpu, or choose an engine that lists that card."
+)
 OTHER_CARD_REFUSAL = (
     "embed is placed on device 0, but the narrow engine lists a different card at device 0. "
     "Set the embed target to cpu, or choose an engine that lists that card."
@@ -125,6 +130,37 @@ def test_the_placement_view_reports_the_same_refusal_for_another_card(
     )
     assert resolved.unlaunched_roles == {WorkerRole.EMBED: OTHER_CARD_REFUSAL}
     assert [inst.role for inst in resolved.instances] == [WorkerRole.CHAT]
+
+
+def _chat_on_another_card_embed_on_cpu(tmp_path: Path) -> dict[WorkerRole, CardEngine]:
+    """Chat's engine lists one 16 GiB card 0; the plan's card 0 is a 4 GiB card."""
+    wide = CardEngine("wide", tmp_path / "wide-server", ROLES, cards_of((4, 4)))
+    narrow = CardEngine("narrow", tmp_path / "narrow-server", ROLES, cards_of((16,)))
+    return {WorkerRole.CHAT: narrow, WorkerRole.EMBED: wide}
+
+
+def test_a_chat_on_another_card_with_embed_on_the_cpu_is_refused_and_embed_is_planned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(tmp_path, monkeypatch, CHAT_ON_CARD_ZERO_EMBED_ON_CPU)
+    engines = _chat_on_another_card_embed_on_cpu(tmp_path)
+    planning.capture_plan_probe(engines)
+    plan = planning.plan_all_launches(engines=engines)
+    assert [launch.role for launch in plan.launches] == [WorkerRole.EMBED]
+    assert plan.refused_roles == {WorkerRole.CHAT: CHAT_OTHER_CARD_REFUSAL}
+
+
+def test_the_placement_view_refuses_a_chat_on_another_card_with_embed_on_the_cpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(tmp_path, monkeypatch, CHAT_ON_CARD_ZERO_EMBED_ON_CPU)
+    engines = _chat_on_another_card_embed_on_cpu(tmp_path)
+    planning.capture_plan_probe(engines)
+    resolved = planning.resolve_placement_plan(
+        PlacementSpec.from_json(CHAT_ON_CARD_ZERO_EMBED_ON_CPU), engines=engines
+    )
+    assert resolved.unlaunched_roles == {WorkerRole.CHAT: CHAT_OTHER_CARD_REFUSAL}
+    assert [inst.role for inst in resolved.instances] == [WorkerRole.EMBED]
 
 
 def test_the_reason_names_both_a_different_card_and_a_missing_card() -> None:
