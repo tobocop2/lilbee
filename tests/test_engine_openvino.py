@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from lilbee.providers.fleet.engines import choice, proof
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.openvino import (
     GPU_MISSING,
+    NPU_MISSING,
     OPENVINO,
     OpenvinoAdapter,
     parse_devices,
@@ -108,15 +110,54 @@ def test_a1_the_device_is_not_in_the_shared_environment() -> None:
     assert OPENVINO.runtime_env() == {}
 
 
-def test_a2_an_intel_npu_host_passes_and_says_the_npu_stays_unused() -> None:
+INTEL = 0x8086
+NVIDIA = 0x10DE
+
+
+def _linux(display: tuple[int, ...] = (), accel: list[tuple[str, str]] | None = None) -> HostCaps:
+    return host_caps.collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={},
+        nvidia=None,
+        accel_devices=accel,
+        display_vendors=display,
+    )
+
+
+def test_gate_an_intel_npu_host_is_offered() -> None:
     gate = OPENVINO.host_gate(_host("intel-core-ultra-linux"))
-    assert (gate.ok, gate.known) == (True, True)
-    assert "NPU" in gate.reason
+    assert (gate.ok, gate.known, gate.reason) == (True, True, "")
 
 
-def test_a2_a_host_with_no_npu_passes_with_no_remark() -> None:
+def test_gate_an_intel_gpu_host_is_offered() -> None:
+    gate = OPENVINO.host_gate(_linux(display=(INTEL,), accel=[]))
+    assert (gate.ok, gate.known, gate.reason) == (True, True, "")
+
+
+def test_gate_a_host_with_only_another_vendor_gpu_is_refused() -> None:
+    gate = OPENVINO.host_gate(_linux(display=(NVIDIA,), accel=[]))
+    assert not gate.ok
+    assert gate.reason == (
+        "OpenVINO is offered on computers with an Intel GPU or an Intel NPU, "
+        "and this computer has neither."
+    )
+
+
+def test_gate_a_host_that_lists_no_graphics_card_is_unknown_not_refused() -> None:
     gate = OPENVINO.host_gate(_host("no-accel-linux"))
-    assert (gate.ok, gate.reason) == (True, "")
+    assert (gate.ok, gate.known) == (True, False)
+    assert "could not be read" in gate.reason
+
+
+def test_gate_an_unread_npu_list_beside_another_vendor_gpu_is_unknown() -> None:
+    gate = OPENVINO.host_gate(_linux(display=(NVIDIA,), accel=None))
+    assert (gate.ok, gate.known) == (True, False)
+
+
+def test_gate_an_amd_npu_host_is_refused_when_it_has_no_intel_graphics() -> None:
+    gate = OPENVINO.host_gate(_linux(display=(0x1002,), accel=[("0x1022", "0x17f0")]))
+    assert not gate.ok
 
 
 def test_s12_a_wrong_platform_is_refused_before_any_stage() -> None:
@@ -152,6 +193,50 @@ def test_s4_the_targets_follow_the_device_list(cpu_only: None) -> None:
 
 def test_s4_both_devices_give_both_targets(both_devices: None) -> None:
     assert OPENVINO.device_targets(BINARY) == {RoleTarget.CPU, RoleTarget.GPU}
+
+
+# Written from the line format of the recorded lists, not recorded on a Core Ultra machine.
+# The live proof is owed on a Core Ultra host.
+NPU_LIST = ONE_GPU_LIST + (
+    "  OPENVINO2: GGML_OPENVINO_DEVICE=NPU - Intel(R) AI Boost (1 MiB, 1 MiB free)\n"
+)
+
+
+def test_npu_a_listed_npu_gives_the_npu_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_list(monkeypatch, NPU_LIST)
+    assert OPENVINO.device_targets(BINARY) == {
+        RoleTarget.CPU,
+        RoleTarget.GPU,
+        RoleTarget.NPU,
+    }
+
+
+def test_npu_a_list_without_an_npu_gives_no_npu_target(both_devices: None) -> None:
+    assert RoleTarget.NPU not in OPENVINO.device_targets(BINARY)
+
+
+def test_npu_an_npu_target_sets_the_npu_device_one_slot_and_a_small_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_list(monkeypatch, NPU_LIST)
+    request = replace(_request(RoleTarget.NPU), slots=4, ctx_per_slot=8192)
+    argv = OPENVINO.launch_argv(OPENVINO.role_spec(WorkerRole.CHAT, None, None), request)
+    assert argv[:3] == ["/usr/bin/env", "GGML_OPENVINO_DEVICE=NPU", str(BINARY)]
+    assert argv[argv.index("--parallel") + 1] == "1"
+    assert argv[argv.index("--ctx-size") + 1] == "512"
+
+
+def test_npu_a_context_below_the_cap_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_list(monkeypatch, NPU_LIST)
+    request = replace(_request(RoleTarget.NPU), ctx_per_slot=256)
+    argv = OPENVINO.launch_argv(OPENVINO.role_spec(WorkerRole.CHAT, None, None), request)
+    assert argv[argv.index("--ctx-size") + 1] == "256"
+
+
+def test_npu_a_target_without_an_npu_refuses_in_user_words(both_devices: None) -> None:
+    with pytest.raises(ProviderError) as raised:
+        _argv(RoleTarget.NPU)
+    assert str(raised.value) == NPU_MISSING
 
 
 def test_s4_the_listing_runs_the_binary_with_list_devices(monkeypatch: pytest.MonkeyPatch) -> None:
