@@ -289,7 +289,7 @@ class TestLoggedDevices:
         assert record_presets.logged_devices(Path(_log(tmp_path, _TEI_NO_DEVICE_LOG))) == []
 
     def test_a_log_that_cannot_be_read_stops_the_run(self, tmp_path: Path) -> None:
-        with pytest.raises(SystemExit, match="--engine-log .*missing.log"):
+        with pytest.raises(SystemExit, match=r"--engine-log .*missing\.log"):
             record_presets.logged_devices(tmp_path / "missing.log")
 
 
