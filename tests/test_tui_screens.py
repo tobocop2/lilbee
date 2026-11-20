@@ -9256,6 +9256,29 @@ async def test_catalog_resolve_delete_ref_picks_one_quant():
             assert screen._resolve_delete_ref("qwen3:0.6b") == "qwen3:0.6b"
 
 
+async def test_catalog_resolve_delete_ref_reads_a_gguf_suffixed_ref_as_the_plain_ref():
+    """A ``#gguf`` ref deletes the same installed file as the plain ref."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            repo = "Qwen/Qwen3-0.6B-GGUF"
+            full_q4 = f"{repo}/Qwen3-0.6B-Q4_K_M.gguf"
+            screen._installed_names = {repo, full_q4}
+
+            assert screen._resolve_delete_ref(f"{full_q4}#gguf") == full_q4
+            assert screen._resolve_delete_ref(f"{repo}#gguf") == full_q4
+
+
 async def test_catalog_delete_not_installed():
     """Pressing d on a model that is not installed shows warning."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
