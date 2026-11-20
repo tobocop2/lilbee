@@ -1884,6 +1884,26 @@ def test_a_split_of_a_cache_blob_with_no_snapshot_file_says_the_model_file_is_da
 
 
 @pytest.mark.parametrize("shard", [None, "9b"])
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
+def test_a_one_card_launch_of_a_cache_blob_with_no_snapshot_file_is_refused_with_the_repair(
+    role: WorkerRole, shard: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cuda_host(monkeypatch)
+    blobs = tmp_path / "models--Qwen--Qwen3-4B-GGUF" / "blobs"
+    blob = (blobs / shard if shard else blobs) / "9375c1fd"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 3200)
+    with pytest.raises(
+        ProviderError,
+        match=r"cannot launch this model: its model file is incomplete or damaged\. "
+        r"Run 'lilbee model list', remove that model with 'lilbee model rm', "
+        r"then pull it again\.",
+    ) as refused:
+        _one_card_argv(tmp_path, role, model_path=blob)
+    assert blob.name not in str(refused.value)
+
+
+@pytest.mark.parametrize("shard", [None, "9b"])
 def test_a_split_of_a_loose_gguf_in_a_folder_named_blobs_outside_the_cache_reads_its_heads(
     shard: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
