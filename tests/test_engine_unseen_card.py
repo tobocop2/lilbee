@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import gpu_hardware, planning
-from lilbee.providers.fleet.placement import unseen_card_reason
+from lilbee.providers.fleet.placement import InstancePlan, unseen_card_reason
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import CardEngine, Role, cards_of, prepare_host
@@ -182,6 +184,55 @@ def test_a_cpu_only_engine_takes_no_card_and_is_not_refused(
     plan = planning.plan_all_launches(engines=engines)
     assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert plan.refused_roles == {}
+
+
+def _launch_that_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, placement: str, pre_launch_only: bool
+) -> dict[WorkerRole, CardEngine]:
+    """A host whose every card is listed, with a chat launch that raises a plain ProviderError.
+
+    The check that runs before the plan's launch loop asks for no unified budget. With
+    *pre_launch_only* only that check fails, and the launch loop starts every role.
+    """
+    _host(tmp_path, monkeypatch, placement)
+    same_card = CardEngine("narrow", tmp_path / "narrow-server", ROLES, cards_of((4,)))
+    engines = _engines(tmp_path, same_card)
+    planning.capture_plan_probe(engines)
+
+    launch_for = planning._launch_for
+
+    def _fail(plan: InstancePlan, *args: Any, **kwargs: Any) -> Any:
+        in_pre_launch = "unified_budget" not in kwargs
+        if plan.role is WorkerRole.CHAT and (in_pre_launch or not pre_launch_only):
+            raise ProviderError("the engine cannot start")
+        return launch_for(plan, *args, **kwargs)
+
+    monkeypatch.setattr(planning, "_launch_for", _fail)
+    return engines
+
+
+def test_another_launch_error_leaves_the_plan_instead_of_refusing_the_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the card refusal turns a launch error into a refused role."""
+    engines = _launch_that_fails(
+        tmp_path, monkeypatch, placement=EMBED_ON_CARD_ZERO, pre_launch_only=False
+    )
+    with pytest.raises(ProviderError, match="the engine cannot start"):
+        planning.plan_all_launches(engines=engines)
+
+
+def test_another_launch_error_leaves_the_check_before_the_launch_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With embed on the CPU, the view launches chat once to price the CPU pool."""
+    engines = _launch_that_fails(
+        tmp_path, monkeypatch, placement=CHAT_ON_CARD_ZERO_EMBED_ON_CPU, pre_launch_only=True
+    )
+    with pytest.raises(ProviderError, match="the engine cannot start"):
+        planning.resolve_placement_plan(
+            PlacementSpec.from_json(CHAT_ON_CARD_ZERO_EMBED_ON_CPU), engines=engines
+        )
 
 
 def test_an_engine_that_lists_no_card_keeps_its_placement_on_a_one_card_host(
