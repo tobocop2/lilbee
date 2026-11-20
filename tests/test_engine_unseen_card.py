@@ -61,7 +61,10 @@ def test_a_role_on_a_card_its_engine_lists_is_launched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _host(tmp_path, monkeypatch, EMBED_ON_CARD_ZERO)
-    engines = _engines(tmp_path)
+    # The narrow engine reads the same card 0 as the wide engine: a launch maps cards by
+    # identity, so a different card under the same index is a card the engine does not list.
+    same_card = CardEngine("narrow", tmp_path / "narrow-server", ROLES, cards_of((4,)))
+    engines = _engines(tmp_path, same_card)
     planning.capture_plan_probe(engines)
     plan = planning.plan_all_launches(engines=engines)
     assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
