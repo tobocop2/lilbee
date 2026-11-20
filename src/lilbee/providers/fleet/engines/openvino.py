@@ -1,4 +1,4 @@
-"""The OpenVINO adapter: upstream llama-server built on OpenVINO, serving chat on CPU or iGPU."""
+"""The OpenVINO adapter: upstream llama-server on OpenVINO, serving chat on CPU, GPU or NPU."""
 
 from __future__ import annotations
 
@@ -46,9 +46,20 @@ _DEVICE_LINE = re.compile(
     re.MULTILINE,
 )
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
-_NPU_UNUSED = (
-    "This computer has an Intel NPU. OpenVINO runs on the CPU or the integrated graphics, "
-    "because no run on the NPU is recorded."
+_NPU_DEVICE = "NPU"
+_NPU_CTX = 512
+"""The context of an NPU process; upstream keeps it small ("-c 512") to avoid load failures."""
+_INTEL_PCI_VENDOR = 0x8086
+_NO_INTEL_DEVICE = (
+    "OpenVINO is offered on computers with an Intel GPU or an Intel NPU, "
+    "and this computer has neither."
+)
+_GRAPHICS_UNREAD = "The graphics cards of this computer could not be read."
+NPU_MISSING = (
+    "OpenVINO runs on the Intel NPU only when the computer has one and its driver is installed, "
+    "and this computer has no NPU that OpenVINO can use. "
+    "OpenVINO does not switch to another device by itself. "
+    "Install the Intel NPU driver, or place this role on the CPU or the GPU."
 )
 GPU_MISSING = (
     "OpenVINO runs on Intel graphics only, and this computer has no Intel graphics device "
@@ -90,6 +101,11 @@ def _gpu_ordinal(name: str) -> int:
     return int(tail) if tail.isdigit() else 0
 
 
+def has_npu(devices: tuple[ListedDevice, ...]) -> bool:
+    """Whether the list names the NPU device, which OpenVINO lists as plain ``NPU``."""
+    return any(d.name == _NPU_DEVICE for d in devices)
+
+
 def pick_gpu(devices: tuple[ListedDevice, ...]) -> str | None:
     """The one GPU name a launch passes, or None when no listed GPU is an Intel GPU.
 
@@ -108,11 +124,29 @@ def pick_gpu(devices: tuple[ListedDevice, ...]) -> str | None:
     return min(gpus, key=lambda d: _gpu_ordinal(d.name)).name
 
 
+def _intel_device_gate(host: HostCaps) -> HostGate:
+    """Offer the engine only on a host with an Intel GPU or an Intel NPU.
+
+    An empty list of display controllers means "cannot tell", so it never refuses.
+    """
+    if _INTEL_PCI_VENDOR in host.display_vendors:
+        return PASS
+    npu = npu_gate(host, NpuVendor.INTEL)
+    if npu.ok and npu.known:
+        return PASS
+    if not host.display_vendors:
+        return HostGate(True, _GRAPHICS_UNREAD, known=False)
+    if not npu.known:
+        return npu
+    return HostGate(False, _NO_INTEL_DEVICE)
+
+
 class OpenvinoAdapter:
     """llama-server on OpenVINO behind the engine contract; it serves chat only.
 
     Requantized weights change vectors, so embed and rerank stay with llama.cpp.
-    The NPU is held: no recorded run exists, so ``HARDWARE_PROOF`` lists it as not run.
+    The NPU runs one slot and a small context. No recorded run exists, so
+    ``HARDWARE_PROOF`` lists it as not run and ``auto`` never picks the engine.
     """
 
     name = EngineName.OPENVINO
@@ -134,8 +168,7 @@ class OpenvinoAdapter:
             return PLATFORM_UNREAD
         if (host.os, host.arch) != (HostOS.LINUX, HostArch.X86_64):
             return HostGate(False, f"OpenVINO is not offered on {host.os.value} {host.arch.value}.")
-        npu = npu_gate(host, NpuVendor.INTEL)
-        return HostGate(True, _NPU_UNUSED) if npu.ok and npu.known else PASS
+        return _intel_device_gate(host)
 
     def binary(self) -> Path:
         from lilbee.catalog.runnable import session_host
@@ -178,12 +211,7 @@ class OpenvinoAdapter:
         OpenVINO aborts when the named device is missing and never falls back to the
         CPU, so a GPU target is checked against the device list before it starts.
         """
-        on_cpu = request.target is RoleTarget.CPU
-        gpu = None if on_cpu else pick_gpu(self._listed(request.binary))
-        if not on_cpu and gpu is None:
-            raise ProviderError(GPU_MISSING)
-        if on_cpu:
-            request = replace(request, n_gpu_layers=0, fit_target_mib=())
+        device, request = self._device_for(request)
         argv = build_server_argv(
             binary=request.binary,
             spec=spec,
@@ -198,7 +226,22 @@ class OpenvinoAdapter:
             batch_size=request.batch_size,
             no_mmap=request.no_mmap,
         )
-        return [_ENV, f"{_DEVICE_VAR}={_CPU_DEVICE if gpu is None else gpu}", *argv]
+        return [_ENV, f"{_DEVICE_VAR}={device}", *argv]
+
+    def _device_for(self, request: LaunchRequest) -> tuple[str, LaunchRequest]:
+        """The device name of the process, and the request with the limits of that device."""
+        if request.target is RoleTarget.CPU:
+            return _CPU_DEVICE, replace(request, n_gpu_layers=0, fit_target_mib=())
+        listed = self._listed(request.binary)
+        if request.target is RoleTarget.NPU:
+            if not has_npu(listed):
+                raise ProviderError(NPU_MISSING)
+            capped = min(request.ctx_per_slot, _NPU_CTX)
+            return _NPU_DEVICE, replace(request, slots=1, ctx_per_slot=capped, fit_target_mib=())
+        gpu = pick_gpu(listed)
+        if gpu is None:
+            raise ProviderError(GPU_MISSING)
+        return gpu, request
 
     @staticmethod
     def _listed(binary: Path) -> tuple[ListedDevice, ...]:
@@ -212,9 +255,13 @@ class OpenvinoAdapter:
         return parse_devices(output)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
-        if pick_gpu(self._listed(binary)) is not None:
-            return frozenset({RoleTarget.CPU, RoleTarget.GPU})
-        return frozenset({RoleTarget.CPU})
+        listed = self._listed(binary)
+        targets = {RoleTarget.CPU}
+        if pick_gpu(listed) is not None:
+            targets.add(RoleTarget.GPU)
+        if has_npu(listed):
+            targets.add(RoleTarget.NPU)
+        return frozenset(targets)
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         return DeviceProbe(devices=[], output="", spoke_protocol=False)
