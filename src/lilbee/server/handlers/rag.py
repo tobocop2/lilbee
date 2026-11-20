@@ -208,6 +208,14 @@ def _chat_warming_events() -> list[str]:
     return [sse_event(SseEvent.WARMING, {"role": WorkerRole.CHAT.value})]
 
 
+async def _warming_frames() -> list[str]:
+    """The warming notice for a cold chat engine, probed on a worker.
+
+    The chat stream yields it before retrieval, which can wait on the cold engine.
+    """
+    return await asyncio.to_thread(_chat_warming_events)
+
+
 def _put_answer_token(
     content: str,
     put: Callable[[str | None], None],
@@ -699,7 +707,7 @@ def _resolve_chat_stream_context(
     top_k: int | None,
     chunk_type: ChunkType | None,
 ) -> _ChatStreamPlan:
-    frames = list(_chat_warming_events())
+    frames: list[str] = []
     if top_k != 0 and searcher.search_unavailable():
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # token the ask stream emits instead of silently answering off-corpus.
@@ -741,6 +749,8 @@ async def _stream_chat_response(
             yield item
             continue
         history, _compaction = item
+    for warming in await _warming_frames():
+        yield warming
     frames, ctx = await asyncio.to_thread(
         _resolve_chat_stream_context, get_services().searcher, question, history, top_k, chunk_type
     )
@@ -748,9 +758,16 @@ async def _stream_chat_response(
         yield frame
     if ctx is None:
         return
-    sources, messages = ctx.results, ctx.messages
+    async for frame in _chat_answer_frames(
+        question, _build_canonical_request(ctx.messages, options), ctx.results
+    ):
+        yield frame
 
-    req = _build_canonical_request(messages, options)
+
+async def _chat_answer_frames(
+    question: str, req: CanonicalChatRequest, sources: list[SearchChunk]
+) -> AsyncGenerator[str, None]:
+    """Stream the model's answer as SSE frames, then the sources and memories."""
     answer_parts: list[str] = []
     # Only grounded turns append an authoritative SOURCES event, so only they
     # need a model-generated Sources block suppressed.
