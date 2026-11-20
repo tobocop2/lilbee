@@ -2064,6 +2064,9 @@ class FleetProvider:
         except (ProviderError, httpx.TransportError) as err:
             if is_rebuildable_failure(err) and role is not None:
                 return self._retry_rebuilt(call, role, err)
+            if role is not None and self._left_working(err, role):
+                self._restart_left_working(role)
+                _raise_no_healthy_replica(err)
             if not is_connection_failure(err):
                 raise
             log.info("Engine unreachable; rediscovering before one retry")
@@ -2095,6 +2098,26 @@ class FleetProvider:
                 except Exception:
                     # A failed sweep must not replace the retry's own result or error.
                     log.warning("Hold sweep after a rediscover failed", exc_info=True)
+
+    def _left_working(self, err: BaseException, role: WorkerRole) -> bool:
+        """Whether *err* timed out on a server that keeps working on the request it left."""
+        if not isinstance(err, httpx.TimeoutException):
+            return False
+        return self._adopt_engine(role).request_profile(role).works_on_after_disconnect
+
+    def _restart_left_working(self, role: WorkerRole) -> None:
+        """Restart *role*'s server, which still works on a timed-out request.
+
+        A retry would wait behind that request and time out the same way, so the restart
+        comes first and the timeout surfaces to the caller.
+        """
+        log.warning(
+            "A %s request timed out on a server that keeps working on it after the client "
+            "goes; restarting the %s server so the next request does not wait behind it",
+            role.value,
+            role.value,
+        )
+        self._rebuild_role(role)
 
     def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:
         """Rebuild *role* so the retry is a different launch, and run *call* again.

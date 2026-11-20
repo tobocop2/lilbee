@@ -60,6 +60,9 @@ _PROFILE = RequestProfile(
     unreadable_embedding_hint="mlx-lm serves no embeddings.",
     reasoning_field="reasoning",
     structured_output=False,
+    # A request that is not streamed runs to its end after the client goes: the server
+    # reads its stop flag only between answer tokens and writes only at the end.
+    works_on_after_disconnect=True,
 )
 
 

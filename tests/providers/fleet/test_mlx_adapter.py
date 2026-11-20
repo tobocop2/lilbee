@@ -414,6 +414,15 @@ def test_mlx_profile_structured_output_false() -> None:
     assert MISTRAL.request_profile(WorkerRole.CHAT).structured_output is True
 
 
+def test_only_mlx_works_on_a_request_after_its_client_goes() -> None:
+    from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.engines.mistral import MISTRAL
+
+    assert MLX.request_profile(WorkerRole.CHAT).works_on_after_disconnect is True
+    assert LLAMA.request_profile(WorkerRole.CHAT).works_on_after_disconnect is False
+    assert MISTRAL.request_profile(WorkerRole.CHAT).works_on_after_disconnect is False
+
+
 @pytest.mark.parametrize(
     ("window", "target", "want"), [(CONTEXT, 262144, CONTEXT), (262144, CONTEXT, CONTEXT)]
 )

@@ -104,6 +104,11 @@ class RequestProfile:
     """The response field that carries reasoning text apart from the answer."""
     structured_output: bool = True
     """Whether the server enforces ``response_format``; if not, the client drops or refuses it."""
+    works_on_after_disconnect: bool = False
+    """Whether the server keeps working on a request after its client goes away.
+
+    Such a server makes every later request wait, so a timed-out request restarts it.
+    """
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
     batch_limit: int | None = None
