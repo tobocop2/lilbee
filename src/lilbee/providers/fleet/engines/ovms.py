@@ -22,8 +22,8 @@ from lilbee.providers.fleet.engines.base import (
     RerankShape,
     ServerProcess,
 )
-from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
-from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate, npu_gate
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory
@@ -52,7 +52,7 @@ _ENDPOINTS = {
     WorkerRole.EMBED: "/v3/embeddings",
     WorkerRole.RERANK: "/v3/rerank",
 }
-_DEVICES = {RoleTarget.CPU: "CPU", RoleTarget.GPU: "GPU"}
+_DEVICES = {RoleTarget.CPU: "CPU", RoleTarget.GPU: "GPU", RoleTarget.NPU: "NPU"}
 """The ``--target_device`` value of each target a launch accepts."""
 _PIN_LAUNCH = [
     "{binary}",
@@ -178,9 +178,14 @@ class OvmsAdapter:
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
 
-        if _INTEL_PCI_VENDOR in session_host().display_vendors:
-            return frozenset({RoleTarget.CPU, RoleTarget.GPU})
-        return frozenset({RoleTarget.CPU})
+        host = session_host()
+        targets = {RoleTarget.CPU}
+        if _INTEL_PCI_VENDOR in host.display_vendors:
+            targets.add(RoleTarget.GPU)
+        npu = npu_gate(host, NpuVendor.INTEL)
+        if npu.ok and npu.known:
+            targets.add(RoleTarget.NPU)
+        return frozenset(targets)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return estimate_memory(ModelFormat.OPENVINO, request)
