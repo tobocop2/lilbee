@@ -9,11 +9,13 @@ import platform
 import re
 import socket
 import tempfile
+import urllib.parse
 import urllib.request
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+import psutil
 from tools.qa.engine_demo.scrub import scrub_recording
 
 from lilbee.providers.fleet.readback import _is_host_device, parse_memory_rows
@@ -91,6 +93,7 @@ def setup_from(args: argparse.Namespace) -> Setup:
     )
 
 
+_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 _NO_REPORT = "none"
 _CPU = "cpu"
 _PROBE_TIMEOUT_S = 10
@@ -135,6 +138,41 @@ def reported_devices(url: str, token: str | None) -> list[str]:
     return sorted(label for label, size in parse_memory_rows(payload).items() if size > 0)
 
 
+def require_engine_output(url: str, path: Path) -> None:
+    """Stop unless *path* is a file that the local engine listening at *url* holds open.
+
+    A log that the operator wrote or copied proves nothing. The engine writes its startup output to
+    a file it holds open, and the recorder reads that fact from the process table.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname not in _LOOPBACK or parsed.port is None:
+        raise SystemExit(f"--engine-log {path}: the engine at {url} is not a local port")
+    try:
+        pids = {
+            conn.pid
+            for conn in psutil.net_connections(kind="tcp")
+            if conn.status == psutil.CONN_LISTEN
+            and conn.pid
+            and conn.laddr
+            and conn.laddr.port == parsed.port
+        }
+    except psutil.AccessDenied as exc:
+        raise SystemExit(f"--engine-log {path}: the process table is not readable") from exc
+    if not any(_holds_open(pid, path) for pid in pids):
+        raise SystemExit(
+            f"--engine-log {path}: the engine at {url} does not hold this file open, "
+            "so it is not the output of that engine"
+        )
+
+
+def _holds_open(pid: int, path: Path) -> bool:
+    """Whether process *pid* has *path* open; False when the process cannot be read."""
+    try:
+        return any(os.path.samefile(f.path, path) for f in psutil.Process(pid).open_files())
+    except (psutil.Error, OSError):
+        return False
+
+
 def logged_devices(path: Path) -> list[str]:
     """The device labels that the startup lines in *path* name; SystemExit if unreadable."""
     try:
@@ -150,6 +188,8 @@ def device_evidence(
     url: str, token: str | None, engine_log: Path | None
 ) -> tuple[list[str], DeviceSource]:
     """The device labels of the run and where they came from; the engine reply wins over the log."""
+    if engine_log:
+        require_engine_output(url, engine_log)
     from_log = logged_devices(engine_log) if engine_log else []
     from_reply = reported_devices(url, token)
     if from_reply and from_log and reported_backend(from_reply) != reported_backend(from_log):

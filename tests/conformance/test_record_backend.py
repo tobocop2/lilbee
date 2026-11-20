@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -255,9 +256,22 @@ _LLAMA_CUDA_LOG = """\
 """  # noqa: E501
 
 
-def _log(tmp_path: Path, text: str) -> str:
+_HELD: list[IO[str]] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_held_logs() -> Iterator[None]:
+    yield
+    while _HELD:
+        _HELD.pop().close()
+
+
+def _log(tmp_path: Path, text: str, *, held: bool = True) -> str:
+    """A log file; with *held* the test process keeps it open, as the engine keeps its output."""
     path = tmp_path / "engine.log"
     path.write_text(text, encoding="utf-8")
+    if held:
+        _HELD.append(path.open("a", encoding="utf-8"))
     return str(path)
 
 
@@ -340,6 +354,44 @@ class TestRecorderWithAnEngineLog:
             rc, out = _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", log)
         assert rc == 0
         assert "devices-from: memory" in out.with_suffix(".log").read_text(encoding="utf-8")
+
+    def test_a_log_the_engine_does_not_hold_open_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A file the operator wrote proves nothing: the listening process must hold it open."""
+        forged = _log(tmp_path, _TEI_CUDA_LOG, held=False)
+        with _engine(None) as url, pytest.raises(SystemExit, match="does not hold this file open"):
+            _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", forged)
+        assert not (tmp_path / "rec.json").exists()
+        assert not (tmp_path / "rec.log").exists()
+
+    def test_a_log_held_by_another_process_than_the_listener_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_CUDA_LOG)
+        monkeypatch.setattr(record_presets, "_holds_open", lambda pid, path: False)
+        with _engine(None) as url, pytest.raises(SystemExit, match="does not hold this file open"):
+            _record(monkeypatch, tmp_path, url, "cuda", "--engine-log", log)
+
+    def test_a_log_for_an_engine_that_is_not_local_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        log = _log(tmp_path, _TEI_CUDA_LOG)
+        with pytest.raises(SystemExit, match="is not a local port"):
+            record_presets.require_engine_output("http://gpu-box.example:5801", Path(log))
+
+    def test_an_unreadable_process_table_refuses_the_log(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def denied(**kwargs: object) -> list[object]:
+            raise record_presets.psutil.AccessDenied()
+
+        monkeypatch.setattr(record_presets.psutil, "net_connections", denied)
+        with pytest.raises(SystemExit, match="process table is not readable"):
+            record_presets.require_engine_output("http://127.0.0.1:5801", tmp_path / "e.log")
+
+    def test_a_process_that_vanished_holds_nothing_open(self, tmp_path: Path) -> None:
+        assert not record_presets._holds_open(2**22 + 7, tmp_path / "e.log")
 
     def test_a_run_with_no_evidence_is_recorded_as_none(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
