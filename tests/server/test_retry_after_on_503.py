@@ -200,3 +200,46 @@ def test_an_answer_that_is_not_a_503_carries_no_retry_after(client: TestClient) 
         failed = client.get("/api/health")
     assert failed.status_code == 500
     assert "retry-after" not in failed.headers
+
+
+_CONFIG_WRITES = [
+    ("patch", "/api/config", "update_config", {"json": {"top_k": 3}}),
+    ("post", "/api/config/reset", "reset_config", {"json": {"keys": ["top_k"]}}),
+]
+_CONFIG_WRITE_IDS = ["update", "reset"]
+
+
+def _config_write_raises(handler: str, error: Exception) -> AbstractContextManager[Any]:
+    return mock.patch(
+        f"lilbee.server.handlers.{handler}", new_callable=AsyncMock, side_effect=error
+    )
+
+
+def test_the_retry_hint_is_five_seconds() -> None:
+    assert UNAVAILABLE_RETRY_AFTER_SECONDS == 5
+    assert retry_after_headers() == {"Retry-After": "5"}
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "handler", "kwargs"), _CONFIG_WRITES, ids=_CONFIG_WRITE_IDS
+)
+def test_a_config_write_on_a_held_lock_carries_retry_after(
+    client: TestClient, method: str, path: str, handler: str, kwargs: dict[str, Any]
+) -> None:
+    with _config_write_raises(handler, FileLockUnavailableError("another lilbee process held it")):
+        response = getattr(client, method)(path, **kwargs)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert response.json()["detail"].startswith("Could not write config.toml")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "handler", "kwargs"), _CONFIG_WRITES, ids=_CONFIG_WRITE_IDS
+)
+def test_a_config_write_that_fails_for_another_reason_carries_no_retry_after(
+    client: TestClient, method: str, path: str, handler: str, kwargs: dict[str, Any]
+) -> None:
+    with _config_write_raises(handler, PermissionError("denied")):
+        response = getattr(client, method)(path, **kwargs)
+    assert response.status_code == 503
+    assert "retry-after" not in response.headers
