@@ -72,6 +72,10 @@ def served_by(model: str, engine: EngineAdapter | None, *, native: bool) -> Serv
         if engine is None:
             return ServingEngine(UNKNOWN_ENGINE, UNKNOWN_VERSION)
         return _pinned(engine)
+    try:
+        parse_model_ref(model)
+    except ValueError:
+        return ServingEngine(UNKNOWN_ENGINE, UNKNOWN_VERSION)
     prefix = model.split("/", 1)[0] or UNKNOWN_ENGINE
     spec = local_server_for_key(prefix)
     if prefix in API_PROVIDERS or spec is not None:
