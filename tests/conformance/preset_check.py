@@ -109,6 +109,12 @@ class Setup:
     which refuses an oversize prompt before any request (the path of an engine whose
     server has no overflow check, such as mlx-lm).
     """
+    engine: str = ""
+    """The managed engine that serves the server, or empty for a preset.
+
+    A named engine sends the JSON steps through the fleet client with the engine's request
+    profile, which drops or refuses a reply format the engine does not enforce.
+    """
 
     @property
     def preset(self) -> str:
@@ -224,6 +230,8 @@ def _vision(setup: Setup) -> Outcome:
 def _json_step(
     setup: Setup, response_format: dict[str, Any], schema: dict[str, Any] | None
 ) -> Outcome:
+    if setup.engine:
+        return _engine_json_step(setup, response_format, schema)
     result = create_sdk_provider().chat(
         [{"role": "user", "content": JSON_ASK}],
         model=_ref(setup, "chat"),
@@ -231,6 +239,47 @@ def _json_step(
     )
     assert isinstance(result, ChatResult)
     return Outcome(not json_fault(result.text, schema), f"finish={result.finish_reason}")
+
+
+def _engine_json_step(
+    setup: Setup, response_format: dict[str, Any], schema: dict[str, Any] | None
+) -> Outcome:
+    """The JSON step through the fleet client, with the request profile of the named engine.
+
+    An engine that enforces the format must answer one JSON value that fits. On an engine
+    that does not, a schema must be refused before any request, and a json_object request
+    goes out as plain advice: lilbee's own scan must then find the object in the reply.
+    """
+    from lilbee.core.llm_json import first_json_object
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.engines.base import EngineName
+    from lilbee.providers.fleet.engines.choice import discover_adapters
+
+    profile = discover_adapters()[EngineName(setup.engine)].request_profile(WorkerRole.CHAT)
+    client = LlamaServerClient(
+        presets.get_preset(setup.preset).base_url,
+        setup.models["chat"],
+        timeout=_TIMEOUT_S,
+        profile=profile,
+    )
+    try:
+        result = client.chat_result(
+            [{"role": "user", "content": JSON_ASK}],
+            options={"max_tokens": 256, "response_format": response_format},
+        )
+    except ProviderError as exc:
+        refused = not profile.structured_output and exc.kind is ProviderErrorKind.BAD_REQUEST
+        return Outcome(refused and schema is not None, f"refused kind={exc.kind}")
+    finally:
+        client.close()
+    finish = f"finish={result.finish_reason}"
+    if profile.structured_output:
+        return Outcome(not json_fault(result.text, schema), finish)
+    if schema is not None:
+        return Outcome(False, f"the schema went to {profile.label}, which does not enforce it")
+    found = first_json_object(result.text) is not None
+    return Outcome(found, f"format dropped, scan found an object={found} {finish}")
 
 
 def _json_object(setup: Setup) -> Outcome:
@@ -547,6 +596,7 @@ def fixture_json(
         "embed_dim": setup.embed_dim,
         "strict": setup.strict,
         **({"window": setup.window} if setup.window else {}),
+        **({"engine": setup.engine} if setup.engine else {}),
         "results": {step: outcome.as_json() for step, outcome in results.items()},
         "error_answers": error_answers(tape.exchanges),
         "exchanges": [exchange.as_json() for exchange in tape.exchanges],
@@ -563,6 +613,7 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
         doc.get("strict", False),
         doc["server"],
         doc.get("window", 0),
+        doc.get("engine", ""),
     )
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc

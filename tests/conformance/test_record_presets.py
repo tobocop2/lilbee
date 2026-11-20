@@ -10,11 +10,13 @@ import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import pytest
 
 from tests.conformance.preset_check import Setup, fixture_json, recording
 from tests.conformance.record_presets import build_parser, token_from
+from tests.conformance.request_set import JSON_ASK
 
 _TOKEN = "s3cret-token-value"  # pragma: allowlist secret
 
@@ -277,3 +279,99 @@ def _empty_tape():
     from tests.conformance.preset_check import _Tape
 
     return _Tape()
+
+
+@contextmanager
+def _chat_server(content: str, bodies: list[dict]) -> Iterator[str]:
+    """A local chat server that keeps each request body and answers *content* to every one."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            size = int(self.headers.get("Content-Length") or 0)
+            bodies.append(json.loads(self.rfile.read(size)))
+            message = {"role": "assistant", "content": content}
+            reply = {"choices": [{"message": message, "finish_reason": "stop"}]}
+            body = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+_FENCED = '```json\n{"city": "Paris", "pop": 2100000}\n```'
+_BARE = '{"city": "Paris", "pop": 2100000}'
+
+
+def _run_json_step(tmp_path, engine: str, content: str, step: str) -> tuple[Any, list[dict]]:
+    from tests.conformance import preset_check
+
+    bodies: list[dict] = []
+    setup = Setup(("chat",), {"chat": "m"}, strict=True, engine=engine)
+    with _chat_server(content, bodies) as url, preset_check.configured(url, setup, tmp_path):
+        outcome = preset_check._STEP_FUNCTIONS[step](setup)
+    return outcome, bodies
+
+
+def _formats(bodies: list[dict]) -> list[Any]:
+    return [body["response_format"] for body in bodies if "response_format" in body]
+
+
+class TestEngineJsonSteps:
+    def test_mlx_refuses_a_schema_before_the_chat_request(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "mlx", _BARE, "json_schema")
+        assert outcome.ok
+        assert outcome.detail == "refused kind=bad_request"
+        assert _formats(bodies) == []
+        assert all(body["messages"][0]["content"] != JSON_ASK for body in bodies)
+
+    def test_mlx_drops_json_object_and_the_scan_finds_the_fenced_object(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "mlx", _FENCED, "json_object")
+        assert outcome.ok
+        assert "scan found an object=True" in outcome.detail
+        assert _formats(bodies) == []
+        assert any(body["messages"][0]["content"] == JSON_ASK for body in bodies)
+
+    def test_mlx_fails_json_object_when_the_reply_holds_no_object(self, tmp_path) -> None:
+        prose = "Paris has about two million people."
+        outcome, _ = _run_json_step(tmp_path, "mlx", prose, "json_object")
+        assert not outcome.ok
+
+    def test_llama_cpp_sends_the_schema_and_judges_the_reply(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "llama.cpp", _BARE, "json_schema")
+        assert outcome.ok
+        assert [f["type"] for f in _formats(bodies)] == ["json_schema"]
+
+    def test_llama_cpp_fails_a_fenced_reply_to_json_object(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "llama.cpp", _FENCED, "json_object")
+        assert not outcome.ok
+        assert [f["type"] for f in _formats(bodies)] == ["json_object"]
+
+    def test_the_engine_is_read_from_the_fixture(self, tmp_path) -> None:
+        from tests.conformance.preset_check import load_fixture
+
+        setup = Setup(("chat",), {"chat": "m"}, engine="mlx")
+        doc = fixture_json("s", "1", setup, {}, _empty_tape())
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        assert load_fixture(path)[0].engine == "mlx"
+
+    def test_the_parser_takes_an_engine_name_and_refuses_another_word(self) -> None:
+        base = ["--server", "s", "--version", "1", "--url", "u", "--roles", "chat"]
+        rest = ["--models", "chat=m", "--out", "o.json"]
+        assert build_parser().parse_args([*base, *rest, "--engine", "mlx"]).engine == "mlx"
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([*base, *rest, "--engine", "mlx-lm"])
