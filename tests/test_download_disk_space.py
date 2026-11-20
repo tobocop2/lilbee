@@ -220,7 +220,11 @@ def test_a_partial_that_will_not_delete_is_reported(
 def test_an_unreadable_cache_folder_is_named_in_a_plain_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _refuse(self: Path, pattern: str) -> Any:
+    real_glob = Path.glob
+
+    def _refuse(self: Path, pattern: str, **kwargs: Any) -> Any:
+        if not self.is_relative_to(tmp_path):
+            return real_glob(self, pattern, **kwargs)
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(Path, "glob", _refuse)
@@ -234,7 +238,12 @@ def test_a_cache_plain_error_covers_a_listing_that_fails_while_iterating(
 ) -> None:
     """Path.glob is lazy, so a real read error surfaces on iteration, not on the call."""
 
-    def _fail_midway(self: Path, pattern: str) -> Iterator[Path]:
+    real_glob = Path.glob
+
+    def _fail_midway(self: Path, pattern: str, **kwargs: Any) -> Iterator[Path]:
+        if not self.is_relative_to(tmp_path):
+            yield from real_glob(self, pattern, **kwargs)
+            return
         yield self
         raise PermissionError(13, "Permission denied")
 
@@ -247,7 +256,11 @@ def test_a_cache_plain_error_covers_a_listing_that_fails_while_iterating(
 def test_a_cache_plain_error_falls_back_to_the_error_text_without_a_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _refuse(self: Path, pattern: str) -> Any:
+    real_glob = Path.glob
+
+    def _refuse(self: Path, pattern: str, **kwargs: Any) -> Any:
+        if not self.is_relative_to(tmp_path):
+            return real_glob(self, pattern, **kwargs)
         raise OSError("disk went away")
 
     monkeypatch.setattr(Path, "glob", _refuse)
