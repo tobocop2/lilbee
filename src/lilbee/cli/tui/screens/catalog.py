@@ -33,7 +33,7 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
 from lilbee.catalog.models import CatalogResult, estimate_min_ram_gb
-from lilbee.catalog.refs import is_gguf_filename
+from lilbee.catalog.refs import canonical_ref, is_gguf_filename
 from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
@@ -2310,8 +2310,10 @@ class CatalogScreen(Screen[None]):
         Featured / HF browse rows surface a bare hf_repo while the
         registry deletes by ``<hf_repo>/<file>.gguf``. Bare repos
         resolve to the lexicographically-first matching installed
-        manifest; full refs and remote names pass through.
+        manifest; full refs and remote names pass through. A ``#gguf``
+        qualifier reads as the plain ref.
         """
+        identity = canonical_ref(identity)
         if "/" in identity and is_gguf_filename(identity):
             return identity
         prefix = identity + "/"

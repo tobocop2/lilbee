@@ -32,6 +32,7 @@ from lilbee.app.placement import (
     set_placement,
     wait_chat_ready,
 )
+from lilbee.catalog.refs import canonical_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -56,7 +57,7 @@ def _clean_model_name(ref: str) -> str:
 
     "Qwen/Qwen3-235B-A22B-GGUF/Q4_K_M/...-00001-of-00005.gguf" -> "Qwen3-235B-A22B".
     """
-    parts = ref.split("/")
+    parts = canonical_ref(ref).split("/")
     for component in parts[1:]:  # skip the org; the repo name is the friendly one
         if component.endswith(_GGUF_REPO_SUFFIXES):
             return component.rsplit("-", 1)[0]
