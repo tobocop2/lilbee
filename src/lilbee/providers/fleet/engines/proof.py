@@ -27,6 +27,11 @@ HARDWARE_PROOF: Mapping[str, Mapping[str, HardwareProof]] = {
         "Intel integrated graphics": HardwareProof.RECORDED,
         "Intel NPU": HardwareProof.NOT_RUN,
     },
+    "ovms": {
+        "Intel CPU": HardwareProof.NOT_RUN,
+        "Intel integrated graphics": HardwareProof.NOT_RUN,
+        "Intel NPU": HardwareProof.NOT_RUN,
+    },
     "lemonade": {
         "AMD XDNA2 NPU": HardwareProof.NOT_RUN,
     },

@@ -362,6 +362,7 @@ def test_engine_list_json_names_the_engines_that_are_not_installed(
         "tei",
         "openvino",
         "lemonade",
+        "ovms",
     ]
 
 

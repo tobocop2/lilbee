@@ -32,6 +32,7 @@ class EngineSetting(StrEnum):
     MLX = "mlx"
     OPENVINO = "openvino"
     LEMONADE = "lemonade"
+    OVMS = "ovms"
 
 
 class FtsLanguage(StrEnum):

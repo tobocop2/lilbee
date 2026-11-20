@@ -387,7 +387,7 @@ def test_the_install_path_refuses_each_row_that_has_no_pack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     refused = [r for r in COVERAGE_ROWS if r.route in (Route.UNPUBLISHED, Route.USER_INSTALLED)]
-    assert {r.engine for r in refused} == {"mlx", "openvino", "lemonade"}
+    assert {r.engine for r in refused} == {"mlx", "openvino", "ovms", "lemonade"}
     assert {install_refusal(r, monkeypatch) for r in refused} == {"NoPublishedPackError"}
 
 
