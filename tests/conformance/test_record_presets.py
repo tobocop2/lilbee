@@ -282,7 +282,7 @@ def _empty_tape():
 
 
 @contextmanager
-def _chat_server(content: str, bodies: list[dict]) -> Iterator[str]:
+def _chat_server(content: str, bodies: list[dict], finish: str = "stop") -> Iterator[str]:
     """A local chat server that keeps each request body and answers *content* to every one."""
 
     class Handler(BaseHTTPRequestHandler):
@@ -290,7 +290,7 @@ def _chat_server(content: str, bodies: list[dict]) -> Iterator[str]:
             size = int(self.headers.get("Content-Length") or 0)
             bodies.append(json.loads(self.rfile.read(size)))
             message = {"role": "assistant", "content": content}
-            reply = {"choices": [{"message": message, "finish_reason": "stop"}]}
+            reply = {"choices": [{"message": message, "finish_reason": finish}]}
             body = json.dumps(reply).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -316,12 +316,15 @@ _FENCED = '```json\n{"city": "Paris", "pop": 2100000}\n```'
 _BARE = '{"city": "Paris", "pop": 2100000}'
 
 
-def _run_json_step(tmp_path, engine: str, content: str, step: str) -> tuple[Any, list[dict]]:
+def _run_json_step(
+    tmp_path, engine: str, content: str, step: str, finish: str = "stop"
+) -> tuple[Any, list[dict]]:
     from tests.conformance import preset_check
 
     bodies: list[dict] = []
     setup = Setup(("chat",), {"chat": "m"}, strict=True, engine=engine)
-    with _chat_server(content, bodies) as url, preset_check.configured(url, setup, tmp_path):
+    server = _chat_server(content, bodies, finish)
+    with server as url, preset_check.configured(url, setup, tmp_path):
         outcome = preset_check._STEP_FUNCTIONS[step](setup)
     return outcome, bodies
 
@@ -353,10 +356,18 @@ class TestEngineJsonSteps:
         assert ask["chat_template_kwargs"] == {"enable_thinking": False}
         assert ask["max_tokens"] == 256
 
-    def test_mlx_fails_json_object_when_the_reply_holds_no_object(self, tmp_path) -> None:
-        prose = "Paris has about two million people."
-        outcome, _ = _run_json_step(tmp_path, "mlx", prose, "json_object")
+    def test_mlx_passes_json_object_on_a_full_answer_the_scan_cannot_read(self, tmp_path) -> None:
+        """MLX promises no JSON: the step judges that lilbee drops the format, not the model."""
+        broken = '```json\n{"city": "Paris", "population": 16,000,000}\n```'
+        outcome, bodies = _run_json_step(tmp_path, "mlx", broken, "json_object")
+        assert outcome.ok
+        assert "scan found an object=False" in outcome.detail
+        assert _formats(bodies) == []
+
+    def test_mlx_fails_json_object_when_the_answer_is_cut_off(self, tmp_path) -> None:
+        outcome, _ = _run_json_step(tmp_path, "mlx", _FENCED, "json_object", finish="length")
         assert not outcome.ok
+        assert "finish=length" in outcome.detail
 
     def test_llama_cpp_sends_the_schema_and_judges_the_reply(self, tmp_path) -> None:
         outcome, bodies = _run_json_step(tmp_path, "llama.cpp", _BARE, "json_schema")
