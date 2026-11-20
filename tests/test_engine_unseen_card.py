@@ -10,9 +10,14 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import gpu_hardware, planning
-from lilbee.providers.fleet.placement import unseen_card_reason
+from lilbee.providers.fleet.placement import (
+    InstancePlan,
+    ModelPlacementInput,
+    Placement,
+    unseen_card_reason,
+)
 from lilbee.providers.fleet.placement_spec import PlacementSpec
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._fleet_engines import CardEngine, Role, cards_of, prepare_host
 
 ROLES = (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1))
@@ -148,6 +153,32 @@ def test_a_chat_on_another_card_with_embed_on_the_cpu_is_refused_and_embed_is_pl
     plan = planning.plan_all_launches(engines=engines)
     assert [launch.role for launch in plan.launches] == [WorkerRole.EMBED]
     assert plan.refused_roles == {WorkerRole.CHAT: CHAT_OTHER_CARD_REFUSAL}
+
+
+def test_a_chat_on_another_card_is_left_out_of_the_instances_that_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host(tmp_path, monkeypatch, CHAT_ON_CARD_ZERO_EMBED_ON_CPU)
+    engines = _chat_on_another_card_embed_on_cpu(tmp_path)
+    planning.capture_plan_probe(engines)
+    placed = Placement(
+        instances=(
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(), target=RoleTarget.CPU),
+        ),
+        unplaceable_roles=(),
+    )
+    launching = planning._launching_instances(
+        placed,
+        [
+            ModelPlacementInput(WorkerRole.CHAT, 1 << 30),
+            ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=1 << 30),
+        ],
+        {WorkerRole.CHAT: "org/repo/chat.gguf", WorkerRole.EMBED: "org/repo/embed.gguf"},
+        cards_of((4, 4)),
+        engines=engines,
+    )
+    assert [inst.role for inst in launching] == [WorkerRole.EMBED]
 
 
 def test_the_placement_view_refuses_a_chat_on_another_card_with_embed_on_the_cpu(
