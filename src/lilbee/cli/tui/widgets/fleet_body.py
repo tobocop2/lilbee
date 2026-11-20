@@ -26,7 +26,7 @@ from textual.widgets import Label, Static
 
 from lilbee.app import engine_service
 from lilbee.app.placement import (
-    SAVED_PLACEMENT_WAITS_FOR_ENGINE,
+    PlacementRefusal,
     get_placement,
     preview_placement,
     set_placement,
@@ -187,7 +187,7 @@ def _edits_from_view(view: PlacementView) -> dict[WorkerRole, _RoleEdit]:
             edits[r.role] = _RoleEdit(
                 r.role, r.model, set(r.devices), r.replicas, r.tensor_split, entry.target
             )
-    if view.rejected_spec_json and view.refusal != SAVED_PLACEMENT_WAITS_FOR_ENGINE:
+    if view.rejected_spec_json and view.refusal_kind is not PlacementRefusal.WAITING_FOR_ENGINE:
         for role, entry in named.items():
             if role not in edits:
                 edits[role] = _edit_from_entry(role, "", entry)

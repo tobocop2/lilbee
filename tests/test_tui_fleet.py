@@ -1671,7 +1671,7 @@ async def test_the_screen_shows_the_saved_placement_and_each_missing_engine(
 
 def _no_engine_saved_view():  # type: ignore[no-untyped-def]
     """What the service returns when a saved spec exists and no installed engine can run it."""
-    from lilbee.app.placement import SAVED_PLACEMENT_WAITS_FOR_ENGINE, PlacementView
+    from lilbee.app.placement import PlacementRefusal, PlacementView
 
     return PlacementView(
         gpus=(),
@@ -1680,8 +1680,44 @@ def _no_engine_saved_view():  # type: ignore[no-untyped-def]
         manual=False,
         spec_json=None,
         rejected_spec_json=_LOST_CARD_SPEC,
-        refusal=SAVED_PLACEMENT_WAITS_FOR_ENGINE,
+        # A sentence the screen has never seen: it reads the kind, not the words.
+        refusal="Install an engine and this placement applies.",
+        refusal_kind=PlacementRefusal.WAITING_FOR_ENGINE,
     )
+
+
+def _no_model_saved_view():  # type: ignore[no-untyped-def]
+    """What the service returns when a saved spec exists and no model is installed for it."""
+    from lilbee.app.placement import (
+        SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
+        PlacementRefusal,
+        PlacementView,
+    )
+
+    return PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        rejected_spec_json=_LOST_CARD_SPEC,
+        refusal=SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
+        refusal_kind=PlacementRefusal.WAITING_FOR_MODEL,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_saved_spec_with_no_model_keeps_the_saved_rows(monkeypatch):
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(fbm, "get_placement", _no_model_saved_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one(FleetBody)
+        assert await wait_until(pilot, lambda: WorkerRole.CHAT in body._edits)
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,6 @@ from rich.text import Text
 
 from lilbee.app.placement import (
     PLACEMENT_READ_ERRORS,
-    PlacementRefusal,
     PlacementView,
     get_placement,
     preview_placement,
@@ -165,7 +164,8 @@ def _render_rejected(view: PlacementView) -> None:
     """Print why a saved placement is not in use, when it is not."""
     if view.refusal:
         console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
-        if view.rejected_spec_json and view.refusal_kind is not PlacementRefusal.WAITING:
+        waiting = view.refusal_kind is not None and view.refusal_kind.is_waiting
+        if view.rejected_spec_json and not waiting:
             console.print(Text(f"  {_CLEAR_INSTRUCTION}", style=theme.WARNING), soft_wrap=True)
     elif view.rejected_spec_json:
         console.print(

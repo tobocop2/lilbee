@@ -51,9 +51,15 @@ _CHAT_READY_GRACE_S = 3.0
 class PlacementRefusal(StrEnum):
     """Why a placement reads as refused: the spec waits, cannot be read, or is refused."""
 
-    WAITING = "waiting"
+    WAITING_FOR_ENGINE = "waiting_for_engine"
+    WAITING_FOR_MODEL = "waiting_for_model"
     UNREADABLE = "unreadable"
     REFUSED = "refused"
+
+    @property
+    def is_waiting(self) -> bool:
+        """Whether the saved spec is kept and applies once an engine or a model is installed."""
+        return self in (PlacementRefusal.WAITING_FOR_ENGINE, PlacementRefusal.WAITING_FOR_MODEL)
 
 
 @dataclass(frozen=True)
@@ -203,7 +209,7 @@ def _view(
     pins_dropped: str = "",
 ) -> PlacementView:
     refused_roles = resolved.unlaunched_roles or resolved.unplaceable_reasons
-    if refused_roles and refusal_kind in (None, PlacementRefusal.WAITING):
+    if refused_roles and (refusal_kind is None or refusal_kind.is_waiting):
         refusal_kind = PlacementRefusal.REFUSED
     gpus = tuple(
         GpuInfo(
@@ -395,7 +401,7 @@ def _spec_view(
     if resolved.instances:
         return _view(resolved, engines, manual=True, spec_json=spec.to_json())
     if spec.roles.keys() & resolved.skipped_not_installed.keys():
-        refusal, kind = SAVED_PLACEMENT_WAITS_FOR_A_MODEL, PlacementRefusal.WAITING
+        refusal, kind = SAVED_PLACEMENT_WAITS_FOR_A_MODEL, PlacementRefusal.WAITING_FOR_MODEL
     else:
         refusal, kind = SAVED_PLACEMENT_PLACES_NO_ROLE, PlacementRefusal.REFUSED
     return _view(
@@ -549,7 +555,7 @@ def _no_engine_view(
     else:
         if spec is not None:
             rejected_spec_json, refusal = spec.to_json(), SAVED_PLACEMENT_WAITS_FOR_ENGINE
-            refusal_kind = PlacementRefusal.WAITING
+            refusal_kind = PlacementRefusal.WAITING_FOR_ENGINE
     return PlacementView(
         gpus=(),
         roles=(),

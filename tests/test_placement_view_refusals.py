@@ -207,7 +207,7 @@ class TestTheRefusalText:
             spec_json=None,
             rejected_spec_json='{"chat": {"target": "auto"}}',
             refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_A_MODEL,
-            refusal_kind=app_placement.PlacementRefusal.WAITING,
+            refusal_kind=app_placement.PlacementRefusal.WAITING_FOR_MODEL,
         )
         assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
         buffer = io.StringIO()

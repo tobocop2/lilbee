@@ -1006,8 +1006,9 @@ then lists every GPU. `lilbee placement show` prints the same fact as a note
 under the table.
 
 When a saved spec is not in use, `refusal` holds the reason in words and
-`refusal_kind` names the case: `waiting` when the spec applies once an engine or
-a model is installed, `unreadable` when the saved text cannot be parsed, and
+`refusal_kind` names the case: `waiting_for_engine` or `waiting_for_model` when the
+spec applies once an engine or a model is installed, `unreadable` when the saved
+text cannot be parsed, and
 `refused` when an engine refuses roles or the spec places no role on this
 machine. The field is null when there is no refusal, and also for a saved spec
 that does not fit the hardware: that reply carries `rejected_spec_json` alone.
