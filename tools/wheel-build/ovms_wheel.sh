@@ -25,6 +25,13 @@ root="$(cd "${here}/../.." && pwd)"
 project="${root}/packaging/engine-wheel-ovms"
 # shellcheck source=/dev/null
 . "${root}/engines/ovms.env"
+# bin/ovms links libgit2 (GPL-2.0 with a linking exception) and no build flag removes it. The
+# wheel stays unbuilt until the owner rules on that licence.
+test "${OVMS_LIBGIT2_RULING:-}" = "accepted" || {
+  echo "ovms_wheel.sh: the wheel bundles libgit2 (GPL-2.0 with a linking exception)." >&2
+  echo "Set OVMS_LIBGIT2_RULING=accepted after the owner accepts that licence." >&2
+  exit 3
+}
 mkdir -p "${out}"
 out="$(cd "${out}" && pwd)"
 
@@ -60,9 +67,12 @@ for path in "${lib}"/*; do
 done
 cp "${server}/LICENSE" "${project}/LICENSE-ovms"
 cp -R "${server}/thirdparty-licenses/." "${project}/THIRD-PARTY/"
+# libespeak-ng is not copied: no library links it, and only the speech code of libopenvino_genai
+# loads it by name. Its licence text is not shipped either.
+rm -f "${project}/THIRD-PARTY/espeak-ng.LICENSE.txt"
 cp "${tbb}/../tbb-"*".dist-info/LICENSE.txt" "${project}/LICENSE-tbb" 2> /dev/null || true
 
-expression="Apache-2.0"
+expression="Apache-2.0 AND GPL-2.0-only WITH GCC-exception-2.0"
 echo "License-Expression: ${expression}"
 printf '%s\n' "${expression}" > "${out}/license-expression.txt"
 

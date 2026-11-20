@@ -192,6 +192,13 @@ def test_the_memory_estimate_charges_the_weights_of_the_ir_folder(tmp_path: Path
     assert estimate.device_bytes >= 4096
 
 
+def test_the_pin_record_names_the_licence_of_the_linked_libgit2() -> None:
+    assert OVMS.pin_record()["licenses"] == [
+        "Apache-2.0",
+        "GPL-2.0-only WITH GCC-exception-2.0",
+    ]
+
+
 def test_the_proof_table_lists_every_device_as_not_run() -> None:
     devices = ("Intel CPU", "Intel integrated graphics", "Intel NPU")
     assert proof.not_run_on("ovms") == devices
