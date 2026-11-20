@@ -803,6 +803,19 @@ async def test_a_click_on_a_role_in_the_engine_line_opens_the_picker_of_that_rol
         assert _text(app.screen, "#engine-picker-title") == "Engine for the embed model"
 
 
+@pytest.mark.parametrize("role", ["chat", "embed"])
+async def test_a_click_on_a_role_opens_one_picker_for_that_role_only(role: str) -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        offset = str(app.query_one(EngineLine).render()).index(role) + 1
+        await pilot.click(EngineLine, offset=(offset, 0))
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        await pilot.pause()
+        assert _text(app.screen, "#engine-picker-title") == f"Engine for the {role} model"
+        assert sum(isinstance(screen, EnginePickerModal) for screen in app.screen_stack) == 1
+
+
 # --- model info: the Engine section and the e key
 
 _DOWNLOAD = engine_service.EngineOption("openvino", installed=False, download_bytes=180_000_000)
