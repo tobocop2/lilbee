@@ -2278,9 +2278,7 @@ def test_chat_fits_the_context_to_the_configured_model(monkeypatch, invoke) -> N
 
     monkeypatch.setattr(p, "_fit_chat_context", _fit)
     invoke(p)
-    assert seen == [
-        (_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf")
-    ]
+    assert seen == [(_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf")]
 
 
 @pytest.mark.parametrize(
