@@ -18,6 +18,7 @@ from typing import Any
 import psutil
 from tools.qa.engine_demo.scrub import scrub_recording
 
+from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.readback import _is_host_device, parse_memory_rows
 from tests.conformance.preset_check import (
     Outcome,
@@ -64,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Window the engine serves, for a server that has no overflow check of its own.",
     )
+    parser.add_argument(
+        "--engine",
+        default="",
+        choices=["", *(name.value for name in EngineName)],
+        help="Managed engine behind --url, whose request rules the JSON steps apply.",
+    )
     parser.add_argument("--backend", default="cpu", help="Backend of the run: cpu, cuda, metal.")
     parser.add_argument(
         "--device-url",
@@ -90,6 +97,7 @@ def setup_from(args: argparse.Namespace) -> Setup:
         args.strict,
         args.server,
         args.window,
+        args.engine,
     )
 
 
