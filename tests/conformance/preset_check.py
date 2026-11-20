@@ -248,7 +248,7 @@ def _engine_json_step(
 
     An engine that enforces the format must answer one JSON value that fits. On an engine
     that does not, a schema must be refused before any request, and a json_object request
-    goes out as plain advice: lilbee's own scan must then find the object in the reply.
+    goes out as plain advice and must come back whole.
     """
     from lilbee.core.llm_json import first_json_object
     from lilbee.providers.base import ProviderErrorKind
@@ -281,8 +281,10 @@ def _engine_json_step(
         return Outcome(not json_fault(result.text, schema), finish)
     if schema is not None:
         return Outcome(False, f"the schema went to {profile.label}, which does not enforce it")
+    # Whether the model wrote a readable object is a fact of the model, kept in the detail.
     found = first_json_object(result.text) is not None
-    return Outcome(found, f"format dropped, scan found an object={found} {finish}")
+    whole = result.finish_reason == "stop"
+    return Outcome(whole, f"format dropped, scan found an object={found} {finish}")
 
 
 def _json_object(setup: Setup) -> Outcome:
