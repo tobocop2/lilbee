@@ -1202,6 +1202,11 @@ class TestFindPick:
         assert result is not None
         assert result.hf_repo == "mid/Mid-8B-GGUF"
 
+    def test_match_by_a_suffixed_native_ref(self) -> None:
+        result = find_pick("mid/Mid-8B-GGUF/m-Q4_K_M.gguf#gguf")
+        assert result is not None
+        assert result.hf_repo == "mid/Mid-8B-GGUF"
+
     def test_match_by_hf_repo_case_insensitive(self) -> None:
         result = find_pick("MID/mid-8b-gguf")
         assert result is not None
