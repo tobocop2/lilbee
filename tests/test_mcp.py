@@ -1340,8 +1340,8 @@ class TestMain:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGTERM handler to keep")
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    def test_main_leaves_the_terminate_handler_to_the_process(self, mock_build):
-        """No loop takes SIGTERM, so its close cannot reset it to the default disposition."""
+    def test_main_gives_the_terminate_handler_back_when_the_loop_ends(self, mock_build):
+        """The loop takes SIGTERM while it serves, and its close returns the handler it found."""
         previous = signal.getsignal(signal.SIGTERM)
 
         def handler(signum: int, frame: object) -> None:
@@ -1359,7 +1359,7 @@ class TestMain:
             after = signal.getsignal(signal.SIGTERM)
         finally:
             signal.signal(signal.SIGTERM, previous)
-        assert seen == [handler]
+        assert seen != [handler]
         assert after is handler
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The proactor loop sets its own wakeup fd")

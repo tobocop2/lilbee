@@ -22,7 +22,6 @@ import logging
 import os
 import queue
 import signal
-import socket
 import sys
 import threading
 import time
@@ -723,6 +722,17 @@ class _EngineLifecycle:
         else:
             self._on_hard_exit(signum, frame)
 
+    def routed_in_loop(self) -> tuple[signal.Signals, ...]:
+        """Signals a running loop takes over: the ones install and route_interrupt route."""
+        return self._routed_signals(interrupt=True)
+
+    def on_loop_signal(self, signum: int) -> None:
+        """Run the handler of *signum* as a loop callback, with no interrupted frame."""
+        if signum == signal.SIGINT:
+            self._on_interrupt(signum, None)
+        else:
+            self._on_hard_exit(signum, None)
+
     def reset(self) -> None:
         """Forget that handlers were installed and every stop request."""
         self._installed = False
@@ -927,35 +937,31 @@ def install_engine_lifecycle_hooks() -> None:
     _lifecycle.install()
 
 
-def _drain_wakeups(reader: socket.socket) -> None:
-    with suppress(OSError):
-        reader.recv(4096)
-
-
 @contextmanager
-def loop_wakes_on_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
-    """Make a signal on any thread wake *loop*, so its handler runs on the main thread at once.
+def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
+    """Deliver the routed signals as callbacks of *loop* while it runs.
 
-    The handler stays a plain process handler; only the wakeup fd points at the loop.
+    A plain handler raises at whatever bytecode the main thread is running. That can
+    be inside the loop's own bookkeeping or a library's ``except BaseException``, and
+    then the exit is lost and the loop idles. A loop callback runs between steps, so
+    the SystemExit it raises always leaves ``run_forever``. The handlers that were
+    installed before return when the loop ends, so a late signal still reaches the stop.
     """
-    reader, writer = socket.socketpair()
-    reader.setblocking(False)
-    writer.setblocking(False)
+    routed = _lifecycle.routed_in_loop()
+    previous = {sig: signal.getsignal(sig) for sig in routed}
+    added: list[signal.Signals] = []
     try:
-        loop.add_reader(reader.fileno(), _drain_wakeups, reader)
-    except NotImplementedError:  # pragma: no cover - the proactor loop sets its own wakeup fd
-        reader.close()
-        writer.close()
-        yield
-        return
-    previous = signal.set_wakeup_fd(writer.fileno(), warn_on_full_buffer=False)
+        for sig in routed:
+            loop.add_signal_handler(sig, _lifecycle.on_loop_signal, sig)
+            added.append(sig)
+    except (NotImplementedError, RuntimeError):  # pragma: no cover - Windows, off the main thread
+        pass
     try:
         yield
     finally:
-        signal.set_wakeup_fd(previous)
-        loop.remove_reader(reader.fileno())
-        reader.close()
-        writer.close()
+        for sig in added:
+            loop.remove_signal_handler(sig)
+            signal.signal(sig, previous[sig])
 
 
 def exit_status_after_stop(status: int) -> int:

@@ -70,7 +70,7 @@ SDK_DIST = "liter-llm"
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
 _PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 # Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
-pytest_plugins = ["tests._hang_watchdog"]
+pytest_plugins = ["tests._hang_watchdog", "pytester"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
