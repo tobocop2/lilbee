@@ -22,11 +22,11 @@ def _package(
     dist = site / f"{name}-1.0.dist-info"
     dist.mkdir(parents=True)
     (dist / "METADATA").write_text(
-        "\n".join(["Metadata-Version: 2.4", f"Name: {name}", *metadata]) + "\n"
+        "\n".join(["Metadata-Version: 2.4", f"Name: {name}", *metadata]) + "\n", encoding="utf-8"
     )
     if licence is not None:
         (dist / "licenses").mkdir()
-        (dist / "licenses" / "LICENSE").write_text(licence)
+        (dist / "licenses" / "LICENSE").write_text(licence, encoding="utf-8")
     return dist
 
 
@@ -45,6 +45,7 @@ def _run(
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -54,7 +55,7 @@ def site(tmp_path: pathlib.Path) -> pathlib.Path:
     """A site-packages folder whose parent holds the PSF interpreter licence."""
     folder = tmp_path / "python" / "site-packages"
     folder.mkdir(parents=True)
-    (folder.parent / "LICENSE.txt").write_text(_PSF)
+    (folder.parent / "LICENSE.txt").write_text(_PSF, encoding="utf-8")
     return folder
 
 
@@ -64,9 +65,9 @@ def test_names_each_term_and_copies_the_texts(site: pathlib.Path, tmp_path: path
     _package(site, "hub", "License: Apache 2.0 License")
     done = _run(site, tmp_path)
     assert done.returncode == 0, done.stderr
-    terms = (tmp_path / "terms").read_text().split()
+    terms = (tmp_path / "terms").read_text(encoding="utf-8").split()
     assert terms == ["0BSD", "Apache-2.0", "BSD-3-Clause", "MIT", "MPL-2.0", "PSF-2.0", "Zlib"]
-    assert (tmp_path / "out" / "numpy-1.0" / "LICENSE").read_text() == "text"
+    assert (tmp_path / "out" / "numpy-1.0" / "LICENSE").read_text(encoding="utf-8") == "text"
 
 
 def test_reads_the_classifier_and_tells_bsd_clauses_by_their_text(
@@ -76,7 +77,7 @@ def test_reads_the_classifier_and_tells_bsd_clauses_by_their_text(
     _package(site, "two", "Classifier: License :: OSI Approved :: BSD License", licence=_BSD2)
     _package(site, "isc", "Classifier: License :: OSI Approved :: ISC License (ISCL)")
     assert _run(site, tmp_path).returncode == 0
-    terms = (tmp_path / "terms").read_text().split()
+    terms = (tmp_path / "terms").read_text(encoding="utf-8").split()
     assert terms == ["BSD-2-Clause", "BSD-3-Clause", "ISC", "PSF-2.0"]
 
 
@@ -84,9 +85,9 @@ def test_copies_a_licence_file_from_the_top_of_the_dist_info(
     site: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
     dist = _package(site, "old", "License: MIT", licence=None)
-    (dist / "COPYING.txt").write_text("old text")
+    (dist / "COPYING.txt").write_text("old text", encoding="utf-8")
     assert _run(site, tmp_path).returncode == 0
-    assert (tmp_path / "out" / "old-1.0" / "COPYING.txt").read_text() == "old text"
+    assert (tmp_path / "out" / "old-1.0" / "COPYING.txt").read_text(encoding="utf-8") == "old text"
 
 
 @pytest.mark.parametrize(
@@ -136,7 +137,7 @@ def test_refuses_an_interpreter_without_the_psf_licence(
     if text is None:
         interpreter.unlink()
     else:
-        interpreter.write_text(text)
+        interpreter.write_text(text, encoding="utf-8")
     done = _run(site, tmp_path)
     assert done.returncode == 1
     assert message in done.stderr
@@ -145,9 +146,9 @@ def test_refuses_an_interpreter_without_the_psf_licence(
 def _supplied(tmp: pathlib.Path, *lines: str) -> pathlib.Path:
     folder = tmp / "project"
     folder.mkdir(exist_ok=True)
-    (folder / "LICENSE-Apache-2.0").write_text("Apache License text")
+    (folder / "LICENSE-Apache-2.0").write_text("Apache License text", encoding="utf-8")
     path = folder / "supplied.txt"
-    path.write_text("\n".join(["# comment", "", *lines]) + "\n")
+    path.write_text("\n".join(["# comment", "", *lines]) + "\n", encoding="utf-8")
     return path
 
 
@@ -159,8 +160,8 @@ def test_takes_the_supplied_file_of_a_package_that_ships_none(
     done = _run(site, tmp_path, supplied)
     assert done.returncode == 0, done.stderr
     copied = tmp_path / "out" / "tokenizers-1.0" / "LICENSE-Apache-2.0"
-    assert copied.read_text() == "Apache License text"
-    assert (tmp_path / "terms").read_text().split() == ["Apache-2.0", "PSF-2.0"]
+    assert copied.read_text(encoding="utf-8") == "Apache License text"
+    assert (tmp_path / "terms").read_text(encoding="utf-8").split() == ["Apache-2.0", "PSF-2.0"]
 
 
 @pytest.mark.parametrize(
@@ -202,17 +203,17 @@ def test_a_replacing_file_is_written_over_the_tree_and_into_the_copy(
 ) -> None:
     dist = _package(site, "numpy", "License-Expression: BSD-3-Clause", licence="BSD" + _GCC_SECTION)
     (dist / "licenses" / "vendored").mkdir()
-    (dist / "licenses" / "vendored" / "LICENSE").write_text("MIT text")
+    (dist / "licenses" / "vendored" / "LICENSE").write_text("MIT text", encoding="utf-8")
     done = _run(
         site,
         tmp_path,
         _supplied(tmp_path, "numpy-1.0 LICENSE-Apache-2.0 replaces licenses/LICENSE"),
     )
     assert done.returncode == 0, done.stderr
-    assert (dist / "licenses" / "LICENSE").read_text() == "Apache License text"
+    assert (dist / "licenses" / "LICENSE").read_text(encoding="utf-8") == "Apache License text"
     copy = tmp_path / "out" / "numpy-1.0"
-    assert (copy / "LICENSE").read_text() == "Apache License text"
-    assert (copy / "vendored" / "LICENSE").read_text() == "MIT text"
+    assert (copy / "LICENSE").read_text(encoding="utf-8") == "Apache License text"
+    assert (copy / "vendored" / "LICENSE").read_text(encoding="utf-8") == "MIT text"
     assert not (copy / "LICENSE-Apache-2.0").exists()
 
 
@@ -227,7 +228,8 @@ def test_refuses_to_replace_a_file_the_dist_info_lacks(
     )
     assert done.returncode == 1
     assert "numpy-1.0: licenses/COPYING is not a licence file of its dist-info" in done.stderr
-    assert "GNU GENERAL PUBLIC LICENSE" in (dist / "licenses" / "LICENSE").read_text()
+    kept = (dist / "licenses" / "LICENSE").read_text(encoding="utf-8")
+    assert "GNU GENERAL PUBLIC LICENSE" in kept
 
 
 def test_stops_on_a_supplied_line_it_cannot_read(
@@ -252,9 +254,10 @@ def test_refuses_a_supplied_file_for_a_package_the_tree_lacks(
 
 def test_the_pack_supplies_a_file_that_exists_for_each_named_package() -> None:
     supplied = _SCRIPT.parents[2] / "packaging" / "engine-mlx" / "supplied-licences.txt"
-    lines = [line.split() for line in supplied.read_text().splitlines() if line and line[0] != "#"]
+    text = supplied.read_text(encoding="utf-8")
+    lines = [line.split() for line in text.splitlines() if line and line[0] != "#"]
     assert lines
-    requirements = (supplied.parent / "requirements.txt").read_text()
+    requirements = (supplied.parent / "requirements.txt").read_text(encoding="utf-8")
     for package, path, *replaces in lines:
         assert replaces in ([], ["replaces", "licenses/LICENSE.txt"])
         name, version = package.rsplit("-", 1)
@@ -270,7 +273,11 @@ def test_refuses_a_folder_with_no_package(site: pathlib.Path, tmp_path: pathlib.
 
 def test_prints_usage_with_the_wrong_argument_count() -> None:
     done = subprocess.run(
-        [sys.executable, "-I", str(_SCRIPT)], capture_output=True, text=True, check=False
+        [sys.executable, "-I", str(_SCRIPT)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     assert done.returncode != 0
     assert "Usage: collect_python_licences.py" in done.stderr
