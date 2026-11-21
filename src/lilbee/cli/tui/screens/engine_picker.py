@@ -52,12 +52,18 @@ class EnginePickerModal(ModalScreen[EngineOption | None]):
     ]
 
     def __init__(
-        self, title: str, subtitle: str, current: str | None, options: list[EngineOption]
+        self,
+        title: str,
+        subtitle: str,
+        current: str | None,
+        options: list[EngineOption],
+        saved: str = AUTO,
     ) -> None:
         super().__init__()
         self._title = title
         self._subtitle = subtitle
         self._current = current
+        self._saved = saved
         self._options = {option.name: option for option in options}
 
     def _label(self, option: EngineOption) -> Content:
@@ -92,7 +98,11 @@ class EnginePickerModal(ModalScreen[EngineOption | None]):
             yield Static(msg.ENGINE_PICKER_HINT, id="engine-picker-hint")
 
     def on_mount(self) -> None:
-        self.query_one(OptionList).focus()
+        """Focus the list with the saved engine highlighted, so Enter keeps the saved choice."""
+        option_list = self.query_one(OptionList)
+        option_list.focus()
+        names = list(self._options)
+        option_list.highlighted = names.index(self._saved) if self._saved in names else 0
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
