@@ -1210,6 +1210,46 @@ def test_a_reload_whose_plan_fails_after_the_drain_gives_the_server_back(
     assert len(swaps) == started
 
 
+class _StateFileHeld(OSError):
+    """A peer holds the state file of a server open, so its stop cannot remove the file."""
+
+
+def _refuse_a_closed_embed(client: MagicMock) -> None:
+    """Make *client* refuse an embed once it is closed, as its HTTP client does."""
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        if client.close.called:
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        return [[0.0] for _ in texts]
+
+    client.embed.side_effect = embed
+
+
+def test_a_failed_stop_of_one_group_leaves_the_next_group_open_in_dispatch(
+    real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The chat server stops first and its stop raises; the embed server still serves."""
+    provider = _running_provider(monkeypatch, tmp_path)
+    embed_clients = list(provider._clients[WorkerRole.EMBED])
+    for client in embed_clients:
+        _refuse_a_closed_embed(client)
+
+    def refuse_stop() -> None:
+        raise _StateFileHeld("The state file is in use.")
+
+    monkeypatch.setattr(provider._swap_for(WorkerRole.CHAT), "shutdown", refuse_stop)
+    cfg.chat_model = _OTHER_CHAT_REF
+    cfg.chunk_size = _NOTES_CHUNK_SIZE
+
+    with pytest.raises(_StateFileHeld):
+        provider._reload_pass()
+
+    assert provider._clients[WorkerRole.EMBED] == embed_clients
+    for client in embed_clients:
+        client.close.assert_not_called()
+    assert provider.embed(["a note"]) == [[0.0]]
+
+
 def test_a_shutdown_during_the_drain_stops_the_old_engine_and_starts_no_new_one(
     engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
 ) -> None:
