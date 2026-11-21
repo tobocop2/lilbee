@@ -17,6 +17,7 @@ import pytest
 from lilbee.providers.fleet import engine_store
 from lilbee.providers.fleet.engine_crates import MPL_PYPI_CHECKSUMS
 from lilbee.providers.fleet.engines import mlx
+from lilbee.providers.roles import WorkerRole
 
 ROOT = Path(__file__).parents[1]
 PROJECT = ROOT / "packaging" / "engine-mlx"
@@ -278,6 +279,7 @@ case "$1 $2" in
     package mlx-@MLX@ MIT
     package mlx_metal-@MLX@ MIT
     package tqdm-4.70.1 "MPL-2.0 AND MIT"
+    [ -z "$FAKE_PIP_REQUIREMENT" ] || mkdir -p "$site/pip"
     echo "Tag: py3-none-macosx_14_0_arm64" > "$site/mlx_metal-@MLX@.dist-info/WHEEL" ;;
 esac
 """
@@ -299,6 +301,18 @@ def _pack_tree(
     (template / "bin" / "python3").symlink_to(sys.executable)
     (template / "lib" / "python3.12").mkdir(parents=True)
     (template / "lib" / "python3.12" / "LICENSE.txt").write_text(_PSF, encoding="utf-8")
+    packages = template / "lib" / "python3.12" / "site-packages"
+    (packages / "pip" / "_vendor" / "certifi").mkdir(parents=True)
+    (packages / "pip" / "_vendor" / "certifi" / "cacert.pem").write_text("pem", encoding="utf-8")
+    (packages / "pip-26.3.dist-info" / "licenses").mkdir(parents=True)
+    (packages / "pip-26.3.dist-info" / "METADATA").write_text(
+        "Name: pip\nLicense-Expression: MIT\n", encoding="utf-8"
+    )
+    (packages / "pip-26.3.dist-info" / "licenses" / "LICENSE").write_text("MIT", encoding="utf-8")
+    (template / "lib" / "python3.12" / "ensurepip" / "_bundled").mkdir(parents=True)
+    (
+        template / "lib" / "python3.12" / "ensurepip" / "_bundled" / "pip-26.3-py3-none-any.whl"
+    ).write_text("wheel", encoding="utf-8")
     (template / "include" / "python3.12").mkdir(parents=True)
     (template / "include" / "python3.12" / "patchlevel.h").write_text(
         f'#define PY_VERSION "{pin["MLX_PBS_VERSION"]}"\n', encoding="utf-8"
@@ -395,6 +409,37 @@ def test_the_wheel_carries_the_licences_and_terms_of_the_interpreter_libraries(
     ) in url
 
 
+def _interpreter_tree(tmp_path: Path) -> Path:
+    (root,) = (tmp_path / "scratch").glob("mlx-wheel.*/pack/lilbee_engine_mlx-*")
+    return root / "lilbee_engine_mlx" / "python" / "lib" / "python3.12"
+
+
+@needs_bash
+@needs_shasum
+def test_the_build_drops_pip_and_its_bundled_wheel_from_the_interpreter_tree(
+    tmp_path: Path,
+) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    assert _run_pack(top, env, tmp_path).returncode == 1
+    tree = _interpreter_tree(tmp_path)
+    assert not (tree / "site-packages" / "pip").exists()
+    assert not list((tree / "site-packages").glob("pip-*.dist-info"))
+    assert not (tree / "ensurepip" / "_bundled").exists()
+    assert (tree / "LICENSE.txt").exists()
+
+
+@needs_bash
+@needs_shasum
+def test_the_script_stops_when_a_pip_folder_is_in_the_tree_at_the_collector(
+    tmp_path: Path,
+) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    done = _run_pack(top, {**env, "FAKE_PIP_REQUIREMENT": "1"}, tmp_path)
+    assert done.returncode == 1
+    assert "pip is in the interpreter tree" in done.stderr
+    assert not (tmp_path / "out" / "terms.txt").exists()
+
+
 @needs_bash
 @needs_shasum
 def test_the_script_stops_when_the_archive_is_not_the_pinned_one(tmp_path: Path) -> None:
@@ -474,6 +519,25 @@ def test_the_launcher_runs_mlx_lm_server_on_the_bundled_interpreter(tmp_path: Pa
     interpreter, *args = done.stdout.split()
     assert Path(interpreter).resolve() == (package / "python" / "bin" / "python3").resolve()
     assert args == ["-I", "-m", "mlx_lm.server", "--model", "/m", "--port", "5"]
+
+
+def _mlx_paragraph() -> str:
+    text = (ROOT / "docs" / "usage.md").read_text(encoding="utf-8")
+    (paragraph,) = (p for p in text.split("\n\n") if p.startswith("mlx (mlx-lm)"))
+    return " ".join(paragraph.split())
+
+
+def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_exists() -> None:
+    paragraph = _mlx_paragraph()
+    assert f"macOS {mlx.MACOS_FLOOR[0]} or newer" in paragraph
+    assert "needs Apple Silicon" in paragraph
+    assert mlx.MLX.served_roles == {WorkerRole.CHAT}
+    assert "serves chat only" in paragraph
+    packs = (ROOT / "src" / "lilbee" / "providers" / "fleet" / "engine_packs.json").read_text(
+        encoding="utf-8"
+    )
+    assert "mlx" not in packs
+    assert "No pack of mlx is published yet" in paragraph
 
 
 def test_the_launcher_is_executable_and_names_the_adapter_tool() -> None:
