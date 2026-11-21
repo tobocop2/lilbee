@@ -4930,16 +4930,26 @@ class TestLifecycleMethods:
         with pytest.raises(RuntimeError, match="reload failed"):
             p.reload_role(WorkerRole.CHAT, wait=True)
 
-    def test_add_spawn_listener_stores_callbacks(self) -> None:
-        p = FleetProvider()
+    def test_every_added_spawn_listener_hears_each_role_load(self) -> None:
+        embed = _fake_client()
+        embed.embed.return_value = [[0.1]]
+        p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+        first_spawning: list[WorkerRole] = []
+        first_spawned: list[WorkerRole] = []
+        second_spawning: list[WorkerRole] = []
+        second_spawned: list[WorkerRole] = []
+        third_spawned: list[WorkerRole] = []
 
-        def on_spawning(_r: WorkerRole) -> None: ...
+        p.add_spawn_listener(on_spawning=first_spawning.append, on_spawned=first_spawned.append)
+        p.add_spawn_listener(on_spawning=second_spawning.append, on_spawned=second_spawned.append)
+        p.add_spawn_listener(on_spawned=third_spawned.append)
+        p._preload_roles()
 
-        def on_spawned(_r: WorkerRole) -> None: ...
-
-        p.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
-        assert p._on_spawning is on_spawning
-        assert p._on_spawned is on_spawned
+        assert first_spawning == [WorkerRole.EMBED]
+        assert first_spawned == [WorkerRole.EMBED]
+        assert second_spawning == [WorkerRole.EMBED]
+        assert second_spawned == [WorkerRole.EMBED]
+        assert third_spawned == [WorkerRole.EMBED]
 
 
 class TestChatWithTools:
