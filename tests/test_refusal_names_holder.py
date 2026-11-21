@@ -87,8 +87,7 @@ class TestAChatRefusedBesideAnEmbed:
             f"The chat model {CHAT_REF} needs 1.0 GiB but device 0 has 0.0 GiB usable "
             "(8.0 GiB total, 90% headroom). "
             f"The embed model {EMBED_REF} (8.0 GiB) holds the rest. "
-            "Use a smaller embed model, or set the target of one of these models "
-            "to cpu or another card."
+            "Use a smaller embed model, or set the target of one of these models to cpu."
         )
 
     def test_a_partly_full_card_names_the_embed_with_the_true_room(
@@ -135,6 +134,21 @@ class TestAPinnedChatBesideAPinnedEmbed:
         assert reason.startswith("chat pinned to device 0 needs 4.0 GiB but device 0 has 1.2 GiB")
         assert f"The embed model {EMBED_REF} (6.0 GiB) holds the rest." in reason
         assert "Use a smaller embed model" in reason
+        assert reason.endswith("to cpu.")
+        assert "another card" not in reason
+
+    def test_a_two_card_host_keeps_the_other_card_in_the_remedy(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        roles = (Role(WorkerRole.EMBED, 6), Role(WorkerRole.CHAT, 4), Role(WorkerRole.RERANK, 1))
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
+        monkeypatch.setattr(cfg, "placement", PIN_BOTH_AND_CPU_RERANK)
+        engine = CardEngine("engine-a", tmp_path / "engine-server", roles, cards_of((8, 8)))
+        plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
+        assert WorkerRole.CHAT not in _launched(plan)
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert "Use a smaller embed model" in reason
+        assert "to cpu or another card." in reason
 
 
 class TestTheShortfallIsExact:
@@ -178,6 +192,32 @@ class TestTheText:
         )
         assert "Use a smaller embed or rerank model" in reason
 
+    def test_the_remedy_names_another_card_only_when_one_exists(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        holders = (RoomHolder(WorkerRole.EMBED, "e", 4 * GIB),)
+        lone = card_refusal("m", 0, 5 * GIB, 3.2 * GIB, 8 * GIB, fix=True, holders=holders)
+        assert lone == (
+            "m needs 5.0 GiB but device 0 has 3.2 GiB usable (8.0 GiB total, 90% headroom). "
+            "The embed model e (4.0 GiB) holds the rest. "
+            "Use a smaller embed model, or set the target of one of these models to cpu."
+        )
+        pair = card_refusal(
+            "m",
+            0,
+            5 * GIB,
+            3.2 * GIB,
+            8 * GIB,
+            fix=True,
+            holders=holders,
+            cards=2,
+        )
+        assert pair == (
+            "m needs 5.0 GiB but device 0 has 3.2 GiB usable (8.0 GiB total, 90% headroom). "
+            "The embed model e (4.0 GiB) holds the rest. "
+            "Use a smaller embed model, or set the target of one of these models "
+            "to cpu or another card."
+        )
+
     def test_a_refusal_with_a_fallback_names_the_holder_and_offers_no_fix(
         self, monkeypatch
     ) -> None:
@@ -196,8 +236,7 @@ class TestEachSurfaceReadsTheRefusal:
         "chat pinned to device 0 needs 4.0 GiB but device 0 has 1.2 GiB usable "
         "(8.0 GiB total, 90% headroom). "
         f"The embed model {EMBED_REF} (6.0 GiB) holds the rest. "
-        "Use a smaller embed model, or set the target of one of these models to cpu or "
-        "another card."
+        "Use a smaller embed model, or set the target of one of these models to cpu."
     )
 
     @pytest.fixture
