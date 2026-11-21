@@ -1589,7 +1589,14 @@ class CatalogScreen(Screen[None]):
             return
         rows = grid.rows
         row = rows[index] if 0 <= index < len(rows) else None
-        drawer.update_for_row(row)
+        drawer.update_for_row(row, self._installed_ref_of(row))
+
+    def _installed_ref_of(self, row: CatalogRow | None) -> str | None:
+        """The installed file name of an installed local row, or None for any other row."""
+        if not isinstance(row, LocalCatalogRow) or not row.installed:
+            return None
+        ref = self._resolve_delete_ref(row.ref)
+        return ref if ref in self._installed_names else None
 
     def on_key(self, event: Key) -> None:
         """Intercept 1-6 to jump tabs even when a focused widget owns digits.

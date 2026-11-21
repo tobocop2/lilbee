@@ -1013,6 +1013,18 @@ async def test_update_drawer_for_grid_swallows_missing_drawer() -> None:
         query.assert_called_once_with("#catalog-detail-drawer", CatalogDetailDrawer)
 
 
+async def test_the_drawer_gets_the_installed_file_name_of_an_installed_row() -> None:
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._installed_names = {"acme/foo", "acme/foo/foo-q4_k_m.gguf"}
+        installed = _row("acme/foo", installed=True)
+        assert screen._installed_ref_of(installed) == "acme/foo/foo-q4_k_m.gguf"
+        assert screen._installed_ref_of(_row("acme/foo")) is None
+        assert screen._installed_ref_of(_row("acme/other", installed=True)) is None
+        assert screen._installed_ref_of(None) is None
+
+
 async def test_maybe_prefetch_on_grid_nav_skips_with_only_empty_grids() -> None:
     """When _grid_container.query(ModelGrid) finds grids but they're all empty,
     the total <= 0 short-circuit fires."""

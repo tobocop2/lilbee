@@ -17,7 +17,7 @@ from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark
-from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow, SizeVariant
 from lilbee.cli.tui.widgets import catalog_detail
 from lilbee.cli.tui.widgets.catalog_detail import (
     CatalogDetailDrawer,
@@ -177,6 +177,34 @@ def test_a_stored_engine_choice_shows_in_the_engine_line(real_lookup: None) -> N
     )
 
 
+_FILE_REF = "acme/foo/foo-q4_k_m.gguf"
+
+
+def test_a_choice_stored_under_the_installed_file_shows_for_an_installed_row(
+    real_lookup: None,
+) -> None:
+    engine_service.use(_FILE_REF, "openvino")
+    row = _row(frozenset({ModelFormat.GGUF}))
+    assert _engine_line(row, _FILE_REF).plain == "Engine: ■ openvino (chosen for this file)"
+    assert _formats_block(_row(), _FILE_REF).plain.splitlines()[1].endswith("■ openvino")
+
+
+def test_a_choice_stored_under_the_repo_does_not_show_for_an_installed_row(
+    real_lookup: None,
+) -> None:
+    engine_service.use("acme/foo", "openvino")
+    row = _row(frozenset({ModelFormat.GGUF}))
+    assert _engine_line(row, _FILE_REF).plain == "Engine: ■ llama.cpp (chosen for this file)"
+
+
+def test_a_row_that_is_not_installed_keeps_the_repo_lookup(real_lookup: None) -> None:
+    engine_service.use(_FILE_REF, "openvino")
+    row = _row(frozenset({ModelFormat.GGUF}))
+    assert _engine_line(row).plain == "Engine: ■ llama.cpp (chosen for this file)"
+    engine_service.use("acme/foo", "openvino")
+    assert _engine_line(row).plain == "Engine: ■ openvino (chosen for this file)"
+
+
 def test_a_stored_engine_choice_shows_in_the_formats_section(real_lookup: None) -> None:
     engine_service.use("acme/foo", "openvino")
     assert _formats_block(_row()).plain.splitlines()[1].endswith("■ openvino")
@@ -224,6 +252,43 @@ def test_a_missing_engine_shows_its_download_size(monkeypatch: pytest.MonkeyPatc
     block = _formats_block(_row())
     assert block.plain.splitlines()[2] == "  mlx  ■ mlx (180 MB download)"
     assert asked == ["acme/foo#mlx"]
+
+
+@pytest.mark.parametrize(
+    ("level", "glyph"),
+    [(FitLevel.FITS, "✓"), (FitLevel.TIGHT, "⚠"), (FitLevel.WONT_RUN, "✗")],
+)
+def test_each_fit_level_has_its_own_glyph(level: FitLevel, glyph: str) -> None:
+    assert catalog_detail._fit_glyph(FitChip(level=level, headroom_gb=1.0)) == glyph
+
+
+@pytest.mark.parametrize("compat", [ModelCompat.UNSUPPORTED, ModelCompat.UNKNOWN])
+def test_a_row_with_no_catalog_model_says_the_architecture_is_unknown(
+    compat: ModelCompat,
+) -> None:
+    row = replace(_row(compat=compat), catalog_model=None)
+    sentence = _compat_sentence(row).plain
+    if compat is ModelCompat.UNSUPPORTED:
+        assert sentence == (
+            "Architecture unknown is not in the supported set. Pull may fail at load."
+        )
+    else:
+        assert sentence == msg.COMPAT_DETAIL_SENTENCE_UNKNOWN
+
+
+def test_a_size_variant_with_no_fit_has_no_glyph() -> None:
+    variant = SizeVariant(label="Q4_K_M", quant="Q4_K_M", size_gb=4.6, ref="r/q4", fit=None)
+    assert catalog_detail._render_sizes_block([variant]) == "Sizes\n  Q4_K_M  4.6 GB"
+
+
+async def test_the_engine_and_formats_widgets_carry_their_css_classes() -> None:
+    async with _Drawer().run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        drawer = pilot.app.query_one(CatalogDetailDrawer)
+        engine = drawer.query_one("#catalog-detail-engine", Static)
+        formats = drawer.query_one("#catalog-detail-formats", Static)
+        assert engine.classes == frozenset({"catalog-detail-engine"})
+        assert formats.classes == frozenset({"catalog-detail-formats"})
 
 
 def test_a_missing_engine_with_no_known_size_shows_the_name_alone(
