@@ -127,6 +127,27 @@ class TestEstimateInstanceFootprint:
         argv = calls[0]
         assert argv[argv.index("--gpu-layers") + 1] == "-2"
 
+    @pytest.mark.parametrize("layers", [-3, -10])
+    def test_any_negative_layer_count_sends_all_layers_to_parser(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch, layers: int
+    ) -> None:
+        calls: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=calls,
+        )
+        estimate_instance_footprint(
+            model_file,
+            ctx=8192,
+            slots=1,
+            gpu_layers=layers,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.Q8_0,
+        )
+        argv = calls[0]
+        assert argv[argv.index("--gpu-layers") + 1] == "-2"
+
     def test_a_report_without_a_file_size_sizes_as_before(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
