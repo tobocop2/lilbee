@@ -28,27 +28,42 @@ class CancelSignal(Protocol):
     def is_set(self) -> bool: ...
 
 
+class SignalFlag:
+    """A cancel token a signal handler sets with one attribute write and no lock."""
+
+    def __init__(self) -> None:
+        self._is_set = False
+
+    def set(self) -> None:
+        self._is_set = True
+
+    def is_set(self) -> bool:
+        return self._is_set
+
+
 @contextmanager
-def sigint_cancel() -> Iterator[threading.Event]:
+def sigint_cancel() -> Iterator[SignalFlag]:
     """Turn Ctrl-C into a token the wiki pass polls, not a mid-page abort.
 
     A build runs for hours and writes pages as it goes, so the default
     KeyboardInterrupt drops it wherever the interpreter happened to be. Setting
     a token instead lets it stop at a source boundary with what it wrote intact.
-    The previous handler is restored as soon as it fires, so a second Ctrl-C
-    still hard-exits a pass that is not checking the token.
+    The handler stays installed until the scope exits, where the previous handler
+    returns on the main thread. A second Ctrl-C reaches the handler and raises
+    KeyboardInterrupt, so a pass that never checks the token still stops.
 
     signal.signal only works on the main thread; off it (pytest-xdist workers)
     the token is simply never set and Ctrl-C keeps its default behaviour.
     """
-    token = threading.Event()
+    token = SignalFlag()
     if threading.current_thread() is not threading.main_thread():
         yield token
         return
     previous = signal.getsignal(signal.SIGINT)
 
     def _on_sigint(_signum: int, _frame: object) -> None:
-        signal.signal(signal.SIGINT, previous)
+        if token.is_set():
+            raise KeyboardInterrupt
         token.set()
 
     signal.signal(signal.SIGINT, _on_sigint)

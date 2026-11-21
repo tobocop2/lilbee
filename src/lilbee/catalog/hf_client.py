@@ -12,9 +12,10 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from huggingface_hub import HfApi, ModelInfo
-from huggingface_hub.errors import HfHubHTTPError, NotASafetensorsRepoError, SafetensorsParsingError
+import httpx2
+from huggingface_hub import HfApi, ModelInfo, hf_hub_url
 from huggingface_hub.hf_api import RepoSibling
+from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
 from lilbee.catalog.compat import classify
 from lilbee.catalog.content import is_safety_stripped
@@ -23,6 +24,7 @@ from lilbee.catalog.models import (
     CatalogModel,
     HfGgufMeta,
     HfPage,
+    ListsModels,
     estimate_min_ram_gb,
     estimate_size_gb,
 )
@@ -97,7 +99,13 @@ _HF_EXPAND_FIELDS: list[str] = [
     "pipeline_tag",
     "cardData",
     "tags",
+    "safetensors",
 ]
+
+_CONFIG_FILE = "config.json"
+_WEIGHT_FORMATS = frozenset({ModelFormat.SAFETENSORS, ModelFormat.MLX})
+"""The formats whose size a listing row reads from the safetensors tensor counts."""
+_BYTES_PER_GIB = 1024**3
 
 # Query parameter carrying the listing position in the ``Link rel=next`` URL.
 _HF_CURSOR_PARAM = "cursor"
@@ -208,28 +216,55 @@ def repo_has_mmproj(hf_repo: str) -> bool:
     return any(fnmatch.fnmatch(s.rfilename, DEFAULT_MMPROJ_PATTERN) for s in siblings)
 
 
-def read_parameter_count(repo: str, *, token: str | bool | None = None) -> dict[str, int]:
-    """The per-dtype tensor count of a Hub repo, read from the safetensors headers alone.
+_HUB_READ_ERRORS = (
+    httpx2.HTTPError,
+    OSError,
+    AttributeError,
+    TypeError,
+    ValueError,
+    KeyError,
+)
 
-    Returns an empty dict when the repo has no readable header, so the caller
-    reaches the unknown-size reserve instead of an error. A header that parses but
-    has the wrong shape (a list where a mapping belongs) counts as unreadable.
+
+def read_parameter_count(repo: str, *, token: HfToken = None) -> dict[str, int]:
+    """The per-dtype tensor count of a Hub repo, from one request for its safetensors figures.
+
+    Returns an empty dict when the repo has no figures or the Hub cannot be read, so the
+    caller reaches the unknown-size reserve instead of an error.
     """
     try:
-        counts = HfApi().get_safetensors_metadata(repo, token=token).parameter_count
+        info = HfApi().model_info(repo, expand=["safetensors"], token=token)
+        counts = info.safetensors.parameters if info.safetensors else {}
         return {str(dtype): count for dtype, count in counts.items()}
-    except (
-        HfHubHTTPError,
-        NotASafetensorsRepoError,
-        SafetensorsParsingError,
-        OSError,
-        AttributeError,
-        TypeError,
-        ValueError,
-        KeyError,
-    ) as exc:
-        log.debug("No safetensors header for %s: %s", repo, exc)
+    except _HUB_READ_ERRORS as exc:
+        log.debug("No safetensors figures for %s: %s", repo, exc)
         return {}
+
+
+def read_model_config(repo: str, *, token: HfToken = None) -> dict[str, Any] | None:
+    """The ``config.json`` of a Hub repo, or None when it is missing, unreadable or no mapping."""
+    try:
+        resp = get_session().get(
+            hf_hub_url(repo, _CONFIG_FILE),
+            headers=build_hf_headers(token=token),
+            follow_redirects=True,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        hf_raise_for_status(resp)
+        config = resp.json()
+    except _HUB_READ_ERRORS as exc:
+        log.debug("No config.json for %s: %s", repo, exc)
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _weights_gb(counts: dict[str, int]) -> float:
+    """The weight size in GiB, to 0.1, of the listing's tensor counts; 0.0 when unknown."""
+    # circular: model_memory imports lilbee.catalog.types, whose package imports this module.
+    from lilbee.providers.fleet.model_memory import weights_from_header
+
+    weights = weights_from_header(counts)
+    return round(weights / _BYTES_PER_GIB, 1) if weights is not None else 0.0
 
 
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
@@ -277,9 +312,11 @@ class HfClient:
         self._cache: dict[str, tuple[float, HfPage]] = {}
         self._cache_lock = threading.Lock()
         self._arch_cache: dict[str, str] = {}
-        # -inf, not 0.0: on a freshly booted machine ``time.monotonic()`` can be
-        # smaller than the window, which would push the first failure to DEBUG.
-        self._last_fetch_failure_warn: float = float("-inf")
+        self._engine_cache: dict[str, tuple[float, list[CatalogModel]]] = {}
+        # A source that never warned reads as -inf, not 0.0: on a freshly booted machine
+        # ``time.monotonic()`` can be smaller than the window, which would push the first
+        # failure to DEBUG.
+        self._last_fetch_failure_warn: dict[str, float] = {}
 
     def get_cached_arch(self, ref: str) -> str | None:
         """Return the cached `general.architecture` for *ref*, or None if not cached."""
@@ -321,6 +358,8 @@ class HfClient:
         *cursor* names the page to fetch (None is the first). The returned page
         carries the next page's cursor from the ``Link: <...>; rel="next"``
         response header (RFC 5988), the pagination the HuggingFace API documents.
+        A failed read (HTTP error, network error, bad JSON) gives an empty page, and the
+        empty page is cached too, so a browse in the same window makes no request.
         """
         search_value = _hf_search_value(search, fmt)
         cache_key = f"{pipeline_tag}:{sort}:{limit}:{cursor}:{library}:{search_value}:{fmt}"
@@ -346,33 +385,66 @@ class HfClient:
             params = params.add("library", library)
         if cursor:
             params = params.add(_HF_CURSOR_PARAM, cursor)
-        try:
-            resp = httpx.get(
-                HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
-            )
-            if resp.status_code >= HTTPStatus.BAD_REQUEST:
-                log.warning("HuggingFace API returned HTTP %d", resp.status_code)
-                return _EMPTY_HF_PAGE
-            data = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            self._log_fetch_failure(exc)
-            return _EMPTY_HF_PAGE
-
-        next_cursor = _next_cursor(resp)
-
-        engine = self._page_engine(fmt)
-        models: list[CatalogModel] = []
-        for raw in data:
-            model = self._catalog_row(raw, fmt, engine)
-            if model is not None:
-                models.append(model)
-        page = HfPage(models=models, next_cursor=next_cursor)
+        read = self._read_listing(params)
+        page = _EMPTY_HF_PAGE if read is None else self._parse_page(*read, fmt)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)
             if len(self._cache) > self.CACHE_MAX_ENTRIES:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
                 del self._cache[oldest_key]
         return page
+
+    def _read_listing(
+        self, params: httpx.QueryParams
+    ) -> tuple[httpx.Response, list[dict[str, Any]]] | None:
+        """The listing response and its decoded rows, or None when the read failed."""
+        try:
+            resp = httpx.get(
+                HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
+            )
+            if resp.status_code >= HTTPStatus.BAD_REQUEST:
+                log.warning("HuggingFace API returned HTTP %d", resp.status_code)
+                return None
+            return resp, resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            self._log_fetch_failure(exc)
+            return None
+
+    def _parse_page(
+        self, resp: httpx.Response, data: list[dict[str, Any]], fmt: ModelFormat
+    ) -> HfPage:
+        """The page that the decoded rows of a successful listing response hold."""
+        engine = self._page_engine(fmt)
+        models: list[CatalogModel] = []
+        for raw in data:
+            model = self._catalog_row(raw, fmt, engine)
+            if model is not None:
+                models.append(model)
+        return HfPage(models=models, next_cursor=_next_cursor(resp))
+
+    def fetch_engine_models(self, engine: ListsModels) -> list[CatalogModel]:
+        """The rows of the model list that *engine* publishes, cached for ``CACHE_TTL``.
+
+        A failed read (HTTP error, network error, bad JSON, wrong shape) gives no rows, and
+        the empty answer is cached too, so a browse in the same window makes no request.
+        """
+        key = engine.models_url
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._engine_cache.get(key)
+            if cached and now - cached[0] < self.CACHE_TTL:
+                return cached[1]
+        try:
+            resp = httpx.get(key, timeout=DEFAULT_TIMEOUT)
+            if resp.status_code >= HTTPStatus.BAD_REQUEST:
+                raise ValueError(f"HTTP {resp.status_code}")
+            rows = engine.parse_models(resp.json())
+        except (httpx.HTTPError, ValueError) as exc:
+            self._log_fetch_failure(exc, source=f"the {engine.name} model list")
+            rows = []
+        with self._cache_lock:
+            self._engine_cache[key] = (now, rows)
+        return rows
 
     def _catalog_row(
         self, raw: dict[str, Any], fmt: ModelFormat, engine: EngineAdapter | None
@@ -390,7 +462,11 @@ class HfClient:
             return None
         card_desc = item.card_data.get("description", "") if item.card_data else ""
         gguf_meta = HfGgufMeta(**(item.gguf or {}))
-        size_gb = estimate_size_gb(gguf_meta.total, filename)
+        size_gb = (
+            _weights_gb(item.safetensors.parameters if item.safetensors else {})
+            if fmt in _WEIGHT_FORMATS
+            else estimate_size_gb(gguf_meta.total, filename)
+        )
         self.cache_arch(item.id, gguf_meta.architecture)
         return CatalogModel(
             hf_repo=item.id,
@@ -410,17 +486,19 @@ class HfClient:
             formats=formats_from_tags(item.tags or []) | {fmt},
         )
 
-    def _log_fetch_failure(self, exc: Exception) -> None:
-        """Log an HF fetch failure, rate-limited so offline use doesn't spam.
+    def _log_fetch_failure(self, exc: Exception, source: str = "HuggingFace") -> None:
+        """Log a fetch failure from *source*, rate-limited so offline use doesn't spam.
 
         First failure of each ``FETCH_FAILURE_WARN_INTERVAL_S`` window logs
         at WARNING; repeats within the window log at DEBUG. The interval
         starts from the last WARNING so a flapping network produces one
-        line every five minutes, not one per UI tick.
+        line every five minutes, not one per UI tick. Each source has its
+        own window, so one source's warning never hides another's.
         """
         now = time.monotonic()
-        if now - self._last_fetch_failure_warn >= self.FETCH_FAILURE_WARN_INTERVAL_S:
-            log.warning("Failed to fetch models from HuggingFace: %s", exc)
-            self._last_fetch_failure_warn = now
+        last = self._last_fetch_failure_warn.get(source, float("-inf"))
+        if now - last >= self.FETCH_FAILURE_WARN_INTERVAL_S:
+            log.warning("Failed to fetch models from %s: %s", source, exc)
+            self._last_fetch_failure_warn[source] = now
         else:
-            log.debug("Suppressed repeat HF fetch failure: %s", exc)
+            log.debug("Suppressed repeat fetch failure from %s: %s", source, exc)

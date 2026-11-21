@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from lilbee.catalog.refs import hf_repo_from_ref, is_gguf_filename
+from lilbee.catalog.refs import canonical_ref, hf_repo_from_ref, is_gguf_filename
+from lilbee.core.config import META_TABLE
 from lilbee.runtime.lock import write_lock
 
+from .schema import _meta_schema
 from .types import LOCAL_OWNER, ChunkType
 
 if TYPE_CHECKING:
@@ -24,6 +28,13 @@ log = logging.getLogger(__name__)
 # arm, named here so the store's query and index code shares one spelling with
 # its sibling _TITLE_COLUMN.
 _CHUNK_COLUMN = "chunk"
+
+# The age at which a table version is deleted, counted from the version's own creation.
+# A reader keeps its version for one scan, and a full scan of a large table takes seconds
+# to minutes; each kept version slows the check for the latest one (about 1 ms per 1,000).
+_KEEP_VERSIONS = timedelta(minutes=5)
+# The time allowed between reading the clock and the cutoff the cleanup takes from it.
+_CLOCK_SLACK = timedelta(seconds=60)
 
 # Index types as LanceDB's IndexConfig reports them.
 _FTS_INDEX_TYPE = "FTS"
@@ -74,6 +85,26 @@ def open_committed(db: LanceDBConnection, name: str) -> LanceTable | None:
     except ValueError:
         return None
     return table
+
+
+def prune_old_versions(table: LanceTable, keep_version: int | None = None) -> None:
+    """Fold the fragments and delete the table versions older than the keep window.
+
+    ``keep_version`` and every newer version stay readable: the window grows to the
+    epoch age of the oldest of them. Every optimize names its window, as none means 7 days.
+    """
+    if keep_version is None:
+        table.optimize(cleanup_older_than=_KEEP_VERSIONS)
+        return
+    # Listed stamps are naive local times; .timestamp() gives back the epoch, across DST.
+    oldest = min(
+        row["timestamp"].timestamp()
+        for row in table.list_versions()
+        if row["version"] >= keep_version
+    )
+    # The age compares this machine's clock with the writer's: one machine per data dir.
+    age = timedelta(seconds=time.time() - oldest)
+    table.optimize(cleanup_older_than=max(_KEEP_VERSIONS, age + _CLOCK_SLACK))
 
 
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:
@@ -261,6 +292,53 @@ def _vector_index_dangling(
     return any(_is_vector_index(idx) for idx in _dangling_indices(table, indices, lancedb_dir))
 
 
+def newest_meta_row(table: LanceTable) -> dict[str, Any] | None:
+    """The newest row of the ``_meta`` table, or ``None`` when it holds none.
+
+    The table is meant to hold one row; identity reads take the newest to stay deterministic
+    when it holds more.
+    """
+    rows = table.search().limit(None).to_list()
+    return max(rows, key=lambda r: r["updated_at"]) if rows else None
+
+
+_WIDTH_COLUMNS = ("embedding_model", "embedding_dim", "updated_at")
+
+
+def _width_readable(meta: LanceTable) -> bool:
+    """Whether *meta* holds the width columns with the writer's types, each row dated."""
+    written = _meta_schema()
+    names = meta.schema.names
+    if any(
+        name not in names or meta.schema.field(name).type != written.field(name).type
+        for name in _WIDTH_COLUMNS
+    ):
+        return False
+    return meta.count_rows("updated_at IS NULL") == 0
+
+
+def stored_width(value: int | str | None) -> int | None:
+    """The width a ``_meta`` row holds, or ``None`` when it holds no integer above 0."""
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def persisted_embedding_width(lancedb_dir: Path, model: str) -> int | None:
+    """The width the index at *lancedb_dir* was written at, when it was built by *model*.
+
+    Reads the ``_meta`` row without opening a store, so no upgrade runs. ``None`` when the
+    library, a readable row, a match on *model*, or a width above 0 is absent.
+    """
+    if not lancedb_dir.is_dir():
+        return None
+    from lancedb.db import LanceDBConnection
+
+    meta = open_committed(LanceDBConnection(str(lancedb_dir)), META_TABLE)
+    row = newest_meta_row(meta) if meta is not None and _width_readable(meta) else None
+    if row is None or row["embedding_model"] != model:
+        return None
+    return stored_width(row["embedding_dim"])
+
+
 def refs_compatible(
     persisted_ref: str,
     current_ref: str,
@@ -280,6 +358,8 @@ def refs_compatible(
     """
     if persisted_dim != current_dim:
         return False
+    persisted_ref = canonical_ref(persisted_ref)
+    current_ref = canonical_ref(current_ref)
     if persisted_ref == current_ref:
         return True
     if is_gguf_filename(persisted_ref):

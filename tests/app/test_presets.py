@@ -653,23 +653,33 @@ class TestWholeList:
 class TestOneBadEntry:
     """A bad stored entry stops no read, no clear and no key change of another preset."""
 
-    BAD_ENTRIES = (
+    OTHER_FAULTS = (
         _entry("bad", BLOCKED_URL) | {"api_key": KEY},
         _entry("bad", f"http://me:{KEY}@good.test/") | {"api_key": KEY},
         _entry("bad", f"http://good.test/?api_key={KEY}") | {"api_key": KEY},
         {"name": "bad", "url": URL, "roles": ["speak"], "api_key": KEY},
         {"name": "bad", "url": URL, "roles": [], "api_key": KEY},
         {"name": "bad", "url": URL, "roles": ["chat"], "extra": 1, "api_key": KEY},
-        {
-            "name": "bad",
-            "url": URL,
-            "roles": ["chat"],
-            "api_key": "lone\ud800",  # pragma: allowlist secret
-        },
     )
+    BAD_KEY_ENTRIES = (
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "lone\ud800"},
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "tab\tkey"},
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "klúč-key"},
+    )
+    BAD_ENTRIES = (*OTHER_FAULTS, *BAD_KEY_ENTRIES)
 
     @pytest.fixture(params=BAD_ENTRIES)
     def bad(self, request):
+        _store(_entry("good", URL) | {"api_key": KEY}, request.param)
+        return request.param
+
+    @pytest.fixture(params=OTHER_FAULTS)
+    def faulty(self, request):
+        _store(_entry("good", URL) | {"api_key": KEY}, request.param)
+        return request.param
+
+    @pytest.fixture(params=BAD_KEY_ENTRIES)
+    def bad_key(self, request):
         _store(_entry("good", URL) | {"api_key": KEY}, request.param)
         return request.param
 
@@ -701,11 +711,42 @@ class TestOneBadEntry:
         presets.remove_preset("bad")
         assert [entry["name"] for entry in _stored()] == ["good"]
 
-    def test_a_key_change_on_the_bad_entry_is_refused(self, bad):
+    def test_a_key_change_is_refused_when_the_key_is_not_the_only_fault(self, faulty):
         before = _stored()
         with pytest.raises(ValueError, match="'bad' is refused"):
             presets.edit_preset("bad", api_key=KEY + "-2")
         assert _stored() == before
+
+    def test_a_new_key_replaces_a_stored_key_that_cannot_be_a_header_value(self, bad_key):
+        view = presets.edit_preset("bad", api_key=KEY + "-2")
+        assert (view.valid, view.has_key, view.base_url) == (True, True, URL)
+        assert _stored()[1] == {**bad_key, "api_key": KEY + "-2"}
+        assert _stored()[0]["api_key"] == KEY
+
+    def test_a_bad_new_key_leaves_the_bad_entry_as_it_was(self, bad_key):
+        before = _stored()
+        with pytest.raises(ValueError, match="cannot be stored"):
+            presets.edit_preset("bad", api_key="new\tkey")
+        assert _stored() == before
+
+    def test_an_edit_that_names_no_key_leaves_the_bad_key_refused(self, bad_key):
+        before = _stored()
+        with pytest.raises(ValueError, match="'bad' is refused"):
+            presets.edit_preset("bad", roles=["chat", "embed"])
+        assert _stored() == before
+
+    def test_a_new_origin_with_no_new_key_is_refused_for_a_bad_key_too(self, bad_key):
+        before = _stored()
+        with pytest.raises(ValueError, match="stored key does not follow"):
+            presets.edit_preset("bad", url=OTHER_URL)
+        assert _stored() == before
+
+    def test_a_new_key_and_a_new_url_repair_a_row_that_holds_no_url(self):
+        _store({"name": "bad", "url": 5, "roles": ["chat"], "api_key": KEY})
+        with pytest.raises(ValueError, match="stored key does not follow"):
+            presets.edit_preset("bad", url=URL)
+        presets.edit_preset("bad", url=URL, api_key=KEY + "-2")
+        assert _stored() == [{"name": "bad", "url": URL, "roles": ["chat"], "api_key": KEY + "-2"}]
 
     def test_an_add_and_a_role_edit_beside_it_are_still_refused(self, bad):
         before = _stored()

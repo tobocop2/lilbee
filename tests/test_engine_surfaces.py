@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import engine_for_ref
+from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
@@ -27,11 +28,13 @@ from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import NoEngineError
-from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.fleet.engines.host_gate import HostGate
+from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
+from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import (
     GGUF_ENGINE,
     GGUF_REF,
@@ -41,6 +44,7 @@ from tests.test_engine_service import (
     UNREADABLE_NOTICE,
 )
 
+GGUF_EMBED_REF = "org/embed/embed-Q8_0.gguf"
 ALL_ROUTES = [routes.engine_roles_route, routes.engine_use_route, routes.engine_prefer_route]
 SURFACES = ("cli", "rest", "mcp", "slash")
 FALLBACK = (
@@ -58,10 +62,11 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.allow_http_engines = True
     cfg.mcp_engines_enabled = True
     cfg.chat_model = GGUF_REF
+    cfg.embedding_model = GGUF_EMBED_REF
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
@@ -120,7 +125,15 @@ REFUSALS = [
     pytest.param("chat", GGUF_REF, "nonesuch", id="unknown-engine"),
     pytest.param("chat", GGUF_REF, "mlx", id="cannot-load-format"),
     pytest.param("chat", MLX_REF, "mlx", id="model-is-not-the-role-model"),
+    pytest.param("embed", GGUF_EMBED_REF, "mistral.rs", id="gguf-embed-on-mistral"),
 ]
+
+
+def test_the_refusal_of_a_gguf_embed_on_mistral_names_the_format_and_the_role() -> None:
+    assert _service_refusal("embed", GGUF_EMBED_REF, "mistral.rs") == (
+        "Engine mistral.rs cannot load the gguf format of org/embed/embed-Q8_0.gguf for embed. "
+        "Choose an engine that loads gguf for embed."
+    )
 
 
 @pytest.mark.parametrize("surface", SURFACES)
@@ -155,6 +168,45 @@ def test_the_refused_preference_has_the_same_text_on_every_surface(no_mlx: None)
     assert (code, body["detail"]) == (422, expected)
     assert mcp_server.engine_prefer_tool("mlx") == {"error": expected}
     assert run_engine_command("prefer mlx").text == expected
+    assert _stored("preferred_engine") is None
+
+
+class _SilentRefusalEngine(FakeAdapter):
+    """An engine outside the package whose host gate refuses and gives no reason."""
+
+    name = "mistral.rs"
+    formats = frozenset({"gguf"})
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return HostGate(False)
+
+
+EMPTY_REASON_REFUSALS = {
+    "no-build": "Engine mistral.rs is not installed, and this computer cannot run it.",
+    "with-build": "Engine mistral.rs is installed, but this computer cannot run it.",
+}
+
+
+@pytest.mark.parametrize("surface", ["cli", "rest"])
+@pytest.mark.parametrize("case", sorted(EMPTY_REASON_REFUSALS))
+def test_a_host_refusal_with_no_reason_ends_the_text_at_the_sentence(
+    surface: str, case: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    adapter = _SilentRefusalEngine()
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, adapter)  # type: ignore[arg-type]
+    if case == "with-build":
+        monkeypatch.setattr(
+            engine_service, "installed_engines", lambda: {EngineName.MISTRAL: adapter.formats}
+        )
+    assert EngineName.MISTRAL not in engine_service.offered_engines()
+    expected = EMPTY_REASON_REFUSALS[case]
+    if surface == "cli":
+        code, body = _run_cli("prefer", "mistral.rs")
+        assert (code, body["error"]) == (1, expected)
+    else:
+        code, body = _rest("PUT", "/api/engines/preferred", {"engine": "mistral.rs"})
+        assert (code, body["detail"]) == (422, expected)
     assert _stored("preferred_engine") is None
 
 
@@ -431,6 +483,8 @@ def test_every_request_path_checks_the_notice(
 class _Served:
     engine = "llama.cpp"
     version = "1"
+    build = "none"
+    unread = ""
 
 
 _SERVED = _Served()
@@ -462,9 +516,7 @@ def test_the_first_rerank_request_shows_the_notice_once(
 
     cfg.preferred_engine = EngineSetting.MLX
     cfg.reranker_model = GGUF_REF
-    monkeypatch.setattr(routing_provider, "role_engine", lambda role: GGUF_ENGINE)
-    monkeypatch.setattr(routing_provider, "is_native_rerank_ref", lambda model, engine: True)
-    monkeypatch.setattr(routing_provider, "served_by", lambda *a, **k: _SERVED)
+    monkeypatch.setattr(routing_provider, "role_serving", lambda role, ref: _SERVED)
     provider = _provider()
     local = mock.Mock()
     local.rerank.return_value = [0.5]
@@ -719,7 +771,7 @@ def test_every_role_view_shows_why_the_host_refused_an_engine(
         lambda: {EngineName.LLAMA: formats, EngineName.IK_LLAMA: formats},
     )
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(
             system="Linux",

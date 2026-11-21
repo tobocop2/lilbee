@@ -53,7 +53,7 @@ def test_pull_bypassed_with_allow_unsupported(
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, engine, on_bytes, cancel, allow_unsupported: (
+        lambda model, engine, on_bytes, on_notice, cancel, allow_unsupported: (
             captured.append(model) or models_dir / "x.gguf"
         ),
     )
@@ -73,7 +73,7 @@ def test_pull_proceeds_for_supported_arch(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, engine, on_bytes, cancel, allow_unsupported: (
+        lambda model, engine, on_bytes, on_notice, cancel, allow_unsupported: (
             captured.append(model) or models_dir / "x.gguf"
         ),
     )
@@ -92,7 +92,7 @@ def test_pull_proceeds_for_unknown_arch(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(
         mgr,
         "_pull_native",
-        lambda model, engine, on_bytes, cancel, allow_unsupported: models_dir / "x.gguf",
+        lambda model, engine, on_bytes, on_notice, cancel, allow_unsupported: models_dir / "x.gguf",
     )
     result = mgr.pull("acme/foo-GGUF", ModelSource.NATIVE)
     assert result is not None
@@ -238,3 +238,44 @@ def test_is_registered_follows_the_registry_manifest(tmp_path: Path) -> None:
     with mock.patch.object(mgr._registry, "has_manifest", return_value=False) as has_manifest:
         assert not mgr.is_registered("acme/foo-GGUF/foo.gguf")
     has_manifest.assert_called_once_with("acme/foo-GGUF/foo.gguf")
+
+
+def test_the_arch_guard_reads_a_gguf_qualified_file_ref_like_the_bare_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_services()
+    from lilbee.app.services import get_services
+
+    get_services().hf_client.get_cached_arch.return_value = None
+    probed: list[str] = []
+
+    def _probe(url: str) -> GgufHeader:
+        probed.append(url)
+        return GgufHeader(architecture="kimi_k2_unsupported")
+
+    monkeypatch.setattr(compat, "probe_header", _probe)
+    mgr = ModelManager(tmp_path / "models", cfg)
+    with pytest.raises(UnsupportedArchError) as excinfo:
+        mgr.enforce_arch_compat("acme/foo-GGUF/m-Q4_K_M.gguf#gguf")
+    assert excinfo.value.ref == "acme/foo-GGUF/m-Q4_K_M.gguf"
+    assert excinfo.value.architecture == "kimi_k2_unsupported"
+    assert len(probed) == 1
+    assert probed[0].endswith("acme/foo-GGUF/resolve/main/m-Q4_K_M.gguf")
+    get_services().hf_client.get_cached_arch.assert_called_once_with("acme/foo-GGUF/m-Q4_K_M.gguf")
+
+
+@pytest.mark.parametrize(
+    "ref", ["acme/foo-GGUF/m-Q4_K_M.gguf#nope", "qwen:7b#nope", "org/repo/x#a.gguf"]
+)
+def test_the_arch_guard_reads_no_header_for_a_malformed_format_qualifier(
+    ref: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_services()
+    from lilbee.app.services import get_services
+
+    get_services().hf_client.get_cached_arch.return_value = None
+    probed: list[str] = []
+    monkeypatch.setattr(compat, "probe_header", lambda url: probed.append(url) or GgufHeader())
+    ModelManager(tmp_path / "models", cfg).enforce_arch_compat(ref)
+    assert probed == []
+    get_services().hf_client.get_cached_arch.assert_not_called()

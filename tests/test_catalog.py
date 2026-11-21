@@ -57,8 +57,9 @@ from lilbee.catalog import (
 from lilbee.catalog import (
     query as _query,
 )
+from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.header_probe import GgufHeader
-from lilbee.catalog.hf_client import hf_token
+from lilbee.catalog.hf_client import HfClient, hf_token
 from lilbee.catalog.models import HfPage
 from lilbee.catalog.refs import (
     GGUF_GLOB,
@@ -638,16 +639,189 @@ class TestFetchHfModels:
 
         monkeypatch.setattr(httpx, "get", _raise)
         client = get_services().hf_client
-        # Fresh client: the -inf sentinel means "never warned", so the first
-        # failure always warns regardless of the absolute monotonic clock value.
-        assert client._last_fetch_failure_warn == float("-inf")
+        # Fresh client: a source that never warned always warns first, regardless of
+        # the absolute monotonic clock value.
+        assert client._last_fetch_failure_warn == {}
         assert client.fetch_models().models == []
-        first_warn_at = client._last_fetch_failure_warn
-        assert first_warn_at > float("-inf")  # the WARNING branch ran and stamped the clock
+        first_warn_at = dict(client._last_fetch_failure_warn)
+        assert list(first_warn_at) == ["HuggingFace"]  # the WARNING branch ran and stamped it
+        client._cache.clear()  # a cached failure would end the second read before the log
         assert client.fetch_models().models == []
         # Still inside FETCH_FAILURE_WARN_INTERVAL_S: the repeat is throttled to
         # DEBUG and does not re-stamp the clock.
         assert client._last_fetch_failure_warn == first_warn_at
+
+    @pytest.mark.parametrize("failure", ["connect", "status", "badjson"])
+    def test_a_failed_read_is_cached_for_the_window(
+        self, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        """With the Hub unreachable, a second listing in the window makes no request."""
+        calls: list[None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(None)
+            request = httpx.Request("GET", "https://hub.test/api/models")
+            if failure == "connect":
+                raise httpx.ConnectError("offline", request=request)
+            if failure == "status":
+                return httpx.Response(503, request=request)
+            return httpx.Response(200, text="{not json", request=request)
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        first = client.fetch_models()
+        second = client.fetch_models()
+        assert (first.models, first.next_cursor) == ([], None)
+        assert (second.models, second.next_cursor) == ([], None)
+        assert len(calls) == 1
+
+    def test_a_failed_read_asks_again_after_the_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once the cache entry expires the Hub is asked again."""
+        calls: list[None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(None)
+            raise httpx.ConnectError("offline")
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        monkeypatch.setattr(HfClient, "CACHE_TTL", 0.0)
+        client = get_services().hf_client
+        client.fetch_models()
+        client.fetch_models()
+        assert len(calls) == 2
+
+    def test_a_success_replaces_a_cached_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After the window a good read replaces the cached empty page."""
+        answers: list[Any] = [
+            httpx.ConnectError("offline"),
+            httpx.Response(200, json=[{"id": "user/back", "downloads": 1, "siblings": []}]),
+        ]
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        assert client.fetch_models().models == []
+        monkeypatch.setattr(HfClient, "CACHE_TTL", 0.0)  # the window passes
+        assert [m.hf_repo for m in client.fetch_models().models] == ["user/back"]
+        monkeypatch.setattr(HfClient, "CACHE_TTL", 300.0)
+        assert [m.hf_repo for m in client.fetch_models().models] == ["user/back"]
+        assert answers == []
+
+    def test_a_row_that_cannot_be_read_still_raises_and_is_not_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A good row beside a garbage createdAt row is no read failure: it raises, uncached."""
+        rows = [
+            {"id": "user/good", "siblings": [{"rfilename": "good-Q4_K_M.gguf"}]},
+            {
+                "id": "user/bad",
+                "createdAt": "garbage",
+                "siblings": [{"rfilename": "bad-Q4_K_M.gguf"}],
+            },
+        ]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, json=rows))
+        client = get_services().hf_client
+        with pytest.raises(ValueError, match="Cannot parse 'garbage' as a datetime"):
+            client.fetch_models()
+        assert client._cache == {}
+
+    @patch("lilbee.catalog.hf_client.hf_token", return_value="tok")
+    def test_the_request_carries_the_listing_options(
+        self, _mock_token: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default listing asks for GGUF text models by downloads, 50 rows, with the token."""
+        seen: list[tuple[Any, dict[str, Any]]] = []
+
+        def mock_get(url: Any, **kwargs: Any) -> httpx.Response:
+            seen.append((url, kwargs))
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        client.fetch_models()
+        client.fetch_models(fmt=ModelFormat.MLX, search="qwen")
+        (url, kwargs), (_, mlx_kwargs) = seen
+        assert url == _hf_client.HF_API_URL
+        assert kwargs["timeout"] == _hf_client.DEFAULT_TIMEOUT
+        assert kwargs["headers"] == {"Authorization": "Bearer tok"}
+        params = kwargs["params"]
+        assert (params["pipeline_tag"], params["sort"], params["limit"]) == (
+            "text-generation",
+            "downloads",
+            "50",
+        )
+        assert (params["filter"], params["search"]) == ("gguf", "GGUF")
+        assert (mlx_kwargs["params"]["filter"], mlx_kwargs["params"]["search"]) == ("mlx", "qwen")
+
+    def test_a_400_status_is_a_failure_that_warns_with_the_code(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Status 400 is the lowest failure: the body is not read and the warning names the code."""
+        body = [{"id": "user/model", "downloads": 1, "siblings": []}]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(400, json=body))
+        with caplog.at_level(logging.WARNING, logger="lilbee.catalog.hf_client"):
+            page = get_services().hf_client.fetch_models()
+        assert page.models == []
+        assert [r.getMessage() for r in caplog.records] == ["HuggingFace API returned HTTP 400"]
+
+    def test_a_transport_failure_warns_with_the_error(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The first failure warning names the error that the read raised."""
+
+        def mock_get(*args: object, **kwargs: object) -> httpx.Response:
+            raise httpx.ConnectError("offline")
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        with caplog.at_level(logging.WARNING, logger="lilbee.catalog.hf_client"):
+            get_services().hf_client.fetch_models()
+        assert [r.getMessage() for r in caplog.records] == [
+            "Failed to fetch models from HuggingFace: offline"
+        ]
+
+    def test_the_cache_drops_its_oldest_page_past_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Past CACHE_MAX_ENTRIES the oldest page goes, not the first key in sort order."""
+        calls: list[str | None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["params"].get("cursor"))
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        monkeypatch.setattr(HfClient, "CACHE_MAX_ENTRIES", 2)
+        client = get_services().hf_client
+        for cursor in ("z", "m", "c", "m", "c", "z"):
+            client.fetch_models(cursor=cursor)
+        assert calls == ["z", "m", "c", "z"]
+
+    def test_a_page_is_stale_at_exactly_the_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A page aged exactly CACHE_TTL is read again."""
+        calls: list[None] = []
+        now = [100.0]
+
+        def mock_get(*args: object, **kwargs: object) -> httpx.Response:
+            calls.append(None)
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        monkeypatch.setattr("lilbee.catalog.hf_client.time.monotonic", lambda: now[0])
+        client = get_services().hf_client
+        client.fetch_models()
+        now[0] = 100.0 + HfClient.CACHE_TTL - 1
+        client.fetch_models()
+        assert len(calls) == 1
+        now[0] = 100.0 + HfClient.CACHE_TTL
+        client.fetch_models()
+        assert len(calls) == 2
 
 
 class TestGetCatalog:
@@ -1025,6 +1199,11 @@ class TestGetCatalog:
 class TestFindPick:
     def test_match_by_hf_repo(self) -> None:
         result = find_pick("mid/Mid-8B-GGUF")
+        assert result is not None
+        assert result.hf_repo == "mid/Mid-8B-GGUF"
+
+    def test_match_by_a_suffixed_native_ref(self) -> None:
+        result = find_pick("mid/Mid-8B-GGUF/m-Q4_K_M.gguf#gguf")
         assert result is not None
         assert result.hf_repo == "mid/Mid-8B-GGUF"
 
@@ -1535,24 +1714,37 @@ def _bonsai_header(name: str) -> GgufHeader:
 
 
 def _stub_listing(
-    monkeypatch: pytest.MonkeyPatch, *names: str, error: Exception | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    *names: str,
+    error: Exception | None = None,
+    tags: tuple[str, ...] = (),
 ) -> None:
-    """Answer the Hub repo listing with *names*, or raise *error*, through the Hub client."""
+    """Answer the Hub listing with *names* and *tags*, or raise *error*, through the Hub client."""
     from huggingface_hub import HfApi
 
     def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
         if error is not None:
             raise error
-        return SimpleNamespace(siblings=[RepoSibling(rfilename=name) for name in names])
+        return SimpleNamespace(
+            siblings=[RepoSibling(rfilename=name) for name in names], tags=list(tags)
+        )
 
     monkeypatch.setattr(HfApi, "model_info", model_info)
 
 
-def _hub_http_error(status: int) -> Exception:
-    from huggingface_hub.errors import HfHubHTTPError
+def _hub_http_error(status: int, error_code: str | None = None) -> Exception:
+    """The error the Hub client raises for *status*, mapped by its own X-Error-Code reading."""
+    import httpx2
+    from huggingface_hub.utils import hf_raise_for_status
 
-    response = httpx.Response(status, request=httpx.Request("GET", "https://example.com"))
-    return HfHubHTTPError(f"HTTP {status}", response=response)
+    headers = {"X-Error-Code": error_code} if error_code else {}
+    request = httpx2.Request("GET", "https://huggingface.co/api/models/acme/model")
+    response = httpx2.Response(status, headers=headers, request=request)
+    try:
+        hf_raise_for_status(response)
+    except Exception as exc:
+        return exc
+    raise AssertionError(f"status {status} raised nothing")
 
 
 class TestResolveFilename:
@@ -1627,11 +1819,406 @@ class TestResolveFilename:
         self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "mmproj-BF16.gguf")
         assert catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA) == "inkling-Q4_K_M.gguf"
 
+    @staticmethod
+    def _refusing(*refused: str) -> tuple[Callable[[str, str], None], list[tuple[str, str]]]:
+        """An engine verdict that refuses each file in *refused* and records every ask."""
+        asked: list[tuple[str, str]] = []
+
+        def can_load(repo: str, name: str) -> None:
+            asked.append((repo, name))
+            if name in refused:
+                raise UnsupportedQuantError(name, "IQ1_S")
+
+        return can_load, asked
+
+    def test_engine_refusal_moves_the_pull_to_the_next_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A packing the engine cannot read loses to one it can."""
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        can_load, asked = self._refusing("Qwen3-0.6B-Q4_K_M.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Qwen3-0.6B-Q8_0.gguf"
+        repo = PICKS_CHAT[0].hf_repo
+        assert asked == [(repo, "Qwen3-0.6B-Q4_K_M.gguf"), (repo, "Qwen3-0.6B-Q8_0.gguf")]
+
+    def test_engine_accepting_the_best_file_stops_the_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        can_load, asked = self._refusing()
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert asked == [(PICKS_CHAT[0].hf_repo, "Qwen3-0.6B-Q4_K_M.gguf")]
+
+    def test_every_file_refused_raises_the_first_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The user reads the refusal of the best-ranked file, not the last one tried."""
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        can_load, asked = self._refusing("Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q8_0.gguf")
+        with pytest.raises(UnsupportedQuantError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert raised.value.ref == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert len(asked) == 2
+
+    def test_engine_is_not_asked_about_files_the_header_rules_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A projector and an unsupported architecture never reach the expensive verdict."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(
+            monkeypatch,
+            "Bonsai-27B-mmproj-Q8_0.gguf",
+            "Bonsai-27B-dspark-Q4_1.gguf",
+            "Bonsai-27B-Q2_g64.gguf",
+        )
+        can_load, asked = self._refusing()
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Bonsai-27B-Q2_g64.gguf"
+        assert asked == [(PICKS_CHAT[0].hf_repo, "Bonsai-27B-Q2_g64.gguf")]
+
+    def test_supported_file_beats_a_better_ranked_unsupported_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unsupported architecture only wins when no later file is supported."""
+        self._headers(monkeypatch, _bonsai_header)
+        self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "Bonsai-27B-Q2_0.gguf")
+        can_load, asked = self._refusing()
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "Bonsai-27B-Q2_0.gguf"
+        assert asked == [(PICKS_CHAT[0].hf_repo, "Bonsai-27B-Q2_0.gguf")]
+
+    def test_unsupported_architecture_outranks_an_engine_refusal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With nothing loadable, the architecture guard still gets the best unsupported file."""
+        self._headers(
+            monkeypatch,
+            lambda name: GgufHeader(
+                architecture="inkling" if name.startswith("inkling") else "qwen35",
+                file_type="model",
+            ),
+        )
+        self._siblings(monkeypatch, "inkling-Q4_K_M.gguf", "inkling-Q8_0.gguf", "m-Q2_K.gguf")
+        can_load, _ = self._refusing("m-Q2_K.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA, can_load=can_load)
+        assert chosen == "inkling-Q4_K_M.gguf"
+
+    def test_named_file_is_returned_without_a_listing_or_an_engine_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A catalog row naming a real model file pulls it as named."""
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=httpx.ConnectError("x"))
+        can_load, asked = self._refusing("exact.gguf")
+        entry = replace(PICKS_CHAT[0], gguf_filename="exact.gguf")
+        assert catalog.resolve_filename(entry, engine=LLAMA, can_load=can_load) == "exact.gguf"
+        assert asked == []
+
+    def test_named_file_header_is_read_from_the_entry_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The header that vets a named file comes from the repo the pull fetches it from."""
+        probed: list[tuple[str, str]] = []
+
+        def header(repo: str, name: str) -> GgufHeader:
+            probed.append((repo, name))
+            return GgufHeader(architecture="llama", file_type="model")
+
+        monkeypatch.setattr(catalog.download, "file_header", header)
+        entry = replace(PICKS_CHAT[0], gguf_filename="exact.gguf")
+        assert catalog.resolve_filename(entry, engine=LLAMA) == "exact.gguf"
+        assert probed == [(entry.hf_repo, "exact.gguf")]
+
+    def test_listed_file_headers_are_read_from_the_entry_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each candidate is vetted by its own header, read from the repo it is listed in."""
+        probed: list[tuple[str, str]] = []
+
+        def header(repo: str, name: str) -> GgufHeader:
+            probed.append((repo, name))
+            return _bonsai_header(name)
+
+        monkeypatch.setattr(catalog.download, "file_header", header)
+        self._siblings(monkeypatch, "Bonsai-27B-mmproj-Q8_0.gguf", "Bonsai-27B-Q2_0.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert chosen == "Bonsai-27B-Q2_0.gguf"
+        repo = PICKS_CHAT[0].hf_repo
+        assert probed
+        assert {r for r, _ in probed} == {repo}
+        assert {n for _, n in probed} == {"Bonsai-27B-mmproj-Q8_0.gguf", "Bonsai-27B-Q2_0.gguf"}
+
+    def test_named_wildcard_is_never_probed_as_a_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pattern is not a file name: the header probe sees only listed files."""
+        probed: list[str] = []
+
+        def lookup(name: str) -> GgufHeader:
+            probed.append(name)
+            return GgufHeader(architecture="llama", file_type="model")
+
+        self._headers(monkeypatch, lookup)
+        self._siblings(monkeypatch, "Qwen3-0.6B-Q4_K_M.gguf")
+        chosen = catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert chosen == "Qwen3-0.6B-Q4_K_M.gguf"
+        assert probed == ["Qwen3-0.6B-Q4_K_M.gguf"]
+
     def test_wildcard_no_match_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._headers(monkeypatch)
         self._siblings(monkeypatch, "something-else.bin")
         with pytest.raises(RuntimeError, match="No GGUF model weights found"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_safetensors_only_repo_names_the_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "config.json", "model.safetensors", "tokenizer.json")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        repo = PICKS_CHAT[0].hf_repo
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {repo}. It holds safetensors weights: "
+            f"pull them with 'lilbee model pull {repo}#safetensors' "
+            "(or POST /api/models/pull)."
+        )
+
+    def test_mlx_repo_names_the_mlx_pull(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An MLX repo lists plain safetensors files; only the Hub tag says it is MLX."""
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "config.json",
+            "model.safetensors",
+            "tokenizer.json",
+            tags=("mlx", "safetensors"),
+        )
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        repo = PICKS_CHAT[0].hf_repo
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {repo}. It holds mlx weights: "
+            f"pull them with 'lilbee model pull {repo}#mlx' (or POST /api/models/pull)."
+        )
+
+    def test_lora_adapter_repo_is_not_told_to_pull_a_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "adapter_config.json", "adapter_model.safetensors")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}. It holds a LoRA adapter, "
+            "not a model. Pull the base model it was trained from instead."
+        )
+
+    def test_lora_adapter_repo_names_its_base_model_from_the_tags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            tags=("peft", "base_model:adapter:acme/base-7B"),
+        )
+        with pytest.raises(RuntimeError, match=r"Pull acme/base-7B instead\.$"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_lora_adapter_repo_names_every_base_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(
+            monkeypatch,
+            "adapter_config.json",
+            "adapter_model.safetensors",
+            tags=("base_model:adapter:b/two", "base_model:adapter:a/one", "peft"),
+        )
+        with pytest.raises(RuntimeError, match=r"Pull b/two or a/one instead\.$"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            # Only a root adapter_model*.safetensors beside adapter_config.json is an adapter.
+            (("adapter_config.json", "model.safetensors"), "#safetensors'"),
+            (("adapter_model.safetensors",), "#safetensors'"),
+            (("adapter_config.json", "adapter_model.safetensors", "sub/model.safetensors"), "LoRA"),
+        ],
+    )
+    def test_adapter_shape_is_told_apart_from_a_model(
+        self, monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...], expected: str
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, *names)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert expected in str(raised.value)
+
+    def test_gated_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 401 on the tag read is not an error of its own: the refusal still names no ref."""
+        from huggingface_hub import HfApi
+
+        answers: list[object] = [
+            SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[]),
+            _hub_http_error(401, "GatedRepo"),
+        ]
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer  # type: ignore[return-value]
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
+
+    def test_hub_reads_carry_the_timeout_and_the_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from huggingface_hub import HfApi
+
+        from lilbee.catalog import download
+
+        calls: list[dict[str, object]] = []
+
+        def model_info(self: HfApi, repo_id: str, **kw: object) -> SimpleNamespace:
+            calls.append(kw)
+            return SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[])
+
+        monkeypatch.setattr(download, "hf_token", lambda: "tok")
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert len(calls) == 2
+        assert all(c == {"timeout": download.DEFAULT_TIMEOUT, "token": "tok"} for c in calls)
+
+    def test_gated_listing_says_how_to_authenticate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(401, "GatedRepo"))
+        with pytest.raises(PermissionError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"{PICKS_CHAT[0].hf_repo} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "error_code"), [(401, None), (401, "RepoNotFound"), (404, "RepoNotFound")]
+    )
+    def test_a_missing_or_private_repo_without_a_token_names_the_token(
+        self, monkeypatch: pytest.MonkeyPatch, status: int, error_code: str | None
+    ) -> None:
+        """Only X-Error-Code GatedRepo reads as gated; an unmarked 401 may still be a gated repo."""
+        from lilbee.catalog import download
+
+        monkeypatch.setattr(download, "hf_token", lambda: None)
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(status, error_code))
+        with pytest.raises(download.ListingFailedError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"Repository {PICKS_CHAT[0].hf_repo!r} is missing, private or gated on HuggingFace. "
+            "Set HF_TOKEN to get access if it exists."
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "error_code"), [(401, None), (401, "RepoNotFound"), (404, "RepoNotFound")]
+    )
+    def test_a_missing_or_private_repo_with_a_token_says_no_access(
+        self, monkeypatch: pytest.MonkeyPatch, status: int, error_code: str | None
+    ) -> None:
+        from lilbee.catalog import download
+
+        monkeypatch.setattr(download, "hf_token", lambda: "tok")
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(status, error_code))
+        with pytest.raises(download.ListingFailedError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == (
+            f"Repository {PICKS_CHAT[0].hf_repo!r} not found on HuggingFace, "
+            "or your token has no access."
+        )
+
+    def test_a_403_with_the_gated_code_is_gated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(403, "GatedRepo"))
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    @pytest.mark.parametrize("status", [403, 404])
+    def test_an_unmarked_403_or_404_is_a_failed_listing(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        self._headers(monkeypatch)
+        _stub_listing(monkeypatch, error=_hub_http_error(status))
+        with pytest.raises(catalog.download.ListingFailedError, match="Cannot query files"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_unreadable_tags_leave_the_plain_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A tag read that fails cannot tell MLX from safetensors, so the refusal names nothing."""
+        from huggingface_hub import HfApi
+
+        answers: list[object] = [
+            SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[]),
+            _hub_http_error(500),
+        ]
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer  # type: ignore[return-value]
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
+
+    def test_the_listing_is_asked_for_the_entry_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from huggingface_hub import HfApi
+
+        asked: list[str] = []
+
+        def model_info(self: HfApi, repo_id: str, **_kw: object) -> SimpleNamespace:
+            asked.append(repo_id)
+            return SimpleNamespace(siblings=[RepoSibling(rfilename="model.safetensors")], tags=[])
+
+        self._headers(monkeypatch)
+        monkeypatch.setattr(HfApi, "model_info", model_info)
+        with pytest.raises(RuntimeError, match="No GGUF model weights found"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert set(asked) == {PICKS_CHAT[0].hf_repo}
+
+    def test_incomplete_safetensors_shards_still_name_the_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "model-00001-of-00002.safetensors")
+        with pytest.raises(RuntimeError, match="#safetensors'"):
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+
+    def test_repo_without_any_weights_names_no_folder_pull(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._headers(monkeypatch)
+        self._siblings(monkeypatch, "config.json", "pytorch_model.bin")
+        with pytest.raises(RuntimeError) as raised:
+            catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
+        assert str(raised.value) == f"No GGUF model weights found in {PICKS_CHAT[0].hf_repo}"
 
     def test_wildcard_api_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_listing(monkeypatch, error=httpx.ConnectError("x"))
@@ -1645,7 +2232,7 @@ class TestResolveFilename:
 
     def test_wildcard_401_raises_permission_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """HTTP 401 response raises PermissionError with auth message."""
-        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        _stub_listing(monkeypatch, error=_hub_http_error(401, "GatedRepo"))
         with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
 
@@ -2541,9 +3128,36 @@ class TestResolveMmprojFilename:
     def test_gated_repo_listing_raises_projector_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _stub_listing(monkeypatch, error=_hub_http_error(401))
+        _stub_listing(monkeypatch, error=_hub_http_error(401, "GatedRepo"))
         with pytest.raises(_download.ProjectorListingError, match="authentication"):
             _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+
+    @pytest.mark.parametrize(
+        ("error_code", "reason"),
+        [
+            (
+                "RepoNotFound",
+                "Repository 'repo' is missing, private or gated on HuggingFace. "
+                "Set HF_TOKEN to get access if it exists",
+            ),
+            (
+                "GatedRepo",
+                "repo requires HuggingFace authentication. "
+                "Set HF_TOKEN env var or visit the repo page to request access",
+            ),
+        ],
+    )
+    def test_the_projector_refusal_reads_as_whole_sentences(
+        self, monkeypatch: pytest.MonkeyPatch, error_code: str, reason: str
+    ) -> None:
+        monkeypatch.setattr(_download, "hf_token", lambda: None)
+        _stub_listing(monkeypatch, error=_hub_http_error(401, error_code))
+        with pytest.raises(_download.ProjectorListingError) as raised:
+            _download._resolve_mmproj_filename("repo", "*mmproj*.gguf")
+        assert str(raised.value) == (
+            f"Could not look for the vision projector of repo: {reason}. "
+            "Run the pull again to fetch it."
+        )
 
     def test_returns_none_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_listing(monkeypatch, "model-Q4_K_M.gguf")

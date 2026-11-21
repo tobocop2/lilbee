@@ -15,6 +15,7 @@ import pytest
 from lilbee.app import placement as app_placement
 from lilbee.app.engine_choice import BookReading
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices as fleet_devices
 from lilbee.providers.fleet import gpu_select, planning
 from lilbee.providers.fleet.devices import FleetDevice
@@ -34,6 +35,7 @@ OVERRIDE_SENTENCE = (
     "lilbee hides the Intel GPU from the engine because an NVIDIA GPU is present. "
     "To use the Intel GPU, set VK_LOADER_DRIVERS_DISABLE=nomatch* and start lilbee again."
 )
+CHAT_FIX = "Set the chat devices to a card that exists, or set its target to cpu."
 CHAT_ON_INTEL = '{"chat": {"devices": [1]}}'
 CHAT_ON_INTEL_EMBED_AUTO = '{"chat": {"devices": [1]}, "embed": {"target": "auto"}}'
 MIXED = '{"chat": {"devices": [0]}, "embed": {"devices": [1]}}'
@@ -145,14 +147,14 @@ class TestAPinPastTheListSaysWhatTheListHolds:
         cuda = FleetDevice("CUDA", 0, "NVIDIA GeForce GTX 1650 Ti", 4 * GIB, 4 * GIB)
         engine = _host(monkeypatch, tmp_path, [cuda], backend=EngineBackend.CUDA)
         assert _refusal('{"chat": {"devices": [3]}}', engine) == (
-            "chat is pinned to device 3, but this machine lists only device 0."
+            "chat is pinned to device 3, but this machine lists only device 0. " + CHAT_FIX
         )
 
     def test_two_listed_devices(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         engine = _host(monkeypatch, tmp_path, [NVIDIA, INTEL])
         monkeypatch.setattr(gpu_select, "vulkan_icd_choice", lambda: None)
         assert _refusal('{"chat": {"devices": [9]}}', engine) == (
-            "chat is pinned to device 9, but this machine lists only devices 0 and 1."
+            "chat is pinned to device 9, but this machine lists only devices 0 and 1. " + CHAT_FIX
         )
 
     def test_three_listed_devices(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -166,7 +168,7 @@ class TestAPinPastTheListSaysWhatTheListHolds:
     def test_no_listed_device(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         engine = _host(monkeypatch, tmp_path, [], backend=EngineBackend.CPU)
         assert _refusal('{"chat": {"devices": [0]}}', engine) == (
-            "chat is pinned to device 0, but this machine lists no devices."
+            "chat is pinned to device 0, but this machine lists no devices. " + CHAT_FIX
         )
 
 
@@ -177,7 +179,10 @@ class TestAHiddenDeviceIsNamed:
         _two_vendor_launch(monkeypatch)
         engine = _host(monkeypatch, tmp_path, [NVIDIA])
         assert _refusal(CHAT_ON_INTEL, engine) == (
-            "chat is pinned to device 1, but this machine lists only device 0. " + OVERRIDE_SENTENCE
+            "chat is pinned to device 1, but this machine lists only device 0. "
+            + OVERRIDE_SENTENCE
+            + " "
+            + CHAT_FIX
         )
 
     def test_a_mixed_plan_to_the_hidden_device_gets_the_same_text(
@@ -188,6 +193,7 @@ class TestAHiddenDeviceIsNamed:
         assert _refusal(MIXED, engine) == (
             "embed is pinned to device 1, but this machine lists only device 0. "
             + OVERRIDE_SENTENCE
+            + " Set the embed devices to a card that exists, or set its target to cpu."
         )
 
     def test_a_saved_spec_on_the_hidden_device_gets_the_same_sentence(
@@ -201,9 +207,10 @@ class TestAHiddenDeviceIsNamed:
         )
         assert plan.refused_roles == {
             WorkerRole.CHAT: (
-                "chat: GPU 1 is not on this machine (1 found). "
+                "chat is pinned to device 1, but this machine lists only device 0. "
                 + OVERRIDE_SENTENCE
-                + " Set the chat devices to a GPU that exists, or set its target to cpu."
+                + " "
+                + CHAT_FIX
             )
         }
 
@@ -217,7 +224,7 @@ class TestAHiddenDeviceIsNamed:
             planning.plan_launches(
                 None, {NVIDIA.index: NVIDIA}, [NVIDIA], engines=engines_for_all_roles(engine)
             )
-        assert "start lilbee again); using automatic placement instead." in caplog.text
+        assert "set its target to cpu); using automatic placement instead." in caplog.text
 
     def test_a_build_the_loader_cannot_change_gets_no_override(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -226,7 +233,7 @@ class TestAHiddenDeviceIsNamed:
         cuda = FleetDevice("CUDA", 0, "NVIDIA GeForce GTX 1650 Ti", 4 * GIB, 4 * GIB)
         engine = _host(monkeypatch, tmp_path, [cuda], backend=EngineBackend.CUDA)
         assert _refusal(CHAT_ON_INTEL, engine) == (
-            "chat is pinned to device 1, but this machine lists only device 0."
+            "chat is pinned to device 1, but this machine lists only device 0. " + CHAT_FIX
         )
 
     def test_the_view_and_the_response_carry_the_hidden_vendor(
@@ -303,15 +310,13 @@ class TestTheDriverChoice:
 
 
 class TestAProbeStoppedByASignal:
-    def test_the_warning_does_not_blame_the_flag(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    def test_the_error_names_the_signal_and_does_not_blame_the_flag(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(fleet_devices, "_run_list_devices", lambda _binary, _t: ("", -15))
-        with caplog.at_level(logging.WARNING, logger=fleet_devices.log.name):
+        with pytest.raises(ProviderError, match="stopped by signal 15 \\(SIGTERM\\)") as caught:
             fleet_devices.probe_devices(Path("llama-server"))
-        text = " ".join(record.getMessage() for record in caplog.records)
-        assert "stopped by signal 15" in text
-        assert "does not appear to support" not in text
+        assert "does not appear to support" not in str(caught.value)
 
     def test_an_engine_without_the_flag_still_says_so(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

@@ -9,6 +9,7 @@ _INSTALL_COMMAND = (
     "To use a pack on a computer with no network, copy it into the packs folder "
     "of the engines folder first."
 )
+_NO_PACK = "No engine pack is published for this computer yet, so there is nothing to download."
 _BUNDLED_FORMS = (
     "Install a self-contained build again; it carries its own engine: "
     "'brew reinstall lilbee' (Homebrew), 'npm install -g lilbee' (npm launcher), "
@@ -28,4 +29,18 @@ def engine_install_hint(bundled: bool | None = None) -> str:
     bundled = is_frozen() if bundled is None else bundled
     if bundled:
         return f"{_BUNDLED_FORMS} {_BRING_YOUR_OWN}"
-    return f"{_INSTALL_COMMAND} {_BUNDLED_FORMS} {_BRING_YOUR_OWN}"
+    return f"{_download_advice()} {_BUNDLED_FORMS} {_BRING_YOUR_OWN}"
+
+
+def _download_advice() -> str:
+    """The install command, or the reason there is no pack to download for this computer."""
+    from lilbee.providers.fleet.engines.choice import PinError
+    from lilbee.providers.fleet.first_use import INSTALL_REFUSALS, PackNotPublishedError, pack_lock
+
+    try:
+        pack_lock()
+    except PackNotPublishedError:
+        return _NO_PACK
+    except (*INSTALL_REFUSALS, PinError):
+        pass  # the install names the exact refusal; the hint keeps the command
+    return _INSTALL_COMMAND

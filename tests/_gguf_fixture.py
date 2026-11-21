@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import struct
 
+import pytest
+
 GGUF_MAGIC = b"GGUF"
 GGUF_VERSION = 3
 GGUF_TYPE_STRING = 8
@@ -30,18 +32,7 @@ def make_minimal_gguf(architecture: str, file_type: str | None = None) -> bytes:
     return head + struct.pack("<Q", len(entries)) + b"".join(entries)
 
 
-def has_gguf_parser() -> bool:
-    """Whether a gguf-parser binary resolves here.
-
-    The unit lane installs no engine helpers; the integration lane does. Tests
-    that hand real GGUF bytes to the parser are gated on this, and the mapping
-    from a parsed table onto lilbee's fields is covered against a stubbed parser
-    so the unit lane still exercises it.
-    """
-    from lilbee.providers.fleet.binary import resolve_gguf_parser
-
-    try:
-        resolve_gguf_parser()
-    except Exception:
-        return False
-    return True
+# Tests that hand real GGUF bytes to the parser carry this. The mapping from a
+# parsed table onto lilbee's fields is covered against a stubbed parser, so a
+# host with no parser still exercises it.
+needs_gguf_parser = pytest.mark.usefixtures("real_gguf_parser")

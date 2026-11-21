@@ -23,7 +23,7 @@ from lilbee.data.ingest.discovery import (
     walk_reaches,
 )
 from lilbee.data.ingest.ignore import IgnoreRules
-from lilbee.data.store import REMOVED_REASON, HeldOut, HeldRecord
+from lilbee.data.store import INGEST_FAILURES, REMOVED_REASON, HeldOut, HeldRecord
 from lilbee.data.store.locations import SourceLocations, root_location
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
@@ -388,9 +388,9 @@ def folder_members(name: str, known: Iterable[str]) -> list[str]:
 
 
 def held_failures() -> dict[str, HeldRecord]:
-    """The record of each file an ingestion failure holds out, by path, sorted."""
+    """The record of each file whose ingestion failed, by path, sorted."""
     held = get_services().store.held_records()
-    return {name: held[name] for name in sorted(held) if held[name].kind is HeldOut.FAILED}
+    return {name: held[name] for name in sorted(held) if held[name].kind in INGEST_FAILURES}
 
 
 def removable_names(indexed: list[str] | None = None) -> list[str]:

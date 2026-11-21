@@ -20,6 +20,10 @@ EnginePickerModal {
 
 #engine-picker-model {
     color: $text-muted;
+}
+
+#engine-picker-note {
+    color: $text-muted;
     padding: 0 0 1 0;
 }
 

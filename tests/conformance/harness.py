@@ -23,6 +23,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from lilbee.providers.fleet.client import _EMBED_N_SEQ_MAX as EMBED_REQUEST_LIMIT
+from lilbee.retrieval.reasoning import split_reasoning
+
 GOLDEN_DIR = Path(__file__).parent / "golden"
 CLAIMS = frozenset({"chat", "embed", "rerank", "vision", "reasoning", "json"})
 _HTTP_OK = 200
@@ -36,7 +39,14 @@ NEAR_COPY_COSINE = 0.99999
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 BLUE = (0, 0, 255)
-_ORDER_BATCHES = (3, 9, 33)
+_ORDER_BATCHES = (
+    3,
+    9,
+    33,
+    EMBED_REQUEST_LIMIT,
+    EMBED_REQUEST_LIMIT + 1,
+    2 * EMBED_REQUEST_LIMIT + 1,
+)
 _CLIENT_ERROR = range(400, 500)
 _ABSENT_STATUSES = frozenset({400, 404, 405, _NOT_IMPLEMENTED})
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -340,42 +350,53 @@ def answer_fault(answer: str) -> str:
     return "" if rest.strip() else "no answer after the think block"
 
 
-def reasoning_split_fault(message: Mapping[str, Any], finish: Any) -> str:
-    """The reason a reply is not a clean reasoning split, or an empty string.
+def _has_reasoning_field(message: Mapping[str, Any]) -> bool:
+    return any(str(message.get(name) or "").strip() for name in _REASONING_FIELDS)
+
+
+def reasoning_tag_fault(message: Mapping[str, Any]) -> str:
+    """The reason the think tags of a reply are wrong, or an empty string.
 
     A reasoning field needs an answer with no think tag in it. With no field, the answer is
-    one closed think block and then text. A reply with neither reasoning form fails.
+    one closed think block and then text. Both reasoning checks call this rule.
     """
     answer = str(message.get("content") or "")
-    if finish != _FINISH_STOP:
-        return f"finish is {finish}, not stop"
-    if any(str(message.get(name) or "").strip() for name in _REASONING_FIELDS):
+    if _has_reasoning_field(message):
         if _THINK_OPEN in answer or _THINK_CLOSE in answer:
             return "the reasoning field is set and the answer also holds a think tag"
-        return "" if answer.strip() else "reasoning with an empty answer"
+        return ""
     if _THINK_CLOSE not in answer:
         return "no reasoning field and no closed think block"
     return answer_fault(answer)
 
 
+def reasoning_split_fault(message: Mapping[str, Any], finish: Any) -> str:
+    """The reason a reply is not a clean reasoning split, or an empty string.
+
+    The finish must be stop, the think tags must pass the shared rule, and reasoning needs
+    an answer.
+    """
+    if finish != _FINISH_STOP:
+        return f"finish is {finish}, not stop"
+    if fault := reasoning_tag_fault(message):
+        return fault
+    if _has_reasoning_field(message) and not str(message.get("content") or "").strip():
+        return "reasoning with an empty answer"
+    return ""
+
+
 def reasoning_fault(message: Mapping[str, Any], finish: Any) -> str:
     """The reason a reasoning reply is not a clean split, or an empty string.
 
-    With a reasoning field, the answer holds no full think block. The budget may end first
-    (finish length), which leaves no answer. A tag word that only appears in the answer
-    text is not a leak. Without a field, a think block must come before the answer.
+    The think tags pass the shared rule. The budget may end first (finish length), which
+    leaves reasoning with no answer.
     """
-    answer = str(message.get("content") or "")
-    if any(message.get(name) for name in _REASONING_FIELDS):
-        opened, closed = answer.find(_THINK_OPEN), answer.find(_THINK_CLOSE)
-        if 0 <= opened < closed:
-            return "the reasoning field is set and the answer also holds a think block"
-        if not answer.strip() and finish != _FINISH_LENGTH:
-            return f"reasoning with an empty answer and finish {finish}"
-        return ""
-    if _THINK_OPEN not in answer and _THINK_CLOSE not in answer:
-        return "no reasoning field and no think block"
-    return answer_fault(answer)
+    if fault := reasoning_tag_fault(message):
+        return fault
+    empty = not str(message.get("content") or "").strip()
+    if _has_reasoning_field(message) and empty and finish != _FINISH_LENGTH:
+        return f"reasoning with an empty answer and finish {finish}"
+    return ""
 
 
 def _check_reasoning(probe: _Probe) -> Verdict:
@@ -495,8 +516,21 @@ def _ask_colour(probe: _Probe, rgb: tuple[int, int, int]) -> tuple[int, str | No
     return status, answer if isinstance(answer, str) else None
 
 
+def answer_words(content: Any) -> list[str]:
+    """The lower-case words of a reply text, after any reasoning block."""
+    return re.findall(r"[a-z]+", split_reasoning(str(content or "")).answer.lower())
+
+
+def colour_fault(content: Any, want: str) -> str:
+    """The reason a reply to an image is not exactly the one word *want*, or an empty string."""
+    words = answer_words(content)
+    return (
+        "" if words == [want] else f"the {want} image is answered {words}, not the one word {want}"
+    )
+
+
 def _check_vision(probe: _Probe, quality: bool) -> Verdict:
-    """E10: the red image gets 200; with quality it answers red and the blue image does not."""
+    """E10: the red image gets 200; with quality each image is answered by its one colour word."""
     status, red = _ask_colour(probe, (255, 0, 0))
     if status != _HTTP_OK or red is None:
         return probe.judge("E10", f"red image: status {status} or no text answer")
@@ -505,9 +539,7 @@ def _check_vision(probe: _Probe, quality: bool) -> Verdict:
     status, blue = _ask_colour(probe, BLUE)
     if status != _HTTP_OK or blue is None:
         return probe.judge("E10", f"blue image: status {status} or no text answer")
-    if "red" not in red.lower():
-        return probe.judge("E10", "the red image was not called red")
-    return probe.judge("E10", "the blue image was called red" if "red" in blue.lower() else "")
+    return probe.judge("E10", colour_fault(red, "red") or colour_fault(blue, "blue"))
 
 
 def _check_embed(probe: _Probe) -> Verdict:

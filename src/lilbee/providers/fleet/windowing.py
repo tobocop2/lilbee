@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,13 +45,46 @@ def _tools_tokens(tools: list[dict[str, Any]] | None) -> int:
     return estimate_tokens(json.dumps(tools))
 
 
+def _without_orphan_tools(kept: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*kept* without a leading ``tool`` result whose originating call was dropped."""
+    while kept and kept[0].get("role") == _TOOL_ROLE:
+        kept = kept[1:]
+    return kept
+
+
+def _shrink_to_measured(
+    system: list[dict[str, Any]],
+    kept: list[dict[str, Any]],
+    budget: int,
+    measure: Callable[[list[dict[str, Any]]], int],
+) -> tuple[list[dict[str, Any]], int]:
+    """Drop the oldest kept turns until the measured prompt fits; return them and the count.
+
+    Each round drops enough turns, by estimate, to cover the measured overshoot
+    (at least one), then measures again. The last turn is never dropped.
+    """
+    while True:
+        measured = measure(system + kept)
+        if measured <= budget or len(kept) == 1:
+            return kept, measured
+        overshoot = measured - budget
+        dropped = 0
+        cut = 0
+        while cut < len(kept) - 1 and dropped < overshoot:
+            dropped += _message_tokens(kept[cut])
+            cut += 1
+        kept = _without_orphan_tools(kept[cut:])
+        if not kept:
+            return kept, measured
+
+
 @dataclass(frozen=True)
 class WindowResult:
     """Outcome of fitting messages to a budget."""
 
     messages: list[dict[str, Any]]  # system + kept suffix (best-effort even on overflow)
     fits: bool
-    prompt_tokens: int  # estimated tokens of ``messages`` plus the tools passed in
+    prompt_tokens: int  # tokens of ``messages`` plus the tools passed in (measured when asked)
     dropped: int  # number of conversation messages dropped
 
 
@@ -58,14 +92,22 @@ def window_messages(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     budget: int,
+    measure: Callable[[list[dict[str, Any]]], int] | None = None,
 ) -> WindowResult:
-    """Drop oldest conversation turns until the estimated prompt fits ``budget``.
+    """Drop oldest conversation turns until the prompt fits ``budget``.
 
     System messages and the most recent turn are always kept; tool-call/result
     pairs drop together (a kept suffix never starts with an orphan ``tool``
     message whose originating call was dropped). ``fits`` is False when even the
     system messages, tools, and the final message exceed the budget; the caller
     turns that into a context-overflow error.
+
+    The estimate reads the wire JSON, so it misses the chat template's own
+    tool preamble. When *measure* is given it returns the engine's own token
+    count for a message list (the caller renders the tools). The kept suffix
+    shrinks until that count fits ``budget``. The preamble is a fixed size,
+    not a share of the estimate, so no estimate is trusted: *measure* runs
+    at least once whenever a conversation remains.
     """
     system = [m for m in messages if m.get("role") == _SYSTEM_ROLE]
     convo = [m for m in messages if m.get("role") != _SYSTEM_ROLE]
@@ -86,10 +128,12 @@ def window_messages(
         used += cost
     kept = list(reversed(kept_rev))
 
-    # A kept suffix must not begin with an orphan tool result (its call dropped).
-    while kept and kept[0].get("role") == _TOOL_ROLE:
-        kept = kept[1:]
+    kept = _without_orphan_tools(kept)
 
     prompt_tokens = fixed + sum(_message_tokens(m) for m in kept)
+    if measure is not None and kept:
+        kept, prompt_tokens = _shrink_to_measured(system, kept, budget, measure)
+        if not kept:
+            prompt_tokens = fixed
     fits = prompt_tokens <= budget and bool(kept)
     return WindowResult(system + kept, fits, prompt_tokens, len(convo) - len(kept))

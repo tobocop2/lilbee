@@ -7,7 +7,9 @@ keep in sync with the components that produce it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -31,6 +33,23 @@ class WarningCode(StrEnum):
     """A first open is upgrading the library's format; requests that need it wait."""
     ENGINE_FALLBACK = "engine_fallback"
     """A role runs on another engine than the one chosen, or the stored choices are unreadable."""
+    HYDE_BLEND_FAILED = "hyde_blend_failed"
+    """A search ran without its hypothetical-answer step because that step failed."""
+    QUERY_EXPANSION_FAILED = "query_expansion_failed"
+    """A search ran without model-written query variants because that step failed."""
+    CONCEPT_BOOST_FAILED = "concept_boost_failed"
+    """A search ran without the concept re-rank because that step failed."""
+    CONCEPT_EXPANSION_FAILED = "concept_expansion_failed"
+    """A search ran without concept query variants because that step failed."""
+    RERANK_FAILED = "rerank_failed"
+    """A search ran without the cross-encoder re-rank because the reranker failed."""
+    GPU_NOT_SERVED = "gpu_not_served"
+    """The engine pack that installed on first use cannot use this computer's GPU."""
+
+
+def warnings_payload(warnings: Iterable[HealthWarning]) -> list[dict[str, Any]]:
+    """The warnings as JSON-ready dicts, the shape ``/api/health`` serves."""
+    return [w.model_dump(mode="json") for w in warnings]
 
 
 class HealthWarning(BaseModel):
@@ -41,3 +60,8 @@ class HealthWarning(BaseModel):
     """User-facing description of what is degraded."""
     remedy: str | None = None
     """The action that clears it, when there is one."""
+
+    @property
+    def line(self) -> str:
+        """The message followed by the remedy, for a one-line display."""
+        return f"{self.message} {self.remedy}" if self.remedy else self.message

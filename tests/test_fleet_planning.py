@@ -26,7 +26,7 @@ from lilbee.providers.fleet.devices import (
 )
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
-from lilbee.providers.fleet.engines.mistral import MistralAdapter
+from lilbee.providers.fleet.engines.mistral import MISTRAL, MistralAdapter
 from lilbee.providers.fleet.gpu_env import ENGINE_TELEMETRY_OPT_OUT
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
@@ -34,6 +34,7 @@ from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import EngineBackend, RerankMode, WorkerRole
 from tests._fleet_engines import Role, cards_of, engines_for_all_roles, prepare_host
 from tests._gguf_fixture import GGUF_MAGIC
+from tests._safetensors import safetensors_bytes
 from tests._stated_sizes import state_size
 
 _GB = 1024**3
@@ -689,7 +690,10 @@ def test_placement_estimate_ctx_chat_reserves_target(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 24576
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
+        == 24576
+    )
 
 
 def test_placement_estimate_ctx_chat_floored_when_target_tiny(monkeypatch) -> None:
@@ -698,7 +702,7 @@ def test_placement_estimate_ctx_chat_floored_when_target_tiny(monkeypatch) -> No
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
     assert (
-        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {})
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
         == planning_mod._MIN_USABLE_CHAT_CTX
     )
 
@@ -707,12 +711,65 @@ def test_placement_estimate_ctx_chat_capped_by_short_ceiling(monkeypatch) -> Non
     """A short-context model reserves only its ceiling, below the usable floor."""
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 2048)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 2048
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
+        == 2048
+    )
+
+
+def test_planned_chat_ctx_without_a_trained_window_stops_at_the_default_window(
+    monkeypatch,
+) -> None:
+    """A model with no header window is planned at 8192 under the 16384 target."""
+    assert cfg.num_ctx is None
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
+    assert planning_mod.planned_chat_ctx(Path("/m"), None) == 8192
+
+
+def test_planned_chat_ctx_is_the_target_under_a_longer_trained_window(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 16384)
+    assert planning_mod.planned_chat_ctx(Path("/m"), {"context_length": "40960"}) == 16384
+
+
+def test_a_fixed_reserve_chat_placement_estimate_is_the_planned_chat_ctx(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 2048)
+    meta = {"context_length": "40960"}
+    estimate = planning_mod._placement_estimate_ctx(
+        WorkerRole.CHAT, Path("/m"), meta, engine=MISTRAL
+    )
+    assert estimate == planning_mod.planned_chat_ctx(Path("/m"), meta) == 2048
+
+
+def test_planned_chat_ctx_has_no_floor_under_a_tiny_target(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
+    assert planning_mod.planned_chat_ctx(Path("/m"), {"context_length": "40960"}) == 1024
+
+
+def test_configured_chat_ctx_is_the_pin_when_set(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", 1024)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
+    assert planning_mod.configured_chat_ctx() == 1024
+
+
+def test_configured_chat_ctx_is_the_target_above_the_usable_floor(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
+    assert planning_mod.configured_chat_ctx() == 24576
+
+
+def test_configured_chat_ctx_floors_a_tiny_target(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
+    assert planning_mod.configured_chat_ctx() == planning_mod._MIN_USABLE_CHAT_CTX
 
 
 def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", 16384)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}, engine=LLAMA)
+        == 16384
+    )
 
 
 def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
@@ -744,7 +801,10 @@ def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
 
 def test_placement_estimate_ctx_non_chat_delegates_to_aux_role_ctx(monkeypatch) -> None:
     monkeypatch.setattr(planning_mod, "_aux_role_ctx", lambda _r, _p, _m: 512)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.EMBED, Path("/m.gguf"), {}) == 512
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.EMBED, Path("/m.gguf"), {}, engine=LLAMA)
+        == 512
+    )
 
 
 def test_placement_estimate_slots_per_role(monkeypatch) -> None:
@@ -773,7 +833,7 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
     )
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 2)
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 1000)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 1000)
     seen: dict = {}
 
     def _est(_path, *, ctx, slots, tensor_split, mmproj_path=None, **_k) -> GgufVramEstimate:
@@ -792,6 +852,28 @@ def test_peak_estimator_returns_per_device_vector(monkeypatch) -> None:
     assert seen["mmproj"] is None  # chat carries no projector
 
 
+def test_peak_estimator_sizes_an_uneven_split_for_llama_cpp(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 1000)
+    seen: dict = {}
+
+    def _est(_path, *, tensor_split, **_k) -> GgufVramEstimate:
+        seen["ratio"] = tensor_split
+        return GgufVramEstimate(
+            vram_bytes=0, ram_bytes=0, unified_bytes=0, per_device_vram=(33, 11)
+        )
+
+    monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _est)
+    estimate = planning_mod._peak_estimator(
+        {WorkerRole.CHAT: "ref"}, engines=engines_for_all_roles(LLAMA)
+    )
+    assert estimate(WorkerRole.CHAT, (3, 1)) == (33, 11)
+    assert seen["ratio"] == (3, 1)
+
+
 def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/v.gguf")
@@ -799,7 +881,7 @@ def test_peak_estimator_vision_passes_mmproj(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
     monkeypatch.setattr(planning_mod, "_placement_estimate_slots", lambda _r, _m: 1)
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 100)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 100)
     seen: dict = {}
 
     def _est(_path, *, mmproj_path=None, **_k) -> GgufVramEstimate:
@@ -822,7 +904,9 @@ def test_peak_estimator_reserves_single_sequence_total_for_split_chat(monkeypatc
         "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
     )
     monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {})
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 196608)
+    monkeypatch.setattr(
+        planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 196608
+    )
     seen: dict = {}
 
     def _est(_path, *, ctx, slots, tensor_split, **_k) -> GgufVramEstimate:
@@ -1271,9 +1355,18 @@ class TestBuildFleetWiring:
     def test_launch_for_carries_the_swap_keys_the_engine_asks_for(
         self, tmp_path, monkeypatch
     ) -> None:
-        monkeypatch.setattr(LLAMA, "swap_extras", lambda _launch: {"checkEndpoint": "/live"})
+        monkeypatch.setattr(
+            type(LLAMA), "swap_extras", lambda _self, _launch: {"checkEndpoint": "/live"}
+        )
         launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
         assert launch.swap_extras == {"checkEndpoint": "/live"}
+
+    def test_launch_for_records_the_server_binary_it_was_built_for(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch, _calls = self._chat_launch(tmp_path, monkeypatch, num_ctx=None)
+        assert launch.server_binary == str(LLAMA.binary())
+        assert launch.server_binary != ""
 
     def test_launch_for_chat_alone_on_its_card_gets_the_engine_default_fit_target(
         self, tmp_path, monkeypatch
@@ -1554,6 +1647,51 @@ class TestBuildFleetWiring:
             planning_mod._launch_for(plan, "ref", {0: d0, 1: d1}, engine=LLAMA)
         assert "nvlink" in caplog.text.lower()
 
+    def test_a_plan_warns_once_for_each_network_chat_model(self, tmp_path, monkeypatch, caplog):
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 4096)
+        monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 200 * 10**9)
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
+        device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        with (
+            caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"),
+            planning_mod._one_warning_per_plan(),
+        ):
+            for ref in ("ref-a", "ref-a", "ref-b"):
+                planning_mod._launch_for(plan, ref, {0: device}, engine=LLAMA)
+        lines = [r.getMessage() for r in caplog.records if "network filesystem" in r.getMessage()]
+        assert [ln.split()[2] for ln in lines] == ["ref-a", "ref-b"]
+
+    def test_a_plan_warns_once_for_each_split_of_a_chat_model(self, tmp_path, monkeypatch, caplog):
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(planning_mod, "host_lacks_nvlink", lambda: True)
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 5000)
+        devices = {
+            index: FleetDevice("CUDA", index, "gpu", 80 * _GB, 70 * _GB) for index in range(3)
+        }
+        with (
+            caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"),
+            planning_mod._one_warning_per_plan(),
+        ):
+            for pair in ((0, 1), (0, 1), (1, 2)):
+                plan = InstancePlan(role=WorkerRole.CHAT, devices=pair, tensor_split=(1, 1))
+                planning_mod._launch_for(plan, "ref", devices, engine=LLAMA)
+        lines = [r.getMessage() for r in caplog.records if "without NVLink" in r.getMessage()]
+        assert [ln.split("GPUs ")[1].split(" on")[0] for ln in lines] == ["[0, 1]", "[1, 2]"]
+
     def test_non_chat_reservation_sums_per_device(self) -> None:
         instances = [
             InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1)),
@@ -1584,9 +1722,48 @@ class TestBuildFleetWiring:
             ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
         ]
         reserved = planning_mod._non_chat_reservation(
-            instances, inputs, frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+            instances, inputs, (frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION}))
         )
         assert reserved == {0: 3 * _GB}
+
+    def test_non_chat_reservation_charges_chats_class_mates(self) -> None:
+        # Rerank stays loaded beside chat (one class), so its VRAM is held back from
+        # the chat shard's KV; only the evicted vision is not.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 2 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances,
+            inputs,
+            (frozenset({WorkerRole.CHAT, WorkerRole.RERANK}), frozenset({WorkerRole.VISION})),
+        )
+        assert reserved == {0: 2 * _GB}
+
+    def test_room_beside_placed_charges_the_largest_class_sum(self) -> None:
+        # Chat 3 + rerank 2 stay loaded together (5 GiB); vision (4 GiB) is evicted by
+        # them, so the card holds the larger class, not the largest single role.
+        placement = Placement(
+            instances=(
+                InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+                InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+                InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            ),
+            unplaceable_roles=(),
+            swap_classes=(
+                frozenset({WorkerRole.CHAT, WorkerRole.RERANK}),
+                frozenset({WorkerRole.VISION}),
+            ),
+        )
+        charges = {WorkerRole.CHAT: 3 * _GB, WorkerRole.RERANK: 2 * _GB, WorkerRole.VISION: 4 * _GB}
+        room = planning_mod._room_beside_placed(placement, charges, {0: 10 * _GB})
+        assert room == pytest.approx(10 * _GB * planning_mod.usable_vram_fraction() - 5 * _GB)
 
     def test_non_chat_reservation_charges_a_co_tenant_group_without_chat(self) -> None:
         # A vision/rerank swap group that excludes chat runs behind its own process
@@ -1605,7 +1782,7 @@ class TestBuildFleetWiring:
             ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
         ]
         reserved = planning_mod._non_chat_reservation(
-            instances, inputs, frozenset({WorkerRole.VISION, WorkerRole.RERANK})
+            instances, inputs, (frozenset({WorkerRole.VISION}), frozenset({WorkerRole.RERANK}))
         )
         assert reserved == {0: (6 + 2 + 3) * _GB}
 
@@ -1664,15 +1841,23 @@ class TestBuildFleetWiring:
         assert "--flash-attn" not in argv  # embedding path applies no flash attn
         assert "--cache-type-k" not in argv
 
-    def _launch_for_role(self, tmp_path, monkeypatch, role: WorkerRole, ctx: int = 4096):
+    def _launch_for_role(
+        self,
+        tmp_path,
+        monkeypatch,
+        role: WorkerRole,
+        ctx: int = 4096,
+        meta: dict[str, str] | None = None,
+    ):
         model = tmp_path / "m.gguf"
-        model.write_bytes(b"x" * 1000)
+        # The engine reads a header only from a file that starts with the GGUF magic.
+        model.write_bytes((b"GGUF" if meta else b"") + b"x" * 1000)
         monkeypatch.setattr(
             "lilbee.providers.engine_params.resolve_model_path",
             lambda _r: model,
         )
         monkeypatch.setattr(
-            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta or {}
         )
         monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: ctx)
@@ -1680,6 +1865,61 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=role, devices=(0,))
         return planning_mod._launch_for(plan, "ref", {0: device}, engine=LLAMA)
+
+    def test_launch_for_chat_records_the_trained_window(self, tmp_path, monkeypatch) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.CHAT, meta={"context_length": "2048"}
+        )
+        assert launch.trained_ctx == 2048
+
+    def test_launch_for_chat_without_a_header_window_records_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch = self._launch_for_role(tmp_path, monkeypatch, WorkerRole.CHAT)
+        assert launch.trained_ctx == 0
+
+    def test_launch_for_chat_with_an_unreadable_header_window_records_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.CHAT, meta={"context_length": "junk"}
+        )
+        assert launch.trained_ctx == 0
+
+    @pytest.mark.parametrize(
+        ("meta", "expected"),
+        [
+            ({"context_length": "4096"}, 4096),
+            ({"context_length": "1"}, 1),
+            ({"context_length": "0"}, None),
+            ({"context_length": "junk"}, None),
+            ({}, None),
+            (None, None),
+        ],
+    )
+    def test_trained_chat_window_reads_the_header_value(self, meta, expected) -> None:
+        assert planning_mod._trained_chat_window(Path("m.gguf"), meta) == expected
+
+    @pytest.mark.parametrize(
+        ("num_ctx_max", "meta", "expected"),
+        [
+            (None, {"context_length": "junk"}, None),
+            (None, {"context_length": "1"}, 1),
+            (2048, {"context_length": "4096"}, 2048),
+            (8192, {"context_length": "4096"}, 4096),
+        ],
+    )
+    def test_known_chat_ceiling_is_the_smaller_positive_limit(
+        self, monkeypatch, num_ctx_max, meta, expected
+    ) -> None:
+        monkeypatch.setattr(cfg, "num_ctx_max", num_ctx_max)
+        assert planning_mod._known_chat_ceiling(Path("m.gguf"), meta) == expected
+
+    def test_launch_for_embed_does_not_record_a_trained_window(self, tmp_path, monkeypatch) -> None:
+        launch = self._launch_for_role(
+            tmp_path, monkeypatch, WorkerRole.EMBED, meta={"context_length": "2048"}
+        )
+        assert launch.trained_ctx == 0
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
@@ -1973,6 +2213,193 @@ class TestBuildFleetWiring:
         assert "org/repo/chat.gguf" in reason
         assert reason in caplog.text
 
+    def test_a_reranker_on_a_build_without_pooling_is_refused_and_chat_still_plans(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+        from lilbee.providers.fleet import adapters as adapters_mod
+        from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        refs = {WorkerRole.CHAT: "org/repo/chat.gguf", WorkerRole.RERANK: "org/repo/rank.gguf"}
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [
+                    ModelPlacementInput(WorkerRole.CHAT, 5 * _GB),
+                    ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+                ],
+                refs,
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(
+                    InstancePlan(WorkerRole.RERANK, (0,)),
+                    InstancePlan(WorkerRole.CHAT, (0,)),
+                ),
+                unplaceable_roles=(),
+            ),
+        )
+        # The build lists no --pooling; the stand-in runs the real argv builder per role.
+        monkeypatch.setattr(adapters_mod, "engine_help", lambda _binary: "  --model X  the model\n")
+
+        def launch_with_real_argv(plan, model, *_a, **_kw):
+            argv = build_server_argv(
+                binary=Path("/bin/llama-server"),
+                spec=ROLE_SPECS[plan.role],
+                model_path=Path("/m.gguf"),
+                devices=(0,),
+                n_gpu_layers=-1,
+                slots=1,
+                ctx_per_slot=512,
+            )
+            return InstanceLaunch(
+                role=plan.role,
+                argv=argv,
+                env_overrides={},
+                model=model,
+                ctx=min_usable_chat_ctx() * 4,
+            )
+
+        monkeypatch.setattr(planning_mod, "_launch_for", launch_with_real_argv)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+
+        assert [launch.role for launch in plan.launches] == [WorkerRole.CHAT]
+        assert set(plan.refused_roles) == {WorkerRole.RERANK}
+        assert "does not list --pooling" in plan.refused_roles[WorkerRole.RERANK]
+
+    def test_a_refused_chat_keeps_planning_the_roles_placed_after_it(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        refs = {
+            WorkerRole.CHAT: "org/repo/chat.gguf",
+            WorkerRole.EMBED: "org/repo/embed.gguf",
+            WorkerRole.RERANK: "org/repo/rank.gguf",
+        }
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [
+                    ModelPlacementInput(WorkerRole.CHAT, 5 * _GB),
+                    ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+                    ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+                ],
+                refs,
+                0,
+                {},
+            ),
+        )
+        # The chat is placed first, so every role the plan lists after it follows the refusal.
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(
+                    InstancePlan(WorkerRole.CHAT, (0,)),
+                    InstancePlan(WorkerRole.EMBED, (0,)),
+                    InstancePlan(WorkerRole.RERANK, (0,)),
+                ),
+                unplaceable_roles=(),
+            ),
+        )
+
+        def launch_with_chat_window_below_the_floor(plan, model, *_a, **_kw):
+            window = 512 if plan.role is WorkerRole.CHAT else min_usable_chat_ctx() * 4
+            return InstanceLaunch(
+                role=plan.role, argv=[], env_overrides={}, model=model, ctx=window
+            )
+
+        monkeypatch.setattr(planning_mod, "_launch_for", launch_with_chat_window_below_the_floor)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        engines = engines_for_all_roles(LLAMA)
+
+        plan = planning_mod.plan_all_launches(engines=engines)
+        resolved = planning_mod.resolve_placement_plan(None, engines=engines)
+
+        assert [launch.role for launch in plan.launches] == [WorkerRole.EMBED, WorkerRole.RERANK]
+        assert set(plan.refused_roles) == {WorkerRole.CHAT}
+        assert [inst.role for inst in resolved.instances] == [WorkerRole.EMBED, WorkerRole.RERANK]
+        assert set(resolved.unlaunched_roles) == {WorkerRole.CHAT}
+
+    def test_plan_all_launches_refusal_names_the_trained_window(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+        from lilbee.providers.fleet.launch import InstanceLaunch
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr(
+            llama_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "org/repo/chat.gguf"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
+            ),
+        )
+        short = InstanceLaunch(
+            role=WorkerRole.CHAT,
+            argv=[],
+            env_overrides={},
+            model="org/repo/chat.gguf",
+            ctx=2048,
+            trained_ctx=2048,
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: short)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+
+        assert plan.launches == ()
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert "was trained for a 2048-token window" in reason
+        assert str(min_usable_chat_ctx()) in reason
+        assert "memory" not in reason
+
     def test_plan_all_launches_serves_a_pinned_chat_window_unchecked(self, monkeypatch) -> None:
         # An explicit num_ctx pin is the user's override (and the documented
         # escape hatch), so a small pinned window is served as asked.
@@ -2046,7 +2473,7 @@ class TestBuildFleetWiring:
             lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
                 unplaceable_roles=(),
-                co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+                swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
             ),
         )
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
@@ -2055,8 +2482,7 @@ class TestBuildFleetWiring:
             plan = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
 
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
-        assert "chat, vision" in caplog.text
-        assert "only one is resident" in caplog.text
+        assert "chat, vision: share memory, one loaded at a time" in caplog.text
 
     @staticmethod
     def _chat_launch_kwargs(monkeypatch, sizes: dict[WorkerRole, int]) -> dict:
@@ -2250,7 +2676,7 @@ class TestChatSplitCtxObjective:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {"arch": "x"}
         )
-        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
+        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a, **_k: 8192)
         captured: dict[str, object] = {}
 
         def _fake_fit(model_path, **kw):
@@ -2285,7 +2711,7 @@ class TestChatSplitCtxObjective:
         monkeypatch.setattr(
             "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {"arch": "x"}
         )
-        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
+        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a, **_k: 8192)
         monkeypatch.setattr(planning_mod, "_peak_estimator", lambda _refs, engine: lambda *_a: (1,))
         captured: dict[str, object] = {}
 
@@ -2604,6 +3030,9 @@ class TestEstimateLaunchParity:
                 f"{role}: launch flag {flag} is unclassified; add it to the sizing map "
                 "(and thread it into the gguf-parser estimate) or the non-sizing set"
             )
+            if flag == "--n-gpu-layers" and value == "-1":
+                # The server fits the auto count itself; the parser sizes a full offload.
+                value = "-2"
             assert estimator_flags.get(estimator_flag) == value, (
                 f"{role}: launch {flag}={value} not reflected as estimator "
                 f"{estimator_flag}={estimator_flags.get(estimator_flag)}"
@@ -2676,6 +3105,10 @@ class TestWeightsBytes:
         model = tmp_path / "m.gguf"
         model.write_bytes(b"x" * 100)
         assert planning_mod._weights_bytes(model) == 100
+
+    def test_a_cut_off_safetensors_folder_keeps_its_on_disk_size(self, tmp_path) -> None:
+        (tmp_path / "model.safetensors").write_bytes(safetensors_bytes(4000)[:1000])
+        assert planning_mod._weights_bytes(tmp_path) == 1000
 
     def test_split_gguf_sums_all_sibling_shards(self, tmp_path) -> None:
         first = tmp_path / "big-00001-of-00003.gguf"
@@ -3158,6 +3591,49 @@ class TestFlashAttentionParity:
             is False
         )
 
+    @pytest.mark.parametrize(
+        ("flash", "backend", "on_cpu", "role", "mode", "expected"),
+        [
+            pytest.param(True, "CUDA", False, WorkerRole.CHAT, None, True, id="on-card"),
+            pytest.param(True, "CUDA", True, WorkerRole.CHAT, None, True, id="on-cpu"),
+            pytest.param(None, "Vulkan", False, WorkerRole.CHAT, None, False, id="auto-card"),
+            pytest.param(None, "Vulkan", True, WorkerRole.CHAT, None, True, id="auto-cpu"),
+            pytest.param(False, "CUDA", True, WorkerRole.CHAT, None, False, id="off-cpu"),
+            pytest.param(None, "Vulkan", True, WorkerRole.EMBED, None, False, id="auto-cpu-embed"),
+            pytest.param(
+                None,
+                "Vulkan",
+                True,
+                WorkerRole.RERANK,
+                RerankMode.CROSS_ENCODER,
+                False,
+                id="auto-cpu-cross-encoder",
+            ),
+            pytest.param(
+                None,
+                "Vulkan",
+                True,
+                WorkerRole.RERANK,
+                RerankMode.LLM,
+                True,
+                id="auto-cpu-llm-reranker",
+            ),
+        ],
+    )
+    def test_auto_is_assumed_on_only_where_the_weights_load_on_the_cpu(
+        self,
+        monkeypatch,
+        flash: bool | None,
+        backend: str,
+        on_cpu: bool,
+        role: WorkerRole,
+        mode: RerankMode | None,
+        expected: bool,
+    ) -> None:
+        monkeypatch.setattr(cfg, "flash_attention", flash)
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda engine: backend)
+        assert planning_mod._role_flash(role, mode, engine=LLAMA, on_cpu=on_cpu) is expected
+
     def test_auto_is_still_estimated_as_though_off(self, monkeypatch) -> None:
         # Under auto the engine decides at load, so the estimate must assume the
         # larger no-flash cache rather than the one it might not get.
@@ -3216,11 +3692,12 @@ class TestSlotsAreChargedOnce:
             total = 10**9 + int(argv[argv.index("--ctx-size") + 1]) * 10**5
             return json.dumps(
                 {
+                    "metadata": {"fileSize": 0},
                     "estimate": {
                         "items": [
                             {"ram": {"uma": 0, "nonuma": 0}, "vrams": [{"uma": 0, "nonuma": total}]}
                         ]
-                    }
+                    },
                 }
             )
 
@@ -3239,6 +3716,140 @@ class TestSlotsAreChargedOnce:
             )
             == 2
         )
+
+
+class TestTheSharedPoolBacksTheMappedWeights:
+    """One rule for the charge, the slot fit and the ctx fit on a shared pool."""
+
+    @staticmethod
+    def _parser(monkeypatch, tmp_path, *, file_size: int, per_token: int) -> Path:
+        import json
+
+        from lilbee.providers.fleet import vram as vram_mod
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"GGUF")
+        vram_mod._cached_footprint.cache_clear()
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
+        )
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+
+        def _priced_by_context(argv: list[str], _path: str) -> str:
+            total = int(argv[argv.index("--ctx-size") + 1]) * per_token
+            return json.dumps(
+                {
+                    "metadata": {"fileSize": file_size},
+                    "estimate": {
+                        "items": [
+                            {
+                                "ram": {"uma": 0, "nonuma": 0},
+                                "vrams": [{"uma": total, "nonuma": total}],
+                            }
+                        ]
+                    },
+                }
+            )
+
+        monkeypatch.setattr(vram_mod, "_run_parser", _priced_by_context)
+        return model
+
+    def test_the_slot_fit_counts_the_weights_on_a_shared_pool_only(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The unified figure alone backs three slots in 1.5e9 bytes. The 1e9 bytes of
+        # weights it leaves out leave room for one. A card keeps the three.
+        model = self._parser(monkeypatch, tmp_path, file_size=10**9, per_token=10**5)
+
+        def fit(*, unified: bool) -> int:
+            return planning_mod._fit_slots(
+                4,
+                WorkerRole.CHAT,
+                model,
+                4096,
+                mmproj_path=None,
+                unified=unified,
+                budget=int(1.5e9),
+                engine=LLAMA,
+            )
+
+        assert fit(unified=True) == 1
+        assert fit(unified=False) == 3
+
+    def test_the_charge_is_the_unified_figure_plus_the_weights_on_a_shared_pool_only(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        model = self._parser(monkeypatch, tmp_path, file_size=5000, per_token=1)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+        shared = planning_mod._estimate_role(
+            WorkerRole.EMBED, "ref", slots=1, unified_budget=10**9, engine=LLAMA
+        )
+        card = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, engine=LLAMA)
+        # The parser prices one token of context at one byte, so the figure is the ctx.
+        assert shared.est_vram_bytes == card.est_vram_bytes + 5000
+        assert card.est_vram_bytes > 0
+
+    def test_the_slot_sizing_gets_the_shared_budget_and_the_chat_reservation(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        model = self._parser(monkeypatch, tmp_path, file_size=5000, per_token=1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+        seen: dict[str, object] = {}
+
+        def _slots(*_a: object, **kw: object) -> int:
+            seen.update(kw)
+            return 1
+
+        monkeypatch.setattr(planning_mod, "_slots_for", _slots)
+        planning_mod._estimate_role(
+            WorkerRole.EMBED,
+            "ref",
+            slots=None,
+            unified_budget=7000,
+            chat_reservation=3000,
+            engine=LLAMA,
+        )
+        assert seen["unified_budget"] == 7000
+        assert seen["chat_reservation"] == 3000
+
+    def test_the_admission_path_hands_the_shared_budget_to_the_sizing(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The charge that admission records comes from the sizing step, so the shared
+        # budget has to reach it: without it the weights drop out of the charge.
+        model = self._parser(monkeypatch, tmp_path, file_size=5000, per_token=1000)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: {}
+        )
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a, engine: 16)
+        monkeypatch.setattr(planning_mod, "_cpu_offload_in_play", lambda: False)
+        monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda *_a: 5000)
+
+        def admit(unified_budget: int | None):
+            return planning_mod._estimate_or_fallback(
+                WorkerRole.EMBED,
+                "ref",
+                engine=LLAMA,
+                unified_budget=unified_budget,
+                chat_reservation=0,
+                device_count=0,
+                total_vram=0,
+                skipped_not_installed={},
+            )
+
+        shared = admit(10**9)
+        card = admit(None)
+        assert shared is not None and card is not None
+        assert shared.est_vram_bytes == card.est_vram_bytes + 5000
 
 
 class TestSizingBudgetComesFromTheDevice:
@@ -3370,6 +3981,46 @@ class TestUnusableChatCtxReason:
         reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
         assert reason is not None
         assert "loads, but" in reason
+
+    def test_trained_window_below_the_minimum_names_the_window(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        card = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        launch = replace(self._launch(WorkerRole.CHAT, 512, weights_bytes=1 * _GB), trained_ctx=512)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [card])
+        assert reason is not None
+        assert reason == (
+            "The chat model org/m.gguf was trained for a 512-token window, and a grounded "
+            f"answer needs about {min_usable_chat_ctx()} tokens (system prompt, a retrieved "
+            "source, the question, and room for the answer), so it will not be served. "
+            "Use a model with a larger trained window."
+        )
+
+    def test_a_one_token_trained_window_names_the_window(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        launch = replace(self._launch(WorkerRole.CHAT, 1), trained_ctx=1)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [])
+        assert reason is not None
+        assert "was trained for a 1-token window" in reason
+
+    def test_trained_window_that_holds_a_prompt_blames_memory(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        launch = replace(self._launch(WorkerRole.CHAT, 512), trained_ctx=32768)
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [])
+        assert reason is not None
+        assert "memory left after its weights backs only a 512-token context" in reason
+        assert "trained" not in reason
+
+    def test_trained_window_equal_to_the_minimum_blames_memory(self, monkeypatch) -> None:
+        from lilbee.providers.engine_params import min_usable_chat_ctx
+
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        launch = replace(self._launch(WorkerRole.CHAT, 512), trained_ctx=min_usable_chat_ctx())
+        reason = planning_mod._unusable_chat_ctx_reason(launch, [])
+        assert reason is not None
+        assert "memory left after its weights backs only a 512-token context" in reason
+        assert "trained" not in reason
 
     def test_two_cards_name_the_cards_memory_in_gib(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
@@ -3509,6 +4160,35 @@ class TestSizingFailureFallsBackToAnAnalyticFloor:
         # The file is 4096 bytes; the KV cache it will allocate dwarfs that.
         assert by_role[WorkerRole.CHAT].est_vram_bytes > 4096
         assert "floor rather than an estimate" in caplog.text
+
+    def test_a_cut_off_weights_folder_is_still_enrolled_at_its_on_disk_size(
+        self, _sizing_boom, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import logging
+
+        folder = tmp_path / "cut-folder"
+        folder.mkdir()
+        (folder / "model.safetensors").write_bytes(safetensors_bytes(4000)[:1000])
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: folder)
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(
+                total_vram=24 * _GB, engines=engines_for_all_roles(LLAMA)
+            )
+        assert WorkerRole.CHAT in {i.role for i in inputs}
+        assert "could not size model" not in caplog.text
+
+    def test_a_cut_off_weights_folder_on_the_cpu_charges_its_on_disk_size(
+        self, _sizing_boom, tmp_path, monkeypatch
+    ) -> None:
+        folder = tmp_path / "cut-folder"
+        folder.mkdir()
+        (folder / "model.safetensors").write_bytes(safetensors_bytes(4000)[:1000])
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: folder)
+        charged = planning_mod._estimate_cpu_role(
+            WorkerRole.CHAT, "org/repo/unsizable.gguf", engine=LLAMA, skipped_not_installed={}
+        )
+        assert charged is not None
+        assert (charged.est_vram_bytes, charged.est_ram_bytes) == (0, 1000)
 
     def test_weights_beyond_every_pool_refuse_with_a_clear_message(
         self, _sizing_boom, monkeypatch, caplog
@@ -4002,6 +4682,7 @@ def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
         spoke_protocol=False,
         refused_all=False,
         backend=EngineBackend.UNKNOWN,
+        has_listing=True,
     )
     monkeypatch.setattr(llama_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
@@ -4036,6 +4717,24 @@ def test_a_build_without_list_devices_falls_back_to_the_host_loader(
 
     assert [(d.backend, d.index, d.from_loader) for d in devices] == [("Vulkan", 0, True)]
     assert any("does not appear to support the flag" in r.getMessage() for r in caplog.records)
+    assert any("device probe returned nothing" in r.getMessage() for r in caplog.records)
+
+
+def test_an_engine_with_no_device_listing_gets_no_loader_warning(monkeypatch, caplog) -> None:
+    """ik_llama.cpp never runs a listing, so "the probe returned nothing" would be false."""
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+    with caplog.at_level("WARNING"):
+        devices = planning_mod.resolve_devices(_Path("/fake/ik-server"), engine=IK_LLAMA)
+
+    assert [(d.backend, d.index, d.from_loader) for d in devices] == [("Vulkan", 0, True)]
+    assert caplog.records == []
 
 
 def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkeypatch) -> None:
@@ -4055,6 +4754,7 @@ def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkey
         spoke_protocol=False,
         refused_all=False,
         backend=EngineBackend.UNKNOWN,
+        has_listing=True,
     )
     monkeypatch.setattr(llama_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
@@ -4206,6 +4906,7 @@ class TestLoaderDerivedDevicesAreSizedAgainstButNeverPinned:
             spoke_protocol=False,
             refused_all=False,
             backend=EngineBackend.UNKNOWN,
+            has_listing=True,
         )
         monkeypatch.setattr(llama_mod, "probe_devices", lambda _b: probe)
         monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
@@ -4566,11 +5267,10 @@ class TestWarnWhenChatDownsized:
             built_ctx_target=target,
         )
 
-    def test_stays_quiet_when_token_sizing_self_corrects(self, caplog, monkeypatch) -> None:
-        """The chunker already switches to token sizing on its own below this cap,
+    def test_stays_quiet_when_plain_chunking_sizes_to_the_cap(self, caplog, monkeypatch) -> None:
+        """Plain chunking sizes chunks by the model's tokens up to this cap,
         so there is nothing left for the adoption log to flag."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         launch = self._launch(slots=1, ctx=512, target=0)
         launch.token_cap = 504
@@ -4996,11 +5696,176 @@ class TestSnapshotEngineWithMixedReadings:
         assert "https://x/redist." in str(caught.value)
         assert "Check that the engine is installed and works" in str(caught.value)
 
+    @staticmethod
+    def _models(monkeypatch, **refs: str) -> None:
+        """Set the four role models; a role not named has no model."""
+        for field in ("chat_model", "embedding_model", "reranker_model", "vision_model"):
+            monkeypatch.setattr(cfg, field, refs.get(field, ""))
+        monkeypatch.setattr(planning_mod, "vision_role_wanted", lambda _ref: False)
+
+    @staticmethod
+    def _missing_llama(monkeypatch, reads: list) -> None:
+        """Reading the llama.cpp engine raises; every other engine reads as a CPU host."""
+        from lilbee.providers.base import ProviderError
+
+        def _read(_binary, engine):
+            reads.append(engine)
+            if engine is LLAMA:
+                raise ProviderError(
+                    "llama-server binary not found. Engine llama.cpp is not installed"
+                )
+            return []
+
+        monkeypatch.setattr(planning_mod, "_plan_devices", _read)
+
+    def test_a_role_with_no_model_does_not_make_its_engine_part_of_the_plan(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        reads: list = []
+        self._missing_llama(monkeypatch, reads)
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod.snapshot_engine(engines) is FAKE
+        assert LLAMA not in reads
+
+    def test_the_clean_box_snapshot_reads_only_the_engines_of_roles_with_a_model(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        read: list = []
+
+        def _probe(engine):
+            read.append(engine)
+            return planning_mod.DeviceReading([], EngineBackend.UNKNOWN, False)
+
+        monkeypatch.setattr(planning_mod, "_probe_engine_devices", _probe)
+        monkeypatch.setattr(planning_mod, "_engine_identity", lambda engine: engine.name)
+        planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE})
+        assert read == [FAKE]
+
+    def test_a_plan_with_only_an_embed_model_never_reads_the_llama_engine(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        reads: list = []
+        self._missing_llama(monkeypatch, reads)
+        self._no_launches(monkeypatch)
+        planning_mod.plan_all_launches(engines={WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE})
+        assert LLAMA not in reads
+
+    def test_a_role_with_a_model_still_names_its_engine_that_cannot_be_read(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            embedding_model="org/repo/embed.safetensors",
+        )
+        self._missing_llama(monkeypatch, [])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        with pytest.raises(ProviderError, match=r"Cannot read the GPUs of the llama\.cpp engine"):
+            planning_mod.snapshot_engine(engines)
+
+    def test_a_remote_chat_model_does_not_make_the_llama_engine_part_of_the_plan(
+        self, monkeypatch
+    ) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch, chat_model="openai/gpt-x", embedding_model="org/repo/embed.safetensors"
+        )
+        self._missing_llama(monkeypatch, [])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod.snapshot_engine(engines) is FAKE
+
+    def test_with_no_model_at_all_every_engine_still_takes_part(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch)
+        self._missing_llama(monkeypatch, [])
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        with pytest.raises(ProviderError, match=r"Cannot read the GPUs of the llama\.cpp engine"):
+            planning_mod.snapshot_engine(engines)
+
+    def test_every_configured_role_without_an_engine_is_listed_past_a_role_that_is_skipped(
+        self, monkeypatch
+    ) -> None:
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            reranker_model="org/repo/rerank.gguf",
+            vision_model="org/repo/vision.gguf",
+        )
+        monkeypatch.setattr(
+            planning_mod, "vision_role_wanted", lambda ref: ref == "org/repo/vision.gguf"
+        )
+        missing = planning_mod._roles_without_engine(None, {WorkerRole.CHAT: LLAMA})
+        assert missing == {
+            WorkerRole.RERANK: "org/repo/rerank.gguf",
+            WorkerRole.VISION: "org/repo/vision.gguf",
+        }
+
+    def test_only_the_asked_roles_are_checked_for_an_engine(self, monkeypatch) -> None:
+        self._models(
+            monkeypatch,
+            embedding_model="org/repo/embed.gguf",
+            reranker_model="org/repo/rerank.gguf",
+        )
+        missing = planning_mod._roles_without_engine((WorkerRole.RERANK,), {})
+        assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
+
+    def test_a_vision_role_that_is_not_wanted_does_not_end_the_check(self, monkeypatch) -> None:
+        self._models(
+            monkeypatch, reranker_model="org/repo/rerank.gguf", vision_model="org/repo/vision.gguf"
+        )
+        missing = planning_mod._roles_without_engine((WorkerRole.VISION, WorkerRole.RERANK), {})
+        assert missing == {WorkerRole.RERANK: "org/repo/rerank.gguf"}
+
+    def test_a_role_with_no_model_does_not_make_a_fleet_mixed(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(monkeypatch, embedding_model="org/repo/embed.safetensors")
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._is_mixed(engines) is False
+
+    def test_two_roles_with_a_model_on_two_engines_are_a_mixed_fleet(self, monkeypatch) -> None:
+        from tests.conformance.fake_adapter import FAKE
+
+        self._models(
+            monkeypatch,
+            chat_model="org/repo/chat.gguf",
+            embedding_model="org/repo/embed.safetensors",
+        )
+        engines = {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: FAKE}
+        assert planning_mod._is_mixed(engines) is True
+
     def test_an_empty_mapping_is_refused_in_plain_words(self) -> None:
         from lilbee.providers.base import ProviderError
 
         with pytest.raises(ProviderError, match="No engine is assigned to any role"):
             planning_mod.snapshot_engine({})
+
+    def test_the_refusal_for_no_engine_names_the_install_advice_not_the_list_command(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(planning_mod, "install_any_advice", lambda _host: "Run the advice.")
+        with pytest.raises(ProviderError) as refused:
+            planning_mod.snapshot_engine({})
+        assert str(refused.value) == (
+            "No engine is assigned to any role, so there is nothing to plan. Run the advice."
+        )
 
     def test_a_configured_role_without_an_engine_is_recorded(self, monkeypatch, caplog) -> None:
         self._devices(monkeypatch, {id(LLAMA): [_card(8 * _GB)]})

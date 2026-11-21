@@ -12,6 +12,7 @@ def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCa
     writable: bool = False,
     reindex: bool = False,
     write_only: bool = False,
+    header_value: bool = False,
     public: bool = True,
     derived: bool = False,
     profile: ProfileScope | None = None,
@@ -20,6 +21,8 @@ def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCa
 ) -> Any:
     """Wrap pydantic ``Field`` and attach metadata via ``json_schema_extra``.
 
+    ``header_value`` marks a secret that travels in an HTTP header; the settings write refuses
+    a value that a header cannot carry.
     ``derived`` marks a field whose default means lilbee computes the value at runtime.
     ``profile`` marks a field a profile may hold, and the part of lilbee it tunes.
     """
@@ -32,6 +35,8 @@ def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCa
         extra["reindex"] = True
     if write_only:
         extra["write_only"] = True
+    if header_value:
+        extra["header_value"] = True
     if not public:
         extra["public"] = False
     if profile is not None:

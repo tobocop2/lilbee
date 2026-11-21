@@ -254,6 +254,12 @@ def test_a_child_run_that_hits_its_limit_leaves_no_worker_alive(tmp_path: Path) 
             psutil.Process(worker_pid).kill()
 
 
+def test_the_presets_target_reaches_the_toy_run_without_its_test_file() -> None:
+    assert "tests/integration/test_preset_fixtures.py" in _make("-n", "test-presets")
+    args = _XDIST_TARGETS["test-presets"]
+    assert not any(a.endswith(".py") or a.startswith("tests/") for a in args)
+
+
 @pytest.mark.timeout(_RUN_BUDGET_S * 2)
 @pytest.mark.parametrize("target", sorted(_XDIST_TARGETS))
 def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path: Path) -> None:

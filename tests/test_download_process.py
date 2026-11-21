@@ -7,6 +7,7 @@ concurrent downloads in sibling processes keep running.
 
 from __future__ import annotations
 
+import dataclasses
 import multiprocessing
 import sys
 import threading
@@ -17,6 +18,7 @@ from typing import Any
 import pytest
 
 from lilbee.catalog import download_process as dp
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelTask
 from lilbee.providers.fleet.engines import LLAMA
@@ -129,7 +131,12 @@ def test_progress_without_a_callback_is_dropped(
 
 @pytest.mark.parametrize(
     ("error_type", "expected"),
-    [("PermissionError", PermissionError), ("SomethingElse", RuntimeError)],
+    [
+        ("PermissionError", PermissionError),
+        ("ListingOfflineError", ListingOfflineError),
+        ("ListingFailedError", ListingFailedError),
+        ("SomethingElse", RuntimeError),
+    ],
 )
 def test_a_child_failure_is_rebuilt_as_its_translated_type(
     monkeypatch: pytest.MonkeyPatch,
@@ -841,6 +848,270 @@ def test_a_child_that_never_named_a_blob_deletes_nothing(
     )
 
     assert stranger.exists()
+
+
+def _failing_cleanup(monkeypatch: pytest.MonkeyPatch, error: BaseException | None = None) -> None:
+    raised = error or PermissionError("cannot remove the partial blob")
+
+    def _raise(models_dir: Path, hf_repo: str, blobs: Any) -> None:
+        raise raised
+
+    monkeypatch.setattr("lilbee.catalog.download.discard_partial_blobs", _raise)
+
+
+def _send_failed_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    receiver, sender = _pipe()
+    _wire(monkeypatch, _FakeWorker(), receiver)
+    sender.send(dp._Probed(kind="probed", blob="abc123"))
+    sender.send(dp._Failed(kind="failed", error_type="ListingFailedError", message="listing broke"))
+
+
+@pytest.mark.parametrize(
+    "cleanup_error",
+    [PermissionError("cannot remove the partial blob"), ValueError("not a cache folder name")],
+    ids=["os-error", "not-an-os-error"],
+)
+def test_a_failed_cleanup_keeps_the_download_error_and_is_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    cleanup_error: Exception,
+) -> None:
+    """The user needs the reason the download failed, whatever stopped the cleanup."""
+    _send_failed_download(monkeypatch)
+    _failing_cleanup(monkeypatch, cleanup_error)
+
+    with (
+        caplog.at_level("WARNING", logger=dp.log.name),
+        pytest.raises(ListingFailedError, match="listing broke"),
+    ):
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+    [record] = [r for r in caplog.records if "partial download" in r.getMessage()]
+    assert "acme/x-GGUF" in record.getMessage()
+    assert record.exc_info is not None
+    assert record.exc_info[1] is cleanup_error
+
+
+def test_a_repo_id_the_cache_cannot_name_keeps_the_download_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The real cleanup raises ValueError for a repo id holding a double dash."""
+    _send_failed_download(monkeypatch)
+    entry = dataclasses.replace(_entry(), hf_repo="acme/x--y-GGUF")
+
+    with pytest.raises(ListingFailedError, match="listing broke"):
+        dp.download_in_subprocess(
+            entry, tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+
+def test_an_interrupt_during_cleanup_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl-C while the leftovers are cleared still stops the program."""
+    _send_failed_download(monkeypatch)
+    _failing_cleanup(monkeypatch, KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+
+def test_a_failed_cleanup_after_a_stall_still_starts_the_next_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A cleanup error in place of the stall would end the retry loop with the wrong error."""
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    started, _senders = _wire_attempts(
+        monkeypatch,
+        [
+            [dp._Probed(kind="probed", blob="abc123")],
+            [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))],
+        ],
+        [_FakeWorker(), _FakeWorker()],
+    )
+    _failing_cleanup(monkeypatch)
+
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 2
+
+
+class _UnstoppableWorker(_FakeWorker):
+    """Worker whose terminate call fails, as a child the OS refuses to signal does."""
+
+    def terminate(self) -> None:
+        raise PermissionError("cannot signal the download process")
+
+
+class _CloseFailsReceiver:
+    """Receiver double that reads from a real pipe and fails when closed."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.close_calls = 0
+
+    def poll(self, timeout: float = 0.0) -> bool:
+        return bool(self._inner.poll(timeout))
+
+    def recv(self) -> Any:
+        return self._inner.recv()
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise OSError("pipe already closed")
+
+
+class _FlagThatTripsAfterTheFirstCheck(_Flag):
+    """Cancel signal that is clear at the entry check, then cancels or raises Ctrl-C."""
+
+    def __init__(self, interrupt: bool) -> None:
+        super().__init__()
+        self._interrupt = interrupt
+        self._checks = 0
+
+    def is_set(self) -> bool:
+        self._checks += 1
+        if self._checks == 1:
+            return False
+        if self._interrupt:
+            raise KeyboardInterrupt
+        return True
+
+
+def test_a_child_that_cannot_be_stopped_keeps_the_download_error_and_is_logged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The user needs the reason the download failed, not the reason the child resisted."""
+    receiver, sender = _pipe()
+    _wire(monkeypatch, _UnstoppableWorker(), receiver)
+    sender.send(dp._Failed(kind="failed", error_type="ListingFailedError", message="listing broke"))
+
+    with (
+        caplog.at_level("WARNING", logger=dp.log.name),
+        pytest.raises(ListingFailedError, match="listing broke"),
+    ):
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+    [record] = [r for r in caplog.records if "download process" in r.getMessage()]
+    assert "acme/x-GGUF" in record.getMessage()
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], PermissionError)
+
+
+def test_a_pipe_that_cannot_be_closed_keeps_the_download_error_and_is_logged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    inner, sender = _pipe()
+    receiver = _CloseFailsReceiver(inner)
+    _wire(monkeypatch, _FakeWorker(), receiver)
+    sender.send(dp._Failed(kind="failed", error_type="ListingFailedError", message="listing broke"))
+
+    with (
+        caplog.at_level("WARNING", logger=dp.log.name),
+        pytest.raises(ListingFailedError, match="listing broke"),
+    ):
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+    [record] = [r for r in caplog.records if "download process" in r.getMessage()]
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], OSError)
+    assert receiver.close_calls == 1
+
+
+def test_the_pipe_is_closed_when_stopping_the_child_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, sender = _pipe()
+    _wire(monkeypatch, _UnstoppableWorker(), receiver)
+    sender.send(dp._Failed(kind="failed", error_type="ListingFailedError", message="listing broke"))
+
+    with pytest.raises(ListingFailedError, match="listing broke"):
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+    assert receiver.closed
+
+
+def test_a_stop_failure_after_a_finished_download_still_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With no download error to keep, a cleanup failure is the only error there is."""
+    receiver, sender = _pipe()
+    _wire(monkeypatch, _UnstoppableWorker(), receiver)
+    sender.send(dp._Done(kind="done", path=str(tmp_path / "x.gguf")))
+
+    with pytest.raises(PermissionError, match="cannot signal the download process"):
+        dp.download_in_subprocess(
+            _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+        )
+
+
+def test_a_stop_failure_after_a_cancel_keeps_the_cancellation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, _sender = _pipe()
+    _wire(monkeypatch, _UnstoppableWorker(), receiver)
+
+    with pytest.raises(TaskCancelledError):
+        dp.download_in_subprocess(
+            _entry(),
+            tmp_path,
+            None,
+            on_progress=None,
+            cancel=_FlagThatTripsAfterTheFirstCheck(interrupt=False),
+            engine=LLAMA,
+        )
+
+
+def test_a_stop_failure_after_an_interrupt_keeps_the_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    receiver, _sender = _pipe()
+    _wire(monkeypatch, _UnstoppableWorker(), receiver)
+
+    with pytest.raises(KeyboardInterrupt):
+        dp.download_in_subprocess(
+            _entry(),
+            tmp_path,
+            None,
+            on_progress=None,
+            cancel=_FlagThatTripsAfterTheFirstCheck(interrupt=True),
+            engine=LLAMA,
+        )
+
+
+def test_a_stop_failure_after_a_stall_still_starts_the_next_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    started, _senders = _wire_attempts(
+        monkeypatch,
+        [
+            [dp._Probed(kind="probed", blob="abc123")],
+            [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))],
+        ],
+        [_UnstoppableWorker(), _FakeWorker()],
+    )
+
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=None, cancel=_Flag(), engine=LLAMA
+    )
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 2
 
 
 def test_a_done_already_in_the_pipe_beats_the_expired_budget(

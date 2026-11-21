@@ -17,7 +17,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.app import engine_choice
 from lilbee.app.engine_choice import EngineBook
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
@@ -34,6 +33,7 @@ from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import ROLE_FIELDS, Role, cards_of, prepare_host
+from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._published import publish
 from tests.providers.fleet.test_mistral_adapter import caps
 
@@ -95,12 +95,11 @@ _ROWS = [
 
 
 def _ref(role: WorkerRole, engine: EngineName) -> str:
-    """The configured model of *role*: TEI loads safetensors, the others a GGUF file."""
-    return (
-        f"org/{role.value}#safetensors"
-        if engine is EngineName.TEI
-        else f"org/repo/{role.value}.gguf"
+    """The configured model of *role*: safetensors for TEI and a mistral.rs embed, else GGUF."""
+    safetensors = engine is EngineName.TEI or (
+        engine is EngineName.MISTRAL and role is WorkerRole.EMBED
     )
+    return f"org/{role.value}#safetensors" if safetensors else f"org/repo/{role.value}.gguf"
 
 
 def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineName) -> Path:
@@ -134,8 +133,7 @@ def _install_host(
     """*session* with the bundled llama-server and every store engine installed."""
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
-    # The engine rule holds its own reference to the host read, so it needs the patch too.
-    monkeypatch.setattr(engine_choice, "session_host", lambda: session)
+    pick_cuda_on_gpu_hosts(monkeypatch)
     # The real read builds the process-wide services, and those start a warm-up thread.
     monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
     bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
@@ -330,8 +328,9 @@ def test_no_role_is_written_with_a_model_cache_variable(
 _FREE = 20 << 30
 _LOW = 2 << 30
 _TOTAL = 24 << 30
-# llama.cpp prints whole MiB and the driver reports bytes, so one card has two totals.
-_TOTAL_IN_WHOLE_MIB = _TOTAL - (16 << 20)
+# The engine's total omits memory the CUDA runtime does not report, so one card has two totals
+# (450 MiB apart for an RTX 3090 in tests/conformance/fixtures/engines/llama.cpp-cuda.log).
+_TOTAL_IN_WHOLE_MIB = _TOTAL - (450 << 20)
 _FLEETS = [
     pytest.param(_LLAMA_ALL, id="llama"),
     pytest.param(_MISTRAL_WITH_LLAMA_RERANK, id="mistral-with-llama-rerank"),
@@ -394,7 +393,9 @@ def test_a_reload_with_a_low_card_read_keeps_each_engines_clean_figure(
     for name in set(fleet.engines.values()):
         probe = planning._plan_probe_store.get(name)
         assert probe is not None
-        assert [d.free_bytes for d in probe.devices] == [_FREE]
+        # The ik server has no device listing, so it has no card figure to keep clean.
+        expected = [] if name is EngineName.IK_LLAMA else [_FREE]
+        assert [d.free_bytes for d in probe.devices] == expected
     for swap in provider._swaps.values():
         swap._close_log()
 
@@ -481,7 +482,18 @@ def test_an_engine_chosen_after_the_capture_keeps_the_clean_free_figure(
     assert [d.backend for d in planning._current_plan_probe(llama.LLAMA).devices] == ["Vulkan"]
 
 
-def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
+def test_a_second_engine_on_the_same_backend_keeps_the_clean_free_figure(
+    host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = _Cards(monkeypatch)
+    planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
+    cards.free = _LOW
+    probe = planning._current_plan_probe(mistral.MISTRAL)
+    assert probe is not None
+    assert [(d.backend, d.free_bytes) for d in probe.devices] == [("CUDA", _FREE)]
+
+
+def test_a_smaller_card_at_the_same_index_reads_its_own_free_figure(
     host: dict[EngineName, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = _Cards(monkeypatch)
@@ -493,7 +505,7 @@ def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
     )
     probe = planning._current_plan_probe(mistral.MISTRAL)
     assert probe is not None
-    assert [(d.total_bytes, d.free_bytes) for d in probe.devices] == [(_LOW, _LOW)]
+    assert [(d.total_bytes, d.free_bytes) for d in probe.devices] == [(_LOW, _LOW - (1 << 20))]
     assert cards.llama_reads == 1
 
 
@@ -540,6 +552,39 @@ def test_the_card_read_follows_the_visible_devices_mask(
     found = devices.visible_nvidia_cards()
     assert [d.name for d in found] == [f"card{i}" for i in indices]
     assert [d.index for d in found] == list(range(len(indices)))
+    assert [d.uuid for d in found] == [cards[i].uuid for i in indices]
+
+
+def test_a_missing_card_does_not_shift_the_pin_of_the_cards_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cards printed 0 and 2 keep those indices, and the child pin names them."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(2, "GPU-c", "card2", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    found = devices.visible_nvidia_cards()
+    assert [(d.index, d.name) for d in found] == [(0, "card0"), (2, "card2")]
+    assert devices.visible_env(tuple(found))["CUDA_VISIBLE_DEVICES"] == "0,2"
+
+
+def test_a_mask_names_a_card_by_its_printed_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mask entry 2 is the card nvidia-smi prints as 2, not the third card in the list."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(2, "GPU-c", "card2", _TOTAL // 2, _FREE // 2),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,0")
+    found = devices.visible_nvidia_cards()
+    assert [(d.index, d.name) for d in found] == [(0, "card2"), (1, "card0")]
+    assert [(d.total_bytes, d.free_bytes) for d in found] == [
+        (_TOTAL // 2, _FREE // 2),
+        (_TOTAL, _FREE),
+    ]
+    assert devices.visible_env(tuple(found))["CUDA_VISIBLE_DEVICES"] == "2,0"
 
 
 @pytest.mark.parametrize("mask", ["1,1", "0,1,0", "GPU-b,GPU-b", "1,GPU-b", "GPU-a,1,0"])
@@ -583,6 +628,21 @@ def test_both_card_engines_see_no_card_for_a_repeated_mask(
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     assert len(tei.TEI.discover_devices(host[EngineName.TEI]).devices) == 2
     assert len(mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices) == 2
+
+
+def test_both_card_engines_keep_the_printed_index_across_a_gap(
+    host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(2, "GPU-c", "card2", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    tei_found = tei.TEI.discover_devices(host[EngineName.TEI]).devices
+    mistral_found = mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices
+    assert [d.index for d in tei_found] == [0, 2]
+    assert [d.index for d in mistral_found] == [0, 2]
 
 
 def test_a_cpu_tei_build_reads_no_card(

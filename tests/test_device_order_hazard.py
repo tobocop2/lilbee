@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from lilbee.core.config import cfg
 from lilbee.data.ingest.adaptive import (
     CONSERVATIVE,
     ControllerState,
@@ -26,7 +27,6 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.providers.fleet import devices, gpu_hardware, gpu_stats, planning
 from lilbee.providers.fleet.devices import FleetDevice, visible_env
-from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaCard
 from lilbee.providers.fleet.gpu_stats import GpuStat, _physical_index, probe_gpu_stats
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.handlers import gpu_stats_stream
@@ -37,14 +37,16 @@ _NVIDIA = "NVIDIA GeForce RTX 3090"
 _AMD = "AMD Radeon RX 7900"
 _INTEL = "Intel Arc A770"
 _INSTALL_HINT = object()
+# Chat and embed each run a local model, so a plan on two engines is a mixed fleet.
+_MODELS = {
+    "chat_model": "org/repo/chat.gguf",
+    "embedding_model": "org/repo/embed.gguf",
+    "reranker_model": "",
+}
 
 
 def _card_free(index: int) -> int:
     return (index + 2) * GIB
-
-
-def _driver_cards(count: int) -> list[NvidiaCard]:
-    return [NvidiaCard(i, f"GPU-{i}", "n", 8 * GIB, 8 * GIB) for i in range(count)]
 
 
 @pytest.fixture
@@ -58,8 +60,11 @@ def host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for var in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(gpu_stats, "card_count", lambda: 0)
-    monkeypatch.setattr(planning, "nvidia_cards", lambda: [])
+    monkeypatch.setattr(planning, "nvidia_card_rows", lambda: 0)
     monkeypatch.setattr(gpu_hardware, "installed_gpu_counts", Counter)
+    for field, ref in _MODELS.items():
+        monkeypatch.setattr(cfg, field, ref)
+    monkeypatch.setattr(planning, "vision_role_wanted", lambda _ref: False)
     return monkeypatch
 
 
@@ -208,6 +213,7 @@ def _engine(name: str, backend: str, count: int, takes_names: bool) -> SimpleNam
         name=name,
         binary=lambda: Path(f"/nonexistent/{name}"),
         takes_device_names=takes_names,
+        served_roles=frozenset(WorkerRole),
         reading=[FleetDevice(backend, i, "n", 8 * GIB, 8 * GIB) for i in range(count)],
     )
 
@@ -218,7 +224,7 @@ def _unpinnable(host, backend: str, seen: int, cards: int) -> tuple[WorkerRole, 
     other = _engine("other", "CUDA", seen, False)
     cache = SimpleNamespace(get=lambda _b, engine: SimpleNamespace(devices=engine.reading))
     host.setattr(planning, "_read_device_cache", cache)
-    host.setattr(planning, "nvidia_cards", lambda: _driver_cards(cards))
+    host.setattr(planning, "nvidia_card_rows", lambda: cards)
     engines = {_CHAT: first, _EMBED: other}
     on_host = planning.HostCards(first.reading)
     return planning._roles_without_a_pin(_INPUTS, first.reading, engines, None, on_host)
@@ -249,15 +255,29 @@ def test_cuda_plan_under_a_mask_is_not_refused(host) -> None:
     assert _unpinnable(host, "CUDA", seen=1, cards=2) == ()
 
 
+def test_a_role_with_no_model_turns_a_refused_mixed_plan_into_one_engine(host) -> None:
+    """Embed has no model, so only the chat engine is planned: nothing is mixed to refuse."""
+    host.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert _unpinnable(host, "Vulkan", seen=1, cards=2) == (_EMBED,)
+    host.setattr(cfg, "embedding_model", "")
+    assert _unpinnable(host, "Vulkan", seen=1, cards=2) == ()
+
+
+def test_a_remote_role_turns_a_refused_mixed_plan_into_one_engine(host) -> None:
+    host.setenv("CUDA_VISIBLE_DEVICES", "1")
+    host.setattr(cfg, "embedding_model", "openai/embed-model")
+    assert _unpinnable(host, "Vulkan", seen=1, cards=2) == ()
+
+
 def test_a_plan_with_no_visible_device_refuses_nothing(host) -> None:
     assert _unpinnable(host, "Vulkan", seen=0, cards=2) == ()
 
 
 def test_a_plan_with_one_engine_reads_no_driver_count(host) -> None:
-    def read_count() -> list[NvidiaCard]:
+    def read_count() -> int:
         raise AssertionError("one engine needs no driver count")
 
-    host.setattr(planning, "nvidia_cards", read_count)
+    host.setattr(planning, "nvidia_card_rows", read_count)
     engine = _engine("only", "Vulkan", 1, True)
     engines = {_CHAT: engine, _EMBED: engine}
     cards = planning.HostCards(engine.reading)
@@ -271,8 +291,8 @@ def _refusal_text(host, caplog, seen: int, cards: int) -> str:
     cache = SimpleNamespace(get=lambda _b, engine: SimpleNamespace(devices=engine.reading))
     host.setattr(planning, "_read_device_cache", cache)
     host.setattr(planning, "_roles_that_fit_alone", lambda *_args: set())
-    host.setattr(planning, "nvidia_cards", lambda: _driver_cards(cards))
-    placement = SimpleNamespace(unplaceable_roles=(_EMBED,), instances=(), co_tenants=frozenset())
+    host.setattr(planning, "nvidia_card_rows", lambda: cards)
+    placement = SimpleNamespace(unplaceable_roles=(_EMBED,), instances=(), swap_classes=())
     with caplog.at_level(logging.WARNING, logger=planning.log.name):
         planning._log_refused_roles(
             placement,

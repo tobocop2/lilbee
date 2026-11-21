@@ -22,6 +22,7 @@ from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.runtime.progress.columns import literal_text_column
 
 engine_app = typer.Typer(
@@ -55,6 +56,12 @@ def stop() -> None:
     console.print(_STOPPED if stopped else _NOTHING_RUNNING)
 
 
+def _print_engines_folder() -> None:
+    """Name the engines folder and the variable that moves it."""
+    folder = engine_service.engines_folder()
+    console.print(engine_service.FOLDER_LINE.format(folder=folder), soft_wrap=True)
+
+
 @engine_app.command("list")
 def list_builds() -> None:
     """List the engine builds installed beside the models."""
@@ -79,6 +86,7 @@ def list_builds() -> None:
             )
         else:
             console.print(f"{name} not installed{clause}")
+    _print_engines_folder()
 
 
 @engine_app.command("install")
@@ -125,35 +133,25 @@ def install(
                 "installed": label,
                 "note": built.note,
                 "not_run_on": list(built.not_run_on),
+                "engines_folder": str(engine_service.engines_folder()),
             }
         )
         return
     console.print(f"Installed engine {label}.")
+    _print_engines_folder()
     if built.note:
         console.print(built.note)
-
-
-@engine_app.command("remove")
-def remove(
-    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
-    version: str = typer.Argument(help="Build version."),
-    backend: str = typer.Argument(help="Build backend."),
-) -> None:
-    """Remove one installed engine build."""
-    try:
-        label = engine_service.remove_build(engine, version, backend)
-    except engine_service.EngineRefusedError as exc:
-        raise _refuse("engine remove", exc) from exc
-    if cfg.json_mode:
-        json_out({"command": "engine remove", "removed": label})
-        return
-    console.print(engine_service.REMOVE_DONE.format(build=label))
 
 
 def _refuse(command: str, exc: Exception) -> typer.Exit:
     """Show a refusal from the engine service on the surface and return the exit."""
     if cfg.json_mode:
-        json_out({"command": command, "error": str(exc)})
+        code = (
+            {"code": SseErrorCode.ENGINE_INSTALL_REFUSED}
+            if isinstance(exc, engine_service.EngineInstallRefusedError)
+            else {}
+        )
+        json_out({"command": command, "error": str(exc), **code})
     else:
         PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
     return typer.Exit(1)
@@ -245,3 +243,26 @@ def prefer(
         json_out({"command": "engine prefer", "engine": chosen})
         return
     console.print(f"The preferred engine is {chosen}.")
+
+
+@engine_app.command("remove")
+def remove(
+    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
+    version: str = typer.Argument(help="Build version."),
+    backend: str = typer.Argument(help="Build backend."),
+    yes: bool = _YES_OPTION,
+) -> None:
+    """Remove one installed engine build."""
+    try:
+        label = _confirming(
+            lambda confirmed: engine_service.remove_build(
+                engine, version, backend, confirmed=confirmed
+            ),
+            yes,
+        )
+    except engine_service.EngineRefusedError as exc:
+        raise _refuse("engine remove", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine remove", "removed": label})
+        return
+    console.print(engine_service.REMOVE_DONE.format(build=label))

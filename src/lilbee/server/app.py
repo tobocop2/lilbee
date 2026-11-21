@@ -22,6 +22,7 @@ from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 from lilbee.app.config_follow import ConfigFileFollower
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
+    ServicesStoppingError,
     get_services,
     peek_services,
     reset_services,
@@ -33,6 +34,7 @@ from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -41,6 +43,7 @@ from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, comp
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
+from lilbee.server.provider_status import CLIENT_FAULT_STATUSES, retry_after_headers
 from lilbee.server.routes import engines as engine_routes
 from lilbee.server.routes import presets as preset_routes
 from lilbee.server.routes.agent_config import (
@@ -100,6 +103,7 @@ from lilbee.server.routes.placement import (
 )
 from lilbee.server.routes.profiles import profiles_router
 from lilbee.server.routes.search import (
+    SEARCH_WARNINGS_HEADER,
     ask_route,
     ask_stream_route,
     chat_route,
@@ -247,21 +251,24 @@ _UPGRADE_WAIT_SECONDS = 10.0
 _OPEN_EXIT_WAIT_SECONDS = 5.0
 _UPGRADE_RETRY_AFTER_SECONDS = 10
 _UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
+_OPENING_MESSAGE = "lilbee is opening the library. Try again in a few seconds."
 
 
 def _upgrading_response(path: str, upgrade: LibraryUpgradeEvent | None) -> Response:
     """The 503 for a request that waited out the limit, in the error shape of its API.
 
-    Every shape also carries the upgrade's progress, as health reports it.
+    The text names the upgrade only when one runs. Every shape also carries the upgrade's
+    progress, as health reports it.
     """
     code = CompletionsErrorCode.INTERNAL_ERROR
+    message = _OPENING_MESSAGE if upgrade is None else _UPGRADING_MESSAGE
     body: dict[str, Any]
     if path.startswith("/v1/messages"):
-        body = anthropic_error_body(anthropic_error_type(code), _UPGRADING_MESSAGE)
+        body = anthropic_error_body(anthropic_error_type(code), message)
     elif path.startswith("/v1/"):
-        body = completions_error_body(code, _UPGRADING_MESSAGE)
+        body = completions_error_body(code, message)
     else:
-        body = {"status_code": 503, "detail": _UPGRADING_MESSAGE}
+        body = {"status_code": 503, "detail": message}
     body["upgrade"] = None if upgrade is None else upgrade.model_dump(mode="json")
     return Response(
         body,
@@ -320,6 +327,21 @@ class _ConfigFileReload(ASGIMiddleware):
         await next_app(scope, receive, send)
 
 
+def _start_services() -> None:
+    """Build the services before the server serves; a failed build ends the startup."""
+    try:
+        services = get_services()
+    except ServicesStoppingError:
+        log.info("A stop arrived during the services build, so the server does not start")
+        raise
+    except Exception:
+        log.error("The services build failed, so the server does not start", exc_info=True)
+        raise
+    log.info("LLM provider pre-loaded")
+    _log_embedding_model_state(services.embedder)
+    services.store.open_in_background()
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
@@ -329,14 +351,7 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     session_manager.load_or_generate()
 
     try:
-        services = get_services()  # pre-load all services (provider, embedder, etc.)
-        log.info("LLM provider pre-loaded")
-    except Exception:
-        log.warning("Failed to pre-load LLM provider", exc_info=True)
-    else:
-        _log_embedding_model_state(services.embedder)
-        services.store.open_in_background()
-    try:
+        _start_services()
         yield
     finally:
         _server_loop.set(None)
@@ -406,18 +421,39 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
 
 
 def _provider_error_response(request: Request, exc: ProviderError) -> Response:
-    """Answer engines that are still starting as a 503 with their text; the rest stay a 500."""
+    """Answer engines still starting as a 503 and a bad request as a 400, with their text."""
     if exc.kind is ProviderErrorKind.STARTING:
-        unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+        unavailable = HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+            headers=retry_after_headers(exc.kind),
+        )
         return _json_error_response(request, unavailable)
+    status = CLIENT_FAULT_STATUSES.get(exc.kind)
+    if status is not None:
+        return _json_error_response(request, HTTPException(status_code=status, detail=str(exc)))
     return _unhandled_error_response(request, exc)
 
 
 def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> Response:
     """Answer a config write that could not take its lock as a 503 with a plain message."""
     unavailable = HTTPException(
-        status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=config_write_failure_message(exc)
+        status_code=HTTP_503_SERVICE_UNAVAILABLE,
+        detail=config_write_failure_message(exc),
+        headers=retry_after_headers(),
     )
+    return _json_error_response(request, unavailable)
+
+
+def _services_stopping_response(request: Request, exc: ServicesStoppingError) -> Response:
+    """Answer a request that lands after the engine stop began as a 503."""
+    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    return _json_error_response(request, unavailable)
+
+
+def _config_unreadable_response(request: Request, exc: ConfigReadError) -> Response:
+    """Answer a config.toml that cannot be read as a 503 with its text."""
+    unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     return _json_error_response(request, unavailable)
 
 
@@ -428,7 +464,7 @@ def create_app() -> Litestar:
         allow_origin_regex=cfg.cors_origin_regex,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
-        expose_headers=[CONTENT_DISPOSITION],
+        expose_headers=[CONTENT_DISPOSITION, SEARCH_WARNINGS_HEADER],
     )
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
@@ -440,6 +476,8 @@ def create_app() -> Litestar:
             HTTPException: _json_error_response,
             ValidationException: _validation_error_response,
             FileLockUnavailableError: _config_locked_response,
+            ConfigReadError: _config_unreadable_response,
+            ServicesStoppingError: _services_stopping_response,
             ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },

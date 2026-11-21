@@ -87,9 +87,7 @@ def _rename_tool(_exchange: Exchange, body: dict[str, Any]) -> bool:
 
 def _leak_think_tag(exchange: Exchange, body: dict[str, Any]) -> bool:
     message = body["choices"][0]["message"]
-    if "17 plus 25" in json.dumps(exchange.request) and (
-        message.get("reasoning_content") or message.get("reasoning")
-    ):
+    if "17 plus 25" in json.dumps(exchange.request):
         message["content"] = "<think>leak</think>" + str(message.get("content") or "")
         return True
     return False

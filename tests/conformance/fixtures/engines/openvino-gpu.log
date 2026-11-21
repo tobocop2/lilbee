@@ -1,4 +1,4 @@
-source: machine: thinkpad (nuclearwork), Intel i7-10750H, UHD 630 iGPU, GTX 1650 Ti, no NPU; OS: Manjaro Linux kernel 5.10.205; recorded 2026-11-03; llama.cpp release b12020 ubuntu-openvino-2026.4.1-x64; GGML_OPENVINO_DEVICE=GPU
+source: machine: thinkpad (<host>), Intel i7-10750H, UHD 630 iGPU, GTX 1650 Ti, no NPU; OS: Manjaro Linux kernel 5.10.205; recorded 2026-11-03; llama.cpp release b12020 ubuntu-openvino-2026.4.1-x64; GGML_OPENVINO_DEVICE=GPU
 engine: openvino-gpu
 version: llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1
 --- llama-server --list-devices
@@ -7,10 +7,10 @@ Available devices:
   OPENVINO1: GGML_OPENVINO_DEVICE=GPU (selected) - Intel(R) UHD Graphics (iGPU) (14274 MiB, 13285 MiB free)
 --- server log (--verbose)
 0.00.000.703 I srv  llama_server: initializing ...
-0.00.001.920 I load_backend: loaded RPC backend from /home/tobias/f3/ov/llama-b12020/libggml-rpc.so
+0.00.001.920 I load_backend: loaded RPC backend from <home>/f3/ov/llama-b12020/libggml-rpc.so
 0.00.025.862 I OpenVINO: using device GPU
-0.00.025.931 I load_backend: loaded OPENVINO backend from /home/tobias/f3/ov/llama-b12020/libggml-openvino.so
-0.00.032.096 I load_backend: loaded CPU backend from /home/tobias/f3/ov/llama-b12020/libggml-cpu-haswell.so
+0.00.025.931 I load_backend: loaded OPENVINO backend from <home>/f3/ov/llama-b12020/libggml-openvino.so
+0.00.032.096 I load_backend: loaded CPU backend from <home>/f3/ov/llama-b12020/libggml-cpu-haswell.so
 0.00.032.512 I cmn  common_param: common_params_print_info: build 12020 (0ec4027a2) with GNU 13.3.0 for Linux x86_64
 0.00.032.528 I cmn  common_param: common_params_print_info: verbosity = 2147483647 (adjust with the `-lv N` CLI arg)
 0.00.032.528 I cmn  common_param: device_info:
@@ -26,12 +26,12 @@ Available devices:
 0.00.033.090 D srv  init_listene: serve nocache for sw.js
 0.00.033.116 I srv          init: using 11 threads for HTTP server
 0.00.033.175 W srv  server_setup: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
-0.00.034.763 I srv    load_model: loading model '/home/tobias/f3/models/Qwen3-0.6B-Q8_0.gguf'
-0.00.034.765 I srv    load_model: local path '/home/tobias/f3/models/Qwen3-0.6B-Q8_0.gguf'
+0.00.034.763 I srv    load_model: loading model '<home>/f3/models/Qwen3-0.6B-Q8_0.gguf'
+0.00.034.765 I srv    load_model: local path '<home>/f3/models/Qwen3-0.6B-Q8_0.gguf'
 0.00.034.793 I cmn  common_fit_a: fitting params to device memory ...
 0.00.034.794 I cmn  common_fit_a: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
 0.00.034.820 I common_params_fit_impl: getting device memory data for initial parameters:
-0.00.065.124 I llama_model_loader: loaded meta data with 28 key-value pairs and 310 tensors from /home/tobias/f3/models/Qwen3-0.6B-Q8_0.gguf (version GGUF V3 (latest))
+0.00.065.124 I llama_model_loader: loaded meta data with 28 key-value pairs and 310 tensors from <home>/f3/models/Qwen3-0.6B-Q8_0.gguf (version GGUF V3 (latest))
 0.00.065.141 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 0.00.065.148 I llama_model_loader: - kv   0:                       general.architecture str              = qwen3
 0.00.065.149 I llama_model_loader: - kv   1:                               general.type str              = model
@@ -2113,7 +2113,7 @@ Available devices:
 0.00.179.009 I common_params_fit_impl: will leave 12384 >= 1024 MiB of free device memory, no changes needed
 0.00.179.010 I common_fit_params: successfully fit params to free device memory
 0.00.179.012 I common_fit_params: fitting params to free memory took 0.14 seconds
-0.00.207.237 I llama_model_loader: loaded meta data with 28 key-value pairs and 310 tensors from /home/tobias/f3/models/Qwen3-0.6B-Q8_0.gguf (version GGUF V3 (latest))
+0.00.207.237 I llama_model_loader: loaded meta data with 28 key-value pairs and 310 tensors from <home>/f3/models/Qwen3-0.6B-Q8_0.gguf (version GGUF V3 (latest))
 0.00.207.251 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 0.00.207.253 I llama_model_loader: - kv   0:                       general.architecture str              = qwen3
 0.00.207.254 I llama_model_loader: - kv   1:                               general.type str              = model

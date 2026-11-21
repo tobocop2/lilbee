@@ -24,6 +24,7 @@ from lilbee.cli.tui.preset_commands import (
     run_preset_command,
 )
 from lilbee.cli.tui.screens.settings import SettingsScreen
+from lilbee.cli.tui.screens.settings_engines import ENGINES_PANE_ID
 from lilbee.cli.tui.screens.settings_presets import (
     PRESETS_PANE_ID,
     PresetDialog,
@@ -32,7 +33,7 @@ from lilbee.cli.tui.screens.settings_presets import (
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
-from tests._async_wait import wait_until
+from tests._async_wait import subtree_mounted, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 KEY = "SENTINEL-tui-key-91c4"
@@ -115,10 +116,7 @@ async def await_dialog(pilot, app) -> bool:
     """Wait until the preset dialog is the top screen and every widget in it is mounted."""
     return await wait_until(
         pilot,
-        lambda: (
-            isinstance(app.screen, PresetDialog)
-            and all(w.is_mounted for w in app.screen.walk_children(with_self=True))
-        ),
+        lambda: isinstance(app.screen, PresetDialog) and subtree_mounted(app.screen),
     )
 
 
@@ -742,6 +740,20 @@ class TestPane:
             assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
         assert "api_key" not in _stored()[0]
 
+    async def test_a_new_key_in_the_dialog_replaces_a_stored_bad_key(self):
+        row = {"name": "omlx", "url": LOCAL, "roles": ["chat"], "api_key": "tab\tkey"}
+        settings.set_value(cfg.data_root, "server_presets", json.dumps([row]))
+        app = _ChatApp()
+        async with app.run_test(size=(120, 50)) as pilot:
+            pane = await _open_pane(pilot, app)
+            assert await wait_until(pilot, lambda: bool(pane.query(".preset-edit")))
+            _press(app, ".preset-edit")
+            assert await await_dialog(pilot, app)
+            app.screen.query_one("#preset-key-input", Input).value = KEY
+            _press(app, "#preset-save")
+            assert await wait_until(pilot, lambda: not isinstance(app.screen, PresetDialog))
+        assert _stored() == [{**row, "api_key": KEY}]
+
     async def test_edit_dialog_has_no_clear_key_button_without_a_key(self):
         _seed(key=None)
         app = _ChatApp()
@@ -835,7 +847,8 @@ class TestPaneKeyboardAccess:
                 await pilot.press(">")
                 assert await wait_until(pilot, lambda: tabs.active != seen[-1])
                 seen.append(tabs.active)
-            assert seen[1:] == [*groups, PRESETS_PANE_ID]
+            # Engines sits right after the first group, Models; Presets is last.
+            assert seen[1:] == [groups[0], ENGINES_PANE_ID, *groups[1:], PRESETS_PANE_ID]
             await pilot.press(">")
             assert await wait_until(pilot, lambda: tabs.active == pane_ids[0])
 
@@ -856,9 +869,22 @@ class TestPaneKeyboardAccess:
             tabs.active = last_group
             assert await wait_until(pilot, lambda: bool(screen.query(f"#{last_group}-body > *")))
             body = screen.query_one(f"#{last_group}-body", VerticalScroll)
-            last_field = screen._focus_stops(body)[-1]
-            screen._focus_pane_edge(last_group, -1)
-            assert await wait_until(pilot, lambda: app.focused is last_field)
+            # The rows join the body first and compose their editors later; the last field is
+            # not known until every one of them has mounted.
+            assert await wait_until(pilot, lambda: subtree_mounted(body), timeout=30.0), (
+                f"{last_group} body never finished mounting"
+            )
+            assert screen._focus_stops(body), f"{last_group} has no focus stops"
+
+            def _on_last_field() -> bool:
+                last = screen._focus_stops(body)[-1]
+                if app.focused is not last:
+                    screen._focus_pane_edge(last_group, -1)
+                return app.focused is last
+
+            assert await wait_until(pilot, _on_last_field, timeout=30.0), (
+                f"focus never reached the last field of {last_group}"
+            )
             await pilot.press("tab")
             assert await wait_until(pilot, lambda: tabs.active == PRESETS_PANE_ID)
             assert await wait_until(
@@ -982,6 +1008,7 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
                 mock.patch.object(chat, "_run_preset_command"),
                 mock.patch.object(chat, "_run_hf_login"),
                 mock.patch.object(chat, "_send_message"),
+                mock.patch.object(chat, "_handle_slash"),
             ):
                 chat._submit_draft(chat._chat_input, typed)
             chat._chat_input.focus()
@@ -996,6 +1023,16 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
             f"/LOGIN   {TOKEN}",
             f"/set crawl_password {PASSWORD}",
             f"/set  crawl_password\t{PASSWORD}",
+            f"/set OPENAI_API_KEY {PASSWORD}",
+            f"/set openai_api_key={PASSWORD}",
+            f"/set OpenAI_Api_Key={PASSWORD}",
+            f"/set ollama_base_url http://user:{PASSWORD}@host:11434",
+            f"/set lm_studio_base_url=http://user:{PASSWORD}@host:1234/v1",
+            f"/crawl https://user:{PASSWORD}@example.com/docs",
+            f"/crawl user:{PASSWORD}@example.com/docs",
+            f"/CRAWL https://user:{PASSWORD}@example.com --depth 2",
+            f"/add https://user:{PASSWORD}@example.com/page",
+            f"/add ./notes.md https://user:{PASSWORD}@example.com/page",
             f"/preset add x1 {LOCAL} --roles chat --key {PASSWORD}",
         ],
     )
@@ -1004,7 +1041,18 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
 
     @pytest.mark.parametrize(
         "typed",
-        ["/login", "/set top_k 5", "/version", "hello there"],
+        [
+            "/login",
+            "/set top_k 5",
+            "/set top_k=5",
+            "/version",
+            "hello there",
+            "/crawl https://example.com/docs?a=b@c",
+            "/crawl example.com",
+            "/add ./notes@v2.md",
+            "/add https://example.com/page",
+            "/set ollama_base_url http://localhost:11434",
+        ],
     )
     async def test_a_line_without_a_secret_is_recalled(self, typed):
         assert await self._recalled(typed) == typed
@@ -1018,6 +1066,17 @@ class TestUpArrowReturnsOnlyWhatIsSafeToRecall:
             ("/set crawl_password", True),
             ("/set chunk_size 512", False),
             ("/set nonsense x", False),
+            ("/set CRAWL_PASSWORD x", True),
+            ("/set crawl_password=x", True),
+            ("/set ollama_base_url http://u:p@h", True),
+            ("/set ollama_base_url http://[::1@h", True),
+            ("/crawl http://[::1@h", True),
+            ("/add notes@v2.md", False),
+            ("/add //u:p@h", False),
+            ("/set ollama_base_url http://u@h", True),
+            ("/crawl example.com --depth 2 me@x.com", False),
+            ("/crawl https://u:p@h --depth 2", True),
+            ("/crawl", False),
             ("/set", False),
             ("/preset list", True),
             ("/version", False),

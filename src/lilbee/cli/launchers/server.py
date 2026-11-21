@@ -11,7 +11,8 @@ import socket
 import subprocess
 import sys
 import time
-from typing import IO
+from pathlib import Path
+from typing import IO, NamedTuple
 
 import httpx
 import typer
@@ -43,6 +44,8 @@ _TERMINATE_GRACE_S = 10
 _KILL_GRACE_S = 5
 # Spawn attempts; free_port()'s released probe port can be stolen before the server binds.
 _SPAWN_ATTEMPTS = 3
+_SERVE_LOG_TAIL_LINES = 20
+_SERVE_LOG_TAIL_BYTES = 16 * 1024
 
 
 def running_server_session() -> tuple[str, int] | None:
@@ -117,10 +120,17 @@ def health_ok(port: int) -> bool:
     return _probe_health(port) is not None
 
 
-def wait_for_health(port: int, timeout_s: float = _SERVER_BOOT_TIMEOUT_S) -> bool:
-    """Poll ``/api/health`` until it answers 200 or *timeout_s* elapses."""
+def wait_for_health(
+    port: int,
+    timeout_s: float = _SERVER_BOOT_TIMEOUT_S,
+    *,
+    server: subprocess.Popen[bytes] | None = None,
+) -> bool:
+    """Poll ``/api/health`` until it answers 200, *timeout_s* elapses, or *server* exits."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        if server is not None and server.poll() is not None:
+            return False
         if health_ok(port):
             return True
         time.sleep(_SERVER_POLL_INTERVAL_S)
@@ -150,7 +160,8 @@ def planned_chat_ctx() -> int | None:
     """The per-slot window the fleet will serve the configured chat model, or None.
 
     Mirrors the fleet's own single-GPU chat sizing, so it answers before the
-    engine is up: the same ``cfg.num_ctx`` short-circuit, then the same
+    engine is up: a ``cfg.num_ctx`` pin clamped to the trained window as the launch
+    clamps it, else the same
     :func:`resolve_chat_ctx` against the same budget the fleet sizes with, which
     is the memory the GPU reports rather than the host's (see
     :func:`lilbee.providers.fleet.planning.plan_sizing_budget`).
@@ -164,28 +175,29 @@ def planned_chat_ctx() -> int | None:
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
     from lilbee.providers.fleet.planning import plan_sizing_budget
-    from lilbee.providers.gguf_meta import read_gguf_metadata
+    from lilbee.providers.fleet.planning import planned_chat_ctx as pinned_chat_ctx
     from lilbee.providers.model_ref import parse_model_ref
 
     ref = str(cfg.chat_model)
     if not ref or not parse_model_ref(ref).is_local:
         return None
-    if cfg.num_ctx is not None:
-        return cfg.num_ctx
     try:
         path = resolve_model_path(ref)
         engine = resolve_engines(cfg).for_role(WorkerRole.CHAT).adapter
+        meta = engine.model_meta(path)
+        if cfg.num_ctx is not None:
+            return pinned_chat_ctx(path, meta)
         return resolve_chat_ctx(
             path,
-            read_gguf_metadata(path),
+            meta,
             engine=engine,
             available_bytes=plan_sizing_budget(engine),
         )
     except (ProviderError, OSError, ValueError):
-        # Sizing needs the model file and its GGUF header; an absent or unreadable
-        # one leaves the window unknown rather than failing the launch.
+        # Sizing needs the model file and its GGUF header. Without them the trained
+        # window is unknown: a pin stands as given, an unpinned window stays unknown.
         log.debug("planned_chat_ctx failed for %s", ref, exc_info=True)
-        return None
+        return cfg.num_ctx
 
 
 def client_chat_ctx(port: int) -> int | None:
@@ -259,6 +271,45 @@ def _poll_chat_ready(port: int, timeout_s: float) -> bool:
     return False
 
 
+def serve_log_path() -> Path:
+    """The file a launcher-spawned server writes its stdout and stderr to."""
+    return cfg.data_dir / "logs" / "launcher-serve.log"
+
+
+def _serve_log_size() -> int:
+    """The byte size of the server log, 0 when quiet mode or no log exists."""
+    if os.environ.get("LILBEE_LAUNCHER_SERVE_QUIET"):
+        return 0
+    try:
+        return serve_log_path().stat().st_size
+    except OSError:
+        return 0
+
+
+def _serve_log_since(start: int) -> str:
+    """The last lines the server wrote after byte *start*, empty when it wrote none."""
+    if os.environ.get("LILBEE_LAUNCHER_SERVE_QUIET"):
+        return ""
+    try:
+        with serve_log_path().open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            # A log truncated at spawn is smaller than the recorded start.
+            first = 0 if size < start else start
+            handle.seek(max(first, size - _SERVE_LOG_TAIL_BYTES))
+            raw = handle.read()
+    except OSError:
+        return ""
+    lines = raw.decode("utf-8", errors="replace").splitlines()[-_SERVE_LOG_TAIL_LINES:]
+    return "\n".join(lines)
+
+
+class _FailedStart(NamedTuple):
+    """Why one spawned server did not become healthy."""
+
+    exit_status: int | None
+    output: str
+
+
 def spawn_server(
     port: int, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.Popen[bytes]:
@@ -294,9 +345,8 @@ def spawn_server(
         stdout: int | IO[bytes] = subprocess.DEVNULL
         stderr: int | IO[bytes] = subprocess.DEVNULL
     else:
-        log_dir = cfg.data_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "launcher-serve.log"
+        log_path = serve_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         # Truncate when the file passes 5 MB so a long-lived session doesn't
         # accumulate the chat-completion firehose into the data dir indefinitely.
         # On Windows the file may still be held open by a previous session, so
@@ -355,32 +405,52 @@ def ensure_server_running(
     if existing is not None and health_ok(existing[1]):
         return existing, None
     last_port = 0
+    failed = _FailedStart(None, "")
+    # A server that exits is retried like one that hangs: a stolen port looks the same.
     for _ in range(_SPAWN_ATTEMPTS):
         # Honor a user-pinned port so a persisted agent config keeps a valid URL;
         # fall back to a free port when unset (0).
         last_port = cfg.server_port or free_port()
         spawned = _spawn_and_wait(last_port, env_overrides=env_overrides)
-        if spawned is not None:
+        if not isinstance(spawned, _FailedStart):
             return _session_for_spawned(spawned), spawned
+        failed = spawned
     typer.secho(
-        f"lilbee server failed to start on port {last_port}; check the logs.",
+        f"lilbee server failed to start on port {last_port}.",
         err=True,
         fg=typer.colors.RED,
     )
+    _report_failed_start(failed)
     raise typer.Exit(1)
+
+
+def _report_failed_start(failed: _FailedStart) -> None:
+    """Print how the last spawned server ended and what it wrote to the log."""
+    log_path = serve_log_path()
+    if failed.output:
+        typer.echo(f"Last lines of {log_path}:\n{failed.output}", err=True)
+    elif failed.exit_status is not None:
+        where = (
+            "its output is off (LILBEE_LAUNCHER_SERVE_QUIET)"
+            if os.environ.get("LILBEE_LAUNCHER_SERVE_QUIET")
+            else f"it wrote nothing to {log_path}"
+        )
+        typer.echo(f"The server exited with status {failed.exit_status}; {where}.", err=True)
 
 
 def _spawn_and_wait(
     port: int, *, env_overrides: dict[str, str] | None = None
-) -> subprocess.Popen[bytes] | None:
-    """Spawn a server on *port* and wait for health; None when it never comes up."""
+) -> subprocess.Popen[bytes] | _FailedStart:
+    """Spawn a server on *port* and wait for health; the failure when it exits or hangs."""
+    log_start = _serve_log_size()
     spawned = spawn_server(port, env_overrides=env_overrides)
     with console.status(f"Starting lilbee server on port {port}..."):
-        healthy = wait_for_health(port)
+        healthy = wait_for_health(port, server=spawned)
     if healthy:
         return spawned
+    exit_status = spawned.poll()
     stop_spawned_server(spawned)
-    return None
+    return _FailedStart(exit_status, _serve_log_since(log_start))
 
 
 def _session_for_spawned(spawned: subprocess.Popen[bytes]) -> tuple[str, int]:

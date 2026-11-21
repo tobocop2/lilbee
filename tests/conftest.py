@@ -1,5 +1,6 @@
 """Shared test helpers."""
 
+import importlib.util
 import io
 import os
 import shutil
@@ -50,13 +51,16 @@ from lilbee.cli.app import clear_overrides
 from lilbee.core import profile_files
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import profile_folders
-from lilbee.core.system import default_data_dir
+from lilbee.core.system import canonical_models_dir, default_data_dir
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, SourceSummary
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.availability import provider_sdk_available as _real_provider_sdk_available
-from lilbee.providers.fleet.binary import EngineTool
+from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
+from lilbee.providers.fleet.engine_install import engine_install_hint
+from lilbee.providers.fleet.first_use import installed_tool
 from lilbee.runtime.lock import _no_sync_running
 
 # The literal name, not read from the code under test: a wrong name must fail the tests.
@@ -66,12 +70,14 @@ SDK_DIST = "liter-llm"
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
 _PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 # Stack-dump watchdog for wedged tests (opt-in via LILBEE_TEST_HANG_DUMP_S).
-pytest_plugins = ["tests._hang_watchdog"]
+pytest_plugins = ["tests._hang_watchdog", "pytester"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # The developer's platform data root, read before any test redirects it.
 REAL_GLOBAL_ROOT = default_data_dir()
+# The developer's models folder; the engine pack installs beside it.
+REAL_MODELS_DIR = canonical_models_dir()
 # The package's own profiles folder; the suite reads a session copy of it.
 REAL_PACKAGE_PROFILES_DIR = profile_files.PACKAGE_PROFILES_DIR
 # The variables that root derives from, with their real values.
@@ -180,6 +186,16 @@ def _no_real_browser(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_held_install_warnings() -> Generator[None]:
+    """Start and end each test with no install warning held, so one test's warning never leaks."""
+    from lilbee.providers.fleet import first_use
+
+    first_use.take_install_warnings()
+    yield
+    first_use.take_install_warnings()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_nvidia_probes() -> Generator[None]:
     """Start and end each test with no cached nvidia-smi answer, so one test's fake never leaks."""
     from lilbee.providers.fleet.gpu_backends import nvidia
@@ -190,6 +206,37 @@ def _fresh_nvidia_probes() -> Generator[None]:
     yield
     for probe in probes:
         probe.reset()
+
+
+@pytest.fixture(autouse=True)
+def _sealed_host_cards(request, monkeypatch, tmp_path_factory) -> Generator[None]:
+    """Run each test on a host with no card: no nvidia-smi, no NVLink topology, no PCI device.
+
+    Every read of the host's cards answers "none", so no count depends on the machine that
+    runs the test. A test that needs cards patches the same reader itself, which wins over
+    this seal. ``real_nvidia_smi`` opts out for a test that drives ``run_tool`` for real, and
+    ``real_windows_registry`` for a test that injects its own registry module.
+    """
+    from lilbee.providers.fleet import devices, gpu_hardware
+    from lilbee.providers.fleet.gpu_backends import nvidia
+
+    if not request.node.get_closest_marker("real_nvidia_smi"):
+        monkeypatch.setattr(nvidia, "run_tool", lambda tool, args, timeout: ("", None))
+
+    run_bounded = devices.run_bounded
+
+    def _without_topology(argv, **kwargs):
+        if list(argv[:3]) == ["nvidia-smi", "topo", "-m"]:
+            return "", None
+        return run_bounded(argv, **kwargs)
+
+    monkeypatch.setattr(devices, "run_bounded", _without_topology)
+    monkeypatch.setattr(
+        gpu_hardware, "_SYSFS_PCI_DEVICE_DIR", tmp_path_factory.getbasetemp() / "no-pci-bus"
+    )
+    if not request.node.get_closest_marker("real_windows_registry"):
+        monkeypatch.setattr(gpu_hardware, "_windows_adapters", lambda: iter(()))
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -250,6 +297,32 @@ def _restore_server_stop_flag():
 
 
 @pytest.fixture(autouse=True)
+def _forget_engine_stop(_restore_server_stop_flag):
+    """Clear every engine stop request after each test.
+
+    A stop runs once per process and refuses new containers, so a leak breaks
+    every later test that builds the services. A stop still running would set
+    its done event during the next test, so it fails this test instead.
+
+    The stop thread sets the server-stopping flag before it sets its done
+    event. Asking for the flag fixture makes this teardown run first, so the
+    flag is restored after the wait and not before a late stop sets it.
+
+    The fixture holds the process's own lifecycle from before the test. Fixture
+    teardown order depends on which autouse fixture asks for ``monkeypatch``
+    first, and a test that swaps in a lifecycle of its own must not become the
+    one this fixture waits on.
+    """
+    from lilbee.app import services as services_mod
+
+    lifecycle = services_mod._lifecycle
+    yield
+    if lifecycle.stop_requested:
+        assert lifecycle.wait_stopped(5.0), "the test left an engine stop running"
+    lifecycle.reset()
+
+
+@pytest.fixture(autouse=True)
 def _suppress_model_scan(request, monkeypatch):
     """Prevent ModelBar._scan_models from doing real work in tests.
 
@@ -265,6 +338,27 @@ def _suppress_model_scan(request, monkeypatch):
             "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
             lambda: {},
         )
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_model_lists(request, monkeypatch):
+    """Keep a catalog browse from reading an engine's published model list over the network.
+
+    Tests of that read use ``@pytest.mark.real_engine_model_lists`` and patch ``httpx.get``.
+    """
+    if "real_engine_model_lists" in {m.name for m in request.node.iter_markers()}:
+        return
+    from lilbee.catalog.hf_client import HfClient
+
+    monkeypatch.setattr(HfClient, "fetch_engine_models", lambda self, engine: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_router_download(monkeypatch, tmp_path):
+    """Keep an engine install from downloading the router; a test of that step patches it back."""
+    monkeypatch.setattr(
+        "lilbee.app.engine_service.install_router", lambda **_signals: tmp_path / "llama-swap"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -284,7 +378,7 @@ def _assume_provider_sdk_available(request, monkeypatch):
 
 def _only_providers_installed(dist: str) -> str:
     if dist == SDK_DIST:
-        return "2.4.1"
+        return "2.5.0"
     raise PackageNotFoundError(dist)
 
 
@@ -309,43 +403,136 @@ def _record_toasts(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_session_host():
-    """Read the host afresh per test; an engine install replaces the cached host."""
-    from lilbee.catalog.runnable import session_host
+def _fresh_session_host(request, monkeypatch):
+    """Give each test a fixed Linux x86-64 host with no GPU; ``real_host_read`` reads the live one.
 
+    The live read starts a child process for the CPU probe, so a read per test is slow. The cache
+    is cleared around each test, so an engine install that refreshes the host reads it afresh.
+    """
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet.host_caps import collect
+
+    session_host = runnable._read_host
     session_host.cache_clear()
+    if "real_host_read" not in {m.name for m in request.node.iter_markers()}:
+        fixed = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
+        monkeypatch.setattr(runnable, "detect", lambda: fixed)
     yield
     session_host.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_ingest_pool_size():
+    """Size the ingest pool afresh per test; a cached count would fix it for later tests."""
+    from lilbee.data.offload import max_workers
+
+    max_workers.cache_clear()
+    yield
+    max_workers.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_block_bar_answer():
+    """Probe the terminal afresh per test; a cached block bar answer would leak a fake terminal."""
+    from lilbee.cli.tui.color_compat import draws_block_bars
+
+    draws_block_bars.cache_clear()
+    yield
+    draws_block_bars.cache_clear()
 
 
 @pytest.fixture(autouse=True)
 def _fresh_engine_help():
     """Read each engine binary's --help afresh per test; a cached text would leak across tests."""
     from lilbee.providers.fleet.adapters import _warn_once
-    from lilbee.providers.fleet.binary import engine_help
+    from lilbee.providers.fleet.binary import _help_timeouts, _read_help
 
-    engine_help.cache_clear()
+    _read_help.cache_clear()
+    _help_timeouts.clear()
     _warn_once.cache_clear()
     yield
-    engine_help.cache_clear()
+    _read_help.cache_clear()
+    _help_timeouts.clear()
     _warn_once.cache_clear()
+
+
+@pytest.fixture(scope="session")
+def _engine_free_path(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """The ``PATH`` of this session with every engine tool hidden and the other tools kept.
+
+    A folder that holds an engine tool is swapped for a scratch folder of links to
+    the other files in it, so a child finds no engine on ``PATH`` and still finds
+    ``git`` or ``pdfseparate`` from the same folder.
+    """
+    sealed = {tool.value for tool in EngineTool}
+    scratch = tmp_path_factory.mktemp("engine-free-path")
+    folders = []
+    for index, folder in enumerate(os.environ.get("PATH", "").split(os.pathsep)):
+        if not any(shutil.which(name, path=folder) for name in sealed):
+            folders.append(folder)
+            continue
+        shadow = scratch / str(index)
+        shadow.mkdir()
+        for entry in Path(folder).resolve().iterdir():
+            if entry.stem not in sealed:
+                _link_or_copy(entry, shadow / entry.name)
+        folders.append(str(shadow))
+    return os.pathsep.join(folders)
+
+
+def _link_or_copy(entry: Path, link: Path) -> None:
+    """Link *link* to *entry*; copy a file when the host grants no symlink right (Windows)."""
+    try:
+        os.symlink(entry, link, target_is_directory=entry.is_dir())
+    except OSError:
+        if entry.is_file():
+            shutil.copy2(entry, link)
+
+
+@pytest.fixture(scope="session")
+def _engine_free_pythonpath(tmp_path_factory: pytest.TempPathFactory) -> str | None:
+    """A folder with the engine wheel package minus its ``bin/``, or ``None`` with no wheel.
+
+    A child that finds this folder first on ``PYTHONPATH`` imports a wheel that holds no
+    engine, as the wheel is outside a release build.
+    """
+    spec = importlib.util.find_spec("lilbee_engine_llama_cpp")
+    if spec is None or spec.origin is None:
+        return None
+    shadow = tmp_path_factory.mktemp("engine-free-pythonpath")
+    shutil.copytree(
+        Path(spec.origin).parent,
+        shadow / spec.name,
+        ignore=shutil.ignore_patterns("bin", "__pycache__"),
+    )
+    return str(shadow)
 
 
 @pytest.fixture(autouse=True)
-def _sealed_engine_resolution(request, monkeypatch):
+def _sealed_engine_resolution(request, monkeypatch, _engine_free_path, _engine_free_pythonpath):
     """Seal engine-binary resolution so every machine behaves like CI.
 
     resolve_engine_tool falls back to PATH when the bundled wheel's bin/ is
     empty (always, outside a release build), so a developer with llama-server
-    installed resolves a real binary where CI raises ProviderError. Blocking
-    the three engine names in shutil.which and the LILBEE_LLAMA_SERVER_PATH
-    override forces a test that needs a binary to plant its own (a tmp-file
-    ``cfg.llama_server_path``, a fake ``lilbee_engine_llama_cpp``, or a
-    ``shutil.which`` patch) or use ``@pytest.mark.real_engine_resolution``.
+    installed resolves a real binary where CI raises ProviderError. Resolution
+    reads the LILBEE_LLAMA_SERVER_PATH override, the bundled wheel and the engine
+    names on PATH. All three are sealed in the environment, which a child process
+    a test spawns inherits (the wheel through a copy without bin/ that comes first
+    on PYTHONPATH), and in shutil.which for this process. A test that needs a binary
+    plants its own (a tmp-file ``cfg.llama_server_path``, a fake
+    ``lilbee_engine_llama_cpp``, or a ``shutil.which`` patch) or uses
+    ``@pytest.mark.real_engine_resolution``.
     """
     if "real_engine_resolution" in {m.name for m in request.node.iter_markers()}:
         return
     monkeypatch.setattr(cfg, "llama_server_path", "")
+    monkeypatch.delenv("LILBEE_LLAMA_SERVER_PATH", raising=False)
+    monkeypatch.setenv("PATH", _engine_free_path)
+    if _engine_free_pythonpath is not None:
+        inherited = os.environ.get("PYTHONPATH")
+        monkeypatch.setenv(
+            "PYTHONPATH", os.pathsep.join(filter(None, [_engine_free_pythonpath, inherited]))
+        )
     sealed = {tool.value for tool in EngineTool}
     real_which = shutil.which
 
@@ -353,6 +540,31 @@ def _sealed_engine_resolution(request, monkeypatch):
         return None if cmd in sealed else real_which(cmd, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "which", _engineless_which)
+
+
+@pytest.fixture
+def real_gguf_parser(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the test at the developer's own engine store and return its gguf-parser.
+
+    The product lookup runs first, with no install: the bundled wheel, then PATH.
+    If it raises, the fixture reads the installed engine pack itself, in the real
+    engine store. Nothing is installed: a host with no gguf-parser skips, unless
+    LILBEE_REQUIRE_GGUF_PARSER is set, which turns the skip into a failure.
+    """
+    monkeypatch.setattr(cfg, "models_dir", REAL_MODELS_DIR)
+    try:
+        return resolve_engine_tool(EngineTool.GGUF_PARSER, install=False)
+    except ProviderError:
+        packed = installed_tool(EngineTool.GGUF_PARSER.value)
+    if packed is None:
+        message = (
+            "gguf-parser is not on PATH and the engine pack is not installed under "
+            f"{REAL_MODELS_DIR.parent}. {engine_install_hint()}"
+        )
+        if os.environ.get("LILBEE_REQUIRE_GGUF_PARSER"):
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
+    return packed
 
 
 @pytest.fixture(autouse=True)
@@ -696,22 +908,6 @@ def _no_leaked_task_workers():
         )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _shutdown_ingest_pool():
-    """Join the shared ingest pool before coverage stops, so the total is stable.
-
-    ``offload._ingest_executor`` is a cached pool of daemon ``lilbee-ingest``
-    workers. Left running, they are still tracing when ``coverage.stop()`` combines
-    thread data at process exit, and a worker mid-line during that combine
-    intermittently loses its lines -- the flake that reads the 100% gate as 99% on
-    an unlucky run. A session finalizer runs before coverage's atexit, so joining
-    the pool here removes those threads from the combine and makes coverage
-    deterministic. No-op when ingest never ran.
-    """
-    yield
-    _join_shared_ingest_pool()
-
-
 @pytest.fixture(scope="session")
 def tessdata_ready(tmp_path_factory):
     """Have xberg fetch Tesseract's language data once, under a lock every worker shares.
@@ -730,19 +926,20 @@ def tessdata_ready(tmp_path_factory):
         _PRISTINE_EXTRACT_DOCUMENT(png.getvalue(), "image/png", filename="ready.png", config=config)
 
 
-@pytest.fixture
-def joined_ingest_pool():
-    """Join the shared ingest pool after a test that drives ingest outside a sync."""
-    yield
-    _join_shared_ingest_pool()
-
-
-def _join_shared_ingest_pool() -> None:
+def shutdown_ingest_pool() -> None:
+    """Shut down and clear the shared ingest pool, if one is cached."""
     from lilbee.data import offload
 
     if offload._ingest_executor.cache_info().currsize:
         offload._ingest_executor().shutdown(wait=True)
         offload._ingest_executor.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_ingest_pool():
+    """Shut down and clear the shared ingest pool after every test, so none carries over."""
+    yield
+    shutdown_ingest_pool()
 
 
 @pytest.fixture(autouse=True)
@@ -870,8 +1067,11 @@ def _default_provider_mock():
     provider.chat_prefill_progress.return_value = None
     # The chunker bounds its budget to the embed cap; None keeps the configured budget.
     provider.embed_token_cap.return_value = None
-    # xberg probes a tokenizer binding with a one-character count at registration.
-    provider.count_tokens.return_value = 1
+    # Four characters to a token, as the chunker assumed before it counted tokens; the
+    # one-character registration probe xberg sends counts one.
+    provider.count_tokens.side_effect = lambda text: max(1, len(text) // 4)
+    # Retrieval budgets with the chat tokenizer when it answers; None keeps the character rule.
+    provider.count_chat_text_tokens.return_value = None
     provider.health_warnings.return_value = []
     # warm_progress feeds the /api/warm/stream handler (WarmProgress | None);
     # default to None (idle). Warm-stream tests override this.
@@ -1059,6 +1259,16 @@ def filesystem_without_locking() -> Generator[None, None, None]:
         yield
 
 
+@pytest.fixture
+def counting_provider():
+    """Services whose provider counts tokens, for tests that chunk text through the real chunker."""
+    import lilbee.app.services as svc_mod
+
+    svc_mod.set_services(make_mock_services())
+    yield
+    svc_mod.set_services(None)
+
+
 def make_mock_services(**overrides):
     """Create a mock Services container. Override individual services via kwargs.
 
@@ -1120,6 +1330,16 @@ def _default_known_models_mock():
     cache.refs.return_value = set()
     cache.resolve.return_value = None
     return cache
+
+
+def child_pythonpath(*folders: str | Path) -> str:
+    """PYTHONPATH for a child process: the sealed value, then *folders*.
+
+    The sealing fixture puts a wheel without an engine first on PYTHONPATH. A child
+    that gets its own PYTHONPATH from a test must start from it, or it imports the
+    host's engine wheel.
+    """
+    return os.pathsep.join(filter(None, [os.environ.get("PYTHONPATH"), *map(str, folders)]))
 
 
 def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
@@ -1198,7 +1418,7 @@ def wiki_enabled():
 
 
 @pytest.fixture(autouse=False)
-def wiki_isolated_env(tmp_path: Path):
+def wiki_isolated_env(tmp_path: Path, counting_provider):
     """Shared fixture for wiki tests: snapshot cfg, set wiki-related paths, restore."""
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path

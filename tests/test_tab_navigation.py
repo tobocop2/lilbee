@@ -16,14 +16,17 @@ without advancing focus.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from unittest import mock
 
 import pytest
+from textual.widgets import Input, TextArea
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.core.config import cfg
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -88,6 +91,14 @@ def _patch_chat_setup() -> Any:
         yield
 
 
+_WAIT_TIMEOUT_S = 5.0
+
+
+async def _wait(pilot: Any, predicate: Callable[[], bool]) -> bool:
+    """Wait for *predicate* on the shared wall-clock budget; return whether it held."""
+    return await wait_until(pilot, predicate, timeout=_WAIT_TIMEOUT_S)
+
+
 async def _walk_tab_chain(
     app: LilbeeApp,
     pilot: Any,
@@ -116,8 +127,54 @@ async def _walk_tab_chain(
         if marker in stop_at:
             break
         await pilot.press("tab")
-        await pilot.pause()
+        # Focus moves on a later message-loop tick; wait for it to leave the widget.
+        moved = await _wait(pilot, lambda current=focused: app.focused is not current)
+        # A text input keeps focus on Tab (it inserts a tab character): the walk ends there.
+        if isinstance(focused, (Input, TextArea)):
+            if not moved:
+                break
+        else:
+            assert moved, f"focus did not move from {marker}"
     return chain
+
+
+def _focusing(widget: Any) -> Callable[[], bool]:
+    """Return a predicate that asks *widget* for focus once, then reports whether it holds it."""
+    asked = False
+
+    def holds_focus() -> bool:
+        nonlocal asked
+        if not asked and not widget.has_focus and widget.focusable:
+            asked = True
+            widget.focus()
+        return widget.has_focus
+
+    return holds_focus
+
+
+async def _await_profile_snapshot(pilot: Any, screen: Any) -> None:
+    """Wait for the Profile pane's snapshot, so the focus stops are final.
+
+    The snapshot loads on a thread and then enables the Select and shows or hides the pane's
+    buttons. The pane has 8 focus stops before it lands and 4 after.
+    """
+    from textual.widgets import Select
+
+    from lilbee.cli.tui.screens.profile_tab import PROFILE_SELECT_ID
+
+    def landed() -> bool:
+        selects = screen.query(f"#{PROFILE_SELECT_ID}").results(Select)
+        return any(bool(s.value) or s.disabled for s in selects)
+
+    assert await _wait(pilot, landed), "the profile snapshot never landed"
+
+
+async def _show_view(app: LilbeeApp, pilot: Any, view: str, screen_type: type) -> None:
+    """Switch to *view* and wait until its screen is current and holds focus."""
+    app.switch_view(view)
+    assert await _wait(
+        pilot, lambda: isinstance(app.screen, screen_type) and app.focused is not None
+    ), f"{view} never took focus: screen={app.screen!r} focused={app.focused!r}"
 
 
 async def test_chat_tab_chain_includes_view_tabs() -> None:
@@ -134,11 +191,9 @@ async def test_chat_tab_chain_includes_view_tabs() -> None:
         view_tabs = app.screen.query_one(ViewTabs)
         # Chat's auto-focus lands on the input around the handover; pin the
         # walk's starting point or Tab becomes a literal character immediately.
-        for _ in range(20):
-            view_tabs.query_one("#view-tab-chat").focus()
-            await pilot.pause()
-            if app.focused is not None and app.focused.id == "view-tab-chat":
-                break
+        chat_tab = view_tabs.query_one("#view-tab-chat")
+
+        assert await _wait(pilot, _focusing(chat_tab)), "chat view tab never took focus"
         chain = await _walk_tab_chain(app, pilot, max_presses=40)
         for view in ("view-tab-chat", "view-tab-catalog", "view-tab-settings"):
             assert view in chain, f"Tab walk missed {view}: {chain}"
@@ -155,13 +210,12 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause(0.2)
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
         inp.value = "hello"
-        await pilot.pause()
+        assert await _wait(pilot, lambda: app.focused is inp), "chat input never took focus"
         await pilot.press("tab")
-        await pilot.pause()
+        await _wait(pilot, lambda: inp.value == "hello\t")
         assert inp.value == "hello\t", f"Tab did not insert: {inp.value!r}"
         assert app.focused is inp, "Focus moved away from chat input on Tab"
 
@@ -169,12 +223,12 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
 @pytest.mark.timeout(120)
 async def test_settings_tab_chain_visits_group_tabs_widget() -> None:
     """Tab from SettingsScreen visits the group Tabs strip."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause(0.2)
+        await _show_view(app, pilot, "Settings", SettingsScreen)
         chain = await _walk_tab_chain(app, pilot, max_presses=80, stop_at=("ContentTabs", "Tabs"))
         assert any(name in chain for name in ("ContentTabs", "Tabs")), (
             f"Tabs widget missing from {chain}"
@@ -190,22 +244,25 @@ async def test_settings_tab_rolls_over_to_next_pane() -> None:
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause(0.2)
+        await _show_view(app, pilot, "Settings", SettingsScreen)
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
         screen.populate_all_panes()
-        await pilot.pause()
         tabs = screen.query_one(TabbedContent)
         starting_pane = tabs.active
         body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
-        focusables = [w for w in screen.focus_chain if body in w.ancestors]
-        assert focusables, "active pane should expose at least one focusable"
-        focusables[-1].focus()
-        await pilot.pause()
+
+        def _focusables() -> list[Any]:
+            return [w for w in screen.focus_chain if body in w.ancestors]
+
+        await _await_profile_snapshot(pilot, screen)
+        assert await _wait(pilot, lambda: bool(_focusables())), (
+            "active pane should expose at least one focusable"
+        )
+        last = _focusables()[-1]
+        assert await _wait(pilot, _focusing(last)), "last field never focused"
         await pilot.press("tab")
-        await pilot.pause(0.3)
+        await _wait(pilot, lambda: tabs.active != starting_pane)
         assert tabs.active != starting_pane, (
             f"Tab from last field should activate the next pane (still {tabs.active})"
         )
@@ -227,23 +284,26 @@ async def test_settings_tab_advances_within_pane() -> None:
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
-        app.switch_view("Settings")
-        await pilot.pause(0.2)
+        await _show_view(app, pilot, "Settings", SettingsScreen)
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
         screen.populate_all_panes()
-        await pilot.pause()
         tabs = screen.query_one(TabbedContent)
         starting_pane = tabs.active
         body = screen.query_one(f"#{starting_pane}-body", _LazyGroupBody)
+
         # Tab walks the visible fields; the Select's hidden overlay is focusable but is no stop.
-        focusables = [w for w in screen.focus_chain if body in w.ancestors]
-        assert len(focusables) >= 2, "pane needs at least two focusables to test mid-pane move"
-        focusables[0].focus()
-        await pilot.pause()
+        def _focusables() -> list[Any]:
+            return [w for w in screen.focus_chain if body in w.ancestors]
+
+        await _await_profile_snapshot(pilot, screen)
+        assert await _wait(pilot, lambda: len(_focusables()) >= 2), (
+            "pane needs at least two focusables to test mid-pane move"
+        )
+        focusables = _focusables()
+        assert await _wait(pilot, _focusing(focusables[0])), "first field never focused"
         await pilot.press("tab")
-        await pilot.pause(0.3)
+        await _wait(pilot, lambda: app.focused is focusables[1])
         assert tabs.active == starting_pane, (
             f"Tab from a non-last field should keep the same pane, got {tabs.active}"
         )
@@ -260,19 +320,18 @@ async def test_catalog_tab_chain_visits_search() -> None:
     must visit it so screen-reader and keyboard-only users can route
     out of the search box without touching the mouse.
     """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
-        app.switch_view("Catalog")
-        await pilot.pause(0.3)
+        await _show_view(app, pilot, "Catalog", CatalogScreen)
         view_tabs = app.screen.query_one(ViewTabs)
-        view_tabs.query_one("#view-tab-catalog").focus()
-        await pilot.pause()
+        catalog_tab = view_tabs.query_one("#view-tab-catalog")
+        assert await _wait(pilot, _focusing(catalog_tab)), "catalog view tab never took focus"
         await pilot.press("slash")
-        await pilot.pause()
+        await _wait(pilot, lambda: app.focused is not None and app.focused.id == "catalog-search")
         focused_id = app.focused.id if app.focused else None
         assert focused_id == "catalog-search", (
             f"slash should focus catalog-search, focused={focused_id!r}"

@@ -1325,10 +1325,12 @@ async def test_settings_list_editor_refused_pattern_blocks_save():
             ta.load_text(f"/ok\n{refused}")
             ta.blur()
             err = app.screen.query_one("#err-crawl_exclude_patterns", Static)
-            # Focus change → blur handler → check → error widget class toggle are all
-            # async. Single pilot.pause is not enough on slower runners; poll until
-            # the -visible class lands.
-            await pump_until(pilot, lambda: err.has_class("-visible"))
+            # Focus change → blur handler → check → error text are all async. Wait
+            # for the text the test asserts on, and fail on the wait if it never lands.
+            assert await pump_until(pilot, lambda: "line 2" in str(err.render())), (
+                "the refused-pattern error never rendered"
+            )
+            assert err.has_class("-visible")
             shown = str(err.render())
             assert "line 2" in shown
             assert "unrecognized escape sequence" in shown
@@ -2998,8 +3000,12 @@ def test_status_read_chat_arch_success():
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.fleet.engines.llama.read_gguf_metadata",
             return_value={"architecture": "llama"},
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_chat_arch(info)
@@ -3019,6 +3025,10 @@ def test_status_read_embed_arch_success():
         patch(
             "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_embed_arch(info)
@@ -3042,6 +3052,10 @@ def test_status_read_vision_arch_success():
         patch(
             "lilbee.providers.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
+        ),
+        patch(
+            "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+            return_value=True,
         ),
     ):
         result = _read_vision_arch(info)
@@ -3069,33 +3083,6 @@ def test_status_read_vision_arch_swallows_errors():
     ):
         result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
-
-
-def test_get_model_architecture_caches_within_session():
-    """Repeated calls under the same model refs return the cached instance."""
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    first = get_model_architecture()
-    second = get_model_architecture()
-    # Cached identity, not just equal value: a cache hit returns the
-    # exact same object so callers can rely on cheap reads.
-    assert first is second
-
-
-def test_invalidate_cache_forces_reread():
-    """invalidate_cache drops the memoized arch info so the next call
-    re-reads instead of returning the stale instance."""
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    first = get_model_architecture()
-    invalidate_cache()
-    second = get_model_architecture()
-    # Different instances after invalidate (re-read happens), even
-    # though the values are equal because nothing changed on disk.
-    assert first is not second
-    assert first == second
 
 
 async def test_app_mounts_chat_screen():
@@ -8177,6 +8164,72 @@ def test_consume_stream_shows_the_rewrite_in_the_status_row():
     widget.append_content.assert_called_once_with("In 1910.")
 
 
+def test_consume_stream_toasts_each_degraded_step_and_keeps_the_status_row():
+    """A notice with no rewrite still toasts every failed step, and sets no status."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    warning = HealthWarning(
+        code=WarningCode.HYDE_BLEND_FAILED, message="hyde failed.", remedy="Run lilbee status."
+    )
+    screen = ChatScreen.__new__(ChatScreen)
+    widget = MagicMock()
+    stream = iter(
+        [
+            RetrievalNotice(degraded=(warning,)),
+            StreamToken(content="Answer.", is_reasoning=False),
+        ]
+    )
+    with (
+        patch(
+            "lilbee.cli.tui.screens.chat.call_from_thread",
+            side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+        ),
+        patch.object(ChatScreen, "notify", create=True) as notify,
+    ):
+        screen._consume_stream(stream, _Turn("q", widget, 0, None), [])
+    notify.assert_called_once_with(warning.line, severity="warning")
+    widget.set_thinking_status.assert_not_called()
+
+
+@pytest.mark.parametrize("size", [(80, 24), (160, 48)])
+async def test_chat_toasts_a_failed_search_step(mock_svc, size):
+    """The chat screen raises a warning toast when a search step failed."""
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+    from lilbee.retrieval.reasoning import RetrievalNotice, StreamToken
+
+    warning = HealthWarning(
+        code=WarningCode.CONCEPT_BOOST_FAILED,
+        message="Concept boost failed.",
+        remedy="Run lilbee status, then search again.",
+    )
+    mock_svc.searcher.ask_stream = MagicMock(
+        return_value=iter(
+            [
+                RetrievalNotice(query="q", degraded=(warning,)),
+                StreamToken(content="Answer.", is_reasoning=False),
+            ]
+        )
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=size) as pilot:
+        # Textual drops a toast from its list five seconds after it is raised,
+        # so a poll on that list can miss a toast on a loaded host. Record the
+        # call that raises it and wait on that.
+        with patch.object(app, "notify", wraps=app.notify) as notify:
+            inp = app.screen.query_one("#chat-input", ChatInput)
+            inp.value = "test"
+            await pilot.press("enter")
+            assert await wait_until(
+                pilot,
+                lambda: any(c.args[:1] == (warning.line,) for c in notify.call_args_list),
+                timeout=10,
+            ), "the failed search step never raised its toast"
+        raised = next(c for c in notify.call_args_list if c.args[:1] == (warning.line,))
+        assert raised.kwargs["severity"] == "warning"
+
+
 async def test_chat_stream_response_error_worker(mock_svc):
     """Cover the error branch in _stream_response."""
     app = ChatTestApp()
@@ -9069,10 +9122,6 @@ async def test_catalog_grid_renders_hf_overflow_cta():
                 screen, "_build_hf_rows", return_value=[_hf_row(f"m{i}") for i in range(30)]
             ):
                 screen._refresh_grid()
-                # Two pauses: first lets call_after_refresh schedule
-                # _mount_remaining_grid_sections, the second lets it mount
-                # the CTA that surfaces the "{count} loaded" hint.
-                await _pilot.pause()
                 await _pilot.pause()
             grid_text = " ".join(str(s.render()) for s in screen.query("#grid-chat > Static"))
             assert any(c.isdigit() for c in grid_text)
@@ -9213,6 +9262,29 @@ async def test_catalog_resolve_delete_ref_picks_one_quant():
             assert screen._resolve_delete_ref(full_q8) == full_q8
             # Remote SDK names pass through unchanged.
             assert screen._resolve_delete_ref("qwen3:0.6b") == "qwen3:0.6b"
+
+
+async def test_catalog_resolve_delete_ref_reads_a_gguf_suffixed_ref_as_the_plain_ref():
+    """A ``#gguf`` ref deletes the same installed file as the plain ref."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=_EMPTY_CATALOG),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+        ):
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            await screen.workers.wait_for_complete()
+
+            repo = "Qwen/Qwen3-0.6B-GGUF"
+            full_q4 = f"{repo}/Qwen3-0.6B-Q4_K_M.gguf"
+            screen._installed_names = {repo, full_q4}
+
+            assert screen._resolve_delete_ref(f"{full_q4}#gguf") == full_q4
+            assert screen._resolve_delete_ref(f"{repo}#gguf") == full_q4
 
 
 async def test_catalog_delete_not_installed():
@@ -10016,10 +10088,9 @@ async def test_an_unknown_command_keeps_the_draft_and_says_so():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press(*"/sync", "enter")
-        await pilot.pause()
+        unknown = msg.CMD_UNKNOWN.format(cmd="/sync")
+        assert await wait_until(pilot, lambda: any(n.message == unknown for n in posted_toasts()))
         assert app.screen._chat_input.value == "/sync"
-        notes = [note.message for note in posted_toasts()]
-        assert msg.CMD_UNKNOWN.format(cmd="/sync") in notes
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):
@@ -16566,9 +16637,10 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         screen = app.screen
         with patch_model_write() as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
-            # The persist + role reload now runs in a thread worker; await it.
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            # The persist + role reload runs in a thread worker. The write publishes,
+            # which starts other screen workers that may cancel each other, so wait
+            # for the write itself, not for every worker.
+            assert await pump_until(pilot, lambda: mock_apply.called)
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
         # Label was repainted via model_picker_label; the chat_model field
@@ -16604,7 +16676,9 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
-            await app.workers.wait_for_complete()
+            # The write publishes, and the screen's own workers may cancel each
+            # other then, so wait for the reload, not for every worker.
+            assert await pump_until(pilot, lambda: services_mock.reload_role.called)
             await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
@@ -16753,8 +16827,11 @@ async def test_settings_model_picker_dismissed_reload_success_notifies_the_brack
             patch.object(app, "notify", lambda msg, **_k: notes.append(msg)),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision[q4].gguf")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            # The write publishes, and the screen's own workers may cancel each
+            # other then, so wait for the toast, not for every worker.
+            assert await pump_until(
+                pilot, lambda: any("Now using fake/vision[q4].gguf" in n for n in notes)
+            )
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
     assert any("Now using fake/vision[q4].gguf" in n for n in notes)
@@ -16831,6 +16908,9 @@ class _SyncWorkerApp:
     is_running = True
 
     def notify(self, *_args, **_kwargs) -> None:
+        pass
+
+    def publish_settings(self, _keys) -> None:
         pass
 
     def run_worker(self, work, **_kwargs):
@@ -17220,8 +17300,8 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     assert loaded_arch == [arch_payload]
 
 
-async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
-    """_mount_remaining_grid_sections mounts each remaining section after the first paint."""
+async def test_catalog_remount_grid_sections_mounts_every_section():
+    """_remount_grid_sections mounts a heading for each section it is given."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
     from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 
@@ -17250,35 +17330,17 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             screen._active_tab_id_cache = "chat"
             screen._refresh_view = lambda: None  # type: ignore[method-assign]
-            # The screen's own first paint queues a tail mount through
-            # call_after_refresh. Left pending, it lands on the pause below the
-            # mount and reaches _remount_grid_sections, which clears the
-            # container's children before remounting the real sections -- so the
-            # section mounted here disappears and the count reads unchanged.
-            # Drain it now, while nothing has been counted yet. Stubbing the
-            # method cannot help: call_after_refresh captured the bound method
-            # when it scheduled.
-            for _ in range(3):
-                await _pilot.pause()
-            # Hand the screen one extra section to mount; the iteration
-            # is the previously-uncovered branch.
-            sections = [GridSection(heading="Extras", rows=[row])]
-            # _mount_remaining_grid_sections returns early unless the container
-            # is running; assert it so a regression reads as the precondition
-            # failing, not as a bare "no heading appeared".
-            assert screen._grid_container.is_running
-            before = len(list(screen._grid_container.query(".section-heading")))
-            mounts = screen._mount_remaining_grid_sections(
-                screen._grid_container, sections, hf_count=1
-            )
-            # Awaited: pause only settles the widgets that existed when it was
-            # called, so it never waits for the ones just mounted.
-            assert mounts, "expected the iteration to mount the remaining section"
-            for mount in mounts:
-                await mount
-            await _pilot.pause()
-            after = len(list(screen._grid_container.query(".section-heading")))
-            assert after > before, "expected an additional section heading"
+            sections = [
+                GridSection(heading="Picks", rows=[row]),
+                GridSection(heading="Extras", rows=[row]),
+            ]
+            screen._remount_grid_sections(sections, hf_count=1)
+            headings = [
+                str(w.render())
+                for w in screen._grid_container.displayed_children
+                if w.has_class("section-heading")
+            ]
+            assert headings == ["Picks", "Extras"]
 
 
 class TestWikiSafeCoerce:
@@ -17486,7 +17548,9 @@ async def test_settings_masks_credentials_but_keeps_the_value():
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause(0.15)
+        assert await wait_until(
+            pilot, lambda: bool(app.screen.query("#settings-tabs")), timeout=30.0
+        )
         tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
         # Panes compose lazily, so every group has to be visited to reach its
         # editors; a credential hiding in an unvisited pane is the whole risk.
@@ -17495,18 +17559,26 @@ async def test_settings_masks_credentials_but_keeps_the_value():
             if not pane.id:
                 continue
             tabbed.active = pane.id
-            await pilot.pause(0.15)
+            assert await wait_until(
+                pilot, lambda target=pane.id: tabbed.active == target, timeout=30.0
+            )
+
+        def _every_credential_editor_rendered() -> bool:
+            checked.clear()
             for key in secret_keys:
                 for editor in app.screen.query(f"#{EDITOR_ID_PREFIX}{key}").results(Input):
                     assert editor.password is True, f"{key} renders in plain text"
                     checked.append(key)
-        missing = set(secret_keys) - set(checked)
-        assert not missing, f"credential editors never rendered: {missing}"
+            return not set(secret_keys) - set(checked)
+
+        rendered = await wait_until(pilot, _every_credential_editor_rendered, timeout=30.0)
+        assert rendered, f"credential editors never rendered: {set(secret_keys) - set(checked)}"
 
         editor = app.screen.query(f"#{EDITOR_ID_PREFIX}{checked[-1]}").first(Input)
         editor.value = "sk-proj-REALSECRET123"
-        await pilot.pause()
-        assert editor.value == "sk-proj-REALSECRET123"
+        assert await wait_until(
+            pilot, lambda: editor.value == "sk-proj-REALSECRET123", timeout=30.0
+        )
 
 
 async def test_settings_leaves_non_credentials_visible():

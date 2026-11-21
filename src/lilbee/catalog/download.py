@@ -15,7 +15,12 @@ from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
-from lilbee.catalog.formats import select_files
+from lilbee.catalog.formats import (
+    SAFETENSORS_INDEX,
+    formats_from_tags,
+    require_declared_shards,
+    select_files,
+)
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HfToken,
@@ -26,6 +31,7 @@ from lilbee.catalog.refs import (
     DEFAULT_MMPROJ_PATTERN,
     FLOAT_QUANTS,
     WILDCARD,
+    ModelRef,
     quant_label,
     rank_gguf_candidates,
     split_shard_filenames,
@@ -35,6 +41,8 @@ from lilbee.catalog.xdna import write_ticket
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
+    from huggingface_hub.hf_api import ModelInfo
+
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 _T = TypeVar("_T")
@@ -131,12 +139,21 @@ def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) 
     Scoped to the blobs the caller resolved, because another quant of the same
     repo downloads into the same directory at the same time and its temporary
     file is live.
+
+    Raises RuntimeError naming the folder when the cache cannot be listed.
     """
     from huggingface_hub.file_download import repo_folder_name
 
     repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
     for blob in blobs:
-        for partial in repo_dir.glob(f"blobs/{blob}.*.incomplete"):
+        try:
+            partials = list(repo_dir.glob(f"blobs/{blob}.*.incomplete"))
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot read the model cache folder {repo_dir}: {exc.strerror or exc}. "
+                "Check that lilbee can read and write that folder."
+            ) from exc
+        for partial in partials:
             try:
                 partial.unlink()
             except OSError:
@@ -353,7 +370,7 @@ _NEVER_CANCELLED = _NeverCancelled()
 
 def download_model(
     entry: CatalogModel,
-    engine: "EngineAdapter",
+    engine: "EngineAdapter | None",
     *,
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
@@ -384,7 +401,7 @@ def download_model(
     """
     models_dir = _models_dir()
     if entry.format is ModelFormat.XDNA:
-        return write_ticket(models_dir, entry.hf_repo)
+        return write_ticket(models_dir, entry.hf_repo, entry.task)
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
     # circular: download -> download_process via fetch_model_files
@@ -407,7 +424,7 @@ def fetch_model_files(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
-    engine: "EngineAdapter",
+    engine: "EngineAdapter | None",
     *,
     on_progress: ProgressCallback | None = None,
     on_probe: ProbeCallback | None = None,
@@ -424,6 +441,8 @@ def fetch_model_files(
         return fetch_format_files(
             entry, models_dir, token, on_progress=on_progress, on_probe=on_probe
         )
+    if engine is None:
+        raise RuntimeError(f"A GGUF download needs an engine to pick the file: {entry.hf_repo}")
     filename = resolve_filename(entry, engine)
     shards = split_shard_filenames(filename)
     paths = _cached_shards(entry, models_dir, shards, on_probe)
@@ -499,8 +518,8 @@ def _fetch_files(
     return file_paths
 
 
-def _cached_path(hf_repo: str, name: str, models_dir: Path) -> Path | None:
-    """The cache path of *name* when the cache holds the whole file, else None."""
+def cached_file_path(hf_repo: str, name: str, models_dir: Path) -> Path | None:
+    """The snapshot path of *name* when the cache holds the whole file under it, else None."""
     from huggingface_hub import try_to_load_from_cache
 
     found = try_to_load_from_cache(hf_repo, name, cache_dir=str(models_dir))
@@ -519,10 +538,16 @@ def fetch_format_files(
     selected = select_files(entry.format, _repo_sibling_files(entry.hf_repo))
     if not selected:
         raise RuntimeError(f"No {entry.format} model files found in {entry.hf_repo}")
+    if SAFETENSORS_INDEX in selected:
+        index_path = (
+            cached_file_path(entry.hf_repo, SAFETENSORS_INDEX, models_dir)
+            or _fetch_files(entry, models_dir, token, [SAFETENSORS_INDEX], None, on_probe)[0]
+        )
+        require_declared_shards(index_path.read_text(encoding="utf-8"), selected)
     cached = {
         name: path
         for name in selected
-        if (path := _cached_path(entry.hf_repo, name, models_dir)) is not None
+        if (path := cached_file_path(entry.hf_repo, name, models_dir)) is not None
     }
     if len(cached) == len(selected):
         log.info("Model already downloaded: %s", cached[selected[0]])
@@ -559,11 +584,9 @@ def _cached_shard(
     Looks in the Hub cache layout first, then at the flat path an older
     install used.
     """
-    from huggingface_hub import try_to_load_from_cache
-
     file = _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
-    hit = try_to_load_from_cache(entry.hf_repo, shard, cache_dir=str(models_dir))
-    for path in (Path(hit) if isinstance(hit, str) else None, models_dir / shard):
+    hit = cached_file_path(entry.hf_repo, shard, models_dir)
+    for path in (hit, models_dir / shard):
         if path is not None and path.exists() and _size_matches(path, file.size):
             return path
     return None
@@ -678,28 +701,74 @@ def _fetch_mmproj(
     return path
 
 
+class ListingOfflineError(RuntimeError):
+    """The Hub cannot be reached: offline mode is on, or the network is down."""
+
+
+class ListingFailedError(RuntimeError):
+    """The Hub answered, or failed in transit, without giving the repo listing."""
+
+
+def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
+    """The Hub record of *hf_repo*; a gated repo, an unreachable Hub and a failed read are typed."""
+    from huggingface_hub import HfApi
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+
+    token = hf_token()
+    try:
+        return HfApi().model_info(hf_repo, timeout=timeout, token=token)
+    except GatedRepoError as exc:
+        raise PermissionError(
+            f"{hf_repo} requires HuggingFace authentication. "
+            "Set HF_TOKEN env var or visit the repo page to request access."
+        ) from exc
+    except RepositoryNotFoundError as exc:
+        if token:
+            reason = (
+                f"Repository {hf_repo!r} not found on HuggingFace, or your token has no access."
+            )
+        else:
+            reason = (
+                f"Repository {hf_repo!r} is missing, private or gated on HuggingFace. "
+                "Set HF_TOKEN to get access if it exists."
+            )
+        raise ListingFailedError(reason) from exc
+    except HfHubHTTPError as exc:
+        raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
+    except (OfflineModeIsEnabled, httpx2.TransportError) as exc:
+        raise ListingOfflineError(
+            f"Cannot reach HuggingFace to list the files of {hf_repo}. "
+            f"Connect to the network, or turn offline mode off, and pull again. ({exc})"
+        ) from exc
+    except Exception as exc:
+        raise ListingFailedError(f"Cannot query files for {hf_repo}: {exc}") from exc
+
+
 def _repo_sibling_files(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
     """Every filename the HuggingFace Hub lists for *hf_repo*.
 
     Raises:
         PermissionError: the repo is gated and needs authentication.
-        RuntimeError: the listing could not be fetched, or offline mode is on.
+        ListingOfflineError: the Hub cannot be reached, or offline mode is on.
+        ListingFailedError: the Hub did not give the listing.
     """
-    from huggingface_hub import HfApi
-    from huggingface_hub.errors import HfHubHTTPError
+    return [s.rfilename for s in _model_info(hf_repo, timeout).siblings or []]
 
-    try:
-        info = HfApi().model_info(hf_repo, timeout=timeout, token=hf_token())
-    except HfHubHTTPError as exc:
-        if exc.response.status_code == HTTPStatus.UNAUTHORIZED:
-            raise PermissionError(
-                f"{hf_repo} requires HuggingFace authentication. "
-                "Set HF_TOKEN env var or visit the repo page to request access."
-            ) from exc
-        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"Cannot query files for {hf_repo}: {exc}") from exc
-    return [s.rfilename for s in info.siblings or []]
+
+def _repo_tags(hf_repo: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+    """The Hub tags of *hf_repo*.
+
+    Raises:
+        PermissionError: the repo is gated and needs authentication.
+        ListingOfflineError: the Hub cannot be reached, or offline mode is on.
+        ListingFailedError: the Hub did not give the record.
+    """
+    return list(_model_info(hf_repo, timeout).tags or [])
 
 
 def _mmproj_rank(filename: str) -> tuple[bool, str]:
@@ -719,7 +788,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
         names = _repo_sibling_files(hf_repo, timeout=PROJECTOR_LISTING_TIMEOUT)
     except (PermissionError, RuntimeError) as exc:
         raise ProjectorListingError(
-            f"Could not look for the vision projector of {hf_repo}: {exc}. "
+            f"Could not look for the vision projector of {hf_repo}: {str(exc).rstrip('.')}. "
             "Run the pull again to fetch it."
         ) from exc
     matches = [name for name in names if fnmatch.fnmatch(name, pattern)]
@@ -756,7 +825,8 @@ def resolve_filename(
         return named
     unsupported: str | None = None
     refused: UnsupportedQuantError | None = None
-    for candidate in rank_gguf_candidates(_repo_sibling_files(entry.hf_repo)):
+    siblings = _repo_sibling_files(entry.hf_repo)
+    for candidate in rank_gguf_candidates(siblings):
         header = file_header(entry.hf_repo, candidate)
         if not header.is_model:
             continue
@@ -774,7 +844,58 @@ def resolve_filename(
         return unsupported
     if refused is not None:
         raise refused
-    raise RuntimeError(f"No GGUF model weights found in {entry.hf_repo}")
+    raise RuntimeError(_no_gguf_message(entry.hf_repo, siblings))
+
+
+_ADAPTER_BASE_TAG = "base_model:adapter:"
+_ADAPTER_CONFIG = "adapter_config.json"
+_ADAPTER_WEIGHTS_PREFIX = "adapter_model"
+
+
+def _holds_weights(siblings: list[str]) -> bool:
+    """Whether the listing holds safetensors weight files, complete or not."""
+    try:
+        return bool(select_files(ModelFormat.SAFETENSORS, siblings))
+    except ValueError:
+        # An incomplete shard set still means weights; the folder pull names the missing part.
+        return True
+
+
+def _is_adapter_only(siblings: list[str]) -> bool:
+    """Whether every root safetensors file of the listing is a LoRA adapter's weights."""
+    weights = [n for n in siblings if "/" not in n and n.endswith(".safetensors")]
+    return _ADAPTER_CONFIG in siblings and all(
+        name.startswith(_ADAPTER_WEIGHTS_PREFIX) for name in weights
+    )
+
+
+def _adapter_message(message: str, tags: list[str]) -> str:
+    """The refusal for a LoRA adapter repo, naming each base model the Hub tags give."""
+    named = [t.removeprefix(_ADAPTER_BASE_TAG) for t in tags if t.startswith(_ADAPTER_BASE_TAG)]
+    target = " or ".join(named) or "the base model it was trained from"
+    return f"{message}. It holds a LoRA adapter, not a model. Pull {target} instead."
+
+
+def _no_gguf_message(hf_repo: str, siblings: list[str]) -> str:
+    """The refusal for a repo with no GGUF weights, naming the ref that pulls its folder."""
+    message = f"No GGUF model weights found in {hf_repo}"
+    if not _holds_weights(siblings):
+        return message
+    try:
+        tags = _repo_tags(hf_repo)
+    except (RuntimeError, PermissionError):
+        # Without the tags an MLX repo reads as plain safetensors, so name nothing.
+        tags = None
+    if _is_adapter_only(siblings):
+        return _adapter_message(message, tags or [])
+    if tags is None:
+        return message
+    fmt = ModelFormat.MLX if ModelFormat.MLX in formats_from_tags(tags) else ModelFormat.SAFETENSORS
+    ref = ModelRef(hf_repo, "", fmt).canonical
+    return (
+        f"{message}. It holds {fmt} weights: pull them with 'lilbee model pull {ref}' "
+        "(or POST /api/models/pull)."
+    )
 
 
 _SIZE_UNKNOWN = 0

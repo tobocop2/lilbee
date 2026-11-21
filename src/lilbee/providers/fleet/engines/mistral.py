@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
@@ -19,27 +20,58 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    ServerProcess,
+    SplitRefusedError,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
-from lilbee.providers.gguf_meta import read_gguf_metadata
+from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
+from lilbee.providers.folder_embed_width import read_folder_config
+from lilbee.providers.gguf_meta import (
+    is_hf_cache_blob,
+    read_gguf_metadata,
+    snapshot_entry_of_blob,
+)
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _MIN_SPLIT_CARDS = 2
 # With two or more visible cards the engine starts tensor parallelism unless this is "1".
 _NO_COLLECTIVE_ENV = "MISTRALRS_NO_NCCL"
-_CONFIG = "config.json"
+# A split uses peer-to-peer only over NVLink; a PCIe pair in a VM can stall without this.
+_P2P_LEVEL_ENV = "NCCL_P2P_LEVEL"
+_P2P_NVLINK_ONLY = "NVL"
+# A user who sets either variable keeps their choice.
+_P2P_USER_ENV = (_P2P_LEVEL_ENV, "NCCL_P2P_DISABLE")
 _LAYERS_KEY = "num_hidden_layers"
 _HEADS_KEY = "num_attention_heads"
 _KV_HEADS_KEY = "num_key_value_heads"
+_ARCHITECTURES_KEY = "architectures"
+_WINDOW_KEY = "max_position_embeddings"
+# The multimodal loaders of mistral.rs v0.9.5 that cap their window to ``--max-model-len``
+# (their ``runtime_config``); the trait default of every other loader refuses the flag.
+_CAPPED_VISION_ARCHITECTURES = frozenset(
+    {
+        "Qwen3_5ForConditionalGeneration",
+        "Qwen3_5MoeForConditionalGeneration",
+        "Qwen4ExpForConditionalGeneration",
+        "Gemma4ForConditionalGeneration",
+        "Gemma4ForCausalLM",
+        "Gemma4UnifiedForConditionalGeneration",
+        "Gemma4UnifiedForCausalLM",
+        "MuseGlimmerForConditionalGeneration",
+    }
+)
 _TEXT_CONFIG_KEY = "text_config"
 _GGUF_LAYERS_KEY = "block_count"
 _GGUF_HEADS_KEY = "head_count"
 _GGUF_KV_HEADS_KEY = "head_count_kv"
 _SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
+_DAMAGED_MODEL = (
+    "its model file is incomplete or damaged. "
+    "Run 'lilbee model list', remove that model with 'lilbee model rm', then pull it again."
+)
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
@@ -51,15 +83,15 @@ _CPU = "cpu"
 _SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
 # The model subcommand each role names; the device flags go after it.
+_EMBEDDING = "embedding"
+_MULTIMODAL = "multimodal"
 _SUBCOMMAND = {
-    WorkerRole.EMBED: "embedding",
-    WorkerRole.VISION: "multimodal",
+    WorkerRole.EMBED: _EMBEDDING,
+    WorkerRole.VISION: _MULTIMODAL,
 }
 _TEXT = "text"
 _METAL = "metal"
-_CUDA_DRIVER_FLOOR = (12, 8)
-# The compute capabilities the release publishes a CUDA 12.8 archive for.
-_CUDA_ARCHIVES = frozenset({(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)})
+_NO_CUDA_PACK = "The mistral.rs CUDA pack is not offered, so the cpu pack runs."
 _SUPPORTED_HOSTS = frozenset(
     {
         (HostOS.LINUX, HostArch.X86_64),
@@ -90,34 +122,13 @@ class BuildPick:
     reason: str
 
 
-def _compute_text(compute: tuple[int, int]) -> str:
-    return f"{compute[0]}.{compute[1]}"
-
-
 def _linux_pick(host: HostCaps) -> BuildPick:
-    """The CUDA archive of the host's GPUs, else the CPU archive with the reason."""
+    """The CPU archive, with the reason when an NVIDIA GPU could have asked for a CUDA one."""
     if not host.nvidia_known:
         return BuildPick(_CPU, f"{host.nvidia_reason}, so the CPU archive runs.")
     if not host.gpus:
         return BuildPick(_CPU, "This host has no NVIDIA GPU, so the CPU archive runs.")
-    computes = {gpu.compute for gpu in host.gpus}
-    if len(computes) > 1:
-        return BuildPick(_CPU, "The GPUs differ in compute capability, so the CPU archive runs.")
-    compute = next(iter(computes))
-    if compute not in _CUDA_ARCHIVES:
-        return BuildPick(
-            _CPU,
-            f"No CUDA archive targets compute capability {_compute_text(compute)}, "
-            "so the CPU archive runs.",
-        )
-    driver = host.nvidia_driver_cuda or (0, 0)
-    if driver < _CUDA_DRIVER_FLOOR:
-        return BuildPick(
-            _CPU,
-            f"The CUDA archive needs a driver for CUDA {_compute_text(_CUDA_DRIVER_FLOOR)}; "
-            f"this driver offers CUDA {_compute_text(driver)}, so the CPU archive runs.",
-        )
-    return BuildPick(f"cuda128-sm{compute[0]}{compute[1]}", "")
+    return BuildPick(_CPU, _NO_CUDA_PACK)
 
 
 def _positive_int(value: object) -> int | None:
@@ -133,12 +144,7 @@ def _positive_int(value: object) -> int | None:
 
 def _config_sections(path: Path) -> list[Mapping[str, Any]]:
     """The top level and the text section of a model folder's config, as far as they are objects."""
-    try:
-        config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(config, dict):
-        return []
+    config = read_folder_config(path)
     return [s for s in (config, config.get(_TEXT_CONFIG_KEY)) if isinstance(s, dict)]
 
 
@@ -151,6 +157,28 @@ def _layer_count(path: Path) -> int | None:
         count = _positive_int(section.get(_LAYERS_KEY))
         if count is not None:
             return count
+    return None
+
+
+def _vision_context(path: Path, planned: int) -> int:
+    """The context flag of a vision folder, or 0 for none.
+
+    The loaders that take the flag refuse a figure above the window their config
+    declares, so the flag is the smaller of the planned context and that window. A
+    config that declares none gets no flag.
+    """
+    sections = _config_sections(path)
+    if _architecture(sections) not in _CAPPED_VISION_ARCHITECTURES:
+        return 0
+    window = _positive_int(sections[-1].get(_WINDOW_KEY))
+    return min(planned, window) if window else 0
+
+
+def _architecture(sections: list[Mapping[str, Any]]) -> str | None:
+    """The one architecture the top level of a config names, or ``None``."""
+    names = sections[0].get(_ARCHITECTURES_KEY) if sections else None
+    if isinstance(names, list) and len(names) == 1 and isinstance(names[0], str):
+        return names[0]
     return None
 
 
@@ -201,9 +229,15 @@ class MistralAdapter:
     formats = frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS})
     architectures: frozenset[str] = frozenset()
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION})
+    refused_role_formats: Mapping[WorkerRole, frozenset[str]] = {
+        WorkerRole.EMBED: frozenset({ModelFormat.GGUF})
+    }
     memory_kind = MemoryKind.FIXED_RESERVE
+    equal_split_only = True
     takes_device_names = False
+    concatenates_pooling = True
     bundled = False
+    server_process = ServerProcess(name=_TOOL)
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -251,13 +285,11 @@ class MistralAdapter:
 
     def binary(self) -> Path:
         from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engines.choice import store_tool
+        from lilbee.providers.fleet.engines.choice import install_advice, store_tool
 
         tool = store_tool(self.pin_record(), _TOOL, session_host())
         if tool is None:
-            raise ProviderError(
-                "The mistral.rs engine is not installed. Run lilbee engine install mistral.rs."
-            )
+            raise ProviderError(f"The mistral.rs engine is not installed. {install_advice(self)}")
         return tool
 
     def identity(self, binary: Path) -> str:
@@ -271,7 +303,13 @@ class MistralAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The serve command; context stays unset, and an equal split over cards adds no flag.
+        """The serve command; an equal split over cards adds no flag.
+
+        Chat passes the planned context as ``--max-model-len``, the figure the memory
+        estimate prices. An embedding model takes none: its context is its tokenizer
+        limit, and no cache grows with it. Vision takes it only for the architectures in
+        ``_CAPPED_VISION_ARCHITECTURES``: any other multimodal loader refuses the flag and
+        the launch fails. The estimate prices the planned context in every case.
 
         A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
         decides the device flags: a CPU build gets ``--cpu``, and
@@ -280,14 +318,24 @@ class MistralAdapter:
         belongs to ``serve``, so it sits before the model subcommand. The device flags
         belong to the subcommand: before it the engine ignores ``--cpu`` and takes the
         whole card (20536 MiB measured), so every role names its subcommand. A GGUF file
-        goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
-        several quantizations is open for slice 8.
+        goes by ``-f`` with its folder as ``-m``. The cache stores the file as a blob
+        that has no name, so the launch names the snapshot file that points at it.
         """
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
-        argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
+        subcommand = _SUBCOMMAND.get(spec.role, _TEXT)
+        argv.append(subcommand)
         argv += self._device_flags(request.target)
         self._check_split(request)
-        path = request.model_path
+        path = snapshot_entry_of_blob(request.model_path)
+        if is_hf_cache_blob(path):
+            raise ProviderError(f"mistral.rs cannot launch this model: {_DAMAGED_MODEL}")
+        context = request.ctx_per_slot
+        if subcommand == _MULTIMODAL:
+            context = _vision_context(path, context)
+        elif subcommand != _TEXT:
+            context = 0
+        if context:
+            argv += ["--max-model-len", str(context)]
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
         return [*argv, "-m", str(path)]
@@ -300,29 +348,38 @@ class MistralAdapter:
         return ["--paged-attn", "off"]
 
     def _check_split(self, request: LaunchRequest) -> None:
+        """Refuse a launch split over several cards that the engine cannot run."""
+        if request.target is not RoleTarget.CPU:
+            self.check_split(request.model_path, request.tensor_split)
+
+    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
         """Refuse a split over several cards unless the engine can run it as equal shards."""
-        ratio = request.tensor_split
-        if request.target is RoleTarget.CPU or len(ratio) < _MIN_SPLIT_CARDS:
+        if len(ratio) < _MIN_SPLIT_CARDS:
             return
         from lilbee.catalog.runnable import session_host
 
-        name = request.model_path.name
+        path = snapshot_entry_of_blob(model_path)
+        name = path.name
         cards = len(ratio)
         backend = self.pick_build(session_host()).backend
         if backend in (None, _CPU, _METAL):
             label = "Metal" if backend == _METAL else "CPU"
-            raise ProviderError(
+            raise SplitRefusedError(
                 f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
                 f"{_SPLIT_FIX}"
             )
         if len(set(ratio)) != 1:
-            raise ProviderError(
+            raise SplitRefusedError(
                 f"mistral.rs splits {name} only evenly across cards. "
                 f"Use the {EngineName.LLAMA.value} engine for an uneven split."
             )
-        heads = _head_counts(request.model_path)
+        if is_hf_cache_blob(path):
+            raise SplitRefusedError(
+                f"mistral.rs cannot split this model across {cards} cards: {_DAMAGED_MODEL}"
+            )
+        heads = _head_counts(path)
         if heads is None or not _heads_divide(*heads, cards):
-            raise ProviderError(
+            raise SplitRefusedError(
                 f"mistral.rs cannot split {name} across {cards} cards: "
                 f"the attention heads of the model do not divide over {cards} cards, "
                 f"or the model does not list its heads. {_SPLIT_FIX}"
@@ -339,14 +396,14 @@ class MistralAdapter:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return DeviceProbe(devices=[], output="")
-        return DeviceProbe(devices=visible_nvidia_cards(), output="")
+            return DeviceProbe(devices=[], output="", has_listing=False)
+        return DeviceProbe(devices=visible_nvidia_cards(), output="", has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         whole = self._whole_estimate(request)
         if len(request.tensor_split) < _MIN_SPLIT_CARDS:
             return whole
-        layers = _layer_count(request.model_path)
+        layers = _layer_count(snapshot_entry_of_blob(request.model_path))
         if layers is None:
             return whole
         shares = _apportion(layers, request.tensor_split)
@@ -362,11 +419,8 @@ class MistralAdapter:
         try:
             weights = request.model_path.stat().st_size
         except OSError:
-            weights = 0
-        weights = weights if weights > 0 else UNKNOWN_SIZE_RESERVE_BYTES
-        return MemoryEstimate(
-            kind=MemoryKind.FIXED_RESERVE, device_bytes=weights, host_bytes=0, shared_bytes=weights
-        )
+            weights = None
+        return fixed_weights_estimate(weights)
 
     def check_readback(self, binary: Path) -> bool:
         return False
@@ -380,7 +434,7 @@ class MistralAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
@@ -389,7 +443,9 @@ class MistralAdapter:
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         """Tensor parallelism needs the collective library; any other launch turns it off."""
         if target is not RoleTarget.CPU and cards >= _MIN_SPLIT_CARDS:
-            return {}
+            if any(name in os.environ for name in _P2P_USER_ENV):
+                return {}
+            return {_P2P_LEVEL_ENV: _P2P_NVLINK_ONLY}
         return {_NO_COLLECTIVE_ENV: "1"}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:

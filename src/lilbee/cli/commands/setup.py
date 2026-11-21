@@ -98,6 +98,7 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
     so the check exercises the model the user actually runs.
     """
     from lilbee.catalog.query import reclassify_by_name
+    from lilbee.catalog.types import ModelFormat
     from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
@@ -107,7 +108,9 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
         ]
     except Exception:
         return None
-    refs = [m.ref for m in manifests]
+    for skipped in (m for m in manifests if m.format is not ModelFormat.GGUF):
+        console.print(f"Skipping {skipped.ref}: the self-check loads GGUF files only.")
+    refs = [m.ref for m in manifests if m.format is ModelFormat.GGUF]
     ordered = [configured, *refs] if configured in refs else refs
     for ref in ordered:
         try:

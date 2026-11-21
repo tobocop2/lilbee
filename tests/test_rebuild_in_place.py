@@ -161,7 +161,7 @@ async def test_rebuild_with_a_changed_embedder_and_a_dead_probe_keeps_the_index(
     cfg.embedding_model = "other/embedder-GGUF"
     cfg.embedding_dim = DIM + 4
     assert store.index_mismatch() is not None
-    embedder.embed_batch.side_effect = ProviderError("down", provider="fleet")
+    embedder.adopt_served_width.side_effect = ProviderError("down", provider="fleet")
     with pytest.raises(RuntimeError, match="embedding model did not answer"):
         await sync(force_rebuild=True, quiet=True)
     assert store.count_chunks() == chunks

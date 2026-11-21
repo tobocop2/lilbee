@@ -14,7 +14,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
@@ -43,6 +43,7 @@ from lilbee.providers.fleet.engines.base import RequestProfile
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
+from lilbee.providers.truncation import note_truncated
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 # Shown when a stream breaks after its first frame. The client cannot know why.
@@ -182,6 +183,11 @@ _UPSTREAM_LOG_TIMEOUT_S = 2.0
 _UPSTREAM_LOG_MAX_CHUNKS = 8
 
 log = logging.getLogger(__name__)
+
+# What a bad answer from the limit or count route raises; the embed itself already succeeded.
+_TRUNCATION_CHECK_FAILURES = (httpx.HTTPError, ProviderError, KeyError, TypeError, ValueError)
+# The longest the advisory limit or count request may hold an embed, in seconds.
+_TRUNCATION_CHECK_TIMEOUT_S = 5.0
 
 
 def _estimate_tokens(text: str) -> int:
@@ -483,6 +489,8 @@ _GATEWAY_BACKOFF_MAX_S = 8.0
 # caller sees it routable once cooled down (a success restores it, another
 # connection failure re-stamps the cool-down).
 _UNHEALTHY_RETRY_S = 30.0
+# A truncation check that failed on a dead or busy router waits this long before it asks again.
+_TRUNCATION_CHECK_RETRY_S = _UNHEALTHY_RETRY_S
 _T = TypeVar("_T")
 
 
@@ -601,7 +609,21 @@ class LlamaServerClient:
         # LLM => score candidates by yes/no logprob; None/cross-encoder => rank pooling.
         self._rerank_mode = rerank_mode
         self.in_flight = 0
+        # The server's input limit; None until read.
+        self._max_input: int | None = None
+        # Monotonic time before which the truncation check does not run: a failure sets a
+        # cool-down, a route that is absent sets infinity.
+        self._check_resume_at = 0.0
+        # Whether the check has warned of an unexpected answer; it warns once per client.
+        self._check_warned = False
+        # The truncation-check requests in flight, one future for each distinct request.
+        self._flights_lock = threading.Lock()
+        self._flights: dict[tuple[Any, ...], Future[Any]] = {}
+        # Whether the count route has answered once; until then one probe runs for the route.
+        self._count_route_answered = False
         self._in_flight_lock = threading.Lock()
+        # Signalled under the count lock each time a request takes in_flight to zero.
+        self._idle = threading.Condition(self._in_flight_lock)
         # Called each time a request takes in_flight to zero; see notify_when_idle.
         self._on_idle: Callable[[], None] | None = None
         # Live SSE responses, so a cancel can sever the transport from another
@@ -619,6 +641,18 @@ class LlamaServerClient:
         self._healthy = True
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
         self._unhealthy_since = 0.0
+        # The error line for a request that breaks because the fleet restarts this
+        # server after it stopped answering; None while no such restart runs.
+        self.restart_message: str | None = None
+
+    @property
+    def profile(self) -> RequestProfile:
+        """The request profile of this server's engine."""
+        return self._profile
+
+    def sent(self, request: httpx.Request) -> bool:
+        """Whether *request* went to this client's server."""
+        return str(request.url).startswith(f"{self._base}/")
 
     @property
     def healthy(self) -> bool:
@@ -728,21 +762,29 @@ class LlamaServerClient:
         """Release a reservation taken by :meth:`reserve`."""
         self._leave()
 
-    def notify_when_idle(self, callback: Callable[[], None]) -> None:
+    def notify_when_idle(self, callback: Callable[[], None] | None) -> None:
         """Call *callback* each time a request ends and leaves ``in_flight`` at zero.
 
         The callback runs on the thread that ended the request, after the count
         lock is released. That thread can hold any lock of its caller, so the
-        callback must not block on one.
+        callback must not block on one. None stops the calls.
         """
         with self._in_flight_lock:
             self._on_idle = callback
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for ``in_flight`` to reach zero; whether it did."""
+        with self._idle:
+            return self._idle.wait_for(lambda: self.in_flight == 0, timeout)
 
     def _leave(self) -> None:
         """End one request; call the idle callback when it was the last one."""
         with self._in_flight_lock:
             self.in_flight -= 1
-            callback = self._on_idle if self.in_flight == 0 else None
+            callback = None
+            if self.in_flight == 0:
+                self._idle.notify_all()
+                callback = self._on_idle
         if callback is not None:
             callback()
 
@@ -1098,7 +1140,9 @@ class LlamaServerClient:
         """*options* without the fields this server's engine does not read or enforce.
 
         A ``json_schema`` request is a promise that the reply fits the schema, so it is
-        refused. Any other format is advice, so it is dropped.
+        refused. A ``json_object`` request is advice, so it is dropped. A ``text`` request
+        asks for nothing and goes through. Any other format is refused, because the server
+        ignores it.
         """
         wire = dict(options or {})
         if not self._profile.takes_cache_prompt:
@@ -1107,15 +1151,26 @@ class LlamaServerClient:
             wire.pop("seed")
         if self._profile.structured_output or "response_format" not in wire:
             return wire
-        reply_format = wire.pop("response_format")
-        if not (isinstance(reply_format, Mapping) and reply_format.get("type") == "json_schema"):
-            return wire
-        raise ProviderError(
-            f"{self._profile.label} does not enforce a JSON schema. "
-            "Use a llama.cpp model for structured output.",
-            provider=self._profile.label,
-            kind=ProviderErrorKind.BAD_REQUEST,
-        )
+        reply_format = wire["response_format"]
+        # The caller's value is untyped: a non-mapping has no type.
+        reply_type = reply_format.get("type") if isinstance(reply_format, Mapping) else None
+        if reply_type == "json_object":
+            del wire["response_format"]
+        elif reply_type != "text":
+            raise self._refused_reply_format(reply_format, reply_type)
+        return wire
+
+    def _refused_reply_format(self, reply_format: object, reply_type: object) -> ProviderError:
+        """The 400 for a ``response_format`` this server's engine ignores."""
+        label = self._profile.label
+        if reply_type == "json_schema":
+            message = (
+                f"{label} does not enforce a JSON schema. "
+                "Use a llama.cpp model for structured output."
+            )
+        else:
+            message = f"{label} does not support response_format {reply_format!r}. Use type text."
+        return ProviderError(message, provider=label, kind=ProviderErrorKind.BAD_REQUEST)
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]
@@ -1194,10 +1249,146 @@ class LlamaServerClient:
             # Match the in-process embedder; the server rejects an empty input.
             return []
         vectors: list[Vector] = []
-        for sub_batch in self._truncate_and_subbatch(texts, estimate=True):
+        sub_batches = self._truncate_and_subbatch(texts, estimate=True)
+        for sub_batch in sub_batches:
             data = self._embed_subbatch(sub_batch)
             vectors.extend(_embedding_vector(item, self._profile) for item in data)
+        self._note_cut_inputs(sub_batches, len(texts))
         return vectors
+
+    def _note_cut_inputs(self, sub_batches: list[list[str]], total: int) -> None:
+        """Record how many inputs the server cut; a failure pauses the check, never raises."""
+        if time.monotonic() < self._check_resume_at:
+            return
+        route = self._profile.input_limit_path
+        try:
+            limit = self._input_limit()
+            path = self._profile.input_count_path
+            if limit is None or path is None:
+                return
+            route = path
+            cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
+        except _TRUNCATION_CHECK_FAILURES as exc:
+            self._pause_truncation_check(exc, route)
+            return
+        note_truncated(cut, total, limit)
+
+    def _pause_truncation_check(self, exc: Exception, route: str | None) -> None:
+        """Pause the check after *exc* from *route*, and warn once of an unexpected answer.
+
+        A dead or busy router costs one debug line. An answer the check cannot use is
+        a warning, because the inputs the router cuts go unreported. Both pause the
+        check for a cool-down; a route the router does not have pauses it for good.
+        """
+        absent = isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND
+        pause = math.inf if absent else _TRUNCATION_CHECK_RETRY_S
+        self._check_resume_at = time.monotonic() + pause
+        if _is_transient_probe_failure(exc):
+            log.debug("Embed truncation check skipped: %s", exc)
+        elif not self._check_warned:
+            self._check_warned = True
+            log.warning(
+                "Embed truncation check skipped: the router's %s route gave an unexpected "
+                "answer (%s). Embed inputs the router cuts are not reported.",
+                route,
+                exc,
+            )
+
+    def _raise_for_side_route(self, resp: httpx.Response) -> None:
+        """Raise for a failed side-route answer; a 404 says the router has no such route."""
+        if resp.status_code == httpx.codes.NOT_FOUND:
+            raise ProviderError(
+                f"{self._profile.label} has no such route (HTTP 404): {resp.text.strip()[:200]}",
+                provider=self._profile.label,
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
+        self._raise_for_status(resp)
+
+    def _single_flight(self, key: tuple[Any, ...], request: Callable[[], _T]) -> _T:
+        """The answer of *request*, sent once for all the threads that ask for *key* together.
+
+        The first thread to ask sends it. A thread that asks while it runs waits for that
+        answer, or its failure, so a hung route holds each caller once and takes one
+        request, not one for each thread. The slot clears when the request ends, whatever
+        way it ends, so a later caller sends a new one.
+        """
+        with self._flights_lock:
+            flight = self._flights.get(key)
+            leader = flight is None
+            if flight is None:
+                flight = self._flights[key] = Future()
+        if not leader:
+            waited: _T = flight.result()
+            return waited
+        try:
+            answer = request()
+        except BaseException as exc:
+            flight.set_exception(exc)
+            raise
+        else:
+            flight.set_result(answer)
+            return answer
+        finally:
+            with self._flights_lock:
+                del self._flights[key]
+
+    def _input_limit(self) -> int | None:
+        """The server's ``max_input_length``, read once per client."""
+        path = self._profile.input_limit_path
+        if path is None:
+            return self._max_input
+        return self._single_flight(("limit",), lambda: self._read_input_limit(path))
+
+    def _read_input_limit(self, path: str) -> int:
+        if self._max_input is None:
+            resp = self._http.get(self._native_route(path), timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            self._raise_for_side_route(resp)
+            self._max_input = int(resp.json()["max_input_length"])
+        return self._max_input
+
+    def _count_route_tokens(
+        self, path: str, inputs: list[str], *, timeout: float | None = None
+    ) -> list[list[dict[str, Any]]]:
+        """The token lists the route *path* answers for *inputs*, one list for each input.
+
+        Without a *timeout* the request waits as long as the client's own timeout.
+        """
+        extra: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
+        resp = self._http.post(self._native_route(path), json={"inputs": inputs}, **extra)
+        self._raise_for_side_route(resp)
+        counts = resp.json()
+        if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
+            raise ValueError(f"the body is not a list of token lists: {resp.text.strip()[:200]}")
+        return counts
+
+    def _count_inputs_past_limit(self, texts: list[str], limit: int, path: str) -> int:
+        """How many of *texts* the tokenizer route *path* counts past *limit*.
+
+        Every text is counted, in one request: the route counts the special tokens, and
+        a byte-level tokenizer makes more than one token from a character, so no
+        character count bounds the tokens. Threads that count the same texts together
+        share one request.
+        """
+
+        def count() -> int:
+            counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            return sum(len(tokens) > limit for tokens in counts)
+
+        if self._count_route_answered:
+            return self._single_flight(("count", tuple(texts)), count)
+
+        def first_probe() -> tuple[tuple[str, ...], int]:
+            probed = count()
+            self._count_route_answered = True
+            return tuple(texts), probed
+
+        # Until the route has answered once, one thread probes it, whatever it counts. The
+        # other threads wait for that probe: a failure reaches them. A success serves the
+        # threads that count the same texts, and each other thread counts its own.
+        probed_texts, probed = self._single_flight(("first-probe", path), first_probe)
+        if probed_texts == tuple(texts):
+            return probed
+        return self._single_flight(("count", tuple(texts)), count)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.
@@ -1206,11 +1397,15 @@ class LlamaServerClient:
         (XML, code), so an estimate-trusted input may still exceed the server's
         context. On that error -- and only that -- redo the batch with exact
         server-side tokenization, which truncates the oversize input to the cap.
+        An engine with no tokenize route cannot truncate more exactly than the
+        estimate did, so it raises the overflow with no resend.
         """
         try:
             return self._embeddings_call(sub_batch)
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW:
+                raise
+            if self._profile.tokenize_path is None:
                 raise
             data: list[dict[str, Any]] = []
             for exact in self._truncate_and_subbatch(sub_batch, estimate=False):
@@ -1281,10 +1476,10 @@ class LlamaServerClient:
 
         def _post(extra: Mapping[str, Any]) -> httpx.Response:
             return self._http.post(
-                self._native_route(path), json={"query": query, "texts": texts, **extra}
+                self._native_route(path), json=self._profile.rerank_body(query, texts, extra)
             )
 
-        def _call() -> tuple[list[dict[str, Any]], str | None]:
+        def _call() -> tuple[Any, str | None]:
             with self._track():
                 resp = _post(self._profile.rerank_fields)
                 overflow = None
@@ -1292,10 +1487,10 @@ class LlamaServerClient:
                     overflow = resp.text.strip()
                     resp = _post({})
                 self._raise_for_status(resp)
-                return list(resp.json()), overflow
+                return resp.json(), overflow
 
-        items, overflow = retry_on_gateway_error(_call)
-        by_index = {int(item["index"]): float(item["score"]) for item in items}
+        payload, overflow = retry_on_gateway_error(_call)
+        by_index = self._profile.rerank_scores(payload)
         if sorted(by_index) != list(range(len(texts))):
             raise ProviderError(
                 f"The reranker did not return one score for each of the {len(texts)} candidates.",
@@ -1319,12 +1514,15 @@ class LlamaServerClient:
 
         The char estimate under-counts token-dense pairs, so an over-cap pair
         can slip through untruncated; the server rejects it as CONTEXT_OVERFLOW
-        and the batch is redone with exact server-side tokenization.
+        and the batch is redone with exact server-side tokenization. An engine
+        with no tokenize route raises the overflow with no resend.
         """
         try:
             return self._embeddings_call(batch)
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or self._token_cap is None:
+                raise
+            if self._profile.tokenize_path is None:
                 raise
             cap = self._token_cap
             exact = [self._fit_input(text, cap, estimate=False)[0] for text in batch]
@@ -1480,9 +1678,17 @@ class LlamaServerClient:
 
     def count_tokens(self, text: str) -> int:
         """Tokens in *text* under the server's tokenizer, or a character estimate with no route."""
-        if self._profile.tokenize_path is None:
-            return _estimate_tokens(text)
-        return len(self._tokenize(text))
+        tokens = self.count_text_tokens(text)
+        return _estimate_tokens(text) if tokens is None else tokens
+
+    def count_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the server's tokenizer, or None when the engine has no route."""
+        if self._profile.tokenize_path is not None:
+            return len(self._tokenize(text))
+        path = self._profile.input_count_path
+        if path is None:
+            return None
+        return len(retry_on_gateway_error(lambda: self._count_route_tokens(path, [text]))[0])
 
     @staticmethod
     def _require_route(path: str | None, route: str) -> str:
@@ -1544,10 +1750,15 @@ class LlamaServerClient:
         return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
+        """Text for *tokens*; a gateway error is retried like a tokenize call."""
         path = self._require_route(self._profile.detokenize_path, "detokenize")
-        resp = self._http.post(self._native_route(path), json={"tokens": tokens})
-        self._raise_for_status(resp)
-        return str(resp.json()["content"])
+
+        def _call() -> str:
+            resp = self._http.post(self._native_route(path), json={"tokens": tokens})
+            self._raise_for_status(resp)
+            return str(resp.json()["content"])
+
+        return retry_on_gateway_error(_call)
 
     def _abortable(self, resp: httpx.Response) -> None:
         """Expose *resp* to ``abort_streams`` until the response closes."""

@@ -284,6 +284,31 @@ class TestEnginePin:
         monkeypatch.setattr(_WHICH, lambda name: None)
         assert engine_build_id() == "unpinned"
 
+    def test_wheel_without_a_server_file_yields_to_the_path_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A stub wheel carries the pin accessor but no llama-server file: the server
+        # that launches is the PATH one, so the pin names that one.
+        fake = _fake_engine(tmp_path, make_files=False)
+        fake.get_engine_pin = lambda: "llama-cpp-0.0.0-stub"
+        monkeypatch.setitem(sys.modules, "lilbee_engine_llama_cpp", fake)
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        (tmp_path / "bin").mkdir()
+        server = _plant_host_binary(tmp_path / "bin", EngineTool.LLAMA_SERVER)
+        monkeypatch.setattr(_WHICH, lambda name: str(server))
+        assert resolve_engine_tool(EngineTool.LLAMA_SERVER) == server
+        assert engine_build_id().startswith(f"path:{server}@")
+
+    def test_wheel_without_a_server_file_and_no_server_is_unpinned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _fake_engine(tmp_path, make_files=False)
+        fake.get_engine_pin = lambda: "llama-cpp-0.0.0-stub"
+        monkeypatch.setitem(sys.modules, "lilbee_engine_llama_cpp", fake)
+        monkeypatch.setattr(cfg, "llama_server_path", "")
+        monkeypatch.setattr(_WHICH, lambda name: None)
+        assert engine_build_id() == "unpinned"
+
     def test_wheel_without_pin_accessor_reports_its_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -372,7 +397,7 @@ class TestEngineResolutionSeal:
         assert resolve_llama_server() == planted
 
 
-def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> None:
+def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch, tmp_path) -> None:
     """engine_pin runs on every state write, so it must not raise here.
 
     lilbee_engine_llama_cpp can be importable with nothing to look up: an extracted wheel
@@ -380,12 +405,11 @@ def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> No
     lilbee-engine-llama-cpp. A PackageNotFoundError escaping here aborts the state write.
     """
     import sys
-    import types
     from importlib.metadata import PackageNotFoundError
 
     from lilbee.providers.fleet import binary as binary_mod
 
-    stub = types.ModuleType("lilbee_engine_llama_cpp")  # no get_engine_pin -> pre-pin path
+    stub = _fake_engine(tmp_path, make_files=True)  # no get_engine_pin -> pre-pin path
     monkeypatch.setitem(sys.modules, "lilbee_engine_llama_cpp", stub)
     from lilbee.core.config import cfg
 
@@ -414,6 +438,113 @@ class TestEngineHelp:
 
         monkeypatch.setattr(binary_mod.subprocess, "run", _hang)
         assert binary_mod.engine_help(Path("/bin/llama-server")) == ""
+
+    def test_a_failed_read_is_retried_on_the_next_call(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        def _flaky(*_a, **_k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("transient")
+            return SimpleNamespace(stdout="--port PORT", stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _flaky)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_blank_read_is_retried_on_the_next_call(self, monkeypatch) -> None:
+        outputs = iter(["", "--port PORT"])
+        calls: list[int] = []
+
+        def _run(*_a, **_k):
+            calls.append(1)
+            return SimpleNamespace(stdout=next(outputs), stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 2
+
+    @staticmethod
+    def _clocked_timeouts(monkeypatch) -> list[float]:
+        """Run the timeout memory on a fake clock; the list's one item is now."""
+        now = [0.0]
+        monkeypatch.setattr(binary_mod._help_timeouts, "clock", lambda: now[0])
+        return now
+
+    @staticmethod
+    def _hang_then_answer(monkeypatch, *, hangs: int) -> list[int]:
+        """Make the probe time out *hangs* times, then print ``--port PORT``; the call log."""
+        calls: list[int] = []
+
+        def _run(*_a, **_k):
+            calls.append(1)
+            if len(calls) <= hangs:
+                raise binary_mod.subprocess.TimeoutExpired("llama-server", 15.0)
+            return SimpleNamespace(stdout="--port PORT", stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+        return calls
+
+    def test_a_timed_out_probe_is_not_run_again_before_its_expiry(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=1)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        now[0] = binary_mod._HELP_TIMEOUT_MEMORY_S - 1
+        assert binary_mod.engine_help(binary) == ""
+        assert len(calls) == 1
+
+    def test_a_timed_out_probe_runs_again_after_its_expiry(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=1)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        now[0] = binary_mod._HELP_TIMEOUT_MEMORY_S + 1
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_probe_that_times_out_again_is_remembered_for_a_new_period(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=2)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == ""
+        now[0] = binary_mod._HELP_TIMEOUT_MEMORY_S + 1
+        assert binary_mod.engine_help(binary) == ""
+        now[0] += binary_mod._HELP_TIMEOUT_MEMORY_S - 1
+        assert binary_mod.engine_help(binary) == ""
+        assert len(calls) == 2
+
+    def test_a_timeout_on_one_path_does_not_hold_back_another(self, monkeypatch) -> None:
+        self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=1)
+        assert binary_mod.engine_help(Path("/bin/llama-server")) == ""
+        assert binary_mod.engine_help(Path("/opt/other/llama-server")) == "--port PORT\n"
+        assert len(calls) == 2
+
+    def test_a_good_read_stays_cached_long_after_the_expiry(self, monkeypatch) -> None:
+        now = self._clocked_timeouts(monkeypatch)
+        calls = self._hang_then_answer(monkeypatch, hangs=0)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        now[0] = 100 * binary_mod._HELP_TIMEOUT_MEMORY_S
+        assert binary_mod.engine_help(binary) == "--port PORT\n"
+        assert len(calls) == 1
+
+    def test_a_good_read_runs_the_binary_once_per_path(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        def _run(*_a, **_k):
+            calls.append(1)
+            return SimpleNamespace(stdout="--port PORT", stderr="")
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+        binary = Path("/bin/llama-server")
+        assert binary_mod.engine_help(binary) == binary_mod.engine_help(binary)
+        assert len(calls) == 1
 
 
 @pytest.mark.parametrize(

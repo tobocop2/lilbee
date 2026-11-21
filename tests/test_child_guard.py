@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
+import time
+import traceback
 from unittest import mock
 
 import pytest
@@ -234,31 +237,43 @@ class TestTheLifetimeSpawner:
         ):
             spawner.spawn(["/x/llama-swap"])
 
-    def test_the_worker_is_created_once_and_reused(self, spawner):
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
-            spawner.spawn(["/x"])
-            first = spawner._thread
-            spawner.spawn(["/x"])
+    @staticmethod
+    def _spawning_threads(spawner, count):
+        """Spawn *count* times and return the thread each Popen call ran on."""
+        seen: list[threading.Thread] = []
 
-        assert first is spawner._thread and first is not None
+        def _popen(*_args, **_kwargs):
+            seen.append(threading.current_thread())
+            return "proc"
 
-    def test_the_worker_is_a_daemon_thread(self, spawner):
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
-            spawner.spawn(["/x"])
+        with mock.patch.object(child_guard.subprocess, "Popen", side_effect=_popen):
+            for _ in range(count):
+                spawner.spawn(["/x"])
+        return seen
 
-        assert spawner._thread is not None
-        assert spawner._thread.daemon is True
-        assert spawner._thread.name == "fleet-spawner"
+    def test_every_spawn_runs_on_one_thread_that_is_not_the_caller(self, spawner):
+        first, second = self._spawning_threads(spawner, 2)
+
+        assert first is second
+        assert first is not threading.current_thread()
+
+    def test_the_worker_is_a_named_daemon_thread(self, spawner):
+        (worker,) = self._spawning_threads(spawner, 1)
+
+        assert worker.daemon is True
+        assert worker.name == "fleet-spawner"
 
     def test_close_stops_the_worker_and_is_safe_when_never_started(self, spawner):
         spawner.close()  # never started: no-op
-        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
-            spawner.spawn(["/x"])
-        assert spawner._thread is not None
+        (first,) = self._spawning_threads(spawner, 1)
         spawner.close()
-        assert spawner._thread is None
+        (second,) = self._spawning_threads(spawner, 1)
 
-    def test_a_spawn_during_interpreter_teardown_raises_without_queueing(self, spawner):
+        assert not first.is_alive()
+        assert second is not first
+
+    def test_a_spawn_during_interpreter_teardown_raises_without_starting_a_worker(self, spawner):
+        workers_before = {t for t in threading.enumerate() if t.name == "fleet-spawner"}
         with (
             mock.patch.object(child_guard.sys, "is_finalizing", return_value=True),
             mock.patch.object(child_guard.subprocess, "Popen") as popen,
@@ -267,8 +282,68 @@ class TestTheLifetimeSpawner:
             spawner.spawn(["/x"])
 
         popen.assert_not_called()
-        assert spawner._thread is None
-        assert spawner._requests.empty()
+        assert {t for t in threading.enumerate() if t.name == "fleet-spawner"} == workers_before
+
+    def test_the_fork_reset_starts_a_fresh_worker_on_the_next_spawn(self, spawner):
+        (before,) = self._spawning_threads(spawner, 1)
+        parents_requests = spawner._requests
+        spawner._reset_in_forked_child()
+        (after,) = self._spawning_threads(spawner, 1)
+
+        assert after is not before
+        assert after.name == "fleet-spawner"
+        # The reset drops the parent's worker without stopping it; stop it here.
+        parents_requests.put(None)
+        before.join(timeout=5)
+        assert not before.is_alive()
+
+    def test_the_fork_reset_frees_a_lock_another_thread_held_at_the_fork(self, spawner):
+        held = spawner._lock
+        held.acquire()  # a thread that is not in the child held it at the fork
+        spawner._reset_in_forked_child()
+        results: list[threading.Thread] = []
+
+        def _spawn() -> None:
+            results.extend(self._spawning_threads(spawner, 1))
+
+        caller = threading.Thread(target=_spawn, daemon=True)
+        caller.start()
+        caller.join(timeout=5)
+        stuck = caller.is_alive()
+        held.release()
+        caller.join(timeout=5)
+
+        assert not stuck
+        assert len(results) == 1
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_a_forked_child_can_spawn_a_process(self):
+        """The module spawner's thread is not in a forked child; the child starts its own."""
+        child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the forked child
+            code = 1
+            try:
+                signal.signal(signal.SIGALRM, signal.SIG_DFL)
+                signal.alarm(20)
+                code = child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+            except BaseException:
+                traceback.print_exc()
+            finally:
+                os._exit(code)
+        deadline = time.monotonic() + 30
+        status = None
+        while time.monotonic() < deadline:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            pytest.fail("the forked child never got its spawn back")
+
+        assert os.waitstatus_to_exitcode(status) == 0
 
     def test_close_does_not_strand_a_spawn_in_progress(self, spawner):
         results: list[object] = []
@@ -367,6 +442,40 @@ class TestTheSpawnerAcrossInterpreterShutdown:
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="spawns a real /bin/sh watcher")
 
+# Guards a sleeper through the death pipe, forks a child that outlives the parent,
+# records both pids, then dies by SIGKILL so no cleanup runs.
+_GUARDS_THEN_FORKS = (
+    "import os, signal, subprocess, sys, time\n"
+    "from lilbee.providers.fleet import child_guard\n"
+    "child_guard._libc = None\n"
+    "victim = child_guard.spawn_bound_child(\n"
+    "    [sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+    "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+    ")\n"
+    "lingerer = os.fork()\n"
+    "if lingerer == 0:\n"
+    "    time.sleep(600)\n"
+    "    os._exit(0)\n"
+    "open(sys.argv[1], 'w').write(f'{victim.pid} {lingerer}')\n"
+    "os.kill(os.getpid(), signal.SIGKILL)\n"
+)
+
+
+def _is_running(pid: int) -> bool:
+    """True while *pid* is alive and not a zombie awaiting a reaper."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    stat = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    ).stdout.strip()
+    return bool(stat) and not stat.startswith("Z")
+
 
 class TestTheDeathPipe:
     """The mock-based cases run on every platform (the death-pipe code is POSIX but
@@ -390,6 +499,70 @@ class TestTheDeathPipe:
             if victim.poll() is None:
                 victim.kill()
                 victim.wait(timeout=10)
+
+    def test_the_fork_hook_closes_and_forgets_every_write_end(self, monkeypatch):
+        """Closing the only write end gives the reader EOF; an already-closed fd is skipped."""
+        read_fd, write_fd = os.pipe()
+        held = {1: write_fd, 2: 10**6}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        try:
+            child_guard._close_death_pipes_in_forked_child()
+
+            assert held == {}
+            assert os.read(read_fd, 1) == b""
+        finally:
+            os.close(read_fd)
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_a_forked_child_holds_no_death_pipe_write_end(self):
+        """A real fork drops every inherited write end; the parent keeps its own."""
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            child_guard._watch_via_death_pipe(victim.pid)
+            write_fd = child_guard._death_pipe_write_fds[victim.pid]
+            pipe = os.fstat(write_fd)
+            pid = os.fork()
+            if pid == 0:  # pragma: no cover - runs in the forked child
+                # Match the pipe by device and inode: another after-fork hook can
+                # reopen the freed descriptor number as an unrelated file.
+                try:
+                    now = os.fstat(write_fd)
+                    code = 2 if (now.st_dev, now.st_ino) == (pipe.st_dev, pipe.st_ino) else 0
+                except OSError:
+                    code = 0
+                os._exit(code or (3 if child_guard._death_pipe_write_fds else 0))
+            _, status = os.waitpid(pid, 0)
+
+            assert os.waitstatus_to_exitcode(status) == 0, "2: fd still open, 3: table not emptied"
+            assert child_guard._death_pipe_write_fds == {victim.pid: write_fd}
+            os.fstat(write_fd)
+        finally:
+            child_guard.release_death_pipe(victim.pid)
+            victim.kill()
+            victim.wait(timeout=10)
+
+    @_POSIX_ONLY
+    def test_the_guarded_process_dies_with_its_parent_while_a_forked_child_lives(self, tmp_path):
+        """The inherited write end of a forked child must not hold the guard open."""
+        pids = tmp_path / "pids"
+        subprocess.run(
+            [sys.executable, "-c", _GUARDS_THEN_FORKS, str(pids)],
+            stdout=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+        victim_pid, lingerer_pid = (int(word) for word in pids.read_text(encoding="utf-8").split())
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and _is_running(victim_pid):
+                time.sleep(0.1)
+
+            assert not _is_running(victim_pid), "the guarded process outlived its parent"
+            assert _is_running(lingerer_pid), "the forked child died; the check proves nothing"
+        finally:
+            for pid in (victim_pid, lingerer_pid):
+                if _is_running(pid):
+                    os.kill(pid, signal.SIGKILL)
 
     def test_release_death_pipe_closes_the_write_end_for_a_stopped_child(self, monkeypatch):
         """Release closes the write end and drops the entry, idempotently."""
@@ -458,6 +631,40 @@ class TestTheDeathPipe:
         assert "pass_fds" not in recorded["kw"]
         # The read end is the watcher's stdin, so it is the fd not retained as write.
         assert recorded["kw"]["stdin"] not in held.values()
+        child_guard.release_death_pipe(4242)
+
+    def test_the_watcher_is_spawned_with_the_pipe_read_end_its_own_session_and_no_stdio(
+        self, monkeypatch
+    ):
+        """Each spawn argument is pinned by name, so a dropped or changed one fails alone."""
+        held: dict[int, int] = {}
+        monkeypatch.setattr(child_guard, "_death_pipe_write_fds", held)
+        real_pipe = os.pipe
+        ends: list[tuple[int, int]] = []
+
+        def _recording_pipe() -> tuple[int, int]:
+            pair = real_pipe()
+            ends.append(pair)
+            return pair
+
+        monkeypatch.setattr(child_guard.os, "pipe", _recording_pipe)
+        recorded: dict[str, object] = {}
+
+        def _capture(argv, **kw):
+            recorded["argv"], recorded["kw"] = argv, kw
+            return mock.MagicMock()
+
+        monkeypatch.setattr(child_guard._spawner, "spawn", _capture)
+        child_guard._watch_via_death_pipe(4242)
+
+        (read_fd, write_fd), kw = ends[0], recorded["kw"]
+        assert recorded["argv"][:2] == ["/bin/sh", "-c"]
+        assert set(kw) == {"stdin", "start_new_session", "stdout", "stderr"}
+        assert kw["stdin"] == read_fd
+        assert held[4242] == write_fd
+        assert kw["start_new_session"] is True
+        assert kw["stdout"] is subprocess.DEVNULL
+        assert kw["stderr"] is subprocess.DEVNULL
         child_guard.release_death_pipe(4242)
 
     def test_a_watcher_that_cannot_start_leaks_no_fds(self, monkeypatch):

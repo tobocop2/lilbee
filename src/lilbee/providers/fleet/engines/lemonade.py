@@ -8,8 +8,9 @@ import re
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.catalog.xdna import read_checkpoint
 from lilbee.core.config import cfg
@@ -23,14 +24,22 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PLATFORM_UNREAD, HostGate, npu_gate
+from lilbee.providers.fleet.engines.lemonade_models import parse_models
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
+if TYPE_CHECKING:
+    from lilbee.catalog.models import CatalogModel
+
 _VERSION = "2026.44.1"
+_FLM_TAG = "v1.0.7"
+"""The ``flm.npu`` tag in ``backend_versions.json`` of the Lemonade release ``_VERSION``."""
+_MODELS_URL = f"https://raw.githubusercontent.com/ROCm/FastFlowLM/{_FLM_TAG}/src/model_list.json"
 _TOOL = "lemond"
 _BACKEND = "npu"
 _HOST = "127.0.0.1"
@@ -52,9 +61,10 @@ _KEY_LABELS = "labels"
 _KEY_CTX = "ctx_size"
 _LABEL_EMBEDDINGS = "embeddings"
 _TMP_SUFFIX = ".tmp"
+_INSTALL_DOCS_URL = "https://lemonade-server.ai/docs/guide/install/"
 _INSTALL_HINT = (
-    "lilbee has no Lemonade pack. Install Lemonade from "
-    "https://lemonade-server.ai/docs/guide/install/ or unpack the lemonade-embeddable "
+    f"lilbee has no Lemonade pack. Install Lemonade from {_INSTALL_DOCS_URL} "
+    "or unpack the lemonade-embeddable "
     f"archive from https://github.com/lemonade-sdk/lemonade/releases/tag/v{_VERSION}, "
     f"then put the folder with {_TOOL} on PATH."
 )
@@ -131,8 +141,15 @@ class LemonadeAdapter:
     served_roles = frozenset(_ENDPOINTS)
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
+    server_process = ServerProcess(name=_TOOL, folder=data_root)
     install_hint = _INSTALL_HINT
+    install_docs_url = _INSTALL_DOCS_URL
+    models_url = _MODELS_URL
+
+    def parse_models(self, payload: Any) -> list[CatalogModel]:
+        return parse_models(payload)
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -211,7 +228,7 @@ class LemonadeAdapter:
         return frozenset({RoleTarget.NPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="", spoke_protocol=False)
+        return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return MemoryEstimate(
@@ -233,7 +250,7 @@ class LemonadeAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

@@ -15,6 +15,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import console
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
+from lilbee.providers.server_registry import ConfigReadError
 
 CHUNK_PREVIEW_LEN = 80  # characters shown in human-readable search output
 MAX_FAILURES_SHOWN = 5  # file names shown before "and N more"
@@ -55,7 +56,7 @@ def run_or_fail(operation: Callable[[], T], os_error_message: Callable[[OSError]
     """Run *operation*; a refusal prints its reason, as JSON or text, and exits 1."""
     try:
         return operation()
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, ConfigReadError) as exc:
         fail(str(exc))
     except OSError as exc:
         fail(os_error_message(exc))

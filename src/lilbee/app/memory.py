@@ -99,6 +99,7 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
     """
     services = get_services()
     predicate = human_recall_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
+    services.store.ensure_servable()
     return services.store.search_memories(
         services.embedder.embed_query(query),
         owner_predicate=predicate,

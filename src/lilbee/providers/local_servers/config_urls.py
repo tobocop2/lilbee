@@ -28,6 +28,13 @@ def base_url_for(server_key: str) -> str:
     return _configured_url(spec)
 
 
+def local_server_api_key(spec: LocalServerSpec) -> str | None:
+    """The key to send to a local server: none for Ollama, else ``llm_api_key`` when set."""
+    if spec is OLLAMA:
+        return None
+    return cfg.llm_api_key or None
+
+
 def configured_local_servers() -> list[tuple[LocalServerSpec, str]]:
     """Return (spec, resolved-url) for every known local server."""
     return [(spec, _configured_url(spec)) for spec in LOCAL_SERVERS]

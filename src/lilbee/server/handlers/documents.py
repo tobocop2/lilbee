@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import mimetypes
+from functools import partial
 
 from litestar.exceptions import ClientException
 from litestar.status_codes import HTTP_409_CONFLICT
@@ -97,8 +98,10 @@ async def list_documents(
     """
     store = get_services().store
     search_term = search or None
-    page = store.get_sources(search=search_term, limit=limit, offset=offset)
-    total = store.count_sources(search=search_term)
+    page = await asyncio.to_thread(
+        partial(store.get_sources, search=search_term, limit=limit, offset=offset)
+    )
+    total = await asyncio.to_thread(partial(store.count_sources, search=search_term))
     return DocumentListResponse(
         documents=[
             DocumentInfo(

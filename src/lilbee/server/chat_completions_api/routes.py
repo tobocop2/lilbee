@@ -22,6 +22,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ReasoningMode
 from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import default_first
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
@@ -89,7 +90,7 @@ def _build_models_list_payload() -> ModelsListResponse:
     served_ctx = services.provider.served_chat_ctx()
     served_slots = services.provider.served_chat_slots()
     chat = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
-    installed = {ref: chat[ref] for ref in loadable_refs(chat)}
+    installed = {ref: chat[ref] for ref in loadable_refs(chat, WorkerRole.CHAT)}
     # A remote or path-configured chat model has no registry entry but is still
     # listed, configured model first (the launcher's picker order).
     listed = with_configured_chat(sorted(installed), cfg.chat_model)
@@ -219,7 +220,9 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
             # Mirror _run_non_stream: an unclassified failure still rides the
             # OpenAI error envelope, not a bare framework 500.
             return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _error_response(
+            classified.http_status, classified.code, classified.message, headers=classified.headers
+        )
 
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
@@ -253,7 +256,9 @@ async def _run_non_stream(
         classified = classify_provider_error(exc)
         if classified is None:
             return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _error_response(
+            classified.http_status, classified.code, classified.message, headers=classified.headers
+        )
     finally:
         await guard.release()
     body: CompletionsResponse = canonical_to_completions_response(

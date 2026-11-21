@@ -14,8 +14,10 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.chat import _engine_status_text, _Turn
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._toasts import posted_toasts
 
 
 def _turn(widget: mock.MagicMock) -> _Turn:
@@ -140,6 +142,58 @@ async def test_await_engine_paints_progress_then_proceeds(_warming_services):
         assert painted[0] == msg.ENGINE_WARMING  # labelled before the first snapshot
         assert _engine_status_text(snapshot) in painted
         assert painted[-1] == ""  # the status clears once the engine is ready
+
+
+_SIZE_NOTICE = "The size of the chat model a/b is unknown, so 8.0 GiB is reserved for it."
+
+
+@pytest.mark.parametrize("size", [(80, 24), (160, 50)])
+async def test_a_chat_model_of_unknown_size_toasts_a_warning_when_it_is_ready(
+    _warming_services, size
+):
+    """The first cold prompt toasts the unknown-size sentence once the engine serves."""
+    from textual.widgets._toast import Toast
+
+    from tests._async_wait import wait_until
+
+    app = _ChatHost()
+    async with app.run_test(size=size, notifications=True) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        with (
+            mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
+            mock.patch("lilbee.app.placement.wait_chat_ready", return_value=True),
+            mock.patch(
+                "lilbee.app.placement.size_unknown_notices", return_value=[_SIZE_NOTICE]
+            ) as notices,
+        ):
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(mock.MagicMock()))
+        notices.assert_called_once_with(WorkerRole.CHAT)
+
+        def _shown() -> str:
+            return " ".join(
+                " ".join(toast.render().plain.split()) for toast in app.screen.query(Toast)
+            )
+
+        await wait_until(pilot, lambda: _SIZE_NOTICE in _shown())
+        assert _SIZE_NOTICE in _shown()
+        warnings = [n for n in posted_toasts() if n.severity == "warning"]
+        assert [n.message for n in warnings] == [_SIZE_NOTICE]
+
+
+async def test_a_chat_model_of_known_size_toasts_nothing_when_it_is_ready(_warming_services):
+    app = _ChatHost()
+    async with app.run_test(size=(80, 24), notifications=True) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        with (
+            mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
+            mock.patch("lilbee.app.placement.wait_chat_ready", return_value=True),
+            mock.patch("lilbee.app.placement.size_unknown_notices", return_value=[]),
+        ):
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(mock.MagicMock()))
+        await pilot.pause()
+        assert [n for n in posted_toasts() if n.severity == "warning"] == []
 
 
 async def test_await_engine_cancelled_wait_stays_silent(_warming_services):

@@ -12,7 +12,10 @@ from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager import ModelManager
+from lilbee.modelhub.model_manager.validation import _first_installed_local_ref
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry, register_downloaded_model
+from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines.base import EngineName
 
 _REV = "0" * 40
 _GGUF = "m-Q4_K_M.gguf"
@@ -300,3 +303,14 @@ class TestThroughTheModelManager:
         assert manager.remove("org/repo#mlx") is True
         assert manager.list_installed(ModelSource.NATIVE) == [f"org/repo/{_GGUF}"]
         assert not manager.is_installed("org/repo#mlx", ModelSource.NATIVE)
+
+
+class TestSubstituteNeedsAnEngine:
+    def test_an_mlx_model_is_no_substitute_without_an_mlx_engine(self, repo: Path) -> None:
+        _install(repo, ModelFormat.MLX)
+        with mock.patch.object(cfg, "models_dir", repo):
+            with mock.patch.object(choice, "installed_engines", lambda: {}):
+                assert _first_installed_local_ref(ModelTask.CHAT) is None
+            engines = {EngineName.MLX: frozenset({ModelFormat.MLX})}
+            with mock.patch.object(choice, "installed_engines", lambda: engines):
+                assert _first_installed_local_ref(ModelTask.CHAT) == "org/repo#mlx"

@@ -15,6 +15,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
+from lilbee.providers.server_registry import RerankWire
 from tests import _fake_sdk as fakes
 
 URL = "http://infinity.example.test:7997"
@@ -91,6 +92,56 @@ def test_a_preset_404_names_the_url_the_role_and_both_checks(
     assert "missing" not in text
     assert HOSTED not in text
     assert "Not Found" not in text
+
+
+def _rerank_404_text(wire: RerankWire) -> str:
+    request = RerankRequest(
+        ref=parse_model_ref("wired/m"),
+        query="q",
+        candidates=["a"],
+        api_base=URL,
+        rerank_wire=wire,
+    )
+    with pytest.raises(ProviderError) as err:
+        LiterLlmBackend().rerank(request)
+    return str(err.value)
+
+
+@pytest.mark.parametrize(
+    ("wire", "route", "other"),
+    [
+        pytest.param(RerankWire.V1, "/v1/rerank", "tei", id="v1"),
+        pytest.param(RerankWire.TEI, "/rerank", "v1", id="tei"),
+    ],
+)
+def test_a_rerank_404_names_the_route_and_the_wire_to_set(
+    sdk: fakes.FakeSdk, wire: RerankWire, route: str, other: str
+) -> None:
+    text = _rerank_404_text(wire)
+    assert f"The server answered 404 at {route}" in text
+    assert "If a model is loaded, the server has no such route" in text
+    assert f"set rerank_wire to {other} " in text
+    assert HOSTED not in text
+
+
+def test_a_rerank_404_is_worded_for_every_wire(sdk: fakes.FakeSdk) -> None:
+    wires = list(RerankWire)
+    assert wires
+    for wire in wires:
+        text = _rerank_404_text(wire)
+        assert f"answered 404 at {wire.route}" in text
+        for other in wires:
+            if other is not wire:
+                assert other.value in text.split("set rerank_wire to ")[1]
+
+
+@pytest.mark.parametrize("path", [_chat, _stream, _embed], ids=["chat", "stream", "embed"])
+def test_a_404_on_another_role_names_no_rerank_wire(
+    sdk: fakes.FakeSdk, path: Callable[..., Callable[[LiterLlmBackend], object]]
+) -> None:
+    with pytest.raises(ProviderError) as err:
+        path("wired/m", URL)(LiterLlmBackend())
+    assert "rerank_wire" not in str(err.value)
 
 
 @pytest.mark.parametrize(("path", "role"), PATHS)

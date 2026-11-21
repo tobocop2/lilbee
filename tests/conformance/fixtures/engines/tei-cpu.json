@@ -23,7 +23,7 @@
   },
   "named": {
    "ok": true,
-   "detail": "log=['served by engine=tei-cpu version=preset role=embed model=tei-cpu/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'tei-cpu', <WorkerRole.RERANK: 'rerank'>: 'tei-cpu'}"
+   "detail": "log=['served by engine=tei-cpu version=preset build=none role=embed model=tei-cpu/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'tei-cpu', <WorkerRole.RERANK: 'rerank'>: 'tei-cpu'}"
   }
  },
  "exchanges": [

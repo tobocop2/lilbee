@@ -87,10 +87,9 @@ class TestSchemaPersistence:
     def test_emptied_state_table_reads_none(self, store):
         """A state table whose row was deleted reads as never-induced."""
         from lilbee.core.config import ENTITY_SCHEMA_TABLE
-        from lilbee.data.store.types import ENTITY_SCHEMA_DELETE_ALL_PREDICATE
 
         save_schema(EntitySchema(types=[PART]), store, applied=False, source_count=1)
-        store.clear_table(ENTITY_SCHEMA_TABLE, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
+        store.clear_table(ENTITY_SCHEMA_TABLE, "updated_at IS NOT NULL")
         assert store.entity_schema_state() is None
 
     def test_save_overwrites_the_single_row(self, store):

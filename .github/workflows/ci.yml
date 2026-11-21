@@ -278,6 +278,8 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - uses: ./.github/actions/checkout-engine-packs
+
       - name: Install make (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -552,6 +554,9 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: auto
+          # The estimator and metadata tests run the gguf-parser built at the pin
+          # above: a missing parser fails this job instead of skipping them.
+          LILBEE_REQUIRE_GGUF_PARSER: "1"
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
           LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

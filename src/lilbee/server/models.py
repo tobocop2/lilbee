@@ -5,12 +5,13 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
+from lilbee.app.placement import PlacementRefusal
 from lilbee.app.profiles import (
     ActiveProfile,
     ApplyResult,
@@ -368,6 +369,8 @@ class AskResponse(BaseModel):
     """The standalone rewrite retrieval ran on, when a follow-up was rewritten."""
     dropped_sources: list[CleanedChunk] = Field(default_factory=list)
     """Chunks the budget fit shed, so a client can say what was trimmed."""
+    warnings: list[HealthWarning] = Field(default_factory=list)
+    """Search steps that failed, so a client can say the answer used fewer matches."""
 
 
 class SetModelResponse(BaseModel):
@@ -946,6 +949,14 @@ class RolePlacementResponse(BaseModel):
     tensor_split: list[int] | None
     replicas: int
     target: RoleTarget = RoleTarget.GPU
+    charge_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Bytes the planner charges for one instance of the role, on the memory the role "
+            "runs in: card memory for a GPU role, system memory for a CPU role. Multiply by "
+            "replicas for the total. Null when the planner has no charge for the role."
+        ),
+    )
 
 
 class SkippedRoleResponse(BaseModel):
@@ -963,6 +974,23 @@ class SkippedNoEngineResponse(BaseModel):
     notice: str
 
 
+class SizeUnknownResponse(BaseModel):
+    """A placed role whose model has no known size, and the reserve it is charged."""
+
+    role: WorkerRole
+    model: str
+    notice: str
+
+
+class TightRoleResponse(BaseModel):
+    """A placed role whose estimate exceeds the memory on its card, and what to do about it."""
+
+    role: WorkerRole
+    model: str
+    shortfall_bytes: int
+    notice: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -974,9 +1002,16 @@ class PlacementResponse(BaseModel):
     skipped_not_installed: list[SkippedRoleResponse] = []
     skipped_no_engine: list[SkippedNoEngineResponse] = []
     co_tenants: list[str] = []
+    swap_classes: list[list[str]] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
     refusal: str | None = None
+    # waiting: the saved spec applies once an engine or model is installed; unreadable: the
+    # saved text cannot be parsed; refused: an engine refuses roles, or the spec places no
+    # role on this machine. Null without a refusal.
+    refusal_kind: PlacementRefusal | None = None
+    # Where each pinned role runs after the auto plan replaced the saved spec; empty otherwise.
+    pins_dropped: str = ""
     # The backend the engine selected, reported rather than inferred. ``gpus``
     # being empty does not mean ``cpu``: a host whose device probe never answered
     # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
@@ -984,6 +1019,10 @@ class PlacementResponse(BaseModel):
     # Vendors whose GPU is in this machine but hidden from the engine at launch, so
     # ``gpus`` has no row for them and no pin can name them. Empty when none is hidden.
     hidden_gpus: list[str] = []
+    # Roles placed on the unknown-size reserve; empty when every size is known.
+    size_unknown: list[SizeUnknownResponse] = []
+    # Roles placed on a card that cannot hold them; empty when every role fits.
+    tight: list[TightRoleResponse] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -999,6 +1038,7 @@ class PlacementResponse(BaseModel):
                     tensor_split=list(r.tensor_split) if r.tensor_split else None,
                     replicas=r.replicas,
                     target=r.target,
+                    charge_bytes=r.charge_bytes,
                 )
                 for r in view.roles
             ],
@@ -1013,10 +1053,23 @@ class PlacementResponse(BaseModel):
                 for s in view.skipped_no_engine
             ],
             co_tenants=[r.value for r in view.co_tenants],
+            swap_classes=[sorted(r.value for r in members) for members in view.swap_classes],
             rejected_spec_json=view.rejected_spec_json,
             refusal=view.refusal,
+            refusal_kind=view.refusal_kind,
+            pins_dropped=view.pins_dropped,
             engine_backend=view.engine_backend,
             hidden_gpus=list(view.hidden_gpus),
+            size_unknown=[
+                SizeUnknownResponse(role=s.role, model=s.model, notice=s.notice)
+                for s in view.size_unknown
+            ],
+            tight=[
+                TightRoleResponse(
+                    role=t.role, model=t.model, shortfall_bytes=t.shortfall_bytes, notice=t.notice
+                )
+                for t in view.tight
+            ],
         )
 
 
@@ -1089,6 +1142,7 @@ class EngineBuildsResponse(BaseModel):
 
     builds: list[EngineBuildResponse]
     not_installed: list[str]
+    engines_folder: str
 
 
 class EngineRemovedResponse(BaseModel):
@@ -1118,14 +1172,43 @@ class EngineChosenResponse(BaseModel):
     engine: str
 
 
-class EngineInstallBody(BaseModel):
-    """Request body for installing an engine build from its pack.
+WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
 
-    ``wheel`` is a command line option; a request that sets it is refused.
-    """
+
+class RefusesWheel(BaseModel):
+    """Mixin for a remote engine install input: a ``wheel`` entry is refused."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_wheel(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "wheel" in data:
+            raise ValueError(WHEEL_CLI_ONLY)
+        return data
+
+
+_M = TypeVar("_M", bound=BaseModel)
+
+
+def refusing_wheel(model: type[_M]) -> type[_M]:
+    """A subclass of *model* that refuses a ``wheel`` entry."""
+    return cast("type[_M]", create_model(model.__name__, __base__=(model, RefusesWheel)))
+
+
+class HidesInput(BaseModel):
+    """Mixin for an input model whose validation errors never echo the rejected input."""
+
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+
+def hiding_input(model: type[_M]) -> type[_M]:
+    """A subclass of *model* whose validation errors leave out the rejected input."""
+    return cast("type[_M]", create_model(model.__name__, __base__=(model, HidesInput)))
+
+
+class EngineInstallBody(RefusesWheel):
+    """Request body for installing an engine build from its pack."""
 
     engine: str
-    wheel: str | None = None
 
 
 class EngineInstalledResponse(BaseModel):
@@ -1136,6 +1219,7 @@ class EngineInstalledResponse(BaseModel):
     backend: str
     note: str = ""
     not_run_on: list[str] = []
+    engines_folder: str
 
 
 class PresetAddBody(BaseModel):

@@ -20,6 +20,7 @@ import asyncio
 import atexit
 import logging
 import os
+import queue
 import signal
 import sys
 import threading
@@ -29,6 +30,7 @@ from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -59,7 +61,14 @@ log = logging.getLogger(__name__)
 
 _SIGNAL_EXIT_BASE = 128
 
-_HARD_EXIT_THREAD_NAME = "hard-exit-teardown"
+SERVICES_STOPPING_MESSAGE = "lilbee is stopping."
+
+
+class ServicesStoppingError(RuntimeError):
+    """The engine stop has begun; no new container is built."""
+
+    def __init__(self) -> None:
+        super().__init__(SERVICES_STOPPING_MESSAGE)
 
 
 def _default_session_store() -> SessionStore:
@@ -225,6 +234,14 @@ def wait_for_opens(timeout: float) -> bool:
     return done
 
 
+def _run_cleanup(step: Callable[[], None]) -> None:
+    """Run one cleanup step of a failed build; log its error so the build's own error stays."""
+    try:
+        step()
+    except Exception:
+        log.warning("Cleanup after a failed services build failed", exc_info=True)
+
+
 def build_services(
     config: Config,
     *,
@@ -264,46 +281,59 @@ def build_services(
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     engines = EngineBook(config)
+    owns_provider = provider is None
     provider = provider or create_provider(
         config, hold_warm=interactive, config_refresh=refresh_config
     )
-    from lilbee.data.extract.backends import sync_xberg_backends
+    store: Store | None = None
+    try:
+        from lilbee.data.extract.backends import sync_xberg_backends
 
-    sync_xberg_backends(provider)
-    registry = registry or ModelRegistry(config.models_dir)
-    # The first point that sees env vars, --model and config.toml together.
-    warn_unregistered_role_refs(config, registry)
-    embedder = Embedder(config, provider)
-    store = _new_store(config, canary_probe(config, embedder, registry))
-    reranker = Reranker(config)
-    concepts = ConceptGraph(config, store)
-    clusterer = Clusterer(config, store)
-    searcher = Searcher(config, provider, store, embedder, reranker, concepts)
-    hf_client = HfClient(config)
-    ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(config.models_dir, config)
-    crawler_semaphore = (
-        asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
-    )
-    crawler_sync_state = CrawlerSyncState()
-    known_models = KnownModelCache()
-    return Services(
-        provider=provider,
-        engines=engines,
-        store=store,
-        embedder=embedder,
-        reranker=reranker,
-        concepts=concepts,
-        clusterer=clusterer,
-        searcher=searcher,
-        registry=registry,
-        hf_client=hf_client,
-        ingest_lock_registry=ingest_lock_registry,
-        model_manager=model_manager,
-        crawler_semaphore=crawler_semaphore,
-        crawler_sync_state=crawler_sync_state,
-        known_models=known_models,
-    )
+        sync_xberg_backends(provider)
+        registry = registry or ModelRegistry(config.models_dir)
+        # The first point that sees env vars, --model and config.toml together.
+        warn_unregistered_role_refs(config, registry)
+        embedder = Embedder(config, provider)
+        store = _new_store(config, canary_probe(config, embedder, registry))
+        reranker = Reranker(config)
+        concepts = ConceptGraph(config, store)
+        clusterer = Clusterer(config, store)
+        searcher = Searcher(config, provider, store, embedder, reranker, concepts)
+        hf_client = HfClient(config)
+        ingest_lock_registry = IngestLockRegistry()
+        model_manager = ModelManager(config.models_dir, config)
+        crawler_semaphore = (
+            asyncio.Semaphore(config.crawl_max_concurrent)
+            if config.crawl_max_concurrent > 0
+            else None
+        )
+        crawler_sync_state = CrawlerSyncState()
+        known_models = KnownModelCache()
+        return Services(
+            provider=provider,
+            engines=engines,
+            store=store,
+            embedder=embedder,
+            reranker=reranker,
+            concepts=concepts,
+            clusterer=clusterer,
+            searcher=searcher,
+            registry=registry,
+            hf_client=hf_client,
+            ingest_lock_registry=ingest_lock_registry,
+            model_manager=model_manager,
+            crawler_semaphore=crawler_semaphore,
+            crawler_sync_state=crawler_sync_state,
+            known_models=known_models,
+        )
+    except BaseException:
+        # A failed build leaves nothing open: the store it made and the provider it
+        # created (a caller-supplied provider stays the caller's).
+        if store is not None:
+            _run_cleanup(store.close)
+        if owns_provider:
+            _run_cleanup(provider.shutdown)
+        raise
 
 
 # Serializes first-touch singleton creation: several worker threads (e.g.
@@ -319,7 +349,8 @@ def get_services() -> Services:
     Creates the singleton on first call (against the process-global cfg). A
     config-file embedding_model with no embedding_dim would otherwise build the
     store at the stale 768 default, so the width is pinned to the embedder before
-    the store is built.
+    the store is built. Once the engine stop has begun it builds nothing and
+    raises ServicesStoppingError, so no container outlives the stop.
     """
     override = _state.override.get()
     if override is not None:
@@ -332,6 +363,8 @@ def get_services() -> Services:
     with _singleton_create_lock:
         if _state.singleton is not None:
             return _state.singleton
+        if _lifecycle.stop_requested:
+            raise ServicesStoppingError
 
         from lilbee.app.settings import reconcile_embedding_dim
         from lilbee.modelhub.registry import ModelRegistry
@@ -341,7 +374,16 @@ def get_services() -> Services:
         # resolution doesn't re-enter this half-built get_services.
         reconcile_embedding_dim(registry)
         services = build_services(cfg, registry=registry, interactive=_state.interactive)
-        _state.singleton = services
+        # A stop asked for during the build may already have swapped the singleton
+        # out, so this container is shut down here instead of outliving the stop.
+        with _reset_swap_lock:
+            stopping = _lifecycle.stop_requested
+            if not stopping:
+                _state.singleton = services
+        if stopping:
+            services.provider.shutdown()
+            services.store.close()
+            raise ServicesStoppingError
         # Eager start is the default: pay the spawn cost per role server at TUI mount
         # so the first user action lands on a warm fleet. Roles whose model is unset
         # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -446,10 +488,13 @@ def answer_provider_waiters() -> None:
         services.provider.stop_waiting()
 
 
-# Serializes the singleton swap in reset_services: a signal's teardown thread
-# and an exiting caller's can race, and both tearing down the same container
+# Serializes the singleton swap in reset_services: the engine stop thread
+# and another caller can race, and both tearing down the same container
 # would double-close the store.
 _reset_swap_lock = threading.Lock()
+
+# Serializes reset_store builds; taken before _reset_swap_lock, never inside it.
+_store_rebuild_lock = threading.Lock()
 
 
 def reset_services() -> None:
@@ -457,10 +502,10 @@ def reset_services() -> None:
 
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. The swap is
-    locked so concurrent callers (a signal's teardown thread plus an exiting
-    one) tear the container down exactly once. On ``lilbee serve``, SIGTERM and
-    SIGHUP run it on the signal's teardown thread while requests are still
-    open; SIGINT and the shutdown route run it after those requests end.
+    locked so concurrent callers (the engine stop thread plus another one)
+    tear the container down exactly once. On ``lilbee serve``, SIGINT,
+    SIGTERM and SIGHUP run it on the engine stop thread while requests
+    are still open; the shutdown route runs it after those requests end.
     """
     with _reset_swap_lock:
         old = _state.singleton
@@ -477,9 +522,6 @@ def reset_store() -> None:
     but the running provider/embedder/reranker are still good. Avoids the
     multi-second reload cost of ``reset_services()``.
     """
-    svc = _state.singleton
-    if svc is None:
-        return
     from dataclasses import replace
 
     from lilbee.core.config import cfg
@@ -488,21 +530,39 @@ def reset_store() -> None:
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
 
-    # Build the replacement, swap the reference, then close the old store last so
-    # a new caller never observes a closed handle mid-swap.
-    old_store = svc.store
-    store = _new_store(cfg, canary_probe(cfg, svc.embedder, svc.registry))
-    concepts = ConceptGraph(cfg, store)
-    clusterer = Clusterer(cfg, store)
-    searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
-    _state.singleton = replace(
-        svc,
-        store=store,
-        concepts=concepts,
-        clusterer=clusterer,
-        searcher=searcher,
-    )
-    old_store.close()
+    # One rebuild at a time, so two resets never build from the same container. This
+    # lock is taken before _reset_swap_lock and never inside it; get_services and
+    # reset_services never take it, so the stop is not held up by a build.
+    with _store_rebuild_lock:
+        svc = _state.singleton
+        if svc is None:
+            return
+        # Build the replacement, swap the reference, then close the old store last so
+        # a new caller never observes a closed handle mid-swap.
+        store = _new_store(cfg, canary_probe(cfg, svc.embedder, svc.registry))
+        try:
+            concepts = ConceptGraph(cfg, store)
+            clusterer = Clusterer(cfg, store)
+            searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
+            rebuilt = replace(
+                svc, store=store, concepts=concepts, clusterer=clusterer, searcher=searcher
+            )
+        except BaseException:
+            store.close()
+            raise
+        # Same lock and stop check as get_services: a rebuild must not bring back a
+        # container that the stop cleared, nor one that reset_services replaced.
+        with _reset_swap_lock:
+            stopping = _lifecycle.stop_requested
+            swapped = not stopping and _state.singleton is svc
+            if swapped:
+                _state.singleton = rebuilt
+    if swapped:
+        svc.store.close()
+        return
+    store.close()
+    if stopping:
+        raise ServicesStoppingError
 
 
 class _ServerExit:
@@ -549,11 +609,91 @@ def request_server_exit(status: int = 0) -> bool:
     return _server_exit.request(status)
 
 
+class _StopStep(StrEnum):
+    """The teardown step the stop runs."""
+
+    STARTING = "starting the stop"
+    ANSWER_WAITERS = "answering the callers that wait on the provider"
+    RESET_SERVICES = "stopping the services"
+
+
 class _EngineLifecycle:
-    """Owns the hard-exit hooks that stop the engine fleet."""
+    """Owns the hard-exit hooks and the one thread that stops the engine fleet."""
 
     def __init__(self) -> None:
         self._installed = False
+        self._interrupts = 0
+        self._reset_in_forked_child()
+
+    def _reset_in_forked_child(self) -> None:
+        """Drop the stop thread and its queue, which a fork does not copy."""
+        self._start_lock = threading.Lock()
+        self._requests: queue.SimpleQueue[int] = queue.SimpleQueue()
+        self._stopped = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._forget_stop()
+
+    def _forget_stop(self) -> None:
+        """Clear every stop request, so the next request runs a new stop."""
+        self._stopped.clear()
+        self.stop_requested = False
+        self._signalled = False
+        self.owed_status: int | None = None
+        self.stop_step = _StopStep.STARTING
+
+    def _ensure_stop_thread(self) -> None:
+        """Start the stop thread once, in ordinary context, before any handler can ask for it."""
+        with self._start_lock:
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._serve_stops, name="engine-stop", daemon=True
+                )
+                self._thread.start()
+
+    def _serve_stops(self) -> None:
+        while True:
+            self._run_stop(self._requests.get())
+
+    def _run_stop(self, signum: int) -> None:
+        try:
+            self._stop(signum)
+        finally:
+            self._stopped.set()
+
+    def _stop(self, signum: int) -> None:
+        """Log the signal (0: an exit asked), answer the provider's waiters, stop the services."""
+        if signum:
+            log.info(
+                "Received signal %s; stopping the engine fleet before exit",
+                signal.Signals(signum).name,
+            )
+        self.stop_step = _StopStep.ANSWER_WAITERS
+        answer_provider_waiters()
+        self.stop_step = _StopStep.RESET_SERVICES
+        reset_services()
+
+    def stop_for_exit(self) -> bool:
+        """Ask the stop thread for the stop; True when the caller must wait for it.
+
+        With no stop thread (no handler installed: library use, or atexit) the stop
+        runs on the calling thread, which starts no thread at interpreter shutdown.
+        """
+        if self._thread is None:
+            self.stop_requested = True
+            self._run_stop(0)
+            return False
+        self.request_stop(0)
+        return True
+
+    def request_stop(self, signum: int) -> None:
+        """Queue the stop once; a later request joins the stop already asked for."""
+        if not self.stop_requested:
+            self.stop_requested = True
+            self._requests.put(signum)
+
+    def wait_stopped(self, timeout: float | None) -> bool:
+        """Wait for the stop to finish; False when *timeout* ran out first."""
+        return self._stopped.wait(timeout)
 
     @staticmethod
     def _hard_exit_signals() -> tuple[signal.Signals, ...]:  # pragma: no cover - platform split
@@ -562,53 +702,83 @@ class _EngineLifecycle:
             return (signal.SIGTERM,)
         return (signal.SIGTERM, signal.SIGHUP)
 
+    @staticmethod
+    def _ignored_at_launch(sig: signal.Signals) -> bool:
+        """Whether the launch left *sig* ignored (nohup does it for SIGHUP)."""
+        return signal.getsignal(sig) == signal.SIG_IGN
+
+    @classmethod
+    def _routed_signals(cls, *, interrupt: bool) -> tuple[signal.Signals, ...]:
+        """Signals to route: SIGTERM always; SIGHUP, and SIGINT when *interrupt*, unless ignored."""
+        wanted = cls._hard_exit_signals()
+        if interrupt:
+            wanted = (signal.SIGINT, *wanted)
+        return tuple(
+            sig for sig in wanted if sig == signal.SIGTERM or not cls._ignored_at_launch(sig)
+        )
+
     def install(self) -> None:
         """Route hard-exit signals through teardown. Idempotent; no-op off the main thread."""
         if self._installed:
             return
+        self._ensure_stop_thread()
         try:
-            for sig in self._hard_exit_signals():
+            for sig in self._routed_signals(interrupt=False):
                 signal.signal(sig, self._on_hard_exit)
         except ValueError:
             return
         self._installed = True
 
-    def route_in_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Deliver Ctrl-C and the hard-exit signals as loop callbacks.
+    def route_interrupt(self) -> None:
+        """Send Ctrl-C through the hard-exit path; a second press ends the process at once.
 
-        A plain handler runs only when the main thread returns to bytecode, and the
-        kernel may hand the signal to another thread while the loop sits in select.
-        The loop's wakeup descriptor makes the delivery certain.
+        An inherited ignore of SIGINT stays in place.
         """
-        for sig in (signal.SIGINT, *self._hard_exit_signals()):
-            with suppress(NotImplementedError, RuntimeError):  # Windows, off main thread
-                loop.add_signal_handler(sig, self._on_hard_exit, sig, None)
+        self._interrupts = 0
+        if signal.SIGINT not in self._routed_signals(interrupt=True):
+            return
+        self._ensure_stop_thread()
+        signal.signal(signal.SIGINT, self._on_interrupt)
+
+    def _on_interrupt(self, signum: int, frame: object) -> None:
+        self._interrupts += 1
+        if self._interrupts > 1:
+            _force_quit_from_handler()
+        else:
+            self._on_hard_exit(signum, frame)
+
+    def routed_in_loop(self) -> tuple[signal.Signals, ...]:
+        """Signals a running loop takes over: the ones install and route_interrupt route."""
+        return self._routed_signals(interrupt=True)
+
+    def on_loop_signal(self, signum: int) -> None:
+        """Run the handler of *signum* as a loop callback, with no interrupted frame."""
+        if signum == signal.SIGINT:
+            self._on_interrupt(signum, None)
+        else:
+            self._on_hard_exit(signum, None)
 
     def reset(self) -> None:
-        """Forget that handlers were installed."""
+        """Forget that handlers were installed and every stop request."""
         self._installed = False
+        self._interrupts = 0
+        self._forget_stop()
 
     def _on_hard_exit(self, signum: int, frame: object) -> None:
-        """Stop the fleet on its own thread, then exit with the signal status.
+        """Queue the stop and exit with the signal status; the handler only records.
 
-        A serving loop is asked to stop and exits with the status itself. A
-        SystemExit raised into the loop cancels the ASGI lifespan with it,
-        which logs a traceback, or dies inside a request's ASGI wrapper. With
-        no serving loop the SystemExit unwinds the main thread. Signal handlers
-        all run on the main thread, and a second signal can interrupt this one
-        mid-teardown: the kernel pairs SIGCONT with SIGHUP for an orphaned
-        process group, and Textual's SIGCONT handler raises once the event loop
-        is gone, which aborted the reap half-done and orphaned a loaded fleet.
-        A dedicated non-daemon thread cannot be interrupted by signals, and the
-        interpreter waits for it even as the SystemExit unwinds the main thread.
+        It starts no thread, takes no lock and logs nothing: a signal can land
+        while the main thread holds one of threading's own locks.
         """
         del frame
         status = _SIGNAL_EXIT_BASE + signum
-        serving = request_server_exit(status)
-        threading.Thread(
-            target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
-        ).start()
-        if not serving:
+        server_took = request_server_exit(status)
+        joining = server_took or server_is_stopping() or self.stop_requested
+        if joining and not server_took and not self._signalled:
+            self.owed_status = status
+        self._signalled = True
+        self.request_stop(signum)
+        if not joining:
             raise SystemExit(status)
 
 
@@ -620,6 +790,8 @@ _STOPPING_NOTE_GRACE_S = 1.0
 """Seconds a teardown may run silently; a fast exit stays as quiet as ever."""
 
 _FORCE_QUIT_NOTE = "lilbee: force quit. The engine stops with it.\n"
+
+_FORCE_QUIT_NOTE_BYTES = _FORCE_QUIT_NOTE.encode()
 
 _STRAGGLER_BUDGET_S = 5.0
 """Seconds every leftover non-daemon thread gets, together, before the exit."""
@@ -659,46 +831,62 @@ def _exit_now(status: int, note: str) -> None:
     os._exit(status)
 
 
+def _force_quit_from_handler() -> None:
+    """End the process from a signal handler: a bare write of the note to fd 2, no lock."""
+    with suppress(OSError):
+        os.write(2, _FORCE_QUIT_NOTE_BYTES)
+    os._exit(_FORCE_QUIT_EXIT_CODE)
+
+
+@contextmanager
+def _interrupt_force_quits() -> Iterator[None]:
+    """Turn a Ctrl-C during an exit wait into the force quit."""
+    try:
+        yield
+    except KeyboardInterrupt:
+        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+
+
 def _all_threads() -> list[threading.Thread]:
     """Seam over threading.enumerate, so tests never patch the stdlib global."""
     return threading.enumerate()
 
 
+def _wait_for_stop() -> None:
+    """Wait for the stop thread's teardown; silent for the grace, then the stopping note.
+
+    An interrupt while waiting force-quits the process: waiting is the only
+    thing left, and the engine reaper (or, without kernel file locks, the
+    child guard) stops the engine once this was its last user.
+    """
+    with _interrupt_force_quits():
+        if not _lifecycle.wait_stopped(_STOPPING_NOTE_GRACE_S):
+            _write_exit_note(_STOPPING_NOTE)
+            _lifecycle.wait_stopped(None)
+
+
 def wait_for_hard_exit_teardown() -> None:
-    """Block until any teardown thread (signal-driven or exit-driven) finishes.
+    """Block until a stop that a signal or an exit asked for finishes; else return.
 
     Lets ``serve`` hold its OS locks through the fleet stop, so a successor
     cannot acquire them while this server's models still occupy memory.
-
-    An interrupt while waiting force-quits the process: waiting is the only
-    thing left, the interpreter would otherwise still join the non-daemon
-    teardown thread, and the engine reaper (or, without kernel file locks, the
-    child guard) stops the engine once this was its last user.
     """
-    try:
-        for thread in _all_threads():
-            if thread.name != _HARD_EXIT_THREAD_NAME:
-                continue
-            thread.join(_STOPPING_NOTE_GRACE_S)
-            if thread.is_alive():
-                _write_exit_note(_STOPPING_NOTE)
-                thread.join()
-    except KeyboardInterrupt:
-        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+    if _lifecycle.stop_requested:
+        _wait_for_stop()
 
 
 def reset_services_on_exit() -> None:
-    """Tear the container down on a thread no signal reaches, and wait for it.
+    """Run the teardown and wait for it; no-op with nothing to stop.
 
-    Engine release waits on the fleet build lock before it releases anything, so
-    a Ctrl-C on the main thread skips the release, and atexit cannot retry: the
-    singleton is already cleared. The teardown thread is non-daemon and takes
-    no signals; a wait that outlives the grace names what is happening.
+    With signal handlers installed the stop thread runs it, since a Ctrl-C on the
+    main thread would skip the engine release and atexit cannot retry. Without
+    them it runs here, and a Ctrl-C during it force-quits.
     """
-    if peek_services() is None:
+    if peek_services() is None and not _lifecycle.stop_requested:
         return
-    threading.Thread(target=reset_services, name=_HARD_EXIT_THREAD_NAME).start()
-    wait_for_hard_exit_teardown()
+    with _interrupt_force_quits():
+        if _lifecycle.stop_for_exit():
+            _wait_for_stop()
 
 
 def _straggler_threads() -> list[threading.Thread]:
@@ -725,19 +913,16 @@ def exit_when_stragglers_would_hang() -> None:
     """
     if not _state.interactive:
         return
-    _exit_if_stragglers(0)
+    _exit_if_stragglers(0, time.monotonic() + _STRAGGLER_BUDGET_S)
 
 
-def _exit_if_stragglers(status: int) -> None:
-    """Join leftover non-daemon threads within the budget, else exit with *status*."""
-    try:
-        deadline = time.monotonic() + _STRAGGLER_BUDGET_S
+def _exit_if_stragglers(status: int, deadline: float) -> None:
+    """Join leftover non-daemon threads before *deadline*, else exit with *status*."""
+    with _interrupt_force_quits():
         for thread in _straggler_threads():
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
             _exit_now(status, _STRAGGLER_NOTE)
-    except KeyboardInterrupt:
-        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
 def exit_if_opens_remain(status: int) -> None:
@@ -750,29 +935,23 @@ def exit_if_opens_remain(status: int) -> None:
     _exit_now(status, _OPEN_EXIT_NOTE)
 
 
-def exit_on_signals_in_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """Make Ctrl-C and terminate signals end a process whose loop has no UI to catch them."""
-    _lifecycle.route_in_loop(loop)
+def stop_on_interrupt() -> None:
+    """Make Ctrl-C stop a serving process as SIGTERM does; a second press ends it at once."""
+    _lifecycle.route_interrupt()
 
 
 def exit_after_signal(status: int) -> None:
-    """Finish the signal-driven teardown, then exit with *status* even past a wedged thread.
+    """Finish the engine stop, then exit with *status* even past a wedged thread.
 
     The stdio MCP server reads stdin on a non-daemon thread that no signal
     wakes, so the interpreter would wait on it forever after the main thread
-    unwound.
+    unwound. The stop and the stragglers share one budget; a cut names its step.
     """
-    reset_services_on_exit()
-    _exit_if_stragglers(status)
-
-
-def _teardown_for_signal(signum: int) -> None:
-    """Log the fatal signal, then stop services; runs off the signal handler's thread."""
-    log.info(
-        "Received signal %s; stopping the engine fleet before exit", signal.Signals(signum).name
-    )
-    answer_provider_waiters()
-    reset_services()
+    deadline = time.monotonic() + _STRAGGLER_BUDGET_S
+    if _lifecycle.stop_for_exit() and not _lifecycle.wait_stopped(_STRAGGLER_BUDGET_S):
+        log.warning("The exit cut the engine stop while %s", _lifecycle.stop_step)
+        _exit_now(status, _STRAGGLER_NOTE)
+    _exit_if_stragglers(status, deadline)
 
 
 _lifecycle = _EngineLifecycle()
@@ -782,5 +961,41 @@ def install_engine_lifecycle_hooks() -> None:
     """Make a terminal close or ``kill`` stop the engine fleet instead of orphaning it."""
     _lifecycle.install()
 
+
+@contextmanager
+def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
+    """Deliver the routed signals as callbacks of *loop* while it runs.
+
+    A plain handler raises at whatever bytecode the main thread is running. That can
+    be inside the loop's own bookkeeping or a library's ``except BaseException``, and
+    then the exit is lost and the loop idles. A loop callback runs between steps, so
+    the SystemExit it raises always leaves ``run_forever``. The handlers that were
+    installed before return when the loop ends, so a late signal still reaches the stop.
+    """
+    routed = _lifecycle.routed_in_loop()
+    previous = {sig: signal.getsignal(sig) for sig in routed}
+    added: list[signal.Signals] = []
+    try:
+        for sig in routed:
+            loop.add_signal_handler(sig, _lifecycle.on_loop_signal, sig)
+            added.append(sig)
+    except (NotImplementedError, RuntimeError):  # pragma: no cover - Windows, off the main thread
+        pass
+    try:
+        yield
+    finally:
+        for sig in added:
+            loop.remove_signal_handler(sig)
+            signal.signal(sig, previous[sig])
+
+
+def exit_status_after_stop(status: int) -> int:
+    """Return the status of a first signal that joined an exit's stop, else *status*."""
+    owed = _lifecycle.owed_status
+    return status if owed is None else owed
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no cover - absent on Windows
+    os.register_at_fork(after_in_child=_lifecycle._reset_in_forked_child)
 
 atexit.register(reset_services_on_exit)

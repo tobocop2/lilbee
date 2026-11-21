@@ -23,6 +23,7 @@ from lilbee.app.models import (
     ShowModelResult,
 )
 from lilbee.app.settings import SettingsUpdateResult
+from lilbee.catalog.refs import canonical_ref
 from lilbee.catalog.types import ModelSource
 from lilbee.cli import app
 from lilbee.core.config import cfg
@@ -77,6 +78,7 @@ _CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _CHAT_FILE = "Qwen3-0.6B-Q4_K_M.gguf"
 _CHAT_REF = f"{_CHAT_REPO}/{_CHAT_FILE}"
 _OLLAMA_REF = "ollama/llama3:latest"
+_SIZE_NOTICE = "The size of this model is unknown, so 8.0 GiB is reserved for it."
 
 
 class _FakeManager:
@@ -92,6 +94,7 @@ class _FakeManager:
         self._remote = list(remote or [])
         self.cache_only: set[str] = set()
         self.pull_calls: list[tuple[str, ModelSource]] = []
+        self.pull_notice: str | None = None
         self.remove_calls: list[tuple[str, ModelSource | None]] = []
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
@@ -102,6 +105,7 @@ class _FakeManager:
         return list(self._remote)
 
     def is_installed(self, model: str, source: ModelSource | None = None) -> bool:
+        model = canonical_ref(model)
         if source is None:
             return model in self._native or model in self._remote
         if source is ModelSource.NATIVE:
@@ -109,17 +113,23 @@ class _FakeManager:
         return model in self._remote
 
     def is_registered(self, model: str) -> bool:
+        model = canonical_ref(model)
         return model in self._native and model not in self.cache_only
 
     def get_source(self, model: str) -> ModelSource | None:
+        model = canonical_ref(model)
         if model in self._native:
             return ModelSource.NATIVE
         if model in self._remote:
             return ModelSource.REMOTE
         return None
 
-    def pull(self, model, source, *, on_bytes=None, allow_unsupported=False, cancel=None):
+    def pull(
+        self, model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
+    ):
         self.pull_calls.append((model, source))
+        if self.pull_notice is not None and on_notice is not None:
+            on_notice(self.pull_notice)
         if on_bytes is not None:
             on_bytes(50, 100)
         return f"/fake/{model}.gguf"
@@ -276,6 +286,29 @@ class TestRemoveModelDataFreedSize:
         registry.shard_paths.assert_not_called()  # recorded total used directly
 
 
+class TestRemoveModelDataGgufQualifier:
+    def test_gguf_qualified_ref_removes_the_plain_ref_and_reports_its_size(
+        self, fake_manager, native_manifests
+    ):
+        result = model_mod.remove_model_data(f"{_CHAT_REF}#gguf")
+        assert fake_manager.remove_calls == [(_CHAT_REF, None)]
+        assert result.model == _CHAT_REF
+        assert result.freed_gb == model_mod._bytes_to_gb(5 * 1024**3)
+
+
+class TestMalformedQualifierStaysAsWritten:
+    def test_remove_passes_a_malformed_qualifier_on_unchanged(self, empty_manager):
+        result = model_mod.remove_model_data("ghost#nope")
+        assert empty_manager.remove_calls == [("ghost#nope", None)]
+        assert result.model == "ghost#nope"
+
+    def test_pull_passes_a_malformed_qualifier_on_unchanged(self, empty_manager, monkeypatch):
+        monkeypatch.setattr(model_mod, "ensure_vision_projector", lambda ref, **_: None)
+        result = model_mod.pull_model_data("ghost#nope", ModelSource.NATIVE)
+        assert empty_manager.pull_calls == [("ghost#nope", ModelSource.NATIVE)]
+        assert result.model == "ghost#nope"
+
+
 class TestListNoEagerWarm:
     def test_model_list_disables_eager_warm(self, monkeypatch):
         """`model list` reads installed files and must not warm the fleet."""
@@ -420,6 +453,26 @@ class TestShowModelData:
         assert data.manifest is not None
         assert data.manifest.task == "chat"
 
+    def test_gguf_qualified_ref_reads_as_the_plain_ref(self, fake_manager, native_manifests):
+        with (
+            patch("lilbee.catalog.find_pick", return_value=None),
+            patch("lilbee.app.models._resolve_native_path", return_value="/fake/path.gguf"),
+        ):
+            data = model_mod.show_model_data(f"{_CHAT_REF}#gguf")
+        assert data.model == _CHAT_REF
+        assert data.installed is True
+        assert data.manifest is not None
+        assert data.manifest.task == "chat"
+        assert data.path == "/fake/path.gguf"
+
+    def test_malformed_qualifier_is_not_found_as_written(self, empty_manager):
+        with (
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
+            patch("lilbee.catalog.find_pick", return_value=None),
+            pytest.raises(ModelNotFoundError, match="model not found: ghost#nope"),
+        ):
+            model_mod.show_model_data("ghost#nope")
+
     def test_catalog_only_not_installed(self, empty_manager):
         entry = _catalog_model(hf_repo="Qwen/Qwen3-8B-GGUF")
         with (
@@ -519,6 +572,13 @@ class TestPullModelData:
         assert isinstance(result, PullResult)
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
+
+    def test_gguf_qualified_ref_names_the_plain_ref_in_the_result(
+        self, fake_manager, native_manifests
+    ):
+        result = model_mod.pull_model_data(f"{_CHAT_REF}#gguf", ModelSource.NATIVE)
+        assert result.status == PullStatus.ALREADY_INSTALLED
+        assert result.model == _CHAT_REF
 
     def test_cache_only_model_is_pulled_again_not_reported_installed(
         self, fake_manager, native_manifests
@@ -892,6 +952,37 @@ class TestPullCmd:
         assert result.exit_code == 0, result.output
         final = json.loads(result.output.strip().splitlines()[-1])
         assert final["warning"] == "no projector listed"
+
+    def test_json_final_event_carries_the_size_notice_and_the_projector_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        fake_manager.pull_notice = _SIZE_NOTICE
+        monkeypatch.setattr(
+            model_mod, "ensure_vision_projector", lambda ref, **_: "no projector listed"
+        )
+        result = runner.invoke(
+            app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+        )
+        assert result.exit_code == 0, result.output
+        final = json.loads(result.output.strip().splitlines()[-1])
+        assert final["warning"] == f"{_SIZE_NOTICE} no projector listed"
+
+    def test_human_mode_prints_the_size_notice(self, fake_manager, native_manifests):
+        fake_manager.pull_notice = _SIZE_NOTICE
+        result = runner.invoke(app, ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"])
+        assert result.exit_code == 0, result.output
+        assert "Warning:" in result.output
+        assert "is unknown, so 8.0 GiB is reserved" in " ".join(result.output.split())
+
+    def test_a_pull_with_no_notice_has_no_warning(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        monkeypatch.setattr(model_mod, "ensure_vision_projector", lambda ref, **_: None)
+        result = runner.invoke(
+            app, ["--json", "model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]
+        )
+        final = json.loads(result.output.strip().splitlines()[-1])
+        assert final["warning"] is None
 
     def test_human_already_installed_message(self, fake_manager, native_manifests):
         result = runner.invoke(app, ["model", "pull", _CHAT_REF])

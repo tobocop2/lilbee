@@ -40,6 +40,7 @@ class TaskType(StrEnum):
     IMPORT = "import"
     EXPORT = "export"
     ANALYZE = "analyze"
+    ENGINE = "engine"
 
 
 class CancelOrigin(StrEnum):

@@ -29,7 +29,13 @@ from lilbee.providers.fleet.gpu_backends import (
     intel_util_hint as _detect_intel_util_hint,
 )
 from lilbee.providers.fleet.gpu_backends.nvidia import card_count
-from lilbee.providers.fleet.gpu_env import gpu_environ
+from lilbee.providers.fleet.gpu_env import (
+    CUDA_VISIBLE_VAR,
+    GPU_DEVICE_ORDINAL_VAR,
+    HIP_VISIBLE_VAR,
+    ROCR_VISIBLE_VAR,
+    gpu_environ,
+)
 
 
 class DeviceLike(Protocol):
@@ -115,12 +121,12 @@ def probe_gpu_stats_shared(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
 # reporting 0..3. Merging those two spaces by ordinal attributes another
 # tenant's cards' utilization, temperature and free memory to this fleet.
 _BACKEND_VISIBLE_VARS: dict[str, tuple[str, ...]] = {
-    "CUDA": ("CUDA_VISIBLE_DEVICES",),
+    "CUDA": (CUDA_VISIBLE_VAR,),
     # Innermost mask first. ROCr filters, then HIP re-indexes within the
     # survivors, so walking outward from the fleet's index means undoing HIP
     # before ROCr.
-    "ROCm": ("HIP_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "ROCR_VISIBLE_DEVICES"),
-    "HIP": ("HIP_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL", "ROCR_VISIBLE_DEVICES"),
+    "ROCm": (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR),
+    "HIP": (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR),
 }
 
 

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config import active_config
-from lilbee.data.types import EmbeddingBackendName, TokenizerBackendName
 
 if TYPE_CHECKING:
     from xberg import (
@@ -22,8 +21,6 @@ CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"
 _MARKDOWN_CHUNKER = "markdown"
-# xberg's default sizer: chunk_size counts characters.
-_CHARACTER_SIZING = "characters"
 # Markdown heading path rendered into a chunk: "# Setup > ## Install".
 _HEADING_MARK = "#"
 _BREADCRUMB_SEPARATOR = " > "
@@ -37,16 +34,20 @@ def _embed_token_cap() -> int | None:
     return get_services().provider.embed_token_cap()
 
 
-def token_sizing_in_effect(cap: int | None) -> bool:
-    """Whether chunks are sized in the embedder's tokens: opted in, or its window binds.
+def count_embed_tokens(text: str) -> int:
+    """Tokens in *text* under the embedder's tokenizer, or a character estimate without one."""
+    from lilbee.app.services import get_services
 
-    The window binds when *cap* is below the character budget ``chunk_size``
-    allows, so a character-sized chunk could exceed it at embedding time.
-    """
-    config = active_config()
-    if config.token_sizing:
-        return True
-    return cap is not None and cap < config.chunk_size * CHARS_PER_TOKEN
+    from .backends.tokenizer import LilbeeTokenizerBackend
+
+    return LilbeeTokenizerBackend(count_fn=get_services().provider.count_tokens).count_tokens(text)
+
+
+def token_budget() -> int:
+    """Tokens one chunk may hold: ``chunk_size``, cut to the embedder's cap when it has one."""
+    cap = _embed_token_cap()
+    size = active_config().chunk_size
+    return size if cap is None else min(size, cap)
 
 
 def _char_budget() -> tuple[int, int]:
@@ -58,49 +59,41 @@ def _char_budget() -> tuple[int, int]:
 
 
 def _tokenizer_sizing() -> ChunkSizing:
-    """xberg sizing through lilbee's tokenizer backend, bound to the provider on demand.
-
-    xberg fails extraction when a sizing names an unregistered tokenizer, so the
-    bind precedes every sizing that routes to it. The bind is a no-op once the
-    current provider holds the binding.
-    """
+    """xberg sizing through the tokenizer registered for the current provider."""
     from xberg import ChunkSizing
 
     from lilbee.app.services import get_services
 
-    from .backends import BackendKind, bind_backend
+    from .backends.tokenizer import TOKENIZER_SIZING_TYPE, provider_tokenizers
 
-    bind_backend(BackendKind.TOKENIZER, get_services().provider)
-    return ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE)
+    return ChunkSizing(
+        type=TOKENIZER_SIZING_TYPE, model=provider_tokenizers.name_for(get_services().provider)
+    )
 
 
-def _size_params() -> tuple[int, int, ChunkSizing | str]:
-    """Return (max, overlap, sizing) for the plain and heading chunkers.
+def _size_params(max_tokens: int | None = None) -> tuple[int, int, ChunkSizing]:
+    """Return (max, overlap, sizing) in embedder tokens for the plain and heading chunkers.
 
-    Under token sizing (``cfg.token_sizing``, or an embed window below the
-    character budget) the budget is a token count no larger than the embedder's
-    cap and ``sizing`` routes to lilbee's tokenizer backend, so no chunk loses
-    text at embedding time. Otherwise the character heuristic with xberg's
-    default character sizer. The semantic chunker does not use this -- it sizes
-    by characters and ignores ChunkSizing."""
-    config = active_config()
-    cap = _embed_token_cap()
-    if not token_sizing_in_effect(cap):
-        max_chars, max_overlap = _char_budget()
-        return max_chars, max_overlap, _CHARACTER_SIZING
-    max_tokens = config.chunk_size if cap is None else min(config.chunk_size, cap)
-    overlap = min(config.chunk_overlap, max_tokens // 2)
+    The semantic chunker does not use this: it sizes by characters and ignores ChunkSizing.
+    """
+    if max_tokens is None:
+        max_tokens = token_budget()
+    overlap = min(active_config().chunk_overlap, max_tokens // 2)
     return max_tokens, overlap, _tokenizer_sizing()
 
 
 def _semantic_embedding_config() -> EmbeddingConfig:
     """EmbeddingConfig for semantic chunking. Boundary-detection embeddings route to
-    lilbee's embedder, registered as xberg's plugin backend in
-    ``lilbee.data.extract.backends.registry`` (embedding binding), so the model that
-    vectorizes chunks for retrieval is the one that decides where they split."""
+    the current provider's embedder, registered as xberg's plugin backend in
+    ``lilbee.data.extract.backends.embedding``, so the model that vectorizes
+    chunks for retrieval is the one that decides where they split."""
     from xberg import EmbeddingConfig, EmbeddingModelType
 
-    model = EmbeddingModelType.plugin(EmbeddingBackendName.LILBEE)
+    from lilbee.app.services import get_services
+
+    from .backends.embedding import provider_embedders
+
+    model = EmbeddingModelType.plugin(provider_embedders.name_for(get_services().provider))
     return EmbeddingConfig(model=model)
 
 
@@ -126,7 +119,7 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     config = active_config()
     if use_semantic and config.semantic_chunking:
         # The semantic chunker sizes by characters and ignores ChunkSizing, so it
-        # stays on the character budget regardless of cfg.token_sizing.
+        # stays on the character budget.
         max_chars, max_overlap = _char_budget()
         chunking = ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
@@ -159,42 +152,77 @@ def chunk_text(
     if not text or not text.strip():
         return []
 
-    from xberg import ChunkingConfig, ExtractionConfig
-
-    from .xberg import extract_document
+    from xberg import ChunkingConfig
 
     if heading_context:
-        max_size, max_overlap, sizing = _size_params()
+        budget = token_budget()
+        max_size, max_overlap, sizing = _size_params(budget)
         chunking = ChunkingConfig(
             max_characters=max_size,
             overlap=max_overlap,
             sizing=sizing,
             chunker_type=_MARKDOWN_CHUNKER,
         )
-    else:
-        chunking = build_chunking_config(use_semantic=use_semantic)
-
-    config = ExtractionConfig(chunking=chunking)
-    doc = extract_document(text.encode("utf-8"), mime_type, config=config)
-    if not doc.chunks:
-        return []
-    if heading_context:
-        return [_with_heading_breadcrumb(c.content, c.metadata.heading_context) for c in doc.chunks]
-    return [c.content for c in doc.chunks]
+        chunks: list[str] = []
+        for c in _extract_chunks(text, mime_type, chunking):
+            chunks.extend(_fit_breadcrumb(c.content, c.metadata.heading_context, budget))
+        return chunks
+    return [
+        c.content
+        for c in _extract_chunks(text, mime_type, build_chunking_config(use_semantic=use_semantic))
+    ]
 
 
-def _with_heading_breadcrumb(content: str, context: HeadingContext | None) -> str:
-    """Prefix a markdown chunk with its heading path, e.g. ``# Setup > ## Install``.
+def _extract_chunks(text: str, mime_type: str, chunking: ChunkingConfig) -> list[Any]:
+    """The chunks xberg cuts from *text* under *chunking*."""
+    from xberg import ExtractionConfig
+
+    from .xberg import extract_document
+
+    doc = extract_document(
+        text.encode("utf-8"), mime_type, config=ExtractionConfig(chunking=chunking)
+    )
+    return list(doc.chunks or [])
+
+
+def _breadcrumb(context: HeadingContext | None) -> str:
+    """The heading path of *context*, e.g. ``# Setup > ## Install``, or empty without one.
 
     xberg's ``render_heading_breadcrumb`` is Rust-only; the Python binding exposes
     the headings as the chunk's ``metadata.heading_context``.
     """
     if context is None or not context.headings:
-        return content
-    breadcrumb = _BREADCRUMB_SEPARATOR.join(
+        return ""
+    return _BREADCRUMB_SEPARATOR.join(
         f"{_HEADING_MARK * h.level} {h.text}" for h in context.headings
     )
-    return f"{breadcrumb}\n\n{content}"
+
+
+def _fit_breadcrumb(content: str, context: HeadingContext | None, budget: int) -> list[str]:
+    """Chunks of *content* that stay within *budget* tokens with the heading path prefixed.
+
+    A chunk that fits with its prefix is returned whole. One that overflows is re-split to
+    the room the prefix leaves. A path that takes more than half the budget is dropped, so
+    the body keeps its room.
+    """
+    breadcrumb = _breadcrumb(context)
+    if not breadcrumb:
+        return [content]
+    prefix = f"{breadcrumb}\n\n"
+    if count_embed_tokens(prefix + content) <= budget:
+        return [prefix + content]
+    room = budget - count_embed_tokens(prefix)
+    if room < budget // 2:
+        return [content]
+    from xberg import ChunkingConfig
+
+    max_size, overlap, sizing = _size_params(room)
+    pieces = _extract_chunks(
+        content,
+        "text/markdown",
+        ChunkingConfig(max_characters=max_size, overlap=overlap, sizing=sizing),
+    )
+    return [prefix + p.content for p in pieces]
 
 
 class ChunkLimitError(Exception):

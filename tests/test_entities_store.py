@@ -1,9 +1,13 @@
 """Tests for the entities table: writes, scans, replacement, compatibility."""
 
+from unittest import mock
+
+import lancedb
 import pytest
 
-from lilbee.core.config import cfg
+from lilbee.core.config import ENTITY_SCHEMA_TABLE, cfg
 from lilbee.data.store import Store
+from lilbee.data.store.schema import _entity_schema_state_schema
 
 
 @pytest.fixture()
@@ -117,3 +121,86 @@ class TestCompatibility:
         assert store.count_chunks() == before
         results = store.search([0.1] * dim, top_k=1)
         assert results and results[0].source == "a.txt"
+
+
+class TestEntitySchemaReplaceHasNoGap:
+    """A process killed in the middle of a schema rewrite leaves the old row, not none."""
+
+    def test_a_kill_during_the_rewrite_leaves_the_old_row(self, store):
+        store.save_entity_schema("old", applied=False, source_count=1)
+        before = store.entity_schema_state()
+        assert before is not None
+        killed_create = mock.patch.object(
+            lancedb.db.LanceDBConnection, "create_table", side_effect=RuntimeError("killed")
+        )
+        killed_add = mock.patch.object(
+            lancedb.table.LanceTable, "add", side_effect=RuntimeError("killed")
+        )
+
+        with killed_create, killed_add, pytest.raises(RuntimeError, match="killed"):
+            store.save_entity_schema("new", applied=True, source_count=2)
+
+        assert Store(store._config).entity_schema_state() == before
+
+    def test_a_rewrite_commits_one_new_version_with_one_row(self, store):
+        store.save_entity_schema("old", applied=False, source_count=1)
+        versions = len(store.open_table(ENTITY_SCHEMA_TABLE).list_versions())
+
+        store.save_entity_schema("new", applied=True, source_count=2)
+
+        table = store.open_table(ENTITY_SCHEMA_TABLE)
+        assert len(table.list_versions()) == versions + 1
+        assert table.count_rows() == 1
+        state = store.entity_schema_state()
+        assert state is not None
+        assert (state["schema_json"], state["applied"], state["source_count"]) == ("new", True, 2)
+
+
+_OLD_ROW = {
+    "schema_json": '{"types": []}',
+    "applied": True,
+    "updated_at": "2026-07-13T00:00:00",
+}
+
+
+def _write_schema_row(store, row, *, without=None):
+    """Create the schema table with the writer's column set, minus *without*."""
+    schema = _entity_schema_state_schema()
+    if without is not None:
+        schema = schema.remove(schema.get_field_index(without))
+    store.get_db().create_table(ENTITY_SCHEMA_TABLE, schema=schema).add([row])
+
+
+class TestEntitySchemaStateOlderColumns:
+    """A schema row written before a column existed still loads."""
+
+    def test_row_without_source_count_reads_as_unknown_corpus(self, store):
+        _write_schema_row(store, _OLD_ROW, without="source_count")
+        assert store.entity_schema_state() == {
+            "schema_json": '{"types": []}',
+            "applied": True,
+            "source_count": 0,
+            "updated_at": "2026-07-13T00:00:00",
+        }
+
+    def test_row_with_null_source_count_reads_as_unknown_corpus(self, store):
+        _write_schema_row(store, {**_OLD_ROW, "applied": False, "source_count": None})
+        state = store.entity_schema_state()
+        assert state["source_count"] == 0
+        assert state["applied"] is False
+
+    def test_save_over_an_old_row_writes_the_current_columns(self, store):
+        _write_schema_row(store, _OLD_ROW, without="source_count")
+
+        store.save_entity_schema('{"types": []}', applied=False, source_count=4)
+
+        table = store.open_table(ENTITY_SCHEMA_TABLE)
+        assert table.schema == _entity_schema_state_schema()
+        assert table.count_rows() == 1
+        state = store.entity_schema_state()
+        assert state is not None
+        assert (state["applied"], state["source_count"]) == (False, 4)
+
+    def test_row_with_source_count_keeps_it(self, store):
+        store.save_entity_schema('{"types": []}', applied=True, source_count=7)
+        assert store.entity_schema_state()["source_count"] == 7

@@ -2215,11 +2215,11 @@ class TestCatalogPriorScrollAndPrefetchEdges:
                 focused.highlighted = 0
                 screen._maybe_prefetch_on_grid_nav()
 
-    async def test_mount_remaining_grid_sections_restores_prior_scroll(self) -> None:
+    async def test_remount_grid_sections_restores_prior_scroll(self) -> None:
         from textual.app import ComposeResult
         from textual.widgets import Footer
 
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
 
         class _Probe(LilbeeAppHost):
             def compose(self) -> ComposeResult:
@@ -2234,18 +2234,18 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             assert isinstance(screen, CatalogScreen)
             container = screen._grid_container
             with (
+                mock.patch.object(type(container), "scroll_y", new=12.5),
                 mock.patch.object(screen, "_mount_grid_section"),
                 mock.patch.object(screen, "_mount_grid_ctas"),
+                mock.patch.object(screen, "_restore_focused_section"),
                 mock.patch.object(container, "scroll_to") as scroll_to,
             ):
-                screen._mount_remaining_grid_sections(
-                    container, [], hf_count=0, prior_scroll_y=12.5
-                )
-                scroll_to.assert_called_once()
+                screen._remount_grid_sections([GridSection(heading="Chat", rows=[])], hf_count=0)
+                scroll_to.assert_called_once_with(y=12.5, animate=False)
 
-    def test_mount_remaining_returns_when_restore_focused_section_succeeds(self) -> None:
-        """`_mount_remaining_grid_sections` returns after a successful restore."""
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
+    def test_remount_in_list_view_moves_no_focus(self) -> None:
+        """`_remount_grid_sections` leaves the focus alone while the list view shows."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen, GridSection
 
         screen = CatalogScreen.__new__(CatalogScreen)
         # __new__ bypasses __init__; pin minimum fields the screen reads.
@@ -2261,27 +2261,19 @@ class TestCatalogPriorScrollAndPrefetchEdges:
             "vision": "local",
             "rerank": "local",
         }
-        screen._grid_view = True
+        screen._grid_view = False
         fake_container = mock.MagicMock()
         fake_container.scroll_y = 0
         with (
             mock.patch.object(CatalogScreen, "_grid_container", new=fake_container),
             mock.patch.object(screen, "_mount_grid_section"),
             mock.patch.object(screen, "_mount_grid_ctas"),
-            mock.patch.object(screen, "_focused_grid", return_value=None),
-            # The restore branch sits downstream of the filter-focus guard, and
-            # that guard reads the `focused` reactive, which raises on an
-            # instance built with __new__. Stubbed so this test still reaches
-            # the branch it is about; the guard itself is covered by
-            # test_catalog_actions.test_deferred_grid_mount_does_not_steal_the_filter_focus.
-            mock.patch.object(CatalogScreen, "_search_focused", new=False),
-            mock.patch.object(screen, "_restore_focused_section", return_value=True),
-            mock.patch.object(screen, "_focus_first_grid") as focus_first,
+            mock.patch.object(screen, "_capture_focused_section", return_value=None),
+            mock.patch.object(screen, "_restore_focused_section") as restore,
         ):
-            screen._mount_remaining_grid_sections(
-                fake_container, [], hf_count=0, focus_anchor=("Chat", 0), prior_scroll_y=0.0
-            )
-            focus_first.assert_not_called()
+            screen._remount_grid_sections([GridSection(heading="Chat", rows=[])], hf_count=0)
+        restore.assert_not_called()
+        fake_container.scroll_to.assert_not_called()
 
 
 class TestModelGridScrollIntoViewParentGuard:
@@ -2368,15 +2360,13 @@ class TestCatalogSmallEdgeBranches:
         match = mock.MagicMock(spec=ModelGrid)
         match.name = "Chat"
         match.rows = [object(), object()]
-        fake_container = mock.MagicMock()
-        fake_container.query.return_value = [non_match, match]
-        with mock.patch.object(CatalogScreen, "_grid_container", new=fake_container):
-            assert screen._restore_focused_section(("Chat", 5)) is True
-        match.focus.assert_called_once()
-        non_match.focus.assert_not_called()
+        with mock.patch.object(screen, "set_focus") as set_focus:
+            screen._restore_focused_section([non_match, match], ("Chat", 5))
+        set_focus.assert_called_once_with(match)
+        assert match.highlighted == 1
 
-    def test_restore_focused_section_returns_false_when_no_match(self) -> None:
-        """`_restore_focused_section` returns False when no grid matches."""
+    def test_restore_focused_section_focuses_the_first_grid_when_no_match(self) -> None:
+        """`_restore_focused_section` focuses the first grid when no grid matches."""
         from lilbee.cli.tui.screens.catalog import CatalogScreen
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -2394,12 +2384,15 @@ class TestCatalogSmallEdgeBranches:
             "vision": "local",
             "rerank": "local",
         }
-        non_match = mock.MagicMock(spec=ModelGrid)
-        non_match.name = "Other"
-        fake_container = mock.MagicMock()
-        fake_container.query.return_value = [non_match]
-        with mock.patch.object(CatalogScreen, "_grid_container", new=fake_container):
-            assert screen._restore_focused_section(("Missing", None)) is False
+        first = mock.MagicMock(spec=ModelGrid)
+        first.name = "Other"
+        first.highlighted = None
+        second = mock.MagicMock(spec=ModelGrid)
+        second.name = "Another"
+        with mock.patch.object(screen, "set_focus") as set_focus:
+            screen._restore_focused_section([first, second], ("Missing", 3))
+        set_focus.assert_called_once_with(first)
+        assert first.highlighted is None
 
     async def test_action_toggle_view_to_list_triggers_first_hf_fetch(self) -> None:
         from textual.app import ComposeResult
@@ -2656,8 +2649,8 @@ class TestModelInfoExceptionBranches:
             side_effect=RuntimeError("boom"),
         ):
             result = _read_chat_arch(info)
-        # Failure path swallowed: function returns info; the success branch's
-        # ``info.active_handler = 'llama-server'`` assignment was never reached.
+        # Failure path swallowed: function returns info; the engine's label
+        # was never written to ``active_handler``.
         assert result is info
         assert info.active_handler == ""
 
@@ -2676,6 +2669,10 @@ class TestModelInfoExceptionBranches:
             mock.patch(
                 "lilbee.providers.gguf_meta.read_gguf_metadata",
                 side_effect=OSError("disk read failed"),
+            ),
+            mock.patch(
+                "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic",
+                return_value=True,
             ),
         ):
             result = _read_embed_arch(info)

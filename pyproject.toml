@@ -92,7 +92,7 @@ providers = ["liter-llm>=2.5.0,<3"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
 # ada-url parses a page address with the URL standard the crawler keys pages by.
-crawler = ["crawlberg>=1.12.3", "playwright>=1.61.0", "ada-url>=4.0.0"]
+crawler = ["crawlberg>=1.12.4", "playwright>=1.61.0", "ada-url>=4.0.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
@@ -193,13 +193,17 @@ markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
     "real_provider_sdk_probe: opt out of the global provider_sdk_available True override",
+    "real_engine_model_lists: opt out of the seal on the model lists that engines publish",
     "real_engine_resolution: opt out of the engine-binary seal (host PATH and LILBEE_LLAMA_SERVER_PATH resolve again)",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",
     "no_warm_default: opt out of the launch tests' default chat-warm fixture",
+    "real_host_read: opt out of the fixed session host (the test reads the live host, as detection tests do)",
     "live_picks: opt out of the seeded SAMPLE_PICKS and resolve picks for real",
     "real_hf_client: opt out of the global hf_client.fetch_models stub (tests the client itself)",
     "download_child: opt out of the in-process download stub (drives the real child-process relay)",
+    "real_nvidia_smi: opt out of the nvidia-smi seal (the test drives the tool runner itself)",
+    "real_windows_registry: opt out of the Windows adapter seal (the test injects its own registry)",
     "fleet_warm_up: the test runs a real fleet warm-up thread and joins it itself",
 ]
 
@@ -259,8 +263,6 @@ max-complexity = 10
 extend-immutable-calls = ["litestar.params.Body"]
 
 [tool.ruff.lint.per-file-ignores]
-# Machine output: a wheel URL on one line is longer than the line limit.
-"src/lilbee/providers/fleet/engine_digests.py" = ["E501"]
 # The namespace names of non-English wikis hold letters that look like ASCII, such as the
 # Turkish dotless i; the table is the names as the wikis write them.
 "src/lilbee/core/config/mediawiki_namespaces.py" = ["RUF001"]
@@ -298,6 +300,8 @@ extend-immutable-calls = ["litestar.params.Body"]
 ]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
 "tools/build_wheel_indexes.py" = ["S603", "S607"]
+# Invokes the trusted `gh` CLI with fixed args to read the release assets.
+"tools/gen_engine_packs.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]

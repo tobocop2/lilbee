@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from lilbee.catalog import runnable, xdna
+from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import choice, openvino
@@ -17,7 +18,7 @@ from lilbee.providers.fleet.host_caps import collect
 BINARY = PurePosixPath("/engines/bin/server")
 MODEL = PurePosixPath("/models/model.gguf")
 THREADS = 8
-HELP = "  --device <dev>  devices\n  -ts, --tensor-split N0,N1  split\n"
+HELP = "  --device <dev>  devices\n  -ts, --tensor-split N0,N1  split\n  --pooling TYPE  pooling\n"
 
 
 def launch_argvs(
@@ -39,7 +40,7 @@ def launch_argvs(
         "session_host",
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
-    ticket = xdna.write_ticket(models_dir, "qwen3:0.6b")
+    ticket = xdna.write_ticket(models_dir, "qwen3:0.6b", ModelTask.CHAT)
     request = LaunchRequest(
         binary=Path(BINARY),
         model_path=Path(MODEL),

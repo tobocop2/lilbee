@@ -244,7 +244,7 @@ class LiterLlmBackend:
             return RerankResult(scores=[])
         liter_llm = _require_sdk()
         model, base_url = rerank_route(request.ref, request.api_base, request.rerank_wire)
-        preset = _preset_call(request.ref, request.api_base, WorkerRole.RERANK)
+        preset = _preset_call(request.ref, request.api_base, WorkerRole.RERANK, request.rerank_wire)
         try:
             client = _client(model, base_url, request.api_key, request.ref.is_preset)
             response = asyncio_loop.run(

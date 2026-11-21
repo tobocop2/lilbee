@@ -1,0 +1,17 @@
+# A per-platform wheel that holds the upstream mistral.rs binary. The pack workflow fills
+# lilbee_engine_mistral_rs/bin/, sets the version and the licence, and retags the wheel.
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lilbee-engine-mistral-rs"
+version = "0.0.0"
+description = "The mistral.rs engine for lilbee"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["lilbee_engine_mistral_rs"]
+
+[tool.setuptools.package-data]
+lilbee_engine_mistral_rs = ["bin/*", "bin/**/*"]

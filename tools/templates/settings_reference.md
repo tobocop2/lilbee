@@ -27,13 +27,15 @@ An environment value that its setting refuses stops every command with one line 
 
 `main_gpu` is not a setting. A `main_gpu` key in `config.toml` or a `LILBEE_MAIN_GPU` variable prints a warning and is ignored: choose the cards with `gpu_devices` or `placement`.
 
-There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+`token_sizing` is not a setting. A `token_sizing` key in `config.toml` or in a profile file, or a `LILBEE_TOKEN_SIZING` variable, prints a warning and is ignored: `chunk_size` always counts the embedding model's tokens.
+
+There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
 **Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
-**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
+**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. A tab name, such as `Engines tab`, means the setting is on that tab of the settings screen, with its own control. `no` is not on the screen.
 
 **MCP.** `yes` is settable with `lilbee_settings_set` and listed by `lilbee_settings_list`. `write-only` is settable but never readable: the API keys carry a `write_only` flag, so `lilbee_settings_get` refuses them and `lilbee_settings_list` skips them. `no` means the environment or the config file is the only way in.
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
@@ -18,12 +18,14 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import estimate_memory
+from lilbee.providers.folder_embed_width import read_folder_config, read_generation_config
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.32.2"
@@ -43,8 +45,21 @@ _PROMPT_CACHE_BYTES = 1024**3
 
 Not measured on a Mac yet.
 """
-_CONFIG = "config.json"
 _WINDOW_KEY = "max_position_embeddings"
+_SAMPLING_FLAGS = {
+    "temperature": "--temp",
+    "top_p": "--top-p",
+    "top_k": "--top-k",
+    "min_p": "--min-p",
+}
+"""The ``generation_config.json`` keys the launch passes on, and the server flag of each."""
+_LLAMA_SERVER_SAMPLING: dict[str, float | int] = {
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 40,
+    "min_p": 0.05,
+}
+"""llama-server's own sampling defaults, used for each key the model folder does not name."""
 
 _PROFILE = RequestProfile(
     embed_fields={},
@@ -59,11 +74,34 @@ _PROFILE = RequestProfile(
     unreadable_embedding_hint="mlx-lm serves no embeddings.",
     reasoning_field="reasoning",
     structured_output=False,
+    # A request that is not streamed runs to its end after the client goes: the server
+    # reads its stop flag only between answer tokens and writes only at the end.
+    works_on_after_disconnect=True,
 )
 
 
 def _floor_text() -> str:
     return ".".join(map(str, MACOS_FLOOR))
+
+
+def _sampling_args(model: Path) -> list[str]:
+    """The sampling defaults for a request that names none, as server flags.
+
+    mlx-lm samples greedily unless a request or a flag says otherwise, and greedy decoding
+    makes a thinking model repeat itself until the answer budget runs out. Each value comes
+    from the folder's ``generation_config.json``, else from llama-server's defaults, so both
+    engines sample alike. A folder that turns sampling off keeps greedy decoding.
+    """
+    config = read_generation_config(model)
+    if config.get("do_sample") is False:
+        return []
+    args: list[str] = []
+    for key, flag in _SAMPLING_FLAGS.items():
+        value = config.get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            value = _LLAMA_SERVER_SAMPLING[key]
+        args += [flag, str(value)]
+    return args
 
 
 class MlxAdapter:
@@ -75,7 +113,9 @@ class MlxAdapter:
     served_roles = frozenset({WorkerRole.CHAT})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
+    server_process = ServerProcess(name=_TOOL, interpreted=True)
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -103,13 +143,11 @@ class MlxAdapter:
 
     def binary(self) -> Path:
         from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engines.choice import store_tool
+        from lilbee.providers.fleet.engines.choice import install_advice, store_tool
 
         tool = store_tool(self.pin_record(), _TOOL, session_host())
         if tool is None:
-            raise ProviderError(
-                f"The mlx engine is not installed. Run lilbee engine install {self.name}."
-            )
+            raise ProviderError(f"The mlx engine is not installed. {install_advice(self)}")
         return tool
 
     def identity(self, binary: Path) -> str:
@@ -139,7 +177,12 @@ class MlxAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The server command; mlx-lm places the model itself, so layers and context stay unset."""
+        """The server command; mlx-lm places the model itself, so layers and context stay unset.
+
+        mlx-lm stops an answer at 512 tokens when the request names no max_tokens. A chat
+        names none unless the user sets one, so the answer budget is the window. The model
+        folder's own sampling defaults replace the server's greedy default.
+        """
         return [
             str(request.binary),
             "--model",
@@ -150,17 +193,20 @@ class MlxAdapter:
             PORT_SLOT,
             "--prompt-cache-bytes",
             str(_PROMPT_CACHE_BYTES),
+            "--max-tokens",
+            str(request.ctx_per_slot),
+            *_sampling_args(request.model_path),
             *spec.extra_args,
         ]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="")
+        return DeviceProbe(devices=[], output="", has_listing=False)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         return frozenset({RoleTarget.GPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        """The weights of the model folder, charged as a fixed reserve; the cache is not priced."""
+        """The weights of the model folder plus its cache at the planned context and slots."""
         return estimate_memory(ModelFormat.MLX, request)
 
     def check_readback(self, binary: Path) -> bool:
@@ -177,19 +223,14 @@ class MlxAdapter:
 
         A vision-language model keeps the value under ``text_config``.
         """
-        try:
-            config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(config, dict):
-            return None
+        config = read_folder_config(path)
         for section in (config, config.get("text_config")):
             window = section.get(_WINDOW_KEY) if isinstance(section, dict) else None
             if isinstance(window, int) and not isinstance(window, bool) and window > 0:
                 return {"context_length": str(window)}
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

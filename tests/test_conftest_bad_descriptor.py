@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import child_pythonpath
+
 pytest_plugins = ["pytester"]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +43,7 @@ def test_a_bad_descriptor_error_in_a_test_fails_it(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A second os.close raises EBADF from selectors.py in the test body, and the test fails."""
-    monkeypatch.setenv("PYTHONPATH", str(_REPO_ROOT))
+    monkeypatch.setenv("PYTHONPATH", child_pythonpath(_REPO_ROOT))
     pytester.mkdir("shim")
     (pytester.path / "shim" / "selectors.py").write_text(_SHIM, encoding="utf-8")
     pytester.makepyfile(test_inner=_INNER_TEST)

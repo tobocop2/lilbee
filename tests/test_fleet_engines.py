@@ -9,17 +9,18 @@ from typing import Any
 
 import pytest
 
+from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet.engines import LLAMA, EngineName, LaunchRequest
+from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._gguf_fixture import make_minimal_gguf
 
-_ROOT = Path(__file__).resolve().parents[1]
 _LLAMA_MODULE = "lilbee.providers.fleet.engines.llama"
 _MEMORY_MODULE = "lilbee.providers.fleet.model_memory"
 _SWEEP_INPUTS = 400
@@ -53,22 +54,25 @@ def test_llama_identity_digests_the_binary(tmp_path: Path) -> None:
     assert LLAMA.identity(tmp_path / "missing").endswith("@unreadable")
 
 
-def test_llama_pin_record_version_is_the_pinned_ref() -> None:
-    env = (_ROOT / "engine-versions.env").read_text(encoding="utf-8")
-    ref = re.search(r"^ENGINE_LLAMA_CPP_REF=(.+)$", env, re.M)
-    assert ref is not None
+def test_llama_pin_record_version_is_the_version_of_the_pack() -> None:
     record = LLAMA.pin_record()
-    assert record["version"] == ref.group(1)
-    assert {
+    assert record["version"] == LLAMA.pack_pin()["version"] == _WHEEL_VERSION
+    assert record["upstream_ref"] == LLAMA.pack_pin()["upstream_ref"] == ENGINE_LLAMA_CPP_REF
+    assert record["upstream_ref"] != record["version"]
+    assert set(record) == {
         "engine",
         "version",
+        "upstream_ref",
         "backend",
         "tool",
+        "libraries",
         "launch",
         "platforms",
         "memory",
         "licenses",
-    } <= set(record)
+    }
+    assert record["libraries"] == ["ggml-base"]
+    assert record["memory"] == {"sizing": ["gguf-parser", "--model", "{model}"], "rule": None}
 
 
 def test_llama_role_spec_picks_rerank_embed_or_default() -> None:
@@ -83,6 +87,26 @@ def test_llama_role_spec_picks_rerank_embed_or_default() -> None:
 def test_llama_role_spec_ignores_a_rerank_mode_on_other_roles() -> None:
     spec = LLAMA.role_spec(WorkerRole.CHAT, RerankMode.LLM, None)
     assert spec is adapters.ROLE_SPECS[WorkerRole.CHAT]
+
+
+def test_llama_launch_argv_refuses_a_reranker_on_a_build_without_pooling(tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+
+    binary = tmp_path / "srv"
+    binary.write_text("#!/bin/sh\necho '  --model X  text'\n", encoding="utf-8")
+    binary.chmod(0o755)
+    request = LaunchRequest(
+        binary=binary,
+        model_path=Path("/m/r.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+    with pytest.raises(ProviderError, match=r"srv does not list --pooling"):
+        LLAMA.launch_argv(adapters.ROLE_SPECS[WorkerRole.RERANK], request)
+    embed = LLAMA.launch_argv(adapters.ROLE_SPECS[WorkerRole.EMBED], request)
+    assert "--embeddings" in embed
 
 
 def test_llama_launch_argv_matches_the_argv_builder(tmp_path: Path) -> None:

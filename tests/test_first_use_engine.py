@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import stat
 import sys
 import threading
@@ -11,9 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
+from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF
 from lilbee.app import engine_service
 from lilbee.catalog import runnable
+from lilbee.cli import app as cli_app
 from lilbee.core.config import Config, cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import binary as binary_mod
@@ -25,9 +29,11 @@ from lilbee.providers.fleet.binary import (
     resolve_llama_server,
 )
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.roles import WorkerRole
 from tests._published import render_table, wheel_name
 
 PACKAGE = "lilbee_engine_llama_cpp"
@@ -55,7 +61,6 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.llama_server_path = ""
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
@@ -106,11 +111,12 @@ def test_the_sibling_tools_come_from_the_installed_pack(fetched) -> None:
     assert fetched == [CELL]
 
 
-def test_an_unpublished_pack_gives_the_named_error_with_the_install_command() -> None:
+def test_an_unpublished_pack_gives_the_named_error_and_says_there_is_nothing_to_download() -> None:
     with pytest.raises(ProviderError) as excinfo:
         resolve_llama_server()
     assert NAMED in str(excinfo.value)
-    assert "lilbee engine install" in str(excinfo.value)
+    assert "nothing to download" in str(excinfo.value)
+    assert "lilbee engine install" not in str(excinfo.value)
     assert excinfo.value.kind is ProviderErrorKind.NOT_FOUND
 
 
@@ -175,6 +181,47 @@ def test_a_failed_download_names_the_pack_to_copy(
         resolve_llama_server()
 
 
+@pytest.mark.parametrize(
+    ("tool", "source"),
+    [
+        (EngineTool.LLAMA_SERVER, ""),
+        (EngineTool.GGUF_PARSER, " gguf-parser comes from the llama.cpp pack."),
+    ],
+    ids=["llama-server", "gguf-parser"],
+)
+def test_a_helper_refusal_says_the_tool_comes_from_the_llama_cpp_pack(
+    tool: EngineTool, source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    publish(monkeypatch, make_pack(tmp_path / "w.whl"))
+
+    def offline(*_args: object, **_kwargs: object) -> Path:
+        raise OSError("no network")
+
+    monkeypatch.setattr(first_use, "fetch_frozen", offline)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_engine_tool(tool)
+    assert str(excinfo.value).startswith(f"{tool.value} binary not found.{source} ")
+
+
+def test_a_refused_router_install_names_the_router_not_the_llama_cpp_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.providers.fleet import router_install
+
+    def refused() -> Path:
+        raise router_install.RouterDownloadError("the router download failed")
+
+    monkeypatch.setattr(router_install, "router_on_first_use", refused)
+    monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
+    monkeypatch.setattr(binary_mod, "_installed_helper", lambda _tool: None)
+    monkeypatch.setattr(binary_mod, "_has_server", lambda: False)
+    monkeypatch.setattr(binary_mod.shutil, "which", lambda _name: None)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_engine_tool(EngineTool.LLAMA_SWAP)
+    assert str(excinfo.value).startswith("llama-swap binary not found. the router download failed")
+    assert "llama.cpp pack" not in str(excinfo.value)
+
+
 def test_an_unreadable_engine_store_gives_the_engine_error_not_a_raw_os_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -197,7 +244,8 @@ def test_an_engine_on_the_path_wins_over_the_pack(fetched, monkeypatch) -> None:
     assert fetched == []
 
 
-def test_the_install_hint_does_not_name_the_engine_extra() -> None:
+def test_the_install_hint_does_not_name_the_engine_extra(monkeypatch) -> None:
+    monkeypatch.setattr(first_use, "pack_lock", lambda: (None, "cell"))
     from lilbee.providers.fleet.engine_install import engine_install_hint
 
     for bundled in (True, False):
@@ -223,6 +271,23 @@ def test_the_install_command_fetches_the_pack_when_no_engine_is_present(fetched)
     assert fetched == [CELL]
     assert resolve_llama_server().is_file()
     assert fetched == [CELL]
+
+
+def test_the_served_by_version_is_the_version_the_engine_list_shows(
+    fetched, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.routing_provider import RoutingProvider
+    from lilbee.providers.serving import served_by
+
+    resolve_llama_server()
+    listed = [b.version for b in engine_service.engine_list().builds if b.engine == "llama.cpp"]
+    assert listed == [_WHEEL_VERSION]
+    provider = RoutingProvider()
+    served = served_by("org/chat-GGUF/chat.gguf", LLAMA, native=True)
+    with caplog.at_level("INFO", logger="lilbee.providers.routing_provider"):
+        provider._log_served(WorkerRole.CHAT, "org/chat-GGUF/chat.gguf", served)
+    line = f"served by engine=llama.cpp version={listed[0]} build={ENGINE_LLAMA_CPP_REF} role=chat"
+    assert line in caplog.text
 
 
 def test_installing_the_pack_reports_bytes_and_retries_and_honours_cancel(
@@ -342,6 +407,24 @@ def test_an_unreadable_store_leaves_the_engine_pin_unpinned(monkeypatch) -> None
     assert binary_mod.engine_build_id() == "unpinned"
 
 
+def _host_with_vendors(
+    monkeypatch: pytest.MonkeyPatch,
+    vendors: frozenset[int],
+    system: str = "Linux",
+    machine: str = "x86_64",
+) -> None:
+    """Make the session host a computer whose display controllers have these PCI vendors."""
+    host = collect(
+        system=system,
+        machine=machine,
+        cpu_info={"flags": ["avx2"]},
+        nvidia=None,
+        display_vendors=tuple(vendors),
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
+
+
 @pytest.mark.parametrize(("vendor_id", "vendor"), [(0x1002, "AMD"), (0x8086, "Intel")])
 def test_installing_the_cpu_pack_on_an_unserved_gpu_host_names_the_vendor(
     vendor_id: int,
@@ -350,7 +433,7 @@ def test_installing_the_cpu_pack_on_an_unserved_gpu_host_names_the_vendor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({vendor_id}))
+    _host_with_vendors(monkeypatch, frozenset({vendor_id}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack()
     assert fetched == [CELL]
@@ -372,7 +455,7 @@ def test_a_host_with_no_amd_or_intel_gpu_installs_the_cpu_pack_silently(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: vendors)
+    _host_with_vendors(monkeypatch, vendors)
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack()
     assert fetched == [CELL]
@@ -382,7 +465,7 @@ def test_a_host_with_no_amd_or_intel_gpu_installs_the_cpu_pack_silently(
 def test_a_repeat_install_with_the_pack_present_is_not_warned(
     fetched: list[str], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack()
         assert len(caplog.records) == 1
@@ -397,7 +480,7 @@ def test_an_install_from_a_given_wheel_is_not_warned(
 ) -> None:
     wheel = tmp_path / "given.whl"
     publish(monkeypatch, make_pack(wheel))
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}))
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.install_pack(wheel)
     assert first_use.installed_tool("gguf-parser") is not None
@@ -407,9 +490,7 @@ def test_an_install_from_a_given_wheel_is_not_warned(
 def test_a_host_with_no_pack_is_refused_before_any_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    arm = collect(system="Linux", machine="aarch64", cpu_info={}, nvidia=None)
-    monkeypatch.setattr(first_use, "session_host", lambda: arm)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}), machine="aarch64")
     with (
         caplog.at_level("WARNING", logger=first_use.__name__),
         pytest.raises(first_use.PackNotPublishedError, match="not published yet"),
@@ -421,12 +502,36 @@ def test_a_host_with_no_pack_is_refused_before_any_warning(
 def test_a_host_whose_pack_uses_the_gpu_is_not_warned(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
-    monkeypatch.setattr(first_use, "session_host", lambda: mac)
-    monkeypatch.setattr(first_use, "installed_gpu_vendor_ids", lambda: frozenset({0x1002}))
+    _host_with_vendors(monkeypatch, frozenset({0x1002}), "Darwin", "arm64")
     with caplog.at_level("WARNING", logger=first_use.__name__):
         first_use.warn_if_gpu_unserved()
     assert caplog.records == []
+
+
+def test_the_log_line_is_the_text_the_user_reads(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    linux = collect(
+        system="Linux", machine="x86_64", cpu_info={}, nvidia=None, display_vendors=(0x1002,)
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: linux)
+    with caplog.at_level("WARNING", logger=first_use.__name__):
+        first_use.warn_if_gpu_unserved()
+    held = first_use.take_install_warnings()
+    assert len(held) == 1
+    assert [record.getMessage() for record in caplog.records] == [held[0].line]
+    assert held[0].line.startswith("This computer has an AMD GPU")
+
+
+def test_a_new_holder_holds_nothing_and_returns_a_warning_once() -> None:
+    from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+    holder = first_use._InstallWarnings()
+    assert holder.take() == []
+    warning = HealthWarning(code=WarningCode.GPU_NOT_SERVED, message="No GPU use.")
+    holder.set(warning)
+    assert holder.take() == [warning]
+    assert holder.take() == []
 
 
 def test_a_wheel_that_is_not_a_zip_is_refused_by_name(
@@ -479,6 +584,56 @@ def test_your_own_server_never_installs_a_pack_for_a_missing_helper(
     assert excinfo.value.kind is ProviderErrorKind.UNKNOWN
     assert f"Install {tool.value} with '{command}'" in str(excinfo.value)
     assert "engine install" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("on_path", [False, True], ids=["configured-path", "on-path"])
+@pytest.mark.parametrize("tool", [EngineTool.GGUF_PARSER, EngineTool.LLAMA_SWAP])
+def test_an_installed_pack_gives_the_helper_even_with_your_own_server(
+    tool: EngineTool, on_path: bool, fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack_server = resolve_llama_server()
+    assert fetched == [CELL]
+    _own_server(monkeypatch, tmp_path, on_path=on_path)
+    assert resolve_engine_tool(tool) == pack_server.parent / tool.value
+    assert fetched == [CELL]
+
+
+@pytest.mark.parametrize(
+    ("tool", "kind"),
+    [
+        (EngineTool.LLAMA_SERVER, ProviderErrorKind.NOT_FOUND),
+        (EngineTool.GGUF_PARSER, ProviderErrorKind.UNKNOWN),
+    ],
+    ids=["llama-server", "gguf-parser"],
+)
+def test_a_lookup_that_may_not_install_names_the_missing_tool(
+    tool: EngineTool, kind: ProviderErrorKind, fetched
+) -> None:
+    with pytest.raises(ProviderError, match=f"^{tool.value} binary not found") as excinfo:
+        resolve_engine_tool(tool, install=False)
+    assert excinfo.value.kind is kind
+    assert fetched == []
+
+
+def test_a_helper_on_path_loses_to_the_installed_pack(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack_server = resolve_llama_server()
+    on_path = tmp_path / "bin" / "gguf-parser"
+    on_path.parent.mkdir()
+    on_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(binary_mod.shutil, "which", lambda name: str(on_path))
+    assert resolve_gguf_parser() == pack_server.parent / "gguf-parser"
+
+
+def test_a_llama_server_on_path_still_beats_the_installed_pack(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack_server = resolve_llama_server()
+    _own_server(monkeypatch, tmp_path, on_path=True)
+    own_server = tmp_path / "my" / "llama-server"
+    assert resolve_llama_server() == own_server != pack_server
+    assert fetched == [CELL]
 
 
 def test_a_pack_install_makes_the_next_read_in_the_process_ask_the_new_parser(
@@ -568,6 +723,29 @@ def test_the_install_command_retries_after_a_failed_first_use(
     assert first_use.first_use_tool("llama-server").is_file()
 
 
+def test_the_pack_install_refuses_a_damaged_pack_that_a_launch_holds(
+    fetched, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet.engine_store import RECORD_NAME, EngineInUseError
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    lock = first_use.install_pack()
+    build = EngineStore(engines_root(cfg.models_dir)).build_dir(lock)
+    (build / RECORD_NAME).unlink()
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        with pytest.raises(EngineInUseError, match="is in use"):
+            first_use.install_pack()
+        with pytest.raises(engine_service.EngineRefusedError, match="lilbee engine stop"):
+            engine_service.install(EngineName.LLAMA.value)
+    finally:
+        hold.release_and_check_last()
+    assert not (build / RECORD_NAME).exists()
+    first_use.install_pack()
+    assert (build / RECORD_NAME).is_file()
+
+
 def test_the_install_command_clears_a_refusal_the_pack_then_outlives(
     fetched, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -582,3 +760,109 @@ def test_the_install_command_clears_a_refusal_the_pack_then_outlives(
     monkeypatch.setattr(first_use, "fetch_frozen", good)
     first_use.install_pack()
     assert first_use.first_use_tool("a-tool-the-pack-lacks") is None
+
+
+def _list_json() -> dict[str, Any]:
+    result = CliRunner().invoke(cli_app, ["--json", "engine", "list"])
+    assert result.exit_code == 0
+    return json.loads(result.output)
+
+
+def test_the_list_names_llama_cpp_missing_when_no_server_can_launch() -> None:
+    result = CliRunner().invoke(cli_app, ["engine", "list"])
+    assert "llama.cpp not installed" in result.output.splitlines()
+    body = _list_json()
+    assert body["not_installed"].count("llama.cpp") == 1
+    assert body["builds"] == []
+
+
+def test_a_stored_pack_lists_llama_cpp_as_installed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "given.whl"
+    publish(monkeypatch, make_pack(wheel))
+    first_use.install_pack(wheel)
+    body = _list_json()
+    assert [b["engine"] for b in body["builds"]] == ["llama.cpp"]
+    assert "llama.cpp" not in body["not_installed"]
+    text = CliRunner().invoke(cli_app, ["engine", "list"]).output.splitlines()
+    assert "llama.cpp not installed" not in text
+    assert sum(line.startswith("llama.cpp ") for line in text) == 1
+
+
+@pytest.mark.parametrize("on_path", [False, True], ids=["configured-file", "on-path"])
+def test_a_server_that_can_launch_keeps_llama_cpp_out_of_the_missing_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_path: bool
+) -> None:
+    _own_server(monkeypatch, tmp_path, on_path=on_path)
+    if cfg.llama_server_path:
+        monkeypatch.setenv("LILBEE_LLAMA_SERVER_PATH", cfg.llama_server_path)
+    assert "llama.cpp" not in _list_json()["not_installed"]
+
+
+def test_a_helper_with_no_server_and_no_pack_installs_the_pack_on_first_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parser = tmp_path / "gguf-parser"
+    monkeypatch.setattr(binary_mod, "_first_use_tool", lambda _tool: parser)
+    assert resolve_engine_tool(EngineTool.GGUF_PARSER) == parser
+
+
+def test_the_list_and_the_launch_agree_on_the_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel_server = tmp_path / "wheel" / "llama-server"
+    wheel_server.parent.mkdir()
+    wheel_server.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: wheel_server)
+    assert "llama.cpp" not in _list_json()["not_installed"]
+    assert resolve_llama_server() == wheel_server
+
+
+def test_a_configured_path_that_is_not_a_file_leaves_llama_cpp_listed_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LILBEE_LLAMA_SERVER_PATH", str(tmp_path / "no-such-llama-server"))
+    assert "llama.cpp" in _list_json()["not_installed"]
+    with pytest.raises(ProviderError, match="is not a file"):
+        resolve_llama_server()
+
+
+def test_an_unreadable_computer_is_named_this_computer_in_the_unpublished_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unreadable = collect(system="Plan9", machine="x86_64", cpu_info={}, nvidia=None)
+    monkeypatch.setattr(runnable, "session_host", lambda: unreadable)
+    with pytest.raises(ProviderError) as excinfo:
+        resolve_llama_server()
+    assert "The llama.cpp pack 1.12032.1 for this computer is not published yet." in str(
+        excinfo.value
+    )
+
+
+def test_the_install_checks_the_wheel_against_the_digest_of_the_host_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / "pack" / "llama.whl"
+    wheel.parent.mkdir()
+    cell_sha = make_pack(wheel)
+    publish(monkeypatch, cell_sha)
+    real_pin = type(LLAMA).pack_pin
+
+    def pin_with_other_top_digest(self: Any) -> dict[str, Any]:
+        return {**real_pin(self), "sha256": "cd" * 32}
+
+    monkeypatch.setattr(type(LLAMA), "pack_pin", pin_with_other_top_digest)
+    fetched_digests: list[str] = []
+
+    def fake(lock: Any, cell: str, *, dest: Path, **_signals: Any) -> Path:
+        fetched_digests.append(lock.sha256)
+        dest.mkdir(parents=True, exist_ok=True)
+        copy = dest / wheel.name
+        copy.write_bytes(wheel.read_bytes())
+        return copy
+
+    monkeypatch.setattr(first_use, "fetch_frozen", fake)
+    installed = first_use.install_pack()
+    assert installed.sha256 == cell_sha
+    assert fetched_digests == [cell_sha]

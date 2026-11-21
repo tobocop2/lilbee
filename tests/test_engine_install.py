@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
 import re
 import socket
 import stat
+import threading
 import time
 import zipfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -18,30 +21,39 @@ from unittest import mock
 import pytest
 from huggingface_hub import constants as hub_constants
 from huggingface_hub.file_download import http_get
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel
+from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.mcp_server as mcp_server
-from lilbee.app import engine_choice, engine_service
+from lilbee.app import engine_service
 from lilbee.catalog import download, runnable
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import app as cli_app
+from lilbee.cli import engine as cli_engine
+from lilbee.cli import theme
 from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
-from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engine_store import LOCK_DIR, EngineStore, engines_root
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, collect
+from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS
+from lilbee.providers.fleet.router_install import RouterDownloadError
+from lilbee.runtime.console import PlainConsole
+from lilbee.runtime.engine_lock import hold_user_lock
 from lilbee.server.routes import engines as routes
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
 from tests._litestar_test_client import create_test_client
 from tests._release_server import ReleaseServer, release_server
+from tests._toasts import posted_toasts
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_engine_service import GGUF_ENGINE
 from tests.test_tui_engine_choice import _ChatApp
@@ -55,6 +67,7 @@ BAD_PACK = (
     "so lilbee did not install it. Run the install again. If this happens again, report it."
 )
 ROUTES = [routes.engine_install_route]
+INSTALL_REFUSED = "engine_install_refused"
 
 
 def make_wheel(path: Path, package: str = "lilbee_engine_fx") -> str:
@@ -109,13 +122,6 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.mcp_engines_enabled = True
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
-    monkeypatch.setattr(
-        engine_choice,
-        "session_host",
-        lambda: collect(
-            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None
-        ),
-    )
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(runnable, "detect", _live_host)
     yield
@@ -187,7 +193,7 @@ def test_a_wrong_sha256_is_refused_with_the_store_text_and_leaves_nothing(
         engine_service.install(ENGINE.value, other)
     assert str(exc.value) == BAD_PACK
     assert _builds() == []
-    assert not root.exists()
+    assert [p.name for p in root.glob("*") if p.name != LOCK_DIR] == []
 
 
 def test_no_pack_and_no_network_gives_the_missing_pack_text(good: Path, root: Path) -> None:
@@ -251,7 +257,11 @@ def test_a_host_the_manifest_cannot_name_is_refused(
     )
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, good)
-    assert str(exc.value) == f"Engine {ENGINE} has no cpu build for this computer."
+    assert str(exc.value) == (
+        f"Engine {ENGINE} cannot be installed: lilbee could not read the operating system "
+        "of this computer. Run lilbee on Windows, macOS or Linux with an x86-64 or ARM64 "
+        "processor."
+    )
 
 
 def test_a_download_the_network_keeps_cutting_gives_the_missing_pack_text(
@@ -337,7 +347,7 @@ async def test_cancelling_the_slash_install_during_the_backoff_ends_it_before_th
         chat._cmd_engine(f"install {ENGINE.value}")
         assert await wait_until(
             pilot,
-            lambda: any("trying again" in str(n.message) for n in app._notifications),
+            lambda: any("trying again" in str(n.message) for n in posted_toasts()),
             timeout=10,
         )
         started = time.monotonic()
@@ -433,6 +443,34 @@ def test_a_build_of_another_wheel_is_refused_not_replaced(
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
+def test_the_engines_tab_row_of_a_build_of_another_wheel_removes_it_so_install_works(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine_service.install(ENGINE.value, good)
+    other = tmp_path / "other.whl"
+    sha = make_wheel(other, package="lilbee_engine_other")
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha))  # type: ignore[arg-type]
+    rows = [r for r in engine_service.engine_rows() if r.engine == ENGINE.value]
+    assert [(r.state, r.version, r.backend) for r in rows] == [
+        (engine_service.EngineState.NOT_INSTALLED, "", "cpu"),
+        (engine_service.EngineState.DIFFERS_FROM_PIN, VERSION, "cpu"),
+    ]
+    stale = rows[1]
+    assert stale.size_bytes is not None and stale.size_bytes > 0
+    assert not stale.outside_store
+    # The row names the build that `lilbee engine list` names on its line.
+    listing = " ".join(CliRunner().invoke(cli_app, ["engine", "list"]).output.split())
+    assert (
+        f"{ENGINE} not installed: the installed build {stale.version} ({stale.backend}) "
+        "differs from the pin"
+    ) in listing
+    engine_service.remove_build(stale.engine, stale.version, stale.backend)
+    built = engine_service.install(ENGINE.value, other)
+    assert (built.engine, built.version, built.backend) == (ENGINE.value, VERSION, "cpu")
+    rows = [r for r in engine_service.engine_rows() if r.engine == ENGINE.value]
+    assert [r.state for r in rows] == [engine_service.EngineState.INSTALLED]
+
+
 def test_a_pin_that_names_no_backend_is_refused(
     good: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -472,6 +510,42 @@ def _rest(body: dict[str, Any]) -> tuple[int, Any]:
         return res.status_code, res.json()
 
 
+class _PairState(threading.local):
+    """Whether the current thread is inside a socket pair."""
+
+    active = False
+
+
+def _spy_connects(monkeypatch: pytest.MonkeyPatch, allow: tuple[str, ...] = ()) -> list[Any]:
+    """Record every socket connect to a host the test does not allow by name.
+
+    An allowed host connects for real. Any other connect, loopback included, is
+    recorded and not made. The connect inside a socket pair is left out: on Windows
+    the event loop joins its own pair over loopback.
+    """
+    seen: list[Any] = []
+    real_connect = socket.socket.connect
+    real_pair = socket.socketpair
+    pairing = _PairState()
+
+    def connect_spy(sock: socket.socket, address: Any, *args: object) -> None:
+        if pairing.active or (isinstance(address, tuple) and address[0] in allow):
+            real_connect(sock, address, *args)
+        else:
+            seen.append(address)
+
+    def pair_spy() -> tuple[socket.socket, socket.socket]:
+        pairing.active = True
+        try:
+            return real_pair()
+        finally:
+            pairing.active = False
+
+    monkeypatch.setattr(socket.socket, "connect", connect_spy)
+    monkeypatch.setattr(socket, "socketpair", pair_spy)
+    return seen
+
+
 def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
     code, body = _cli("install", ENGINE.value, "--wheel", str(good))
     assert (code, body) == (
@@ -481,6 +555,7 @@ def test_the_cli_installs_and_lists_the_engine(good: Path) -> None:
             "installed": f"{ENGINE} {VERSION} (cpu)",
             "note": "",
             "not_run_on": [],
+            "engines_folder": str(cfg.models_dir.parent / "engines"),
         },
     )
     listing = CliRunner().invoke(cli_app, ["engine", "list"])
@@ -505,12 +580,38 @@ def test_the_cli_text_mode_says_what_was_installed(good: Path) -> None:
     assert f"Installed engine {ENGINE} {VERSION} (cpu)." in result.output
 
 
+def test_with_lilbee_data_set_the_cli_names_the_shared_engines_folder(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    for variable in ("HOME", "XDG_DATA_HOME", "LOCALAPPDATA"):
+        monkeypatch.setenv(variable, str(home))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "library"))
+    resolved = Config()
+    cfg.models_dir = resolved.models_dir
+    folder = resolved.models_dir.parent / "engines"
+    assert not folder.is_relative_to(resolved.data_root)
+
+    installed = CliRunner().invoke(
+        cli_app, ["engine", "install", ENGINE.value, "--wheel", str(good)]
+    )
+    listed = CliRunner().invoke(cli_app, ["engine", "list"])
+
+    assert (folder / ENGINE.value).is_dir()
+    for result in (installed, listed):
+        assert result.exit_code == 0
+        assert (
+            f"Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
+            in result.output
+        )
+
+
 def test_the_cli_refuses_with_the_service_text(good: Path, tmp_path: Path) -> None:
     other = tmp_path / "other.whl"
     make_wheel(other, package="lilbee_engine_other")
     assert _cli("install", ENGINE.value, "--wheel", str(other)) == (
         1,
-        {"command": "engine install", "error": BAD_PACK},
+        {"command": "engine install", "error": BAD_PACK, "code": INSTALL_REFUSED},
     )
     result = CliRunner().invoke(cli_app, ["engine", "install", ENGINE.value, "--wheel", str(other)])
     assert result.exit_code == 1
@@ -527,6 +628,7 @@ def test_rest_installs_a_pack_from_the_packs_folder(good: Path, root: Path) -> N
             "backend": "cpu",
             "note": "",
             "not_run_on": [],
+            "engines_folder": str(cfg.models_dir.parent / "engines"),
         },
     )
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
@@ -536,6 +638,7 @@ def test_rest_refuses_with_a_422_and_the_service_text(good: Path) -> None:
     code, body = _rest({"engine": ENGINE.value})
     assert code == 422
     assert "cannot be downloaded" in body["detail"]
+    assert body["extra"] == {"code": INSTALL_REFUSED}
 
 
 def test_rest_install_is_gated_like_the_other_writes(good: Path, root: Path) -> None:
@@ -550,6 +653,7 @@ def test_rest_install_is_gated_like_the_other_writes(good: Path, root: Path) -> 
 def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
     refused = mcp_server.engine_install_tool(ENGINE.value)
     assert "cannot be downloaded" in refused["error"]
+    assert refused["code"] == INSTALL_REFUSED
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     assert mcp_server.engine_install_tool(ENGINE.value) == {
@@ -558,8 +662,22 @@ def test_mcp_installs_and_refuses(good: Path, root: Path) -> None:
         "backend": "cpu",
         "note": "",
         "not_run_on": [],
+        "engines_folder": str(cfg.models_dir.parent / "engines"),
     }
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_every_install_surface_names_the_folder_the_list_names(good: Path, root: Path) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    expected = str(cfg.models_dir.parent / "engines")
+    folders = {
+        "cli": _cli("install", ENGINE.value, "--wheel", str(good))[1]["engines_folder"],
+        "rest": _rest({"engine": ENGINE.value})[1]["engines_folder"],
+        "mcp": mcp_server.engine_install_tool(ENGINE.value)["engines_folder"],
+        "list": mcp_server.engine_list_tool()["engines_folder"],
+    }
+    assert folders == dict.fromkeys(("cli", "rest", "mcp", "list"), expected)
 
 
 def test_the_mcp_tool_is_off_the_wire_and_refuses_while_the_setting_is_off(good: Path) -> None:
@@ -588,7 +706,7 @@ def test_the_slash_command_installs_from_the_packs_folder(good: Path, root: Path
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     out = run_engine_command(f"install {ENGINE.value}")
     assert out.ok
-    assert f"{ENGINE} {VERSION} (cpu)" in out.text
+    assert out.text == f"Installed engine {ENGINE} {VERSION} (cpu)."
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
@@ -611,28 +729,97 @@ def test_an_engine_with_no_published_pack_is_refused_on_every_surface_and_touche
 
     monkeypatch.setattr(EngineStore, "ensure", spy)
     monkeypatch.setattr(EngineStore, "install_from_wheel", spy)
-    real_connect = socket.socket.connect
-
-    def connect_spy(sock: socket.socket, address: Any, *args: object) -> None:
-        # The event loop of the REST client joins its own socket pair over loopback on Windows.
-        if not isinstance(address, tuple) or address[0] in ("127.0.0.1", "::1"):
-            real_connect(sock, address, *args)
-        else:
-            reads.append("network")
-
-    monkeypatch.setattr(socket.socket, "connect", connect_spy)
+    connects = _spy_connects(monkeypatch)
     pack = tmp_path / "pack.whl"
     pack.write_bytes(b"not read")
     with pytest.raises(engine_service.EngineRefusedError) as exc:
         engine_service.install(ENGINE.value, pack)
     assert str(exc.value) == NO_PACK
-    assert _cli("install", ENGINE.value, "--wheel", str(pack))[1]["error"] == NO_PACK
-    assert _cli("install", ENGINE.value)[1]["error"] == NO_PACK
+    assert _cli("install", ENGINE.value, "--wheel", str(pack))[1] == {
+        "command": "engine install",
+        "error": NO_PACK,
+        "code": INSTALL_REFUSED,
+    }
+    assert _cli("install", ENGINE.value)[1]["code"] == INSTALL_REFUSED
     code, body = _rest({"engine": ENGINE.value})
-    assert (code, body["detail"]) == (422, NO_PACK)
-    assert mcp_server.engine_install_tool(ENGINE.value) == {"error": NO_PACK}
+    assert (code, body["detail"], body["extra"]) == (422, NO_PACK, {"code": INSTALL_REFUSED})
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": NO_PACK,
+        "code": INSTALL_REFUSED,
+    }
     assert run_engine_command(f"install {ENGINE.value}").text == NO_PACK
-    assert (reads, root.exists()) == ([], False)
+    assert (reads, connects, root.exists()) == ([], [], False)
+
+
+def test_the_connect_spy_records_a_loopback_connect_unless_the_test_allows_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        address = server.getsockname()
+        with monkeypatch.context() as refusing:
+            refused = _spy_connects(refusing)
+            with socket.socket() as client:
+                client.connect(address)
+        assert refused == [address]
+        with monkeypatch.context() as allowing:
+            allowed = _spy_connects(allowing, allow=("127.0.0.1",))
+            with socket.socket() as client:
+                client.connect(address)
+                assert client.getpeername() == address
+        assert allowed == []
+
+
+def test_the_connect_spy_ignores_the_connect_a_socket_pair_makes_inside_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def windows_style_pair() -> tuple[socket.socket, socket.socket]:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(5)
+            client = socket.socket()
+            client.connect(listener.getsockname())
+            server, _ = listener.accept()
+            return client, server
+
+    monkeypatch.setattr(socket, "socketpair", windows_style_pair)
+    connects = _spy_connects(monkeypatch)
+    left, right = socket.socketpair()
+    left.close()
+    right.close()
+    assert connects == []
+
+
+def test_the_connect_spy_records_a_connect_from_another_thread_during_a_socket_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inside_pair, leave_pair = threading.Event(), threading.Event()
+
+    def held_pair() -> tuple[socket.socket, socket.socket]:
+        inside_pair.set()
+        assert leave_pair.wait(timeout=5)
+        return socket.socket(), socket.socket()
+
+    monkeypatch.setattr(socket, "socketpair", held_pair)
+    connects = _spy_connects(monkeypatch)
+    pairs: list[tuple[socket.socket, socket.socket]] = []
+    maker = threading.Thread(target=lambda: pairs.append(socket.socketpair()))
+    maker.start()
+    try:
+        assert inside_pair.wait(timeout=5)
+        with socket.socket() as server, socket.socket() as client:
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            address = server.getsockname()
+            client.connect(address)
+        assert connects == [address]
+    finally:
+        leave_pair.set()
+        maker.join(timeout=5)
+    for sock in pairs[0]:
+        sock.close()
 
 
 def test_an_engine_with_no_published_pack_is_not_installed_and_logs_no_warning(
@@ -654,11 +841,61 @@ def test_every_surface_shows_the_service_refusal(
     expected = str(exc.value)
     assert expected
     assert expected.endswith(STAYS) is (name == ENGINE.value)
-    assert _cli("install", name)[1]["error"] == expected
+    refused = name == ENGINE.value
+    coded = {"code": INSTALL_REFUSED} if refused else {}
+    assert _cli("install", name)[1] == {"command": "engine install", "error": expected, **coded}
     code, body = _rest({"engine": name})
-    assert (code, body["detail"]) == (422, expected)
-    assert mcp_server.engine_install_tool(name) == {"error": expected}
+    assert (code, body["detail"], body.get("extra")) == (422, expected, coded or None)
+    assert mcp_server.engine_install_tool(name) == {"error": expected, **coded}
     assert run_engine_command(f"install {name}").text == expected
+
+
+def test_the_advice_names_the_command_only_for_an_engine_with_a_published_pack() -> None:
+    assert choice.install_advice(StandIn("a" * 64)) == f"Run lilbee engine install {ENGINE}."
+    assert choice.install_advice(StandIn(None)) == (
+        f"No pack of {ENGINE} is published yet, so there is nothing to install."
+    )
+
+
+def _any_advice(monkeypatch: pytest.MonkeyPatch, adapters: dict[EngineName, StandIn]) -> str:
+    monkeypatch.setattr(choice, "ADAPTERS", adapters)
+    return choice.install_any_advice(_refusing_host(HostOS.LINUX, HostArch.X86_64))
+
+
+def test_the_advice_for_no_engine_names_the_command_of_each_engine_that_serves_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Second(StandIn):
+        name = EngineName.MLX.value
+
+    advice = _any_advice(
+        monkeypatch,
+        {ENGINE: StandIn("a" * 64), EngineName.MLX: Second("b" * 64)},
+    )
+    assert advice == f"Run lilbee engine install {ENGINE} or lilbee engine install mlx."
+
+
+def test_the_advice_for_no_engine_skips_an_engine_the_host_refuses_or_with_no_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoPack(StandIn):
+        name = EngineName.MLX.value
+
+    advice = _any_advice(
+        monkeypatch,
+        {ENGINE: StandIn("a" * 64, HostGate(False, NO_AVX2)), EngineName.MLX: NoPack(None)},
+    )
+    assert advice == choice.LIST_HINT
+
+
+def test_the_advice_names_an_unusable_pin_record() -> None:
+    class NoBackend(StandIn):
+        def pin_record(self) -> Mapping[str, Any]:
+            return {**super().pin_record(), "backend": None}
+
+    assert choice.install_advice(NoBackend("a" * 64)).startswith(
+        f"Engine {ENGINE} cannot be installed: the pin record is not usable"
+    )
 
 
 def test_the_server_app_serves_the_install_route() -> None:
@@ -708,14 +945,17 @@ def test_a_pinned_wheel_the_store_cannot_read_is_refused_on_every_surface(
     expected = str(exc.value)
     assert _cli("install", ENGINE.value, "--wheel", str(wheel)) == (
         1,
-        {"command": "engine install", "error": expected},
+        {"command": "engine install", "error": expected, "code": INSTALL_REFUSED},
     )
     root_dir = engines_root(cfg.models_dir)
     (root_dir / "packs").mkdir(parents=True)
     (root_dir / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(wheel.read_bytes())
     code, body = _rest({"engine": ENGINE.value})
     assert (code, body["detail"]) == (422, expected)
-    assert mcp_server.engine_install_tool(ENGINE.value) == {"error": expected}
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": expected,
+        "code": INSTALL_REFUSED,
+    }
     slash = run_engine_command(f"install {ENGINE.value}")
     assert (slash.ok, slash.text) == (False, expected)
     assert _builds() == []
@@ -728,7 +968,8 @@ def test_auto_is_refused_as_not_installable_and_is_left_out_of_the_list() -> Non
     assert "auto" in text.split("Choose one of:")[0]
     assert "cannot be installed" in text
     assert "auto" not in text.split("Choose one of:")[1]
-    assert _cli("install", "auto")[1]["error"] == text
+    assert _cli("install", "auto")[1] == {"command": "engine install", "error": text}
+    assert "extra" not in _rest({"engine": "auto"})[1]
     assert _rest({"engine": "auto"})[1]["detail"] == text
     assert mcp_server.engine_install_tool("auto") == {"error": text}
     assert run_engine_command("install auto").text == text
@@ -771,21 +1012,58 @@ def test_the_cli_returns_at_once_for_a_fifo_as_the_wheel(good: Path, tmp_path: P
         os.close(held)
 
 
-def test_rest_refuses_a_wheel_field_and_installs_nothing(good: Path, root: Path) -> None:
+@pytest.mark.parametrize("as_null", [False, True], ids=["path", "null"])
+def test_rest_refuses_a_wheel_field_and_installs_nothing(
+    good: Path, root: Path, as_null: bool
+) -> None:
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
-    code, body = _rest({"engine": ENGINE.value, "wheel": str(good)})
-    assert (code, body["detail"]) == (422, WHEEL_CLI_ONLY)
+    code, body = _rest({"engine": ENGINE.value, "wheel": None if as_null else str(good)})
+    assert code == 400
+    assert WHEEL_CLI_ONLY in json.dumps(body["extra"])
     assert _builds() == []
 
 
-def test_mcp_refuses_a_wheel_argument_and_installs_nothing(good: Path, root: Path) -> None:
+def test_rest_still_ignores_an_unknown_field_other_than_wheel(good: Path, root: Path) -> None:
     (root / "packs").mkdir(parents=True)
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
-    assert mcp_server.engine_install_tool(ENGINE.value, wheel=str(good)) == {
-        "error": WHEEL_CLI_ONLY
-    }
+    code, body = _rest({"engine": ENGINE.value, "client_tag": "plugin"})
+    assert (code, body["engine"]) == (200, ENGINE.value)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_the_rest_install_schema_lists_no_wheel_field() -> None:
+    with create_test_client(ROUTES, debug=False) as client:
+        schema = client.get("/schema/openapi.json").json()
+    body = schema["components"]["schemas"]["EngineInstallBody"]
+    assert list(body["properties"]) == ["engine"]
+
+
+@pytest.mark.parametrize("as_null", [False, True], ids=["path", "null"])
+def test_mcp_refuses_a_wheel_argument_and_installs_nothing(
+    good: Path, root: Path, as_null: bool
+) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    server = mcp_server.build_mcp_server()
+    arguments = {"engine": ENGINE.value, "wheel": None if as_null else str(good)}
+    with pytest.raises(ToolError, match=re.escape(WHEEL_CLI_ONLY)):
+        asyncio.run(server.call_tool("engine_install", arguments))
     assert _builds() == []
+
+
+def test_mcp_still_ignores_an_unknown_argument_other_than_wheel(good: Path, root: Path) -> None:
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    server = mcp_server.build_mcp_server()
+    asyncio.run(server.call_tool("engine_install", {"engine": ENGINE.value, "client_tag": "x"}))
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_the_mcp_install_schema_lists_no_wheel_argument() -> None:
+    tools = asyncio.run(mcp_server.build_mcp_server().list_tools())
+    schema = next(t for t in tools if t.name == "engine_install").input_schema
+    assert list(schema["properties"]) == ["engine"]
 
 
 NOTE = "This host has no NVIDIA GPU, so the CPU archive runs."
@@ -1007,3 +1285,287 @@ def test_the_cli_shows_download_progress_on_stderr_and_keeps_stdout_clean(
         result = CliRunner().invoke(cli_app, ["--json", "engine", "install", ENGINE.value])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["installed"] == f"{ENGINE.value} {VERSION} (cpu)"
+
+
+def test_an_engine_install_also_installs_the_router_that_starts_it(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heard: list[list[str]] = []
+
+    def router(**signals: object) -> Path:
+        heard.append(sorted(signals))
+        return Path("llama-swap")
+
+    monkeypatch.setattr(engine_service, "install_router", router)
+    engine_service.install(ENGINE.value, good)
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+    assert heard == [["cancel", "on_progress", "on_retry"]]
+
+
+def test_a_router_that_cannot_install_names_the_engine_that_did(
+    good: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(**_signals: object) -> Path:
+        raise RouterDownloadError("The router cannot be downloaded.")
+
+    monkeypatch.setattr(engine_service, "install_router", refuse)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value, good)
+    assert str(exc.value) == (
+        f"Engine {ENGINE} is installed, but the router that starts it is not. "
+        "The router cannot be downloaded."
+    )
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_a_refused_engine_install_never_reaches_the_router(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = tmp_path / "other.whl"
+    make_wheel(other, package="lilbee_engine_other")
+
+    def fail(**_signals: object) -> Path:
+        raise AssertionError("no engine was installed, so no router is installed")
+
+    monkeypatch.setattr(engine_service, "install_router", fail)
+    with pytest.raises(engine_service.EngineRefusedError, match="does not match its pin"):
+        engine_service.install(ENGINE.value, other)
+
+
+def test_the_router_install_hears_the_progress_the_retries_and_the_cancel(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    heard: dict[str, Any] = {}
+
+    def router(**signals: Any) -> Path:
+        heard.update(signals)
+        return tmp_path / "llama-swap"
+
+    monkeypatch.setattr(engine_service, "install_router", router)
+    cancel = threading.Event()
+    retries: list[str] = []
+    updates: list[DownloadProgress] = []
+    engine_service.install(
+        ENGINE.value, good, on_update=updates.append, on_retry=retries.append, cancel=cancel
+    )
+    assert heard["cancel"] is cancel
+    heard["on_progress"](50, 100)
+    assert [update.percent for update in updates] == [50.0]
+    heard["on_retry"](2, 3, "the link dropped")
+    assert len(retries) == 1
+    assert "the link dropped" in retries[0]
+
+
+class _Report(BaseModel):
+    folder: Path
+    stamp: datetime
+    names: set[str]
+    blob: bytes
+
+
+def test_the_mcp_result_is_plain_json_text() -> None:
+    report = _Report(
+        folder=Path("/engines"), stamp=datetime(2026, 1, 2, 3, 4, 5), names={"a"}, blob=b"ab"
+    )
+    assert mcp_server._engine_result(lambda: report) == {
+        "folder": str(Path("/engines")),
+        "stamp": "2026-01-02T03:04:05",
+        "names": ["a"],
+        "blob": "ab",
+    }
+
+
+def _raises(error: Exception) -> Callable[..., Any]:
+    def install(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    return install
+
+
+def test_the_mcp_tool_says_the_choice_is_saved_when_the_server_did_not_apply_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EngineNotAppliedError("the engine did not start")
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": "the engine did not start",
+        "code": engine_service.NOT_APPLIED_CODE,
+        "saved": True,
+    }
+
+
+def test_the_mcp_tool_asks_for_the_confirmation_of_an_embed_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EmbedConfirmRequiredError("docs", 3)
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    assert mcp_server.engine_install_tool(ENGINE.value) == {
+        "error": f"{error} Pass confirm_embed_change=true to confirm.",
+        "code": engine_service.CONFIRM_CODE,
+        "library": "docs",
+        "documents": 3,
+    }
+
+
+def test_rest_answers_a_failed_save_with_a_503_and_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EngineNotSavedError("the settings file is read-only")
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    code, body = _rest({"engine": ENGINE.value})
+    assert code == 503
+    assert body["detail"] == "the settings file is read-only"
+
+
+def test_the_cli_exits_1_and_prints_a_refusal_whole_to_stderr_in_the_error_style(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    printed: list[Text] = []
+
+    class Recorder(PlainConsole):
+        def print(self, *objects: Any, **kwargs: Any) -> None:
+            printed.extend(objects)
+            super().print(*objects, **kwargs)
+
+    monkeypatch.setattr(cli_engine, "PlainConsole", Recorder)
+    monkeypatch.setattr(cfg, "json_mode", False)
+    missing = tmp_path / ("a-long-name-" * 12 + "missing.whl")
+    message = f"{missing} is not a file. Name a wheel file."
+    result = CliRunner().invoke(
+        cli_app, ["engine", "install", ENGINE.value, "--wheel", str(missing)]
+    )
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == message + "\n"
+    assert [(text.plain, text.style) for text in printed] == [(message, theme.ERROR)]
+
+
+def test_rest_asks_for_the_confirmation_of_an_embed_change_with_a_409_and_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = engine_service.EmbedConfirmRequiredError("docs", 3)
+    monkeypatch.setattr(engine_service, "install", _raises(error))
+    code, body = _rest({"engine": ENGINE.value})
+    assert code == 409
+    assert body["detail"] == f"{error} Send confirm_embed_change: true to confirm."
+    assert body["extra"] == {
+        "code": engine_service.CONFIRM_CODE,
+        "library": "docs",
+        "documents": 3,
+    }
+
+
+HELD_REFUSAL = (
+    f"Engine {ENGINE.value} {VERSION} (cpu) is in use. "
+    "Stop the engine with 'lilbee engine stop' and install it again."
+)
+SURVIVOR = "survivor.txt"
+SURVIVOR_TEXT = "a running launch reads this"
+
+
+def _damaged_build(good: Path, root: Path) -> Path:
+    """Install the build, then drop its record so the store reads it as damaged."""
+    (root / "packs").mkdir(parents=True)
+    (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
+    engine_service.install(ENGINE.value)
+    build = root / ENGINE.value / f"{VERSION}-cpu"
+    (build / engine_store.RECORD_NAME).unlink()
+    (build / SURVIVOR).write_text(SURVIVOR_TEXT, encoding="utf-8")
+    assert _builds() == []
+    return build
+
+
+@pytest.fixture
+def launch_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    slot = tmp_path / "slot"
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(slot))
+    return slot
+
+
+def _service_install() -> str:
+    with pytest.raises(engine_service.EngineInstallRefusedError) as exc:
+        engine_service.install(ENGINE.value)
+    return str(exc.value)
+
+
+def _cli_install() -> str:
+    code, body = _cli("install", ENGINE.value)
+    assert (code, body["code"]) == (1, INSTALL_REFUSED)
+    return str(body["error"])
+
+
+def _rest_install() -> str:
+    code, body = _rest({"engine": ENGINE.value})
+    assert (code, body["extra"]) == (422, {"code": INSTALL_REFUSED})
+    return str(body["detail"])
+
+
+def _mcp_install() -> str:
+    refused = mcp_server.engine_install_tool(ENGINE.value)
+    assert refused["code"] == INSTALL_REFUSED
+    return str(refused["error"])
+
+
+def _slash_install() -> str:
+    result = run_engine_command(f"install {ENGINE.value}")
+    assert result.ok is False
+    return result.text
+
+
+HELD_INSTALLS = {
+    "service": _service_install,
+    "cli": _cli_install,
+    "rest": _rest_install,
+    "mcp": _mcp_install,
+    "slash": _slash_install,
+}
+
+
+@pytest.mark.parametrize("surface", sorted(HELD_INSTALLS))
+def test_install_refuses_a_damaged_build_that_a_launch_holds(
+    surface: str, good: Path, root: Path, launch_slot: Path
+) -> None:
+    build = _damaged_build(good, root)
+    hold = hold_user_lock(launch_slot)
+    try:
+        text = HELD_INSTALLS[surface]()
+    finally:
+        hold.release_and_check_last()
+    assert text == HELD_REFUSAL
+    assert (build / SURVIVOR).read_text(encoding="utf-8") == SURVIVOR_TEXT
+    assert _builds() == []
+
+
+def test_install_and_remove_refuse_a_held_build_in_the_same_words(
+    good: Path, root: Path, launch_slot: Path
+) -> None:
+    _damaged_build(good, root)
+    hold = hold_user_lock(launch_slot)
+    try:
+        with pytest.raises(engine_service.EngineRefusedError) as removed:
+            engine_service.remove_build(ENGINE.value, VERSION, "cpu")
+        installed = _service_install()
+    finally:
+        hold.release_and_check_last()
+    assert str(removed.value).replace("remove it", "install it") == installed
+
+
+def test_install_replaces_a_damaged_build_that_no_launch_holds(
+    good: Path, root: Path, launch_slot: Path
+) -> None:
+    build = _damaged_build(good, root)
+    engine_service.install(ENGINE.value)
+    assert not (build / SURVIVOR).exists()
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]
+
+
+def test_install_succeeds_once_the_launch_releases_the_build(
+    good: Path, root: Path, launch_slot: Path
+) -> None:
+    build = _damaged_build(good, root)
+    hold = hold_user_lock(launch_slot)
+    assert _service_install() == HELD_REFUSAL
+    hold.release_and_check_last()
+    engine_service.install(ENGINE.value)
+    assert not (build / SURVIVOR).exists()
+    assert _builds() == [(ENGINE.value, VERSION, "cpu")]

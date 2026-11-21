@@ -125,7 +125,7 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
     monkeypatch.setattr(prov_mod, "SwapManager", _ProcessSwap)
     monkeypatch.setattr(prov_mod, "stop_engine", machine.stop_engine)
     monkeypatch.setattr(prov_mod, "engine_record_exists", lambda d: bool(machine.records[d.name]))
-    monkeypatch.setattr(prov_mod, "_healthy_states", lambda d: dict(machine.records[d.name]))
+    monkeypatch.setattr(prov_mod, "_healthy_states", lambda d, **_kw: dict(machine.records[d.name]))
     monkeypatch.setattr(cfg, "keep_engine_warm", False)
     return machine
 
@@ -413,7 +413,7 @@ def test_with_the_slot_free_a_dead_private_fleet_leads_to_a_slot_build(
     monkeypatch.setattr(
         prov_mod,
         "_healthy_states",
-        lambda d: {} if d == box.private else dict(box.records[d.name]),
+        lambda d, **_kw: {} if d == box.private else dict(box.records[d.name]),
     )
     _assert_builds_in_the_slot_and_leaves_the_private_dir(_process(monkeypatch), box, private_pids)
 

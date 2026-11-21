@@ -30,6 +30,8 @@ class MemoryRequest:
     tensor_split: tuple[int, ...] = ()
     batch_size: int | None = None
     expert_offload: tuple[str, ...] = ()
+    on_cpu: bool = False
+    """True when the weights load into the CPU backend, not onto a card."""
 
 
 @dataclass(frozen=True)
@@ -46,15 +48,25 @@ class MemoryEstimate:
     host_bytes: int
     """Discrete-GPU model: bytes held in host memory."""
     shared_bytes: int
-    """Unified-memory model: the whole resident footprint."""
+    """Unified-memory model: the footprint without the mapped weights."""
+    mapped_weights_bytes: int = 0
+    """Unified-memory model: the weight bytes that ``shared_bytes`` leaves out.
+
+    The mapped file, plus the repacked copy of it that a CPU load keeps."""
     per_device: tuple[int, ...] = ()
     """Discrete-GPU model: bytes on each device."""
     per_device_shared: tuple[int, ...] = ()
     """Unified-memory model: bytes on each device."""
+    size_known: bool = True
+    """False when the figures are a stated reserve because the model's size could not be read."""
 
     def footprint(self, *, unified: bool) -> int:
         """Total bytes to charge against a shared budget for this memory model."""
         return self.shared_bytes if unified else self.device_bytes
+
+    def resident_footprint(self, *, unified: bool) -> int:
+        """Bytes a shared pool must back: the unified figure plus the mapped weights."""
+        return self.shared_bytes + self.mapped_weights_bytes if unified else self.device_bytes
 
     def peak_footprint(self, *, unified: bool) -> int:
         """The busiest single device's bytes, or the total without a per-device breakdown."""

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import gc
 import json
 import logging
 import os
+import re
+import socket
 import struct
 import threading
 import time
+from collections.abc import Callable, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,7 +24,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
-from lilbee.providers.base import ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.client import LlamaServerClient
@@ -28,8 +32,11 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
-from lilbee.providers.fleet.swap_manager import EngineLifetime
+from lilbee.providers.fleet.swap_manager import EngineLifetime, EngineReadiness
+from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.routing_provider import RoutingProvider
+from tests._async_wait import poll_until
 from tests._exit_probe import assert_probe_exits
 from tests._fleet_engines import engines_for_all_roles
 from tests._prior_run import request_keep_warm_in_prior_run
@@ -55,7 +62,13 @@ def reaper_ensures(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 def _fake_client(in_flight: int = 0) -> MagicMock:
     client = MagicMock()
     client.in_flight = in_flight
+    client.restart_message = None
     return client
+
+
+def _pool(*members: object) -> prov_mod._LivePool:
+    """A live pool over fixed *members*, the shape the routing helpers take."""
+    return prov_mod._LivePool(threading.RLock(), lambda: list(members), lambda: None)
 
 
 def _fake_launch(
@@ -91,6 +104,7 @@ class _FakeSwap:
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
         self.running = True
+        self.ready_records = 0
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
         self.lifetime: EngineLifetime | None = None  # set by start()
         self.log_path = Path("/engine/logs/llama-swap-fake.log")
@@ -118,6 +132,9 @@ class _FakeSwap:
 
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
+
+    def record_ready(self) -> None:
+        self.ready_records += 1
 
     def health_warnings(self) -> list:
         return []
@@ -176,7 +193,7 @@ def _install_engine(
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: swap)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
@@ -577,6 +594,23 @@ def test_count_tokens_routes_to_embed_server() -> None:
     client.count_tokens.assert_called_once_with("hello")
 
 
+def test_count_chat_text_tokens_routes_to_chat_server() -> None:
+    """Retrieval budgets with the chat model's tokenizer, not the embedder's."""
+    chat, embed = _fake_client(), _fake_client()
+    chat.count_text_tokens.return_value = 13
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    assert p.count_chat_text_tokens("hello") == 13
+    chat.count_text_tokens.assert_called_once_with("hello")
+    embed.count_text_tokens.assert_not_called()
+
+
+def test_count_chat_text_tokens_is_none_when_the_chat_engine_has_no_route() -> None:
+    chat = _fake_client()
+    chat.count_text_tokens.return_value = None
+    p = _provider_with_clients({WorkerRole.CHAT: [chat]})
+    assert p.count_chat_text_tokens("hello") is None
+
+
 _COUNT_MESSAGES = [{"role": "user", "content": "hello"}]
 
 
@@ -658,6 +692,26 @@ def test_count_tokens_connection_failure_rediscovers_once_and_recovers(
     p = FleetProvider()
     assert p.count_tokens("hello") == 7
     assert len(clients) == 2  # first pool failed, rediscovery built a second
+
+
+def test_a_count_with_the_engine_down_raises_the_not_responding_message(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A count for chunk sizing fails with the message an embedding gets, not a transport error."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.count_tokens.side_effect = httpx.ConnectError("router down")
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+
+    with pytest.raises(ProviderError, match=r"^The model server is not responding") as err:
+        FleetProvider().count_tokens("hello")
+    assert err.value.kind is ProviderErrorKind.CONNECTION
 
 
 def test_embed_routes_to_least_busy_replica() -> None:
@@ -989,7 +1043,7 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
         planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
     )
     sentinel = object()
-    monkeypatch.setattr(LLAMA, "request_profile", lambda _role: sentinel)
+    monkeypatch.setattr(type(LLAMA), "request_profile", lambda _self, _role: sentinel)
     FleetProvider()._ensure_fleet()
     assert captured["profile"] is sentinel
 
@@ -1162,6 +1216,186 @@ def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
     assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
+_SEARCH_TOOL = {"type": "function", "function": {"name": "search", "parameters": {}}}
+
+
+def _tool_convo() -> list[dict]:
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for _ in range(4):
+        msgs.append({"role": "user", "content": "x" * 280})
+        msgs.append({"role": "assistant", "content": "y" * 280})
+    msgs.append({"role": "user", "content": "q"})
+    return msgs
+
+
+def _rendered_count(messages: list[dict], **_: object) -> int:
+    """A stand-in engine count: a 300-token tool preamble the wire JSON does not show."""
+    return 300 + sum(len(m["content"]) for m in messages) // 2
+
+
+def _tool_convo_near_budget_provider(client: MagicMock) -> FleetProvider:
+    """A provider whose 896-token budget the estimate of _tool_convo nearly fills (858)."""
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    return p
+
+
+def test_fit_chat_context_counts_tools_as_the_engine_renders_them() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048  # a prompt budget of 896 tokens
+    msgs = _tool_convo()
+
+    out = p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m")
+
+    assert len(out) < len(msgs)
+    assert _rendered_count(out) <= 896
+    assert out[0]["role"] == "system"
+    assert out[-1]["content"] == "q"
+
+
+def test_fit_chat_context_sends_the_tool_choice_to_the_render() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m", "required")
+
+    kwargs = client.count_chat_prompt_tokens.call_args.kwargs
+    assert kwargs["tools"] == [_SEARCH_TOOL]
+    assert kwargs["tool_choice"] == "required"
+
+
+def test_fit_chat_context_raises_when_the_rendered_prompt_cannot_fit() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    with pytest.raises(ProviderError, match="Prompt of about 5000 tokens") as excinfo:
+        p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_falls_back_to_the_estimate_with_no_render_route() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = NotImplementedError("no route")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m") == msgs
+
+
+def test_fit_chat_context_renders_twice_when_one_drop_clears_the_overshoot() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+
+    assert client.count_chat_prompt_tokens.call_count == 2
+
+
+def test_fit_chat_context_renders_once_far_under_the_budget() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 16_384
+    msgs = _tool_convo()
+
+    assert p._fit_chat_context(msgs, [_SEARCH_TOOL], None, "m") == msgs
+    assert client.count_chat_prompt_tokens.call_count == 1
+
+
+def _short_tool_convo() -> list[dict]:
+    """Two turns and a question: the estimate sits far under the 896 budget."""
+    return [
+        {"role": "system", "content": "s"},
+        *_tool_convo()[1:5],
+        {"role": "user", "content": "q"},
+    ]
+
+
+def test_fit_chat_context_refuses_a_tool_prompt_the_estimate_leaves_under_the_budget() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    estimate = window_messages(_short_tool_convo(), [_SEARCH_TOOL], 10**6).prompt_tokens
+    assert estimate < 0.8 * 896  # under any 0.937 ratio gate
+
+    with pytest.raises(ProviderError, match="Prompt of about 5000 tokens") as excinfo:
+        p._fit_chat_context(_short_tool_convo(), [_SEARCH_TOOL], None, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+def test_fit_chat_context_does_not_render_an_empty_tool_list() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [], None, "m")
+
+    client.count_chat_prompt_tokens.assert_not_called()
+
+
+def test_fit_chat_context_surfaces_a_render_error() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = ProviderError(
+        "render failed", provider="llama-server", kind=ProviderErrorKind.BAD_REQUEST
+    )
+    p = _tool_convo_near_budget_provider(client)
+
+    with pytest.raises(ProviderError, match="render failed"):
+        p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], None, "m")
+
+
+def test_render_count_passes_the_options_the_chat_call_sends() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _tool_convo_near_budget_provider(client)
+
+    p._fit_chat_context(_tool_convo(), [_SEARCH_TOOL], {"temperature": 0.25}, "m")
+
+    assert client.count_chat_prompt_tokens.call_args.kwargs["options"] == {"temperature": 0.25}
+
+
+def test_render_count_retries_through_the_chat_role(monkeypatch) -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 10
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    roles: list[WorkerRole | None] = []
+    real = p._with_rediscover
+
+    def spy(call, *, role=None):
+        roles.append(role)
+        return real(call, role=role)
+
+    monkeypatch.setattr(p, "_with_rediscover", spy)
+
+    assert p._render_count(_tool_convo(), [_SEARCH_TOOL], None, None) == 10
+    assert roles == [WorkerRole.CHAT]
+
+
+def test_fit_chat_context_does_not_render_a_prompt_without_tools() -> None:
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+
+    p._fit_chat_context(_tool_convo(), None, None, "m")
+
+    client.count_chat_prompt_tokens.assert_not_called()
+
+
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
@@ -1191,7 +1425,7 @@ def test_vision_ocr_waiting_for_a_slot_stops_on_cancel(monkeypatch) -> None:
         except BaseException as exc:
             raised.append(exc)
 
-    with prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(client, 1)]):
+    with prov_mod._VISION_DISPATCHER.slot(_pool(prov_mod._VisionReplica(client, 1))):
         waiter = threading.Thread(target=_page, daemon=True)
         waiter.start()
         waiter.join(timeout=0.3)
@@ -1506,7 +1740,7 @@ def test_vision_pool_pairs_each_replica_with_its_fitted_slots(monkeypatch) -> No
         _fake_launch(WorkerRole.VISION, slots=3),
         _fake_launch(WorkerRole.VISION, slots=2, replica=1),
     )
-    assert p._vision_pool() == [
+    assert p._live_vision_pool(float("inf")).pick(list) == [
         prov_mod._VisionReplica(first_client, 3),
         prov_mod._VisionReplica(second_client, 2),
     ]
@@ -1517,7 +1751,7 @@ def test_vision_pool_falls_back_to_configured_slots(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.VISION: [client]})
-    assert p._vision_pool() == [prov_mod._VisionReplica(client, 4)]
+    assert p._live_vision_pool(float("inf")).pick(list) == [prov_mod._VisionReplica(client, 4)]
 
 
 def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
@@ -1528,7 +1762,8 @@ def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
     p = _provider_with_clients({WorkerRole.VISION: clients})
     p._role_group[WorkerRole.VISION] = SwapGroup.VISION
     p._launches[SwapGroup.VISION] = (_fake_launch(WorkerRole.VISION, slots=3),)
-    assert [replica.slots for replica in p._vision_pool()] == [4, 4]
+    pool = p._live_vision_pool(float("inf"))
+    assert [replica.slots for replica in pool.pick(list)] == [4, 4]
 
 
 def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
@@ -1735,7 +1970,7 @@ def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
 
     dispatcher = prov_mod._VisionDispatcher()
     replica_a, replica_b = _fake_client(), _fake_client()
-    pool = [prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1)]
+    pool = _pool(prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1))
 
     lock = threading.Lock()
     live: dict[int, int] = {}
@@ -1774,7 +2009,7 @@ def test_vision_dispatcher_blocks_on_a_full_pool_until_a_slot_frees() -> None:
 
     dispatcher = prov_mod._VisionDispatcher()
     only = _fake_client()
-    pool = [prov_mod._VisionReplica(only, 1)]
+    pool = _pool(prov_mod._VisionReplica(only, 1))
 
     acquired = threading.Event()
 
@@ -1800,7 +2035,7 @@ def test_vision_dispatcher_prefers_replica_with_most_free_slots() -> None:
     # the most free slots, not to whichever raced ahead.
     dispatcher = prov_mod._VisionDispatcher()
     roomy, tight = _fake_client(), _fake_client()
-    pool = [prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3)]
+    pool = _pool(prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3))
     with dispatcher.slot(pool) as first, dispatcher.slot(pool) as second:
         assert first is roomy  # 3 free beats 1
         assert second is roomy  # still 2 free vs 1
@@ -1814,7 +2049,7 @@ def test_vision_dispatcher_skips_unhealthy_replica() -> None:
     dispatcher = prov_mod._VisionDispatcher()
     dead, alive = _fake_client(), _fake_client()
     dead.healthy = False
-    pool = [prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1))
     with dispatcher.slot(pool) as client:
         assert client is alive
 
@@ -1826,7 +2061,7 @@ def test_vision_dispatcher_falls_back_when_all_unhealthy() -> None:
     dispatcher = prov_mod._VisionDispatcher()
     dead = _fake_client()
     dead.healthy = False
-    pool = [prov_mod._VisionReplica(dead, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 1))
     with dispatcher.slot(pool) as client:
         assert client is dead
 
@@ -1841,7 +2076,7 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
     dead, alive = _fake_client(), _fake_client()
     dead.chat.side_effect = _httpx.ConnectError("refused")
     alive.chat.return_value = "ocr text"
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1))
     result = prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
     assert result == "ocr text"
     dead.mark_unhealthy.assert_called_once()
@@ -1852,7 +2087,7 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
     lone.chat.side_effect = _httpx.ConnectError("refused")
     with pytest.raises(ProviderError, match="no healthy replica"):
         prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
+            _pool(prov_mod._VisionReplica(lone, 1)),
             lambda c: c.chat([], options={}, stream=False),
         )
 
@@ -1873,9 +2108,9 @@ def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
         raise _httpx.ConnectError("refused")
 
     dead.chat.side_effect = _refuse
-    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1)]
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1))
     with (
-        prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(busy, 1)]),
+        prov_mod._VISION_DISPATCHER.slot(_pool(prov_mod._VisionReplica(busy, 1))),
         pytest.raises(TaskCancelledError),
     ):
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False), cancel)
@@ -1916,7 +2151,7 @@ def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatc
     log = Path("/engine/logs/llama-swap-embed.log")
     client = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(client), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
@@ -1930,7 +2165,7 @@ def test_exited_engine_without_a_known_log_still_names_the_death(monkeypatch) ->
 
     monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([_exited_embed_client(None)], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(_exited_embed_client(None)), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500)."
     )
@@ -1944,7 +2179,7 @@ def test_lone_rerank_replica_whose_engine_exited_names_the_model_and_the_log(mon
     log = Path("/engine/logs/llama-swap-rerank.log")
     client = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([client], lambda c: c.rerank("q", ["a"]))
+        prov_mod._call_with_failover(_pool(client), lambda c: c.rerank("q", ["a"]))
     assert str(info.value) == (
         f"The engine for {_EXITED_MODEL} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
@@ -1961,7 +2196,7 @@ def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
     lone.engine_log = Path("/engine/logs/llama-swap-embed.log")
     lone.embed.side_effect = _httpx.ConnectError("refused")
     with pytest.raises(ProviderError) as info:
-        prov_mod._call_with_failover([lone], lambda c: c.embed(["a"]))
+        prov_mod._call_with_failover(_pool(lone), lambda c: c.embed(["a"]))
     assert str(info.value) == (
         "The model server is not responding and no healthy replica is available. "
         "It may be restarting; try again in a moment."
@@ -1977,7 +2212,7 @@ def test_lone_vision_replica_whose_engine_exited_names_the_death(monkeypatch) ->
     lone = _exited_embed_client(log)
     with pytest.raises(ProviderError) as info:
         prov_mod._dispatch_vision(
-            [prov_mod._VisionReplica(lone, 1)],
+            _pool(prov_mod._VisionReplica(lone, 1)),
             lambda c: c.embed(["a"]),
         )
     assert str(info.value) == (
@@ -2032,22 +2267,37 @@ def test_request_through_the_fleet_names_the_model_and_the_engine_own_log(
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
     # The failover leg stamps health too: a second dead replica is marked
-    # unhealthy and the failure propagates.
+    # unhealthy and the failure surfaces as the not-responding provider error.
     import httpx as _httpx
 
     dead_a, dead_b = _fake_client(), _fake_client()
+    refused = _httpx.ConnectError("refused")
     dead_a.chat.side_effect = _httpx.ConnectError("refused")
-    dead_b.chat.side_effect = _httpx.ConnectError("refused")
-    pool = [prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1)]
-    with pytest.raises(_httpx.ConnectError):
+    dead_b.chat.side_effect = refused
+    pool = _pool(prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1))
+    with pytest.raises(ProviderError, match="not responding") as caught:
         prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
+    assert caught.value.__cause__ is refused
     dead_a.mark_unhealthy.assert_called_once()
     dead_b.mark_unhealthy.assert_called_once()
 
 
+def test_dispatch_vision_model_error_on_the_retry_replica_surfaces_unchanged() -> None:
+    dead, other = _fake_client(), _fake_client()
+    rejected = ProviderError("bad image", kind=ProviderErrorKind.BAD_REQUEST)
+    dead.chat.side_effect = httpx.ConnectError("refused")
+    other.chat.side_effect = rejected
+    pool = _pool(prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(other, 1))
+    with pytest.raises(ProviderError) as caught:
+        prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert caught.value is rejected
+    other.mark_unhealthy.assert_not_called()
+
+
 def test_chat_streams_from_server() -> None:
     client = _fake_client(0)
-    client.chat_stream_items.return_value = iter(["a", "b"])
+    client.chat_stream_items.return_value = _frames_of("a", "b")
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a", "b"]
     client.chat_stream_items.assert_called_once()
@@ -2056,7 +2306,7 @@ def test_chat_streams_from_server() -> None:
 def test_chat_stream_with_no_frames_yields_nothing() -> None:
     # Priming must pass an immediately-exhausted stream through, not error on it.
     client = _fake_client(0)
-    client.chat_stream_items.return_value = iter([])
+    client.chat_stream_items.return_value = _frames_of()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
     assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == []
 
@@ -2077,6 +2327,941 @@ def test_chat_stream_close_before_iteration_releases_the_request() -> None:
     stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
     stream.close()  # truncated before consuming anything
     assert closed == [True]  # the source stream (and its request slot) was released
+
+
+def _frames_of(*frames: str) -> Generator[str]:
+    """A closable frame stream, as the real client's chat_stream_items returns."""
+    yield from frames
+
+
+def _counting_client() -> MagicMock:
+    """A fake client whose reserve and release move ``in_flight`` like the real one."""
+    client = _fake_client(0)
+
+    def _reserve() -> None:
+        client.in_flight += 1
+
+    def _release() -> None:
+        client.in_flight -= 1
+
+    client.reserve.side_effect = _reserve
+    client.release.side_effect = _release
+    return client
+
+
+def _reload_twice_away_from(p: FleetProvider, old: MagicMock) -> None:
+    """Two reloads in a row: the first retires *old*, the second closes idle retired clients."""
+    p._clients = {WorkerRole.CHAT: [_counting_client()]}
+    with p._lock:
+        p._retire_clients([old])
+        p._retire_clients([])
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_chat_client_is_not_closed_by_reloads_during_its_request(streaming: bool) -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+
+    def _request(*_args: object, **_kwargs: object) -> object:
+        # The reloads land after the pick and before the call counts itself.
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        if streaming:
+            return _frames_of("a")
+        return ChatResult(text="a", tool_calls=(), finish_reason=FinishReason.STOP)
+
+    client.chat_stream_items.side_effect = _request
+    client.chat_result.side_effect = _request
+    if streaming:
+        assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a"]
+    else:
+        result = p.chat([{"role": "user", "content": "hi"}])
+        assert result.text == "a"
+    assert client.in_flight == 0  # the reservation is given back
+
+
+def test_chat_with_tools_client_is_not_closed_by_reloads_during_its_request() -> None:
+    from lilbee.providers.base import ChatToolResult
+
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+
+    def _request(*_args: object, **_kwargs: object) -> object:
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        return ChatToolResult(content="a", tool_calls=[])
+
+    client.chat_tools.side_effect = _request
+    p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+    assert client.in_flight == 0
+
+
+def test_chat_forwards_the_whole_request_to_the_reserved_client() -> None:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+    client.chat_result.return_value = ChatResult(
+        text="a", tool_calls=(), finish_reason=FinishReason.STOP
+    )
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    p.chat(messages, tools=tools, tool_choice="auto", options={"temperature": 0.2})
+    client.chat_result.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+def test_chat_stream_forwards_the_whole_request_to_the_reserved_client() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    stream = p.chat(
+        messages, stream=True, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+    assert list(stream) == ["a"]
+    client.chat_stream_items.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+def test_chat_with_tools_forwards_the_whole_request_to_the_reserved_client() -> None:
+    from lilbee.providers.base import ChatToolResult
+
+    client = _counting_client()
+    client.chat_tools.return_value = ChatToolResult(content="a", tool_calls=[])
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function"}]
+    p.chat_with_tools(messages, tools=tools, tool_choice="auto", options={"temperature": 0.2})
+    client.chat_tools.assert_called_once_with(
+        messages, tools=tools, tool_choice="auto", options={"temperature": 0.2}
+    )
+
+
+_CHAT_MESSAGES = [{"role": "user", "content": "hi"}]
+_CHAT_TOOLS = [{"type": "function"}]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda p: p.chat(_CHAT_MESSAGES, tools=_CHAT_TOOLS, options={"temperature": 0.2}),
+        lambda p: p.chat_with_tools(
+            _CHAT_MESSAGES, tools=_CHAT_TOOLS, options={"temperature": 0.2}
+        ),
+    ],
+    ids=["chat", "chat_with_tools"],
+)
+def test_chat_fits_the_context_to_the_configured_model(monkeypatch, invoke) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_counting_client()]})
+    seen: list[tuple[object, ...]] = []
+
+    def _fit(*args: object) -> object:
+        seen.append(args)
+        return _CHAT_MESSAGES
+
+    monkeypatch.setattr(p, "_fit_chat_context", _fit)
+    invoke(p)
+    assert seen == [
+        (_CHAT_MESSAGES, _CHAT_TOOLS, {"temperature": 0.2}, "org/repo/configured.gguf", None)
+    ]
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda p, model: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS, model=model),
+        lambda p, model: p.count_chat_prompt_tokens(_CHAT_MESSAGES, model=model),
+    ],
+    ids=["chat_with_tools", "count_chat_prompt_tokens"],
+)
+def test_chat_calls_accept_only_the_configured_model(monkeypatch, invoke) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    p = _provider_with_clients({WorkerRole.CHAT: [_counting_client()]})
+    invoke(p, "org/repo/configured.gguf")
+    with pytest.raises(ProviderError, match=r"configured chat model \(org/repo/configured.gguf\)"):
+        invoke(p, "org/repo/other.gguf")
+
+
+@pytest.mark.parametrize(
+    ("method", "invoke"),
+    [
+        ("chat_result", lambda p: p.chat(_CHAT_MESSAGES)),
+        ("chat_stream_items", lambda p: p.chat(_CHAT_MESSAGES, stream=True)),
+        ("chat_tools", lambda p: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS)),
+        ("count_text_tokens", lambda p: p.count_chat_text_tokens("hi")),
+        ("count_chat_prompt_tokens", lambda p: p.count_chat_prompt_tokens(_CHAT_MESSAGES)),
+    ],
+)
+def test_chat_load_failure_rebuilds_the_chat_role(monkeypatch, method, invoke) -> None:
+    client = _counting_client()
+    getattr(client, method).side_effect = ProviderError("no room", kind=ProviderErrorKind.CAPACITY)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    roles: list[WorkerRole] = []
+
+    def _rebuilt(_call: object, role: WorkerRole, _err: BaseException) -> str:
+        roles.append(role)
+        return "rebuilt"
+
+    monkeypatch.setattr(p, "_retry_rebuilt", _rebuilt)
+    assert invoke(p) == "rebuilt"
+    assert roles == [WorkerRole.CHAT]
+
+
+_SERVED_CHAT_URL = "http://127.0.0.1:8080/v1/chat/completions"
+
+
+def _timing_out_chat(monkeypatch, adapter: object, method: str, error: Exception):
+    """A chat provider whose *method* fails with *error*, served by *adapter*."""
+    client = _counting_client()
+    client.profile = adapter.request_profile(WorkerRole.CHAT)
+    client.sent.side_effect = lambda request: str(request.url) == _SERVED_CHAT_URL
+    getattr(client, method).side_effect = error
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    restarted: list[WorkerRole] = []
+    monkeypatch.setattr(p, "_force_restart", lambda role, **_k: restarted.append(role))
+    monkeypatch.setattr(p, "_rebuild_role", restarted.append)
+    return p, client, restarted
+
+
+_TIMED_CHATS = [
+    ("chat_result", lambda p: p.chat(_CHAT_MESSAGES)),
+    ("chat_tools", lambda p: p.chat_with_tools(_CHAT_MESSAGES, tools=_CHAT_TOOLS)),
+]
+
+
+@pytest.mark.parametrize(("method", "invoke"), _TIMED_CHATS)
+def test_a_timeout_on_mlx_restarts_the_chat_server_and_sends_no_retry(
+    monkeypatch, method, invoke
+) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    timeout = httpx.ReadTimeout("no answer", request=httpx.Request("POST", _SERVED_CHAT_URL))
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, method, timeout)
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        invoke(p)
+    assert caught.value.__cause__ is timeout
+    assert restarted == [WorkerRole.CHAT]
+    assert getattr(client, method).call_count == 1
+
+
+@pytest.mark.parametrize(("method", "invoke"), _TIMED_CHATS)
+def test_a_timeout_on_llama_cpp_keeps_the_one_retry_and_no_restart(
+    monkeypatch, method, invoke
+) -> None:
+    p, client, restarted = _timing_out_chat(monkeypatch, LLAMA, method, httpx.ReadTimeout("slow"))
+    with pytest.raises(ProviderError, match="not responding"):
+        invoke(p)
+    assert restarted == []
+    assert getattr(client, method).call_count == 2
+
+
+def test_a_timeout_on_llama_cpp_keeps_its_retry_when_the_engine_choice_is_gone(
+    monkeypatch,
+) -> None:
+    p, client, restarted = _timing_out_chat(
+        monkeypatch,
+        LLAMA,
+        "chat_result",
+        httpx.ReadTimeout("slow", request=httpx.Request("POST", _SERVED_CHAT_URL)),
+    )
+
+    def gone(_role: WorkerRole) -> object:
+        raise ProviderError("The engine is gone.")
+
+    monkeypatch.setattr(p, "_adopt_engine", gone)
+    with pytest.raises(ProviderError, match="not responding"):
+        p.chat(_CHAT_MESSAGES)
+    assert restarted == []
+    assert client.chat_result.call_count == 2
+
+
+def test_a_refused_connection_on_mlx_takes_the_retry_and_no_restart(monkeypatch) -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    refused = httpx.ConnectError("refused")
+    p, client, restarted = _timing_out_chat(monkeypatch, MLX, "chat_result", refused)
+    with pytest.raises(ProviderError, match="not responding"):
+        p.chat(_CHAT_MESSAGES)
+    assert restarted == []
+    assert client.chat_result.call_count == 2
+
+
+def test_vision_ocr_client_is_not_closed_by_reloads_during_its_request(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _counting_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    held: list[int] = []
+
+    def _request(*_args: object, **_kwargs: object) -> str:
+        _reload_twice_away_from(p, client)
+        client.close.assert_not_called()
+        held.append(client.in_flight)
+        return "ocr text"
+
+    client.chat_abortable.side_effect = _request
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert held == [1]  # reserved while the call ran
+    assert client.in_flight == 0  # given back
+
+
+def test_vision_ocr_gives_the_reservation_back_when_it_fails(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _counting_client()
+    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError, match="boom"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert client.in_flight == 0
+
+
+def test_vision_failover_reserves_each_replica_only_while_it_runs() -> None:
+    failed, spare = _counting_client(), _counting_client()
+    seen: list[tuple[int, int]] = []
+
+    def _call(client: MagicMock) -> str:
+        seen.append((failed.in_flight, spare.in_flight))
+        if client is failed:
+            raise httpx.ConnectError("refused")
+        return "ok"
+
+    pool = _pool(prov_mod._VisionReplica(failed, 1), prov_mod._VisionReplica(spare, 1))
+    assert prov_mod._dispatch_vision(pool, _call) == "ok"
+    assert seen == [(1, 0), (0, 1)]  # the failed replica is let go before the retry
+    assert (failed.in_flight, spare.in_flight) == (0, 0)
+
+
+def test_vision_ocr_cancelled_while_waiting_reserves_nothing(monkeypatch) -> None:
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    class _CancelAfterOneWait:
+        """Not set on the first poll, so the request waits; set on the next."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            return self.polls > 1
+
+    monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 0.01)
+    busy, cancel = _counting_client(), _CancelAfterOneWait()
+    pool = _pool(prov_mod._VisionReplica(busy, 1))
+    with prov_mod._VISION_DISPATCHER.slot(pool):
+        with pytest.raises(TaskCancelledError):
+            prov_mod._dispatch_vision(pool, lambda c: "x", cancel)
+        assert cancel.polls == 2  # it waited once, then saw the cancel
+        assert busy.in_flight == 1  # only the slot holder's reservation
+    assert busy.in_flight == 0
+
+
+def _serving_client(served: list[bool]) -> MagicMock:
+    """A counting client that records, at each call, whether a reload had closed it."""
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    client = _counting_client()
+
+    def _serve(result: object) -> Callable[..., object]:
+        def _call(*_args: object, **_kwargs: object) -> object:
+            served.append(client.close.called)
+            return result
+
+        return _call
+
+    client.chat_result.side_effect = _serve(
+        ChatResult(text="a", tool_calls=(), finish_reason=FinishReason.STOP)
+    )
+    client.chat_stream_items.side_effect = lambda *_a, **_k: _serve(_frames_of("a"))()
+    client.embed.side_effect = _serve([[0.1]])
+    return client
+
+
+@pytest.mark.parametrize("route", ["chat", "stream", "embed"])
+def test_a_pick_after_two_reloads_reserves_a_live_client(monkeypatch, route: str) -> None:
+    # Each pool read is followed by two reloads: the first retires what the read
+    # returned, the second closes it while idle. The pick must not land on it.
+    role = WorkerRole.EMBED if route == "embed" else WorkerRole.CHAT
+    served: list[bool] = []
+    p = _provider_with_clients({role: [_serving_client(served)]})
+    read = p._require_clients
+
+    def _read_then_reload_twice(asked: WorkerRole) -> list[LlamaServerClient]:
+        clients = read(asked)
+        p._clients[role] = [_serving_client(served)]
+        with p._lock:
+            p._retire_clients(list(clients))
+            p._retire_clients([])
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _read_then_reload_twice)
+    messages = [{"role": "user", "content": "hi"}]
+    if route == "embed":
+        assert p.embed(["x"]) == [[0.1]]
+    elif route == "stream":
+        assert list(p.chat(messages, stream=True)) == ["a"]
+    else:
+        assert p.chat(messages).text == "a"
+    assert served == [False]  # one call, on a client no reload closed
+
+
+def test_an_ocr_pick_after_two_reloads_in_its_slot_wait_reserves_a_live_client(
+    monkeypatch,
+) -> None:
+    # Page one holds the only slot on the old client. Page two waits for a slot;
+    # two reloads during that wait retire and close the old client. When the slot
+    # frees, page two must run on the new client.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    old, new = _fake_client(), _fake_client()  # in_flight stays 0: the reload closes old
+    entered, finish = threading.Event(), threading.Event()
+    served: list[tuple[str, bool]] = []
+
+    def _old_call(*_args: object, **_kwargs: object) -> str:
+        served.append(("old", old.close.called))
+        entered.set()
+        finish.wait(10)
+        return "old text"
+
+    old.chat_abortable.side_effect = _old_call
+    new.chat_abortable.return_value = "new text"
+    p = _provider_with_clients({WorkerRole.VISION: [old]})
+
+    class _SeesTheWait:
+        """Never set; marks that page two found the pool full and waited at least once."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+            self.waiting = threading.Event()
+
+        def is_set(self) -> bool:
+            # Each pass polls twice, the dispatcher and then the pool's reload wait,
+            # so a third poll comes after page two waited once on the full pool.
+            self.polls += 1
+            if self.polls >= 3:
+                self.waiting.set()
+            return False
+
+    results: list[str] = []
+    first = threading.Thread(target=lambda: results.append(p.vision_ocr(b"png", "")))
+    first.start()
+    assert entered.wait(10)
+    probe = _SeesTheWait()
+    second = threading.Thread(target=lambda: results.append(p.vision_ocr(b"png", "", cancel=probe)))
+    second.start()
+    assert probe.waiting.wait(10)
+    p._clients[WorkerRole.VISION] = [new]
+    with p._lock:
+        p._retire_clients([old])
+        p._retire_clients([])
+    old.close.assert_called_once()  # the second reload closed the idle old client
+    finish.set()
+    first.join(10)
+    second.join(10)
+    assert sorted(results) == ["new text", "old text"]
+    assert served == [("old", False)]  # only page one ran on old, before it closed
+
+
+def test_vision_ocr_attempts_a_failing_fleet_check_once(monkeypatch) -> None:
+    # A build that fails with a retryable kind surfaces at once, not after the
+    # gateway retries: the fleet check runs once, outside the retry loop.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    checks: list[WorkerRole] = []
+
+    def _engine_missing(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        raise ProviderError("the engine library is missing", kind=ProviderErrorKind.SERVER)
+
+    monkeypatch.setattr(p, "_require_clients", _engine_missing)
+    with pytest.raises(ProviderError, match="engine library is missing"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert checks == [WorkerRole.VISION]
+    client.chat_abortable.assert_not_called()
+
+
+def _start_vision_reload(p: FleetProvider, monkeypatch) -> None:
+    """After the call's fleet check, a reload drops vision; *owed* says one brings it back."""
+    check = p._require_clients
+
+    def _check_then_drop(role: WorkerRole) -> list[LlamaServerClient]:
+        clients = check(role)
+        p._clients.pop(WorkerRole.VISION)
+        p._reload_owed = frozenset({WorkerRole.VISION})
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _check_then_drop)
+
+
+def test_vision_ocr_sees_a_cancel_while_a_reload_owes_its_clients(monkeypatch) -> None:
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    class _CancelOnSecondPoll:
+        """Not set on the dispatcher's first poll; set on the reload wait's poll."""
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            return self.polls > 1
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    cancel = _CancelOnSecondPoll()
+    with pytest.raises(TaskCancelledError):
+        p.vision_ocr(b"png", "org/repo/v.gguf", cancel=cancel)
+    assert cancel.polls == 2  # the reload wait checked the cancel
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_ocr_waits_out_a_reload_and_runs_on_the_new_client(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    old, new = _fake_client(), _fake_client()
+    new.chat_abortable.return_value = "new text"
+    p = _provider_with_clients({WorkerRole.VISION: [old]})
+    _start_vision_reload(p, monkeypatch)
+
+    class _CountedCondition(threading.Condition):
+        """The reload condition; counts the wait slices that start on it."""
+
+        waits = 0
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.waits += 1
+            return super().wait(timeout)
+
+    reload_done = _CountedCondition(p._lock)
+    monkeypatch.setattr(p, "_reload_done", reload_done)
+    results: list[str] = []
+    page = threading.Thread(
+        target=lambda: results.append(p.vision_ocr(b"png", "org/repo/v.gguf")), daemon=True
+    )
+    page.start()
+    assert poll_until(lambda: reload_done.waits >= 2)  # one recheck passed, still owed
+    with p._lock:
+        p._clients[WorkerRole.VISION] = [new]
+        p._reload_owed = frozenset()
+        p._reload_done.notify_all()
+    page.join(10)
+    assert results == ["new text"]
+    old.chat_abortable.assert_not_called()
+
+
+def test_vision_ocr_raises_when_a_reload_left_no_vision_server(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    check = p._require_clients
+
+    def _check_then_drop_for_good(role: WorkerRole) -> list[LlamaServerClient]:
+        clients = check(role)
+        p._reload_owed = frozenset()  # the reload ended without vision
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _check_then_drop_for_good)
+    with pytest.raises(ProviderError) as expected:
+        p._raise_no_clients(WorkerRole.VISION)
+    with pytest.raises(ProviderError, match=re.escape(str(expected.value))):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    client.chat_abortable.assert_not_called()
+
+
+class _ReloadClock:
+    """A fake clock and reload condition: each wait slice moves the clock by its timeout.
+
+    The reload never brings vision back, so only a deadline ends the wait; a wait
+    with no end fails after *max_waits* slices instead of hanging the test.
+    """
+
+    def __init__(self, max_waits: int = 50) -> None:
+        self.now = 0.0
+        self.waits: list[float] = []
+        self._max_waits = max_waits
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def wait(self, timeout: float | None = None) -> bool:
+        assert timeout is not None, "a reload wait slice has no timeout"
+        self.waits.append(timeout)
+        assert len(self.waits) <= self._max_waits, "the reload wait never ended"
+        self.now += timeout
+        return False
+
+    def wait_for(self, predicate: Callable[[], bool], timeout: float | None = None) -> bool:
+        if not predicate():
+            self.wait(timeout)
+        return predicate()
+
+    def notify_all(self) -> None:
+        return None
+
+
+def _install_reload_clock(p: FleetProvider, monkeypatch) -> _ReloadClock:
+    clock = _ReloadClock()
+    monkeypatch.setattr("lilbee.providers.fleet.provider.time.monotonic", clock.monotonic)
+    monkeypatch.setattr(p, "_reload_done", clock)
+    return clock
+
+
+def _owed_vision_page(
+    monkeypatch, load_budget: float
+) -> tuple[FleetProvider, MagicMock, _ReloadClock]:
+    """A vision provider whose call meets a reload that owes vision and never ends."""
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", load_budget)
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    _start_vision_reload(p, monkeypatch)
+    return p, client, _install_reload_clock(p, monkeypatch)
+
+
+def _assert_reload_timeout(raised: pytest.ExceptionInfo[ProviderError]) -> None:
+    assert raised.value.kind is ProviderErrorKind.STARTING
+    assert "did not come back from its reload in time" in str(raised.value)
+
+
+def test_vision_reload_wait_with_no_page_limit_ends_at_the_load_budget(monkeypatch) -> None:
+    # Slices of the 0.5 s recheck, the last one cut to the time left.
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=1.25)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5, 0.5, 0.25]
+    assert clock.now == 1.25
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_wait_with_a_page_limit_ends_at_the_page_deadline(monkeypatch) -> None:
+    # The page deadline is ocr_timeout plus the load budget: 1.0 + 0.25. The wait
+    # runs to it, not to the load budget alone (0.25).
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=0.25)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=1.0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5, 0.5, 0.25]
+    assert clock.now == 1.25
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_wait_with_a_zero_load_budget_does_not_wait(monkeypatch) -> None:
+    # A load budget of 0 reserves no time for a load, as in the PDF budget.
+    p, client, clock = _owed_vision_page(monkeypatch, load_budget=0.0)
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == []
+    client.chat_abortable.assert_not_called()
+
+
+def test_vision_reload_budget_counts_from_the_start_of_the_wait(monkeypatch) -> None:
+    # A page with no limit generates for 1000 s, hits a gateway error and meets a
+    # reload. Its reload wait still gets the whole load budget.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 0.5)
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    clock = _install_reload_clock(p, monkeypatch)
+
+    def _generate_then_meet_a_reload(*_args: object, **_kwargs: object) -> str:
+        clock.now += 1000.0
+        p._clients.pop(WorkerRole.VISION)
+        p._reload_owed = frozenset({WorkerRole.VISION})
+        raise ProviderError("bad gateway", kind=ProviderErrorKind.SERVER)
+
+    client.chat_abortable.side_effect = _generate_then_meet_a_reload
+    with pytest.raises(ProviderError) as raised:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=0)
+    _assert_reload_timeout(raised)
+    assert clock.waits == [0.5]
+    assert clock.now == 1000.5
+    assert client.chat_abortable.call_count == 1
+
+
+def test_embed_failover_after_two_reloads_retries_on_a_live_client() -> None:
+    # The first replica refuses after two reloads retired the pool: the retry must
+    # run on the new pool, not on the old spare that the second reload closed.
+    served: list[bool] = []
+    first, spare, fresh = _counting_client(), _serving_client(served), _serving_client(served)
+    p = _provider_with_clients({WorkerRole.EMBED: [first, spare]})
+
+    def _refuse_after_reloads(*_args: object, **_kwargs: object) -> object:
+        p._clients[WorkerRole.EMBED] = [fresh]
+        with p._lock:
+            p._retire_clients([first, spare])
+            p._retire_clients([])
+        raise httpx.ConnectError("refused")
+
+    first.embed.side_effect = _refuse_after_reloads
+    assert p.embed(["x"]) == [[0.1]]
+    assert served == [False]  # the retry ran once, on a client no reload closed
+    spare.close.assert_called_once()
+
+
+def test_embed_failover_with_two_reloads_during_its_wait_retries_on_a_live_client(
+    monkeypatch,
+) -> None:
+    # The first replica refuses with the pool intact. Two reloads then land inside
+    # the failover itself, after its wait: the retry must run on the new pool.
+    served: list[bool] = []
+    first, spare, fresh = _counting_client(), _serving_client(served), _serving_client(served)
+    p = _provider_with_clients({WorkerRole.EMBED: [first, spare]})
+    check = p._require_clients
+    checks: list[WorkerRole] = []
+
+    def _reload_twice_in_the_failover(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        clients = check(role)
+        if len(checks) == 2:  # the failover's wait
+            p._clients[WorkerRole.EMBED] = [fresh]
+            with p._lock:
+                p._retire_clients([first, spare])
+                p._retire_clients([])
+        return clients
+
+    monkeypatch.setattr(p, "_require_clients", _reload_twice_in_the_failover)
+    first.embed.side_effect = httpx.ConnectError("refused")
+    assert p.embed(["x"]) == [[0.1]]
+    assert served == [False]  # the retry ran once, on a client no reload closed
+    spare.close.assert_called_once()
+    assert len(checks) == 2
+
+
+def test_embed_failover_with_no_server_left_surfaces_the_connection_error(monkeypatch) -> None:
+    first = _counting_client()
+    p = _provider_with_clients({WorkerRole.EMBED: [first, _counting_client()]})
+    refused = httpx.ConnectError("refused")
+    check = p._require_clients
+    checks: list[WorkerRole] = []
+
+    def _no_server_on_the_retry(role: WorkerRole) -> list[LlamaServerClient]:
+        checks.append(role)
+        if len(checks) > 1:
+            raise ProviderError("the embed server is still restarting")
+        return check(role)
+
+    monkeypatch.setattr(p, "_require_clients", _no_server_on_the_retry)
+    first.embed.side_effect = refused
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        prov_mod._call_with_failover(p._live_pool(WorkerRole.EMBED), lambda c: c.embed(["x"]))
+    assert caught.value.__cause__ is refused
+    assert len(checks) == 2  # the retry's check ran and its error gave way
+
+
+def _vision_pair(
+    monkeypatch, first_fails: Exception
+) -> tuple[FleetProvider, MagicMock, MagicMock, MagicMock]:
+    """A vision pool of two; the first call reloads twice to a new client, then fails."""
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    first, spare, fresh = _fake_client(), _fake_client(), _fake_client()
+    spare.chat_abortable.return_value = "spare text"
+    fresh.chat_abortable.return_value = "fresh text"
+    p = _provider_with_clients({WorkerRole.VISION: [first, spare]})
+
+    def _fail_after_reloads(*_args: object, **_kwargs: object) -> str:
+        p._clients[WorkerRole.VISION] = [fresh]
+        with p._lock:
+            p._retire_clients([first, spare])
+            p._retire_clients([])
+        raise first_fails
+
+    first.chat_abortable.side_effect = _fail_after_reloads
+    return p, first, spare, fresh
+
+
+def test_vision_failover_after_two_reloads_retries_on_a_live_client(monkeypatch) -> None:
+    p, first, spare, _fresh = _vision_pair(monkeypatch, httpx.ConnectError("refused"))
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "fresh text"
+    first.mark_unhealthy.assert_called_once()
+    spare.chat_abortable.assert_not_called()  # closed by the second reload
+
+
+def test_vision_gateway_retry_after_two_reloads_runs_on_a_live_client(monkeypatch) -> None:
+    gateway = ProviderError("bad gateway", kind=ProviderErrorKind.SERVER)
+    p, first, spare, _fresh = _vision_pair(monkeypatch, gateway)
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "fresh text"
+    assert first.chat_abortable.call_count == 1
+    spare.chat_abortable.assert_not_called()
+
+
+def test_vision_failover_with_no_server_left_surfaces_the_connection_error(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    first, spare = _fake_client(), _fake_client()
+    refused = httpx.ConnectError("refused")
+    p = _provider_with_clients({WorkerRole.VISION: [first, spare]})
+
+    def _refuse_after_vision_left(*_args: object, **_kwargs: object) -> str:
+        p._clients.pop(WorkerRole.VISION)  # a reload ended without vision
+        raise refused
+
+    first.chat_abortable.side_effect = _refuse_after_vision_left
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert caught.value.__cause__ is refused
+    spare.chat_abortable.assert_not_called()
+
+
+def test_live_pool_waits_again_when_a_reload_empties_it_before_the_pick() -> None:
+    reads: list[list[str]] = [[], ["live"]]
+    waits: list[int] = []
+    pool = prov_mod._LivePool(threading.RLock(), lambda: reads.pop(0), lambda: waits.append(1))
+    assert pool.pick(list) == ["live"]
+    assert waits == [1, 1]  # the empty read sent the pick back to wait
+
+
+def test_vision_dispatcher_does_not_wait_for_a_slot_freed_after_its_pick(monkeypatch) -> None:
+    # A slot freed between a full pick and the wait must not be slept through.
+    monkeypatch.setattr(prov_mod, "_DISPATCH_HEALTH_RECHECK_S", 60.0)
+    dispatcher = prov_mod._VisionDispatcher()
+    only = _fake_client()
+    replicas = [prov_mod._VisionReplica(only, 1)]
+    held = dispatcher.slot(_pool(*replicas))
+    assert held.__enter__() is only
+
+    class _FreeTheSlotAfterThePick:
+        """The pool lock; leaving it the first time frees the held slot."""
+
+        def __init__(self) -> None:
+            self.left = 0
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_exc: object) -> None:
+            self.left += 1
+            if self.left == 1:
+                held.__exit__(None, None, None)
+
+    lock = _FreeTheSlotAfterThePick()
+    pool = prov_mod._LivePool(lock, lambda: replicas, lambda: None)
+    started = time.monotonic()
+    with dispatcher.slot(pool) as client:
+        assert client is only
+    assert lock.left == 2  # one full pick, then the pick that took the freed slot
+    assert time.monotonic() - started < 5.0
+
+
+def test_chat_token_counts_hold_the_reservation_for_the_call() -> None:
+    client = _counting_client()
+    seen: list[int] = []
+
+    def _text_tokens(_text: str) -> int:
+        seen.append(client.in_flight)
+        return 3
+
+    def _prompt_tokens(*_args: object, **_kwargs: object) -> int:
+        seen.append(client.in_flight)
+        return 7
+
+    client.count_text_tokens.side_effect = _text_tokens
+    client.count_chat_prompt_tokens.side_effect = _prompt_tokens
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert p.count_chat_text_tokens("hi") == 3
+    assert p.count_chat_prompt_tokens([{"role": "user", "content": "hi"}]) == 7
+    assert seen == [1, 1]  # reserved during each call
+    assert client.in_flight == 0
+
+
+def test_chat_call_gives_the_reservation_back_when_it_fails() -> None:
+    client = _counting_client()
+    client.chat_result.side_effect = ProviderError("bad", kind=ProviderErrorKind.BAD_REQUEST)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    with pytest.raises(ProviderError, match="bad"):
+        p.chat([{"role": "user", "content": "hi"}])
+    assert client.in_flight == 0
+
+
+def test_chat_stream_holds_the_reservation_until_it_is_exhausted() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1  # held while the caller reads
+    assert next(stream) == "a"
+    assert client.in_flight == 1
+    assert list(stream) == ["b"]
+    assert client.in_flight == 0
+    stream.close()  # a second close gives nothing back twice
+    assert client.in_flight == 0
+
+
+def test_chat_stream_closed_early_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    stream.close()
+    assert client.in_flight == 0
+
+
+def test_chat_stream_gives_the_reservation_back_when_closing_the_source_fails() -> None:
+    class _SourceThatFailsToClose:
+        def __iter__(self) -> _SourceThatFailsToClose:
+            return self
+
+        def __next__(self) -> str:
+            return "a"
+
+        def close(self) -> None:
+            raise OSError("socket already gone")
+
+    client = _counting_client()
+    client.chat_stream_items.return_value = _SourceThatFailsToClose()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    with pytest.raises(OSError, match="socket already gone"):
+        stream.close()
+    assert client.in_flight == 0
+
+
+def test_chat_stream_that_fails_midway_gives_the_reservation_back() -> None:
+    def _frames():
+        yield "a"
+        raise ProviderError("died", kind=ProviderErrorKind.BAD_REQUEST)
+
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert next(stream) == "a"
+    assert client.in_flight == 1
+    with pytest.raises(ProviderError, match="died"):
+        next(stream)
+    assert client.in_flight == 0
+
+
+def test_chat_stream_that_fails_to_open_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.side_effect = ProviderError("no", kind=ProviderErrorKind.BAD_REQUEST)
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    with pytest.raises(ProviderError, match="no"):
+        p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 0
+
+
+def test_chat_stream_dropped_unread_gives_the_reservation_back() -> None:
+    client = _counting_client()
+    client.chat_stream_items.return_value = _frames_of("a")
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert client.in_flight == 1
+    del stream
+    gc.collect()
+    assert client.in_flight == 0
 
 
 def _book_of(monkeypatch: pytest.MonkeyPatch, engine: object) -> None:
@@ -2497,7 +3682,7 @@ def test_giant_model_client_timeout_covers_its_cold_load(monkeypatch) -> None:
 
     launch = _fake_launch(WorkerRole.CHAT, weights_bytes=300 * _GB)
     kwargs = _captured_client_kwargs(monkeypatch, launch)
-    health_timeout = swap_config_mod._health_check_timeout_s([launch])
+    health_timeout = swap_config_mod.health_check_timeout_s([launch])
     assert health_timeout > prov_mod._REQUEST_TIMEOUT_FLOOR_S
     assert kwargs["timeout"] >= health_timeout
     assert kwargs["timeout"] == health_timeout + prov_mod._REQUEST_TIMEOUT_GENERATION_MARGIN_S
@@ -3334,6 +4519,23 @@ def test_role_device_sets_unions_replicas_and_skips_unpinned() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "var",
+    [
+        "CUDA_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "GGML_VK_VISIBLE_DEVICES",
+        "ONEAPI_DEVICE_SELECTOR",
+    ],
+)
+def test_role_device_sets_reads_every_backends_pin_variable(var: str) -> None:
+    launch = InstanceLaunch(
+        role=WorkerRole.EMBED, argv=[], env_overrides={var: "2"}, model="embed-0"
+    )
+    assert prov_mod._role_device_sets([launch]) == {WorkerRole.EMBED: frozenset({f"{var}=2"})}
+
+
 def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     # Chat and embed pinned to the same card must warm one at a time, embed
     # first: concurrent loads on a shared device race each other for VRAM and
@@ -3835,11 +5037,10 @@ class TestEmbedTokenCap:
         assert FleetProvider().embed_token_cap() == 8184
         assert seen == ["org/repo/e.gguf"]
 
-    def test_health_is_clean_when_token_sizing_self_corrects(self, monkeypatch) -> None:
-        """The chunker already switches to token sizing on its own below this cap,
+    def test_health_is_clean_when_plain_chunking_sizes_to_the_cap(self, monkeypatch) -> None:
+        """Plain chunking sizes chunks by the model's tokens up to this cap,
         so health has nothing actionable to report."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 504)
         assert FleetProvider().health_warnings() == []
@@ -3968,13 +5169,13 @@ class TestReserveSpreadsLoad:
         # each get exactly one request instead of all landing on the first
         # (the thundering herd that left cards idle on the 8x A100 fleet).
         replicas = [_FakeReplica() for _ in range(4)]
-        picked = [prov_mod._reserve_least_in_flight(replicas) for _ in range(4)]
+        picked = [prov_mod._reserve_least_busy(replicas) for _ in range(4)]
         assert {id(c) for c in picked} == {id(c) for c in replicas}
         assert all(r.in_flight == 1 for r in replicas)
 
     def test_call_with_failover_releases_the_reservation(self) -> None:
         replicas = [_FakeReplica(), _FakeReplica()]
-        prov_mod._call_with_failover(replicas, lambda c: c.embed(["x"]))
+        prov_mod._call_with_failover(_pool(*replicas), lambda c: c.embed(["x"]))
         assert all(r.in_flight == 0 for r in replicas)  # reservation released
 
     def test_failover_releases_both_reservations(self) -> None:
@@ -3982,9 +5183,29 @@ class TestReserveSpreadsLoad:
 
         bad = _FakeReplica(fail=httpx.ConnectError("refused"))
         good = _FakeReplica()
-        prov_mod._call_with_failover([bad, good], lambda c: c.embed(["x"]))
+        prov_mod._call_with_failover(_pool(bad, good), lambda c: c.embed(["x"]))
         assert bad.in_flight == 0 and good.in_flight == 0  # both released
         assert good.calls == 1 and not bad.healthy  # retried onto the healthy one
+
+    def test_every_replica_unreachable_raises_a_provider_error(self) -> None:
+        refused = httpx.ConnectError("refused")
+        first = _FakeReplica(fail=refused)
+        second = _FakeReplica(fail=refused)
+        with pytest.raises(ProviderError, match="not responding") as info:
+            prov_mod._call_with_failover(_pool(first, second), lambda c: c.embed(["x"]))
+        assert info.value.kind is ProviderErrorKind.CONNECTION
+        assert info.value.__cause__ is refused
+        assert not first.healthy and not second.healthy
+        assert first.in_flight == 0 and second.in_flight == 0
+
+    def test_a_model_error_on_the_retry_replica_surfaces_unchanged(self) -> None:
+        bad = _FakeReplica(fail=httpx.ConnectError("refused"))
+        rejected = ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST)
+        other = _FakeReplica(fail=rejected)
+        with pytest.raises(ProviderError) as info:
+            prov_mod._call_with_failover(_pool(bad, other), lambda c: c.embed(["x"]))
+        assert info.value is rejected
+        assert other.healthy
 
     def test_concurrent_dispatch_does_not_pile_on_one_replica(self) -> None:
         import threading
@@ -3995,9 +5216,10 @@ class TestReserveSpreadsLoad:
         # With the atomic reserve the 8 requests spread evenly (2 per replica);
         # without it the herd piled onto whichever replica read idlest first.
         overlap = threading.Barrier(8)
+        pool = _pool(*replicas)
 
         def _dispatch() -> None:
-            prov_mod._call_with_failover(replicas, lambda c: (overlap.wait(), c.embed(["x"]))[1])
+            prov_mod._call_with_failover(pool, lambda c: (overlap.wait(), c.embed(["x"]))[1])
 
         threads = [threading.Thread(target=_dispatch) for _ in range(8)]
         for t in threads:
@@ -4708,7 +5930,7 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> 
         lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
     )
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
@@ -4718,7 +5940,7 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> 
         "plan_all_launches",
         lambda *, engines: planning_mod.FleetPlan(
             (chat, vision, embed),
-            co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
         ),
     )
 
@@ -4811,7 +6033,7 @@ class TestPlanProbeLifecycle:
             lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
         )
         monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
-        monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+        monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
         monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: order.append("reap"))
         monkeypatch.setattr(
@@ -5040,7 +6262,7 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "kill_engine", lambda _data_dir: None)
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.READY)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda engine: None)
     # Everything the test configures is placeable and buildable unless overridden.
     monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda engine: 0)
@@ -5078,7 +6300,7 @@ def test_ladder_never_kills_a_live_engine_on_a_probe_failure(monkeypatch, tmp_pa
     reaped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(prov_mod, "reap_stale", lambda d, **_k: reaped.append(Path(d)))
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # every probe fails
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # every probe fails
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
@@ -5538,6 +6760,111 @@ def test_ladder_replaces_an_unused_incompatible_machine_engine(monkeypatch, tmp_
     assert swap.binds == []  # incompatible: never bound
     assert stopped == [machine]  # the unused incumbent was stopped...
     assert built and built[0] == machine  # ...and the slot rebuilt, not overflowed
+
+
+def _failed_record_ladder(monkeypatch, tmp_path: Path, *, pin: str):
+    """A machine slot whose engine answers but never loaded, recorded under *pin*."""
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.FAILED)
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin=pin, model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    return swap, machine, built, stopped
+
+
+def test_ladder_rebuilds_an_unused_engine_that_never_loaded(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-a")
+    assert FleetProvider()._ensure_fleet() is True
+    assert swap.binds == []  # the hung engine is not bound
+    assert stopped == [machine]
+    assert built and built[0] == machine
+
+
+def test_ladder_binds_its_own_engine_without_a_load_proof_while_in_use(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A live user may never have asked for a load, so an in-use engine is not called failed."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-a")
+    holder = hold_user_lock(machine, pid=999_888)
+    assert FleetProvider()._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert swap.started == []
+    assert stopped == []
+    holder.release_and_check_last()
+
+
+def test_ladder_overflows_around_a_foreign_engine_that_never_loaded_while_in_use(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-OTHER")
+    holder = hold_user_lock(machine, pid=999_888)
+    assert FleetProvider()._ensure_fleet() is True
+    assert swap.binds == []
+    assert stopped == []  # a live user's engine is never stopped
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"
+    holder.release_and_check_last()
+
+
+def test_ladder_rebuilds_an_unused_foreign_engine_that_never_loaded(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _swap, machine, built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-OTHER")
+    assert FleetProvider()._ensure_fleet() is True
+    assert stopped == [machine]
+    assert built and built[0] == machine
+
+
+def test_ladder_keeps_an_idle_engine_even_when_it_is_old(monkeypatch, tmp_path: Path) -> None:
+    swap, _machine, _built, stopped = _failed_record_ladder(monkeypatch, tmp_path, pin="pin-a")
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.IDLE)
+    assert FleetProvider()._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert stopped == []
+
+
+def test_healthy_states_leaves_out_a_failed_group(monkeypatch, tmp_path: Path) -> None:
+    machine = tmp_path / "machine-slot"
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-embed", role="embed")
+    verdicts = {4100: EngineReadiness.FAILED}
+    monkeypatch.setattr(
+        prov_mod, "engine_readiness", lambda state, *, now: verdicts.get(state.proxy_port)
+    )
+    assert prov_mod._healthy_states(machine) == {}
+    verdicts[4100] = EngineReadiness.IDLE
+    assert set(prov_mod._healthy_states(machine)) == {SwapGroup.CHAT, SwapGroup.EMBED}
+    verdicts[4100] = EngineReadiness.FAILED
+    assert set(prov_mod._healthy_states(machine, in_use=True)) == {
+        SwapGroup.CHAT,
+        SwapGroup.EMBED,
+    }
+    verdicts[4100] = None
+    assert prov_mod._healthy_states(machine, in_use=True) == {}
+    assert prov_mod._healthy_states(machine) == {}
+
+
+def test_the_slot_wait_keeps_waiting_on_an_in_use_engine_that_never_loaded(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The wait compares the in-use view the ladder took, so a failed record is no change."""
+    machine = tmp_path / "machine-slot"
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: EngineReadiness.FAILED)
+    monkeypatch.setattr(prov_mod, "live_users_exist", lambda _d, **_k: True)
+    before = prov_mod._healthy_states(machine, in_use=True)
+    assert set(before) == {SwapGroup.CHAT}
+    polls: list[float] = []
+    monkeypatch.setattr(prov_mod.time, "sleep", polls.append)
+    prov_mod._await_slot_change(machine, before, time.monotonic() + 0.05)
+    assert len(polls) > 1  # it ran to the deadline instead of returning on the first poll
 
 
 def test_last_out_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
@@ -6200,13 +7527,13 @@ def test_ladder_probes_each_group_once_per_pass(monkeypatch, tmp_path: Path) -> 
 
     _swap, machine = _bindable_machine(monkeypatch, tmp_path)
     probed: list[int | None] = []
-    real_healthy = prov_mod.state_is_healthy
+    real_readiness = prov_mod.engine_readiness
 
-    def counting_probe(state):
+    def counting_probe(state, *, now):
         probed.append(state.proxy_port)
-        return real_healthy(state)
+        return real_readiness(state, now=now)
 
-    monkeypatch.setattr(prov_mod, "state_is_healthy", counting_probe)
+    monkeypatch.setattr(prov_mod, "engine_readiness", counting_probe)
     # Want a model the recorded engine does not serve, so the bind fails and the
     # replaceability check runs too -- the path that used to re-probe. A live
     # peer keeps that check from short-circuiting on membership.
@@ -6519,6 +7846,88 @@ def test_rediscover_releases_unused_holds_when_the_retry_fails(monkeypatch) -> N
     assert released == [1]
 
 
+def test_a_transport_failure_on_the_rediscover_retry_is_not_responding(monkeypatch) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    refused = httpx.ConnectError("refused")
+
+    def _call() -> str:
+        raise refused
+
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p._with_rediscover(_call)
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
+    assert caught.value.__cause__ is refused
+
+
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError(f"server answered {status}", request=request, response=response)
+
+
+_MODEL_ERRORS = [
+    pytest.param(
+        lambda: ProviderError("bad input", kind=ProviderErrorKind.BAD_REQUEST),
+        id="provider-error",
+    ),
+    pytest.param(lambda: ValueError("malformed reply"), id="value-error"),
+    pytest.param(lambda: _status_error(500), id="http-status-error"),
+]
+
+
+@pytest.mark.parametrize("make_error", _MODEL_ERRORS)
+def test_a_model_error_on_the_rediscover_retry_surfaces_unchanged(
+    monkeypatch, make_error: Callable[[], Exception]
+) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
+    rejected = make_error()
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _connection_error()
+        raise rejected
+
+    with pytest.raises(type(rejected), match=str(rejected)) as caught:
+        p._with_rediscover(_call)
+    assert caught.value is rejected
+    assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("make_error", _MODEL_ERRORS)
+def test_a_model_error_after_a_rebuild_surfaces_unchanged(
+    monkeypatch, make_error: Callable[[], Exception]
+) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
+    rejected = make_error()
+    held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
+
+    def _call() -> str:
+        raise rejected
+
+    with pytest.raises(type(rejected), match=str(rejected)) as caught:
+        p._retry_rebuilt(_call, WorkerRole.CHAT, held_port)
+    assert caught.value is rejected
+
+
+def test_a_transport_failure_after_a_rebuild_is_not_responding(monkeypatch) -> None:
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_rebuild_role", lambda _role: None)
+    refused = httpx.ConnectError("refused")
+    held_port = ProviderError("port held", kind=ProviderErrorKind.CONNECTION)
+
+    def _call() -> str:
+        raise refused
+
+    with pytest.raises(ProviderError, match="not responding") as caught:
+        p._retry_rebuilt(_call, WorkerRole.CHAT, held_port)
+    assert caught.value.__cause__ is refused
+
+
 def test_a_failed_sweep_after_a_rediscover_keeps_the_retry_result(monkeypatch) -> None:
     p = FleetProvider()
     monkeypatch.setattr(p, "_drop_swap_refs", lambda **_k: None)
@@ -6784,7 +8193,7 @@ def test_chat_stream_open_failure_rediscovers_once_and_streams(monkeypatch, tmp_
         if not clients:
             client.chat_stream_items.return_value = _dead_stream()
         else:
-            client.chat_stream_items.return_value = iter(["a", "b"])
+            client.chat_stream_items.return_value = _frames_of("a", "b")
         clients.append(client)
         return client
 
@@ -6840,6 +8249,85 @@ def test_chat_with_tools_resets_stale_tracker_after_eviction(monkeypatch) -> Non
     assert snap.phase is WarmPhase.READY
     assert begins == [str(cfg.chat_model)]
     assert not p._lazy_warming
+
+
+def test_chat_with_tools_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_tools.return_value = "tools-ok"
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p.chat_with_tools(msgs, tools=[_SEARCH_TOOL], tool_choice="auto") == "tools-ok"
+
+    sent = client.chat_tools.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+    assert client.count_chat_prompt_tokens.call_args.kwargs["tool_choice"] == "auto"
+
+
+def test_chat_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_result.return_value = "chat-ok"
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    p._chat_ctx = 2048
+    msgs = _tool_convo()
+
+    assert p.chat(msgs, tools=[_SEARCH_TOOL], tool_choice="required") == "chat-ok"
+
+    sent = client.chat_result.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+    assert client.count_chat_prompt_tokens.call_args.kwargs["tool_choice"] == "required"
+
+
+def test_chat_stream_sends_the_server_a_prompt_that_fits_as_rendered() -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    client.chat_stream_items.return_value = _frames_of("a", "b")
+    p = _tool_convo_near_budget_provider(client)
+    msgs = _tool_convo()
+
+    assert list(p.chat(msgs, stream=True, tools=[_SEARCH_TOOL])) == ["a", "b"]
+
+    sent = client.chat_stream_items.call_args.args[0]
+    assert len(sent) < len(msgs)
+    assert _rendered_count(sent) <= 896
+
+
+def _call_chat(p: FleetProvider, entry: str, **kwargs: object) -> object:
+    """Call the chat entry point named *entry* with the search tool and the tool convo."""
+    if entry == "chat":
+        return p.chat(_tool_convo(), tools=[_SEARCH_TOOL], **kwargs)
+    return p.chat_with_tools(_tool_convo(), tools=[_SEARCH_TOOL], **kwargs)
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_with_tools"])
+def test_chat_entry_points_send_the_options_to_the_render(entry: str) -> None:
+    client = _fake_client()
+    client.count_chat_prompt_tokens.side_effect = _rendered_count
+    p = _tool_convo_near_budget_provider(client)
+
+    _call_chat(p, entry, options={"temperature": 0.25})
+
+    assert client.count_chat_prompt_tokens.call_args.kwargs["options"] == {"temperature": 0.25}
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_with_tools"])
+def test_chat_entry_points_name_the_configured_model_in_an_overflow(
+    entry: str, monkeypatch
+) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "chat_model", "org/repo/configured.gguf")
+    client = _fake_client()
+    client.count_chat_prompt_tokens.return_value = 5000
+    p = _tool_convo_near_budget_provider(client)
+
+    with pytest.raises(ProviderError, match=r"org/repo/configured\.gguf"):
+        _call_chat(p, entry)
 
 
 def test_can_build_engine_false_when_nothing_placeable() -> None:
@@ -6905,7 +8393,7 @@ def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
     real_can_build = prov_mod._can_build_engine  # captured before _install_ladder stubs it
     _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     monkeypatch.setattr(prov_mod, "_can_build_engine", real_can_build)  # exercise the real gate
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # bind fails
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # bind fails
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
@@ -6933,7 +8421,7 @@ def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_pa
     _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     stopped: list[Path] = []
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # unprobeable
+    monkeypatch.setattr(prov_mod, "engine_readiness", lambda _s, *, now: None)  # unprobeable
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
@@ -7057,6 +8545,39 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
     working card sits idle.
     """
 
+    def _fleet(self, swap: _FakeSwap | None = None):
+        from lilbee.providers.fleet import provider as provider_mod
+
+        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
+        fleet._warm_errors = {}
+        fleet._shut_down = False
+        fleet._lock = threading.RLock()
+        fleet._role_group = {WorkerRole.EMBED: SwapGroup.CHAT} if swap else {}
+        fleet._swaps = {SwapGroup.CHAT: swap} if swap else {}
+        return fleet
+
+    def test_a_loaded_role_stamps_its_swap_as_ready(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients(set())
+        monkeypatch.setattr(provider_mod, "_warm_role", lambda _r, _c: None)
+        swap = _FakeSwap()
+        assert self._fleet(swap)._warm_role_clients(WorkerRole.EMBED, clients) is True
+        assert swap.ready_records == 1
+
+    def test_a_role_that_never_loads_leaves_its_swap_unstamped(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients({0, 1})
+
+        def _boom(_role, _client):
+            raise RuntimeError("no device could allocate")
+
+        monkeypatch.setattr(provider_mod, "_warm_role", _boom)
+        swap = _FakeSwap()
+        assert self._fleet(swap)._warm_role_clients(WorkerRole.EMBED, clients) is False
+        assert swap.ready_records == 0
+
     def _clients(self, failing: set[int]):
         from lilbee.providers.fleet.client import LlamaServerClient
 
@@ -7079,9 +8600,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
                 raise RuntimeError("failed to allocate on device 0")
 
         monkeypatch.setattr(provider_mod, "_warm_role", _warm)
-        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
-        fleet._warm_errors = {}
-        fleet._shut_down = False
+        fleet = self._fleet()
 
         assert fleet._warm_role_clients(WorkerRole.EMBED, clients) is True
 
@@ -7095,9 +8614,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
 
         clients, _ = self._clients(set())
         monkeypatch.setattr(provider_mod, "_warm_role", lambda _r, _c: None)
-        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
-        fleet._warm_errors = {}
-        fleet._shut_down = False
+        fleet = self._fleet()
 
         fleet._warm_role_clients(WorkerRole.EMBED, clients)
 
@@ -7114,9 +8631,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
             raise RuntimeError("no device could allocate")
 
         monkeypatch.setattr(provider_mod, "_warm_role", _boom)
-        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
-        fleet._warm_errors = {}
-        fleet._shut_down = False
+        fleet = self._fleet()
 
         assert fleet._warm_role_clients(WorkerRole.EMBED, clients) is False
         assert "no device could allocate" in fleet._warm_errors[WorkerRole.EMBED]
@@ -7353,3 +8868,137 @@ def test_an_engine_write_during_a_chat_leaves_the_chat_client_open(
     streaming.in_flight = 0
     engine_service.prefer("llama.cpp")  # the next reload closes the finished stream's client
     streaming.close.assert_called_once_with()
+
+
+class TestDeadServersThroughTheRoutingProvider:
+    """The routing provider over a fleet whose replicas listen on no port."""
+
+    @staticmethod
+    def _dead_endpoint() -> str:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        return f"http://127.0.0.1:{port}"
+
+    @classmethod
+    def _routing(cls, monkeypatch, replicas: int):
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        routing = RoutingProvider()
+        fleet = routing._get_local()
+        assert isinstance(fleet, FleetProvider)
+        pools = {
+            role: [
+                LlamaServerClient(
+                    cls._dead_endpoint(), f"{role.value}-{i}", profile=LLAMA.request_profile(role)
+                )
+                for i in range(replicas)
+            ]
+            for role in (WorkerRole.EMBED, WorkerRole.CHAT)
+        }
+        monkeypatch.setattr(fleet, "_require_clients", lambda role: pools[role])
+        monkeypatch.setattr(fleet, "_clients", pools)
+        # The fleet start-up layer is out; the clients and their sockets are real.
+        monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
+        monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
+        return routing, pools
+
+    @pytest.mark.parametrize("replicas", [1, 2])
+    def test_embed_with_every_server_down_is_a_provider_error(self, monkeypatch, replicas) -> None:
+        routing, pools = self._routing(monkeypatch, replicas)
+        with pytest.raises(ProviderError, match="not responding") as caught:
+            routing.embed(["text"])
+        assert caught.value.kind is ProviderErrorKind.CONNECTION
+        assert not any(client.healthy for client in pools[WorkerRole.EMBED])
+
+    @pytest.mark.parametrize("replicas", [1, 2])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_chat_with_every_server_down_is_a_provider_error(
+        self, monkeypatch, replicas, stream
+    ) -> None:
+        routing, _pools = self._routing(monkeypatch, replicas)
+        with pytest.raises(ProviderError, match="not responding") as caught:
+            routing.chat([{"role": "user", "content": "hi"}], stream=stream)
+        assert caught.value.kind is ProviderErrorKind.CONNECTION
+
+
+_ROLE_ONLY_FRAME = b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+
+
+class _RoleOnlyCuttingServer:
+    """A local chat server that sends role-only stream frames, then cuts the connection."""
+
+    def __init__(self, frames: int, how: str) -> None:
+        self._frames = frames
+        self._how = how
+        self.streams = 0
+        self._listener = socket.socket()
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(4)
+        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def close(self) -> None:
+        # shutdown wakes the accept thread on Linux; close alone leaves it blocked.
+        with contextlib.suppress(OSError):
+            self._listener.shutdown(socket.SHUT_RDWR)
+        self._listener.close()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self._listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn: socket.socket) -> None:
+        # The socket stays open until its reader closes too; a client that hangs up ends both reads.
+        reader = conn.makefile("rb")
+        length = 0
+        while (line := reader.readline()) not in (b"\r\n", b""):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":")[1])
+        body = reader.read(length)
+        reader.close()
+        if b'"stream":true' in body.replace(b" ", b""):
+            self.streams += 1
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+        )
+        for _ in range(self._frames):
+            conn.sendall(b"%x\r\n" % len(_ROLE_ONLY_FRAME) + _ROLE_ONLY_FRAME + b"\r\n")
+        if self._how == "reset":
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        conn.close()
+
+
+class TestAStreamCutBeforeAnyText:
+    """A chat stream that sends only role frames, then loses its connection."""
+
+    @pytest.mark.parametrize("frames", [1, 3])
+    @pytest.mark.parametrize("how", ["reset", "closed"])
+    def test_the_cut_is_the_not_responding_error(self, monkeypatch, frames, how) -> None:
+        server = _RoleOnlyCuttingServer(frames, how)
+        try:
+            monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+            monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+            routing = RoutingProvider()
+            fleet = routing._get_local()
+            assert isinstance(fleet, FleetProvider)
+            client = LlamaServerClient(
+                server.url, "chat-0", profile=LLAMA.request_profile(WorkerRole.CHAT)
+            )
+            # The fleet start-up layer is out; the client and its socket are real.
+            monkeypatch.setattr(fleet, "_require_clients", lambda role: [client])
+            monkeypatch.setattr(fleet, "_clients", {WorkerRole.CHAT: [client]})
+            monkeypatch.setattr(fleet, "_drop_swap_refs", lambda **_k: None)
+            monkeypatch.setattr(routing, "_announce", lambda _role, _ref: None)
+            with pytest.raises(ProviderError, match="not responding") as caught:
+                list(routing.chat([{"role": "user", "content": "hi"}], stream=True))
+            assert caught.value.kind is ProviderErrorKind.CONNECTION
+            assert isinstance(caught.value.__cause__, httpx.TransportError)
+            assert server.streams == 2  # the first cut is retried once, the second is final
+        finally:
+            server.close()

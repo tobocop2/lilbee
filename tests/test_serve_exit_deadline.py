@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -21,9 +22,12 @@ from lilbee.providers.base import LLMProvider, ProviderError
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.runtime.daemon_call import DaemonCall
+from tests._signals import child_preexec
 
 _FAILURE_CEILING_S = 30.0
 _WAKE_LIMIT_S = 5.0
+_BLOCKED_LOOP_BOUND_S = 15.0
+_QUIET_WINDOW_S = 1.0
 _FIXED_PATH = "/usr/bin:/bin"
 _DEADLINE_EXIT_STATUS = 1
 _SIGINT_EXIT_STATUS = 130
@@ -34,12 +38,14 @@ _NEW_VALUE = 0.75
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery")
 
 _SERVE_PROBE = """\
-import os, sys, threading
+import os, sys, threading, time
 import lilbee.app.services as services
 import lilbee.cli.commands.servers as servers
 import lilbee.core.security as security
+import lilbee.server as server_pkg
 import lilbee.server.app as app_mod
 import lilbee.server.handlers.rag as rag
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.cli.app import app
 
 def say(line):
@@ -51,22 +57,38 @@ if os.environ.get("X_GRACE"):
     servers._GRACEFUL_SHUTDOWN_S = float(os.environ["X_GRACE"])
 
 class Searcher:
-    def search(self, q, top_k=5, chunk_type=None):
+    def search_report(self, q, top_k=5, chunk_type=None):
         say("HELD")
         held_on_the_engine(never)
-        return []
+        return SearchReport([])
 
 def held_on_the_engine(event):
     event.wait()
 
+class Embedder:
+    def validate_model(self):
+        return True
+
+class Store:
+    def open_in_background(self):
+        pass
+
 class Services:
     searcher = Searcher()
+    embedder = Embedder()
+    store = Store()
 
-def no_engines():
-    raise RuntimeError("no engines in this probe")
-
-app_mod.get_services = no_engines
+app_mod.get_services = lambda: Services()
 rag.get_services = lambda: Services()
+
+if os.environ.get("X_SLOW_BUILD"):
+    def slow_build():
+        say("BUILDING")
+        while not services._lifecycle.stop_requested:
+            time.sleep(0.05)
+        raise services.ServicesStoppingError
+
+    app_mod.get_services = slow_build
 
 def stuck_teardown():
     say("HELD")
@@ -89,6 +111,33 @@ if os.environ.get("X_HOLD_REPLACE"):
         servers.arm_exit_deadline(servers._EXIT_DEADLINE_S)
         never.wait()
     security.os.replace = held_in_the_write
+
+if os.environ.get("X_BLOCK_LOOP"):
+    woke = threading.Event()
+    real_answer = services.answer_provider_waiters
+
+    def answering():
+        woke.set()
+        real_answer()
+
+    services.answer_provider_waiters = answering
+    servers.answer_provider_waiters = answering
+    real_create_app = server_pkg.create_app
+
+    def create_blocking_app():
+        inner = real_create_app()
+
+        async def blocking(scope, receive, send):
+            if scope["type"] == "http" and scope["path"] == "/block":
+                say("BLOCKED")
+                woke.wait(float(os.environ["X_BLOCK_LOOP"]))
+                say("WOKE" if woke.is_set() else "TIMEOUT")
+                return
+            await inner(scope, receive, send)
+
+        return blocking
+
+    server_pkg.create_app = create_blocking_app
 
 sys.argv = ["lilbee", "serve", "--host", "127.0.0.1", "--port", "0"]
 app()
@@ -126,7 +175,7 @@ class _Serve:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding="utf-8",
-            preexec_fn=preexec,
+            preexec_fn=child_preexec(preexec),
         )
         # A kill at the failure ceiling turns a blocked read of the output into an EOF.
         self.ceiling = threading.Timer(_FAILURE_CEILING_S, self.process.kill)
@@ -134,6 +183,7 @@ class _Serve:
         self.ceiling.start()
         self.port = int(self.read_until("Listening on").rsplit(":", 1)[1])
         self.client: socket.socket | None = None
+        self.output = ""
 
     def read_until(self, needle: str) -> str:
         """Block until the server prints a line holding *needle*; EOF is a failure."""
@@ -144,6 +194,14 @@ class _Serve:
                 return line.strip()
             seen.append(line)
         raise AssertionError(f"the server ended before it printed {needle!r}: {seen[-12:]}")
+
+    def read_until_any(self, needles: tuple[str, ...]) -> str:
+        """Block until the server prints a line that is one of *needles*; EOF is a failure."""
+        assert self.process.stdout is not None
+        for line in self.process.stdout:
+            if line.strip() in needles:
+                return line.strip()
+        raise AssertionError(f"the server ended before it printed one of {needles!r}")
 
     def request(self, method: str, path: str, body: str = "") -> socket.socket:
         """Send a request with the server's token and return the open connection."""
@@ -164,7 +222,7 @@ class _Serve:
 
     def wait(self) -> int:
         """Read the rest of the output and return the exit status, under a failure ceiling."""
-        self.process.communicate(timeout=_FAILURE_CEILING_S)
+        self.output, _ = self.process.communicate(timeout=_FAILURE_CEILING_S)
         return self.process.returncode
 
     def fault_log(self) -> str:
@@ -224,6 +282,27 @@ def test_a_hard_exit_signal_ends_a_blocked_read_without_the_full_grace(
     assert b" 500 " in server.client.recv(200)
 
 
+@posix_only
+@pytest.mark.parametrize(
+    "signal_name",
+    ["SIGINT", "SIGTERM", "SIGHUP"],
+    ids=["sigint", "sigterm", "sighup"],
+)
+def test_a_stop_signal_wakes_a_wait_on_a_blocked_loop_at_once(
+    start: Callable[..., _Serve], signal_name: str
+) -> None:
+    signum = signal.Signals[signal_name]
+    server = start(X_DEADLINE="25", X_BLOCK_LOOP=str(_BLOCKED_LOOP_BOUND_S))
+    server.client = server.request("GET", "/block")
+    server.read_until("BLOCKED")
+    started = time.monotonic()
+    server.process.send_signal(signum)
+    outcome = server.read_until_any(("WOKE", "TIMEOUT"))
+    assert outcome == "WOKE"
+    assert time.monotonic() - started < _WAKE_LIMIT_S
+    assert server.wait() == 128 + signum
+
+
 def test_the_shutdown_route_with_a_read_blocked_ends_at_the_deadline(
     start: Callable[..., _Serve],
 ) -> None:
@@ -234,10 +313,93 @@ def test_the_shutdown_route_with_a_read_blocked_ends_at_the_deadline(
 
 
 @posix_only
-def test_an_inherited_ignore_of_sigint_does_not_hide_it(start: Callable[..., _Serve]) -> None:
-    server = start(X_DEADLINE="20", preexec=_ignore_sigint)
+def test_an_inherited_ignore_of_sigint_keeps_the_server_running_until_it_is_told_to_stop(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sigint)
     server.process.send_signal(signal.SIGINT)
-    assert server.wait() == _SIGINT_EXIT_STATUS
+    time.sleep(_QUIET_WINDOW_S)
+    assert server.process.poll() is None
+    server.request("POST", "/api/shutdown")
+    assert server.wait() == 0
+
+
+def _ignore_sighup() -> None:
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+
+def _ignore_sigterm() -> None:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+
+@posix_only
+def test_an_inherited_ignore_of_sighup_keeps_the_server_answering(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sighup)
+    server.process.send_signal(signal.SIGHUP)
+    time.sleep(_QUIET_WINDOW_S)
+    assert server.process.poll() is None
+    answer = server.request("GET", "/api/health")
+    answer.settimeout(_WAKE_LIMIT_S)
+    assert b" 200 " in answer.recv(200)
+    server.request("POST", "/api/shutdown")
+    assert server.wait() == 0
+
+
+@posix_only
+def test_a_sighup_with_the_default_disposition_stops_the_server(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release")
+    server.process.send_signal(signal.SIGHUP)
+    assert server.wait() == 128 + signal.SIGHUP
+
+
+@posix_only
+def test_an_inherited_ignore_of_sigterm_does_not_stop_sigterm_from_stopping_the_server(
+    start: Callable[..., _Serve],
+) -> None:
+    server = start(X_DEADLINE="20", X_GRACE="0.1", X_TEARDOWN="release", preexec=_ignore_sigterm)
+    server.process.send_signal(signal.SIGTERM)
+    assert server.wait() == 128 + signal.SIGTERM
+
+
+@posix_only
+def test_a_stop_signal_during_the_startup_build_exits_with_its_status(tmp_path: Path) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", _SERVE_PROBE],
+        env={
+            **_child_env(tmp_path / "data"),
+            "HF_HUB_OFFLINE": "1",
+            "X_DEADLINE": "20",
+            "X_SLOW_BUILD": "1",
+        },
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+    )
+    # A kill at the failure ceiling turns a blocked read of the output into an EOF.
+    ceiling = threading.Timer(_FAILURE_CEILING_S, process.kill)
+    ceiling.daemon = True
+    ceiling.start()
+    try:
+        assert process.stdout is not None
+        building = next((line for line in process.stdout if "BUILDING" in line), None)
+        assert building is not None, "the server ended before its startup build"
+        process.send_signal(signal.SIGTERM)
+        output, _ = process.communicate(timeout=_FAILURE_CEILING_S)
+    finally:
+        ceiling.cancel()
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    server_log = next(tmp_path.rglob("server.log")).read_text(encoding="utf-8")
+    assert process.returncode == 128 + signal.SIGTERM, output
+    assert "A stop arrived during the services build" in server_log
+    assert "The services build failed" not in server_log + output
 
 
 def test_the_grace_lets_a_clean_exit_reach_the_lifespan_teardown(
@@ -257,8 +419,41 @@ def test_a_second_ctrl_c_leaves_a_stuck_teardown_before_the_deadline(
     server.process.send_signal(signal.SIGINT)
     server.read_until("HELD")
     server.process.send_signal(signal.SIGINT)
-    assert server.wait() == _SIGINT_EXIT_STATUS
+    assert server.wait() == _SIGINT_EXIT_STATUS, server.output + server.fault_log()
     assert "Timeout (" not in server.fault_log()
+
+
+@posix_only
+def test_a_ctrl_c_during_a_stuck_shutdown_logs_no_failure(start: Callable[..., _Serve]) -> None:
+    server = start(X_DEADLINE="20", X_TEARDOWN="stuck")
+    server.request("POST", "/api/shutdown")
+    server.read_until("HELD")
+    server.process.send_signal(signal.SIGINT)
+    server.read_until("HELD")
+    time.sleep(_QUIET_WINDOW_S)
+    server.process.send_signal(signal.SIGINT)
+    assert server.wait() == _SIGINT_EXIT_STATUS
+    assert "Application shutdown failed" not in server.output
+    assert "SystemExit" not in server.output
+
+
+@posix_only
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["sigterm", "sighup"])
+def test_a_terminate_signal_during_a_stuck_shutdown_logs_no_failure(
+    start: Callable[..., _Serve], signum: signal.Signals
+) -> None:
+    server = start(X_DEADLINE="20", X_TEARDOWN="stuck")
+    server.request("POST", "/api/shutdown")
+    server.read_until("HELD")
+    server.process.send_signal(signum)
+    server.read_until("HELD")
+    time.sleep(_QUIET_WINDOW_S)
+    server.process.send_signal(signal.SIGINT)
+    time.sleep(_QUIET_WINDOW_S)
+    server.process.send_signal(signal.SIGINT)
+    assert server.wait() == _SIGINT_EXIT_STATUS
+    assert "Application shutdown failed" not in server.output
+    assert "SystemExit" not in server.output
 
 
 @posix_only
@@ -329,6 +524,69 @@ def test_the_deadline_ends_a_process_whose_threads_are_running(
     tmp_path: Path, attempt: int
 ) -> None:
     assert _run_probe(tmp_path, _BUSY_THREADS_PROBE).returncode == _DEADLINE_EXIT_STATUS
+
+
+_FINALIZATION_WEDGE_PROBE = """\
+import threading
+from lilbee.cli.commands import serve_logging
+
+class Wedge:
+    def __del__(self):
+        threading.Event().wait()
+
+wedge = Wedge()
+serve_logging._BACKSTOP_GRACE_S = 1.0
+serve_logging.arm_exit_deadline(1.0)
+"""
+
+_CLEAN_EXIT_PROBE = """\
+import atexit
+from lilbee.cli.commands.serve_logging import arm_exit_deadline
+
+atexit.register(print, "flushed", flush=True)
+arm_exit_deadline(%r)
+"""
+
+
+def _finalization_wedge_status(tmp_path: Path) -> int:
+    """Run the finalization wedge probe and return its status; fail if it outlives the backstop."""
+    process = subprocess.Popen(
+        [sys.executable, "-c", _FINALIZATION_WEDGE_PROBE],
+        env=_child_env(tmp_path),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        return process.wait(timeout=_WAKE_LIMIT_S * 3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        pytest.fail("a destructor that hangs in finalization held the process past its deadline")
+
+
+@posix_only
+def test_the_deadline_ends_a_process_that_hangs_in_finalization(tmp_path: Path) -> None:
+    assert _finalization_wedge_status(tmp_path) == -signal.SIGALRM
+
+
+@posix_only
+def test_the_backstop_writes_the_hung_thread_to_the_fault_log_and_still_dies_of_sigalrm(
+    tmp_path: Path,
+) -> None:
+    status = _finalization_wedge_status(tmp_path)
+    fault_log = "".join(
+        path.read_text(encoding="utf-8") for path in tmp_path.rglob("server-fault.log")
+    )
+    assert status == -signal.SIGALRM
+    assert "in __del__" in fault_log
+
+
+@posix_only
+def test_a_clean_exit_before_the_deadline_runs_its_exit_handlers(tmp_path: Path) -> None:
+    result = _run_probe(tmp_path, _CLEAN_EXIT_PROBE % _FAILURE_CEILING_S)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "flushed"
 
 
 def test_the_deadline_leaves_the_interpreter_timer_and_the_fault_target_alone(
@@ -440,7 +698,7 @@ def test_the_signal_teardown_tells_the_provider_before_it_clears_the_services() 
     calls.services.provider.stop_waiting.side_effect = lambda: calls.seen(
         services_module.peek_services() is calls.services
     )
-    services_module._teardown_for_signal(signal.SIGTERM)
+    services_module._lifecycle._stop(signal.SIGTERM)
     calls.seen.assert_called_once_with(True)
     calls.services.provider.shutdown.assert_called_once_with()
     assert services_module.peek_services() is None

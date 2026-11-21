@@ -9,6 +9,7 @@ import pytest
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError
+from lilbee.providers.engine_params import N_GPU_LAYERS_AUTO
 from lilbee.providers.fleet import vram as vram_mod
 from lilbee.providers.fleet.vram import (
     GgufVramEstimate,
@@ -16,10 +17,13 @@ from lilbee.providers.fleet.vram import (
 )
 
 
-def _sample_json(*, ram_uma: int, ram_nonuma: int, vrams: list[tuple[int, int]]) -> str:
+def _sample_json(
+    *, ram_uma: int, ram_nonuma: int, vrams: list[tuple[int, int]], file_size: int = 0
+) -> str:
     """gguf-parser-shaped JSON with the given ram and (uma, nonuma) vram devices."""
     return json.dumps(
         {
+            "metadata": {"fileSize": file_size},
             "estimate": {
                 "items": [
                     {
@@ -27,7 +31,7 @@ def _sample_json(*, ram_uma: int, ram_nonuma: int, vrams: list[tuple[int, int]])
                         "vrams": [{"uma": u, "nonuma": n} for u, n in vrams],
                     }
                 ]
-            }
+            },
         }
     )
 
@@ -84,6 +88,102 @@ class TestEstimateInstanceFootprint:
         assert est.vram_bytes == 2000
         assert est.ram_bytes == 250
         assert est.unified_bytes == 100 + 700
+
+    def test_reads_the_file_size_as_the_mapped_weights(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=100, ram_nonuma=250, vrams=[(700, 2000)], file_size=4096),
+        )
+        est = estimate_instance_footprint(
+            model_file,
+            ctx=4096,
+            slots=2,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+        )
+        assert est.mapped_weights_bytes == 4096
+        assert est.unified_bytes == 100 + 700
+
+    def test_auto_offload_sends_all_layers_to_parser(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=calls,
+        )
+        estimate_instance_footprint(
+            model_file,
+            ctx=8192,
+            slots=1,
+            gpu_layers=N_GPU_LAYERS_AUTO,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.Q8_0,
+        )
+        argv = calls[0]
+        assert argv[argv.index("--gpu-layers") + 1] == "-2"
+
+    @pytest.mark.parametrize("layers", [-3, -10])
+    def test_any_negative_layer_count_sends_all_layers_to_parser(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch, layers: int
+    ) -> None:
+        calls: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=calls,
+        )
+        estimate_instance_footprint(
+            model_file,
+            ctx=8192,
+            slots=1,
+            gpu_layers=layers,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.Q8_0,
+        )
+        argv = calls[0]
+        assert argv[argv.index("--gpu-layers") + 1] == "-2"
+
+    def test_a_report_without_a_file_size_sizes_as_before(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A parser that leaves out the file size still sizes a discrete card from
+        # the device figure: the size only matters to a shared pool.
+        bare = json.loads(_sample_json(ram_uma=100, ram_nonuma=40, vrams=[(300, 500)]))
+        del bare["metadata"]
+        _patch_parser(monkeypatch, stdout=json.dumps(bare))
+        est = estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+        )
+        assert est.vram_bytes == 500
+        assert est.ram_bytes == 40
+        assert est.unified_bytes == 400
+        assert est.mapped_weights_bytes == 0
+
+    def test_a_report_whose_metadata_is_not_a_mapping_is_refused(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bad = json.loads(_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]))
+        bad["metadata"] = ["not", "a", "mapping"]
+        _patch_parser(monkeypatch, stdout=json.dumps(bad))
+        with pytest.raises(ProviderError, match="unexpected estimator output"):
+            estimate_instance_footprint(
+                model_file,
+                ctx=2048,
+                slots=1,
+                gpu_layers=-1,
+                flash_attn=True,
+                kv_cache_type=KvCacheType.F16,
+            )
 
     def test_sums_multiple_vram_devices(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -415,6 +515,19 @@ class TestProjectorCorrection:
         assert est.vram_bytes == 3 * self._GB + int(0.8 * self._GB)
         # The unified estimate was never inflated; it passes through untouched.
         assert est.unified_bytes == int(2.8 * self._GB)
+
+    def test_the_projector_file_joins_the_mapped_weights(
+        self, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"G" * 1024)
+        self._patch_two_run_parser(
+            monkeypatch,
+            base_json=_sample_json(ram_uma=0, ram_nonuma=0, vrams=[(10, 20)], file_size=5000),
+            mmproj_json=_sample_json(ram_uma=0, ram_nonuma=0, vrams=[(15, 30)], file_size=5000),
+        )
+        est = self._estimate(model_file, mmproj)
+        assert est.mapped_weights_bytes == 5000 + 1024
 
     def test_projector_charge_is_floored_at_its_weights(
         self, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

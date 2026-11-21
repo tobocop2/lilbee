@@ -14,7 +14,6 @@ from lilbee.providers.fleet.host_caps import HostCaps, collect
 
 def _use_host(monkeypatch: pytest.MonkeyPatch, system: str, machine: str) -> HostCaps:
     host = collect(system=system, machine=machine, cpu_info={"flags": ["avx2"]}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     return host
 
@@ -41,6 +40,7 @@ def test_an_engine_the_gate_passes_is_listed(monkeypatch: pytest.MonkeyPatch) ->
 def test_a_host_that_could_not_be_read_lists_no_engine_to_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(engine_service, "llama_server_ready", lambda: True)
     _use_host(monkeypatch, "", "")
     assert engine_service.not_installed() == []
 
@@ -57,7 +57,6 @@ def _install_mlx_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     mac = mac_host("Darwin", "arm64", "15.2")
-    monkeypatch.setattr(engine_service, "session_host", lambda: mac)
     monkeypatch.setattr(runnable, "session_host", lambda: mac)
     sha = make_pack(tmp_path / "pack.whl")
     publish(monkeypatch, EngineName.MLX, sha)
@@ -66,6 +65,10 @@ def _install_mlx_build(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, "mlx-lm-server"
     )
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, tmp_path / "pack.whl")
+
+
+def _picker_names(model: str) -> list[str]:
+    return [option.name for option in engine_service.engine_options(model)]
 
 
 def test_an_installed_build_the_gate_refuses_is_not_listed(
@@ -80,7 +83,7 @@ def test_an_installed_build_the_gate_refuses_is_not_listed(
     assert "mlx" not in [b.engine for b in listed.builds]
     assert "mlx" not in listed.not_installed
     assert "mlx" not in installed_engines()
-    assert "mlx" not in engine_service.engine_names("org/repo#mlx")
+    assert "mlx" not in _picker_names("org/repo#mlx")
 
 
 def test_an_installed_build_the_gate_passes_stays_listed(
@@ -141,7 +144,6 @@ def _installed_ik_llama(monkeypatch: pytest.MonkeyPatch, *, avx2: bool) -> None:
 
     flags = ["avx2"] if avx2 else ["sse4_2"]
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": flags}, nvidia=None)
-    monkeypatch.setattr(engine_service, "session_host", lambda: host)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(
         engine_service, "installed_engines", lambda: {EngineName.IK_LLAMA: IK_LLAMA.formats}
@@ -152,14 +154,15 @@ def test_the_picker_names_an_installed_engine_the_cpu_can_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _installed_ik_llama(monkeypatch, avx2=True)
-    assert "ik_llama.cpp" in engine_service.engine_names("org/repo.gguf")
+    rows = {option.name: option for option in engine_service.engine_options("org/repo.gguf")}
+    assert rows["ik_llama.cpp"].installed is True
 
 
 def test_the_picker_hides_an_installed_engine_the_cpu_cannot_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _installed_ik_llama(monkeypatch, avx2=False)
-    assert "ik_llama.cpp" not in engine_service.engine_names("org/repo.gguf")
+    assert "ik_llama.cpp" not in _picker_names("org/repo.gguf")
 
 
 def _refuse(choose: object, model: str, name: str) -> engine_service.EngineRefusedError:

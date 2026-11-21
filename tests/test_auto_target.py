@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -38,8 +39,8 @@ VISION_REFUSED = (
     "Use a smaller model, or set its target to cpu."
 )
 LOST_CHAT = (
-    "chat: GPU 1 is not on this machine (1 found). "
-    "Set the chat devices to a GPU that exists, or set its target to cpu."
+    "chat is pinned to device 1, but this machine lists only device 0. "
+    "Set the chat devices to a card that exists, or set its target to cpu."
 )
 
 
@@ -186,12 +187,14 @@ class TestAutoPlansOnTheRemainingCards:
             '{"chat": {"target": "auto"}, "vision": {"target": "cpu"}, "embed": {"target": "cpu"}}'
         )
         engine = _host(monkeypatch, tmp_path, (16,), spec)
+        monkeypatch.setattr(cfg, "num_ctx", 4096)
         resolved = planning.resolve_placement_plan(
             PlacementSpec.from_json(spec),
             engines=engines_for_all_roles(engine),
             fall_back_to_auto=True,
         )
         assert set(resolved.tight_roles) == {WorkerRole.CHAT}
+        assert resolved.unlaunched_roles == {}
         assert resolved.refused_roles == {}
 
     def test_a_mixed_plan_beside_no_named_role_keeps_the_planners_refusal(
@@ -288,6 +291,59 @@ class TestPlacementFromSpecWithAuto:
             host_cards=planning.HostCards(cards_of((24,))),
         )
         assert captured == {"models": [WorkerRole.EMBED], "budget": 10 * GIB}
+
+
+class TestViewAndLaunchSizeReplicasAlike:
+    """The view and the launch resolve an auto replica knob from the same device count."""
+
+    def test_an_auto_embed_knob_gets_one_replica_per_card_in_both(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        small = (Role(WorkerRole.CHAT, 4), Role(WorkerRole.EMBED, 1), Role(WorkerRole.VISION, 2))
+        prepare_host(monkeypatch, tmp_path, small, 64 * GIB)
+        monkeypatch.setattr(cfg, "embed_replicas", 0)
+        engine = CardEngine(
+            "engine-a", tmp_path / "engine-server", small, cards_of((24, 24)), spans=True
+        )
+        engines = engines_for_all_roles(engine)
+
+        plan = planning.plan_all_launches(engines=engines)
+        view = planning.resolve_placement_plan(None, engines=engines)
+
+        launched = sorted(
+            launch.replica for launch in plan.launches if launch.role is WorkerRole.EMBED
+        )
+        viewed = sorted(p.replica for p in view.instances if p.role is WorkerRole.EMBED)
+        assert launched == [0, 1]
+        assert viewed == launched
+
+    @pytest.mark.parametrize("path", ["view", "launch"])
+    def test_the_sizing_gets_the_unified_budget_and_the_card_total_from_either_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
+    ) -> None:
+        small = (Role(WorkerRole.CHAT, 4), Role(WorkerRole.EMBED, 1))
+        prepare_host(monkeypatch, tmp_path, small, 64 * GIB)
+        engine = CardEngine(
+            "engine-a", tmp_path / "engine-server", small, cards_of((24, 24)), spans=True
+        )
+        engines = engines_for_all_roles(engine)
+        seen: list[dict[str, object]] = []
+
+        def spy(roles: object, **kw: object) -> Any:
+            seen.append(kw)
+            return [], {}, 0, {}
+
+        monkeypatch.setattr(planning, "_server_model_inputs", spy)
+        monkeypatch.setattr(planning, "_unified_memory_budget", lambda *_a, **_k: 7 * GIB)
+
+        if path == "view":
+            planning.resolve_placement_plan(None, engines=engines)
+        else:
+            planning.plan_all_launches(engines=engines)
+
+        assert [(kw["unified_budget"], kw["total_vram"], kw["device_count"]) for kw in seen] == [
+            (7 * GIB, 48 * GIB, 2)
+        ]
 
 
 def test_the_auto_target_reads_back_from_json() -> None:
