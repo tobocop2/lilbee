@@ -3759,6 +3759,24 @@ class TestEmbeddingModelGate:
         assert meta is not None
         assert meta["embedding_dim"] == new_dim
 
+    def test_legacy_stamp_reads_model_a_writer_set_before_the_lock(self, store, test_config):
+        """A model change between the has-chunks check and the lock is stamped as is."""
+        original_model = test_config.embedding_model
+        replacement_model = "ollama/embed-writer:v2"
+
+        def rebuild():
+            store.drop_all()
+            test_config.embedding_model = replacement_model
+            store.add_chunks(_make_records())
+            store.get_db().drop_table(META_TABLE)
+
+        with self._legacy_store_with_writer_before_lock(store, rebuild):
+            assert store.initialize_meta_if_legacy() is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == replacement_model
+        assert original_model != replacement_model
+
     def test_legacy_stamp_writes_nothing_when_a_writer_dropped_the_chunks(self, store):
         """A rebuild that drops the chunks between the check and the lock leaves no stamp."""
         with self._legacy_store_with_writer_before_lock(store, store.drop_all):
