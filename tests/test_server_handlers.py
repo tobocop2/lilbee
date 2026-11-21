@@ -373,16 +373,16 @@ class TestWarmStreamAfterSwap:
 
     @staticmethod
     def _routing_with_stale_local_error():
-        from lilbee.providers.fleet.engines import LLAMA
         from lilbee.providers.routing_provider import RoutingProvider
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
-        routing = RoutingProvider(engine=LLAMA)
+        routing = RoutingProvider()
         local = MagicMock()
         local.warm_progress.return_value = WarmProgress(
             phase=WarmPhase.ERROR, error="chat model Qwen3 4B is not installed"
         )
         local.role_ready.return_value = False
+        local.reload_notice.return_value = None
         routing._local = local
         return routing
 
@@ -4059,7 +4059,9 @@ class TestPlacementHandlersRunOffTheLoop:
         gib = 1024**3
         return PlacementView(
             gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * gib, 72 * gib),),
-            roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+            roles=(
+                RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),
+            ),
             unplaceable=(),
             manual=False,
             spec_json=None,

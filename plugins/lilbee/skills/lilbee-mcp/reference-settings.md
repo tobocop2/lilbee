@@ -7,8 +7,8 @@ The full list of settings, with defaults and which surfaces can set each one, is
 
 ## A setting that changes the tool list needs a reconnect
 
-`wiki`, `memory_enabled`, `mcp_sessions_enabled`, `mcp_profiles_enabled` and
-`mcp_presets_enabled` decide which tools register. The
+`wiki`, `memory_enabled`, `mcp_sessions_enabled`, `mcp_profiles_enabled`,
+`mcp_presets_enabled` and `mcp_engines_enabled` decide which tools register. The
 server decides once, at start. `lilbee_settings_set({"wiki": true})` succeeds and persists,
 and the other `lilbee_wiki_*` tools are still absent. Ask the user to restart the lilbee MCP
 server. Do not report the feature as broken. `lilbee_wiki_status` and `lilbee_wiki_wipe`
@@ -109,3 +109,19 @@ These tools register only when the user turns on `mcp_presets_enabled` (off by d
 On the shared HTTP daemon, add, edit and remove are refused unless the host enables
 `allow_http_engines` (a preset sets where requests and API keys go). List always works.
 Change presets only when the user asks.
+
+## Engine choice
+
+These tools register only when the user turns on `mcp_engines_enabled` (off by default).
+
+| Tool | Use |
+|---|---|
+| `lilbee_engine_list()` | The engine builds installed beside the models: name, version and backend. |
+| `lilbee_engine_remove(engine, version, backend)` | Remove one installed build, as `list` shows it. Refused for the bundled engine and a build in use. |
+| `lilbee_engine_roles()` | The engine of each role: model, format, engine and the notice when the role fell back or has no engine. |
+| `lilbee_engine_use(role, model, engine)` | Choose the engine for the model of a role. `engine` `auto` removes the choice. |
+| `lilbee_engine_prefer(engine)` | Set the engine for every model with no choice of its own. `auto` picks by model format. |
+
+On the shared HTTP daemon, remove, use and prefer are refused unless the host enables
+`allow_http_engines`. List and roles always work. Change the engine only when the user
+asks.

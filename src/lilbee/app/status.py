@@ -14,6 +14,8 @@ from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.store import HeldOut
 from lilbee.data.types import SkippedSource
+from lilbee.providers.roles import WorkerRole
+from lilbee.providers.serving import role_serving
 
 LILBEE_LABEL_MAX_LEN = 40
 """Hard cap on the compact-label width. The leaf gets its own internal
@@ -132,6 +134,15 @@ class EntityStatus(BaseModel):
     rows: int
 
 
+class ServingStatus(BaseModel):
+    """The engine that serves one configured role."""
+
+    role: WorkerRole
+    model: str
+    engine: str
+    version: str
+
+
 class StatusResult(BaseModel):
     """Full status response for the knowledge base."""
 
@@ -151,6 +162,32 @@ class StatusResult(BaseModel):
     skipped_total: int = 0
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
+    serving: list[ServingStatus] = []
+    """The engine and version that serve each configured role."""
+
+
+def serving_roles() -> list[ServingStatus]:
+    """The engine for each configured role, from the ref each role routes by."""
+    configured = (
+        (WorkerRole.CHAT, cfg.chat_model),
+        (WorkerRole.EMBED, cfg.embedding_model),
+        (WorkerRole.RERANK, cfg.reranker_model),
+        (WorkerRole.VISION, cfg.vision_model),
+    )
+    rows: list[ServingStatus] = []
+    for role, model in configured:
+        if not model:
+            continue
+        served = role_serving(role, model)
+        rows.append(
+            ServingStatus(role=role, model=model, engine=served.engine, version=served.version)
+        )
+    return rows
+
+
+def chat_engine() -> str | None:
+    """The engine name that serves the chat model, or None when it names none."""
+    return next((row.engine for row in serving_roles() if row.role is WorkerRole.CHAT), None)
 
 
 def _index_status() -> IndexStatus | None:
@@ -207,6 +244,7 @@ def gather_status() -> StatusResult:
         skipped=skipped,
         skipped_total=skipped_total,
         ocr_note=scanned_pages_state(),
+        serving=serving_roles(),
     )
 
 

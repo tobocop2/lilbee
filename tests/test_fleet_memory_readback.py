@@ -21,7 +21,6 @@ from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import readback
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
-from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import (
@@ -389,7 +388,7 @@ class _MemoryResponse:
 def _manager_with_launch(
     tmp_path: Path, argv: list[str], port: int | None = 5901
 ) -> sm.SwapManager:
-    manager = sm.SwapManager(tmp_path, SwapGroup.CHAT, engine=LLAMA)
+    manager = sm.SwapManager(tmp_path, SwapGroup.CHAT)
     launch = InstanceLaunch(
         role=WorkerRole.CHAT,
         argv=argv,

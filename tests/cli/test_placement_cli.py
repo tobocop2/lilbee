@@ -19,7 +19,7 @@ _GIB = 1024**3
 def _view(manual: bool = False) -> PlacementView:
     return PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100-SXM4-80GB", 80 * _GIB, 72 * _GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=manual,
         spec_json='{"chat": {"devices": [0]}}' if manual else None,
@@ -41,7 +41,7 @@ def _view_with_skipped() -> PlacementView:
 
     return PlacementView(
         gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * _GIB, 20 * _GIB),),
-        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,
@@ -61,7 +61,7 @@ def test_show_renders_not_downloaded_note(monkeypatch: object) -> None:
 def _view_with_rejected_spec() -> PlacementView:
     return PlacementView(
         gpus=(GpuInfo(0, "Vulkan", "Vulkan0", "Intel Iris Xe", 8 * _GIB, 6 * _GIB),),
-        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=False,
         spec_json=None,

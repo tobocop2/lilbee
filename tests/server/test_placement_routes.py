@@ -21,7 +21,7 @@ GIB = 1024**3
 def _view(manual=False):
     return PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1, "llama.cpp"),),
         unplaceable=(),
         manual=manual,
         spec_json=None,

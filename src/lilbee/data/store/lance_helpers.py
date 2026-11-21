@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.catalog.refs import hf_repo_from_ref, is_gguf_filename
 from lilbee.runtime.lock import write_lock
 
 from .types import LOCAL_OWNER, ChunkType
@@ -282,8 +282,8 @@ def refs_compatible(
         return False
     if persisted_ref == current_ref:
         return True
-    if persisted_ref.endswith(".gguf"):
+    if is_gguf_filename(persisted_ref):
         return False
-    if not current_ref.endswith(".gguf"):
+    if not is_gguf_filename(current_ref):
         return False
     return hf_repo_from_ref(current_ref) == persisted_ref
