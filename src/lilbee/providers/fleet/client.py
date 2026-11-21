@@ -762,12 +762,12 @@ class LlamaServerClient:
         """Release a reservation taken by :meth:`reserve`."""
         self._leave()
 
-    def notify_when_idle(self, callback: Callable[[], None]) -> None:
+    def notify_when_idle(self, callback: Callable[[], None] | None) -> None:
         """Call *callback* each time a request ends and leaves ``in_flight`` at zero.
 
         The callback runs on the thread that ended the request, after the count
         lock is released. That thread can hold any lock of its caller, so the
-        callback must not block on one.
+        callback must not block on one. None stops the calls.
         """
         with self._in_flight_lock:
             self._on_idle = callback

@@ -3295,7 +3295,8 @@ class FleetProvider:
         A cooperative worker cancel cannot reach a thread blocked in a socket
         read, and the reader's own close runs only when its worker unwinds, so
         the disconnect must happen here. Retired clients are swept too: a
-        model-swap reload retires a busy client before the cancel lands.
+        model-swap reload and a timeout restart retire a busy client before
+        the cancel lands.
         """
         with self._lock:
             clients = [*self._clients.get(WorkerRole.CHAT, ()), *self._retiring_clients]
@@ -3481,13 +3482,13 @@ class FleetProvider:
             # stops once its running requests end, or at the drain limit. The clients
             # of a stuck server have drained already, and a request still running on
             # one ends with the restart error when its server stops.
-            with self._lock:
-                self._retire_clients([client for pool in drained.values() for client in pool])
-            drained.clear()
             drain_until = time.monotonic() + _SHUTDOWN_WORK_WAIT_S
             for group in sorted(changed, key=lambda g: g.value):
                 with self._lock:
                     clients = self._group_clients(group)
+                    for role in [r for r, g in self._role_group.items() if g is group]:
+                        for client in drained.pop(role, []):
+                            client.restart_message = _restart_message(role)
                     swap = self._drop_group(group)
                 self._drain_clients(clients, drain_until)
                 if swap is not None:
@@ -3527,8 +3528,8 @@ class FleetProvider:
         A timeout on such a server means it is stuck, and the requests behind it often
         wait on it too, so the drain ends at the drain limit, as for a dead-server
         rebuild. It runs before the pass takes the build lock. New requests wait for
-        the new server. Each client carries the restart error for a request that is
-        still running when its server stops. Returns the clients by role.
+        the new server. The clients are retired as a reload retires them, so a cancel
+        and a shutdown reach their requests during the drain. Returns the clients by role.
         """
         drained: dict[WorkerRole, list[LlamaServerClient]] = {}
         with self._lock:
@@ -3539,8 +3540,7 @@ class FleetProvider:
             }
             for role in [r for r, g in self._role_group.items() if g in groups]:
                 drained[role] = self._clients.pop(role, [])
-                for client in drained[role]:
-                    client.restart_message = _restart_message(role)
+            self._retire_clients([client for pool in drained.values() for client in pool])
             self._stuck_roles = frozenset(drained)
         self._drain_clients(
             [client for pool in drained.values() for client in pool],
@@ -3552,12 +3552,15 @@ class FleetProvider:
         """Put *drained* clients back in dispatch after a pass that failed before its stop phase.
 
         A failed pass leaves the running fleet as it was; the next timeout restarts again.
+        The clients leave the retired list, so no later retire closes them in use. A role
+        that left the fleet meanwhile keeps its clients retired, for a later close.
         """
         with self._lock:
             for role, pool in drained.items():
-                for client in pool:
-                    client.restart_message = None
                 if role in self._role_group:
+                    self._retiring_clients = [c for c in self._retiring_clients if c not in pool]
+                    for client in pool:
+                        client.notify_when_idle(None)
                     self._clients[role] = pool
 
     def _drain_clients(self, clients: list[LlamaServerClient], until: float) -> None:
