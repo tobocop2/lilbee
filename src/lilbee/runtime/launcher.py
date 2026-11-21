@@ -11,6 +11,7 @@ import contextlib
 import io
 import os
 import sys
+from collections.abc import Callable
 
 # Shells fetch tab completions by running the console script with
 # ``_<PROG>_COMPLETE=...`` set (and an empty argv); click answers those itself.
@@ -34,6 +35,19 @@ def _force_utf8_stdio() -> None:
                 stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
+def _run_cli(app: Callable[[], object]) -> None:
+    """Run the CLI *app*; a config write that cannot take its lock exits 1 with a plain message."""
+    from lilbee.core.security import FileLockUnavailableError
+
+    try:
+        app()
+    except FileLockUnavailableError as exc:
+        from lilbee.app.settings import config_write_failure_message
+
+        sys.stderr.write(f"Error: {config_write_failure_message(exc)}\n")
+        raise SystemExit(1) from None
+
+
 def main() -> None:
     """Entry point for the ``lilbee`` console script."""
     _force_utf8_stdio()
@@ -47,7 +61,7 @@ def main() -> None:
     if not is_interactive:
         from lilbee.cli import app
 
-        app()
+        _run_cli(app)
         return
 
     from lilbee.app.services import mark_interactive_session
@@ -71,7 +85,7 @@ def main() -> None:
     # own imports (Textual and every screen), which on a cold disk take seconds;
     # run_tui dismisses it right before Textual takes over the terminal.
     try:
-        app()
+        _run_cli(app)
     except KeyboardInterrupt:
         sys.stderr.write("\033[?25h")
         sys.stderr.flush()

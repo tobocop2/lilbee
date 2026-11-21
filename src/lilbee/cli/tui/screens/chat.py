@@ -75,6 +75,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     unregister_added_roots,
 )
 from lilbee.cli.tui.screens.profile_dialogs import run_profile_op, start_profile_switch
+from lilbee.cli.tui.secret_lines import carries_secret
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
@@ -122,6 +123,7 @@ from lilbee.data.store import (
     SearchScope,
     scope_to_chunk_type,
 )
+from lilbee.providers.base import is_header_safe
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -745,7 +747,8 @@ class ChatScreen(Screen[None]):
         if not self._ready_to_submit(text):
             return
         chat_input.value = ""
-        self._input_history.append(text)
+        if not carries_secret(text):
+            self._input_history.append(text)
         self._history_index = -1
 
         if text.startswith("/"):
@@ -1444,16 +1447,18 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _run_hf_login(self, token: str) -> None:
+        if not is_header_safe(token):
+            call_from_thread(self, self.notify, msg.CHAT_LOGIN_UNSENDABLE, severity="error")
+            return
         try:
             from huggingface_hub import login
 
             login(token=token, add_to_git_credential=False)
             call_from_thread(self, self.notify, msg.CHAT_LOGGED_IN)
         except Exception as exc:
-            log.warning("HuggingFace login failed", exc_info=True)
-            call_from_thread(
-                self, self.notify, msg.CHAT_LOGIN_FAILED.format(error=exc), severity="error"
-            )
+            # No exc_info and no str(exc): the library's text can echo the token.
+            log.warning("HuggingFace login failed: %s", type(exc).__name__)
+            call_from_thread(self, self.notify, msg.CHAT_LOGIN_FAILED, severity="error")
 
     def _cmd_model(self, args: str) -> None:
         if args:
@@ -1498,6 +1503,60 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
             )
+
+    def _cmd_preset(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import dialog_request, key_typed, remove_target
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+
+        if key_typed(args):
+            self.notify(msg.PRESET_KEY_IN_DIALOG, severity="error")
+            return
+
+        def _notify_dialog_result(notice: str | None) -> None:
+            if notice is not None:
+                self.notify(notice)
+
+        if (request := dialog_request(args)) is not None:
+            self._open_preset_dialog(request.name, _notify_dialog_result)
+            return
+        if (name := remove_target(args)) is not None:
+
+            def _on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._run_preset_command(args)
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    msg.PRESET_REMOVE_CONFIRM_TITLE,
+                    msg.PRESET_REMOVE_CONFIRM_MESSAGE.format(name=name),
+                ),
+                _on_confirm,
+            )
+            return
+        self._run_preset_command(args)
+
+    @work(thread=True)
+    def _open_preset_dialog(self, name: str | None, on_done: Callable[[str | None], None]) -> None:
+        from lilbee.app.presets import failure_text, get_preset
+        from lilbee.cli.tui.screens.settings_presets import PresetDialog
+
+        preset = None
+        if name is not None:
+            try:
+                preset = get_preset(name)
+            except (ValueError, OSError) as exc:
+                call_from_thread(self, self.notify, failure_text(exc), severity="error")
+                return
+        call_from_thread(self, self.app.push_screen, PresetDialog(preset), on_done)
+
+    @work(thread=True)
+    def _run_preset_command(self, args: str) -> None:
+        from lilbee.cli.tui.preset_commands import run_preset_command
+
+        result = run_preset_command(args)
+        call_from_thread(
+            self, self.notify, result.text, severity="information" if result.ok else "error"
+        )
 
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog

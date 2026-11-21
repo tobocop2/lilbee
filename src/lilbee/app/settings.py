@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import ValidationError
 
 from lilbee.app.settings_map import CHUNK_LIMIT_KEY, SETTINGS_MAP, SettingDef, SettingGroup
+from lilbee.catalog.hf_client import is_hf_token_sendable
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
+    SERVICE_ONLY_FIELDS,
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core import settings as persistent_settings
@@ -49,6 +51,7 @@ from lilbee.core.config.resolve import (
 from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
     MODEL_FIELD_TO_ROLE,
@@ -177,7 +180,9 @@ def _secret_refusal(key: str, error: ValidationError) -> str:
 def _public_writable_keys() -> list[str]:
     """Names of every writable config field minus write-only secrets and non-public fields."""
     keys = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    return sorted(k for k in keys if k in PUBLIC_CONFIG_FIELDS and not _is_write_only(k))
+    return sorted(
+        k for k in keys - SERVICE_ONLY_FIELDS if k in PUBLIC_CONFIG_FIELDS and not _is_write_only(k)
+    )
 
 
 def _setting_help(key: str, definition: SettingDef | None) -> str:
@@ -279,6 +284,8 @@ def get_setting(key: str) -> SettingInfo:
 
 
 def _is_settable(key: str) -> bool:
+    if key in SERVICE_ONLY_FIELDS:
+        return False
     return key in WRITABLE_CONFIG_FIELDS or key in MODEL_ROLE_FIELDS
 
 
@@ -354,6 +361,9 @@ def _validate(updates: dict[str, Any]) -> None:
     if refusal is not None:
         raise ValueError(refusal)
     _validate_crawl_login(updates)
+    hf_token = updates.get("hf_token")
+    if isinstance(hf_token, str) and not is_hf_token_sendable(hf_token):
+        raise ValueError("hf_token holds a character that cannot be sent. Copy it again.")
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
     if new_ttl is not None and new_ttl < 0:
         raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")
@@ -521,6 +531,8 @@ def _config_failure_message(exc: OSError, verb: str) -> str:
         # The error text already names the file by its full path.
         return f"{exc}."
     detail = f"Could not {verb} {CONFIG_FILE_NAME}: {exc}."
+    if isinstance(exc, FileLockUnavailableError):
+        return f"{detail} Nothing was changed. Close any other lilbee process and try again."
     if exc.errno in (errno.EACCES, errno.EPERM):
         detail += f" Close the program that holds {CONFIG_FILE_NAME} open and try again."
     return detail
