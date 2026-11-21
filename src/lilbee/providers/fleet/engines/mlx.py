@@ -30,6 +30,8 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "0.32.2"
 _TOOL = "mlx-lm-server"
+_CHAT_MODULE = "mlx_lm.server"
+"""The module that the chat launcher runs; the process table shows it, not the launcher."""
 _HOST = "127.0.0.1"
 _METAL = "metal"
 _LICENCES = ["MIT", "Apache-2.0", "BSD-3-Clause"]
@@ -115,7 +117,7 @@ class MlxAdapter:
     takes_device_names = False
     concatenates_pooling = False
     bundled = False
-    server_process = ServerProcess(name=_TOOL, interpreted=True)
+    server_process = ServerProcess(name=_TOOL, interpreted=True, scripts=(_CHAT_MODULE,))
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
