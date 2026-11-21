@@ -18,7 +18,6 @@ from lilbee.providers.fleet.engines.openvino import (
     GPU_MISSING,
     NPU_MISSING,
     OPENVINO,
-    OPENVINO_RUNTIME_TERM,
     OpenvinoAdapter,
     parse_devices,
 )
@@ -273,6 +272,8 @@ def test_s12_a_pack_for_the_engine_is_not_published_yet() -> None:
 
 
 _OPENVINO_CELL = "linux-x86_64-openvino"
+# The OpenVINO runtime licence, as the archive names it (docs/licensing/readme.txt).
+_INTEL_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
 
 
 def _publish_llama_cells(monkeypatch: pytest.MonkeyPatch, cells: dict[str, str]) -> None:
@@ -311,7 +312,7 @@ def test_pack_a_vulkan_or_cpu_llama_cpp_pack_is_not_the_openvino_pack(
 
 def test_licence_the_pack_names_the_intel_runtime_licence() -> None:
     (expression,) = OPENVINO.pin_record()["licenses"]
-    assert OPENVINO_RUNTIME_TERM in expression.split(" AND ")
+    assert _INTEL_RUNTIME_TERM in expression.split(" AND ")
 
 
 def test_licence_a_published_pack_is_refused_until_the_runtime_licence_is_ruled(
@@ -319,7 +320,7 @@ def test_licence_a_published_pack_is_refused_until_the_runtime_licence_is_ruled(
 ) -> None:
     _publish_llama_cells(monkeypatch, {_OPENVINO_CELL: "a" * 64})
     lock = choice.pin_lock(OPENVINO.pin_record())
-    with pytest.raises(engine_store.LicenceRefusedError, match=OPENVINO_RUNTIME_TERM):
+    with pytest.raises(engine_store.LicenceRefusedError, match=_INTEL_RUNTIME_TERM):
         engine_store._check_licences(lock)
 
 
