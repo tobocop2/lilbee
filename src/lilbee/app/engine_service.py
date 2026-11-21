@@ -531,6 +531,11 @@ def engine_options(model: str) -> list[EngineOption]:
     return rows
 
 
+def saved_engine(model: str) -> str | None:
+    """The engine the user saved for *model*, or None when the user saved none."""
+    return stored_choices(cfg.engine_choices).get(model)
+
+
 class EngineState(StrEnum):
     """Whether an engine row is a build on disk, the bundled engine, a user install, or a download.
 

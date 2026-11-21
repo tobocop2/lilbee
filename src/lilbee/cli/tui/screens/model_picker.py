@@ -21,7 +21,7 @@ from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
 from lilbee.app import engine_service
-from lilbee.app.engine_choice import engine_for_ref, stored_choices
+from lilbee.app.engine_choice import engine_for_ref
 from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui import messages as msg
@@ -98,11 +98,6 @@ def _browse_catalog_row() -> CatalogRow:
     )
 
 
-def _saved_engine(ref: str) -> str | None:
-    """The engine saved for the model *ref*, or None when the user saved none."""
-    return stored_choices(cfg.engine_choices).get(ref)
-
-
 def _engine_of(ref: str) -> tuple[str | None, bool]:
     """The engine that runs *ref* now, and whether lilbee chose it.
 
@@ -115,7 +110,7 @@ def _engine_of(ref: str) -> tuple[str | None, bool]:
         name = str(engine_for_ref(ref, cfg).name)
     except NoEngineError:
         return "", False
-    auto = _saved_engine(ref) is None and cfg.preferred_engine is EngineSetting.AUTO
+    auto = engine_service.saved_engine(ref) is None and cfg.preferred_engine is EngineSetting.AUTO
     return name, auto
 
 
@@ -314,7 +309,7 @@ class ModelPickerModal(ModalScreen[str | None]):
             self._options.labels[ref],
             self._options.engines[ref][0] or None,
             options,
-            _saved_engine(ref) or AUTO,
+            engine_service.saved_engine(ref),
         )
 
         def answered(option: engine_service.EngineOption | None) -> None:
@@ -331,7 +326,7 @@ class ModelPickerModal(ModalScreen[str | None]):
         engine closes the picker with no model, and the model goes to *pick_later* once
         the engine is saved. A refused download or a failed install leaves the role as it was.
         """
-        if option.name == (_saved_engine(ref) or AUTO):
+        if option.name == (engine_service.saved_engine(ref) or AUTO):
             self._pick_now(ref)
             return
         app, pick_later, key = self.app, self._pick_later, config_key_for_scope(self._scope)
@@ -355,7 +350,7 @@ class ModelPickerModal(ModalScreen[str | None]):
             self.notify(msg.MODEL_INFO_NO_ENGINE_CHOICE)
 
     def _save_engine(self, ref: str, option: engine_service.EngineOption) -> None:
-        if option.name != (_saved_engine(ref) or AUTO):
+        if option.name != (engine_service.saved_engine(ref) or AUTO):
             choose_for_model(self.app, ref, option, self._repaint)
 
     def _repaint(self) -> None:

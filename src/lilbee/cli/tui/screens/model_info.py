@@ -133,6 +133,7 @@ class ModelInfoModal(ModalScreen[None]):
             ref,
             _current_engine(ref),
             options,
+            engine_service.saved_engine(ref),
         )
         self.app.push_screen(modal, self._on_engine_picked)
 

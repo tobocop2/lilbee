@@ -1388,3 +1388,57 @@ async def test_a_role_with_no_model_says_so_instead_of_opening_the_fleet_picker(
             pilot, lambda: msg.ENGINE_NO_MODEL.format(role=WorkerRole.VISION) in _toasts()
         )
         assert not isinstance(app.screen, EnginePickerModal)
+
+
+_OPENVINO_ROW = 2
+
+
+def _saved_choices() -> dict[str, str]:
+    return json.loads(cfg.engine_choices or "{}")
+
+
+async def _enter_keeps_the_saved_engine(app: LilbeeAppHost, pilot) -> None:
+    """Open on a saved engine: that row is highlighted, and Enter alone keeps the choice."""
+    assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+    assert app.screen.query_one(OptionList).highlighted == _OPENVINO_ROW
+    await pilot.press("enter")
+    assert await wait_until(pilot, lambda: not isinstance(app.screen, EnginePickerModal))
+    await pilot.pause()
+    assert _saved_choices() == {GGUF_REF: "openvino"}
+
+
+async def test_enter_enter_from_the_model_bar_keeps_a_saved_engine() -> None:
+    cfg.engine_choices = json.dumps({GGUF_REF: "openvino"})
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.query_one("#model-pick-chat", ModelPickerButton).focus()
+        await pilot.press("e")
+        await _enter_keeps_the_saved_engine(app, pilot)
+
+
+async def test_enter_enter_from_model_info_keeps_a_saved_engine() -> None:
+    cfg.engine_choices = json.dumps({GGUF_REF: "openvino"})
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _open_info(app, pilot)
+        await pilot.press("e")
+        await _enter_keeps_the_saved_engine(app, pilot)
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_enter_enter_from_the_fleet_keeps_a_saved_engine() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody, FleetPill
+
+    cfg.engine_choices = json.dumps({GGUF_REF: "openvino"})
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        app.query_one("#eng-chat", FleetPill).press()
+        await _enter_keeps_the_saved_engine(app, pilot)
