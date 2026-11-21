@@ -599,7 +599,7 @@ class SettingsTestApp(LilbeeAppHost):
 
 
 class LazySettingsTestApp(SettingsTestApp):
-    """Test fixture that mounts the Settings screen the way production does: panes build on demand."""
+    """Test fixture that mounts the Settings screen as production does: panes build on demand."""
 
     def on_mount(self) -> None:
         self.push_screen(_make_eager_settings_screen(eager=False)())
