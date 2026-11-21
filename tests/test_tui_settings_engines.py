@@ -31,10 +31,10 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.engine_store import EngineStore
-from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines import LLAMA, choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.host_gate import PASS
-from lilbee.providers.fleet.engines.llama import LlamaCppAdapter, pack_backend
+from lilbee.providers.fleet.engines.llama import pack_backend
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from tests._async_wait import wait_until
@@ -681,19 +681,25 @@ def test_engine_rows_leave_out_an_engine_the_host_cannot_install(
     assert [row.engine for row in engine_service.engine_rows()] == ["llama.cpp", "ik_llama.cpp"]
 
 
-class _LlamaWithDigest(LlamaCppAdapter):
-    """The real llama.cpp adapter, with the pack digest that its pin record leaves out."""
-
-    def pin_record(self) -> Any:
-        return {**super().pin_record(), "sha256": "1" * 64}
-
-
 _REAL_BUNDLED_BACKEND = engine_service._bundled_backend
 _REAL_MISSING_OPTION = engine_service._missing_option
 _LLAMA_PACK_BYTES = 9_876_543
 
 
-@pytest.mark.parametrize("ready", [True, False], ids=["ready", "not-ready"])
+_NOT_READY_DEFECT = (
+    "The llama.cpp pin record names no backend and no digest, so the missing-engine read "
+    "rejects it and the Install row of llama.cpp has no backend and no size."
+)
+
+
+@pytest.mark.parametrize(
+    "ready",
+    [
+        True,
+        pytest.param(False, marks=pytest.mark.xfail(strict=True, reason=_NOT_READY_DEFECT)),
+    ],
+    ids=["ready", "not-ready"],
+)
 def test_the_llama_rows_name_the_pack_backend_of_the_host_with_the_real_reads(
     fleet: None, monkeypatch: pytest.MonkeyPatch, ready: bool
 ) -> None:
@@ -707,11 +713,8 @@ def test_the_llama_rows_name_the_pack_backend_of_the_host_with_the_real_reads(
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     backend = pack_backend(host)
     assert backend
-    # The real llama.cpp adapter: its pin names no backend, so the row falls back to the pack's.
-    llama_adapter = _LlamaWithDigest()
-    monkeypatch.setattr(choice, "ADAPTERS", {**choice.ADAPTERS, EngineName.LLAMA: llama_adapter})
-    version = llama_adapter.pin_record()["version"]
-    file = wheel_name(EngineName.LLAMA, version, f"macos-arm64-{backend}")
+    monkeypatch.setattr(choice, "ADAPTERS", {**choice.ADAPTERS, EngineName.LLAMA: LLAMA})
+    file = wheel_name(EngineName.LLAMA, LLAMA.pin_record()["version"], f"macos-arm64-{backend}")
     monkeypatch.setattr(
         engine_manifest, "MANIFESTS", render_table([(file, "1" * 64, _LLAMA_PACK_BYTES)])
     )
