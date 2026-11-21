@@ -277,7 +277,7 @@ _INTEL_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
 
 
 def _publish_llama_cells(monkeypatch: pytest.MonkeyPatch, cells: dict[str, str]) -> None:
-    """Publish a llama.cpp wheel per cell, at the version of the llama.cpp packs, on Linux x86_64."""
+    """Publish a llama.cpp wheel per cell at the version of the llama.cpp packs, on Linux x86_64."""
     rows = [
         (wheel_name(EngineName.LLAMA, _WHEEL_VERSION, key, "2.34"), sha, 1)
         for key, sha in cells.items()

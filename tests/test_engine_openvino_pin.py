@@ -35,7 +35,8 @@ def test_the_pin_holds_the_runtime_and_the_release_cell_only() -> None:
 def test_the_pin_names_the_archive_of_its_version_with_a_digest() -> None:
     pin = _pin()
     name = pin["OPENVINO_ARCHIVE_URL"].rsplit("/", 1)[1]
-    assert re.fullmatch(rf"openvino_toolkit_rhel8_{re.escape(pin['OPENVINO_VERSION'])}\.\S+\.tgz", name)
+    version = re.escape(pin["OPENVINO_VERSION"])
+    assert re.fullmatch(rf"openvino_toolkit_rhel8_{version}\.\S+\.tgz", name)
     assert f"/packages/{pin['OPENVINO_VERSION']}/linux/" in pin["OPENVINO_ARCHIVE_URL"]
     assert re.fullmatch(r"[0-9a-f]{64}", pin["OPENVINO_ARCHIVE_SHA256"])
 
