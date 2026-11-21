@@ -725,6 +725,18 @@ def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
         client.rerank(_WARM_PROMPT, [_WARM_PROMPT])
 
 
+def _tell_listeners(listeners: tuple[Callable[[WorkerRole], None], ...], role: WorkerRole) -> None:
+    """Call each of *listeners* with *role*; a listener that raises is logged and skipped.
+
+    One bad listener must not mute the others or stop the warm of *role*.
+    """
+    for listener in listeners:
+        try:
+            listener(role)
+        except Exception:
+            log.warning("A spawn listener failed for the %s role", role.value, exc_info=True)
+
+
 @functools.lru_cache(maxsize=32)
 def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     """Memoised tool-template probe keyed on the GGUF's path + mtime.
@@ -3165,24 +3177,22 @@ class FleetProvider:
     ) -> None:
         """Warm *chain*'s roles one at a time; every role gets its attempt.
 
-        An unexpected error warming one role (a listener blowing up) must not rob
-        the roles behind it of their warm, so the first error is re-raised only
-        after the chain finishes.
+        An unexpected error warming one role must not rob the roles behind it of
+        their warm, so the first error is re-raised only after the chain finishes.
         """
         on_spawning, on_spawned = listeners
         first_exc: Exception | None = None
         for role in chain:
+            _tell_listeners(on_spawning, role)
             try:
-                for spawning in on_spawning:
-                    spawning(role)
                 if role is WorkerRole.CHAT:
                     self._warm_chat_role(pools[role])
                 else:
                     self._warm_role_clients(role, pools[role])
-                for spawned in on_spawned:
-                    spawned(role)
             except Exception as exc:
                 first_exc = first_exc or exc
+            else:
+                _tell_listeners(on_spawned, role)
         if first_exc is not None:
             raise first_exc
 
