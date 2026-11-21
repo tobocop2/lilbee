@@ -597,8 +597,28 @@ def _restart_message(role: WorkerRole) -> str:
     )
 
 
+def _reload_message(role: WorkerRole) -> str:
+    """User-facing reason a request ended because a settings change reloaded *role*'s model."""
+    return (
+        f"The {role.value} model is reloading after a settings change, so this request "
+        "was cut. Send your request again."
+    )
+
+
+def _cut_message(role: WorkerRole, *, stuck: bool, replanned: bool) -> str | None:
+    """The error line for a request that the stop of *role*'s server breaks.
+
+    A server that stopped answering names the restart, and a server that a new plan
+    replaces names the reload. A dead server that is only rebuilt gets no line: its
+    requests keep their own error.
+    """
+    if stuck:
+        return _restart_message(role)
+    return _reload_message(role) if replanned else None
+
+
 class _EngineRestartedError(ProviderError):
-    """A request ended because its server stopped answering and the fleet restarted it.
+    """A request ended because the fleet restarted its server, which is named in the message.
 
     A request with no answer yet takes one retry on the new server; a stream that has
     sent frames is not retried.
@@ -1957,15 +1977,6 @@ class FleetProvider:
         if group is None:
             return ()
         return tuple(launch for launch in self._launches.get(group, ()) if launch.role is role)
-
-    def _group_clients(self, group: SwapGroup) -> list[LlamaServerClient]:
-        """Every client of *group*'s member roles. Caller holds ``self._lock``."""
-        return [
-            client
-            for role, member in self._role_group.items()
-            if member is group
-            for client in self._clients.get(role, [])
-        ]
 
     def _drop_group(self, group: SwapGroup) -> SwapManager | None:
         """Forget *group*'s swap/launches and every member role's clients, and the last failure.
@@ -3437,8 +3448,8 @@ class FleetProvider:
             self._preload_restarted(restarted)
             return
         reload_dir = self._reload_dir()
-        # A server that stopped answering drains before the build lock, so a peer
-        # can take the lock during the wait.
+        # Every drain runs with the build lock free, so a peer can take the lock
+        # during the wait. A server that stopped answering drains before the plan.
         drained = self._drain_stuck_groups(force)
         try:
             restarted = self._restart_changed(reload_dir, running, old, force, drained)
@@ -3458,103 +3469,121 @@ class FleetProvider:
         force: frozenset[WorkerRole],
         drained: dict[WorkerRole, list[LlamaServerClient]],
     ) -> list[WorkerRole]:
-        """Under the build lock, re-plan, stop the changed groups and start their replacements.
+        """Re-plan, drain the changed groups, stop them and start their replacements.
+
+        The plan, the stop and the start are one hold of the build lock, and no hold
+        waits for a request. A hold that finds a changed group with a running request
+        ends there: the group is out of dispatch, its requests drain with the lock
+        free, and the next hold plans again. Each group drains once, so a request
+        still running at the drain limit ends when its server stops.
 
         *drained* holds the clients that ``_drain_stuck_groups`` took out of dispatch;
         their groups restart whatever the plan says. Returns the restarted roles, or
         none when a shutdown lands during the drain.
         """
         restarted: list[WorkerRole] = []
-        # Serialize the reload against peer acquisitions with the same
-        # cross-process lock a build takes. Without it, this reap_stale can kill
-        # a peer's swap that is spawned but not yet answering its proxy, and the
-        # stop-then-spawn gap lets a peer's ladder see a half-stopped slot and
-        # build a second fleet into the same dir, double-allocating VRAM.
-        with build_lock(reload_dir):
-            # Reap dead engines in our dirs before re-planning, as a build would.
-            reap_stale(reload_dir)
-            origin = _plan_origin()
-            # A planning failure (a missing engine binary, a wedged GPU probe, an
-            # unusable CUDA runtime) propagates: the change was not applied, and a
-            # caller that wrote the choice must hear that. The raise lands before
-            # the stop phase, so a running fleet is left intact rather than half
-            # torn down.
-            if not running:
-                # Nothing loaded (a resurrect after a failed pass): the box is
-                # clean, so refresh the plan snapshot like a first build would.
-                planning.capture_plan_probe(self._engines())
-            engines = self._engines()
-            plan = planning.plan_all_launches(engines=engines)
-            # Keep the skip reasons in step with the fresh plan.
-            self._skipped_not_installed = dict(plan.skipped_not_installed)
-            self._refused_roles = dict(plan.refused_roles)
-            new = _launches_by_group(plan)
-            # A group restarts when its launches changed OR its running/planned
-            # presence disagrees (covers a group the new plan drops or adds).
-            changed = {
-                group
-                for group in running | set(new)
-                if (group in running) != (group in new)
-                or _launch_moves(old.get(group, ()), new.get(group, ()))
-            }
-            changed |= {group_for(role, plan.co_tenants) for role in force}
-            with self._lock:
-                changed |= {self._role_group[role] for role in drained if role in self._role_group}
-                self._reload_owed = frozenset(
-                    role for group in changed & set(new) for role in _by_role(list(new[group]))
-                )
-                # Every planned role that has no server is in a changed group, so
-                # this pass starts it again and records its own failures.
-                self._failed_starts = {}
-                self._reload_done.notify_all()
-            self._log_dropped_groups(changed, old, new)
-            # Stop phase: free the changed groups' VRAM before their replacements
-            # (or another group's grown plan) spawn against it. A group's engine
-            # stops once its running requests end, or at the drain limit. The clients
-            # of a stuck server have drained already, and a request still running on
-            # one ends with the restart error when its server stops.
-            drain_until = time.monotonic() + _SHUTDOWN_WORK_WAIT_S
-            for group in sorted(changed, key=lambda g: g.value):
+        stuck = frozenset(drained)
+        busy: list[LlamaServerClient] = []
+        while True:
+            self._drain_clients(busy, time.monotonic() + _SHUTDOWN_WORK_WAIT_S)
+            # Serialize the reload against peer acquisitions with the same
+            # cross-process lock a build takes. Without it, this reap_stale can kill
+            # a peer's swap that is spawned but not yet answering its proxy, and the
+            # stop-then-spawn gap lets a peer's ladder see a half-stopped slot and
+            # build a second fleet into the same dir, double-allocating VRAM.
+            with build_lock(reload_dir):
+                # Reap dead engines in our dirs before re-planning, as a build would.
+                reap_stale(reload_dir)
+                origin = _plan_origin()
+                # A planning failure (a missing engine binary, a wedged GPU probe, an
+                # unusable CUDA runtime) propagates: the change was not applied, and a
+                # caller that wrote the choice must hear that. The raise lands before
+                # the stop phase, so a running fleet is left intact rather than half
+                # torn down.
+                if not running:
+                    # Nothing loaded (a resurrect after a failed pass): the box is
+                    # clean, so refresh the plan snapshot like a first build would.
+                    planning.capture_plan_probe(self._engines())
+                engines = self._engines()
+                plan = planning.plan_all_launches(engines=engines)
+                # Keep the skip reasons in step with the fresh plan.
+                self._skipped_not_installed = dict(plan.skipped_not_installed)
+                self._refused_roles = dict(plan.refused_roles)
+                new = _launches_by_group(plan)
+                # A group restarts when its launches changed OR its running/planned
+                # presence disagrees (covers a group the new plan drops or adds).
+                replanned = {
+                    group
+                    for group in running | set(new)
+                    if (group in running) != (group in new)
+                    or _launch_moves(old.get(group, ()), new.get(group, ()))
+                }
+                changed = replanned | {group_for(role, plan.co_tenants) for role in force}
                 with self._lock:
-                    clients = self._group_clients(group)
-                    for role in [r for r, g in self._role_group.items() if g is group]:
-                        for client in drained.pop(role, []):
-                            client.restart_message = _restart_message(role)
-                    swap = self._drop_group(group)
-                self._drain_clients(clients, drain_until)
-                if swap is not None:
-                    swap.shutdown()
-            # Start phase: spawn the changed groups present in the new plan.
-            to_start = sorted(changed & set(new), key=lambda g: g.value)
-            for index, group in enumerate(to_start):
-                with self._lock:
-                    if self._shut_down:
-                        # A shutdown during the drain: a server started now has no owner.
-                        return []
-                group_launches = list(new[group])
-                swap = SwapManager(reload_dir, group)
-                lifetime = _engine_lifetime(reload_dir)
-                try:
-                    swap.start(
-                        group_launches,
-                        engines=engines,
-                        ttl_seconds=_warm_ttl_seconds(
-                            lifetime,
-                            reload_dir,
-                            hold_warm_for_session=self._hold_warm_for_session,
-                        ),
-                        lifetime=lifetime,
-                        origin=origin,
+                    changed |= {
+                        self._role_group[role] for role in drained if role in self._role_group
+                    }
+                    self._reload_owed = frozenset(
+                        role for group in changed & set(new) for role in _by_role(list(new[group]))
                     )
-                except Exception as exc:
-                    self._record_failed_starts(to_start[index:], new, exc)
-                    raise
-                with self._lock:
-                    self._adopt_group(group, swap, group_launches)
-                    self._group_dirs[group] = reload_dir
-                restarted.extend(_by_role(group_launches))
-            self._restamp_kept(running - changed, origin)
-        return restarted
+                    # Every planned role that has no server is in a changed group, so
+                    # this pass starts it again and records its own failures.
+                    self._failed_starts = {}
+                    busy = [
+                        client
+                        for client in self._take_out_of_dispatch(changed, drained)
+                        if client.in_flight
+                    ]
+                    self._reload_done.notify_all()
+                if busy:
+                    continue
+                self._log_dropped_groups(changed, old, new)
+                # Stop phase: free the changed groups' VRAM before their replacements
+                # (or another group's grown plan) spawn against it. The clients have
+                # drained already, and a request still running on one ends with the
+                # error of its restart when its server stops.
+                for group in sorted(changed, key=lambda g: g.value):
+                    with self._lock:
+                        for role in [r for r, g in self._role_group.items() if g is group]:
+                            message = _cut_message(
+                                role, stuck=role in stuck, replanned=group in replanned
+                            )
+                            for client in drained.pop(role, []):
+                                client.restart_message = message
+                        swap = self._drop_group(group)
+                    if swap is not None:
+                        swap.shutdown()
+                # Start phase: spawn the changed groups present in the new plan.
+                to_start = sorted(changed & set(new), key=lambda g: g.value)
+                for index, group in enumerate(to_start):
+                    with self._lock:
+                        if self._shut_down:
+                            # A shutdown during the drain: a server started now has no owner.
+                            return []
+                    group_launches = list(new[group])
+                    swap = SwapManager(reload_dir, group)
+                    lifetime = _engine_lifetime(reload_dir)
+                    try:
+                        swap.start(
+                            group_launches,
+                            engines=engines,
+                            ttl_seconds=_warm_ttl_seconds(
+                                lifetime,
+                                reload_dir,
+                                hold_warm_for_session=self._hold_warm_for_session,
+                            ),
+                            lifetime=lifetime,
+                            origin=origin,
+                        )
+                    except Exception as exc:
+                        self._record_failed_starts(to_start[index:], new, exc)
+                        raise
+                    with self._lock:
+                        self._adopt_group(group, swap, group_launches)
+                        self._group_dirs[group] = reload_dir
+                    restarted.extend(_by_role(group_launches))
+                self._restamp_kept(running - changed, origin)
+                return restarted
 
     def _record_failed_starts(
         self,
@@ -3589,15 +3618,30 @@ class FleetProvider:
                 for role in force
                 if self._forced_roles.get(role) and role in self._role_group
             }
-            for role in [r for r, g in self._role_group.items() if g in groups]:
-                drained[role] = self._clients.pop(role, [])
-            self._retire_clients([client for pool in drained.values() for client in pool])
+            taken = self._take_out_of_dispatch(groups, drained)
             self._stuck_roles = frozenset(drained)
-        self._drain_clients(
-            [client for pool in drained.values() for client in pool],
-            time.monotonic() + _SHUTDOWN_WORK_WAIT_S,
-        )
+        self._drain_clients(taken, time.monotonic() + _SHUTDOWN_WORK_WAIT_S)
         return drained
+
+    def _take_out_of_dispatch(
+        self, groups: set[SwapGroup], drained: dict[WorkerRole, list[LlamaServerClient]]
+    ) -> list[LlamaServerClient]:
+        """Move the clients of *groups* from dispatch into *drained*; return the moved ones.
+
+        Caller holds ``self._lock``. A role already in *drained* is left alone, so a
+        group drains once. A pick reserves its client under the same lock, so a
+        moved client gets no new request. The clients join the retired list, where a
+        cancel and a shutdown reach them, and no earlier retired client is closed
+        here: a pass that fails gives the clients of *drained* back to dispatch.
+        """
+        taken: list[LlamaServerClient] = []
+        for role in [r for r, g in self._role_group.items() if g in groups and r not in drained]:
+            drained[role] = self._clients.pop(role, [])
+            taken.extend(drained[role])
+        for client in taken:
+            client.notify_when_idle(self._start_hold_sweep)
+        self._retiring_clients = self._retiring_clients + taken
+        return taken
 
     def _give_back_clients(self, drained: dict[WorkerRole, list[LlamaServerClient]]) -> None:
         """Put *drained* clients back in dispatch after a pass that failed before its stop phase.

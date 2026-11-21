@@ -46,6 +46,10 @@ _LONG_DRAIN_S = 20.0
 # How long a peer waits for the build lock in these tests (90 s in production).
 _PEER_LOCK_WAIT_S = 1.0
 _RESTARTED = "The chat model server stopped answering and was restarted"
+_RELOADING = (
+    "The chat model is reloading after a settings change, so this request was cut. "
+    "Send your request again."
+)
 _QUESTION = [{"role": "user", "content": "hi"}]
 _START_REFUSED = "The engine did not start."
 _NOTES_CHUNK_SIZE = 384
@@ -441,7 +445,7 @@ def test_a_reload_with_no_time_left_asks_each_client_for_no_wait(
 
     _reload_chat_model(provider)
     assert poll_until(lambda: old.engine.stopped.is_set())
-    with pytest.raises(StreamInterruptedError, match="answer is cut"):
+    with pytest.raises(ProviderError, match="is reloading after a settings change"):
         list(stream)
     _join_fleet_threads()
 
@@ -1133,11 +1137,77 @@ def test_a_stream_cut_by_the_drain_limit_ends_with_a_message_for_the_user(
 
     _reload_chat_model(provider)
     assert poll_until(lambda: old.engine.stopped.is_set())
-    with pytest.raises(StreamInterruptedError, match="answer is cut"):
+    with pytest.raises(ProviderError) as caught:
         list(stream)
     _join_fleet_threads()
 
+    assert str(caught.value) == _RELOADING
+    assert caught.value.kind is ProviderErrorKind.CONNECTION
     assert old.answers_at_stop == 0
+
+
+def test_a_peer_takes_the_build_lock_while_a_settings_reload_drains(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No hold of the build lock waits for a request, so the drain shuts no peer process out."""
+    provider, swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _LONG_DRAIN_S)
+    monkeypatch.setattr(engine_lock_mod, "_BUILD_LOCK_TIMEOUT_S", _PEER_LOCK_WAIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    engine_dir = provider._reload_dir()
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _reload_chat_model(provider)
+
+    took_the_lock = _peer_takes_the_build_lock(engine_dir)
+    still_draining = not old.engine.stopped.is_set()
+    old.engine.release.set()
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert took_the_lock
+    assert still_draining
+    assert _texts(answers) == ["the answer"]
+    assert old.answers_at_stop == 1
+    assert swaps[-1] is not old
+    assert swaps[-1].engine.requests == 0
+
+
+def test_a_reload_whose_plan_fails_after_the_drain_gives_the_server_back(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan of the hold that follows the drain fails, so the fleet stays as it was."""
+    provider, swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _LONG_DRAIN_S)
+    real_plan = planning_mod.plan_all_launches
+    plans: list[int] = []
+
+    def plan_once(**kwargs: object) -> object:
+        plans.append(1)
+        if len(plans) > 1:
+            raise ProviderError("The engine binary is missing.")
+        return real_plan(**kwargs)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", plan_once)
+    old = provider._swap_for(WorkerRole.CHAT)
+    client = provider._clients[WorkerRole.CHAT][0]
+    started = len(swaps)
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _reload_chat_model(provider)
+
+    old.engine.release.set()
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert _texts(answers) == ["the answer"]
+    assert len(plans) == 2
+    assert provider._clients.get(WorkerRole.CHAT) == [client]
+    assert client not in provider._retiring_clients
+    assert client.restart_message is None
+    assert provider._swap_for(WorkerRole.CHAT) is old
+    assert not old.engine.stopped.is_set()
+    assert len(swaps) == started
 
 
 def test_a_shutdown_during_the_drain_stops_the_old_engine_and_starts_no_new_one(

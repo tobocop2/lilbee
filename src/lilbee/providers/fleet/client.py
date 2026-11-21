@@ -642,7 +642,8 @@ class LlamaServerClient:
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
         self._unhealthy_since = 0.0
         # The error line for a request that breaks because the fleet restarts this
-        # server after it stopped answering; None while no such restart runs.
+        # server, for a settings change or after it stopped answering; None while
+        # no such restart runs.
         self.restart_message: str | None = None
 
     @property
