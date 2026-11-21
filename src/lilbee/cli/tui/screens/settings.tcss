@@ -274,3 +274,25 @@ SettingsScreen PresetsPane .preset-line {
 SettingsScreen PresetsPane .preset-row Button {
     margin-left: 1;
 }
+SettingsScreen EnginesPane {
+    padding: 0 1;
+}
+
+SettingsScreen EnginesPane #engines-preferred {
+    width: 40;
+}
+
+SettingsScreen EnginesPane #engines-title {
+    text-style: bold;
+    margin-top: 1;
+}
+
+SettingsScreen EnginesPane #engines-table {
+    height: auto;
+    max-height: 20;
+}
+
+SettingsScreen EnginesPane #engines-hint {
+    color: $text-muted;
+    margin-top: 1;
+}

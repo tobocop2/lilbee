@@ -39,6 +39,7 @@ from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
+from lilbee.cli.tui.screens.settings_engines import ENGINES_PANE_ID, EnginesPane
 from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID, PresetsPane
 from lilbee.cli.tui.screens.settings_widgets import (
     ADVANCED_COLLAPSIBLE_CLASS,
@@ -219,7 +220,7 @@ class SettingsScreen(Screen[None]):
             yield StableFooter()
 
     def _compose_group_tabs(self) -> ComposeResult:
-        """Yield one TabPane per setting group, then Presets; bodies populate on activation."""
+        """Yield one TabPane per setting group, Engines after Models, then Presets."""
         for group_name, items in group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
             self._pane_groups[pane_id] = _PaneGroup(
@@ -231,6 +232,13 @@ class SettingsScreen(Screen[None]):
                 _LazyGroupBody(id=f"{pane_id}-body"),
                 id=pane_id,
             )
+            if group_name == SettingGroup.MODELS:
+                self._pane_ids.append(ENGINES_PANE_ID)
+                yield TabPane(
+                    msg.SETTINGS_ENGINES_TAB,
+                    EnginesPane(id=f"{ENGINES_PANE_ID}-body"),
+                    id=ENGINES_PANE_ID,
+                )
         self._pane_ids.append(PRESETS_PANE_ID)
         yield TabPane(
             msg.SETTINGS_PRESETS_TAB,
