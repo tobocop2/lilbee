@@ -4894,7 +4894,14 @@ def _launches_and_refusals(
             holders = _room_holders(plan, device, placement, charged, model_refs)
             reason = (
                 card_refusal(
-                    subject, device, needed, room, capacity[device], fix=True, holders=holders
+                    subject,
+                    device,
+                    needed,
+                    room,
+                    capacity[device],
+                    fix=True,
+                    holders=holders,
+                    cards=len(capacity),
                 )
                 or reason
             )
