@@ -150,7 +150,9 @@ async def test_the_chips_follow_the_stored_choice_without_a_restart() -> None:
         assert app.query_one("#model-bar-engine-chips").region.height == 1
 
 
-async def test_the_bar_shows_a_choice_another_process_saved_when_the_terminal_regains_focus() -> None:
+async def test_the_bar_shows_a_choice_another_process_saved_when_the_terminal_regains_focus() -> (
+    None
+):
     app = _BarApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -433,8 +435,6 @@ async def test_key_e_off_the_strip_still_types_into_the_prompt(size: tuple[int, 
         await pilot.press("e")
         assert await wait_until(pilot, lambda: chat._chat_input.value == "e")
         assert not isinstance(app.screen, EnginePickerModal)
-
-
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])

@@ -34,8 +34,10 @@ async def _embed_question_open(app: _SettingsApp, pilot) -> bool:
     """Wait for the second dialog, not the removal dialog that is still closing."""
     return await wait_until(
         pilot,
-        lambda: isinstance(app.screen, ConfirmDialog)
-        and "Continue?" in str(app.screen.query_one("#confirm-message", Static).render()),
+        lambda: (
+            isinstance(app.screen, ConfirmDialog)
+            and "Continue?" in str(app.screen.query_one("#confirm-message", Static).render())
+        ),
     )
 
 
