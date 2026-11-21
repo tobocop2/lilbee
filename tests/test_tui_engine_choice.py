@@ -376,6 +376,26 @@ async def test_key_e_on_a_focused_pill_opens_the_picker_in_insert_mode(
         assert chat._chat_input.value == ""
 
 
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_space_on_a_focused_fleet_pill_presses_it_in_insert_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.cli.tui.widgets import gpu_fleet_panel
+
+    monkeypatch.setattr(gpu_fleet_panel, "probe_gpu_stats", lambda devices: {})
+    app = _ChatApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        assert isinstance(chat, ChatScreen)
+        assert chat._insert_mode is True
+        await pilot.press("ctrl+g")
+        await _fleet_ready(app, pilot)
+        chat.query_one("#eng-chat").focus()
+        await pilot.press("space")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert chat._chat_input.value == ""
+
+
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
 async def test_a_key_the_focused_pill_does_not_bind_still_types_into_the_prompt(
     size: tuple[int, int],
