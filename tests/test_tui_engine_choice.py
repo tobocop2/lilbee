@@ -150,6 +150,18 @@ async def test_the_chips_follow_the_stored_choice_without_a_restart() -> None:
         assert app.query_one("#model-bar-engine-chips").region.height == 1
 
 
+async def test_the_bar_shows_a_choice_another_process_saved_when_the_terminal_regains_focus() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app.query_one("#model-bar-engine-chips").region.height == 0
+        settings.set_value(cfg.data_root, "engine_choices", json.dumps({GGUF_REF: "openvino"}))
+        app.on_app_focus()
+        await pilot.pause()
+        assert _text(app, "#model-bar-engine-chips") == "engine: chat ■ openvino  embed ■ llama.cpp"
+        assert app.query_one("#model-bar-engine-chips").region.height == 1
+
+
 async def test_the_engine_line_shows_when_the_user_prefers_an_engine() -> None:
     app = _BarApp()
     async with app.run_test(size=(120, 40)) as pilot:
