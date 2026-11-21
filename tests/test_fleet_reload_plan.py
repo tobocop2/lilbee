@@ -718,6 +718,37 @@ def test_a_shutdown_during_a_timeout_drain_closes_the_stuck_clients(
     assert closed
 
 
+def test_a_retry_that_fails_on_the_new_server_starts_no_second_server(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restart retry runs once: a new server that dies at once is not restarted again."""
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    embed = provider._swap_for(WorkerRole.EMBED)
+    starts: list[_EngineSwap] = []
+    real_start = _EngineSwap.start
+
+    def start_then_die(self: _EngineSwap, launches: list[object], **kwargs: object) -> None:
+        real_start(self, launches, **kwargs)
+        starts.append(self)
+        self.engine.stop()
+
+    monkeypatch.setattr(_EngineSwap, "start", start_then_die)
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _time_out_a_chat(provider)
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert not caller.is_alive()
+    assert len(answers) == 1
+    assert isinstance(answers[0], ProviderError)
+    assert old.engine.requests == 2
+    assert len(starts) == 1
+    assert provider._swap_for(WorkerRole.EMBED) is embed
+
+
 def test_a_late_timeout_from_a_replaced_server_restarts_nothing(
     mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
 ) -> None:
