@@ -2,8 +2,10 @@
 
 One process loads one model for one task:
 
-- ``--task embed`` serves ``POST /v1/embeddings`` in the OpenAI shape. A vector is the final
-  hidden state of the last token, normalised to length 1 (the pooling of Qwen3-Embedding).
+- ``--task embed`` serves ``POST /v1/embeddings`` in the OpenAI shape. The tokenizer adds its
+  own special tokens, as in the model card; for Qwen3-Embedding that is ``<|endoftext|>`` at the
+  end. A vector is the final hidden state of the last token, normalised to length 1 (the pooling
+  of Qwen3-Embedding).
 - ``--task rerank`` serves ``POST /v1/rerank`` in the Cohere shape. A score is the probability
   of "yes" against "no" after the prompt of Qwen3-Reranker.
 
@@ -49,10 +51,8 @@ _NO = "no"
 class Backend(Protocol):
     """The model calls of the server; the only part that needs mlx."""
 
-    eos_id: int | None
-
-    def encode(self, text: str) -> list[int]:
-        """The token ids of *text*, with no special tokens added."""
+    def encode(self, text: str, special: bool) -> list[int]:
+        """The token ids of *text*; with *special*, plus the tokens of the tokenizer's template."""
         ...
 
     def token_id(self, token: str) -> int:
@@ -80,12 +80,10 @@ class MlxBackend:
         from mlx_lm import load
 
         self._mx = mx
-        self._model, tokenizer = load(path)
-        self._tokenizer = tokenizer
-        self.eos_id = tokenizer.eos_token_id
+        self._model, self._tokenizer = load(path)
 
-    def encode(self, text: str) -> list[int]:
-        return list(self._tokenizer.encode(text, add_special_tokens=False))
+    def encode(self, text: str, special: bool) -> list[int]:
+        return list(self._tokenizer.encode(text, add_special_tokens=special))
 
     def token_id(self, token: str) -> int:
         return int(self._tokenizer.convert_tokens_to_ids(token))
@@ -141,12 +139,8 @@ class Service:
         return ids
 
     def _embed_ids(self, text: str) -> list[int]:
-        """The ids of *text* with the end token last; the pooling reads that token."""
-        ids = self.backend.encode(text)
-        eos = self.backend.eos_id
-        if eos is not None and (not ids or ids[-1] != eos):
-            ids.append(eos)
-        return self._check(ids)
+        """The ids of *text* as the tokenizer's template makes them; the pooling reads the last."""
+        return self._check(self.backend.encode(text, special=True))
 
     def embed(self, body: dict[str, Any]) -> dict[str, Any]:
         texts = _texts(body.get("input"), "input")
@@ -178,10 +172,11 @@ class Service:
 
     def _rerank_ids(self, query: str, document: str, instruction: str) -> list[int]:
         """The prompt of Qwen3-Reranker; a long document loses its tail to fit the window."""
-        head = self.backend.encode(f"{RERANK_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n")
-        tail = self.backend.encode(RERANK_SUFFIX)
+        prompt = f"{RERANK_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n"
+        head = self.backend.encode(prompt, special=False)
+        tail = self.backend.encode(RERANK_SUFFIX, special=False)
         room = self.max_length - len(head) - len(tail)
-        doc = self.backend.encode(f"<Document>: {document}")
+        doc = self.backend.encode(f"<Document>: {document}", special=False)
         if room < 1:
             raise RequestError(400, OVERFLOW.format(count=len(head) + len(tail), limit=self.max_length))
         return [*head, *doc[:room], *tail]
