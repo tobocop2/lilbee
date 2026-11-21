@@ -47,6 +47,7 @@ _LONG_DRAIN_S = 20.0
 _PEER_LOCK_WAIT_S = 1.0
 _RESTARTED = "The chat model server stopped answering and was restarted"
 _QUESTION = [{"role": "user", "content": "hi"}]
+_START_REFUSED = "The engine did not start."
 _NOTES_CHUNK_SIZE = 384
 _NOTES_CHUNK_OVERLAP = 64
 _EMBED_WINDOW_AT_512 = 2048
@@ -747,6 +748,135 @@ def test_a_retry_that_fails_on_the_new_server_starts_no_second_server(
     assert old.engine.requests == 2
     assert len(starts) == 1
     assert provider._swap_for(WorkerRole.EMBED) is embed
+
+
+def _fail_first_starts(monkeypatch: pytest.MonkeyPatch, count: int) -> list[_EngineSwap]:
+    """Make the first *count* server starts fail; returns each swap asked to start."""
+    starts: list[_EngineSwap] = []
+    real_start = _EngineSwap.start
+
+    def start(self: _EngineSwap, launches: list[object], **kwargs: object) -> None:
+        starts.append(self)
+        if len(starts) <= count:
+            raise ProviderError(_START_REFUSED)
+        real_start(self, launches, **kwargs)
+
+    monkeypatch.setattr(_EngineSwap, "start", start)
+    return starts
+
+
+def _ask(provider: FleetProvider) -> object:
+    """One chat: its answer, or the error it raised."""
+    try:
+        return provider.chat(_QUESTION)
+    except ProviderError as err:
+        return err
+
+
+def test_a_chat_after_a_restart_that_did_not_start_names_the_failed_start(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restart stops the chat server and cannot start it: the next chat says why."""
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    starts = _fail_first_starts(monkeypatch, 2)
+    _time_out_a_chat(provider)
+    _join_fleet_threads()
+
+    with pytest.raises(ProviderError) as heard:
+        provider.chat(_QUESTION)
+    _join_fleet_threads()
+
+    assert str(heard.value).startswith(
+        f"The chat model server was restarted and did not start again: {_START_REFUSED}"
+    )
+    assert "Send your request again" in str(heard.value)
+    assert old.engine.stopped.is_set()
+    assert len(starts) == 2
+
+
+def test_a_chat_after_a_restart_that_did_not_start_starts_the_server_again(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    embed = provider._swap_for(WorkerRole.EMBED)
+    starts = _fail_first_starts(monkeypatch, 1)
+    _time_out_a_chat(provider)
+    _join_fleet_threads()
+    assert provider._swap_for(WorkerRole.CHAT) is None
+
+    answers = [_ask(provider)]
+    _join_fleet_threads()
+
+    assert _texts(answers) == ["the answer"]
+    assert len(starts) == 2
+    assert provider._swap_for(WorkerRole.CHAT) is starts[-1]
+    assert provider._swap_for(WorkerRole.EMBED) is embed
+
+
+def test_a_chat_after_a_reload_that_did_not_start_starts_the_server_again(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A settings reload whose start fails leaves the same gap; the next chat closes it."""
+    provider, _swaps = engine_fleet
+    starts = _fail_first_starts(monkeypatch, 1)
+    _reload_chat_model(provider)
+    _join_fleet_threads()
+    assert provider._swap_for(WorkerRole.CHAT) is None
+
+    answers = [_ask(provider)]
+    _join_fleet_threads()
+
+    assert _texts(answers) == ["the answer"]
+    assert provider._swap_for(WorkerRole.CHAT) is starts[-1]
+    assert provider._launches[provider._role_group[WorkerRole.CHAT]][0].model == _OTHER_CHAT_REF
+
+
+def test_a_server_that_started_again_drops_its_failed_start(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After the start succeeds, a later failed rebuild reports its own cause, not the old start."""
+    provider, _swaps = engine_fleet
+    _fail_first_starts(monkeypatch, 1)
+    _reload_chat_model(provider)
+    _join_fleet_threads()
+    assert _texts([_ask(provider)]) == ["the answer"]
+    _join_fleet_threads()
+
+    def no_plan(**_kwargs: object) -> object:
+        raise ProviderError("The engine binary is missing.")
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", no_plan)
+    with pytest.raises(ProviderError) as heard:
+        provider._rebuild_role(WorkerRole.CHAT)
+    _join_fleet_threads()
+
+    assert str(heard.value) == "The engine binary is missing."
+
+
+class _LadderReached(Exception):
+    """The build got past its demand plan."""
+
+
+def test_a_build_drops_an_earlier_failed_start(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A build plans every role afresh, so a role it does not serve keeps no failed start."""
+    provider, _swaps = engine_fleet
+    provider._failed_starts = {WorkerRole.CHAT: _START_REFUSED}
+
+    def reached() -> Path:
+        raise _LadderReached
+
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", reached)
+    with pytest.raises(_LadderReached):
+        provider._acquire_engine(tmp_path)
+
+    assert provider._failed_starts == {}
 
 
 def test_a_late_timeout_from_a_replaced_server_restarts_nothing(
