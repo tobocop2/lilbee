@@ -193,6 +193,48 @@ def test_the_python_install_writes_nothing_outside_the_scratch_directory(tmp_pat
         assert Path(folder).is_relative_to(scratch)
 
 
+_FAKE_UV = """
+case "$1 $2" in
+  "--version "*) echo "uv {uv}" ;;
+  "python install")
+    mkdir -p "$UV_PYTHON_INSTALL_DIR/cp/bin" "$UV_PYTHON_INSTALL_DIR/cp/lib/python3.12"
+    printf '#!/bin/sh\\n' > "$UV_PYTHON_INSTALL_DIR/cp/bin/python3.12"
+    chmod 755 "$UV_PYTHON_INSTALL_DIR/cp/bin/python3.12"
+    cp "$UV_PYTHON_INSTALL_DIR/cp/bin/python3.12" "$UV_PYTHON_INSTALL_DIR/cp/bin/python3" ;;
+  "python find") echo "$UV_PYTHON_INSTALL_DIR/cp/bin/python3.12" ;;
+  "pip install")
+    while [ "$1" != --target ]; do shift; done
+    mkdir -p "$2/mlx_metal-{mlx}.dist-info" "$2/numpy/.dylibs"
+    echo "Tag: py3-none-macosx_14_0_arm64" > "$2/mlx_metal-{mlx}.dist-info/WHEEL" ;;
+esac
+"""
+
+
+@needs_bash
+def test_the_script_stops_when_numpy_bundles_libraries_again(tmp_path: Path) -> None:
+    """The numpy licence is replaced only because the wheel holds no numpy/.dylibs."""
+    top = _tree(tmp_path)
+    shutil.copytree(PROJECT / "lilbee_engine_mlx", top / "packaging/engine-mlx/lilbee_engine_mlx")
+    pin = _pin()
+    stubs = tmp_path / "stubs"
+    _stub(stubs, "uv", _FAKE_UV.format(uv=pin["MLX_UV_VERSION"], mlx=pin["MLX_VERSION"]))
+    _stub(stubs, "delocate-wheel", f"echo {pin['MLX_DELOCATE_VERSION']}")
+    _stub(stubs, "uname", '[ "$1" = -s ] && echo Darwin || echo arm64')
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    done = subprocess.run(
+        ["bash", str(top / "tools" / "wheel-build" / "mlx_wheel.sh"), str(tmp_path / "out")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+        env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(scratch)},
+    )
+    assert done.returncode == 1
+    assert "numpy bundles libraries in numpy/.dylibs" in done.stderr
+
+
 @pytest.mark.skipif(shutil.which("sh") is None, reason="the launcher is a sh script")
 def test_the_launcher_runs_mlx_lm_server_on_the_bundled_interpreter(tmp_path: Path) -> None:
     package = tmp_path / "engines" / "lilbee_engine_mlx"
