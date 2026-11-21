@@ -114,7 +114,7 @@ def _announce_and_after(
     app: LilbeeApp, result: EngineCommandResult, after: Callable[[], object] | None
 ) -> None:
     announce(app, result)
-    if after is not None:
+    if result.ok and after is not None:
         after()
 
 

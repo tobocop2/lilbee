@@ -33,6 +33,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+from lilbee.cli.tui.widgets.model_pick import config_key_for_scope
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines.choice import AUTO, NoEngineError
@@ -50,6 +51,21 @@ BROWSE_CATALOG_REF = "__browse_catalog__"
 
 # The engine step asks only when at least this many engines can load the model file.
 _MIN_ENGINES_TO_ASK = 2
+
+
+def _pick_if_role_unchanged(
+    app: LilbeeApp, key: str, held: str | None, ref: str, pick_later: Callable[[str], object]
+) -> None:
+    """Give *ref* to *pick_later* only while the role *key* still holds *held*.
+
+    The role can get another model while the engine of *ref* installs. That newer pick
+    wins, and a toast names the model that is not used.
+    """
+    current = getattr(cfg, key)
+    if current == held:
+        pick_later(ref)
+    elif current != ref:
+        app.notify(msg.MODEL_PICKER_LATE_PICK_SKIPPED.format(model=ref), severity="warning")
 
 
 def _picker_title(scope: PickerScope) -> str:
@@ -181,7 +197,8 @@ class ModelPickerModal(ModalScreen[str | None]):
 
     A pick that changes the engine of the model returns None at once, and the role keeps
     its old model. *pick_later* gets the ref once the new engine is saved, which can wait
-    on a download. The picker has closed by then, so it owns no action that ends late.
+    on a download, and only while the role still holds the model it had at the pick. The
+    picker has closed by then, so it owns no action that ends late.
     """
 
     CSS_PATH: ClassVar[str] = "model_picker.tcss"
@@ -310,11 +327,18 @@ class ModelPickerModal(ModalScreen[str | None]):
         if option.name == (_saved_engine(ref) or AUTO):
             self.dismiss(ref)
             return
-        app, pick_later = self.app, self._pick_later
+        app, pick_later, key = self.app, self._pick_later, config_key_for_scope(self._scope)
+        held = getattr(cfg, key)
         self.dismiss(None)
         # The app runs the save: a dialog pushed from the closed picker would send its answer
         # to the picker, which no longer reads its messages.
-        app.call_later(choose_for_model, app, ref, option, lambda: pick_later(ref))
+        app.call_later(
+            choose_for_model,
+            app,
+            ref,
+            option,
+            lambda: _pick_if_role_unchanged(app, key, held, ref, pick_later),
+        )
 
     def action_change_engine(self) -> None:
         """Open the engine picker for the highlighted model; the model stays unchanged."""
