@@ -442,6 +442,34 @@ def test_a_build_of_another_wheel_is_refused_not_replaced(
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
+def test_the_engines_tab_row_of_a_build_of_another_wheel_removes_it_so_install_works(
+    good: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine_service.install(ENGINE.value, good)
+    other = tmp_path / "other.whl"
+    sha = make_wheel(other, package="lilbee_engine_other")
+    monkeypatch.setitem(choice.ADAPTERS, ENGINE, StandIn(sha))  # type: ignore[arg-type]
+    rows = [r for r in engine_service.engine_rows() if r.engine == ENGINE.value]
+    assert [(r.state, r.version, r.backend) for r in rows] == [
+        (engine_service.EngineState.NOT_INSTALLED, "", "cpu"),
+        (engine_service.EngineState.DIFFERS_FROM_PIN, VERSION, "cpu"),
+    ]
+    stale = rows[1]
+    assert stale.size_bytes is not None and stale.size_bytes > 0
+    assert not stale.outside_store
+    # The row names the build that `lilbee engine list` names on its line.
+    listing = " ".join(CliRunner().invoke(cli_app, ["engine", "list"]).output.split())
+    assert (
+        f"{ENGINE} not installed: the installed build {stale.version} ({stale.backend}) "
+        "differs from the pin"
+    ) in listing
+    engine_service.remove_build(stale.engine, stale.version, stale.backend)
+    built = engine_service.install(ENGINE.value, other)
+    assert (built.engine, built.version, built.backend) == (ENGINE.value, VERSION, "cpu")
+    rows = [r for r in engine_service.engine_rows() if r.engine == ENGINE.value]
+    assert [r.state for r in rows] == [engine_service.EngineState.INSTALLED]
+
+
 def test_a_pin_that_names_no_backend_is_refused(
     good: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

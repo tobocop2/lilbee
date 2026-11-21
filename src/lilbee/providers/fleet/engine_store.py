@@ -535,15 +535,23 @@ class EngineStore:
     def _dir(self, engine: str, version: str, backend: str) -> Path:
         return self.root / engine / f"{version}-{backend}"
 
+    def holds(self, engine: str, version: str, backend: str) -> bool:
+        """True when the build folder is a real entry under the engines root, as remove needs."""
+        try:
+            self._inside_root(self._dir(engine, version, backend))
+        except StorePathError:
+            return False
+        return True
+
     def build_size(self, engine: str, version: str, backend: str) -> int | None:
-        """The bytes on disk of one build folder; None when the folder cannot be read."""
+        """The bytes on disk of one build folder; None when it is outside the root or unreadable."""
+        build = self._dir(engine, version, backend)
         total = 0
         try:
-            for folder, _dirs, files in os.walk(
-                self._dir(engine, version, backend), onerror=_raise_walk_error
-            ):
+            self._inside_root(build)
+            for folder, _dirs, files in os.walk(build, onerror=_raise_walk_error):
                 total += sum(os.lstat(os.path.join(folder, name)).st_size for name in files)
-        except OSError as exc:
+        except (OSError, StorePathError) as exc:
             log.warning(
                 "The size of engine %s %s (%s) is unknown: %s", engine, version, backend, exc
             )

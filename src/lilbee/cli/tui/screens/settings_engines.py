@@ -43,13 +43,17 @@ _STATE_TEXT = {
     EngineState.INSTALLED: msg.ENGINE_STATE_INSTALLED,
     EngineState.USER_INSTALLED: msg.ENGINE_STATE_INSTALLED,
     EngineState.NOT_INSTALLED: msg.ENGINE_STATE_NOT_INSTALLED,
+    EngineState.DIFFERS_FROM_PIN: msg.ENGINE_STATE_DIFFERS_FROM_PIN,
 }
 _ACTION_TEXT = {
     EngineState.BUNDLED: "",
     EngineState.INSTALLED: msg.ENGINES_ACTION_REMOVE,
     EngineState.USER_INSTALLED: "",
     EngineState.NOT_INSTALLED: msg.ENGINES_ACTION_INSTALL,
+    EngineState.DIFFERS_FROM_PIN: msg.ENGINES_ACTION_REMOVE,
 }
+# The rows of a build on disk: they show its size and offer Remove.
+_ON_DISK = frozenset({EngineState.INSTALLED, EngineState.DIFFERS_FROM_PIN})
 
 
 def _row_key(row: EngineRow) -> str:
@@ -60,10 +64,17 @@ def _size_text(row: EngineRow) -> str:
     """The size of a row: the word bundled, the size on disk or of the download, or a dash."""
     if row.state is EngineState.BUNDLED:
         return msg.ENGINE_STATE_BUNDLED
-    size = row.size_bytes if row.state is EngineState.INSTALLED else row.download_bytes
+    size = row.size_bytes if row.state in _ON_DISK else row.download_bytes
     if size is not None:
         return format_size(size)
     return msg.ENGINES_NO_VALUE
+
+
+def _action_text(row: EngineRow) -> str:
+    """The action of a row; a build that remove refuses says why instead of Remove."""
+    if row.outside_store:
+        return msg.ENGINES_ACTION_OUTSIDE_STORE
+    return _ACTION_TEXT[row.state]
 
 
 def _build_label(row: EngineRow) -> str:
@@ -128,7 +139,7 @@ class EnginesPane(VerticalScroll):
             Text(_size_text(row)),
             Text(_STATE_TEXT[row.state]),
             Text(used),
-            Text(_ACTION_TEXT[row.state]),
+            Text(_action_text(row)),
         ]
 
     def _styled(self, content: Content) -> Text:
@@ -203,7 +214,12 @@ class EnginesPane(VerticalScroll):
                 download_bytes=row.download_bytes,
             )
             confirm_and_install(self.app, option, self.reload, use_for_model=False)
-        elif row.state is EngineState.INSTALLED:
+        elif row.state in _ON_DISK and row.outside_store:
+            text = msg.ENGINE_REMOVE_OUTSIDE_STORE.format(
+                build=_build_label(row), folder=engine_service.engines_folder()
+            )
+            self.app.notify(text, severity="warning")
+        elif row.state in _ON_DISK:
             self._ask_remove(row)
 
     def _ask_remove(self, row: EngineRow) -> None:
