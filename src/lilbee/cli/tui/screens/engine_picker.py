@@ -57,7 +57,7 @@ class EnginePickerModal(ModalScreen[EngineOption | None]):
         subtitle: str,
         current: str | None,
         options: list[EngineOption],
-        saved: str = AUTO,
+        saved: str | None,
     ) -> None:
         super().__init__()
         self._title = title
