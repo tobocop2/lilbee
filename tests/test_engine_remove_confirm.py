@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,11 +10,14 @@ import pytest
 import lilbee.mcp_server as mcp_server
 from lilbee.app import engine_service
 from lilbee.cli.tui.engine_commands import run_engine_command
+from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.data.store import Store
 from lilbee.providers.fleet.engine_store import engines_root
 from lilbee.retrieval import canary_probe
 from tests.cli.test_engine_builds import install
 from tests.test_engine_builds_surfaces import _cli, _installed, _isolated, _rest  # noqa: F401
+from tests.test_engine_embed_confirm import MODEL as EMBED_MODEL
 from tests.test_engine_embed_confirm import library  # noqa: F401
 
 
@@ -99,11 +103,72 @@ def test_a_library_with_no_documents_asks_nothing(
     assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
 
 
-def test_a_stopped_server_asks_nothing(
-    embeds_on_the_build: None, monkeypatch: pytest.MonkeyPatch
+def test_no_server_and_no_saved_library_asks_nothing(
+    embeds_on_the_build: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(engine_service, "peek_services", lambda: None)
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "no-library")
     assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
+
+
+@pytest.fixture
+def standalone_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No running services: the fx build is installed and a saved library of 3 documents exists.
+
+    The embedder trigger comes from the settings and the real registry code. The library is a
+    real store on disk, read the way a standalone command reads it.
+    """
+    install(cfg.models_dir)
+    model_file = tmp_path / "embed.gguf"
+    model_file.write_bytes(b"x")
+    binary = engines_root(cfg.models_dir) / "fx" / "1-cpu" / "bin" / "server"
+    monkeypatch.setattr(canary_probe, "resolve_model_path", lambda *_: model_file)
+    monkeypatch.setattr(canary_probe, "engine_build_id", lambda: f"pack:{binary}@1")
+    # The CLI start-up points the paths at the data root and reads the saved settings again,
+    # so the embedder is saved and the library sits where the root derives it.
+    settings.set_value(cfg.data_root, "embedding_model", EMBED_MODEL)
+    monkeypatch.setattr(cfg, "embedding_model", EMBED_MODEL)
+    monkeypatch.setattr(cfg, "lancedb_dir", cfg.data_root / "data" / "lancedb")
+    monkeypatch.setattr(engine_service, "peek_services", lambda: None)
+    store = Store(cfg)
+    for index in range(3):
+        store.upsert_source(f"doc{index}.md", f"hash{index}", 1)
+    store.close()
+
+
+def test_removing_the_embedder_build_with_no_server_asks_with_the_count(
+    standalone_library: None,
+) -> None:
+    with pytest.raises(engine_service.EmbedConfirmRequiredError) as caught:
+        engine_service.remove_build("fx", "1", "cpu")
+    assert (caught.value.library, caught.value.documents) == (cfg.data_root.name, 3)
+    assert [(b.engine, b.version) for b in _installed()] == [("fx", "1")]
+
+
+def test_the_standalone_cli_refuses_without_a_terminal_and_names_the_flag(
+    standalone_library: None,
+) -> None:
+    code, body = _cli("remove", "fx", "1", "cpu")
+    assert code == 1
+    assert "--yes" in body["error"]
+    assert len(_installed()) == 1
+    code, body = _cli("remove", "fx", "1", "cpu", "--yes")
+    assert (code, body["removed"]) == (0, "fx 1 (cpu)")
+    assert _installed() == []
+
+
+def test_a_build_whose_folder_name_starts_with_another_is_not_the_embedder_build(
+    library: SimpleNamespace,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(cfg.models_dir, backend="cpu")
+    install(cfg.models_dir, backend="cpu-avx2")
+    binary = engines_root(cfg.models_dir) / "fx" / "1-cpu-avx2" / "bin" / "server"
+    monkeypatch.setattr(canary_probe, "engine_build_id", lambda: f"pack:{binary}@1")
+    assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
+    with pytest.raises(engine_service.EmbedConfirmRequiredError):
+        engine_service.remove_build("fx", "1", "cpu-avx2")
+    assert [b.backend for b in _installed()] == ["cpu-avx2"]
 
 
 def test_a_build_that_is_not_installed_is_refused_not_asked_about(
@@ -137,16 +202,6 @@ def test_mcp_asks_then_removes_when_confirmed(embeds_on_the_build: None) -> None
     assert len(_installed()) == 1
     done = mcp_server.engine_remove_tool("fx", "1", "cpu", confirm_embed_change=True)
     assert done == {"removed": "fx 1 (cpu)"}
-
-
-def test_the_cli_refuses_without_a_terminal_and_names_the_flag(embeds_on_the_build: None) -> None:
-    code, body = _cli("remove", "fx", "1", "cpu")
-    assert code == 1
-    assert "--yes" in body["error"]
-    assert len(_installed()) == 1
-    code, body = _cli("remove", "fx", "1", "cpu", "--yes")
-    assert (code, body["removed"]) == (0, "fx 1 (cpu)")
-    assert _installed() == []
 
 
 def test_the_slash_command_refuses_and_names_the_word_then_removes_on_yes(

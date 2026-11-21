@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from lilbee.app.engine_choice import (
     resolve_engines,
     stored_choices,
 )
-from lilbee.app.services import peek_services
+from lilbee.app.services import Services, peek_services
 from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import make_download_callback
@@ -320,7 +321,7 @@ def _removal_changes_embedder(
     trigger = embedder_trigger(cfg, registry)
     if trigger is None:
         return False
-    if str(store.root / engine / f"{version}-{backend}") in trigger:
+    if f"{store.root / engine / f'{version}-{backend}'}{os.sep}" in trigger:
         return True
     others = [
         b
@@ -334,16 +335,35 @@ def _check_removal_keeps_embedder(
     store: EngineStore, engine: str, version: str, backend: str, confirmed: bool
 ) -> None:
     """Refuse unless *confirmed* when removing the build changes the engine that embeds."""
-    services = peek_services()
-    if services is None or confirmed:
+    if confirmed:
         return
     if (engine, version, backend) not in [
         (b.engine, b.version, b.backend) for b in store.installed()
     ]:
         return
-    documents = services.store.source_summary(0).document_count
-    if documents and _removal_changes_embedder(store, services.registry, engine, version, backend):
+    services = peek_services()
+    registry = services.registry if services is not None else ModelRegistry(cfg.models_dir)
+    if not _removal_changes_embedder(store, registry, engine, version, backend):
+        return
+    documents = _document_count(services)
+    if documents:
         raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
+
+
+def _document_count(services: Services | None) -> int:
+    """The documents in the library: the running store's count, else the saved library's count."""
+    if services is not None:
+        return services.store.source_summary(0).document_count
+    if not cfg.lancedb_dir.exists():
+        return 0
+    # heavy: lilbee.data.store opens lancedb (>50ms)
+    from lilbee.data.store import Store
+
+    store = Store(cfg)
+    try:
+        return store.source_summary(0).document_count
+    finally:
+        store.close()
 
 
 def remove_build(
