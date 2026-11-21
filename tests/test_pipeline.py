@@ -383,6 +383,6 @@ class TestMaxConcurrent:
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
         monkeypatch.setattr(cfg, "vision_model", "")
         monkeypatch.setattr(cfg, "embed_replicas", 0)
-        monkeypatch.setattr(replicas_mod, "gpu_device_count", lambda: 4)
+        monkeypatch.setattr(replicas_mod, "gpu_device_count", lambda _engine: 4)
         result = pipeline._max_concurrent()
         assert result >= 4, f"expected at least 4 (one per GPU), got {result}"

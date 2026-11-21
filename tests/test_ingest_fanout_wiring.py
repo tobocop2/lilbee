@@ -42,6 +42,8 @@ def services(monkeypatch):
     store.get_sources.return_value = []
     store.has_chunks.return_value = False
     store.index_mismatch.return_value = None
+    store.embedding_mismatch.return_value = None
+    store.canary_mismatch.return_value = None
     set_services(make_mock_services(store=store))
     return store
 

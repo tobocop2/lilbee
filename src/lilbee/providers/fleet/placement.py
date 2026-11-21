@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from functools import reduce
 from math import gcd
 
+from lilbee.providers.fleet.engines.base import MemoryKind
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
@@ -45,12 +46,16 @@ class ModelPlacementInput:
     ``est_ram_bytes`` is what the same estimate puts in system memory, which is
     non-zero only when something offloads. Placement divides GPUs and so does not
     read it; admission does, because system memory is a bound too.
+
+    ``kind`` says whether the engine sized the figures or declared a fixed
+    reserve, which no later step corrects against the weights on disk.
     """
 
     role: WorkerRole
     est_vram_bytes: int
     replicas: int = 1
     est_ram_bytes: int = 0
+    kind: MemoryKind = MemoryKind.SIZED
 
 
 @dataclass(frozen=True)

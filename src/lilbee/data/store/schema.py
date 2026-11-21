@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pyarrow as pa
 
+CANARY_VECTORS_COLUMN = "canary_vectors"
+
 
 def _meta_schema() -> pa.Schema:
     return pa.schema(
@@ -12,6 +14,9 @@ def _meta_schema() -> pa.Schema:
             pa.field("embedding_dim", pa.int32()),
             pa.field("schema_version", pa.int32()),
             pa.field("updated_at", pa.utf8()),
+            pa.field(CANARY_VECTORS_COLUMN, pa.list_(pa.list_(pa.float32()))),
+            pa.field("canary_trigger", pa.utf8()),
+            pa.field("canary_verified", pa.bool_()),
         ]
     )
 

@@ -1,0 +1,8 @@
+{
+  "id": "M4",
+  "rows": [
+    11
+  ],
+  "request": null,
+  "assert": "The pin has a version and, for each platform, an https URL and a 64-hex sha256; macOS carries min_os."
+}

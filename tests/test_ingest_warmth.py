@@ -104,7 +104,7 @@ class TestKeepFleetWarm:
         monkeypatch.setattr(
             "lilbee.providers.fleet.replicas.resolve_replica_count", lambda *_a, **_k: 1
         )
-        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda: 1)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 1)
         assert offload.embed_inflight_target() == 0  # single card: CPU sizing fits
 
     def test_max_inflight_lifts_the_worker_pool_ceiling(self, monkeypatch):

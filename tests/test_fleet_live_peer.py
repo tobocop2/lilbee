@@ -19,13 +19,15 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers import engine_params, gguf_meta
+from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet import swap_manager as swap_mod
 from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
@@ -73,7 +75,9 @@ class _Box:
 
     def seed_fleet(self, engine_dir: Path) -> dict[SwapGroup, int]:
         """Start the current plan in *engine_dir* as another process; return its pids."""
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engine=LLAMA)
+        ).items():
             self.record(engine_dir, group, list(launches))
         return self.pids(engine_dir)
 
@@ -91,7 +95,7 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
     machine = _Box(tmp_path)
 
     class _ProcessSwap(_FakeSwap):
-        def __init__(self, engine_dir: Path, group: SwapGroup) -> None:
+        def __init__(self, engine_dir: Path, group: SwapGroup, engine: object) -> None:
             super().__init__()
             self._dir = engine_dir
             self._group = group
@@ -115,7 +119,7 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
     monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: machine.private)
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _dir: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(prov_mod, "SwapManager", _ProcessSwap)
     monkeypatch.setattr(prov_mod, "stop_engine", machine.stop_engine)
@@ -128,7 +132,7 @@ def box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Box:
 def _pick_reranker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Configure a reranker that the real planner places."""
     resolve = engine_params.resolve_model_path
-    read = gguf_meta.read_gguf_metadata
+    read = llama_mod.read_gguf_metadata
     weights = tmp_path / "rr.gguf"
     weights.write_bytes(b"weights")
     monkeypatch.setattr(
@@ -137,7 +141,7 @@ def _pick_reranker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         lambda ref: weights if ref == _RERANK_REF else resolve(ref),
     )
     monkeypatch.setattr(
-        gguf_meta,
+        llama_mod,
         "read_gguf_metadata",
         lambda path: (
             {"general.architecture": "bert", "bert.context_length": "512"}
@@ -159,7 +163,7 @@ def _assert_serves_all_from_private(provider: FleetProvider, box: _Box) -> None:
     assert set(provider._group_dirs.values()) == {box.private}
     assert not any(swap.bound for swap in provider._swaps.values())
     assert list(provider._engine_holds) == [box.private]
-    planned = {launch.role for launch in planning_mod.plan_all_launches().launches}
+    planned = {launch.role for launch in planning_mod.plan_all_launches(engine=LLAMA).launches}
     assert set(provider._clients) == planned
     assert all(provider._clients[role] for role in planned)
     assert set(box.records[_PRIVATE]) == set(provider._swaps)
@@ -535,7 +539,9 @@ def _streaming_client() -> LlamaServerClient:
         transport=httpx.MockTransport(lambda _req: httpx.Response(200, text=body)),
         base_url="http://gpu0",
     )
-    client = LlamaServerClient("http://gpu0", "chat-model", http=http)
+    client = LlamaServerClient(
+        "http://gpu0", "chat-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
     client._needs_alternation = False
     return client
 
@@ -553,7 +559,7 @@ def test_a_process_that_cannot_build_leaves_a_warm_engine_it_cannot_bind(
     box.seed_fleet(box.slot)
     warm = dict(box.records[_SLOT])
     cfg.chunk_size = _NOTES_CHUNK_SIZE
-    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: False)
     assert _process(monkeypatch)._acquire_engine(box.root) is False
     assert box.stopped == []
     assert box.records[_SLOT] == warm
@@ -563,7 +569,7 @@ def test_a_start_kills_only_the_swap_at_this_process_config(
     box: _Box, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The kill by config path cannot reach a group that another process started."""
-    own_config = SwapManager(box.slot, SwapGroup.EMBED)._config_path
+    own_config = SwapManager(box.slot, SwapGroup.EMBED, LLAMA)._config_path
     other_config = box.slot / swap_mod._config_filename(_PEER_PID, SwapGroup.EMBED.value)
     assert own_config != other_config
     own = MagicMock()
@@ -613,7 +619,7 @@ def _warming_process(monkeypatch: pytest.MonkeyPatch, chat_ref: str) -> FleetPro
         "_configured_model_for",
         lambda role: chat_ref if role is WorkerRole.CHAT else "",
     )
-    monkeypatch.setattr(prov_mod, "_unusable_engine_reason", lambda: None)
+    monkeypatch.setattr(provider, "_unusable_engine_reason", lambda: None)
     provider._engine_refusal = prov_mod._ENGINES_IN_USE_MESSAGE
     provider._warm_tracker.begin(chat_ref)
     return provider

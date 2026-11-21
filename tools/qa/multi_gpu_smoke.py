@@ -96,9 +96,10 @@ def _check_placement() -> None:
     (the concurrency check below) is where you confirm the giant actually landed on the
     cards the plan named and that an unequal split is by capacity.
     """
+    from lilbee.providers.fleet.engines import LLAMA
     from lilbee.providers.fleet.planning import plan_all_launches
 
-    plan = plan_all_launches()
+    plan = plan_all_launches(engine=LLAMA)
     launches = plan.launches
     _require(bool(launches), "planner produced no servers (every role unplaceable)")
     roles = {launch.role for launch in launches}

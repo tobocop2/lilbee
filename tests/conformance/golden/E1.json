@@ -1,0 +1,11 @@
+{
+  "id": "E1",
+  "rows": [
+    1,
+    12,
+    22,
+    38
+  ],
+  "request": null,
+  "assert": "GET the preset health_path, else /health, answers 200. If none does, GET /v1/models 200 gives fallback."
+}
