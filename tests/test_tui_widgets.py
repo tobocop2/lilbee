@@ -5555,7 +5555,7 @@ class TestConfirmDialog:
             await pilot.pause()
             yes = app.screen.query_one("#confirm-yes", ConfirmPill)
             no = app.screen.query_one("#confirm-no", ConfirmPill)
-            for key, pill in (("right", no), ("left", yes)):
+            for key, pill in (("left", yes), ("right", no)):
                 resting = pill.styles.background
                 await pilot.press(key)
                 await pilot.pause()
@@ -5574,13 +5574,13 @@ class TestConfirmDialog:
             await pilot.pause()
             yes = app.screen.query_one("#confirm-yes", ConfirmPill)
             no = app.screen.query_one("#confirm-no", ConfirmPill)
-            assert yes.has_focus
-            await pilot.press("right")
-            await pilot.pause()
             assert no.has_focus
             await pilot.press("left")
             await pilot.pause()
             assert yes.has_focus
+            await pilot.press("right")
+            await pilot.pause()
+            assert no.has_focus
 
     async def test_rebuild_offer_leaves_room_for_the_pills(self) -> None:
         """The dialog grows with its message; the pill row must stay inside it."""
@@ -5664,6 +5664,7 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
+            await pilot.press("left")
             await pilot.press("enter")
             await pilot.pause()
 
@@ -5703,8 +5704,8 @@ class TestConfirmDialog:
 
         assert results == [False]
 
-    async def test_tab_to_no_then_enter_cancels(self) -> None:
-        """Enter presses the focused No button instead of blanket-confirming."""
+    async def test_enter_on_the_dialog_as_opened_cancels(self) -> None:
+        """The dialog opens on No, so Enter presses No instead of blanket-confirming."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         results: list[bool] = []
@@ -5716,7 +5717,6 @@ class TestConfirmDialog:
         app = _App()
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            await pilot.press("tab")
             await pilot.press("enter")
             await pilot.pause()
 
