@@ -21,6 +21,8 @@ htmlcov/
 !tools/qa/**/*.txt
 !tools/qa/**/*.pdf
 !tools/qa/**/*.html
+# The mlx pack's pinned requirements and licence texts must be tracked.
+!packaging/engine-mlx/**/*.txt
 # Site files served by GitHub Pages must be tracked.
 !site/robots.txt
 !site/a6304ff876c16bda1e4371eb04f45c7d.txt
