@@ -1101,7 +1101,7 @@ async def test_the_fleet_editor_puts_an_engine_cell_with_the_mark_in_each_role_r
             app.query_one(FleetBody)._load_worker()
             await _fleet_ready(app, pilot)
         assert _pill_text(app, "#eng-chat") == "■ llama.cpp"
-        assert _pill_text(app, "#eng-embed") == "▲ none"
+        assert _pill_text(app, "#eng-embed") == msg.ENGINE_NEEDS == "▲ needs an engine"
         assert _pill_text(app, "#eng-vision") == "-"
         row = app.query_one("#eng-chat").parent
         assert isinstance(row, Horizontal)
@@ -1134,6 +1134,71 @@ async def test_key_e_on_a_role_row_saves_the_pick_and_the_cell_follows() -> None
         assert await wait_until(pilot, lambda: _stored() == {GGUF_REF: "openvino"})
         assert await wait_until(pilot, lambda: _pill_text(app, "#eng-chat") == "■ openvino")
         assert _pill_text(app, "#eng-embed") == "■ llama.cpp"
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_key_e_on_the_embed_row_saves_the_pick_for_the_embed_model() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        await pilot.pause()
+        app.query_one("#dev-embed-0").focus()
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert _text(app.screen, "#engine-picker-title") == "Engine for the embed model"
+        await pilot.press("down", "down", "enter")
+        assert await wait_until(pilot, lambda: _stored() == {EMBED_REF: "openvino"})
+        assert await wait_until(pilot, lambda: _pill_text(app, "#eng-embed") == "■ openvino")
+        assert _pill_text(app, "#eng-chat") == "■ llama.cpp"
+        assert GGUF_REF not in _stored()
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_a_fleet_row_engine_not_installed_is_saved_after_the_confirm_and_install() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    installed: list[str] = []
+
+    def install(name: str, _wheel: object = None, **_kw: Any) -> engine_service.InstalledBuild:
+        assert _stored() == {}
+        installed.append(name)
+        return engine_service.InstalledBuild(name, "1.0", "cpu", "")
+
+    options = [
+        engine_service.EngineOption("auto", auto_now="llama.cpp"),
+        engine_service.EngineOption("llama.cpp", bundled=True, backend="metal"),
+        _DOWNLOAD,
+    ]
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        await pilot.pause()
+        app.query_one("#dev-chat-0").focus()
+        with (
+            mock.patch.object(engine_service, "engine_options", return_value=options),
+            mock.patch.object(engine_service, "install", side_effect=install),
+        ):
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+            await pilot.press("down", "down", "enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+            assert installed == []
+            assert _stored() == {}
+            await pilot.press("y")
+            assert await wait_until(pilot, lambda: _stored() == {GGUF_REF: "openvino"})
+        assert installed == ["openvino"]
 
 
 @pytest.mark.usefixtures("_default_fleet_view")
