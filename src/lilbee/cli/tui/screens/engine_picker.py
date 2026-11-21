@@ -12,7 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from lilbee.app.engine_service import EngineOption
+from lilbee.app.engine_service import EngineOption, InstallRoute
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
 from lilbee.providers.fleet.engines.choice import AUTO
@@ -21,8 +21,9 @@ _DETAIL_SEP = " · "
 
 
 def option_detail(option: EngineOption) -> Content:
-    """The state and backend of *option*, in the muted style the picker rows use."""
-    text = _DETAIL_SEP.join(part for part in (state_text(option), option.backend) if part)
+    """The state, docs link and backend of *option*, in the muted style the picker rows use."""
+    parts = (state_text(option), option.docs_url, option.backend)
+    text = _DETAIL_SEP.join(part for part in parts if part)
     return Content.styled(text, "$text-muted")
 
 
@@ -32,6 +33,10 @@ def state_text(option: EngineOption) -> str:
         return msg.ENGINE_STATE_BUNDLED
     if option.installed:
         return msg.ENGINE_STATE_INSTALLED
+    if option.route is InstallRoute.NO_PACK:
+        return msg.ENGINE_STATE_NO_DOWNLOAD
+    if option.route is InstallRoute.BY_HAND:
+        return msg.ENGINE_STATE_BY_HAND
     if option.download_bytes is None:
         return msg.ENGINE_STATE_NOT_INSTALLED
     return msg.ENGINE_STATE_DOWNLOAD.format(size=format_size(option.download_bytes))
@@ -74,7 +79,14 @@ class EnginePickerModal(ModalScreen[EngineOption | None]):
             yield Static(self._subtitle, id="engine-picker-model", markup=False)
             yield Static(msg.ENGINE_PICKER_NOTE, id="engine-picker-note")
             yield OptionList(
-                *[Option(self._label(option), id=name) for name, option in self._options.items()],
+                *[
+                    Option(
+                        self._label(option),
+                        id=name,
+                        disabled=not option.installed and not option.offers_download,
+                    )
+                    for name, option in self._options.items()
+                ],
                 id="engine-picker-list",
             )
             yield Static(msg.ENGINE_PICKER_HINT, id="engine-picker-hint")
