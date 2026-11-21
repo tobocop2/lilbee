@@ -23,7 +23,7 @@
   },
   "named": {
    "ok": true,
-   "detail": "log=['served by engine=tei-cuda version=preset role=embed model=tei-cuda/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'tei-cuda', <WorkerRole.RERANK: 'rerank'>: 'tei-cuda'}"
+   "detail": "log=['served by engine=tei-cuda version=preset build=none role=embed model=tei-cuda/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'tei-cuda', <WorkerRole.RERANK: 'rerank'>: 'tei-cuda'}"
   }
  },
  "exchanges": [
