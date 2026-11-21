@@ -105,7 +105,7 @@ A prompt longer than the context gets a 4xx answer within the timeout (default 6
 
 Evidence: row 8, row 28, row 43, row 52, row 66, row 75, row 86. mlx_lm.server hung until the client timeout (rows 8, 75). The wording of the 400 differs by engine (rows 43, 52, 66, 86). The caller is `src/lilbee/providers/fleet/client.py`.
 
-mlx_lm.server also keeps working on a request that is not streamed after its client goes, so every later request waits. Its profile sets `works_on_after_disconnect`. When a request to such a server times out, lilbee restarts that role's server and reports the timeout, with no retry. New requests wait for the new server. The old server stops once every other request on it has ended, or at the request timeout of its clients; a stream that nobody reads is cut then. A timeout from a server that a restart already replaced restarts nothing and takes the one retry.
+mlx_lm.server also keeps working on a request that is not streamed after its client goes, so every later request waits. Its profile sets `works_on_after_disconnect`. When a request to such a server times out, lilbee restarts that role's server and reports the timeout, with no retry. New requests wait for the new server. The old server stops once every other request on it has ended, or after 45 s. That wait runs before the restart takes the build lock, so other lilbee processes can still take the lock. A request that is still running at the end of the wait ends with "The chat model server stopped answering and was restarted". A request with no answer yet then takes one retry on the new server; a stream that has sent text does not. A timeout from a server that a restart already replaced restarts nothing and takes the one retry.
 
 ### E13 Route not served
 

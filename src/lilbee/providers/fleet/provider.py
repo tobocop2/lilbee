@@ -48,6 +48,7 @@ from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
+    StreamInterruptedError,
     is_connection_failure,
     is_load_capacity_failure,
     is_rebuildable_failure,
@@ -470,8 +471,9 @@ class _ReservedStream:
     def __next__(self) -> ChatStreamItem:
         try:
             return next(self._source)
-        except BaseException:
+        except BaseException as exc:
             self.close()
+            _raise_if_restarted(self._client, exc)
             raise
 
     def close(self) -> None:
@@ -497,8 +499,9 @@ def _stream_reserved(
     client = pool.pick(_reserve_least_busy)
     try:
         return _ReservedStream(client, _primed_stream(open_stream(client)))
-    except BaseException:
+    except BaseException as exc:
         client.release()
+        _raise_if_restarted(client, exc)
         raise
 
 
@@ -509,6 +512,9 @@ def _call_reserved(
     client = pool.pick(_reserve_least_busy)
     try:
         return call(client)
+    except Exception as exc:
+        _raise_if_restarted(client, exc)
+        raise
     finally:
         client.release()
 
@@ -583,16 +589,32 @@ def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
     ) from cause
 
 
-def _drain_deadline(clients: Sequence[LlamaServerClient], limit: float, *, waits: bool) -> float:
-    """When the drain of *clients* ends: at *limit*, or later for a restart that *waits*.
+def _restart_message(role: WorkerRole) -> str:
+    """User-facing reason a request ended because *role*'s stuck server was restarted."""
+    return (
+        f"The {role.value} model server stopped answering and was restarted. "
+        "Send your request again."
+    )
 
-    A restart that waits for its requests drains until the request timeout of the
-    clients: every request that still reads has ended by then, and a stream nobody
-    reads holds no timeout of its own, so it is cut there.
+
+class _EngineRestartedError(ProviderError):
+    """A request ended because its server stopped answering and the fleet restarted it.
+
+    A request with no answer yet takes one retry on the new server; a stream that has
+    sent frames is not retried.
     """
-    if not waits:
-        return limit
-    return time.monotonic() + max((client.timeout for client in clients), default=0.0)
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION)
+
+
+def _raise_if_restarted(client: LlamaServerClient, exc: BaseException) -> None:
+    """Raise the restart error when *exc* broke a request on *client*'s restarted server."""
+    message = client.restart_message
+    if message is None or not isinstance(exc, Exception):
+        return
+    if isinstance(exc, StreamInterruptedError) or is_connection_failure(exc):
+        raise _EngineRestartedError(message) from exc
 
 
 def _final_attempt(call: Callable[[], _T]) -> _T:
@@ -1287,9 +1309,13 @@ class FleetProvider:
         self._writes_done = 0
         # A read needs a fleet; clears when the build step ends.
         self._build_wanted = False
-        # Roles whose group the next pass restarts with an unchanged plan. True: the pass
-        # drains the old server until the request timeout of its clients, not the drain limit.
+        # Roles whose group the next pass restarts with an unchanged plan. True: the
+        # server stopped answering, so the pass drains it before the build lock and a
+        # request still running on it ends with the restart error.
         self._forced_roles: dict[WorkerRole, bool] = {}
+        # The roles of the stuck servers that the running pass restarts; a request
+        # that gives up waiting for one of them gets the restart error.
+        self._stuck_roles: frozenset[WorkerRole] = frozenset()
         # How the last fleet work ended.
         self._reload_failed = False
         # Roles the running reload pass may still bring a server back for: every role
@@ -1996,7 +2022,9 @@ class FleetProvider:
             )
             clients = self._clients.get(role)
             if not clients and not settled:
-                raise ProviderError(_reload_timeout_message(role), provider=_PROVIDER_NAME)
+                stuck = role in self._stuck_roles
+                message = _restart_message(role) if stuck else _reload_timeout_message(role)
+                raise ProviderError(message, provider=_PROVIDER_NAME)
             swap = self._swap_for(role)
             fleet_is_empty = not self._swaps
         if not clients and fleet_is_empty and had_fleet:
@@ -2078,6 +2106,10 @@ class FleetProvider:
         except (ProviderError, httpx.TransportError) as err:
             if is_rebuildable_failure(err) and role is not None:
                 return self._retry_rebuilt(call, role, err)
+            if isinstance(err, _EngineRestartedError):
+                # The restart owns the old server, so nothing is rediscovered: the
+                # retry waits for the new server.
+                return _final_attempt(call)
             if role is not None and self._left_working(err, role):
                 self._restart_left_working(role)
                 _raise_no_healthy_replica(err)
@@ -2139,16 +2171,16 @@ class FleetProvider:
 
         A retry would wait behind that request and time out the same way, so the
         timeout surfaces to the caller. New requests wait for the new server. The old
-        server stops once every other request on it has ended, or at the request timeout
-        of its clients, by which every request that still reads has ended.
+        server stops once its other requests end, or at the drain limit; a request
+        still running then ends with the restart error.
         """
         log.warning(
             "A %s request timed out on a server that keeps working on it after the client "
-            "goes; restarting the %s server once its other requests end",
+            "goes; restarting the %s server",
             role.value,
             role.value,
         )
-        self._force_restart(role, wait_for_requests=True)
+        self._force_restart(role, stopped_answering=True)
 
     def _retry_rebuilt(self, call: Callable[[], _T], role: WorkerRole, err: BaseException) -> _T:
         """Rebuild *role* so the retry is a different launch, and run *call* again.
@@ -2185,22 +2217,23 @@ class FleetProvider:
         respawned. The fleet work runs the same diff-driven pass as a reload, forcing
         *role* into the restart set so an unchanged plan still replaces its dead swap.
         """
-        work = self._force_restart(role, wait_for_requests=False)
+        work = self._force_restart(role, stopped_answering=False)
         if work is not None:
             self._join_fleet_work(work)
 
     def _force_restart(
-        self, role: WorkerRole, *, wait_for_requests: bool
+        self, role: WorkerRole, *, stopped_answering: bool
     ) -> DaemonCall[None] | None:
         """Start the fleet work that restarts *role*'s group; None after a shutdown.
 
-        With *wait_for_requests*, the pass drains the old server until the request timeout
-        of its clients instead of the drain limit. A shutdown still ends the wait.
+        With *stopped_answering*, the pass drains the old server before the build lock,
+        and a request still running at the drain limit ends with the restart error. A
+        later restart of the same role before the pass runs keeps that mark.
         """
         with self._lock:
             if self._shut_down:
                 return None
-            self._forced_roles[role] = self._forced_roles.get(role, False) or wait_for_requests
+            self._forced_roles[role] = self._forced_roles.get(role, False) or stopped_answering
             return self._start_fleet_work()
 
     def role_ready(self, role: WorkerRole) -> bool:
@@ -3374,14 +3407,42 @@ class FleetProvider:
             restarted = self._rebind_or_overflow()
             self._preload_restarted(restarted)
             return
-        # Reap dead engines in our dirs before re-planning, as a build would.
         reload_dir = self._reload_dir()
+        # A server that stopped answering drains before the build lock, so a peer
+        # can take the lock during the wait.
+        drained = self._drain_stuck_groups(force)
+        try:
+            restarted = self._restart_changed(reload_dir, running, old, force, drained)
+        except BaseException:
+            self._give_back_clients(drained)
+            raise
+        finally:
+            with self._lock:
+                self._stuck_roles = frozenset()
+        self._preload_restarted(restarted)
+
+    def _restart_changed(
+        self,
+        reload_dir: Path,
+        running: set[SwapGroup],
+        old: dict[SwapGroup, tuple[InstanceLaunch, ...]],
+        force: frozenset[WorkerRole],
+        drained: dict[WorkerRole, list[LlamaServerClient]],
+    ) -> list[WorkerRole]:
+        """Under the build lock, re-plan, stop the changed groups and start their replacements.
+
+        *drained* holds the clients that ``_drain_stuck_groups`` took out of dispatch;
+        their groups restart whatever the plan says. Returns the restarted roles, or
+        none when a shutdown lands during the drain.
+        """
+        restarted: list[WorkerRole] = []
         # Serialize the reload against peer acquisitions with the same
         # cross-process lock a build takes. Without it, this reap_stale can kill
         # a peer's swap that is spawned but not yet answering its proxy, and the
         # stop-then-spawn gap lets a peer's ladder see a half-stopped slot and
         # build a second fleet into the same dir, double-allocating VRAM.
         with build_lock(reload_dir):
+            # Reap dead engines in our dirs before re-planning, as a build would.
             reap_stale(reload_dir)
             origin = _plan_origin()
             # A planning failure (a missing engine binary, a wedged GPU probe, an
@@ -3409,6 +3470,7 @@ class FleetProvider:
             }
             changed |= {group_for(role, plan.co_tenants) for role in force}
             with self._lock:
+                changed |= {self._role_group[role] for role in drained if role in self._role_group}
                 self._reload_owed = frozenset(
                     role for group in changed & set(new) for role in _by_role(list(new[group]))
                 )
@@ -3416,16 +3478,18 @@ class FleetProvider:
             self._log_dropped_groups(changed, old, new)
             # Stop phase: free the changed groups' VRAM before their replacements
             # (or another group's grown plan) spawn against it. A group's engine
-            # stops once its running requests end, or at the drain limit.
+            # stops once its running requests end, or at the drain limit. The clients
+            # of a stuck server have drained already, and a request still running on
+            # one ends with the restart error when its server stops.
+            with self._lock:
+                self._retire_clients([client for pool in drained.values() for client in pool])
+            drained.clear()
             drain_until = time.monotonic() + _SHUTDOWN_WORK_WAIT_S
-            waiting = self._groups_waiting_for_requests(force, plan.co_tenants)
             for group in sorted(changed, key=lambda g: g.value):
                 with self._lock:
                     clients = self._group_clients(group)
                     swap = self._drop_group(group)
-                self._drain_clients(
-                    clients, _drain_deadline(clients, drain_until, waits=group in waiting)
-                )
+                self._drain_clients(clients, drain_until)
                 if swap is not None:
                     swap.shutdown()
             # Start phase: spawn the changed groups present in the new plan.
@@ -3433,7 +3497,7 @@ class FleetProvider:
                 with self._lock:
                     if self._shut_down:
                         # A shutdown during the drain: a server started now has no owner.
-                        return
+                        return []
                 group_launches = list(new[group])
                 swap = SwapManager(reload_dir, group)
                 lifetime = _engine_lifetime(reload_dir)
@@ -3453,14 +3517,48 @@ class FleetProvider:
                     self._group_dirs[group] = reload_dir
                 restarted.extend(_by_role(group_launches))
             self._restamp_kept(running - changed, origin)
-        self._preload_restarted(restarted)
+        return restarted
 
-    def _groups_waiting_for_requests(
-        self, force: frozenset[WorkerRole], co_tenants: frozenset[WorkerRole]
-    ) -> set[SwapGroup]:
-        """The groups of the *force* roles whose restart waits for their requests."""
+    def _drain_stuck_groups(
+        self, force: frozenset[WorkerRole]
+    ) -> dict[WorkerRole, list[LlamaServerClient]]:
+        """Take the groups of the *force* roles that stopped answering out of dispatch, and drain.
+
+        A timeout on such a server means it is stuck, and the requests behind it often
+        wait on it too, so the drain ends at the drain limit, as for a dead-server
+        rebuild. It runs before the pass takes the build lock. New requests wait for
+        the new server. Each client carries the restart error for a request that is
+        still running when its server stops. Returns the clients by role.
+        """
+        drained: dict[WorkerRole, list[LlamaServerClient]] = {}
         with self._lock:
-            return {group_for(role, co_tenants) for role in force if self._forced_roles.get(role)}
+            groups = {
+                self._role_group[role]
+                for role in force
+                if self._forced_roles.get(role) and role in self._role_group
+            }
+            for role in [r for r, g in self._role_group.items() if g in groups]:
+                drained[role] = self._clients.pop(role, [])
+                for client in drained[role]:
+                    client.restart_message = _restart_message(role)
+            self._stuck_roles = frozenset(drained)
+        self._drain_clients(
+            [client for pool in drained.values() for client in pool],
+            time.monotonic() + _SHUTDOWN_WORK_WAIT_S,
+        )
+        return drained
+
+    def _give_back_clients(self, drained: dict[WorkerRole, list[LlamaServerClient]]) -> None:
+        """Put *drained* clients back in dispatch after a pass that failed before its stop phase.
+
+        A failed pass leaves the running fleet as it was; the next timeout restarts again.
+        """
+        with self._lock:
+            for role, pool in drained.items():
+                for client in pool:
+                    client.restart_message = None
+                if role in self._role_group:
+                    self._clients[role] = pool
 
     def _drain_clients(self, clients: list[LlamaServerClient], until: float) -> None:
         """Wait until *clients* run no request, the time *until* passes, or a shutdown starts."""

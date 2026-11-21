@@ -641,16 +641,14 @@ class LlamaServerClient:
         self._healthy = True
         # Monotonic stamp of the last mark_unhealthy; consulted only while unhealthy.
         self._unhealthy_since = 0.0
+        # The error line for a request that breaks because the fleet restarts this
+        # server after it stopped answering; None while no such restart runs.
+        self.restart_message: str | None = None
 
     @property
     def profile(self) -> RequestProfile:
         """The request profile of this server's engine."""
         return self._profile
-
-    @property
-    def timeout(self) -> float:
-        """The request timeout of this client, in seconds."""
-        return self._timeout
 
     def sent(self, request: httpx.Request) -> bool:
         """Whether *request* went to this client's server."""

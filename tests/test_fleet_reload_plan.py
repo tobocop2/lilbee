@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from filelock import Timeout as FileLockTimeout
 
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
@@ -26,6 +27,8 @@ from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime import engine_lock as engine_lock_mod
+from lilbee.runtime.engine_lock import build_lock
 from tests._async_wait import poll_until
 from tests._fake_engine_server import FakeEngine
 from tests._fleet_engines import engines_for_all_roles
@@ -38,7 +41,11 @@ _EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.g
 _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _OTHER_CHAT_REF = "Qwen/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf"
 _DRAIN_LIMIT_S = 0.3
-_STUCK_TIMEOUT_S = 1.0
+# A drain limit that the test ends first, by releasing the held chat.
+_LONG_DRAIN_S = 20.0
+# How long a peer waits for the build lock in these tests (90 s in production).
+_PEER_LOCK_WAIT_S = 1.0
+_RESTARTED = "The chat model server stopped answering and was restarted"
 _QUESTION = [{"role": "user", "content": "hi"}]
 _NOTES_CHUNK_SIZE = 384
 _NOTES_CHUNK_OVERLAP = 64
@@ -345,15 +352,6 @@ def mlx_engine_fleet(
     yield from _serve_mlx_chat(monkeypatch, tmp_path)
 
 
-@pytest.fixture
-def stuck_mlx_fleet(
-    real_planner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
-    """``mlx_engine_fleet`` whose clients time out after ``_STUCK_TIMEOUT_S``."""
-    monkeypatch.setattr(prov_mod, "_request_timeout_s", lambda _launch: _STUCK_TIMEOUT_S)
-    yield from _serve_mlx_chat(monkeypatch, tmp_path)
-
-
 def _serve_mlx_chat(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
@@ -472,58 +470,194 @@ def test_a_chat_cut_by_the_drain_limit_is_sent_again_and_ends_on_the_new_engine_
     assert swaps[-1].engine.completed == 1
 
 
-def test_a_timeout_restart_on_mlx_lets_the_other_chat_finish_on_the_old_engine(
-    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """One chat times out while another runs: the restart waits for it, past the drain limit."""
-    provider, swaps = mlx_engine_fleet
-    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
-    old = provider._swap_for(WorkerRole.CHAT)
-    client = provider._clients[WorkerRole.CHAT][0]
-    answers: list[object] = []
-    caller = threading.Thread(target=lambda: answers.append(provider.chat(_QUESTION)), daemon=True)
-    caller.start()
-    assert old.engine.started.wait(_JOIN_S)
+def _time_out_a_chat(provider: FleetProvider) -> LlamaServerClient:
+    """Send a chat that times out on the MLX chat server, which starts its restart.
 
+    Returns the timed-out client once the restart has taken it out of dispatch.
+    """
+    client = provider._clients[WorkerRole.CHAT][0]
     # httpx fixes a request's timeout when it sends it, so only the next request times out.
     client._http.timeout = httpx.Timeout(_DRAIN_LIMIT_S)
     with pytest.raises(ProviderError, match="not responding"):
         provider.chat(_QUESTION)
     assert poll_until(lambda: client not in provider._clients.get(WorkerRole.CHAT, []))
-    assert not poll_until(lambda: old.engine.stopped.is_set(), timeout=3 * _DRAIN_LIMIT_S)
+    return client
 
+
+def _held_chat(provider: FleetProvider, answers: list[object]) -> threading.Thread:
+    """Start a chat that the first engine holds; its answer or error goes to *answers*."""
+
+    def ask() -> None:
+        try:
+            answers.append(provider.chat(_QUESTION))
+        except ProviderError as err:
+            answers.append(err)
+
+    caller = threading.Thread(target=ask, daemon=True)
+    caller.start()
+    assert provider._swap_for(WorkerRole.CHAT).engine.started.wait(_JOIN_S)
+    return caller
+
+
+def _texts(answers: list[object]) -> list[str]:
+    """The text of each answer, or the message of each error."""
+    return [
+        str(answer) if isinstance(answer, ProviderError) else answer.text  # type: ignore[attr-defined]
+        for answer in answers
+    ]
+
+
+def _peer_takes_the_build_lock(engine_dir: Path) -> bool:
+    """Whether a peer gets the build lock of *engine_dir* within its wait."""
+    try:
+        with build_lock(engine_dir):
+            return True
+    except FileLockTimeout:
+        return False
+
+
+def test_a_peer_takes_the_build_lock_while_a_timeout_restart_drains(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drain runs before the build lock, so a peer process is not shut out for its length."""
+    provider, swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _LONG_DRAIN_S)
+    monkeypatch.setattr(engine_lock_mod, "_BUILD_LOCK_TIMEOUT_S", _PEER_LOCK_WAIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    engine_dir = provider._reload_dir()
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _time_out_a_chat(provider)
+
+    took_the_lock = _peer_takes_the_build_lock(engine_dir)
+    still_draining = not old.engine.stopped.is_set()
     old.engine.release.set()
     caller.join(_JOIN_S)
     _join_fleet_threads()
 
-    assert [answer.text for answer in answers] == ["the answer"]
-    assert old.engine.stopped.is_set()
+    assert took_the_lock
+    assert still_draining
+    assert _texts(answers) == ["the answer"]
     assert old.engine.requests == 2
     assert swaps[-1] is not old
     assert swaps[-1].engine.requests == 0
 
 
-def test_a_timeout_restart_stops_a_stream_nobody_reads_at_the_request_timeout(
-    stuck_mlx_fleet: tuple[FleetProvider, list[_EngineSwap]],
+def test_a_chat_with_no_answer_at_the_drain_limit_is_sent_once_to_the_new_server(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stream holds its server with no timeout of its own while nobody reads it."""
-    provider, swaps = stuck_mlx_fleet
+    provider, swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    embed = provider._swap_for(WorkerRole.EMBED)
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _time_out_a_chat(provider)
+
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert _texts(answers) == ["the answer"]
+    assert old.engine.stopped.is_set()
+    assert old.engine.requests == 2
+    assert swaps[-1] is not old
+    assert swaps[-1].engine.requests == 1
+    assert swaps[-1].engine.completed == 1
+    assert provider._swap_for(WorkerRole.EMBED) is embed
+
+
+def test_a_stream_that_sent_text_ends_with_the_restart_error_at_the_drain_limit(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
     old = provider._swap_for(WorkerRole.CHAT)
     stream = provider.chat(_QUESTION, stream=True)
     try:
         assert old.engine.started.wait(_JOIN_S)
-        with pytest.raises(ProviderError, match="not responding"):
-            provider.chat(_QUESTION)
-
-        assert poll_until(lambda: old.engine.stopped.is_set(), timeout=5 * _STUCK_TIMEOUT_S)
-        with pytest.raises(StreamInterruptedError, match="answer is cut"):
+        _time_out_a_chat(provider)
+        assert poll_until(lambda: old.engine.stopped.is_set())
+        with pytest.raises(ProviderError) as caught:
             list(stream)
         _join_fleet_threads()
     finally:
         stream.close()
 
-    assert provider._swap_for(WorkerRole.CHAT) is swaps[-1]
+    assert str(caught.value).startswith(_RESTARTED)
+    assert "settings change" not in str(caught.value)
     assert swaps[-1] is not old
+    assert swaps[-1].engine.requests == 0
+
+
+def test_a_request_that_waits_out_a_timeout_restart_gets_the_restart_error(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _LONG_DRAIN_S)
+    monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _time_out_a_chat(provider)
+
+    try:
+        with pytest.raises(ProviderError) as caught:
+            provider.chat(_QUESTION)
+    finally:
+        old.engine.release.set()
+        caller.join(_JOIN_S)
+        _join_fleet_threads()
+
+    assert str(caught.value).startswith(_RESTARTED)
+    assert "settings change" not in str(caught.value)
+
+
+def test_a_restart_after_a_timeout_restart_keeps_the_restart_error(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead-server rebuild asked before the pass runs does not undo the timeout restart."""
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    try:
+        assert old.engine.started.wait(_JOIN_S)
+        # The fleet work waits for the lock, so it reads both restarts at once.
+        with provider._lock:
+            provider._force_restart(WorkerRole.CHAT, stopped_answering=True)
+            provider._force_restart(WorkerRole.CHAT, stopped_answering=False)
+        assert poll_until(lambda: old.engine.stopped.is_set())
+        with pytest.raises(ProviderError) as caught:
+            list(stream)
+        _join_fleet_threads()
+    finally:
+        stream.close()
+
+    assert str(caught.value).startswith(_RESTARTED)
+
+
+def test_a_timeout_restart_whose_plan_fails_gives_the_server_back(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed pass leaves the running fleet as it was, so the next timeout restarts again."""
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+
+    def no_plan(**_kwargs: object) -> object:
+        raise ProviderError("The engine binary is missing.")
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", no_plan)
+    old = provider._swap_for(WorkerRole.CHAT)
+    client = provider._clients[WorkerRole.CHAT][0]
+    client._http.timeout = httpx.Timeout(_DRAIN_LIMIT_S)
+    with pytest.raises(ProviderError, match="not responding"):
+        provider.chat(_QUESTION)
+    _join_fleet_threads()
+
+    assert provider._clients.get(WorkerRole.CHAT) == [client]
+    assert client.restart_message is None
+    assert provider._swap_for(WorkerRole.CHAT) is old
+    assert not old.engine.stopped.is_set()
 
 
 def test_a_late_timeout_from_a_replaced_server_restarts_nothing(
