@@ -14,7 +14,13 @@ pytestmark = pytest.mark.skipif(
 
 # Every x86_64 cell, split by CPU strategy. The union plus _ARM_CELLS is the
 # script's whole case table; a new cell must join one of these lists.
-_DISPATCH_CELLS = [("cpu", "macOS"), ("cpu", "Linux"), ("cpu", "Windows"), ("vulkan", "Linux")]
+_DISPATCH_CELLS = [
+    ("cpu", "macOS"),
+    ("cpu", "Linux"),
+    ("cpu", "Windows"),
+    ("vulkan", "Linux"),
+    ("openvino", "Linux"),
+]
 _CAPPED_CELLS = [
     ("vulkan", "Windows"),
     *[(f"cu12{n}", os) for n in range(1, 6) for os in ("Linux", "Windows")],
@@ -54,6 +60,35 @@ def test_converted_x86_cells_build_runtime_dispatch(backend: str, runner_os: str
 def test_vulkan_linux_dispatch_keeps_the_vulkan_backend() -> None:
     flags = _flags("vulkan", "Linux", "x86_64")
     assert "-DGGML_VULKAN=ON" in flags
+
+
+def test_openvino_linux_is_its_own_cell_with_only_the_openvino_backend() -> None:
+    flags = _flags("openvino", "Linux", "x86_64")
+    assert "-DGGML_OPENVINO=ON" in flags
+    assert "-DGGML_VULKAN=OFF" in flags
+    assert "-DGGML_CUDA=OFF" in flags
+    for backend, runner_os in _DISPATCH_CELLS + _CAPPED_CELLS:
+        if backend != "openvino":
+            assert "-DGGML_OPENVINO=ON" not in _flags(backend, runner_os, "x86_64")
+
+
+@pytest.mark.parametrize("runner_os", ["Windows", "macOS"])
+def test_openvino_is_refused_off_linux(runner_os: str) -> None:
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), "--print"],
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            "BACKEND": "openvino",
+            "RUNNER_OS": runner_os,
+            "TARGET_ARCH": "x86_64",
+            "PATH": "/usr/bin:/bin",
+        },
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert f"backend 'openvino' is not supported on {runner_os}" in result.stderr
 
 
 def test_macos_arm64_cpu_stays_single_variant() -> None:

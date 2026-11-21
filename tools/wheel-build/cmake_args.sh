@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm)}"
+backend="${BACKEND:?BACKEND is required (cpu|vulkan|metal|cu121|cu122|cu123|cu124|cu125|rocm|openvino)}"
 runner_os="${RUNNER_OS:-$(uname -s)}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -137,6 +137,13 @@ case "${backend}_${runner_os}" in
   cu121_Linux|cu121_Windows|cu122_Linux|cu122_Windows|cu123_Linux|cu123_Windows|cu124_Linux|cu124_Windows|cu125_Linux|cu125_Windows)
     args="${common_x86} -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major -DGGML_VULKAN=OFF -DGGML_BLAS=OFF"
     ;;
+  openvino_Linux)
+    # The OpenVINO backend is its own pack, never part of the CPU or Vulkan cells. It builds
+    # against the OpenVINO runtime that engines/openvino.env pins (OpenVINO_DIR must point at
+    # its cmake configs). Upstream builds it with runtime CPU dispatch too, so the CPU
+    # fallback keeps every variant. Windows follows Linux and is not built yet.
+    args="${dispatch_x86} -DGGML_OPENVINO=ON -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF"
+    ;;
   rocm_Linux)
     # ROCm on Windows is preview-quality, so Linux only.
     # GGML_HIP, not GGML_HIPBLAS: cmake caches an unknown -D instead of failing, so
@@ -147,7 +154,7 @@ case "${backend}_${runner_os}" in
     rocm_targets="$(rocm_buildable_targets "${rocm_root}")"
     args="${common_x86} -DGGML_HIP=ON -DAMDGPU_TARGETS=${rocm_targets} -DGGML_VULKAN=OFF -DGGML_CUDA=OFF -DGGML_BLAS=OFF -DCMAKE_C_COMPILER=${rocm_clang} -DCMAKE_CXX_COMPILER=${rocm_clang}++"
     ;;
-  metal_*|vulkan_macOS|cu*_macOS|rocm_*)
+  metal_*|vulkan_macOS|cu*_macOS|rocm_*|openvino_*)
     echo "tools/wheel-build/cmake_args.sh: backend '${backend}' is not supported on ${runner_os}" >&2
     exit 1
     ;;

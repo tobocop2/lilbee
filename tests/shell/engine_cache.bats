@@ -32,3 +32,25 @@ setup() {
   run grep -F 'branches: [main, chore/engine-pin-sync]' "${WARM}"
   [ "$status" -eq 0 ]
 }
+
+# The hashFiles list of the llama.cpp engine key, one path per line. The Vulkan SDK key hashes
+# engine-versions.env alone and is not an engine key.
+hashed_files() {
+  grep -o "hashFiles('engine-versions.env', [^)]*)" "$1" | grep -o "'[^']*'" | tr -d "'"
+}
+
+@test "both llama.cpp engine keys hash the OpenVINO pin with the engine pins" {
+  ACTION="${REPO_ROOT}/.github/actions/bundle-llama-server/action.yml"
+  run hashed_files "${BUILD}"
+  [ "$status" -eq 0 ]
+  build_list="$output"
+  run hashed_files "${ACTION}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "${build_list}" ]
+  echo "${build_list}" | grep -qxF 'engines/openvino.env'
+}
+
+@test "an OpenVINO pin bump starts the engine cache run" {
+  run grep -cxF "      - 'engines/openvino.env'" "${WARM}"
+  [ "$output" = "1" ]
+}

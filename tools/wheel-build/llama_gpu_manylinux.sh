@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Build the Linux CPU, Vulkan or ROCm llama.cpp pack inside the manylinux_2_34 image (AlmaLinux 9,
-# glibc 2.34). The upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30, so this builds
-# from the upstream tag. Runs as root in the container, with the repository mounted at /work.
+# Build the Linux CPU, Vulkan, ROCm or OpenVINO llama.cpp pack inside the manylinux_2_34 image
+# (AlmaLinux 9, glibc 2.34). The upstream Linux assets need glibc 2.38 or libstdc++ 3.4.30, so this
+# builds from the upstream tag. Runs as root in the container, with the repository mounted at /work.
 #
 # Reads:
-#   BACKEND                       cpu, vulkan or rocm
+#   BACKEND                       cpu, vulkan, rocm or openvino
 #   UPSTREAM_REPO, UPSTREAM_TAG   the llama.cpp source to build
 #   BIN_DIR                       the wheel bin/ directory (bind mounted)
 #   OWNER                         uid:gid that owns the files left behind
-#   LICENSE_DIR                   rocm only: where the ROCm licence texts go
-# Writes BIN_DIR/* and, for rocm, LICENSE_DIR/LICENSE-ROCm-*.
+#   LICENSE_DIR                   rocm and openvino: where the runtime licence texts go
+#   OPENVINO_LICENCE_RULING       openvino only: "accepted" once the owner accepts the runtime licence
+# Writes BIN_DIR/* and, for rocm, LICENSE_DIR/LICENSE-ROCm-*; for openvino,
+# LICENSE_DIR/LICENSE-OpenVINO-*, LICENSE-oneTBB, LICENSE-ocl-icd and THIRD-PARTY/openvino/.
 #
-# Both builds use GGML_BACKEND_DL and CPU_ALL_VARIANTS with OpenMP off, as the CPU pack does.
+# Every build uses GGML_BACKEND_DL and CPU_ALL_VARIANTS with OpenMP off, as the CPU pack does.
 # The Vulkan loader and the six ROCm host libraries (see assert_rocm_host_libs.sh) stay with
-# the host. The last step fails when any shipped file needs glibc above 2.34 or libstdc++
+# the host. The OpenVINO pack ships the runtime that engines/openvino.env pins; the Intel GPU
+# compute runtime and the NPU driver stay with the host. The last step fails when any shipped file needs glibc above 2.34 or libstdc++
 # above 3.4.29.
 
 set -euo pipefail
@@ -23,6 +26,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${script_dir}/../../engine-versions.env"
 jobs="$(nproc)"
+
+# The OpenVINO runtime libraries are under the Intel OpenVINO Distribution License, and the oneTBB
+# notice names GPL-3.0 code with the GCC Runtime Library Exception (engines/openvino.env). The
+# check runs before any install or download.
+if [ "${BACKEND}" = openvino ] && [ "${OPENVINO_LICENCE_RULING:-}" != accepted ]; then
+  echo "The OpenVINO pack ships the OpenVINO runtime under the Intel OpenVINO Distribution License." >&2
+  echo "Set OPENVINO_LICENCE_RULING=accepted after the owner accepts that licence." >&2
+  exit 3
+fi
 
 df -h / | tail -1
 dnf install -y gcc-toolset-13-gcc-c++ xz
@@ -74,6 +86,24 @@ REPO
       "-DCMAKE_HIP_COMPILER=${ROCM_PATH}/lib/llvm/bin/clang++"
       "-DCMAKE_HIP_FLAGS=--gcc-install-dir=${gcc13_dir}")
     ;;
+  openvino)
+    # shellcheck source=/dev/null
+    source "${script_dir}/../../engines/openvino.env"
+    : "${LICENSE_DIR:?}"
+    # ggml-openvino includes the OpenCL C++ headers and links the OpenCL loader.
+    dnf install -y dnf-plugins-core
+    dnf config-manager --set-enabled crb
+    dnf install -y opencl-headers ocl-icd-devel
+    ov_archive=/tmp/openvino.tgz
+    curl -fsSL --retry 3 -o "${ov_archive}" "${OPENVINO_ARCHIVE_URL}"
+    echo "${OPENVINO_ARCHIVE_SHA256}  ${ov_archive}" | sha256sum -c -
+    ov_root=/opt/openvino
+    mkdir -p "${ov_root}"
+    tar -xzf "${ov_archive}" -C "${ov_root}" --strip-components=1
+    export OpenVINO_DIR="${ov_root}/runtime/cmake"
+    export TBB_DIR="${ov_root}/runtime/3rdparty/tbb/lib/cmake/TBB"
+    backend_args=(-DGGML_OPENVINO=ON -DGGML_VULKAN=OFF -DGGML_HIP=OFF)
+    ;;
   cpu)
     backend_args=(-DGGML_VULKAN=OFF -DGGML_HIP=OFF)
     ;;
@@ -121,6 +151,40 @@ case "${BACKEND}" in
   vulkan)
     test -f "${BIN_DIR}/libggml-vulkan.so"
     if find "${BIN_DIR}" -name 'libvulkan*' | grep .; then echo "the Vulkan loader must stay with the host" >&2; exit 1; fi
+    ;;
+  openvino)
+    test -f "${BIN_DIR}/libggml-openvino.so"
+    # The runtime, its CPU, GPU and NPU plugins with the plugins that combine them, the IR and
+    # GGUF frontends, oneTBB with hwloc, and the OpenCL loader, as the upstream OpenVINO release
+    # asset ships them. The model-conversion frontends and the C API are left out: llama.cpp
+    # builds its graph in memory and links neither. The Intel GPU compute runtime and the NPU
+    # driver stay with the host.
+    while IFS= read -r -d '' lib; do copy_one "${lib}"; done < <(
+      find "${ov_root}/runtime/lib/intel64" "${ov_root}/runtime/3rdparty/tbb/lib" -maxdepth 1 -type f -name 'lib*.so*' \
+        ! -name 'libopenvino_onnx_frontend*' ! -name 'libopenvino_paddle_frontend*' \
+        ! -name 'libopenvino_tensorflow*' ! -name 'libopenvino_pytorch_frontend*' \
+        ! -name 'libopenvino_jax_frontend*' ! -name 'libopenvino_c.so*' ! -name 'libtbbmalloc_proxy*' -print0)
+    cp "${ov_root}/runtime/lib/intel64/cache.json" "${BIN_DIR}/cache.json"
+    copy_one "$(ldconfig -p | awk '$1 == "libOpenCL.so.1" { print $NF; exit }')"
+    for f in "${BIN_DIR}"/libopenvino* "${BIN_DIR}"/libtbb* "${BIN_DIR}"/libhwloc* "${BIN_DIR}"/libOpenCL*; do
+      # shellcheck disable=SC2016  # $ORIGIN is a literal for the dynamic loader
+      patchelf --set-rpath '$ORIGIN' "${f}"
+    done
+    for plugin in intel_cpu intel_gpu intel_npu auto hetero; do
+      test -f "${BIN_DIR}/libopenvino_${plugin}_plugin.so"
+    done
+    lic="${ov_root}/docs/licensing"
+    cp "${lic}/EULA.txt" "${LICENSE_DIR}/LICENSE-OpenVINO-EULA"
+    cp "${lic}/Apache_license.txt" "${LICENSE_DIR}/LICENSE-OpenVINO-Apache-2.0"
+    cp "${ov_root}/runtime/3rdparty/tbb/TBB-LICENSE" "${LICENSE_DIR}/LICENSE-oneTBB"
+    cp /usr/share/licenses/ocl-icd/COPYING "${LICENSE_DIR}/LICENSE-ocl-icd"
+    rpm -q --qf 'ocl-icd: %{LICENSE}\n' ocl-icd
+    mkdir -p "${LICENSE_DIR}/THIRD-PARTY/openvino"
+    for f in readme.txt redist.txt runtime-third-party-programs.txt onetbb_third-party-programs.txt onednn_third-party-programs.txt; do
+      cp "${lic}/${f}" "${LICENSE_DIR}/THIRD-PARTY/openvino/${f}"
+    done
+    chown -R "${OWNER}" "${LICENSE_DIR}"/LICENSE-OpenVINO-* "${LICENSE_DIR}/LICENSE-oneTBB" \
+      "${LICENSE_DIR}/LICENSE-ocl-icd" "${LICENSE_DIR}/THIRD-PARTY/openvino"
     ;;
   rocm)
     test -f "${BIN_DIR}/libggml-hip.so"
