@@ -10,6 +10,7 @@
 #   1. Refuse a host that is not macOS on arm64, and pins that do not agree: the mlx-lm version,
 #      and the mlx and mlx-metal files of the requirements against the macOS floor.
 #   2. `uv python install` puts python-build-standalone in a scratch directory. The tree copies it.
+#      The tree drops pip, whose vendored packages carry licences that the collector cannot see.
 #   3. `uv pip install --target` installs the hashed requirements into its site-packages.
 #   4. collect_python_licences.py copies every licence text of the tree to THIRD-PARTY/mlx, names the
 #      terms, lists the MPL-2.0 packages, and stops on a GPL-family licence. Its second run takes the
@@ -87,6 +88,14 @@ while IFS= read -r link; do
 done < <(find "${pkg}/python" -type l)
 test -x "${pkg}/python/bin/python3" || die "the interpreter tree has no bin/python3, which the launcher runs"
 
+# pip is not used at run time (the launcher runs python3 -I -m mlx_lm.server and uv installs with
+# --target). It vendors about twenty packages, among them an MPL-2.0 certifi, and its METADATA
+# declares only MIT, so the collector cannot see them. The tree loses pip and its bundled wheel.
+rm -rf "${pkg}/python/lib/python${MLX_PYTHON}/site-packages/pip" "${pkg}/python/lib/python${MLX_PYTHON}/ensurepip/_bundled"
+for pip_dist in "${pkg}/python/lib/python${MLX_PYTHON}/site-packages"/pip-*.dist-info; do
+  ! test -e "${pip_dist}" || rm -rf "${pip_dist}"
+done
+
 uv pip install --python "${pkg}/python/bin/python${MLX_PYTHON}" --target "${site}" \
   --require-hashes --only-binary :all: --no-deps -r "${requirements}"
 grep -q "^Tag: py3-none-${platform}\$" "${site}/mlx_metal-${MLX_VERSION}.dist-info/WHEEL" ||
@@ -95,6 +104,11 @@ grep -q "^Tag: py3-none-${platform}\$" "${site}/mlx_metal-${MLX_VERSION}.dist-in
 # supplied-licences.txt replaces the numpy licence because this wheel bundles no library of its own.
 ! test -e "${site}/numpy/.dylibs" ||
   die "numpy bundles libraries in numpy/.dylibs, so its own LICENSE.txt must stay. Change packaging/engine-mlx/supplied-licences.txt."
+# A requirement that brings pip back would put its vendored licences out of the collector's sight.
+for pip_left in "${site}/pip" "${site}"/pip-*.dist-info; do
+  ! test -e "${pip_left}" ||
+    die "pip is in the interpreter tree (${pip_left#"${pkg}"/}). Its vendored packages carry licences that the build does not list."
+done
 # The bundled interpreter runs the collector, so the Python on PATH may be older than 3.10.
 "${pkg}/python/bin/python3" -I "${here}/collect_python_licences.py" --mpl "${outdir}/mpl.txt" "${site}" \
   "${dist}/licenses/THIRD-PARTY/mlx" "${outdir}/terms.txt" "${project}/supplied-licences.txt" ||
