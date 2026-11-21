@@ -10,7 +10,7 @@ runs:
     - uses: actions/checkout@v7
       with:
         repository: tobocop2/lilbee-engine-packs
-        ref: refs/tags/workflow-pin-2
+        ref: refs/tags/workflow-pin-3
         path: engine-packs
 
     - name: Name the workflow for the tests

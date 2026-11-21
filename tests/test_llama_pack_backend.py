@@ -484,3 +484,41 @@ def test_the_notice_check_failure_fails_the_step_and_the_job() -> None:
 
 def test_the_pack_workflow_names_no_transient_branch() -> None:
     assert "fix/llama-pack-licences" not in pack_workflow().read_text(encoding="utf-8")
+
+
+_PARSER_STAMP = '-ldflags "-X main.Version=${ENGINE_GGUF_PARSER_REF}"'
+_HELPER_PIN_NAMES = ("ENGINE_LLAMA_SWAP_VERSION", "ENGINE_GGUF_PARSER_REF")
+
+
+def _go_build_of_the_parser(text: str) -> list[str]:
+    lines = _uncommented(text).splitlines()
+    return [line for line in lines if "go build" in line and "gguf-parser" in line]
+
+
+def test_the_pack_workflow_stamps_the_parser_version_from_the_pin() -> None:
+    """Without the stamp the parser reports v0.0.0, which hides which release a pack ships."""
+    builds = _go_build_of_the_parser(pack_workflow().read_text(encoding="utf-8"))
+    assert len(builds) == 1
+    assert _PARSER_STAMP in builds[0]
+
+
+def test_the_wheel_build_script_stamps_the_parser_version_from_the_pin() -> None:
+    builds = _go_build_of_the_parser(
+        (_ROOT / "tools/wheel-build/build_llama_server.sh").read_text(encoding="utf-8")
+    )
+    assert len(builds) == 1
+    assert _PARSER_STAMP in builds[0]
+
+
+def test_the_pack_workflow_takes_the_helper_versions_from_the_engine_pins() -> None:
+    """One source: the workflow reads engine-versions.env of the lilbee tag and names no version."""
+    workflow = _uncommented(pack_workflow().read_text(encoding="utf-8"))
+    pins = dict(
+        line.split("=", 1)
+        for line in (_ROOT / "engine-versions.env").read_text(encoding="utf-8").splitlines()
+        if line.startswith("ENGINE_") and "=" in line
+    )
+    assert "engine-versions.env" in workflow
+    for name in _HELPER_PIN_NAMES:
+        assert f"${{{name}}}" in workflow
+        assert pins[name] not in workflow

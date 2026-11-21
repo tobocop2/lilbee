@@ -317,7 +317,8 @@ clone_with_retry -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" https://gi
 
 # gguf-parser's cmd has a nested go.mod, so build from inside cmd/gguf-parser.
 clone_with_retry -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" "${ENGINE_GGUF_PARSER_REPO}" "${go_build_dir}/gguf-parser-go"
-( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
+# The parser reports the version in main.Version; unstamped it reports v0.0.0.
+( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -ldflags "-X main.Version=${ENGINE_GGUF_PARSER_REF}" -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
 
 echo "Built self-contained engine (${backend}: llama-server + llama-swap + gguf-parser) -> ${pkg_bin_dir}/"
 ls -lh "${pkg_bin_dir}/"
