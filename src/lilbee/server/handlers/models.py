@@ -13,10 +13,9 @@ from pydantic import BaseModel
 
 from lilbee.app.models import (
     ensure_vision_projector,
-    is_repeat_pull,
     join_warnings,
     list_models_data,
-    refreshes_safetensors_files,
+    repeat_pull_result,
 )
 from lilbee.app.services import ServicesStoppingError, get_services
 from lilbee.app.settings import apply_settings_update
@@ -604,21 +603,25 @@ async def models_pull(
             sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
         try:
-            repeat = is_repeat_pull(manager, model, src)
-            refresh = refreshes_safetensors_files(manager, model, src)
-            notices: list[str] = []
-            manager.pull(
-                model,
-                src,
-                on_bytes=_on_bytes,
-                on_notice=None if refresh else notices.append,
-                allow_unsupported=allow_unsupported,
-                cancel=sse.cancel,
+            installed = repeat_pull_result(
+                manager, model, src, on_bytes=_on_bytes, cancel=sse.cancel
             )
-            warning = join_warnings(
-                *notices,
-                ensure_vision_projector(model, warn_unreadable=not repeat, cancel=sse.cancel),
-            )
+            if installed is not None:
+                warning = installed.warning
+            else:
+                notices: list[str] = []
+                manager.pull(
+                    model,
+                    src,
+                    on_bytes=_on_bytes,
+                    on_notice=notices.append,
+                    allow_unsupported=allow_unsupported,
+                    cancel=sse.cancel,
+                )
+                warning = join_warnings(
+                    *notices,
+                    ensure_vision_projector(model, warn_unreadable=True, cancel=sse.cancel),
+                )
             done = {} if warning is None else {"warning": warning}
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))
         except TaskCancelledError:

@@ -10,22 +10,27 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.app import models as app_models
-from lilbee.catalog.download import ProjectorListingError
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError, ProjectorListingError
 from lilbee.catalog.types import ModelTask
 from lilbee.server import handlers
 
 REF = "acme/Vision-GGUF"
 
 
-async def _pull_events(*, installed: bool = False) -> list[tuple[str, dict]]:
+async def _pull_events(
+    *, installed: bool = False, ref: str = REF, pull_error: Exception | None = None
+) -> list[tuple[str, dict]]:
     manager = MagicMock()
     manager.is_installed.return_value = installed
+    manager.pull.side_effect = pull_error
     with patch(
         "lilbee.server.handlers.models.get_services",
         return_value=MagicMock(model_manager=manager),
     ):
-        frames = [e async for e in handlers.models_pull(REF, source="native")]
-    manager.pull.assert_called_once()
+        frames = [e async for e in handlers.models_pull(ref, source="native")]
+    # A repeat pull asks the Hub only for the module files of a safetensors model.
+    refreshes = installed and ref.endswith("#safetensors")
+    assert manager.pull.call_count == (1 if refreshes or not installed else 0)
     events: list[tuple[str, dict]] = []
     for frame in frames:
         if not frame:
@@ -81,6 +86,29 @@ async def test_installed_model_with_unreadable_listing_stays_silent(
     _stub_listing_error(monkeypatch)
     events = await _pull_events(installed=True)
     assert events == [("done", {})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ref", [REF, f"{REF}/model-Q4_K_M.gguf", "acme/vision#safetensors"])
+async def test_an_installed_model_pulled_offline_ends_in_done(
+    monkeypatch: pytest.MonkeyPatch, ref: str
+) -> None:
+    _stub_entry(monkeypatch)
+    monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: False)
+    offline = ListingOfflineError("Cannot reach HuggingFace to list acme/vision")
+    events = await _pull_events(installed=True, ref=ref, pull_error=offline)
+    assert events == [("done", {})]
+
+
+@pytest.mark.asyncio
+async def test_a_real_fault_on_a_repeat_safetensors_pull_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_entry(monkeypatch)
+    monkeypatch.setattr(app_models, "_vision_projector_missing", lambda _r: False)
+    failed = ListingFailedError("Cannot query files for acme/vision: HTTP 503")
+    events = await _pull_events(installed=True, ref="acme/vision#safetensors", pull_error=failed)
+    assert events == [("error", {"message": str(failed)})]
 
 
 @pytest.mark.asyncio

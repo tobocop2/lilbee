@@ -645,7 +645,9 @@ class _PullingManager:
     def is_registered(self, _ref: str) -> bool:
         return True
 
-    def pull(self, _ref: str, _source: object, *, cancel: object = None) -> None:
+    def pull(
+        self, _ref: str, _source: object, *, on_bytes: object = None, cancel: object = None
+    ) -> None:
         def fake_fetch(_entry, _dir, _token, files, _progress, _probe, _cached) -> list[Path]:
             self.fetched.append(files)
             return [self.tmp_path / name for name in files]
