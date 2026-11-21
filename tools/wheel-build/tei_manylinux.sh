@@ -105,7 +105,7 @@ bash "${WORK}/tools/wheel-build/tei_wheel.sh" "${src}" "${binary}" "${features}"
 # The router loads libcuda from the GPU driver; every other library is in the image or grafted.
 exclude=()
 [ -z "${CUDA_CC}" ] || exclude=(--exclude libcuda.so.1)
-auditwheel repair --plat manylinux_2_34_x86_64 --disable-isa-ext-check "${exclude[@]}" \
+auditwheel repair --plat manylinux_2_34_x86_64 --disable-isa-ext-check ${exclude[@]+"${exclude[@]}"} \
   -w "${OUT}/repaired" "${OUT}"/dist/*.whl
 
 if [ -n "${CUDA_CC}" ]; then
