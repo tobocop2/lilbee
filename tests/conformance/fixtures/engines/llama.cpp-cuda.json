@@ -55,7 +55,7 @@
   },
   "named": {
    "ok": true,
-   "detail": "log=['served by engine=llama-cpp-cuda version=preset role=chat model=llama-cpp-cuda/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'llama-cpp-cuda', <WorkerRole.EMBED: 'embed'>: 'llama-cpp-cuda', <WorkerRole.RERANK: 'rerank'>: 'llama-cpp-cuda'}"
+   "detail": "log=['served by engine=llama-cpp-cuda version=preset build=none role=chat model=llama-cpp-cuda/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'llama-cpp-cuda', <WorkerRole.EMBED: 'embed'>: 'llama-cpp-cuda', <WorkerRole.RERANK: 'rerank'>: 'llama-cpp-cuda'}"
   }
  },
  "exchanges": [
