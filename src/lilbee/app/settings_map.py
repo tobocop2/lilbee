@@ -580,6 +580,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text="Drop candidates whose raw reranker score is below this (unset = off)",
         advanced=True,
     ),
+    "choose_engine_on_pick": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        help_text=(
+            "Ask which engine runs a model when you pick it in the model picker "
+            "(off = the picked model uses its saved engine, or auto)"
+        ),
+        hidden=True,
+    ),
     "show_reasoning": SettingDef(
         bool,
         nullable=False,

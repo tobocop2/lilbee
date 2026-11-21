@@ -923,6 +923,7 @@ ENGINES_ACTION_INSTALL = "Install"
 ENGINES_ACTION_REMOVE = "Remove"
 ENGINES_NO_VALUE = "-"
 ENGINES_LOAD_FAILED = "The engine list could not be read: {error}"
+ENGINES_CHOOSE_ON_PICK_LABEL = "Choose the engine when picking a model"
 MODEL_INFO_ENGINE_HEADING = "Engine"
 MODEL_INFO_ENGINE_OTHERS = "Also loads it:"
 MODEL_INFO_PICKER_TITLE = "Engine for this model"
@@ -956,7 +957,10 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "or press m to open the Catalog and install it."
 )
 MODEL_PICKER_TURN_OFF = "Turn off this model"
-MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
+MODEL_PICKER_HINT = "Enter use model · e change engine · Esc close · / search"
+MODEL_PICKER_ENGINE_LABEL = "engine:"
+MODEL_PICKER_ENGINE_AUTO = "(auto)"
+MODEL_PICKER_ENGINE_NONE = "none"
 
 # Settings Profile tab, the profile line, and the Apply and Save-as dialogs
 PROFILE_TAB_LABEL = "Profile"

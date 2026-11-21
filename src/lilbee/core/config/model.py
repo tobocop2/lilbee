@@ -1099,6 +1099,15 @@ class Config(BaseSettings):
         ),
     )
 
+    choose_engine_on_pick: bool = ConfigField(
+        default=True,
+        writable=True,
+        description=(
+            "Ask which engine runs a model when you pick it in the model picker. "
+            "Off means the picked model uses its saved engine, or auto"
+        ),
+    )
+
     # The per-model engine override, a JSON scalar {model_ref: engine_name}, stored as placement is.
     engine_choices: str | None = ConfigField(
         default=None,

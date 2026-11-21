@@ -520,6 +520,21 @@ the model of that role. A role with no model shows a message instead.
 In insert mode the prompt takes the key as text. Press Esc to leave insert mode,
 then focus the button and press `e`.
 
+#### Pick the engine with the model
+
+The model picker shows each model with its engine, for example
+`engine: llama.cpp (auto)`. `(auto)` means lilbee chose the engine. A model in
+two formats shows its format after the name.
+
+Press Enter on a model to open the engine picker for it. The saved engine of
+the model is highlighted, or `auto` when none is saved, so Enter and Enter
+again keep the choice. Press Esc to return to the model list. If only one
+engine can load the model file, the picker does not open.
+
+Press `e` on a model, or `ctrl+e` in the search field, to change the engine
+without picking the model. The `choose_engine_on_pick` setting, on the Engines
+tab, turns the engine step on Enter off. It is on by default.
+
 #### Manage engines in Settings
 
 The Engines tab in Settings sits after the Models tab. It holds the preferred

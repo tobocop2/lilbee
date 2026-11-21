@@ -9,7 +9,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.content import Content
-from textual.widgets import DataTable, Select, Static
+from textual.widgets import Checkbox, DataTable, Select, Static
 
 from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineOption, EngineRow, EngineState
@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 ENGINES_PANE_ID = "settings-tab-engines"
 TABLE_ID = "engines-table"
 PREFERRED_ID = "engines-preferred"
+CHOOSE_ID = "engines-choose-on-pick"
+CHOOSE_KEY = "choose_engine_on_pick"
 
 _COLUMNS = (
     msg.ENGINES_COL_ENGINE,
@@ -83,6 +85,9 @@ class EnginesPane(VerticalScroll):
             allow_blank=False,
             id=PREFERRED_ID,
         )
+        yield Checkbox(
+            msg.ENGINES_CHOOSE_ON_PICK_LABEL, value=cfg.choose_engine_on_pick, id=CHOOSE_ID
+        )
         yield Static(msg.ENGINES_TABLE_TITLE, id="engines-title", markup=False)
         table: DataTable[Text] = DataTable(id=TABLE_ID, cursor_type="row")
         table.add_columns(*_COLUMNS)
@@ -114,6 +119,7 @@ class EnginesPane(VerticalScroll):
         for row in rows:
             table.add_row(*self._cells(row), key=_row_key(row))
         self._show_preferred(rows)
+        self._show_choose()
 
     def _cells(self, row: EngineRow) -> list[Text]:
         used = msg.ENGINES_USED_BY.format(roles=", ".join(row.roles)) if row.roles else ""
@@ -148,6 +154,19 @@ class EnginesPane(VerticalScroll):
         with self.prevent(Select.Changed):
             select.set_options((name, name) for name in names)
             select.value = current
+
+    def _show_choose(self) -> None:
+        """Show the stored value of the setting without saving it again."""
+        box = self.query_one(f"#{CHOOSE_ID}", Checkbox)
+        with self.prevent(Checkbox.Changed):
+            box.value = cfg.choose_engine_on_pick
+
+    @on(Checkbox.Changed, f"#{CHOOSE_ID}")
+    def _on_choose_changed(self, event: Checkbox.Changed) -> None:
+        """Save the setting; a refused write puts the box back to the stored value."""
+        event.stop()
+        if not self.app.set_setting(CHOOSE_KEY, event.value, ask_rebuild=False):
+            self._show_choose()
 
     @on(Select.Changed, f"#{PREFERRED_ID}")
     def _on_preferred_changed(self, event: Select.Changed) -> None:

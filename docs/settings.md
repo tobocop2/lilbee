@@ -64,6 +64,7 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use chat REF` | no | LLM used for chat generation (vision and reranking are separate slots). |
+| `choose_engine_on_pick` | `LILBEE_CHOOSE_ENGINE_ON_PICK` | `bool` | `true` | no | yes | yes | no | no | Ask which engine runs a model when you pick it in the model picker (off = the picked model uses its saved engine, or auto). |
 | `embedding_model` | `LILBEE_EMBEDDING_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee use-embedder REF` | no | Model used to embed document chunks. |
 | `include_uncensored` | `LILBEE_INCLUDE_UNCENSORED` | `bool` | `false` | yes | yes | yes | no | no | Recommend safety-stripped models in Picks and Discover (browse and search always list them). |
 | `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use rerank REF` | no | Cross-encoder model for result reranking (empty = off). |
