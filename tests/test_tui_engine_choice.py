@@ -928,3 +928,117 @@ async def test_declining_the_download_saves_nothing() -> None:
             await pilot.pause()
         install.assert_not_called()
         assert _stored() == {}
+
+
+def test_choosing_an_engine_that_cannot_load_the_model_returns_the_refusal_text() -> None:
+    from lilbee.cli.tui.engine_commands import choose_engine_for_model
+
+    result = choose_engine_for_model(GGUF_REF, "mlx")
+    assert not result.ok
+    assert result.text.startswith("Engine mlx cannot load the gguf format")
+    assert _stored() == {}
+
+
+async def test_model_info_says_so_when_no_other_engine_can_load_the_model() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        modal = await _open_info(app, pilot)
+        only_auto = [engine_service.EngineOption("auto", auto_now="llama.cpp")]
+        with mock.patch.object(engine_service, "engine_options", return_value=only_auto):
+            await pilot.press("e")
+            await pilot.pause()
+        assert app.screen is modal
+        assert msg.MODEL_INFO_NO_ENGINE_CHOICE in _toasts(app)
+
+
+async def test_escape_in_the_model_info_picker_saves_nothing() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        modal = await _open_info(app, pilot)
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        await pilot.press("escape")
+        assert await wait_until(pilot, lambda: app.screen is modal)
+        assert _stored() == {}
+
+
+async def test_the_picker_marks_no_engine_as_current_when_none_can_load_the_model() -> None:
+    options = [engine_service.EngineOption("auto"), _DOWNLOAD]
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with (
+            mock.patch(
+                "lilbee.cli.tui.screens.model_info.engine_for_ref",
+                side_effect=choice.NoEngineError("No installed engine loads the gguf format."),
+            ),
+            mock.patch.object(engine_service, "engine_options", return_value=options),
+        ):
+            modal = await _open_info(app, pilot)
+            assert _text(modal, "#info-engine").endswith(
+                "No installed engine loads the gguf format."
+            )
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        picked = app.screen.query_one(OptionList)
+        labels = [str(picked.get_option_at_index(i).prompt) for i in range(picked.option_count)]
+        assert not any("(now)" in label for label in labels)
+
+
+async def test_a_repaint_after_model_info_closed_does_nothing() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        modal = await _open_info(app, pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+        modal._repaint_engine()
+
+
+def _confirming_use(calls: list[bool]):
+    def use(model: str, name: str, confirmed: bool = False) -> str:
+        calls.append(confirmed)
+        if not confirmed:
+            raise engine_service.EmbedConfirmRequiredError("docs", 3)
+        return name
+
+    return use
+
+
+async def _pick_openvino_in_model_info(app: LilbeeAppHost, pilot) -> None:
+    from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog
+
+    await _open_info(app, pilot)
+    await pilot.press("e")
+    assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+    await pilot.press("down", "down", "enter")
+    assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+
+
+async def test_a_change_that_can_orphan_the_index_vectors_is_saved_only_after_a_yes() -> None:
+    calls: list[bool] = []
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with mock.patch.object(engine_service, "use", side_effect=_confirming_use(calls)):
+            await _pick_openvino_in_model_info(app, pilot)
+            assert calls == [False]
+            await pilot.press("y")
+            assert await wait_until(pilot, lambda: calls == [False, True])
+        assert await wait_until(
+            pilot, lambda: any(t.endswith("uses engine openvino.") for t in _toasts(app))
+        )
+
+
+async def test_a_no_to_the_index_vector_question_keeps_the_engine() -> None:
+    calls: list[bool] = []
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with mock.patch.object(engine_service, "use", side_effect=_confirming_use(calls)):
+            await _pick_openvino_in_model_info(app, pilot)
+            await pilot.press("n")
+            assert await wait_until(pilot, lambda: msg.ENGINE_EMBED_CANCELLED in _toasts(app))
+        assert calls == [False]
