@@ -97,10 +97,54 @@ def _excluded(engine: str, cell: str, device: Device, route: Route, decision: st
     )
 
 
+def _compared(
+    engine: str,
+    cell: str,
+    device: Device,
+    version: str,
+    steps: tuple[Step, ...],
+    reason: str,
+    oracle: Oracle = Oracle.LLAMA,
+) -> CoverageRow:
+    return CoverageRow(
+        engine,
+        cell,
+        device,
+        Coverage.COMPARED,
+        Route.PACK,
+        reason,
+        record=f"tests/conformance/fixtures/compare/{engine}-{cell}/{version}.json",
+        oracle=oracle,
+        steps=steps,
+    )
+
+
+_LLAMA_VERSION = "1.12032.1"
+_IK_VERSION = "0+git13cffc006b82"
+_TEI_VERSION = "1.9.4"
+_ORACLE_ITSELF = "the oracle itself: the absolute checks and the null block"
+_IK_OVERFLOW = "its record fails the overflow step: the server aborts on a prompt over its context"
+_TEI_STEPS = (Step.EMBED, Step.RERANK)
+_MISTRAL_STEPS = tuple(step for step in Step if step is not Step.RERANK)
+
 COVERAGE_ROWS: tuple[CoverageRow, ...] = (
-    _deferred(EngineName.LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
-    _deferred(
-        EngineName.LLAMA, "linux-x86_64-cuda", Device.CUDA, Route.PACK, _CUDA_HOST, _NO_RECORD
+    _compared(
+        EngineName.LLAMA,
+        LINUX_CPU,
+        Device.CPU,
+        _LLAMA_VERSION,
+        tuple(Step),
+        _ORACLE_ITSELF,
+        Oracle.ABSOLUTE_ONLY,
+    ),
+    _compared(
+        EngineName.LLAMA,
+        "linux-x86_64-cuda",
+        Device.CUDA,
+        _LLAMA_VERSION,
+        tuple(Step),
+        _ORACLE_ITSELF,
+        Oracle.ABSOLUTE_ONLY,
     ),
     _deferred(
         EngineName.LLAMA, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST
@@ -130,15 +174,37 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         _WINDOWS_AMD_HOST,
         _NO_RECORD,
     ),
-    _deferred(EngineName.IK_LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _deferred(EngineName.IK_LLAMA, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _IK_OVERFLOW),
     _deferred(
-        EngineName.IK_LLAMA, "linux-x86_64-cuda", Device.CUDA, Route.PACK, _CUDA_HOST, _NO_RECORD
+        EngineName.IK_LLAMA, "linux-x86_64-cuda", Device.CUDA, Route.PACK, _CUDA_HOST, _IK_OVERFLOW
     ),
-    _deferred(EngineName.MISTRAL, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _compared(
+        EngineName.MISTRAL,
+        LINUX_CPU,
+        Device.CPU,
+        "0.9.5",
+        _MISTRAL_STEPS,
+        "chat on GGUF, embed and vision on safetensors, against llama.cpp",
+    ),
     _deferred(
         EngineName.MISTRAL, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST
     ),
-    _deferred(EngineName.TEI, LINUX_CPU, Device.CPU, Route.PACK, _CPU_HOST, _NO_RECORD),
+    _compared(
+        EngineName.TEI,
+        LINUX_CPU,
+        Device.CPU,
+        _TEI_VERSION,
+        _TEI_STEPS,
+        "embed and rerank on safetensors, against llama.cpp",
+    ),
+    _compared(
+        EngineName.TEI,
+        "linux-x86_64-cuda-sm89",
+        Device.CUDA,
+        _TEI_VERSION,
+        _TEI_STEPS,
+        "embed and rerank on safetensors on one L4, against llama.cpp",
+    ),
     *(
         _deferred(
             EngineName.TEI,
@@ -148,7 +214,7 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
             _CUDA_HOST,
             _NO_RECORD,
         )
-        for cc in (75, 80, 86, 89, 90, 100, 120)
+        for cc in (75, 80, 86, 90, 100, 120)
     ),
     _deferred(EngineName.TEI, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST),
     _deferred(
