@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import math
+import re
 import socket
 import ssl
 import threading
@@ -191,6 +192,9 @@ def _estimate_tokens(text: str) -> int:
 _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
     ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading {model}",
     ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
+    ProviderErrorKind.CPU_UNSUPPORTED: (
+        "The engine for {model} stopped on an instruction this CPU does not have"
+    ),
 }
 _UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
 _BROKEN_MODEL_FILE_MESSAGE = (
@@ -208,10 +212,42 @@ _BROKEN_FILE_MARKERS: tuple[str, ...] = (
 )
 
 
+# Packages that hold a shared library the engine packs leave out, by library name.
+_LIBRARY_INSTALL_HINTS: dict[str, str] = {
+    "libgomp.so.1": "Install libgomp1 (Debian, Ubuntu) or libgomp (Fedora).",
+}
+# The dynamic loader's line when a shared library is absent at process start.
+_MISSING_LIBRARY_PATTERN = re.compile(
+    r"error while loading shared libraries: (\S+): cannot open shared object file"
+)
+
+
+def missing_library(tail: str) -> str | None:
+    """The shared library the dynamic loader could not find, from an engine's output."""
+    found = _MISSING_LIBRARY_PATTERN.search(tail)
+    return found.group(1) if found else None
+
+
+def _missing_library_message(library: str) -> str:
+    """The plain line that names a missing library and, when known, the package."""
+    message = f"The engine needs the library {library}."
+    hint = _LIBRARY_INSTALL_HINTS.get(library)
+    return message if hint is None else f"{message} {hint}"
+
+
 def _upstream_death_message(
-    kind: ProviderErrorKind, status_code: int, model: str | None, engine_log: Path | None
+    kind: ProviderErrorKind,
+    status_code: int,
+    model: str | None,
+    engine_log: Path | None,
+    tail: str = "",
 ) -> str:
     """One plain line for a model server that exited, built from what lilbee knows."""
+    library = missing_library(tail)
+    if kind is ProviderErrorKind.MISSING_LIBRARY and library is not None:
+        # No log path: the loader line reaches only llama-swap's per-model
+        # stream, and lilbee keeps no file that holds it.
+        return _missing_library_message(library)
     subject = model if model is not None else "the model"
     if kind is ProviderErrorKind.MODEL_FILE_BROKEN:
         if model is None:
@@ -254,6 +290,10 @@ _OOM_MARKERS: tuple[str, ...] = (
 # would be read as a memory shortfall and answered with a context reduction.
 _SURVIVABLE_LINE_MARKERS: tuple[str, ...] = ("warning:", "warn:")
 
+# What an engine prints about an illegal instruction in its own output. A process
+# that SIGILL kills without printing leaves no text here and keeps the generic error.
+_ILLEGAL_INSTRUCTION_MARKER = "illegal instruction"
+
 
 def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     """The kind of failure an engine's dying output describes, or ``None``.
@@ -264,7 +304,9 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
     because the retry re-drives llama-swap's spawn, and worth naming because a
     port held for good needs a different port rather than another attempt at the
     same one. ``None`` leaves the existing classification alone rather than
-    guessing at an unfamiliar death.
+    guessing at an unfamiliar death. ``CPU_UNSUPPORTED`` for an engine the CPU
+    cannot run, which no retry or smaller plan can fix. ``MISSING_LIBRARY`` for a
+    shared library the host lacks, which only an install can fix.
     """
     fatal = [
         line
@@ -278,6 +320,10 @@ def classify_upstream_death(tail: str) -> ProviderErrorKind | None:
         return ProviderErrorKind.CAPACITY
     if _BIND_FAILURE_MARKER in tail:
         return ProviderErrorKind.PORT_CONFLICT
+    if any(_ILLEGAL_INSTRUCTION_MARKER in line for line in fatal):
+        return ProviderErrorKind.CPU_UNSUPPORTED
+    if missing_library(tail) is not None:
+        return ProviderErrorKind.MISSING_LIBRARY
     return None
 
 
@@ -403,7 +449,6 @@ _UPSTREAM_PREFIX = "/upstream"
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
-_HTTP_BAD_REQUEST = 400
 _HTTP_NOT_FOUND = 404
 _HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
@@ -583,6 +628,12 @@ class LlamaServerClient:
                 return True
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
 
+    def _is_context_overflow(self, resp: httpx.Response) -> bool:
+        """True when *resp* is the server's answer to an input past its limit."""
+        return resp.status_code == self._profile.context_overflow_status and bool(
+            self._profile.context_overflow.search(resp.text)
+        )
+
     def _raise_for_status(self, resp: httpx.Response) -> None:
         """Raise the plain error for a failed *resp*, naming this client's model and log.
 
@@ -600,7 +651,7 @@ class LlamaServerClient:
         # user-facing message so the chat route returns a clean context_length_exceeded
         # (400) instead of a generic internal_error -- a long conversation that fills
         # the window then reads as "too long", not "Internal server error".
-        if resp.status_code == _HTTP_BAD_REQUEST and (
+        if resp.status_code == self._profile.context_overflow_status and (
             self._profile.context_overflow.search(body) or is_prompt_length_overflow(body)
         ):
             raise ProviderError(
@@ -631,11 +682,14 @@ class LlamaServerClient:
         # captured output goes to the log (in _upstream_failure_tail) and decides the
         # kind; the message the user sees stays one plain line.
         if _UPSTREAM_DIED_MARKER in body:
-            classified = classify_upstream_death(_upstream_failure_tail(resp))
+            tail = _upstream_failure_tail(resp)
+            classified = classify_upstream_death(tail)
             if classified is not None:
                 kind = classified
             raise ProviderError(
-                _upstream_death_message(kind, resp.status_code, self.model_ref, self.engine_log),
+                _upstream_death_message(
+                    kind, resp.status_code, self.model_ref, self.engine_log, tail
+                ),
                 provider=self._profile.label,
                 kind=kind,
             )
@@ -1041,13 +1095,27 @@ class LlamaServerClient:
         return payload
 
     def _wire_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
-        """*options* without the fields this server's engine does not read."""
+        """*options* without the fields this server's engine does not read or enforce.
+
+        A ``json_schema`` request is a promise that the reply fits the schema, so it is
+        refused. Any other format is advice, so it is dropped.
+        """
         wire = dict(options or {})
         if not self._profile.takes_cache_prompt:
             wire.pop("cache_prompt", None)
         if not self._profile.takes_seed and isinstance(wire.get("seed"), ChosenSeed):
             wire.pop("seed")
-        return wire
+        if self._profile.structured_output or "response_format" not in wire:
+            return wire
+        reply_format = wire.pop("response_format")
+        if not (isinstance(reply_format, Mapping) and reply_format.get("type") == "json_schema"):
+            return wire
+        raise ProviderError(
+            f"{self._profile.label} does not enforce a JSON schema. "
+            "Use a llama.cpp model for structured output.",
+            provider=self._profile.label,
+            kind=ProviderErrorKind.BAD_REQUEST,
+        )
 
     def _prepare_chat_messages(
         self, messages: Sequence[Mapping[str, Any]]
@@ -1186,28 +1254,54 @@ class LlamaServerClient:
         """
         step = self._batch_limit or len(candidates)
         scores: list[float] = []
+        overflows: list[str] = []
+        batches = 0
         for start in range(0, len(candidates), step):
-            scores.extend(self._rerank_route_batch(path, query, candidates[start : start + step]))
+            batches += 1
+            batch_scores, overflow = self._rerank_route_batch(
+                path, query, candidates[start : start + step]
+            )
+            scores.extend(batch_scores)
+            if overflow is not None:
+                overflows.append(overflow)
+        if overflows:
+            log.warning(
+                "Rerank query and candidate exceed the reranker's token limit in %d of %d "
+                "batches; the server truncates the input (%s)",
+                len(overflows),
+                batches,
+                overflows[0],
+            )
         return scores
 
-    def _rerank_route_batch(self, path: str, query: str, texts: list[str]) -> list[float]:
-        def _call() -> list[dict[str, Any]]:
-            with self._track():
-                resp = self._http.post(
-                    self._native_route(path), json={"query": query, "texts": texts}
-                )
-                self._raise_for_status(resp)
-                return list(resp.json())
+    def _rerank_route_batch(
+        self, path: str, query: str, texts: list[str]
+    ) -> tuple[list[float], str | None]:
+        """Scores for one batch, and the server's overflow answer when it had to truncate."""
 
-        by_index = {
-            int(item["index"]): float(item["score"]) for item in retry_on_gateway_error(_call)
-        }
+        def _post(extra: Mapping[str, Any]) -> httpx.Response:
+            return self._http.post(
+                self._native_route(path), json={"query": query, "texts": texts, **extra}
+            )
+
+        def _call() -> tuple[list[dict[str, Any]], str | None]:
+            with self._track():
+                resp = _post(self._profile.rerank_fields)
+                overflow = None
+                if self._profile.rerank_fields and self._is_context_overflow(resp):
+                    overflow = resp.text.strip()
+                    resp = _post({})
+                self._raise_for_status(resp)
+                return list(resp.json()), overflow
+
+        items, overflow = retry_on_gateway_error(_call)
+        by_index = {int(item["index"]): float(item["score"]) for item in items}
         if sorted(by_index) != list(range(len(texts))):
             raise ProviderError(
                 f"The reranker did not return one score for each of the {len(texts)} candidates.",
                 provider=self._profile.label,
             )
-        return [by_index[i] for i in range(len(texts))]
+        return [by_index[i] for i in range(len(texts))], overflow
 
     @property
     def _batch_limit(self) -> int | None:

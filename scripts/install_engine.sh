@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Download a prebuilt llama.cpp release and print the directory that holds
-# llama-server. The integration lane needs a real engine: the lilbee-engine
+# llama-server. The integration lane needs a real engine: the lilbee-engine-llama-cpp
 # wheel ships an empty bin/ outside the release wheel build, so resolution
 # falls through to PATH and CI must put a real binary there.
 #

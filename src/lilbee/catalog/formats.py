@@ -20,6 +20,7 @@ _IR_COMPANIONS = (
     "openvino_detokenizer.xml",
     "openvino_detokenizer.bin",
 )
+_PROCESSOR_FILES = ("preprocessor_config.json", "processor_config.json")
 _TOKENIZER_FILES = (
     "added_tokens.json",
     "chat_template.jinja",
@@ -37,8 +38,11 @@ _MODULE_FILE_RE = re.compile(r"\d+_[^/]+/(?:config\.json|model\.safetensors)")
 
 
 def formats_from_tags(tags: Iterable[str]) -> frozenset[ModelFormat]:
-    """The formats a repo's Hub tags name; an MLX repo is not plain safetensors."""
-    found = {fmt for fmt in ModelFormat if fmt.value in set(tags)}
+    """The formats a repo's Hub tags name; an MLX repo is not plain safetensors.
+
+    No tag names XDNA: those models are named by engine tag, not by Hub repo.
+    """
+    found = {fmt for fmt in ModelFormat if fmt is not ModelFormat.XDNA and fmt.value in set(tags)}
     if ModelFormat.MLX in found:
         found.discard(ModelFormat.SAFETENSORS)
     return frozenset(found)
@@ -61,13 +65,16 @@ def select_files(fmt: ModelFormat, filenames: Iterable[str]) -> list[str]:
 
     Selection reads the listing, never the Hub tags: a tag only says the format
     exists somewhere in the repo. Only exact names and weight suffixes match, so
-    a hash-named blob or a pickled ``pytorch_model.bin`` is never chosen.
+    a hash-named blob or a pickled ``pytorch_model.bin`` is never chosen. An XDNA
+    model has no repo files to select: its engine downloads it.
     """
     names = sorted(set(filenames))
     if fmt == ModelFormat.GGUF:
         selected = _select_gguf(names)
     elif fmt == ModelFormat.OPENVINO:
         selected = _select_openvino(names)
+    elif fmt == ModelFormat.XDNA:
+        selected = []
     else:
         selected = _select_safetensors(fmt, names)
     _refuse_unsafe_names(selected)
@@ -110,7 +117,8 @@ def _select_safetensors(fmt: ModelFormat, names: list[str]) -> list[str]:
     index = _present(names, [_SAFETENSORS_INDEX])
     extras = _present(names, ["config.json", *_TOKENIZER_FILES])
     if fmt == ModelFormat.SAFETENSORS:
-        extras += _present(names, ["generation_config.json"]) + _module_files(names)
+        extras += _present(names, ["generation_config.json", *_PROCESSOR_FILES])
+        extras += _module_files(names)
     entry = index + weights if shards else weights + index
     return [*entry, *sorted(extras)]
 

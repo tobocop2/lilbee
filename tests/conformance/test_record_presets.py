@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from tests.conformance.preset_check import recording
+from tests.conformance.preset_check import Setup, fixture_json, recording
 from tests.conformance.record_presets import build_parser, token_from
 
 _TOKEN = "s3cret-token-value"  # pragma: allowlist secret
@@ -217,3 +217,63 @@ class TestRedirects:
         ):
             assert _post(proxy, "/v1/embeddings")[0] == 200
         assert seen == [("lilbee", "/v1/embeddings", f"Bearer {_TOKEN}")]
+
+
+class TestFixtureJson:
+    def test_the_fixture_holds_the_status_and_body_of_each_error_answer(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with _server("lilbee", seen) as upstream, recording(upstream) as (proxy, tape):
+            assert _post(proxy, "/v1/chat/completions")[0] == 401
+        setup = Setup(("chat",), {"chat": "m"})
+        doc = fixture_json("lilbee", "1", setup, {}, tape)
+        assert doc["error_answers"] == [[401, '{"ok": false, "from": "lilbee"}']]
+
+
+class TestOverflowStep:
+    def test_a_served_window_refuses_the_prompt_before_any_request(self, tmp_path) -> None:
+        from tests.conformance.preset_check import _overflow, configured, replaying
+
+        setup = Setup(("chat",), {"chat": "m"}, window=40960)
+        with (
+            replaying([]) as url,
+            recording(url) as (proxy, tape),
+            configured(proxy, setup, tmp_path),
+        ):
+            outcome = _overflow(setup)
+        assert tape.exchanges == []
+        assert outcome.ok
+        assert outcome.detail == "kind=context_overflow"
+
+    def test_a_step_with_no_answer_fails_at_the_cap(self, tmp_path, monkeypatch) -> None:
+        import time
+
+        from tests.conformance import preset_check
+
+        class Hangs:
+            def chat(self, *args: object, **kwargs: object) -> None:
+                time.sleep(5)
+
+        monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: Hangs())
+        monkeypatch.setattr(preset_check, "_OVERFLOW_CAP_S", 0.2)
+        setup = Setup(("chat",), {"chat": "m"})
+        started = time.monotonic()
+        outcome = preset_check._overflow(setup)
+        assert time.monotonic() - started < 2
+        assert not outcome.ok
+        assert outcome.detail == "no answer within the cap"
+
+    def test_the_window_is_read_from_the_fixture(self, tmp_path) -> None:
+        from tests.conformance.preset_check import load_fixture
+
+        doc = fixture_json(
+            "s", "1", Setup(("chat",), {"chat": "m"}, window=4096), {}, _empty_tape()
+        )
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        assert load_fixture(path)[0].window == 4096
+
+
+def _empty_tape():
+    from tests.conformance.preset_check import _Tape
+
+    return _Tape()

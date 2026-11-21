@@ -501,7 +501,7 @@ _NOTHING_CHANGED = [
     {},
     {"unchanged": 5},
     {"unchanged": 2, "relocated": ["moved.md"]},
-    {"failed": ["bad.md"], "skipped": ["scan.pdf"]},
+    {"skipped": ["scan.pdf"]},
 ]
 
 
@@ -513,6 +513,17 @@ def test_sync_that_added_updated_and_removed_nothing_prints_no_tip(project, coun
     ):
         result = runner.invoke(app, ["sync", "--data-dir", str(project)])
     assert result.exit_code == 0, result.output
+    assert "SYNC RESULT" in result.output
+    assert "lilbee analyze" not in result.output
+
+
+def test_sync_that_left_a_failed_file_exits_one_and_prints_no_tip(project):
+    with mock.patch(
+        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
+        return_value=_Shown(failed=["bad.md"], skipped=["scan.pdf"]),
+    ):
+        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+    assert result.exit_code == 1, result.output
     assert "SYNC RESULT" in result.output
     assert "lilbee analyze" not in result.output
 

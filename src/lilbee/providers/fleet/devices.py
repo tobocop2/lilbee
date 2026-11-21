@@ -12,14 +12,15 @@ from __future__ import annotations
 import itertools
 import logging
 import re
+import signal
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
-from lilbee.providers.fleet.host_caps import read_card_memory
 from lilbee.providers.fleet.proc import run_bounded
 from lilbee.providers.roles import EngineBackend
 
@@ -38,6 +39,12 @@ _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 # llama-server prints this before the device loop, so a run that lists no GPUs
 # still prints it. Its absence means the binary never got as far as enumerating.
 _DEVICE_LIST_HEADER = "Available devices:"
+# Windows status STATUS_DLL_NOT_FOUND: the loader stopped the process before main.
+_STATUS_DLL_NOT_FOUND = 0xC0000135
+DLL_MISSING_LEAD = "The engine could not start because a DLL it needs is missing"
+# Windows status STATUS_ILLEGAL_INSTRUCTION; POSIX reports the same death as SIGILL.
+_STATUS_ILLEGAL_INSTRUCTION = 0xC000001D
+_ILLEGAL_INSTRUCTION_STATUSES = frozenset({-signal.SIGILL, _STATUS_ILLEGAL_INSTRUCTION})
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
 # not a tty; strip them or the header's GPU labels never match.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -196,22 +203,49 @@ def host_lacks_nvlink() -> bool:
     return len(gpu_rows) >= _TOPO_MIN_GPUS and not pairs
 
 
+@cache
+def _warn_order_replaced(preset: str) -> None:
+    """Warn once for each preset order that a child does not get."""
+    log.warning(
+        "Ignoring %s=%s: lilbee numbers NVIDIA cards in bus order, so it sets %s.",
+        _CUDA_ORDER_VAR,
+        preset,
+        _PCI_BUS_ID_ORDER,
+    )
+
+
+def _bus_order(env: Mapping[str, str]) -> str:
+    """The CUDA order of every child, with a warning when it replaces a preset order."""
+    preset = env.get(_CUDA_ORDER_VAR)
+    if preset and preset != _PCI_BUS_ID_ORDER:
+        _warn_order_replaced(preset)
+    return _PCI_BUS_ID_ORDER
+
+
 def _probe_env(binary: Path) -> dict[str, str]:
     """Env for the probe: stable PCI ordering so CUDA indices match what we pin.
 
-    A preset ``CUDA_DEVICE_ORDER`` is respected; ``visible_env`` re-emits the same
-    order var, so the probe and the spawned servers see one device ordering. The
-    probe runs under the engine's own environment (pin, loader safety) and with the
-    CUDA runtime libraries *binary* needs on its library path, so a zero-device
-    result reflects an unusable GPU rather than a probe that lacked them.
+    ``visible_env`` sets the same order, so the probe, the spawned servers and the
+    driver tools see one device ordering. The probe runs under the engine's own
+    environment (pin, loader safety) and with the CUDA runtime libraries *binary*
+    needs on its library path, so a zero-device result reflects an unusable GPU
+    rather than a probe that lacked them.
     """
     from lilbee.providers.fleet.cuda_runtime import cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import engine_environ
 
     env = engine_environ()
     env.update(cuda_runtime_env(binary))
-    env.setdefault(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER)
+    env[_CUDA_ORDER_VAR] = _bus_order(env)
     return env
+
+
+class EngineDllMissingError(ProviderError):
+    """The engine binary stopped at load time because a DLL it imports is absent."""
+
+
+class EngineIllegalInstructionError(ProviderError):
+    """The engine binary died on an instruction this CPU does not have."""
 
 
 def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -> DeviceProbe:
@@ -242,6 +276,22 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     selected = _select_backend(parsed)
     offered = [d for d in parsed if d.backend in _BACKEND_RANK]
     answered = _DEVICE_LIST_HEADER in output
+    if returncode == _STATUS_DLL_NOT_FOUND and not answered:
+        raise EngineDllMissingError(
+            f"{DLL_MISSING_LEAD} (status "
+            f"0x{_STATUS_DLL_NOT_FOUND:X}). The usual cause is a missing Microsoft "
+            "Visual C++ runtime. Install it from "
+            "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        )
+    if returncode in _ILLEGAL_INSTRUCTION_STATUSES and not answered:
+        raise EngineIllegalInstructionError(
+            f"The engine {binary.name} stopped on an instruction this CPU does not have "
+            f"(exit {returncode}). Install a build for an older CPU, or pick another engine.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.CPU_UNSUPPORTED,
+        )
     spoke = returncode == 0 and answered
     if not spoke and answered:
         # It knew the flag and started answering, then died. Blaming the flag
@@ -254,6 +304,15 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             binary.name,
             returncode,
             _probe_tail(output),
+        )
+    elif returncode < 0:
+        # A negative status is a signal that stopped the probe, which says
+        # nothing about whether the engine knows the flag.
+        log.warning(
+            "%s --list-devices was stopped by signal %d before it printed its device "
+            "header, so the device list is unknown.",
+            binary.name,
+            -returncode,
         )
     elif not spoke:
         log.warning(
@@ -577,15 +636,23 @@ def _compose_visible(indices: list[int], parent_value: str | None) -> str:
 
 
 def visible_nvidia_cards() -> list[FleetDevice]:
-    """The NVIDIA cards a child would see, numbered as CUDA numbers them; starts no process."""
+    """The NVIDIA cards a child would see, in CUDA numbering; starts a cached nvidia-smi child.
+
+    The list is empty when the cards do not read or the mask names one card twice, which
+    NVIDIA documents no rule for.
+    """
+    # circular: nvidia -> devices via MIB
+    from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
     from lilbee.providers.fleet.gpu_env import gpu_environ
 
-    cards = read_card_memory()
+    cards = read_cards()
     mask = gpu_environ().get(_CUDA_VISIBLE_VAR)
     if mask is not None:
         named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}
         wanted = [token.strip() for token in mask.split(",")]
         cards = [named[token] for token in itertools.takewhile(named.__contains__, wanted)]
+        if len({card.index for card in cards}) != len(cards):
+            return []
     return [
         FleetDevice("CUDA", index, card.name, card.total_bytes, card.free_bytes)
         for index, card in enumerate(cards)
@@ -609,7 +676,7 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     if backend == "CUDA":
         return {
             _CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(_CUDA_VISIBLE_VAR)),
-            _CUDA_ORDER_VAR: env.get(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER),
+            _CUDA_ORDER_VAR: _bus_order(env),
         }
     if backend in ("ROCm", "HIP"):
         return _amd_visible_env(indices, env)

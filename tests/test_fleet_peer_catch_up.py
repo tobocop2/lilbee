@@ -325,9 +325,7 @@ def test_one_bind_attempt_waits_within_one_bound_over_both_dirs(
     monkeypatch.setattr(
         prov_mod,
         "_placeable_demand",
-        lambda _engine, _engines: SimpleNamespace(
-            skipped_not_installed={}, skipped_unusable_ctx={}
-        ),
+        lambda _engine, _engines: SimpleNamespace(skipped_not_installed={}, refused_roles={}),
     )
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path / "slot")
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _dir: True)

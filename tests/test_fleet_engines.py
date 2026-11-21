@@ -59,9 +59,16 @@ def test_llama_pin_record_version_is_the_pinned_ref() -> None:
     assert ref is not None
     record = LLAMA.pin_record()
     assert record["version"] == ref.group(1)
-    assert {"engine", "version", "backend", "launch", "platforms", "memory", "licenses"} <= set(
-        record
-    )
+    assert {
+        "engine",
+        "version",
+        "backend",
+        "tool",
+        "launch",
+        "platforms",
+        "memory",
+        "licenses",
+    } <= set(record)
 
 
 def test_llama_role_spec_picks_rerank_embed_or_default() -> None:

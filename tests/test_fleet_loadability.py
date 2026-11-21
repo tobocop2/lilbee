@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -197,7 +199,7 @@ class TestTransientFailures:
 
 
 class TestNoParserAvailable:
-    """An install without the engine extra has no parser to ask."""
+    """An install with no engine yet has no parser to ask."""
 
     def test_a_missing_parser_is_not_a_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _unavailable() -> Path:
@@ -210,3 +212,101 @@ class TestNoParserAvailable:
             lambda *_a, **_kw: pytest.fail("ran a parser it could not resolve"),
         )
         assert assert_engine_can_load(_REPO, _FILE) is None
+
+
+_GATED = "failed to parse GGUF file: open http file: stat: do head request: status code 401"
+
+_FAKE_PARSER = """#!{python}
+import json
+import sys
+from pathlib import Path
+
+me = Path(sys.argv[0])
+plan = json.loads(me.with_name(me.name + ".json").read_text())
+calls = me.with_name(me.name + ".calls")
+with calls.open("a") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+n = len(calls.read_text().splitlines())
+if any(item not in sys.argv for item in plan["needs"]):
+    print(plan["refusal"])
+    sys.exit(1)
+out, code = plan["results"][min(n, len(plan["results"])) - 1]
+print(out)
+sys.exit(code)
+"""
+
+
+def _plant_parser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *results: tuple[str, int],
+    needs: tuple[str, ...] = (),
+) -> Path:
+    """A stand-in parser run as a real process; a run missing any of *needs* gets a 401."""
+    exe = tmp_path / "fake-gguf-parser"
+    exe.write_text(_FAKE_PARSER.format(python=sys.executable), encoding="utf-8")
+    exe.chmod(0o755)
+    exe.with_name(exe.name + ".json").write_text(
+        json.dumps({"results": results, "needs": needs, "refusal": _GATED}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loadability, "resolve_gguf_parser", lambda: exe)
+    return exe
+
+
+def _recorded_runs(exe: Path) -> list[list[str]]:
+    """The argv, minus the program, of every run the stand-in parser saw."""
+    calls = exe.with_name(exe.name + ".calls")
+    return [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in parser is a shebang script")
+class TestAgainstARealParserProcess:
+    """The probe starts a process; these checks see what that process was given and did."""
+
+    def test_a_gated_repo_is_checked_when_the_token_is_given(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The token rides along with the repo and file; it does not replace them."""
+        _plant_parser(
+            tmp_path,
+            monkeypatch,
+            (_TENSOR_FAILURE, 1),
+            needs=("--hf-repo", _REPO, "--hf-file", _FILE, "--token", "hf_secret"),
+        )
+        with pytest.raises(UnsupportedQuantError):
+            assert_engine_can_load(_REPO, _FILE, "hf_secret")
+
+    def test_a_gated_repo_is_not_a_verdict_without_the_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Control: the stand-in does refuse a caller that sends no token."""
+        _plant_parser(
+            tmp_path,
+            monkeypatch,
+            (_TENSOR_FAILURE, 1),
+            needs=("--hf-repo", _REPO, "--hf-file", _FILE, "--token", "hf_secret"),
+        )
+        assert assert_engine_can_load(_REPO, _FILE) is None
+
+    def test_a_refusal_comes_from_running_the_resolved_parser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The program the probe starts is the one that was resolved."""
+        exe = _plant_parser(tmp_path, monkeypatch, (_TENSOR_FAILURE, 1))
+        with pytest.raises(UnsupportedQuantError) as excinfo:
+            assert_engine_can_load(_REPO, _FILE)
+        assert excinfo.value.quant == "GGMLType(42)"
+        assert len(_recorded_runs(exe)) == 2
+
+    def test_a_failure_that_clears_on_the_second_run_loads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The second run is the same call as the first, so a read cut short recovers."""
+        truncated = "failed to parse GGUF file: read metadata kv 27: unexpected EOF"
+        exe = _plant_parser(tmp_path, monkeypatch, (truncated, 1), ("{}", 0))
+        assert assert_engine_can_load(_REPO, _FILE, "hf_secret") is None
+        first, second = _recorded_runs(exe)
+        assert first == second
+        assert first[first.index("--hf-repo") + 1] == _REPO
+        assert first[first.index("--token") + 1] == "hf_secret"

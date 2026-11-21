@@ -132,8 +132,8 @@ flowchart LR
     fallback are never pinned: they carry raw loader ordinals, so the engine is
     left to select for itself.
   - By environment (`devices.visible_env`): **CUDA** via `CUDA_VISIBLE_DEVICES`
-    with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the environment presets another
-    order), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
+    with `CUDA_DEVICE_ORDER=PCI_BUS_ID` (a preset order is replaced with a
+    warning), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
     (never both: ROCr filters first and HIP re-indexes within the survivors, so
     writing both double-filters). When the parent environment already restricts a
     visible-devices var (a pod preset like `CUDA_VISIBLE_DEVICES=2,3`), the probe's
@@ -219,6 +219,18 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
+- **A mistral.rs role on several cards**: the launch runs as equal tensor-parallel
+  shards and carries no layer flag. The card order is the order of
+  `CUDA_VISIBLE_DEVICES`. A launch that is not a split sets `MISTRALRS_NO_NCCL=1`: one
+  card, no card pinned, or the CPU target. The engine drops a layer map when
+  collectives are on, and the map it keeps with collectives off answered wrongly on
+  two cards. So the launch refuses an uneven ratio (every entry must be the same
+  number) and a model whose attention heads do not divide over the card count (the
+  GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
+  `num_key_value_heads` in `config.json`). The message names the model and the
+  llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
+  each card the weights by layer share.
+
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process
   (one per role, except co-tenant chat and vision which share one), and a reload
@@ -298,6 +310,15 @@ get the same apply/clear capability as the CLI and TUI. The `preview` operation 
 what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
+
+The `GET /api/placement` response lists the engine's devices in `gpus`. On a
+Vulkan build, a machine with GPUs from two vendors hides one vendor's GPU from the
+engine at launch, so `gpus` has no row for it and no pin can name it. The
+`hidden_gpus` field lists the vendor names of that hidden hardware, for example
+`["Intel"]`. The field is an empty list when nothing is hidden, and it stays
+empty when `VK_LOADER_DRIVERS_DISABLE` is set before launch, because the engine
+then lists every GPU. `lilbee placement show` prints the same fact as a note
+under the table.
 
 - **Resident tiers and the elastic ingest pool**: placement charges roles in the
   registry's `placement_rank` order. The pinned tier goes first: one embed server

@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from lilbee.app import engine_choice
 from lilbee.app.engine_choice import EngineBook
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
@@ -27,7 +28,9 @@ from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_ro
 from lilbee.providers.fleet.engines import llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
-from lilbee.providers.fleet.host_caps import CardMemory, HostCaps
+from lilbee.providers.fleet.gpu_backends import nvidia as nvidia_mod
+from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaCard
+from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from tests._fleet_engines import ROLE_FIELDS, Role, cards_of, prepare_host
@@ -112,7 +115,7 @@ def _install_pack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: EngineN
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
     publish(monkeypatch, name, sha)
     pin = ADAPTERS[name].pin_record()
-    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha)
+    lock = PinLock(pin["engine"], pin["version"], pin["backend"], {}, ("MIT",), sha, tool)
     EngineStore(engines_root(cfg.models_dir)).install_from_wheel(lock, wheel)
     return ADAPTERS[name].binary()
 
@@ -131,9 +134,11 @@ def _install_host(
     """*session* with the bundled llama-server and every store engine installed."""
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: session)
+    # The engine rule holds its own reference to the host read, so it needs the patch too.
+    monkeypatch.setattr(engine_choice, "session_host", lambda: session)
     # The real read builds the process-wide services, and those start a warm-up thread.
     monkeypatch.setattr(swap_config, "_concurrency_limit", lambda *_a, **_k: 4)
-    bundled = tmp_path / "lilbee_engine" / "bin" / _BUNDLED
+    bundled = tmp_path / "lilbee_engine_llama_cpp" / "bin" / _BUNDLED
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(llama, "resolve_llama_server", lambda: bundled)
@@ -346,16 +351,16 @@ class _Cards:
         self.driver_reads = 0
         self._backend = backend
         monkeypatch.setattr(llama, "probe_devices", self._llama_probe)
-        monkeypatch.setattr(devices, "read_card_memory", self._driver_read)
+        monkeypatch.setattr(nvidia_mod, "cards", self._driver_read)
 
     def _llama_probe(self, _binary: Path) -> DeviceProbe:
         self.llama_reads += 1
         card = FleetDevice(self._backend, 0, "gpu0", _TOTAL_IN_WHOLE_MIB, self.free)
         return DeviceProbe(devices=[card], output="", spoke_protocol=True)
 
-    def _driver_read(self) -> list[CardMemory]:
+    def _driver_read(self) -> list[NvidiaCard]:
         self.driver_reads += 1
-        return [CardMemory("GPU-a", "gpu0", _TOTAL, self.driver_free or self.free)]
+        return [NvidiaCard(0, "GPU-a", "gpu0", _TOTAL, self.driver_free or self.free)]
 
 
 def _plan_of_the_reload(
@@ -482,9 +487,9 @@ def test_a_smaller_card_at_the_same_index_never_reads_more_free_than_it_holds(
     cards = _Cards(monkeypatch)
     planning.capture_plan_probe({WorkerRole.CHAT: llama.LLAMA})
     monkeypatch.setattr(
-        devices,
-        "read_card_memory",
-        lambda: [CardMemory("GPU-b", "gpu0", _LOW, _LOW - (1 << 20))],
+        nvidia_mod,
+        "cards",
+        lambda: [NvidiaCard(0, "GPU-b", "gpu0", _LOW, _LOW - (1 << 20))],
     )
     probe = planning._current_plan_probe(mistral.MISTRAL)
     assert probe is not None
@@ -514,34 +519,77 @@ def test_a_card_read_starts_no_process(
 
     monkeypatch.setattr(subprocess, "run", _no_process)
     monkeypatch.setattr(subprocess, "Popen", _no_process)
-    monkeypatch.setattr(devices, "read_card_memory", lambda: [])
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: [])
     assert tei.TEI.discover_devices(host[EngineName.TEI]).devices == []
     assert mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices == []
 
 
 @pytest.mark.parametrize(
     ("mask", "indices"),
-    [("", []), ("1", [1]), ("GPU-a,0", [0, 0]), ("1,7,0", [1])],
+    [("", []), ("1", [1]), ("GPU-b,GPU-a", [1, 0]), ("1,7,0", [1])],
 )
 def test_the_card_read_follows_the_visible_devices_mask(
     mask: str, indices: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cards = [
-        CardMemory("GPU-a", "card0", _TOTAL, _FREE),
-        CardMemory("GPU-b", "card1", _TOTAL, _FREE),
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
     ]
-    monkeypatch.setattr(devices, "read_card_memory", lambda: cards)
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     found = devices.visible_nvidia_cards()
     assert [d.name for d in found] == [f"card{i}" for i in indices]
     assert [d.index for d in found] == list(range(len(indices)))
 
 
+@pytest.mark.parametrize("mask", ["1,1", "0,1,0", "GPU-b,GPU-b", "1,GPU-b", "GPU-a,1,0"])
+def test_a_mask_that_repeats_a_card_lists_no_card(
+    mask: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated entry has no documented rule, so the list is unknown, as a failed read is."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    assert devices.visible_nvidia_cards() == []
+
+
+def test_a_repeat_after_the_first_unnamed_entry_is_never_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mask stops at the first entry that names no card, so a later repeat does not count."""
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,9,1")
+    assert [d.name for d in devices.visible_nvidia_cards()] == ["card1"]
+
+
+def test_both_card_engines_see_no_card_for_a_repeated_mask(
+    host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cards = [
+        NvidiaCard(0, "GPU-a", "card0", _TOTAL, _FREE),
+        NvidiaCard(1, "GPU-b", "card1", _TOTAL, _FREE),
+    ]
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: cards)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,1")
+    assert tei.TEI.discover_devices(host[EngineName.TEI]).devices == []
+    assert mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices == []
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert len(tei.TEI.discover_devices(host[EngineName.TEI]).devices) == 2
+    assert len(mistral.MISTRAL.discover_devices(host[EngineName.MISTRAL]).devices) == 2
+
+
 def test_a_cpu_tei_build_reads_no_card(
     cpu_host: dict[EngineName, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     called: list[int] = []
-    monkeypatch.setattr(devices, "read_card_memory", lambda: called.append(1) or [])
+    monkeypatch.setattr(nvidia_mod, "cards", lambda: called.append(1) or [])
     assert tei.TEI.discover_devices(cpu_host[EngineName.TEI]).devices == []
     assert not called
 

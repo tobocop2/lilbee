@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import threading
 from collections.abc import Iterator
@@ -15,7 +16,7 @@ from lilbee.providers.factory import sdk_library
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest
 
-pytest.importorskip(sdk_library().module)
+importlib.import_module(sdk_library().module)
 
 _CHAT_BODY = {
     "model": "m",

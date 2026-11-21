@@ -38,7 +38,10 @@ from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
     classify_provider_error,
 )
-from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, images_dropped_headers
+from lilbee.server.chat_dispatch.canonical import (
+    CanonicalChatRequest,
+    images_dropped_response_headers,
+)
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     ChatSlotGuard,
@@ -117,7 +120,7 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
             ),
             media_type=SSE_MEDIA_TYPE,
             background=BackgroundTask(guard.release),
-            headers=images_dropped_headers(req),
+            headers=images_dropped_response_headers(req),
         )
     return await _run_non_stream(
         req, guard, canonical_model=resolved_model, mode=mode, cap_chars=cap_chars
@@ -201,7 +204,9 @@ async def _run_non_stream(
         resp, response_id=_response_id(), mode=mode
     )
     return Response(
-        body.model_dump(), media_type="application/json", headers=images_dropped_headers(req)
+        body.model_dump(),
+        media_type="application/json",
+        headers=images_dropped_response_headers(req),
     )
 
 

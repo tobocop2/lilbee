@@ -44,7 +44,7 @@ def _stub_repo_listing(monkeypatch: pytest.MonkeyPatch) -> None:
     choose, and the pull carries on and lets the stubbed download decide the
     outcome, which is what each case is actually asserting.
     """
-    monkeypatch.setattr("lilbee.catalog.download._repo_sibling_files", lambda _repo: [])
+    monkeypatch.setattr("lilbee.catalog.download._repo_sibling_files", lambda _repo, **_kw: [])
 
 
 def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:

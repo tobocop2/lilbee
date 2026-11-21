@@ -135,3 +135,22 @@ class TestClassifyProviderError:
 
     def test_unrelated_exception_returns_none(self) -> None:
         assert classify_provider_error(ValueError("nope")) is None
+
+
+def test_an_engine_the_cpu_cannot_run_is_a_503_with_no_engine_text() -> None:
+    error = ProviderError("Xeon at 127.0.0.1", kind=ProviderErrorKind.CPU_UNSUPPORTED)
+    result = classify_provider_error(error)
+    assert result is not None
+    assert result.http_status == 503
+    assert "127.0.0.1" not in result.message
+
+
+def test_an_engine_missing_a_library_is_a_503_with_no_engine_text() -> None:
+    error = ProviderError(
+        "The engine needs the library libfoo.so.3 at /opt/engine",
+        kind=ProviderErrorKind.MISSING_LIBRARY,
+    )
+    result = classify_provider_error(error)
+    assert result is not None
+    assert result.http_status == 503
+    assert "/opt/engine" not in result.message

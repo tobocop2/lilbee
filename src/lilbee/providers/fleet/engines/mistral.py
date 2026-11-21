@@ -2,40 +2,60 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from lilbee.catalog.types import ModelFormat
-from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
-from lilbee.providers.fleet.engine_manifest import pack_digest
-from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
     EngineName,
     LaunchRequest,
     RequestProfile,
 )
-from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, estimate_memory
+from lilbee.providers.gguf_meta import read_gguf_metadata
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
+_MIN_SPLIT_CARDS = 2
+# With two or more visible cards the engine starts tensor parallelism unless this is "1".
+_NO_COLLECTIVE_ENV = "MISTRALRS_NO_NCCL"
+_CONFIG = "config.json"
+_LAYERS_KEY = "num_hidden_layers"
+_HEADS_KEY = "num_attention_heads"
+_KV_HEADS_KEY = "num_key_value_heads"
+_TEXT_CONFIG_KEY = "text_config"
+_GGUF_LAYERS_KEY = "block_count"
+_GGUF_HEADS_KEY = "head_count"
+_GGUF_KV_HEADS_KEY = "head_count_kv"
+_SPLIT_FIX = f"Use the {EngineName.LLAMA.value} engine for this role, or a smaller model."
 _VERSION = "0.9.5"
 _TOOL = "mistralrs"
 _HOST = "127.0.0.1"
 _LICENCES = ["MIT"]
+# The expression a CUDA pack declares: it bundles NVIDIA runtime libraries.
+_CUDA_LICENCES = ["MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"]
 _CPU = "cpu"
 # The one id the engine serves a model under; it answers 400 to any other.
 _SERVED_NAME = "default"
 _GGUF_SUFFIX = ".gguf"
+# The model subcommand each role names; the device flags go after it.
+_SUBCOMMAND = {
+    WorkerRole.EMBED: "embedding",
+    WorkerRole.VISION: "multimodal",
+}
+_TEXT = "text"
 _METAL = "metal"
 _CUDA_DRIVER_FLOOR = (12, 8)
 # The compute capabilities the release publishes a CUDA 12.8 archive for.
@@ -100,6 +120,80 @@ def _linux_pick(host: HostCaps) -> BuildPick:
     return BuildPick(f"cuda128-sm{compute[0]}{compute[1]}", "")
 
 
+def _positive_int(value: object) -> int | None:
+    """*value* as a whole number above zero, or ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        return None
+    try:
+        count = int(value)
+    except ValueError:
+        return None
+    return count if count > 0 else None
+
+
+def _config_sections(path: Path) -> list[Mapping[str, Any]]:
+    """The top level and the text section of a model folder's config, as far as they are objects."""
+    try:
+        config = json.loads((path / _CONFIG).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(config, dict):
+        return []
+    return [s for s in (config, config.get(_TEXT_CONFIG_KEY)) if isinstance(s, dict)]
+
+
+def _layer_count(path: Path) -> int | None:
+    """The layer count a GGUF file or a model folder declares, or ``None``."""
+    if path.suffix.lower() == _GGUF_SUFFIX:
+        meta = read_gguf_metadata(path)
+        return _positive_int(meta.get(_GGUF_LAYERS_KEY)) if meta else None
+    for section in _config_sections(path):
+        count = _positive_int(section.get(_LAYERS_KEY))
+        if count is not None:
+            return count
+    return None
+
+
+def _heads_in(section: Mapping[str, Any], heads_key: str, kv_key: str) -> tuple[int, int] | None:
+    """Query and key-value head counts of *section*; an absent key-value count equals the first."""
+    heads = _positive_int(section.get(heads_key))
+    if heads is None:
+        return None
+    kv_heads = section.get(kv_key)
+    return heads, heads if kv_heads is None else (_positive_int(kv_heads) or 0)
+
+
+def _head_counts(path: Path) -> tuple[int, int] | None:
+    """Query and key-value head counts a GGUF file or a model folder declares, or ``None``."""
+    if path.suffix.lower() == _GGUF_SUFFIX:
+        meta = read_gguf_metadata(path)
+        return _heads_in(meta, _GGUF_HEADS_KEY, _GGUF_KV_HEADS_KEY) if meta else None
+    for section in _config_sections(path):
+        counts = _heads_in(section, _HEADS_KEY, _KV_HEADS_KEY)
+        if counts is not None:
+            return counts
+    return None
+
+
+def _heads_divide(heads: int, kv_heads: int, cards: int) -> bool:
+    """Whether the heads shard over *cards*: queries divide, key-value heads divide or repeat."""
+    if heads % cards or kv_heads <= 0:
+        return False
+    return kv_heads % cards == 0 if cards <= kv_heads else cards % kv_heads == 0
+
+
+def _apportion(layers: int, ratio: tuple[int, ...]) -> tuple[int, ...] | None:
+    """Layers per card by largest remainder; ``None`` when a card gets none."""
+    total = sum(ratio)
+    if total <= 0:
+        return None
+    shares = [layers * part // total for part in ratio]
+    by_remainder = sorted(range(len(ratio)), key=lambda i: (-(layers * ratio[i] % total), i))
+    for i in by_remainder[: layers - sum(shares)]:
+        shares[i] += 1
+    return tuple(shares) if min(shares) > 0 else None
+
+
 class MistralAdapter:
     """mistral.rs behind the engine contract; it serves chat, embed and vision, never rerank."""
 
@@ -116,9 +210,7 @@ class MistralAdapter:
 
     def host_gate(self, host: HostCaps) -> HostGate:
         if host.os is None or host.arch is None:
-            return HostGate(
-                True, "The OS or CPU architecture of this host could not be read.", known=False
-            )
+            return PLATFORM_UNREAD
         if (host.os, host.arch) in _SUPPORTED_HOSTS:
             reason = self._archive(host, host.os).reason
             return HostGate(True, reason) if reason else PASS
@@ -144,26 +236,24 @@ class MistralAdapter:
 
         host = session_host()
         backend = self.pick_build(host).backend or _CPU
+        platforms = pack_platforms(self.name.value, _VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": pack_digest(self.name.value, host, backend),
+            "sha256": pack_digest(self.name.value, _VERSION, host, backend),
+            "tool": _TOOL,
             "launch": [_TOOL, "serve"],
-            "platforms": {},
+            "platforms": platforms,
             "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
-            "licenses": _LICENCES,
+            "licenses": _LICENCES if backend == _CPU else _CUDA_LICENCES,
         }
 
     def binary(self) -> Path:
-        from lilbee.providers.fleet.engines.choice import NoPublishedPackError, pin_lock
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engines.choice import store_tool
 
-        store = EngineStore(engines_root(cfg.models_dir))
-        try:
-            build = store.complete_build(pin_lock(self.pin_record()))
-        except NoPublishedPackError:
-            build = None
-        tool = next(iter(build.glob(f"*/bin/{_TOOL}*")), None) if build else None
+        tool = store_tool(self.pin_record(), _TOOL, session_host())
         if tool is None:
             raise ProviderError(
                 "The mistral.rs engine is not installed. Run lilbee engine install mistral.rs."
@@ -181,30 +271,69 @@ class MistralAdapter:
         return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The serve command; the engine places the model itself, so layers and context stay unset.
+        """The serve command; context stays unset, and an equal split over cards adds no flag.
 
-        The backend of the build decides the device flags: a CPU build gets ``--cpu``, and
+        A cpu target gets ``--cpu`` on any build. Otherwise the backend of the build
+        decides the device flags: a CPU build gets ``--cpu``, and
         any GPU build turns paged attention off, because its cache takes the whole card
         and the first chat then answers 503. The port flag
-        belongs to ``serve``, so it sits before the model subcommand. A GGUF file
+        belongs to ``serve``, so it sits before the model subcommand. The device flags
+        belong to the subcommand: before it the engine ignores ``--cpu`` and takes the
+        whole card (20536 MiB measured), so every role names its subcommand. A GGUF file
         goes by ``-f`` with its folder as ``-m``; how the engine takes a folder with
         several quantizations is open for slice 8.
         """
         argv = [str(request.binary), "serve", "--host", _HOST, "--port", PORT_SLOT]
-        if spec.role is WorkerRole.EMBED:
-            argv.append("embedding")
-        argv += self._device_flags()
+        argv.append(_SUBCOMMAND.get(spec.role, _TEXT))
+        argv += self._device_flags(request.target)
+        self._check_split(request)
         path = request.model_path
         if path.suffix.lower() == _GGUF_SUFFIX:
             return [*argv, "-m", str(path.parent), "-f", path.name]
         return [*argv, "-m", str(path)]
 
-    def _device_flags(self) -> list[str]:
+    def _device_flags(self, target: RoleTarget) -> list[str]:
+        from lilbee.catalog.runnable import session_host
+
+        if target is RoleTarget.CPU or self.pick_build(session_host()).backend in (None, _CPU):
+            return ["--cpu"]
+        return ["--paged-attn", "off"]
+
+    def _check_split(self, request: LaunchRequest) -> None:
+        """Refuse a split over several cards unless the engine can run it as equal shards."""
+        ratio = request.tensor_split
+        if request.target is RoleTarget.CPU or len(ratio) < _MIN_SPLIT_CARDS:
+            return
+        from lilbee.catalog.runnable import session_host
+
+        name = request.model_path.name
+        cards = len(ratio)
+        backend = self.pick_build(session_host()).backend
+        if backend in (None, _CPU, _METAL):
+            label = "Metal" if backend == _METAL else "CPU"
+            raise ProviderError(
+                f"mistral.rs cannot split {name} across {cards} cards on the {label} build. "
+                f"{_SPLIT_FIX}"
+            )
+        if len(set(ratio)) != 1:
+            raise ProviderError(
+                f"mistral.rs splits {name} only evenly across cards. "
+                f"Use the {EngineName.LLAMA.value} engine for an uneven split."
+            )
+        heads = _head_counts(request.model_path)
+        if heads is None or not _heads_divide(*heads, cards):
+            raise ProviderError(
+                f"mistral.rs cannot split {name} across {cards} cards: "
+                f"the attention heads of the model do not divide over {cards} cards, "
+                f"or the model does not list its heads. {_SPLIT_FIX}"
+            )
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return ["--cpu"]
-        return ["--paged-attn", "off"]
+            return frozenset({RoleTarget.CPU})
+        return frozenset({RoleTarget.CPU, RoleTarget.GPU})
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         from lilbee.catalog.runnable import session_host
@@ -214,6 +343,22 @@ class MistralAdapter:
         return DeviceProbe(devices=visible_nvidia_cards(), output="")
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        whole = self._whole_estimate(request)
+        if len(request.tensor_split) < _MIN_SPLIT_CARDS:
+            return whole
+        layers = _layer_count(request.model_path)
+        if layers is None:
+            return whole
+        shares = _apportion(layers, request.tensor_split)
+        if shares is None:
+            return whole
+        per_device = tuple(whole.device_bytes * count // layers for count in shares)
+        return replace(whole, per_device=per_device)
+
+    @staticmethod
+    def _whole_estimate(request: MemoryRequest) -> MemoryEstimate:
+        if request.model_path.is_dir():
+            return estimate_memory(ModelFormat.SAFETENSORS, request)
         try:
             weights = request.model_path.stat().st_size
         except OSError:
@@ -240,6 +385,12 @@ class MistralAdapter:
 
     def runtime_env(self) -> Mapping[str, str]:
         return {}
+
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
+        """Tensor parallelism needs the collective library; any other launch turns it off."""
+        if target is not RoleTarget.CPU and cards >= _MIN_SPLIT_CARDS:
+            return {}
+        return {_NO_COLLECTIVE_ENV: "1"}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"useModelName": _SERVED_NAME}

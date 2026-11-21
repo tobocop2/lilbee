@@ -15,7 +15,7 @@ _EXE = ".exe" if sys.platform == "win32" else ""
 
 def get_engine_pin() -> str:
     """Identity of this wheel's engine build (the pinned source versions)."""
-    from lilbee_engine.pins import ENGINE_PIN
+    from lilbee_engine_llama_cpp.pins import ENGINE_PIN
 
     return ENGINE_PIN
 

@@ -22,6 +22,8 @@ runner = CliRunner()
 def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    # The fx build installed here is named by no shipped pin; the startup prune would remove it.
+    monkeypatch.setattr("lilbee.providers.fleet.engine_store.prune_engines", lambda _models: [])
     return tmp_path / "models"
 
 
@@ -34,7 +36,7 @@ def install(models_dir: Path) -> None:
         archive.writestr("lilbee_engine_fx-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
     EngineStore(engines_root(models_dir)).install_from_wheel(
-        PinLock("fx", "1", "cpu", {}, ("MIT",), sha), wheel
+        PinLock("fx", "1", "cpu", {}, ("MIT",), sha, "server"), wheel
     )
 
 
@@ -49,7 +51,7 @@ def test_list_shows_each_build_as_json(models_dir: Path) -> None:
     result = runner.invoke(app, ["--json", "engine", "list"])
     assert result.exit_code == 0
     assert json.loads(result.output)["builds"] == [
-        {"engine": "fx", "version": "1", "backend": "cpu"}
+        {"engine": "fx", "version": "1", "backend": "cpu", "not_run_on": []}
     ]
 
 

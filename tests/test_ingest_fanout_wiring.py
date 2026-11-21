@@ -10,6 +10,7 @@ import threading
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.data import offload
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.ingest.discovery import corpus_has_at_least, discover_files
@@ -23,11 +24,12 @@ from tests.test_ingest_fanout import _CANCEL_BOUND_S, FakeContext
 
 @pytest.fixture(autouse=True)
 def restored_environ():
-    """The fan-out gate applies the fleet's GPU env; siblings must not inherit it."""
+    """The fan-out gate sets the GPU env and fills the worker cache; siblings inherit neither."""
     snapshot = dict(os.environ)
     yield
     os.environ.clear()
     os.environ.update(snapshot)
+    offload.max_workers.cache_clear()
 
 
 @pytest.fixture()

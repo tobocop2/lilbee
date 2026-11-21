@@ -44,7 +44,8 @@ def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.Monke
             call()
     with pytest.raises(PlacementError, match="stop after the engine is chosen"):
         placement.set_placement(None)
-    assert [set(engines.values()) for engines in seen] == [{LLAMA}] * 3
+    # get_placement plans the saved spec, then the automatic plan when the spec is refused.
+    assert [set(engines.values()) for engines in seen] == [{LLAMA}] * 4
 
 
 def test_launcher_sizes_the_chat_window_with_the_selected_engine(
