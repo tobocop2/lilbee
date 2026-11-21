@@ -655,9 +655,67 @@ def test_a_timeout_restart_whose_plan_fails_gives_the_server_back(
     _join_fleet_threads()
 
     assert provider._clients.get(WorkerRole.CHAT) == [client]
+    assert client not in provider._retiring_clients
+    assert client._on_idle is None
     assert client.restart_message is None
     assert provider._swap_for(WorkerRole.CHAT) is old
     assert not old.engine.stopped.is_set()
+
+
+def test_a_cancel_during_a_timeout_drain_ends_a_stream_on_the_stuck_server_at_once(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _LONG_DRAIN_S)
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    try:
+        assert old.engine.started.wait(_JOIN_S)
+        _time_out_a_chat(provider)
+        provider.cancel_inference()
+        with pytest.raises(ProviderError) as caught:
+            list(stream)
+        draining = not old.engine.stopped.is_set()
+    finally:
+        old.engine.release.set()
+        stream.close()
+        _join_fleet_threads()
+
+    assert draining
+    assert isinstance(caught.value, StreamInterruptedError)
+    assert not str(caught.value).startswith(_RESTARTED)
+
+
+def test_a_shutdown_during_a_timeout_drain_closes_the_stuck_clients(
+    mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pass outruns the shutdown's wait, so only the shutdown can close the stuck clients."""
+    provider, _swaps = mlx_engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    plan_may_run = threading.Event()
+    real_plan = planning_mod.plan_all_launches
+
+    def held_plan(**kwargs: object) -> object:
+        plan_may_run.wait(_JOIN_S)
+        return real_plan(**kwargs)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", held_plan)
+    old = provider._swap_for(WorkerRole.CHAT)
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    stuck = _time_out_a_chat(provider)
+    stopper = threading.Thread(target=provider.shutdown, daemon=True)
+    try:
+        stopper.start()
+        closed = poll_until(lambda: stuck._http.is_closed)
+    finally:
+        plan_may_run.set()
+        old.engine.release.set()
+        stopper.join(_JOIN_S)
+        caller.join(_JOIN_S)
+        _join_fleet_threads()
+
+    assert closed
 
 
 def test_a_late_timeout_from_a_replaced_server_restarts_nothing(
