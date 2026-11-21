@@ -936,6 +936,27 @@ async def test_key_e_in_model_info_saves_the_pick_for_that_model() -> None:
         assert any(t == f"Model {GGUF_REF} uses engine openvino." for t in _toasts(app))
 
 
+async def test_model_info_saves_the_pick_under_the_canonical_ref_of_a_gguf_suffixed_name() -> None:
+    from lilbee.catalog.refs import canonical_ref
+    from lilbee.cli.tui.screens.model_picker import _browse_catalog_row
+
+    suffixed = GGUF_REF + "#gguf"
+    assert canonical_ref(suffixed) == GGUF_REF
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        row = _browse_catalog_row()
+        row.ref = suffixed  # type: ignore[misc]
+        row.installed = True  # type: ignore[misc]
+        await app.push_screen(ModelInfoModal(row))
+        await pilot.pause()
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        await pilot.press("down", "down", "enter")
+        assert await wait_until(pilot, lambda: bool(_stored()))
+        assert _stored() == {canonical_ref(suffixed): "openvino"}
+
+
 async def test_an_engine_that_is_not_installed_is_saved_only_after_the_confirm_and_install() -> (
     None
 ):
