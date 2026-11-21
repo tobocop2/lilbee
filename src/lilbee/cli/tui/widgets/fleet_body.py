@@ -175,7 +175,7 @@ def _engine_cell(edit: _RoleEdit) -> Content:
     if not edit.model.strip():
         return Content.styled(msg.FLEET_ENGINE_UNSET, "$text-muted")
     if not edit.engine:
-        return Content.styled(msg.FLEET_ENGINE_NONE, "$warning")
+        return Content.styled(msg.ENGINE_NEEDS, "$warning")
     return engine_mark(edit.engine)
 
 
