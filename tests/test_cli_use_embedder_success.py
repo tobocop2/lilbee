@@ -25,6 +25,7 @@ from lilbee.cli.commands._shared import REBUILD_HINT
 from lilbee.core.config import cfg
 from lilbee.data.store import IndexMismatch
 from lilbee.runtime.console import PlainConsole
+from tests._cli_text import plain_cli_text
 from tests.conftest import make_mock_services
 
 runner = CliRunner()
@@ -46,10 +47,6 @@ _MISMATCH = IndexMismatch(
 _CYAN = "\x1b[36m"
 _YELLOW = "\x1b[33m"
 _RED = "\x1b[31m"
-
-
-def _flat(output: str) -> str:
-    return " ".join(output.split())
 
 
 @pytest.fixture(autouse=True)
@@ -212,7 +209,7 @@ class TestSavedSetting:
         folder.mkdir()
         result = runner.invoke(app, ["use-embedder", _REF, "--global", "--data-dir", str(folder)])
         assert result.exit_code != 0
-        assert "Cannot use --global with --data-dir" in _flat(result.output)
+        assert "Cannot use --global with --data-dir" in plain_cli_text(result.output)
         assert not (folder / "config.toml").exists()
         assert cfg.embedding_model == _OTHER_REF
 

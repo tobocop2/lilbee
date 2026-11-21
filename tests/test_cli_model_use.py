@@ -13,6 +13,7 @@ from lilbee.cli import app
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.modelhub.role_validator import TaskMismatchError
+from tests._cli_text import plain_cli_text as _flat
 
 runner = CliRunner()
 
@@ -27,11 +28,6 @@ _VALIDATE = "lilbee.server.handlers.models.validate_model_task_assignment"
 
 def _use(role: str, ref: str, *flags: str):
     return runner.invoke(app, [*flags, "model", "use", role, ref])
-
-
-def _flat(output: str) -> str:
-    """The output with line wraps and panel borders removed, so a phrase matches at any width."""
-    return " ".join(output.replace("│", " ").split())
 
 
 class TestModelUseSetsEachRole:
