@@ -672,6 +672,10 @@ on the CPU, an Intel GPU or an Intel NPU. It is the one engine that offers embed
 the Intel NPU. lilbee offers the NPU target only on a computer with an Intel NPU. lilbee has no
 recorded run of OpenVINO Model Server on any device.
 
+mlx (mlx-lm) needs Apple Silicon and macOS 14 or newer. It serves chat only: embed and
+rerank stay on llama.cpp. lilbee loads `#mlx` models with it and does not offer it on an
+older macOS. No pack of mlx is published yet.
+
 **Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
