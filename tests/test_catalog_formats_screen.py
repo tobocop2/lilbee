@@ -268,9 +268,10 @@ async def test_detail_pane_lists_formats_only_when_there_is_a_choice(
         await pilot.pause()
         drawer = pilot.app.query_one(CatalogDetailDrawer)
         drawer.update_for_row(_detail_row(formats))
+        section = drawer.query_one("#catalog-detail-formats", Static)
         compat = drawer.query_one("#catalog-detail-compat", Static)
         await wait_until(pilot, lambda: bool(str(compat.render()).strip()))
-        assert ("Formats: gguf, safetensors" in str(compat.render())) is shown
+        assert ("gguf" in str(section.render()) and "safetensors" in str(section.render())) is shown
 
 
 async def test_search_result_hides_count_in_the_same_note(monkeypatch: pytest.MonkeyPatch) -> None:

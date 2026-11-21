@@ -412,7 +412,9 @@ CATALOG_GRID_LOAD_MORE = "{count} loaded · keep scrolling for more"
 CATALOG_GRID_ALL_LOADED = "All {count} models loaded"
 CATALOG_GRID_CUT_SHORT = "{count} models loaded · the listing stops here, search to narrow it"
 CATALOG_LIST_COUNT = "{count} models"
-CATALOG_FORMAT_CHOICE = "Formats: {formats}"
+CATALOG_FORMATS_HEADING = "Formats"
+CATALOG_FORMAT_NO_ENGINE = "no engine"
+CATALOG_FORMAT_DOWNLOAD = "{size} download"
 CATALOG_HIDDEN_NOTE = " · {summary}"
 FORMAT_PICKER_TITLE = "Install {name} as"
 FORMAT_PICKER_HINT = "↑↓ select   Enter install   Esc close"
@@ -698,7 +700,8 @@ COMPAT_PILL_UNSUPPORTED = "unsupported"
 COMPAT_PILL_UNKNOWN = "untested"
 
 # Architecture compatibility copy for the catalog detail view + confirm modal.
-COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your llama.cpp build."
+COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your {engine} build."
+COMPAT_DETAIL_SENTENCE_SUPPORTED_NO_ENGINE = "Supported by this lilbee build."
 COMPAT_DETAIL_SENTENCE_UNSUPPORTED = (
     "Architecture {arch} is not in the supported set. Pull may fail at load."
 )
