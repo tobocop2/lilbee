@@ -493,6 +493,10 @@ def _any_in_use(
     return any(in_use(*reading) for reading in readings)
 
 
+def _raise_walk_error(exc: OSError) -> None:
+    raise exc
+
+
 def _read_record(directory: Path) -> InstalledEngine | None:
     """The record of *directory* when it is a complete build, else None."""
     try:
@@ -526,7 +530,25 @@ class EngineStore:
         self.root = root
 
     def build_dir(self, lock: PinLock) -> Path:
-        return self.root / lock.engine / f"{lock.version}-{lock.backend}"
+        return self._dir(lock.engine, lock.version, lock.backend)
+
+    def _dir(self, engine: str, version: str, backend: str) -> Path:
+        return self.root / engine / f"{version}-{backend}"
+
+    def build_size(self, engine: str, version: str, backend: str) -> int | None:
+        """The bytes on disk of one build folder; None when the folder cannot be read."""
+        total = 0
+        try:
+            for folder, _dirs, files in os.walk(
+                self._dir(engine, version, backend), onerror=_raise_walk_error
+            ):
+                total += sum(os.lstat(os.path.join(folder, name)).st_size for name in files)
+        except OSError as exc:
+            log.warning(
+                "The size of engine %s %s (%s) is unknown: %s", engine, version, backend, exc
+            )
+            return None
+        return total
 
     def installed(self) -> list[InstalledEngine]:
         """Every complete build; a directory without a valid record is not listed."""
