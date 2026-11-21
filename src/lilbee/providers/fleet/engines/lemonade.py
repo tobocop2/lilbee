@@ -63,10 +63,11 @@ _LABEL_EMBEDDINGS = "embeddings"
 _TMP_SUFFIX = ".tmp"
 _INSTALL_DOCS_URL = "https://lemonade-server.ai/docs/guide/install/"
 _INSTALL_HINT = (
-    f"lilbee has no Lemonade pack. Install Lemonade from {_INSTALL_DOCS_URL} "
-    "or unpack the lemonade-embeddable "
-    f"archive from https://github.com/lemonade-sdk/lemonade/releases/tag/v{_VERSION}, "
-    f"then put the folder with {_TOOL} on PATH."
+    "lilbee has no Lemonade pack. Unpack the lemonade-embeddable archive from "
+    f"https://github.com/lemonade-sdk/lemonade/releases/tag/v{_VERSION}, "
+    f"then put the folder with {_TOOL} on PATH. "
+    f"On Linux, the Lemonade packages from {_INSTALL_DOCS_URL} also install {_TOOL}. "
+    f"On Windows, use the archive: the Windows installer has no {_TOOL}."
 )
 
 _PROFILE = RequestProfile(
