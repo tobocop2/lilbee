@@ -22,7 +22,7 @@ from lilbee.cli.tui.engine_commands import (
 from lilbee.cli.tui.engine_mark import format_size
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 
 if TYPE_CHECKING:
@@ -126,7 +126,7 @@ def _confirm_embed(
     after: Callable[[], object] | None,
     role: WorkerRole | None,
 ) -> None:
-    dialog = CancelFirstConfirmDialog(
+    dialog = ConfirmDialog(
         msg.ENGINE_EMBED_CONFIRM_TITLE,
         msg.ENGINE_EMBED_CONFIRM_MESSAGE.format(library=asked.library, documents=asked.documents),
     )

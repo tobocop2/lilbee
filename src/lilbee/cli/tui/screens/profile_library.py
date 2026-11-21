@@ -425,7 +425,6 @@ class ProfileLibrary(ModalScreen[None]):
                 msg.PROFILE_DELETE_MESSAGE.format(
                     path=shorten_middle(str(owned.path), _DELETE_PATH_WIDTH)
                 ),
-                focus_no=True,
             )
             self.app.push_screen(dialog, _on_answer)
 

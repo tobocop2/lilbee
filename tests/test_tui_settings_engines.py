@@ -26,7 +26,7 @@ from lilbee.cli.tui.screens.settings_engines import (
     EnginesPane,
 )
 from lilbee.cli.tui.task_queue import TaskStatus
-from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest
@@ -330,7 +330,7 @@ async def test_a_preference_that_can_orphan_the_vectors_asks_and_stores_on_yes(
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_engines(app, pilot)
         _preferred(app).value = "ik_llama.cpp"
-        text = await _dialog_message(app, pilot, CancelFirstConfirmDialog)
+        text = await _dialog_message(app, pilot, ConfirmDialog)
         assert "Library lib holds 7 documents." in text
         await pilot.press("y")
         assert await wait_until(pilot, lambda: prefer.call_count == 2)
@@ -346,7 +346,7 @@ async def test_declining_the_embed_confirm_keeps_the_preference(
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_engines(app, pilot)
         _preferred(app).value = "ik_llama.cpp"
-        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
         await pilot.press("n")
         assert await wait_until(pilot, lambda: "The engine is unchanged." in _toasts())
         assert prefer.call_count == 1
@@ -366,7 +366,7 @@ async def test_removing_an_engine_in_use_names_the_roles_and_removes_on_yes(
         table = await _open_engines(app, pilot)
         service.rows = [_LLAMA, _TEI, _OPENVINO]
         await _select_row(pilot, table, "ik_llama.cpp")
-        text = await _dialog_message(app, pilot, CancelFirstConfirmDialog)
+        text = await _dialog_message(app, pilot, ConfirmDialog)
         assert text == "ik_llama.cpp 1.2.3 (cuda) is used by chat, rerank. Remove it anyway?"
         remove.assert_not_called()
         await pilot.press("y")
@@ -405,7 +405,6 @@ async def test_removing_an_unused_engine_asks_without_naming_roles(
         table = await _open_engines(app, pilot)
         await _select_row(pilot, table, "tei")
         text = await _dialog_message(app, pilot, ConfirmDialog)
-        assert not isinstance(app.screen, CancelFirstConfirmDialog)
         assert text == "Remove tei 0.9 (cpu) from this computer?"
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)

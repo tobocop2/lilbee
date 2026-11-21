@@ -10,7 +10,7 @@ from textual.widgets import Static
 from lilbee.app import engine_service
 from lilbee.cli.tui.engine_commands import EngineCommandResult
 from lilbee.cli.tui.screens import settings_engines
-from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from tests._async_wait import wait_until
 from tests.test_tui_settings_engines import (  # noqa: F401
     _config,
@@ -30,6 +30,15 @@ def _asks_then_removes(engine: str, version: str, backend: str, confirmed: bool 
     return "tei 0.9 (cpu)"
 
 
+async def _embed_question_open(app: _SettingsApp, pilot) -> bool:
+    """Wait for the second dialog, not the removal dialog that is still closing."""
+    return await wait_until(
+        pilot,
+        lambda: isinstance(app.screen, ConfirmDialog)
+        and "Continue?" in str(app.screen.query_one("#confirm-message", Static).render()),
+    )
+
+
 async def test_the_tab_asks_again_when_the_removal_changes_the_embedding_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -41,7 +50,7 @@ async def test_the_tab_asks_again_when_the_removal_changes_the_embedding_engine(
         await _select_row(pilot, table, "tei")
         assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
         await pilot.press("y")
-        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+        assert await _embed_question_open(app, pilot)
         text = str(app.screen.query_one("#confirm-message", Static).render())
         assert text == (
             "Library lib holds 7 documents. tei 0.9 (cpu) runs the embedding model. "
@@ -65,7 +74,7 @@ async def test_declining_the_embed_question_keeps_the_build(
         await _select_row(pilot, table, "tei")
         assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
         await pilot.press("y")
-        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+        assert await _embed_question_open(app, pilot)
         await pilot.press("n")
         assert await wait_until(pilot, lambda: "The engine is unchanged." in _toasts())
         assert remove.call_count == 1
@@ -84,7 +93,7 @@ async def test_declining_the_embed_question_reports_a_failed_result(
         await _select_row(pilot, table, "tei")
         assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
         await pilot.press("y")
-        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+        assert await _embed_question_open(app, pilot)
         await pilot.press("n")
         assert await wait_until(pilot, lambda: bool(shown))
     assert [(r.ok, r.text) for r in shown] == [(False, "The engine is unchanged.")]
