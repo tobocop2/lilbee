@@ -1004,6 +1004,15 @@ def _reload_timeout_message(role: WorkerRole) -> str:
     )
 
 
+def _failed_start_message(role: WorkerRole, cause: str) -> str:
+    """User-facing reason *role* has no server after its restart did not start it again."""
+    return (
+        f"The {role.value} model server was restarted and did not start again: {cause}\n"
+        "Send your request again to try the start once more. If it fails again, "
+        "read the engine log."
+    )
+
+
 class _EngineDemand(NamedTuple):
     """What this process needs an engine to serve: pairs plus its chat window."""
 
@@ -1316,6 +1325,9 @@ class FleetProvider:
         # The roles of the stuck servers that the running pass restarts; a request
         # that gives up waiting for one of them gets the restart error.
         self._stuck_roles: frozenset[WorkerRole] = frozenset()
+        # Roles whose server a reload pass stopped and then could not start again
+        # (role -> the start error). A request for such a role starts it again.
+        self._failed_starts: dict[WorkerRole, str] = {}
         # How the last fleet work ended.
         self._reload_failed = False
         # Roles the running reload pass may still bring a server back for: every role
@@ -1531,6 +1543,8 @@ class FleetProvider:
         # rather than a retryable not-ready.
         self._skipped_not_installed = dict(demand.skipped_not_installed)
         self._refused_roles = dict(demand.refused_roles)
+        # A build plans every role afresh, so no earlier failed start applies.
+        self._failed_starts = {}
         self._engine_refusal = None
         machine_dir = machine_engine_dir()
         private = private_engine_dir(config_root)
@@ -2007,6 +2021,8 @@ class FleetProvider:
         When the pool is empty but a swap was previously built and its process has
         since exited (detected via ``is_live()``), a one-shot rebuild is attempted
         before raising so a transient llama-swap restart recovers transparently.
+        The same rebuild runs for a role whose server a reload stopped and could
+        not start again.
         A request that lands while a reload restarts the role's group waits, up to
         ``_RELOAD_GAP_WAIT_S``, until the role has clients or the reload will not
         bring the role back. A teardown on another thread can empty the fleet after
@@ -2027,11 +2043,12 @@ class FleetProvider:
                 raise ProviderError(message, provider=_PROVIDER_NAME)
             swap = self._swap_for(role)
             fleet_is_empty = not self._swaps
+            start_failed = role in self._failed_starts
         if not clients and fleet_is_empty and had_fleet:
             self._ensure_fleet()
             with self._lock:
                 clients = self._clients.get(role)
-        if not clients and swap is not None and not swap.is_live():
+        if not clients and (start_failed or (swap is not None and not swap.is_live())):
             self._rebuild_role(role)
             with self._lock:
                 clients = self._clients.get(role)
@@ -2216,10 +2233,20 @@ class FleetProvider:
         Other roles' groups keep serving; only the dead group is torn down and
         respawned. The fleet work runs the same diff-driven pass as a reload, forcing
         *role* into the restart set so an unchanged plan still replaces its dead swap.
+        When *role* is left with no server because a start failed, the error says so.
         """
         work = self._force_restart(role, stopped_answering=False)
-        if work is not None:
+        if work is None:
+            return
+        try:
             self._join_fleet_work(work)
+        except ProviderError as err:
+            with self._lock:
+                if role not in self._failed_starts:
+                    raise
+            raise ProviderError(
+                _failed_start_message(role, str(err)), provider=_PROVIDER_NAME, kind=err.kind
+            ) from err
 
     def _force_restart(
         self, role: WorkerRole, *, stopped_answering: bool
@@ -3475,6 +3502,9 @@ class FleetProvider:
                 self._reload_owed = frozenset(
                     role for group in changed & set(new) for role in _by_role(list(new[group]))
                 )
+                # Every planned role that has no server is in a changed group, so
+                # this pass starts it again and records its own failures.
+                self._failed_starts = {}
                 self._reload_done.notify_all()
             self._log_dropped_groups(changed, old, new)
             # Stop phase: free the changed groups' VRAM before their replacements
@@ -3494,7 +3524,8 @@ class FleetProvider:
                 if swap is not None:
                     swap.shutdown()
             # Start phase: spawn the changed groups present in the new plan.
-            for group in sorted(changed & set(new), key=lambda g: g.value):
+            to_start = sorted(changed & set(new), key=lambda g: g.value)
+            for index, group in enumerate(to_start):
                 with self._lock:
                     if self._shut_down:
                         # A shutdown during the drain: a server started now has no owner.
@@ -3502,23 +3533,42 @@ class FleetProvider:
                 group_launches = list(new[group])
                 swap = SwapManager(reload_dir, group)
                 lifetime = _engine_lifetime(reload_dir)
-                swap.start(
-                    group_launches,
-                    engines=engines,
-                    ttl_seconds=_warm_ttl_seconds(
-                        lifetime,
-                        reload_dir,
-                        hold_warm_for_session=self._hold_warm_for_session,
-                    ),
-                    lifetime=lifetime,
-                    origin=origin,
-                )
+                try:
+                    swap.start(
+                        group_launches,
+                        engines=engines,
+                        ttl_seconds=_warm_ttl_seconds(
+                            lifetime,
+                            reload_dir,
+                            hold_warm_for_session=self._hold_warm_for_session,
+                        ),
+                        lifetime=lifetime,
+                        origin=origin,
+                    )
+                except Exception as exc:
+                    self._record_failed_starts(to_start[index:], new, exc)
+                    raise
                 with self._lock:
                     self._adopt_group(group, swap, group_launches)
                     self._group_dirs[group] = reload_dir
                 restarted.extend(_by_role(group_launches))
             self._restamp_kept(running - changed, origin)
         return restarted
+
+    def _record_failed_starts(
+        self,
+        unstarted: list[SwapGroup],
+        new: dict[SwapGroup, tuple[InstanceLaunch, ...]],
+        exc: Exception,
+    ) -> None:
+        """Record the roles of the *unstarted* groups with *exc* as the cause of the failed start.
+
+        These groups have no server now, so a request for one of their roles starts it again.
+        """
+        with self._lock:
+            for group in unstarted:
+                for role in _by_role(list(new[group])):
+                    self._failed_starts[role] = str(exc)
 
     def _drain_stuck_groups(
         self, force: frozenset[WorkerRole]
