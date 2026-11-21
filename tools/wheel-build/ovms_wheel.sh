@@ -65,11 +65,9 @@ for path in "${lib}"/*; do
   chmod u+w "${path}"
   patchelf --set-rpath '$ORIGIN' "${path}"
 done
-cp "${server}/LICENSE" "${project}/LICENSE-ovms"
-cp -R "${server}/thirdparty-licenses/." "${project}/THIRD-PARTY/"
 # libespeak-ng is not copied: no library links it, and only the speech code of libopenvino_genai
-# loads it by name. Its licence text is not shipped either.
-rm -f "${project}/THIRD-PARTY/espeak-ng.LICENSE.txt"
+# loads it by name. The licence step leaves out the texts of code that the wheel does not hold.
+sh "${here}/ovms_licences.sh" "${server}" "${project}"
 cp "${tbb}/../tbb-"*".dist-info/LICENSE.txt" "${project}/LICENSE-tbb" 2> /dev/null || true
 
 expression="Apache-2.0 AND GPL-2.0-only WITH GCC-exception-2.0"
