@@ -11,8 +11,10 @@ from textual.widgets import OptionList, Static
 
 from _async_wait import wait_until
 from conftest import stub_hf_listing
+from lilbee.app.engine_service import EngineOption
 from lilbee.catalog import query as _query
 from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.pull_fit import PullFit
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
@@ -33,6 +35,15 @@ class _SafetensorsEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf", "safetensors"})
     architectures = frozenset({"gguf_arch"})
+
+
+@pytest.fixture(autouse=True)
+def _no_hub_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The picker sizes a safetensors row from the Hub; keep these tests off the network."""
+    monkeypatch.setattr(
+        "lilbee.catalog.pull_fit.chat_pull_fit",
+        lambda *_a, **_kw: PullFit(device_bytes=1, ctx=1, size_known=True, upper_bound=False),
+    )
 
 
 @pytest.fixture
@@ -157,7 +168,8 @@ async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chos
         )
         picker = pilot.app.screen
         assert [
-            str(picker.query_one(OptionList).get_option_at_index(i).prompt) for i in range(2)
+            str(picker.query_one(OptionList).get_option_at_index(i).prompt).split()[0]
+            for i in range(2)
         ] == [
             "gguf",
             "safetensors",
@@ -174,6 +186,10 @@ async def test_install_of_a_format_no_engine_loads_downloads_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only a gguf engine is installed; the safetensors pick still downloads."""
+    monkeypatch.setattr(
+        "lilbee.cli.tui.format_rows.engine_service.engine_options",
+        lambda _ref: [EngineOption(choice.AUTO)],
+    )
     model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS}))
     async with _App().run_test(size=(120, 40)) as pilot:
         screen = CatalogScreen()

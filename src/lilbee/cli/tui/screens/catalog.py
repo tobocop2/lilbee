@@ -38,6 +38,8 @@ from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.engine_install_flow import install_then
+from lilbee.cli.tui.format_rows import FormatRow, format_rows
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
     flatten_sections,
@@ -2117,14 +2119,30 @@ class CatalogScreen(Screen[None]):
 
     def _install_model(self, model: CatalogModel) -> None:
         if len(model.formats) > 1:
-
-            def _after_pick(chosen: ModelFormat | None) -> None:
-                if chosen is not None:
-                    self._install_format(replace(model, format=chosen))
-
-            self.app.push_screen(FormatPicker(model.display_name, model.formats), _after_pick)
+            self.run_worker(lambda: self._offer_formats(model), thread=True)
             return
         self._install_format(model)
+
+    def _offer_formats(self, model: CatalogModel) -> None:
+        """Work out the format rows off the UI thread (a safetensors row reads the Hub)."""
+        rows = format_rows(model, self._available_memory_bytes)
+        call_from_thread(self, self._pick_format, model, rows)
+
+    def _pick_format(self, model: CatalogModel, rows: list[FormatRow]) -> None:
+        """Ask which format to install; a format whose engine is missing installs it first."""
+        by_format = {row.fmt: row for row in rows}
+
+        def _after_pick(chosen: ModelFormat | None) -> None:
+            if chosen is None:
+                return
+            picked = replace(model, format=chosen)
+            missing = by_format[chosen].missing
+            if missing is None:
+                self._install_format(picked)
+            else:
+                install_then(self.app, missing.name, lambda: self._install_format(picked))
+
+        self.app.push_screen(FormatPicker(model.display_name, rows), _after_pick)
 
     def _install_format(self, model: CatalogModel) -> None:
         if self.app.task_bar.pending_download(model) is not None:
