@@ -1301,10 +1301,10 @@ class FleetProvider:
         # Single-flight for starting vision on request: concurrent OCR pages wait
         # for the first page's re-plan instead of each re-planning.
         self._vision_request_lock = threading.Lock()
-        # Spawn-lifecycle listeners (set by the TUI via add_spawn_listener). Stored
-        # so warm-up can report per-role progress as it pre-loads each upstream.
-        self._on_spawning: Callable[[WorkerRole], None] | None = None
-        self._on_spawned: Callable[[WorkerRole], None] | None = None
+        # Spawn-lifecycle listeners, every one that add_spawn_listener was given, in
+        # the order given. Warm-up calls each as it pre-loads each upstream.
+        self._on_spawning: list[Callable[[WorkerRole], None]] = []
+        self._on_spawned: list[Callable[[WorkerRole], None]] = []
         # Granular cold-load progress for the chat role, streamed to a launcher so
         # the user sees real read/engine-load progress instead of a frozen spinner.
         self._warm_tracker = WarmProgressTracker()
@@ -3126,12 +3126,11 @@ class FleetProvider:
                 for role, clients in self._clients.items()
                 if roles is None or role in roles
             }
-            on_spawning, on_spawned = self._on_spawning, self._on_spawned
+            listeners = (tuple(self._on_spawning), tuple(self._on_spawned))
             device_sets = _role_device_sets(
                 launch for launches in self._launches.values() for launch in launches
             )
 
-        listeners = (on_spawning, on_spawned)
         calls = [
             DaemonCall(
                 functools.partial(self._warm_chain, chain, pools, listeners),
@@ -3149,7 +3148,9 @@ class FleetProvider:
         self,
         chain: list[WorkerRole],
         pools: dict[WorkerRole, list[LlamaServerClient]],
-        listeners: tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None],
+        listeners: tuple[
+            tuple[Callable[[WorkerRole], None], ...], tuple[Callable[[WorkerRole], None], ...]
+        ],
     ) -> None:
         """Warm *chain*'s roles one at a time; every role gets its attempt.
 
@@ -3161,14 +3162,14 @@ class FleetProvider:
         first_exc: Exception | None = None
         for role in chain:
             try:
-                if on_spawning is not None:
-                    on_spawning(role)
+                for spawning in on_spawning:
+                    spawning(role)
                 if role is WorkerRole.CHAT:
                     self._warm_chat_role(pools[role])
                 else:
                     self._warm_role_clients(role, pools[role])
-                if on_spawned is not None:
-                    on_spawned(role)
+                for spawned in on_spawned:
+                    spawned(role)
             except Exception as exc:
                 first_exc = first_exc or exc
         if first_exc is not None:
@@ -3720,10 +3721,12 @@ class FleetProvider:
         on_spawning: Callable[[WorkerRole], None] | None = None,
         on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
-        """Store spawn-lifecycle callbacks; warm-up fires them as each role loads."""
+        """Add spawn-lifecycle callbacks; warm-up fires every added one as each role loads."""
         with self._lock:
-            self._on_spawning = on_spawning
-            self._on_spawned = on_spawned
+            if on_spawning is not None:
+                self._on_spawning.append(on_spawning)
+            if on_spawned is not None:
+                self._on_spawned.append(on_spawned)
 
     def shutdown(self) -> None:
         # The on-request vision grant is process-wide; the next provider starts from the setting.
