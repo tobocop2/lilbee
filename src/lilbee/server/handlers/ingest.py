@@ -239,9 +239,10 @@ async def _ingest_stream(
     in ``already_ingesting``, so a partial batch never reads as a full success.
 
     The ``already_ingesting`` events of a partial batch go out through the
-    run's own queue, so the run has started before the client reads any
-    event. A client that closes the stream at ``already_ingesting`` then stops
-    the acquired subset as any close does, after its registration.
+    run's own queue, so the run has taken its first step before the client
+    reads any event. A client that closes the stream at ``already_ingesting``
+    then stops the acquired subset as any close does, after the run's first
+    uninterruptible step (the registration, or the file writes of an upload).
     """
     registry = get_services().ingest_lock_registry
     acquired, busy = await registry.acquire([key for key, _payload in items])
@@ -360,18 +361,15 @@ async def _run_upload(
     external-mode client (a remote lilbee / GPU box) ingest files that live only
     on the client. Unchanged content is a no-op re-embed inside ``sync`` (it
     hashes each source), so there is no separate force flag. A data root that
-    the sync cannot lock refuses the upload before any file is written.
+    the sync cannot lock refuses the upload before any file is written. A
+    stream that stops during the writes stops the sync, not the writes: an
+    uploaded file exists only in the request, so a cancel must not drop it.
     """
     from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync
 
     try:
-        await asyncio.to_thread(refuse_where_a_sync_cannot_lock, cfg.data_root)
-        await asyncio.to_thread(cfg.documents_dir.mkdir, parents=True, exist_ok=True)
-        written: list[str] = []
-        for name, content in files:
-            await asyncio.to_thread(_place_upload, name, content, cfg.documents_dir / name)
-            written.append(name)
+        written = await _to_thread_unbroken(functools.partial(_write_uploads, files))
         with temporary_ocr_config(ocr, ocr_timeout):
             sync_result = await sync(
                 quiet=True, on_progress=sse.callback, cancel=sse.cancel, started_by=_SYNC_STARTER
@@ -408,6 +406,15 @@ def _place_upload(name: str, content: bytes, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not _move_same_content(name, content, dest):
         dest.write_bytes(content)
+
+
+def _write_uploads(files: list[tuple[str, bytes]]) -> list[str]:
+    """Write every uploaded file into ``cfg.documents_dir``; return the names written."""
+    refuse_where_a_sync_cannot_lock(cfg.data_root)
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in files:
+        _place_upload(name, content, cfg.documents_dir / name)
+    return [name for name, _content in files]
 
 
 async def add_uploads_stream(
