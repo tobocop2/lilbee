@@ -40,9 +40,9 @@ _TOOL = "llama-server"
 # under its Intel distribution licence, oneTBB and oneDNN (Apache-2.0), hwloc (BSD-3-Clause) and
 # the OpenCL loader (BSD-2-Clause). The Intel term is not on the permissive list, so an install
 # refuses the pack until that licence is ruled on.
-OPENVINO_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
+_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
 _LICENCES = [
-    f"MIT AND {OPENVINO_RUNTIME_TERM} AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause "
+    f"MIT AND {_RUNTIME_TERM} AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause "
     "AND ISC AND MIT-0 AND Unlicense"
 ]
 _DEVICE_VAR = "GGML_OPENVINO_DEVICE"
