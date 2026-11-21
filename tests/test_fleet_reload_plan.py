@@ -1146,6 +1146,36 @@ def test_a_stream_cut_by_the_drain_limit_ends_with_a_message_for_the_user(
     assert old.answers_at_stop == 0
 
 
+def test_a_stream_cut_after_its_change_was_undone_still_hears_of_the_reload(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat model is set back during the drain, so the last plan no longer differs."""
+    provider, _swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _DRAIN_LIMIT_S)
+    real_plan = planning_mod.plan_all_launches
+    plans: list[int] = []
+
+    def undo_before_the_second_plan(**kwargs: object) -> object:
+        plans.append(1)
+        if len(plans) == 2:
+            cfg.chat_model = _CHAT_REF
+        return real_plan(**kwargs)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", undo_before_the_second_plan)
+    old = provider._swap_for(WorkerRole.CHAT)
+    stream = provider.chat(_QUESTION, stream=True)
+    assert old.engine.started.wait(_JOIN_S)
+
+    _reload_chat_model(provider)
+    assert poll_until(lambda: old.engine.stopped.is_set())
+    with pytest.raises(ProviderError) as caught:
+        list(stream)
+    _join_fleet_threads()
+
+    assert len(plans) >= 2
+    assert str(caught.value) == _RELOADING
+
+
 def test_a_peer_takes_the_build_lock_while_a_settings_reload_drains(
     engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
 ) -> None:

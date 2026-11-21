@@ -3506,6 +3506,7 @@ class FleetProvider:
         restarted: list[WorkerRole] = []
         stuck = frozenset(drained)
         busy: list[LlamaServerClient] = []
+        taken_for_replan: set[SwapGroup] = set()
         while True:
             self._drain_clients(busy, time.monotonic() + _SHUTDOWN_WORK_WAIT_S)
             # Serialize the reload against peer acquisitions with the same
@@ -3540,6 +3541,10 @@ class FleetProvider:
                     if (group in running) != (group in new)
                     or _launch_moves(old.get(group, ()), new.get(group, ()))
                 }
+                # A group that a plan of this pass replaced left dispatch for that
+                # plan, so its requests get the reload line even when a later plan
+                # no longer differs.
+                taken_for_replan |= replanned
                 changed = replanned | {group_for(role, plan.co_tenants) for role in force}
                 with self._lock:
                     changed |= {
@@ -3560,7 +3565,7 @@ class FleetProvider:
                 if busy:
                     continue
                 self._log_dropped_groups(changed, old, new)
-                self._stop_groups(changed, replanned, stuck, drained)
+                self._stop_groups(changed, taken_for_replan, stuck, drained)
                 # Start phase: spawn the changed groups present in the new plan.
                 to_start = sorted(changed & set(new), key=lambda g: g.value)
                 for index, group in enumerate(to_start):
