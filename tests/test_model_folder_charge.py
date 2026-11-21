@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,18 @@ class _StatedEngine(type(MISTRAL)):
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         return self.estimate
+
+
+class _RecordingStderrHandler(logging.StreamHandler):
+    """A terminal stderr handler that keeps the records it printed."""
+
+    def __init__(self) -> None:
+        super().__init__(sys.stderr)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+        super().emit(record)
 
 
 def _pin(engine, role: WorkerRole, path: Path, devices: tuple[int, ...], monkeypatch, alone=False):
@@ -498,12 +511,10 @@ class TestAnUnknownSizeInThePlan:
         assert [len(lines) for lines in printed] == [1, 1]
 
     def test_a_cold_ask_shows_the_unknown_size_once_when_the_log_prints_on_stderr(
-        self, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, monkeypatch
     ) -> None:
-        import sys
-
         self._unknown_chat_model(_folder(tmp_path), monkeypatch)
-        handler = logging.StreamHandler(sys.stderr)
+        handler = _RecordingStderrHandler()
         handler.setLevel(logging.WARNING)
         root = logging.getLogger()
         root.addHandler(handler)
@@ -511,7 +522,7 @@ class TestAnUnknownSizeInThePlan:
             printed = self._announce_cold_asks()
         finally:
             root.removeHandler(handler)
-        logged = [line for line in capsys.readouterr().err.splitlines() if "is unknown" in line]
+        logged = [r for r in handler.records if "is unknown" in r.getMessage()]
         assert [len(lines) for lines in printed] == [0, 0]
         assert len(logged) == 2
 
