@@ -188,6 +188,31 @@ class TestSharedBlobStore:
         assert manifest.blob == hashlib.sha256(b"GGUF one").hexdigest()
         assert manifest.shard_blobs == [hashlib.sha256(b"GGUF two").hexdigest()]
 
+    def test_a_repo_subfolder_named_blobs_still_reaches_the_repo_blob(
+        self, tmp_path: Path
+    ) -> None:
+        from lilbee.modelhub.registry import repo_blob_entry
+        from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+        content = b"GGUF model"
+        top = _seed_shared_store(tmp_path, "m.gguf", content, repo=self._VL_REPO)
+        etag = hashlib.sha256(content).hexdigest()
+        cache = tmp_path / f"models--{repo_to_dir(self._VL_REPO)}"
+        # The same file one folder down, in a repo subfolder that is named blobs.
+        top.unlink()
+        nested = cache / "snapshots" / _FAKE_REV / "blobs" / "m.gguf"
+        nested.parent.mkdir()
+        nested.symlink_to(Path("..") / ".." / ".." / "blobs" / etag)
+        projector = cache / "snapshots" / _FAKE_REV / "blobs" / "mmproj-f16.gguf"
+        projector.symlink_to(Path("..") / ".." / ".." / "blobs" / etag)
+
+        assert repo_blob_entry(nested) == cache / "blobs" / etag
+        registry = ModelRegistry(tmp_path)
+        resolved = registry.resolve(f"{self._VL_REPO}/blobs/m.gguf")
+        assert registry.get_manifest(f"{self._VL_REPO}/blobs/m.gguf").blob == etag
+        assert resolved.parent == cache / "blobs"
+        assert find_mmproj_for_model(resolved) == projector
+
     def test_a_link_loop_ends(self, tmp_path: Path) -> None:
         from lilbee.modelhub.registry import repo_blob_entry
 
