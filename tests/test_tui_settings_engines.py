@@ -456,7 +456,7 @@ async def test_a_build_that_differs_from_the_pin_shows_its_size_and_removes_on_y
         assert text == "Remove ik_llama.cpp 1.2.3 (cuda) from this computer?"
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)
-        remove.assert_called_once_with("ik_llama.cpp", "1.2.3", "cuda")
+        remove.assert_called_once_with("ik_llama.cpp", "1.2.3", "cuda", confirmed=False)
         assert await wait_until(pilot, lambda: table.row_count == 1)
 
 
@@ -720,6 +720,18 @@ def test_the_llama_rows_name_the_pack_backend_of_the_host_with_the_real_reads(
             backend=backend,
             download_bytes=_LLAMA_PACK_BYTES,
         )
+
+
+@pytest.mark.parametrize("error", [choice.PinError("bad pin"), OSError("no manifest")])
+def test_a_missing_engine_whose_pin_cannot_be_read_has_a_row_with_no_backend_or_size(
+    fleet: None, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def refuse(_record: object) -> None:
+        raise error
+
+    monkeypatch.setattr(choice, "pin_lock", refuse)
+    option = _REAL_MISSING_OPTION(EngineName.IK_LLAMA, choice.ADAPTERS[EngineName.IK_LLAMA])
+    assert option == engine_service.EngineOption("ik_llama.cpp", installed=False)
 
 
 def test_engine_rows_show_the_builds_of_an_engine_the_install_gate_refuses(
