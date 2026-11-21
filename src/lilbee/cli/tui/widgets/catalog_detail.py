@@ -19,7 +19,7 @@ from textual.content import Content
 from textual.widgets import Static
 
 from lilbee.app import engine_service
-from lilbee.app.engine_choice import engine_for_format
+from lilbee.app.engine_choice import engine_for_ref
 from lilbee.catalog.formats import ModelFormat
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelCompat
@@ -62,6 +62,7 @@ class CatalogDetailDrawer(Vertical):
             "", id="catalog-detail-license", classes="catalog-detail-license", markup=False
         )
         yield Static("", id="catalog-detail-compat", classes="catalog-detail-compat")
+        yield Static("", id="catalog-detail-engine", classes="catalog-detail-engine")
         yield Static("", id="catalog-detail-formats", classes="catalog-detail-formats")
         yield Static(
             "",
@@ -87,6 +88,7 @@ class CatalogDetailDrawer(Vertical):
             "#catalog-detail-sizes",
             "#catalog-detail-license",
             "#catalog-detail-compat",
+            "#catalog-detail-engine",
             "#catalog-detail-formats",
             "#catalog-detail-description",
         ):
@@ -105,6 +107,7 @@ class CatalogDetailDrawer(Vertical):
         license_widget.update(_license_text(row))
         compat_widget = self.query_one("#catalog-detail-compat", Static)
         compat_widget.update(_compat_sentence(row))
+        self.query_one("#catalog-detail-engine", Static).update(_engine_line(row))
         self.query_one("#catalog-detail-formats", Static).update(_formats_block(row))
         description = self.query_one("#catalog-detail-description", Static)
         description.update(_description_text(row))
@@ -115,6 +118,7 @@ class CatalogDetailDrawer(Vertical):
         self.query_one("#catalog-detail-sizes", Static).update("")
         self.query_one("#catalog-detail-license", Static).update(f"Provider  {row.provider}")
         self.query_one("#catalog-detail-compat", Static).update("")
+        self.query_one("#catalog-detail-engine", Static).update("")
         self.query_one("#catalog-detail-formats", Static).update("")
         self.query_one("#catalog-detail-description", Static).update(
             f"Cloud model accessed via the {row.provider} API."
@@ -150,12 +154,32 @@ def _license_text(_row: LocalCatalogRow) -> str:
     return ""
 
 
-def _engine_name(fmt: ModelFormat) -> str | None:
-    """The engine that loads *fmt* now, or None when no installed engine does."""
+def _engine_name(ref: str) -> str | None:
+    """The engine a run of the model *ref* uses now, or None when no installed engine loads it.
+
+    This is the lookup a run makes, so a stored per-model engine choice shows here.
+    """
     try:
-        return engine_for_format(fmt, cfg).name
+        return engine_for_ref(ref, cfg).name
     except NoEngineError:
         return None
+
+
+def _row_ref(row: LocalCatalogRow) -> str:
+    """The reference a run of the row's model uses."""
+    return row.catalog_model.pull_ref if row.catalog_model is not None else row.ref
+
+
+def _engine_line(row: LocalCatalogRow) -> Content:
+    """The labelled engine line: the engine that loads the file, or that none is installed."""
+    from lilbee.cli.tui import messages as msg
+
+    engine = _engine_name(_row_ref(row))
+    if engine is None:
+        return Content(msg.CATALOG_DETAIL_ENGINE_LABEL + msg.CATALOG_DETAIL_ENGINE_NOT_INSTALLED)
+    return Content.assemble(
+        msg.CATALOG_DETAIL_ENGINE_LABEL, engine_mark(engine), msg.CATALOG_DETAIL_ENGINE_CHOSEN
+    )
 
 
 def _compat_sentence(row: LocalCatalogRow) -> Content:
@@ -163,12 +187,7 @@ def _compat_sentence(row: LocalCatalogRow) -> Content:
     from lilbee.cli.tui import messages as msg
 
     if row.compat is ModelCompat.SUPPORTED:
-        fmt = row.catalog_model.format if row.catalog_model is not None else ModelFormat.GGUF
-        engine = _engine_name(fmt)
-        if engine is None:
-            return Content(msg.COMPAT_DETAIL_SENTENCE_SUPPORTED_NO_ENGINE)
-        before, after = msg.COMPAT_DETAIL_SENTENCE_SUPPORTED.split("{engine}")
-        return Content.assemble(before, engine_mark(engine), after)
+        return Content(msg.COMPAT_DETAIL_SENTENCE_SUPPORTED)
     arch = row.catalog_model.architecture if row.catalog_model is not None else ""
     template = {
         ModelCompat.UNSUPPORTED: msg.COMPAT_DETAIL_SENTENCE_UNSUPPORTED,
@@ -181,7 +200,7 @@ def _format_engine(model: CatalogModel, fmt: ModelFormat) -> Content:
     """The engine of one format: the installed engine, or the one to download with its size."""
     from lilbee.cli.tui import messages as msg
 
-    name = _engine_name(fmt)
+    name = _engine_name(replace(model, format=fmt).pull_ref)
     if name is not None:
         return engine_mark(name)
     options = engine_service.engine_options(replace(model, format=fmt).pull_ref)

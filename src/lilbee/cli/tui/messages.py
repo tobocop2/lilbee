@@ -700,8 +700,10 @@ COMPAT_PILL_UNSUPPORTED = "unsupported"
 COMPAT_PILL_UNKNOWN = "untested"
 
 # Architecture compatibility copy for the catalog detail view + confirm modal.
-COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your {engine} build."
-COMPAT_DETAIL_SENTENCE_SUPPORTED_NO_ENGINE = "Supported by this lilbee build."
+COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by this lilbee build."
+CATALOG_DETAIL_ENGINE_LABEL = "Engine: "
+CATALOG_DETAIL_ENGINE_CHOSEN = " (chosen for this file)"
+CATALOG_DETAIL_ENGINE_NOT_INSTALLED = "not installed"
 COMPAT_DETAIL_SENTENCE_UNSUPPORTED = (
     "Architecture {arch} is not in the supported set. Pull may fail at load."
 )
