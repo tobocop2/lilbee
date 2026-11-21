@@ -33,7 +33,7 @@ from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.runtime.cancellation import CancelSignal
 
 ROUTER_DIRNAME = "router"
-ROUTER_VERSION = "v267"
+ROUTER_VERSION = "v272"
 LICENCE_FILE = "LICENSE.md"
 _RELEASE_URL = "https://github.com/mostlygeek/llama-swap/releases/download/"
 _BINARY_NAME = "llama-swap"
@@ -74,37 +74,37 @@ class RouterAsset:
 
 ROUTER_ASSETS: Mapping[str, RouterAsset] = {
     "linux-x86_64": RouterAsset(
-        filename="llama-swap_267_linux_amd64.tar.gz",
-        sha256="5e57a83418554ed4c4be1247819c0dd2ba7deb2c44f334fb5da3afec51b2d41c",
-        size=23963808,
+        filename="llama-swap_272_linux_amd64.tar.gz",
+        sha256="3f21b4c13f55ea5576badcd6cc1d114ccdcf74a5d56346d3ac1e777d28e0fdf1",
+        size=24279896,
         archive=ArchiveKind.TAR_GZ,
         binary=_BINARY_NAME,
     ),
     "linux-arm64": RouterAsset(
-        filename="llama-swap_267_linux_arm64.tar.gz",
-        sha256="cd359f185fad93e03de77d674cd0c4542932fd5d93a1e8e92441e441e5f2541b",
-        size=22376333,
+        filename="llama-swap_272_linux_arm64.tar.gz",
+        sha256="f7fecf8eb526d232c30b302637680e4556188c963736cb5ea10e9f47633acc48",
+        size=22684827,
         archive=ArchiveKind.TAR_GZ,
         binary=_BINARY_NAME,
     ),
     "macos-arm64": RouterAsset(
-        filename="llama-swap_267_darwin_arm64.tar.gz",
-        sha256="d45c74794cf5db6e5e0dded8423cdce31cd6664d4240b53c4eb82965feb1437a",
-        size=22793442,
+        filename="llama-swap_272_darwin_arm64.tar.gz",
+        sha256="ee16e99873d76e0560000742d2524d7b97932c77c9b57a402283015839ef9d25",
+        size=23126118,
         archive=ArchiveKind.TAR_GZ,
         binary=_BINARY_NAME,
     ),
     "macos-x86_64": RouterAsset(
-        filename="llama-swap_267_darwin_amd64.tar.gz",
-        sha256="07ad320937fe9dc34e458fdbd745a0c1fc1b5c0fb3a436a6bcef11ad0b074d32",
-        size=23807875,
+        filename="llama-swap_272_darwin_amd64.tar.gz",
+        sha256="959885a60348076322629924fe06c90af37b66e5b8d69bafe3e33aa045032d44",
+        size=24122979,
         archive=ArchiveKind.TAR_GZ,
         binary=_BINARY_NAME,
     ),
     "windows-x86_64": RouterAsset(
-        filename="llama-swap_267_windows_amd64.zip",
-        sha256="6ead3207eb0247e68ecc2bd67c0405d4cb434e08cba43816eacb33cae7882bca",
-        size=23845008,
+        filename="llama-swap_272_windows_amd64.zip",
+        sha256="a1784767d662503bdc85649f939747109229306bd818e77a417c52da28c0084c",
+        size=24174334,
         archive=ArchiveKind.ZIP,
         binary=f"{_BINARY_NAME}.exe",
     ),

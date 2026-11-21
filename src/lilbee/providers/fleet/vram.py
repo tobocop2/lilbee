@@ -14,6 +14,7 @@ from pathlib import Path
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.engine_params import N_GPU_LAYERS_AUTO
 from lilbee.providers.fleet.adapters import FLAG_BATCH_SIZE, FLAG_UBATCH_SIZE
 from lilbee.providers.fleet.binary import resolve_gguf_parser
 from lilbee.providers.fleet.proc import run_bounded
@@ -23,6 +24,9 @@ _FLAG_PATH = "--path"
 _FLAG_CTX = "--ctx-size"
 _FLAG_PARALLEL = "--parallel"
 _FLAG_GPU_LAYERS = "--gpu-layers"
+# The parser cannot size llama.cpp's auto layer count (-1) and refuses it; its
+# value for a full offload is -2.
+_PARSER_GPU_LAYERS_ALL = -2
 _FLAG_CACHE_K = "--cache-type-k"
 _FLAG_CACHE_V = "--cache-type-v"
 _FLAG_MMPROJ = "--mmproj-path"
@@ -295,7 +299,7 @@ def estimator_argv(
         _FLAG_PARALLEL,
         str(slots),
         _FLAG_GPU_LAYERS,
-        str(gpu_layers),
+        str(_PARSER_GPU_LAYERS_ALL if gpu_layers == N_GPU_LAYERS_AUTO else gpu_layers),
         _FLAG_CACHE_K,
         kv_cache_type,
         _FLAG_CACHE_V,

@@ -154,21 +154,21 @@ class TestPinTable:
     @pytest.mark.parametrize(
         ("system", "machine", "cell", "filename", "binary"),
         [
-            ("Linux", "x86_64", "linux-x86_64", "llama-swap_267_linux_amd64.tar.gz", "llama-swap"),
-            ("Linux", "aarch64", "linux-arm64", "llama-swap_267_linux_arm64.tar.gz", "llama-swap"),
-            ("Darwin", "arm64", "macos-arm64", "llama-swap_267_darwin_arm64.tar.gz", "llama-swap"),
+            ("Linux", "x86_64", "linux-x86_64", "llama-swap_272_linux_amd64.tar.gz", "llama-swap"),
+            ("Linux", "aarch64", "linux-arm64", "llama-swap_272_linux_arm64.tar.gz", "llama-swap"),
+            ("Darwin", "arm64", "macos-arm64", "llama-swap_272_darwin_arm64.tar.gz", "llama-swap"),
             (
                 "Darwin",
                 "x86_64",
                 "macos-x86_64",
-                "llama-swap_267_darwin_amd64.tar.gz",
+                "llama-swap_272_darwin_amd64.tar.gz",
                 "llama-swap",
             ),
             (
                 "Windows",
                 "AMD64",
                 "windows-x86_64",
-                "llama-swap_267_windows_amd64.zip",
+                "llama-swap_272_windows_amd64.zip",
                 "llama-swap.exe",
             ),
         ],
