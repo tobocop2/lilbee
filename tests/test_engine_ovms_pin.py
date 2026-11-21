@@ -60,6 +60,7 @@ def test_the_script_stops_before_any_work_without_the_ruling(
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         check=False,
     )
@@ -86,6 +87,7 @@ def test_the_script_passes_the_ruling_with_the_accepted_value(
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         check=False,
     )
