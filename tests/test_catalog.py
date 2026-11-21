@@ -878,6 +878,46 @@ class TestGetCatalog:
         assert first.total is None
         assert second.total is None
 
+    def test_the_default_page_is_twenty_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A browse that names no limit serves twenty rows and reports limit=20."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(40)]
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
+        result = get_catalog(task=ModelTask.CHAT)
+        assert result.limit == 20
+        assert [m.hf_repo for m in result.models] == [
+            *[m.hf_repo for m in PICKS_CHAT],
+            *[f"test/Hf{i}" for i in range(12)],
+        ]
+        assert result.has_more is True
+
+    def test_a_page_from_inside_the_picks_ends_in_the_hf_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A window that starts in the picks and ends past them serves both parts in order."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(6)]
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
+        result = get_catalog(task=ModelTask.CHAT, limit=4, offset=6)
+        assert result.offset == 6
+        assert [m.hf_repo for m in result.models] == [
+            *[m.hf_repo for m in PICKS_CHAT[6:]],
+            "test/Hf0",
+            "test/Hf1",
+        ]
+        assert result.has_more is True
+
+    def test_the_last_page_has_more_only_when_a_match_sits_past_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """has_more is exact at the page edge: true one row short of the matches, false on them."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(4)]
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
+        exact = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT) + 4)
+        assert len(exact.models) == len(PICKS_CHAT) + 4
+        assert exact.has_more is False
+        one_short = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT) + 3)
+        assert len(one_short.models) == len(PICKS_CHAT) + 3
+        assert one_short.has_more is True
+
     def test_page_inside_the_picks_fetches_no_hf_rows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
