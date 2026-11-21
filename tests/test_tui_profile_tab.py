@@ -627,6 +627,19 @@ async def test_a_change_that_needs_no_reindex_shows_no_summary(sources) -> None:
     assert cfg.max_chunks_per_file == 3000
 
 
+async def test_a_bare_enter_on_the_apply_dialog_cancels_and_changes_nothing(sources) -> None:
+    _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "fewer")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        assert app.focused is dialog.query_one("#apply-cancel", ConfirmPill)
+        await pilot.press("enter")
+        assert await _until(pilot, lambda: app.screen is screen)
+    assert cfg.max_chunks_per_file == 3000
+
+
 async def test_a_held_out_file_offers_the_rebuild_and_says_why(sources) -> None:
     held = {"long.md": HeldRecord(HeldOut.FAILED, "hash", "14 chunks exceed the limit")}
     get_services().store.held_records.return_value = held
