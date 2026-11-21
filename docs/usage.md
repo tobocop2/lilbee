@@ -520,6 +520,14 @@ the model of that role. A role with no model shows a message instead.
 In insert mode the prompt takes the key as text. Press Esc to leave insert mode,
 then focus the button and press `e`.
 
+#### Manage engines in Settings
+
+The Engines tab in Settings sits after the Models tab. It holds the preferred
+engine and a table with one row per engine: the version, the backend, the size,
+the state, and the roles that use it. Move to a row and press Enter to install
+the engine, or to remove an installed build. Remove asks first, and names the
+roles when a role uses the engine. An install runs as a task in the task bar.
+
 #### A running server
 
 A running server reloads a role when its engine changes.

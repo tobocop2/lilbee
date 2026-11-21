@@ -24,6 +24,7 @@ from lilbee.cli.tui.preset_commands import (
     run_preset_command,
 )
 from lilbee.cli.tui.screens.settings import SettingsScreen
+from lilbee.cli.tui.screens.settings_engines import ENGINES_PANE_ID
 from lilbee.cli.tui.screens.settings_presets import (
     PRESETS_PANE_ID,
     PresetDialog,
@@ -846,7 +847,8 @@ class TestPaneKeyboardAccess:
                 await pilot.press(">")
                 assert await wait_until(pilot, lambda: tabs.active != seen[-1])
                 seen.append(tabs.active)
-            assert seen[1:] == [*groups, PRESETS_PANE_ID]
+            # Engines sits right after the first group, Models; Presets is last.
+            assert seen[1:] == [groups[0], ENGINES_PANE_ID, *groups[1:], PRESETS_PANE_ID]
             await pilot.press(">")
             assert await wait_until(pilot, lambda: tabs.active == pane_ids[0])
 

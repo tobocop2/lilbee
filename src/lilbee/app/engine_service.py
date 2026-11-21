@@ -467,6 +467,62 @@ def engine_options(model: str) -> list[EngineOption]:
     return rows
 
 
+class EngineState(StrEnum):
+    """Whether an engine row is a build on disk, the bundled engine, or a download to offer."""
+
+    INSTALLED = "installed"
+    BUNDLED = "bundled"
+    NOT_INSTALLED = "not_installed"
+
+
+@dataclass(frozen=True)
+class EngineRow:
+    """One row of the engine table: an installed build, the bundled engine, or a missing engine.
+
+    ``download_bytes`` is set only for a missing engine that has a pack for this computer.
+    ``roles`` names the roles that use the engine now.
+    """
+
+    engine: str
+    state: EngineState
+    version: str = ""
+    backend: str = ""
+    download_bytes: int | None = None
+    roles: tuple[str, ...] = ()
+
+
+def engine_rows(config: Config = cfg) -> list[EngineRow]:
+    """Every engine the host can run, one row per build, plus a row for each missing engine."""
+    used: dict[str, list[str]] = {}
+    for view in roles(config):
+        if view.engine and view.model.strip():
+            used.setdefault(view.engine, []).append(view.role.value)
+    installed = builds(config)
+    rows: list[EngineRow] = []
+    for name, adapter in choice.ADAPTERS.items():
+        key = str(name)
+        users = tuple(used.get(key, ()))
+        mine = [b for b in installed if b.engine == key]
+        rows.extend(
+            EngineRow(key, EngineState.INSTALLED, b.version, b.backend, roles=users) for b in mine
+        )
+        if adapter.bundled and llama_server_ready():
+            rows.append(
+                EngineRow(key, EngineState.BUNDLED, backend=_bundled_backend(name), roles=users)
+            )
+        elif not mine and _install_gate(name).ok:
+            option = _missing_option(name, adapter)
+            rows.append(
+                EngineRow(
+                    key,
+                    EngineState.NOT_INSTALLED,
+                    backend=option.backend,
+                    download_bytes=option.download_bytes,
+                )
+            )
+    return rows
+
+
 def prefer(name: str, confirmed: bool = False) -> str:
     """Store the global engine preference; refuses an unknown or uninstalled engine."""
     try:

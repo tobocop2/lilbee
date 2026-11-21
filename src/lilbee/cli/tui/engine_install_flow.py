@@ -30,13 +30,20 @@ if TYPE_CHECKING:
     from lilbee.providers.roles import WorkerRole
 
 
-def confirm_text(option: EngineOption) -> str:
-    """The question that asks before the download of the engine of *option*."""
+def confirm_text(option: EngineOption, use_for_model: bool = True) -> str:
+    """The question that asks before the download of the engine of *option*.
+
+    With *use_for_model* the question says the engine is then used for a model.
+    """
     if option.download_bytes is None:
-        return msg.ENGINE_DOWNLOAD_MESSAGE_NO_SIZE.format(engine=option.name)
-    return msg.ENGINE_DOWNLOAD_MESSAGE.format(
-        engine=option.name, size=format_size(option.download_bytes)
-    )
+        sizeless = (
+            msg.ENGINE_DOWNLOAD_MESSAGE_NO_SIZE
+            if use_for_model
+            else msg.ENGINE_DOWNLOAD_ONLY_MESSAGE_NO_SIZE
+        )
+        return sizeless.format(engine=option.name)
+    sized = msg.ENGINE_DOWNLOAD_MESSAGE if use_for_model else msg.ENGINE_DOWNLOAD_ONLY_MESSAGE
+    return sized.format(engine=option.name, size=format_size(option.download_bytes))
 
 
 def install_then(app: LilbeeApp, name: str, then: Callable[[], object]) -> None:
@@ -133,7 +140,12 @@ def _confirm_embed(
     app.push_screen(dialog, answered)
 
 
-def confirm_and_install(app: LilbeeApp, option: EngineOption, then: Callable[[], object]) -> None:
+def confirm_and_install(
+    app: LilbeeApp,
+    option: EngineOption,
+    then: Callable[[], object],
+    use_for_model: bool = True,
+) -> None:
     """Ask to download the engine of *option*; on yes, install it as a task, then run *then*."""
 
     def answered(yes: bool | None) -> None:
@@ -141,6 +153,9 @@ def confirm_and_install(app: LilbeeApp, option: EngineOption, then: Callable[[],
             install_then(app, option.name, then)
 
     app.push_screen(
-        ConfirmDialog(msg.ENGINE_DOWNLOAD_TITLE.format(engine=option.name), confirm_text(option)),
+        ConfirmDialog(
+            msg.ENGINE_DOWNLOAD_TITLE.format(engine=option.name),
+            confirm_text(option, use_for_model),
+        ),
         answered,
     )
