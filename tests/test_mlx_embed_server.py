@@ -35,7 +35,8 @@ SERVER = (
     / "lilbee_engine_mlx"
     / "mlx_embed_server.py"
 )
-EOS = 0
+END = 0
+"""The token that the fake tokenizer's template adds at the end, as Qwen3-Embedding's does."""
 NO, YES = 1, 2
 
 
@@ -53,12 +54,13 @@ srv = _load()
 class FakeBackend:
     """One token per character (its code point); the state and the logits follow the ids."""
 
-    def __init__(self, eos_id: int | None = EOS) -> None:
-        self.eos_id = eos_id
+    def __init__(self, end: int | None = END) -> None:
+        self.end = end
         self.batches: list[list[list[int]]] = []
 
-    def encode(self, text: str) -> list[int]:
-        return [ord(c) for c in text]
+    def encode(self, text: str, special: bool) -> list[int]:
+        ids = [ord(c) for c in text]
+        return [*ids, self.end] if special and self.end is not None else ids
 
     def token_id(self, token: str) -> int:
         return {"no": NO, "yes": YES}[token]
@@ -78,16 +80,28 @@ def service(task: str, max_length: int = 4096, backend: FakeBackend | None = Non
     return srv.Service(backend or FakeBackend(), task, max_length)
 
 
-def test_an_embed_input_ends_with_the_end_token_once() -> None:
+def test_an_embed_input_carries_the_end_token_of_the_tokenizer_template() -> None:
     backend = FakeBackend()
-    service(srv.TASK_EMBED, backend=backend).embed({"input": ["ab", "c\x00"]})
-    assert backend.batches == [[[97, 98, EOS], [99, EOS]]]
+    service(srv.TASK_EMBED, backend=backend).embed({"input": ["ab", "c"]})
+    assert backend.batches == [[[97, 98, END], [99, END]]]
 
 
-def test_a_model_with_no_end_token_pools_the_text_as_it_is() -> None:
-    backend = FakeBackend(eos_id=None)
+def test_a_tokenizer_with_no_template_pools_the_text_as_it_is() -> None:
+    backend = FakeBackend(end=None)
     service(srv.TASK_EMBED, backend=backend).embed({"input": "ab"})
     assert backend.batches == [[[97, 98]]]
+
+
+class _Tokenizer:
+    def encode(self, text: str, add_special_tokens: bool) -> list[int]:
+        return [len(text), int(add_special_tokens)]
+
+
+@pytest.mark.parametrize("special", [True, False])
+def test_the_mlx_backend_asks_the_tokenizer_for_its_template_tokens(special: bool) -> None:
+    backend = srv.MlxBackend.__new__(srv.MlxBackend)
+    backend._tokenizer = _Tokenizer()
+    assert backend.encode("abc", special=special) == [3, int(special)]
 
 
 def test_each_vector_has_length_one_and_keeps_its_index() -> None:
@@ -316,8 +330,7 @@ spec = importlib.util.spec_from_file_location("s", sys.argv[1])
 s = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(s)
 class B:
-    eos_id = None
-    def encode(self, text): return [1]
+    def encode(self, text, special): return [1]
     def token_id(self, token): return 1
     def last_hidden(self, batch): raise AssertionError
     def last_logits(self, batch, picks): raise AssertionError
