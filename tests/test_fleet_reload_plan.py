@@ -857,6 +857,7 @@ def test_a_server_that_started_again_drops_its_failed_start(
     _join_fleet_threads()
     assert _texts([_ask(provider)]) == ["the answer"]
     _join_fleet_threads()
+    assert provider._failed_starts == {}
 
     def no_plan(**_kwargs: object) -> object:
         raise ProviderError("The engine binary is missing.")
