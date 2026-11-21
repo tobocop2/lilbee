@@ -1,22 +1,22 @@
 # Separate distribution: a per-platform, self-contained wheel bundling lilbee's
 # three engine binaries (llama.cpp llama-server + its ggml/llama/mtmd libs,
 # llama-swap, gguf-parser). lilbee's core dependency (the local engine). CI sets
-# the version to match lilbee and fills lilbee_engine/bin/ before building.
+# the version to match lilbee and fills lilbee_engine_llama_cpp/bin/ before building.
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lilbee-engine"
+name = "lilbee-engine-llama-cpp"
 version = "0.0.0"
 description = "Self-contained local inference engine for lilbee (llama-server + llama-swap + gguf-parser)"
 requires-python = ">=3.11"
 
 [tool.setuptools]
-packages = ["lilbee_engine"]
+packages = ["lilbee_engine_llama_cpp"]
 
 [tool.setuptools.package-data]
 # bin/**/* as well as bin/*: rocm is the first backend to put anything in a
 # subdirectory (rocBLAS reads its Tensile kernels from bin/rocblas/library), and a
 # single-level glob shipped a wheel whose engine died on the first matrix multiply.
-lilbee_engine = ["bin/*", "bin/**/*"]
+lilbee_engine_llama_cpp = ["bin/*", "bin/**/*"]

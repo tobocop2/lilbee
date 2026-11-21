@@ -1,6 +1,6 @@
 # Engine results
 
-This page records what each managed engine did when lilbee ran its strict output check. The check is the same one that [Preset results](preset-results.md) describes, with more steps.
+This page records what each managed engine did in its recorded run. Most rows are results of the strict output check. The check is the same one that [Preset results](preset-results.md) describes, with more steps. Two rows are manual runs of one chat request, and two rows are logs of a device list or an abort.
 
 ## How the check runs
 
@@ -20,21 +20,29 @@ A role that the engine does not claim has no row. A missing claim is `skip`, not
 
 ## Recordings
 
-No recording is taken yet. Each row changes when its recording lands. A recording is taken when an engine is added and on each pin bump.
+A recording is taken when an engine is added and on each pin bump. The Fixture column names the recording of each row. A row with no fixture has no recording yet. A test compares each row with its fixture and fails when they differ. It also fails when a fixture has no row.
 
-| Recording | Roles | Machine | Result |
-|---|---|---|---|
-| llama.cpp-cpu | chat, embed, rerank, vision | CPU host | not recorded |
-| llama.cpp-cuda | chat, embed, rerank, vision | NVIDIA GPU | not recorded |
-| mistralrs-cpu | chat, embed, vision | CPU host | not recorded |
-| mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |
-| tei-cpu | embed, rerank | CPU host | not recorded |
-| tei-cuda | embed, rerank | NVIDIA GPU | not recorded |
-| lemonade-cpu | chat, embed, rerank, vision | CPU host | not recorded |
-| lemonade-ryzen-ai | chat, embed, rerank | Ryzen AI machine | not recorded, no machine |
-| ik-llama-cuda | chat, embed | NVIDIA GPU | not recorded |
-| mlx-chat-metal | chat | Apple silicon Mac | not recorded |
-| mlx-embed-rerank-metal | embed, rerank | Apple silicon Mac | not recorded |
-| ovms-intel-igpu | chat | Intel machine | not recorded, no machine |
-| ovms-intel-npu | embed, rerank | Intel NPU machine | not recorded, no machine |
-| geniex-snapdragon-npu | chat | Snapdragon X machine | not recorded, no machine |
+The Machine column names the machine that the recording names. The Version column is the engine version that the recorder saved.
+
+| Recording | Roles | Machine | Result | Version | Fixture |
+|---|---|---|---|---|---|
+| llama.cpp-cpu | chat, embed, rerank, vision | CPU host | pass, 10 of 10 steps | memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051) | `llama.cpp-cpu.json` |
+| llama.cpp-cuda | chat, embed, rerank, vision | NVIDIA GeForce RTX 3090 | pass, 10 of 10 steps | memory-20261019-152820 62be051e9 llama-server 0.7.0-dev (build 1, commit 62be051) | `llama.cpp-cuda.json` |
+| llama.cpp-cpu-inline | chat | CPU host | pass, 7 of 7 steps | version: 0.8.0-dev (build 1, commit dde879b) | `llama.cpp-cpu-inline.json` |
+| mistralrs-cpu | chat, embed, vision | CPU host | pass, 9 of 9 steps | mistralrs 0.9.5 v0.9.5 cpu | `mistralrs-cpu.json` |
+| mistralrs-cuda | chat, embed, vision | NVIDIA GPU | not recorded |  |  |
+| tei-cpu | embed, rerank | CPU host | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cpu-1.9 | `tei-cpu.json` |
+| tei-cuda | embed, rerank | NVIDIA GeForce RTX 3090 | pass, 3 of 3 steps | 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cuda-source-1.9.4 | `tei-cuda.json` |
+| openvino-cpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-cpu.json` |
+| openvino-gpu | chat | Intel i7-10750H | manual run: 1 chat request, HTTP 200, no strict steps | llama-server 0.8.0-dev (build 12020, commit 0ec4027a2) openvino 2026.4.1 | `openvino-gpu.json` |
+| openvino-gpu-no-runtime | none | Intel i7-10750H | fail: the server aborts and does not fall back to the CPU | llama.cpp b12020 ubuntu-openvino-2026.4.1-x64 | `openvino-gpu-no-runtime.log` |
+| openvino-two-gpu | none | AMD Ryzen 5 8645HS | pass: `--list-devices` shows one CPU and two GPU devices |  | `openvino-two-gpu.list-devices.log` |
+| lemonade-ryzen-ai | chat, embed | Ryzen AI machine with an XDNA2 NPU | not recorded, no machine |  |  |
+| ik-llama-cuda | chat, embed | NVIDIA GPU | not recorded |  |  |
+| mlx-chat-metal | chat | Apple silicon Mac | not recorded |  |  |
+| mlx-embed-rerank-metal | embed, rerank | Apple silicon Mac | not recorded |  |  |
+| ovms-intel-igpu | chat | Intel machine | not recorded, no machine |  |  |
+| ovms-intel-npu | embed, rerank | Intel NPU machine | not recorded, no machine |  |  |
+| geniex-snapdragon-npu | chat | Snapdragon X machine | not recorded, no machine |  |  |
+
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).

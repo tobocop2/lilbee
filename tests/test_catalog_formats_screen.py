@@ -11,8 +11,10 @@ from textual.widgets import OptionList, Static
 
 from _async_wait import wait_until
 from conftest import stub_hf_listing
+from lilbee.app.engine_service import EngineOption
 from lilbee.catalog import query as _query
 from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.pull_fit import PullFit
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
@@ -33,6 +35,15 @@ class _SafetensorsEngine(BundledFakeAdapter):
     name = "llama.cpp"
     formats = frozenset({"gguf", "safetensors"})
     architectures = frozenset({"gguf_arch"})
+
+
+@pytest.fixture(autouse=True)
+def _no_hub_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The picker sizes a safetensors row from the Hub; keep these tests off the network."""
+    monkeypatch.setattr(
+        "lilbee.catalog.pull_fit.chat_pull_fit",
+        lambda *_a, **_kw: PullFit(device_bytes=1, ctx=1, size_known=True, upper_bound=False),
+    )
 
 
 @pytest.fixture
@@ -157,7 +168,8 @@ async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chos
         )
         picker = pilot.app.screen
         assert [
-            str(picker.query_one(OptionList).get_option_at_index(i).prompt) for i in range(2)
+            str(picker.query_one(OptionList).get_option_at_index(i).prompt).split()[0]
+            for i in range(2)
         ] == [
             "gguf",
             "safetensors",
@@ -170,10 +182,14 @@ async def test_install_of_a_two_format_row_offers_the_formats_and_pulls_the_chos
         ]
 
 
-async def test_install_of_a_format_no_engine_loads_refuses_and_starts_nothing(
+async def test_install_of_a_format_no_engine_loads_downloads_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only a gguf engine is installed, so the safetensors pick is refused before any download."""
+    """Only a gguf engine is installed; the safetensors pick still downloads."""
+    monkeypatch.setattr(
+        "lilbee.cli.tui.format_rows.engine_service.engine_options",
+        lambda _ref: [EngineOption(choice.AUTO)],
+    )
     model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.SAFETENSORS}))
     async with _App().run_test(size=(120, 40)) as pilot:
         screen = CatalogScreen()
@@ -187,9 +203,11 @@ async def test_install_of_a_format_no_engine_loads_refuses_and_starts_nothing(
         screen._install_model(model)
         assert await wait_until(pilot, lambda: isinstance(pilot.app.screen, FormatPicker))
         await pilot.press("down", "enter")
-        assert await wait_until(pilot, lambda: bool(notices))
-        assert "No installed engine loads the safetensors format" in notices[0]
-        assert started == []
+        assert await wait_until(pilot, lambda: bool(started))
+        assert [(m.format, m.pull_ref) for m in started] == [
+            (ModelFormat.SAFETENSORS, "acme/two#safetensors")
+        ]
+        assert not any("No installed engine" in n for n in notices)
 
 
 async def test_escape_in_the_format_picker_installs_nothing(
@@ -266,9 +284,10 @@ async def test_detail_pane_lists_formats_only_when_there_is_a_choice(
         await pilot.pause()
         drawer = pilot.app.query_one(CatalogDetailDrawer)
         drawer.update_for_row(_detail_row(formats))
+        section = drawer.query_one("#catalog-detail-formats", Static)
         compat = drawer.query_one("#catalog-detail-compat", Static)
         await wait_until(pilot, lambda: bool(str(compat.render()).strip()))
-        assert ("Formats: gguf, safetensors" in str(compat.render())) is shown
+        assert ("gguf" in str(section.render()) and "safetensors" in str(section.render())) is shown
 
 
 async def test_search_result_hides_count_in_the_same_note(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,12 +366,16 @@ async def test_install_of_a_file_already_on_disk_says_so_and_pulls_nothing(
 
 
 def test_the_download_task_pulls_by_the_format_reference(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lilbee.app.models import PullResult, PullStatus
     from lilbee.cli.tui.widgets.task_bar_controller import _download_target
 
     pulled: list[str] = []
-    monkeypatch.setattr(
-        "lilbee.app.models.pull_model_data", lambda ref, *_a, **_kw: pulled.append(ref)
-    )
+
+    def _pull(ref: str, *_a: object, **_kw: object) -> PullResult:
+        pulled.append(ref)
+        return PullResult(model=ref, source="native", status=PullStatus.OK)
+
+    monkeypatch.setattr("lilbee.app.models.pull_model_data", _pull)
     model = _row("acme/two", frozenset({ModelFormat.GGUF, ModelFormat.MLX}))
     _download_target(object(), replace(model, format=ModelFormat.MLX))  # type: ignore[arg-type]
     _download_target(object(), model)  # type: ignore[arg-type]

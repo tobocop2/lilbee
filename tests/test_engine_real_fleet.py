@@ -80,6 +80,9 @@ class _Gguf(BundledFakeAdapter):
     def runtime_env(self) -> dict[str, str]:
         return {}
 
+    def target_env(self, target, cards):
+        return {}
+
     def swap_extras(self, launch: Any) -> dict[str, str]:
         return {}
 
@@ -121,7 +124,7 @@ def real(
     planning.clear_read_device_cache()
     for module in (planning, planning.model_cache):
         monkeypatch.setattr(module, "total_system_memory", lambda: 64 * _GIB)
-        monkeypatch.setattr(module, "free_system_memory", lambda: 64 * _GIB)
+        monkeypatch.setattr(planning.model_cache, "free_system_memory", lambda: 64 * _GIB)
     monkeypatch.setattr(cfg, "system_memory_reserve_gb", 0)
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 1.0)
     monkeypatch.setattr(cfg, "num_ctx", None)

@@ -16,6 +16,7 @@ from lilbee.providers.fleet.gpu_backends.base import (
     parse_device_index,
     run_smi,
 )
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 
 _TOOL_AMD_SMI = "amd-smi"
 _TOOL_ROCM_SMI = "rocm-smi"
@@ -50,6 +51,8 @@ _TIMEOUT_S = 5.0
 
 class AmdBackend:
     """ROCm/HIP util via rocm-smi, falling back to amd-smi."""
+
+    pci_vendor = PCIVendorID.AMD
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
         result = _rocm_smi_samples(indices)

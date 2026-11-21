@@ -1,15 +1,17 @@
-"""The model set whose llama-swap config the golden records; it imports nothing from the engines."""
+"""The model set whose llama-swap config the golden records; it imports nothing from the engines.
+
+Every path is a ``PurePosixPath`` so the rendered text is the same on every host."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from lilbee.providers.roles import RerankMode, WorkerRole
 
-BINARY = Path("/engine/llama-server")
-LOG_DIR = Path("/engine/logs")
+BINARY = PurePosixPath("/engine/llama-server")
+LOG_DIR = PurePosixPath("/engine/logs")
 BASE_PORT = 5900
 TTL_SECONDS = 300
 THREADS = 6
@@ -31,7 +33,7 @@ class Member:
 def members() -> list[Member]:
     """A chat on two cards, two embed replicas, a rerank and a vision model."""
     chat = {
-        "model_path": Path("/m/chat.gguf"),
+        "model_path": PurePosixPath("/m/chat.gguf"),
         "devices": (0, 1),
         "device_names": ("CUDA0", "CUDA1"),
         "n_gpu_layers": 99,
@@ -48,14 +50,14 @@ def members() -> list[Member]:
         "kv_unified_per_slot": 4096,
     }
     embed = {
-        "model_path": Path("/m/embed.gguf"),
+        "model_path": PurePosixPath("/m/embed.gguf"),
         "devices": (),
         "n_gpu_layers": 0,
         "slots": 1,
         "ctx_per_slot": 512,
     }
     rerank = {
-        "model_path": Path("/m/rerank.gguf"),
+        "model_path": PurePosixPath("/m/rerank.gguf"),
         "devices": (0,),
         "device_names": ("CUDA0",),
         "n_gpu_layers": 99,
@@ -64,13 +66,13 @@ def members() -> list[Member]:
         "cpu_moe": True,
     }
     vision = {
-        "model_path": Path("/m/vision.gguf"),
+        "model_path": PurePosixPath("/m/vision.gguf"),
         "devices": (1,),
         "device_names": ("CUDA1",),
         "n_gpu_layers": 99,
         "slots": 1,
         "ctx_per_slot": 4096,
-        "mmproj": Path("/m/mmproj.gguf"),
+        "mmproj": PurePosixPath("/m/mmproj.gguf"),
     }
     gib = 1 << 30
     return [

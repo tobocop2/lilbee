@@ -44,7 +44,8 @@ def test_placement_views_plan_with_the_selected_engine(monkeypatch: pytest.Monke
             call()
     with pytest.raises(PlacementError, match="stop after the engine is chosen"):
         placement.set_placement(None)
-    assert [set(engines.values()) for engines in seen] == [{LLAMA}] * 3
+    # get_placement plans the saved spec, then the automatic plan when the spec is refused.
+    assert [set(engines.values()) for engines in seen] == [{LLAMA}] * 4
 
 
 def test_launcher_sizes_the_chat_window_with_the_selected_engine(
@@ -52,13 +53,11 @@ def test_launcher_sizes_the_chat_window_with_the_selected_engine(
 ) -> None:
     import lilbee.providers.engine_params as engine_params
     import lilbee.providers.fleet.planning as planning
-    import lilbee.providers.gguf_meta as gguf_meta
 
     seen: list[Any] = []
     monkeypatch.setattr(cfg, "chat_model", "local/model.gguf")
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda ref: tmp_path / "m.gguf")
-    monkeypatch.setattr(gguf_meta, "read_gguf_metadata", lambda path: None)
     monkeypatch.setattr(planning, "plan_sizing_budget", lambda engine: 1)
 
     def _ctx(path: Path, meta: object, *, engine: Any, available_bytes: int) -> int:

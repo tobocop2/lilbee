@@ -151,6 +151,10 @@ def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, An
     return filtered
 
 
+SERVER_STOPPING_MESSAGE = "The server is stopping."
+"""What a caller reads when a stop of the server ends its wait or its stream."""
+
+
 class ProviderErrorKind(StrEnum):
     """Provider-agnostic category of a failed provider call.
 
@@ -169,6 +173,8 @@ class ProviderErrorKind(StrEnum):
     CAPACITY = "capacity"
     PORT_CONFLICT = "port_conflict"
     MODEL_FILE_BROKEN = "model_file_broken"
+    CPU_UNSUPPORTED = "cpu_unsupported"
+    MISSING_LIBRARY = "missing_library"
     STARTING = "starting"
     UNKNOWN = "unknown"
 
@@ -191,6 +197,15 @@ class ProviderError(Exception):
         self.kind = kind
         super().__init__(message)
 
+    @property
+    def repeats_on_retry(self) -> bool:
+        """Whether the same input fails the same way again, so a retry cannot help."""
+        return self.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+class EmbeddingOverflowError(ProviderError):
+    """A context overflow raised by the embedding call."""
+
 
 # The 400 message of a server that refuses a prompt longer than its window.
 _PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
@@ -200,6 +215,9 @@ def is_prompt_length_overflow(text: str) -> bool:
     """Whether *text* is the 400 message of a server refusing a prompt past its window."""
     return _PROMPT_LENGTH_OVERFLOW.search(text) is not None
 
+
+# Capability tag for image input. Chat drops every image part, so no chat model reports it.
+VISION_CAPABILITY = "vision"
 
 # Human word per role for the not-configured error ("embedding model", not "embed model").
 _ROLE_WORDS: dict[WorkerRole, str] = {
@@ -354,6 +372,14 @@ class LLMProvider(Protocol):
         estimate.
         """
         ...
+
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the chat model's tokenizer, or None with no tokenize route.
+
+        Retrieval budgets the prompt with this count. None sends it back to
+        the character rule.
+        """
+        return None
 
     def count_chat_prompt_tokens(
         self,

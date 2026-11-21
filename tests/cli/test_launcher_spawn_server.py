@@ -8,6 +8,7 @@ mode, a size-capped log file otherwise).
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -125,6 +126,51 @@ def test_log_unlink_permission_error_falls_through_to_append(
     server_mod.spawn_server(8080)
     # The file still exists (not truncated because unlink was denied).
     assert log_path.exists()
+    _capture_popen["stdout"].close()
+
+
+def test_the_server_command_runs_the_lilbee_binary(monkeypatch, _capture_popen) -> None:
+    monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
+    monkeypatch.setattr(
+        server_mod.shutil, "which", lambda name: "/opt/bin/lilbee" if name == "lilbee" else None
+    )
+
+    server_mod.spawn_server(8080)
+
+    assert _capture_popen["cmd"] == ["/opt/bin/lilbee", "serve", "--port", "8080"]
+
+
+def test_the_server_command_falls_back_to_the_module_form(monkeypatch, _capture_popen) -> None:
+    monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
+    monkeypatch.setattr(server_mod.shutil, "which", lambda _name: None)
+
+    server_mod.spawn_server(8080)
+
+    assert _capture_popen["cmd"] == [sys.executable, "-m", "lilbee", "serve", "--port", "8080"]
+
+
+def test_the_log_directory_is_created_with_its_parents(
+    monkeypatch, tmp_path: Path, _capture_popen
+) -> None:
+    monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+    monkeypatch.setattr(cfg, "data_dir", tmp_path / "a" / "b")
+
+    server_mod.spawn_server(8080)
+
+    assert (tmp_path / "a" / "b" / "logs" / "launcher-serve.log").exists()
+    _capture_popen["stdout"].close()
+
+
+def test_a_log_exactly_at_the_cap_is_kept(monkeypatch, tmp_path: Path, _capture_popen) -> None:
+    monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+    monkeypatch.setattr(cfg, "data_dir", tmp_path)
+    log_path = tmp_path / "logs" / "launcher-serve.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_bytes(b"x" * (5 * 1024 * 1024))
+
+    server_mod.spawn_server(8080)
+
+    assert log_path.stat().st_size == 5 * 1024 * 1024
     _capture_popen["stdout"].close()
 
 
@@ -258,7 +304,7 @@ class TestEnsureServerRunningRetries:
         )
         spawn = mock.MagicMock(side_effect=procs)
         monkeypatch.setattr(server_mod, "spawn_server", spawn)
-        monkeypatch.setattr(server_mod, "wait_for_health", lambda _p: False)
+        monkeypatch.setattr(server_mod, "wait_for_health", lambda _p, **_kw: False)
 
         with pytest.raises(typer.Exit) as excinfo:
             server_mod.ensure_server_running()
@@ -278,7 +324,9 @@ class TestEnsureServerRunningRetries:
         )
         seen: list[int] = []
         monkeypatch.setattr(
-            server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
+            server_mod,
+            "_spawn_and_wait",
+            lambda port, **_kw: seen.append(port) or server_mod._FailedStart(None, ""),
         )
         with pytest.raises(typer.Exit):
             server_mod.ensure_server_running()
@@ -295,8 +343,305 @@ class TestEnsureServerRunningRetries:
         )
         seen: list[int] = []
         monkeypatch.setattr(
-            server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
+            server_mod,
+            "_spawn_and_wait",
+            lambda port, **_kw: seen.append(port) or server_mod._FailedStart(None, ""),
         )
         with pytest.raises(typer.Exit):
             server_mod.ensure_server_running()
         assert seen == [7, 8, 9]
+
+
+class TestServerExitAtStartup:
+    """A server that exits while the launcher waits ends the wait and shows its log."""
+
+    @staticmethod
+    def _proc(poll_result: int | None) -> mock.MagicMock:
+        proc = mock.MagicMock()
+        proc.poll.return_value = poll_result
+        return proc
+
+    @staticmethod
+    def _forbid(*_args, **_kwargs):
+        raise AssertionError("the launcher kept waiting on an exited server")
+
+    def test_wait_for_health_returns_false_at_once_when_the_server_exited(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(server_mod, "health_ok", self._forbid)
+        monkeypatch.setattr(server_mod.time, "sleep", self._forbid)
+
+        assert server_mod.wait_for_health(8080, 60.0, server=self._proc(1)) is False
+
+    def test_wait_for_health_still_polls_a_live_server(self, monkeypatch) -> None:
+        health = mock.MagicMock(side_effect=[False, True])
+        sleep = mock.MagicMock()
+        monkeypatch.setattr(server_mod, "health_ok", health)
+        monkeypatch.setattr(server_mod.time, "sleep", sleep)
+
+        assert server_mod.wait_for_health(8080, 60.0, server=self._proc(None)) is True
+        assert health.call_args_list == [mock.call(8080), mock.call(8080)]
+        sleep.assert_called_once_with(server_mod._SERVER_POLL_INTERVAL_S)
+
+    def test_wait_for_health_with_no_time_left_never_probes(self, monkeypatch) -> None:
+        health = mock.MagicMock(return_value=True)
+        monkeypatch.setattr(server_mod, "health_ok", health)
+        monkeypatch.setattr(server_mod.time, "monotonic", lambda: 100.0)
+
+        assert server_mod.wait_for_health(8080, 0.0) is False
+        health.assert_not_called()
+
+    def test_wait_for_health_stops_when_the_server_exits_mid_wait(self, monkeypatch) -> None:
+        proc = mock.MagicMock()
+        proc.poll.side_effect = [None, 3]
+        monkeypatch.setattr(server_mod, "health_ok", lambda _p: False)
+        monkeypatch.setattr(server_mod.time, "sleep", lambda _s: None)
+
+        assert server_mod.wait_for_health(8080, 5.0, server=proc) is False
+        assert proc.poll.call_count == 2
+
+    def _start_failing_launch(
+        self, monkeypatch, tmp_path: Path, *, writes: bool, status: int | None
+    ) -> Path:
+        """Set up a launch whose every spawn exits; each spawn appends one line when *writes*."""
+        log_path = tmp_path / "logs" / "launcher-serve.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"older session: stale error\n")
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        monkeypatch.setattr(cfg, "server_port", 0)
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
+        monkeypatch.setattr(server_mod, "free_port", lambda: 4321)
+        spawns: list[int] = []
+
+        def fake_spawn(_port, **_kw):
+            spawns.append(1)
+            if writes:
+                with log_path.open("ab") as handle:
+                    handle.write(f"attempt {len(spawns)}: build error\n".encode())
+            return self._proc(status)
+
+        monkeypatch.setattr(server_mod, "spawn_server", fake_spawn)
+        monkeypatch.setattr(server_mod, "health_ok", self._forbid)
+        monkeypatch.setattr(server_mod.time, "sleep", self._forbid)
+        return log_path
+
+    def test_launcher_shows_only_what_the_last_spawn_wrote(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        import typer
+
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        log_path = self._start_failing_launch(monkeypatch, tmp_path, writes=True, status=2)
+
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+
+        err = capsys.readouterr().err
+        assert "failed to start on port 4321" in err
+        assert f"Last lines of {log_path}" in err
+        assert f"attempt {server_mod._SPAWN_ATTEMPTS}: build error" in err
+        assert "attempt 1: build error" not in err
+        assert "stale error" not in err
+
+    def test_launcher_says_so_when_the_server_exits_without_output(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        import typer
+
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        log_path = self._start_failing_launch(monkeypatch, tmp_path, writes=False, status=7)
+
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+
+        err = capsys.readouterr().err
+        assert f"The server exited with status 7; it wrote nothing to {log_path}." in err
+        assert "stale error" not in err
+
+    def test_launcher_reports_the_exit_status_alone_in_quiet_mode(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        import typer
+
+        monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
+        self._start_failing_launch(monkeypatch, tmp_path, writes=True, status=3)
+
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+
+        err = capsys.readouterr().err
+        assert (
+            "The server exited with status 3; its output is off (LILBEE_LAUNCHER_SERVE_QUIET)"
+            in err
+        )
+        assert "Last lines" not in err
+        assert "build error" not in err
+
+    def test_launcher_adds_nothing_when_the_server_hangs_instead_of_exiting(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        import typer
+
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        self._start_failing_launch(monkeypatch, tmp_path, writes=False, status=None)
+        monkeypatch.setattr(server_mod, "wait_for_health", lambda _p, **_kw: False)
+
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+
+        err = capsys.readouterr().err
+        assert "failed to start on port 4321" in err
+        assert "exited" not in err
+        assert "Last lines" not in err
+
+    def test_log_since_reads_only_after_the_start_offset(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        log_path = tmp_path / "logs" / "launcher-serve.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"old\n")
+        start = server_mod._serve_log_size()
+        with log_path.open("ab") as handle:
+            handle.write(b"new\n")
+
+        assert start == 4
+        assert server_mod._serve_log_since(start) == "new"
+
+    def test_log_since_reads_a_log_truncated_after_the_offset_from_its_start(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        log_path = tmp_path / "logs" / "launcher-serve.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"fresh\n")
+
+        assert server_mod._serve_log_since(10_000) == "fresh"
+
+    def test_log_since_bounds_the_read_on_a_large_log(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        log_path = tmp_path / "logs" / "launcher-serve.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_text("".join(f"line {n:06d}\n" for n in range(200_000)), encoding="utf-8")
+        reads: list[int] = []
+        real = log_path.open("rb")
+
+        def read_and_record() -> bytes:
+            data = real.read()
+            reads.append(len(data))
+            return data
+
+        spy = mock.MagicMock(wraps=real)
+        spy.__enter__.return_value = spy
+        spy.__exit__.return_value = False
+        spy.read.side_effect = read_and_record
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(Path, "open", lambda self, *a, **k: spy)
+                tail = server_mod._serve_log_since(0)
+        finally:
+            real.close()
+
+        assert log_path.stat().st_size > 10 * 16 * 1024
+        assert reads == [16 * 1024]
+        lines = tail.splitlines()
+        assert len(lines) == 20
+        assert lines[-1] == "line 199999"
+
+    def test_log_since_is_empty_without_a_log(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+
+        assert server_mod._serve_log_size() == 0
+        assert server_mod._serve_log_since(0) == ""
+
+    def test_spawn_and_wait_hands_the_child_to_the_wait(self, monkeypatch) -> None:
+        proc = self._proc(None)
+        monkeypatch.setattr(server_mod, "spawn_server", lambda port, **_kw: proc)
+        wait = mock.MagicMock(return_value=True)
+        monkeypatch.setattr(server_mod, "wait_for_health", wait)
+
+        assert server_mod._spawn_and_wait(4321) is proc
+        wait.assert_called_once_with(4321, server=proc)
+
+    def test_spawn_and_wait_returns_the_exit_status_of_a_dead_child(self, monkeypatch) -> None:
+        proc = self._proc(5)
+        monkeypatch.setattr(server_mod, "spawn_server", lambda port, **_kw: proc)
+        monkeypatch.setattr(server_mod, "wait_for_health", lambda _p, **_kw: False)
+        monkeypatch.setattr(server_mod, "_serve_log_since", lambda _start: "boom")
+
+        assert server_mod._spawn_and_wait(4321) == server_mod._FailedStart(5, "boom")
+
+    def test_spawn_and_wait_passes_the_overrides_and_shows_the_status(self, monkeypatch) -> None:
+        spawn = mock.MagicMock(return_value=self._proc(None))
+        status = mock.MagicMock()
+        monkeypatch.setattr(server_mod, "spawn_server", spawn)
+        monkeypatch.setattr(server_mod, "wait_for_health", lambda _p, **_kw: True)
+        monkeypatch.setattr(server_mod.console, "status", status)
+
+        server_mod._spawn_and_wait(4321, env_overrides={"A": "1"})
+
+        spawn.assert_called_once_with(4321, env_overrides={"A": "1"})
+        status.assert_called_once_with("Starting lilbee server on port 4321...")
+
+    def test_log_size_is_zero_in_quiet_mode_even_with_a_log(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        log_path = tmp_path / "logs" / "launcher-serve.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"stale\n")
+
+        assert server_mod._serve_log_size() == 0
+
+    def test_log_since_replaces_bytes_that_are_not_utf8(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        log_path = tmp_path / "logs" / "launcher-serve.log"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_bytes(b"ok\n\xff\xfe boom\n")
+
+        assert server_mod._serve_log_since(0) == "ok\n�� boom"
+
+    def test_a_healthy_server_is_reused_after_probing_its_own_port(self, monkeypatch) -> None:
+        health = mock.MagicMock(return_value=True)
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: ("tok", 1234))
+        monkeypatch.setattr(server_mod, "health_ok", health)
+
+        assert server_mod.ensure_server_running() == (("tok", 1234), None)
+        health.assert_called_once_with(1234)
+
+    def test_the_overrides_reach_the_spawn(self, monkeypatch) -> None:
+        proc = self._proc(None)
+        spawn = mock.MagicMock(return_value=proc)
+        monkeypatch.setattr(cfg, "server_port", 0)
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
+        monkeypatch.setattr(server_mod, "free_port", lambda: 4321)
+        monkeypatch.setattr(server_mod, "_spawn_and_wait", spawn)
+        monkeypatch.setattr(server_mod, "_session_for_spawned", lambda _spawned: ("tok", 4321))
+
+        session, spawned = server_mod.ensure_server_running(env_overrides={"A": "1"})
+
+        assert (session, spawned) == (("tok", 4321), proc)
+        spawn.assert_called_once_with(4321, env_overrides={"A": "1"})
+
+    def test_the_failure_line_is_red_on_stderr(self, monkeypatch) -> None:
+        import typer
+
+        secho = mock.MagicMock()
+        monkeypatch.setattr(cfg, "server_port", 0)
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
+        monkeypatch.setattr(server_mod, "free_port", lambda: 4321)
+        monkeypatch.setattr(
+            server_mod, "_spawn_and_wait", lambda _port, **_kw: server_mod._FailedStart(None, "")
+        )
+        monkeypatch.setattr(server_mod.typer, "secho", secho)
+
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+
+        secho.assert_called_once_with(
+            "lilbee server failed to start on port 4321.", err=True, fg=typer.colors.RED
+        )

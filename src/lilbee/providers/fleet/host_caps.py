@@ -1,27 +1,32 @@
-"""What the host can run: CPU instruction sets, NVIDIA GPUs, NPUs, OS and architecture.
+"""What the host can run: CPU instruction sets, NVIDIA GPUs, OS and architecture.
 
 Each answer carries the reason an engine can show when the capability is absent.
-This module is the one reader of the NVML bindings; it reads no device text itself.
+The NVIDIA facts come from the NVIDIA adapter's bounded probes; this module reads no device text.
 """
 
 from __future__ import annotations
 
 import platform
+import re
 from collections.abc import Callable, Collection, Sequence
-from contextlib import suppress
+from ctypes.util import find_library
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from types import ModuleType
 from typing import Any, TypeVar
+
+from lilbee.providers.fleet.gpu_backends.nvidia import CUDA_MAJOR_UNIT, CUDA_MINOR_UNIT, host_facts
+from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 
 T = TypeVar("T")
 
 NO_NVIDIA_DRIVER = "no NVIDIA driver"
 NVIDIA_UNREADABLE = "the NVIDIA driver answers could not be read"
-_NVML_CUDA_MAJOR_DIVISOR = 1000
-_NVML_CUDA_MINOR_DIVISOR = 10
+MACOS_UNREADABLE = "The macOS version of this computer could not be read."
 _SYSFS_ACCEL_DIR = Path("/sys/class/accel")
+NPU_UNREAD = "The NPU list of this computer could not be read."
+_SYSFS_KFD_NODES = Path("/sys/class/kfd/kfd/topology/nodes")
+_GFX_VERSION = re.compile(r"^gfx_target_version\s+(?P<version>\d+)$", re.MULTILINE)
 
 
 class HostOS(StrEnum):
@@ -30,6 +35,9 @@ class HostOS(StrEnum):
     LINUX = "linux"
     MACOS = "macos"
     WINDOWS = "windows"
+
+
+_OS_DISPLAY = {HostOS.LINUX: "Linux", HostOS.MACOS: "macOS", HostOS.WINDOWS: "Windows"}
 
 
 class HostArch(StrEnum):
@@ -47,12 +55,23 @@ class NpuVendor(StrEnum):
     QUALCOMM = "qualcomm"
 
 
-# PCI vendor id of an accelerator, as sysfs writes it, to the NPU name reported.
-_ACCEL_NPU_NAMES = {
-    "0x8086": "Intel NPU",
-    "0x1022": "AMD NPU",
-    "0x17cb": "Qualcomm NPU",
+# PCI vendor id of an accelerator, as sysfs writes it. Vendor ids are public PCI data. A
+# Qualcomm id on Linux names any Qualcomm accelerator, a data-centre card among them. The
+# vendor id alone makes an NPU, so an AMD or Intel accelerator that is not an NPU reads as
+# one; that errs toward a refused engine, not a false pass.
+_NPU_VENDOR_BY_PCI = {
+    "0x8086": NpuVendor.INTEL,
+    "0x1022": NpuVendor.AMD,
+    "0x17cb": NpuVendor.QUALCOMM,
 }
+_NPU_DISPLAY = {
+    NpuVendor.INTEL: "Intel NPU",
+    NpuVendor.AMD: "AMD NPU",
+    NpuVendor.QUALCOMM: "Qualcomm accelerator",
+}
+# AMD device id to generation. Only ids this table names have a generation; any other
+# AMD id reads as an NPU of unknown generation. Unverified against the amdxdna driver.
+_AMD_GENERATION_BY_DEVICE = {"0x1502": "XDNA", "0x17f0": "XDNA2"}
 
 _OS_BY_SYSTEM = {"Linux": HostOS.LINUX, "Darwin": HostOS.MACOS, "Windows": HostOS.WINDOWS}
 _ARCH_BY_MACHINE = {
@@ -86,10 +105,11 @@ class NvidiaGpu:
 
 @dataclass(frozen=True)
 class Npu:
-    """One neural processing unit."""
+    """One neural processing unit; ``generation`` is ``None`` when the host does not say."""
 
     vendor: NpuVendor
     name: str
+    generation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,105 +118,29 @@ class HostCaps:
 
     os: HostOS | None
     arch: HostArch | None
-    macos_version: tuple[int, ...] | None
     avx2: Feature
     neon: Feature
     gpus: tuple[NvidiaGpu, ...]
     nvidia_driver_cuda: tuple[int, int] | None
     nvidia_reason: str
     nvidia_known: bool
-    npus: tuple[Npu, ...]
-
-
-def nvidia_feature(host: HostCaps) -> Feature:
-    """The NVIDIA GPU as a feature; unknown when the driver answers could not be read."""
-    return Feature(bool(host.gpus), host.nvidia_reason or "no NVIDIA GPU", known=host.nvidia_known)
-
-
-def _decoded(value: str | bytes) -> str:
-    """NVML bindings return ``str`` on recent versions and ``bytes`` on older ones."""
-    return value.decode() if isinstance(value, bytes) else value
-
-
-def _open_nvml() -> ModuleType | None:
-    """The initialised NVML bindings, or ``None`` when the library or driver is missing.
-
-    Any other failure to initialise raises: the driver is present but its state is unknown.
-    """
-    try:
-        import pynvml  # type: ignore[import-untyped]
-    except ImportError:
-        return None
-    try:
-        pynvml.nvmlInit()
-    except (pynvml.NVMLError_LibraryNotFound, pynvml.NVMLError_DriverNotLoaded):
-        return None
-    module: ModuleType = pynvml
-    return module
-
-
-def _close_nvml(nvml: ModuleType) -> None:
-    with suppress(Exception):  # a failed shutdown must not discard a finished read
-        nvml.nvmlShutdown()
-
-
-def nvml_device_totals() -> list[tuple[str, int]] | None:
-    """``[(uuid, total_bytes), ...]`` in driver order, or ``None`` on any NVML failure."""
-    try:
-        nvml = _open_nvml()
-    except Exception:
-        return None
-    if nvml is None:
-        return None
-    try:
-        found = []
-        for i in range(nvml.nvmlDeviceGetCount()):
-            handle = nvml.nvmlDeviceGetHandleByIndex(i)
-            uuid = _decoded(nvml.nvmlDeviceGetUUID(handle))
-            found.append((uuid, int(nvml.nvmlDeviceGetMemoryInfo(handle).total)))
-    except Exception:
-        return None
-    finally:
-        _close_nvml(nvml)
-    return found or None
-
-
-@dataclass(frozen=True)
-class CardMemory:
-    """The memory of one NVIDIA card, as the driver reports it now."""
-
-    uuid: str
-    name: str
-    total_bytes: int
-    free_bytes: int
-
-
-def read_card_memory() -> list[CardMemory]:
-    """Each NVIDIA card in driver order, in this process; empty on any NVML failure."""
-    try:
-        nvml = _open_nvml()
-    except Exception:
-        return []
-    if nvml is None:
-        return []
-    try:
-        cards = []
-        for i in range(nvml.nvmlDeviceGetCount()):
-            handle = nvml.nvmlDeviceGetHandleByIndex(i)
-            memory = nvml.nvmlDeviceGetMemoryInfo(handle)
-            cards.append(
-                CardMemory(
-                    uuid=_decoded(nvml.nvmlDeviceGetUUID(handle)),
-                    name=_decoded(nvml.nvmlDeviceGetName(handle)),
-                    total_bytes=int(memory.total),
-                    free_bytes=int(memory.free),
-                )
-            )
-    except Exception:
-        return []
-    finally:
-        _close_nvml(nvml)
-    return cards
+    macos_version: tuple[int, ...] | None = None
+    """The macOS version as numbers, or ``None`` off macOS and when it could not be read."""
+    macos_reason: str = ""
+    macos_known: bool = True
+    """False only on macOS when the version could not be read; then ``macos_reason`` says so."""
+    npus: tuple[Npu, ...] = ()
+    npu_known: bool = False
+    """False when the NPU list could not be read, as on Windows; ``npus`` then says nothing."""
+    npu_reason: str = NPU_UNREAD
+    display_vendors: frozenset[int] = frozenset()
+    """PCI vendor ids of the display controllers that a driver runs; empty when none can be read."""
+    amd_gfx: tuple[str, ...] = ()
+    """The gfx target of each AMD GPU that the Linux compute driver reports, such as gfx1100."""
+    vulkan_loader: bool = False
+    """True when the Vulkan loader library is installed."""
+    libnuma: bool = False
+    """True when the NUMA library is installed."""
 
 
 def _read_or_none(read: Callable[[], T]) -> T | None:
@@ -207,43 +151,11 @@ def _read_or_none(read: Callable[[], T]) -> T | None:
         return None
 
 
-def _read_gpus(nvml: ModuleType) -> list[dict[str, Any]]:
-    gpus = []
-    for i in range(nvml.nvmlDeviceGetCount()):
-        handle = nvml.nvmlDeviceGetHandleByIndex(i)
-        name = _decoded(nvml.nvmlDeviceGetName(handle))
-        gpus.append({"name": name, "cc": list(nvml.nvmlDeviceGetCudaComputeCapability(handle))})
-    return gpus
-
-
-def read_nvml() -> dict[str, Any] | None:
-    """Driver version, driver CUDA version and GPUs from NVML.
-
-    ``None`` means no NVML library or driver. A field that could not be read is ``None``.
-    """
-    try:
-        nvml = _open_nvml()
-    except Exception:
-        return {"driver": None, "cuda_driver": None, "gpus": None}
-    if nvml is None:
-        return None
-    try:
-        return {
-            "driver": _read_or_none(lambda: _decoded(nvml.nvmlSystemGetDriverVersion())),
-            "cuda_driver": _read_or_none(lambda: int(nvml.nvmlSystemGetCudaDriverVersion())),
-            "gpus": _read_or_none(lambda: _read_gpus(nvml)),
-        }
-    finally:
-        _close_nvml(nvml)
-
-
 def _cuda_version(code: object) -> tuple[int, int] | None:
-    """NVML encodes CUDA 12.4 as 12040; anything else is unreadable."""
+    """The adapter encodes CUDA 12.4 as 12040; anything else is unreadable."""
     if not isinstance(code, int) or isinstance(code, bool) or code <= 0:
         return None
-    return code // _NVML_CUDA_MAJOR_DIVISOR, (
-        code % _NVML_CUDA_MAJOR_DIVISOR
-    ) // _NVML_CUDA_MINOR_DIVISOR
+    return code // CUDA_MAJOR_UNIT, (code % CUDA_MAJOR_UNIT) // CUDA_MINOR_UNIT
 
 
 def _is_int(value: object) -> bool:
@@ -251,7 +163,7 @@ def _is_int(value: object) -> bool:
 
 
 def _gpus(raw: Any) -> tuple[NvidiaGpu, ...] | None:
-    """The GPUs in an NVML answer, or ``None`` when the answer is not readable."""
+    """The GPUs in an NVIDIA answer, or ``None`` when the answer is not readable."""
     try:
         gpus = tuple(NvidiaGpu(g["name"], (g["cc"][0], g["cc"][1])) for g in raw)
     except (TypeError, KeyError, IndexError):
@@ -263,93 +175,159 @@ def _gpus(raw: Any) -> tuple[NvidiaGpu, ...] | None:
 
 def _avx2(arch: HostArch | None, cpu_info: dict[str, Any]) -> Feature:
     if arch is None:
-        return Feature(False, "the CPU architecture could not be read", known=False)
+        return Feature(False, "The CPU architecture could not be read.", known=False)
     if arch is not HostArch.X86_64:
-        return Feature(False, "not an x86 CPU")
+        return Feature(False, "This is not an x86 CPU.")
     flags = cpu_info.get("flags")
-    brand = cpu_info.get("brand_raw") or "this CPU"
+    brand = cpu_info.get("brand_raw")
     if not isinstance(flags, Collection) or isinstance(flags, str):
-        return Feature(False, f"the CPU flags of {brand} could not be read", known=False)
+        return Feature(
+            False, f"The CPU flags of {brand or 'this CPU'} could not be read.", known=False
+        )
     if "avx2" in flags:
         return Feature(True)
-    return Feature(False, f"{brand} lacks AVX2")
+    return Feature(False, f"{brand or 'This CPU'} lacks AVX2.")
 
 
 def _neon(arch: HostArch | None) -> Feature:
     """NEON is part of every 64-bit ARM CPU; Apple Silicon reports no flags to read."""
     if arch is None:
-        return Feature(False, "the CPU architecture could not be read", known=False)
+        return Feature(False, "The CPU architecture could not be read.", known=False)
     if arch is HostArch.ARM64:
         return Feature(True)
-    return Feature(False, "not an ARM CPU")
+    return Feature(False, "This is not an ARM CPU.")
 
 
-def _npu(name: str) -> Npu | None:
-    lowered = name.lower()
-    for vendor in NpuVendor:
-        if vendor.value in lowered:
-            return Npu(vendor, name)
-    return None
+_NUMBER = re.compile(r"\d+")
 
 
-def _macos_version(mac_ver: str) -> tuple[int, ...] | None:
-    try:
-        return tuple(int(part) for part in mac_ver.split(".")) if mac_ver else None
-    except ValueError:
+def version_numbers(version: str) -> tuple[int, ...]:
+    """The numbers of a dotted version string; empty when it holds none."""
+    return tuple(int(part) for part in _NUMBER.findall(version))
+
+
+def _macos_version(host_os: HostOS | None, raw: str) -> tuple[int, ...] | None:
+    """The numbers of a macOS version string, or ``None`` off macOS or when unparseable."""
+    if host_os is not HostOS.MACOS:
         return None
+    return version_numbers(raw) or None
+
+
+def _npu(vendor_id: str, device_id: str) -> Npu | None:
+    vendor = _NPU_VENDOR_BY_PCI.get(vendor_id.lower())
+    if vendor is None:
+        return None
+    generation = (
+        _AMD_GENERATION_BY_DEVICE.get(device_id.lower()) if vendor is NpuVendor.AMD else None
+    )
+    return Npu(vendor, _NPU_DISPLAY[vendor], generation)
+
+
+def _npus(
+    host_os: HostOS | None, accel: Sequence[tuple[str, str]] | None
+) -> tuple[tuple[Npu, ...], bool, str]:
+    """The NPUs, whether the list was read, and why not. Only Linux lists accelerators."""
+    if host_os is not HostOS.LINUX:
+        where = _OS_DISPLAY[host_os] if host_os else "this OS"
+        return (), False, f"lilbee cannot read the NPU list on {where}."
+    if accel is None:
+        return (), False, NPU_UNREAD
+    found = (_npu(vendor, device) for vendor, device in accel)
+    return tuple(npu for npu in found if npu is not None), True, ""
 
 
 def collect(
     *,
     system: str,
     machine: str,
-    mac_ver: str,
     cpu_info: dict[str, Any],
-    nvml: dict[str, Any] | None,
-    npu_devices: Sequence[str],
+    nvidia: dict[str, Any] | None,
+    mac_ver: str = "",
+    accel_devices: Sequence[tuple[str, str]] | None = None,
+    display_vendors: Collection[int] = (),
+    amd_gfx: Sequence[str] = (),
+    vulkan_loader: bool = False,
+    libnuma: bool = False,
 ) -> HostCaps:
     """Build the host answer from raw readings; a value that cannot be read is unknown."""
     host_os = _OS_BY_SYSTEM.get(system)
     arch = _ARCH_BY_MACHINE.get(machine)
-    gpus = _gpus(nvml.get("gpus")) if nvml else ()
-    cuda = _cuda_version(nvml.get("cuda_driver")) if nvml else None
-    nvidia_known = gpus is not None and (cuda is not None or not nvml)
+    gpus = _gpus(nvidia.get("gpus")) if nvidia else ()
+    cuda = _cuda_version(nvidia.get("cuda_driver")) if nvidia else None
+    nvidia_known = gpus is not None and (cuda is not None or not nvidia)
+    macos_version = _macos_version(host_os, mac_ver)
+    macos_known = host_os is not HostOS.MACOS or macos_version is not None
+    npus, npu_known, npu_reason = _npus(host_os, accel_devices)
     return HostCaps(
         os=host_os,
         arch=arch,
-        macos_version=_macos_version(mac_ver) if host_os is HostOS.MACOS else None,
         avx2=_avx2(arch, cpu_info),
         neon=_neon(arch),
         gpus=gpus or (),
         nvidia_driver_cuda=cuda,
-        nvidia_reason=_nvidia_reason(nvml, nvidia_known),
+        nvidia_reason=_nvidia_reason(nvidia, nvidia_known),
         nvidia_known=nvidia_known,
-        npus=tuple(npu for npu in map(_npu, npu_devices) if npu is not None),
+        macos_version=macos_version,
+        macos_reason="" if macos_known else MACOS_UNREADABLE,
+        macos_known=macos_known,
+        npus=npus,
+        npu_known=npu_known,
+        npu_reason=npu_reason,
+        display_vendors=frozenset(display_vendors),
+        amd_gfx=tuple(amd_gfx),
+        vulkan_loader=vulkan_loader,
+        libnuma=libnuma,
     )
 
 
-def _nvidia_reason(nvml: dict[str, Any] | None, known: bool) -> str:
-    if not nvml:
+def _nvidia_reason(nvidia: dict[str, Any] | None, known: bool) -> str:
+    if not nvidia:
         return NO_NVIDIA_DRIVER
     return "" if known else NVIDIA_UNREADABLE
 
 
-def _accel_device_names() -> list[str]:
-    """Names of the NPUs the Linux accelerator class lists, from the PCI vendor of each."""
+def _read_text(path: Path) -> str | None:
     try:
-        vendor_files = sorted(_SYSFS_ACCEL_DIR.glob("accel*/device/vendor"))
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _accel_devices() -> list[tuple[str, str]]:
+    """``(vendor, device)`` PCI ids of each device in the Linux accelerator class."""
+    try:
+        folders = sorted(_SYSFS_ACCEL_DIR.glob("accel*/device"))
     except OSError:
         return []
-    names = []
-    for vendor_file in vendor_files:
-        try:
-            vendor = vendor_file.read_text(encoding="utf-8").strip().lower()
-        except (OSError, UnicodeDecodeError):
-            continue
-        name = _ACCEL_NPU_NAMES.get(vendor)
-        if name is not None:
-            names.append(name)
-    return names
+    found = []
+    for folder in folders:
+        vendor, device = _read_text(folder / "vendor"), _read_text(folder / "device")
+        if vendor is not None:
+            found.append((vendor, device or ""))
+    return found
+
+
+def gfx_target(version: int) -> str:
+    """The gfx name for a kernel ``gfx_target_version``: 110000 is gfx1100, 90010 is gfx90a."""
+    return f"gfx{version // 10000}{version // 100 % 100:x}{version % 100:x}"
+
+
+def _amd_gfx_targets() -> list[str]:
+    """The gfx target of each GPU node in the Linux compute driver's topology."""
+    try:
+        files = sorted(_SYSFS_KFD_NODES.glob("*/properties"))
+    except OSError:
+        return []
+    found = []
+    for path in files:
+        match = _GFX_VERSION.search(_read_text(path) or "")
+        if match and int(match["version"]) > 0:
+            found.append(gfx_target(int(match["version"])))
+    return found
+
+
+def _has_library(name: str) -> bool:
+    return find_library(name) is not None
 
 
 def _cpu_info() -> dict[str, Any]:
@@ -361,11 +339,16 @@ def _cpu_info() -> dict[str, Any]:
 
 def detect() -> HostCaps:
     """Read the live host."""
+    system = platform.system()
     return collect(
-        system=platform.system(),
+        system=system,
         machine=platform.machine(),
-        mac_ver=platform.mac_ver()[0],
         cpu_info=_read_or_none(_cpu_info) or {},
-        nvml=read_nvml(),
-        npu_devices=_accel_device_names(),
+        nvidia=host_facts(),
+        mac_ver=platform.mac_ver()[0],
+        accel_devices=_accel_devices() if system == "Linux" else None,
+        display_vendors=installed_gpu_vendor_ids(),
+        amd_gfx=_amd_gfx_targets() if system == "Linux" else (),
+        vulkan_loader=_has_library("vulkan-1" if system == "Windows" else "vulkan"),
+        libnuma=system == "Linux" and _has_library("numa"),
     )

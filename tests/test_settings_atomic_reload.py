@@ -177,7 +177,7 @@ def test_a_reader_never_sees_the_new_embedder_with_the_old_dim(
         assert read.wait(10)
         return 1024
 
-    monkeypatch.setattr(appset, "_embedder_dim_from_gguf", dim_while_a_reader_looks)
+    monkeypatch.setattr(appset, "_embedder_dim", dim_while_a_reader_looks)
     thread = threading.Thread(target=reader)
     thread.start()
     appset._settle(
@@ -195,7 +195,7 @@ def test_an_update_writes_the_file_after_the_new_embedder_and_its_dim_publish(
     monkeypatch.setattr(appset.cfg, "embedding_dim", 768)
     monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
     monkeypatch.setattr(appset, "_coerce_value", lambda key, value: value)
-    monkeypatch.setattr(appset, "_embedder_dim_from_gguf", lambda ref, registry=None: 1024)
+    monkeypatch.setattr(appset, "_embedder_dim", lambda ref, registry=None: 1024)
     monkeypatch.setattr(appset, "_run_deferred_provider_reset", lambda *a, **k: None)
     real_update = persistent_settings.update_values
     seen: list[tuple[tuple[str, int], dict[str, Any]]] = []

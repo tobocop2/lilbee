@@ -11,12 +11,14 @@ from .lance_helpers import (
     human_recall_predicate,
     install_lancedb_thread_error_suppressor,
     local_owner_predicate,
+    prune_old_versions,
     safe_delete,
 )
 from .ranking import cosine_sim, mmr_rerank
 from .types import (
     DOCUMENTS_PAGE_DEFAULT,
     DOCUMENTS_PAGE_MAX,
+    INGEST_FAILURES,
     LOCAL_OWNER,
     MEMORY_CONTENT_TYPE,
     MEMORY_SOURCE_PREFIX,
@@ -59,6 +61,7 @@ from .types import (
 __all__ = [
     "DOCUMENTS_PAGE_DEFAULT",
     "DOCUMENTS_PAGE_MAX",
+    "INGEST_FAILURES",
     "LOCAL_OWNER",
     "MEMORY_CONTENT_TYPE",
     "MEMORY_SOURCE_PREFIX",
@@ -105,6 +108,7 @@ __all__ = [
     "local_owner_predicate",
     "memory_source",
     "mmr_rerank",
+    "prune_old_versions",
     "safe_delete",
     "scope_to_chunk_type",
     "source_stat",

@@ -19,7 +19,7 @@ _PYPROJECT = pathlib.Path(__file__).resolve().parents[1] / "packaging/engine-whe
 
 def _package_data() -> list[str]:
     config = tomllib.loads(_PYPROJECT.read_text())
-    return config["tool"]["setuptools"]["package-data"]["lilbee_engine"]
+    return config["tool"]["setuptools"]["package-data"]["lilbee_engine_llama_cpp"]
 
 
 def test_package_data_reaches_into_subdirectories():

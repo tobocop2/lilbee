@@ -20,11 +20,16 @@ class LilbeeAppHost(LilbeeApp):
 
 
 def patch_model_write():
-    """Stand in for the model write of a picker pick: it succeeds and needs no rebuild."""
-    return patch(
-        "lilbee.cli.tui.widgets.model_pick.apply_active_model",
-        return_value=SettingsUpdateResult(updated=[], reindex_required=False),
-    )
+    """Stand in for the model write of a picker pick: it succeeds and needs no rebuild.
+
+    It writes nothing, and tells the app of the change as the real write does.
+    """
+
+    def written(host_app: LilbeeApp, key: str, _value: str) -> SettingsUpdateResult:
+        host_app.publish_settings([key])
+        return SettingsUpdateResult(updated=[], reindex_required=False)
+
+    return patch("lilbee.cli.tui.widgets.model_pick.apply_active_model", side_effect=written)
 
 
 # Chat screens whose show handler has returned. The handler moves focus to the chat

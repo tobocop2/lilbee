@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.text import clean_label_for_display
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.lock import SyncMarkWaitCancelledError, source_keys_in_use
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -39,7 +40,6 @@ from .shared import WIKI_BUILD_LOCK
 from .stubs import WikiStub, load_stub_index
 
 if TYPE_CHECKING:
-    import threading
     from pathlib import Path
 
     from lilbee.core.config import Config
@@ -115,7 +115,7 @@ def generate_stub_page(
     *,
     stats: BuildStats | None = None,
     on_progress: DetailedProgressCallback = noop_callback,
-    cancel: threading.Event | None = None,
+    cancel: CancelSignal | None = None,
 ) -> Path | None:
     """Write the page for one indexed subject. Returns its path, or None.
 

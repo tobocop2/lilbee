@@ -1,0 +1,119 @@
+{
+ "server": "omlx-chat",
+ "version": "omlx 0.7.3 metal",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "Qwen3-0.6B-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": true,
+   "detail": "kind=context_overflow"
+  }
+ },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"message\":\"Prompt is too long: 60009 tokens > 40960 maximum context length\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"context_length_exceeded\"}}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": " {\"id\":\"chatcmpl-9bb5cada\",\"object\":\"chat.completion\",\"created\":1793706070,\"model\":\"Qwen3-0.6B-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"The capital of France is Paris, and the capital of Italy is Rome.\",\"reasoning_content\":\"Okay, the user is asking about the capital of both France and Italy. I need to provide accurate information for each country.\\n\\nStarting with France, I know that Paris is the capital and the symbol of France. As for Italy, its capital is Rome. Both cities have important historical and cultural significance. Let me make sure I didn't mix up any details. Yes, France's capital is Paris, and Italy's capital is Rome.\\n\\nI should check if there are any other facts I might be missing. But from what I know, both capitals are well-known and correctly identified. So I can phrase the answer clearly and concisely in a single sentence as the user requested.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":43,\"completion_tokens\":155,\"total_tokens\":198,\"input_tokens\":43,\"output_tokens\":155,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":136},\"model_load_duration\":3.33,\"time_to_first_token\":2.52,\"total_time\":4.32,\"prompt_eval_duration\":2.52,\"generation_duration\":1.8,\"prompt_tokens_per_second\":17.08,\"generation_tokens_per_second\":85.88}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B-4bit",
+    "stream": false,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"chatcmpl-2549b677\",\"object\":\"chat.completion\",\"created\":1793706072,\"model\":\"Qwen3-0.6B-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"reasoning_content\":\"Okay, the user is asking for the weather in Paris. I need to use the get_weather function. Let me check the parameters. The function requires a city parameter, and the user specified Paris. So I should call get_weather with city set to Paris. No other parameters are needed. Just make sure the city name is correctly spelled. Alright, that's all.\",\"tool_calls\":[{\"id\":\"call_915845a8\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":161,\"completion_tokens\":97,\"total_tokens\":258,\"input_tokens\":161,\"output_tokens\":97,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":74},\"time_to_first_token\":0.47,\"total_time\":1.87,\"prompt_eval_duration\":0.47,\"generation_duration\":1.4,\"prompt_tokens_per_second\":343.41,\"generation_tokens_per_second\":69.35}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 400,
+   "content_type": "application/json",
+   "body": "{\"error\":{\"message\":\"Prompt is too long: 60009 tokens > 40960 maximum context length\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"context_length_exceeded\"}}"
+  }
+ ]
+}

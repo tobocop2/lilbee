@@ -56,6 +56,10 @@ class SettingDef:
     var: use it for transport/server knobs that aren't relevant to a
     typical TUI session.
 
+    ``tab`` names the dedicated settings tab that shows a ``hidden``
+    setting with its own control (the Engines tab, for example). The
+    settings reference prints that tab in its TUI column.
+
     ``advanced`` keeps the setting shown, but folded into a collapsed
     section at the bottom of its tab: use it for a setting a normal
     user never needs to get good results (engine internals, timeouts,
@@ -70,6 +74,7 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
+    tab: str | None = None
     advanced: bool = False
     # List editors validate each line as a regex only when this is set; flag-style
     # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
@@ -114,7 +119,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.OCR_TUNING,
-        help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
+        help_text=(
+            "Per-page timeout in seconds for vision OCR (0 = no limit; a wait for a"
+            " reload of the vision model still ends at vision_load_budget_s)"
+        ),
         advanced=True,
     ),
     "vision_load_budget_s": SettingDef(
@@ -124,6 +132,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Wall-clock seconds reserved for the vision worker to load the"
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
+            " With ocr_timeout 0, a page waits this long for a reload to bring the"
+            " vision model back (0 = no wait)."
         ),
         advanced=True,
     ),
@@ -212,15 +222,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "is on (changes invalidate the index)"
         ),
         advanced=True,
-    ),
-    "token_sizing": SettingDef(
-        bool,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Size chunks by real embedder tokens, not chars; on by itself when the "
-            "embedder's window is below the character budget (changes invalidate the index)"
-        ),
     ),
     "table_extraction": SettingDef(
         bool,
@@ -447,7 +448,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Restrict llama.cpp to specific GPU indexes on dual-GPU machines "
+            "Restrict the engine to specific GPU indexes on dual-GPU machines "
             "(e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. "
             "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
         ),
@@ -583,6 +584,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Drop candidates whose raw reranker score is below this (unset = off)",
         advanced=True,
+    ),
+    "choose_engine_on_pick": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        help_text=(
+            "Ask which engine runs a model when you pick it in the model picker "
+            "(off = the picked model uses its saved engine, or auto)"
+        ),
+        hidden=True,
+        tab="Engines",
     ),
     "show_reasoning": SettingDef(
         bool,
@@ -1241,7 +1253,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         float,
         nullable=False,
         group=SettingGroup.GENERATION,
-        help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+        help_text="Fraction of GPU memory used to size the context window (0.1-1.0)",
         advanced=True,
     ),
     "usable_vram_fraction": SettingDef(
@@ -1524,7 +1536,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         help_text=(
-            "Inference provider: auto (default, runs models locally on llama-server) "
+            "Inference provider: auto (default, runs models locally on the managed engine) "
             "or remote (external OpenAI-compatible endpoint)"
         ),
     ),
@@ -1544,7 +1556,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
+        help_text="llama-server path (empty: bundled wheel, PATH, then the engine pack)",
         advanced=True,
     ),
     "wiki_summary_max_tokens": SettingDef(

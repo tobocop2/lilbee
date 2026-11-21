@@ -16,8 +16,11 @@ from lilbee.app.services import (
     answer_provider_waiters,
     exit_after_signal,
     exit_if_opens_remain,
+    exit_status_after_stop,
     report_library_upgrade,
+    reset_services_on_exit,
     set_server_exit_hook,
+    stop_on_interrupt,
     wait_for_hard_exit_teardown,
 )
 from lilbee.cli.app import (
@@ -58,6 +61,9 @@ LOCK_REFUSAL_EXIT_CODE = 3
 Distinct from a generic failure so a supervisor can tell "another server owns
 this" apart from a crash without parsing output.
 """
+
+_STARTUP_FAILED_EXIT_STATUS = 1
+"""Exit code for a server whose startup failed, such as a failed services build."""
 
 _EXIT_DEADLINE_S = 60.0
 """Seconds from the start of shutdown until the process ends, whatever holds it."""
@@ -127,7 +133,12 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     parent_watcher: asyncio.Task[None] | None = None
     try:
         set_server_exit_hook(exit_request)
-        await server.startup()
+        try:
+            await server.startup()
+        except SystemExit:
+            # uvicorn ends a failed start (lifespan or bind) with the status a lock refusal uses.
+            # A stop signal during the start has set its own nonzero status.
+            return exit_request.status or _STARTUP_FAILED_EXIT_STATUS
         started = True
 
         parent_pid = parse_parent_pid()
@@ -246,8 +257,9 @@ def serve(
             timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_S,
         )
         server = uvicorn.Server(config)
-        # asyncio takes over Ctrl-C only from this handler; a launch may have set an ignore.
-        signal.signal(signal.SIGINT, signal.default_int_handler)
+        # Keeps asyncio from installing its own handler, which only cancels the main task
+        # through a loop callback. An inherited ignore of SIGINT stays ignored.
+        stop_on_interrupt()
         status = asyncio.run(_run_server(server, config, cfg.server_host))
     except Exception:
         # The exit in the finally can end the process before the traceback prints.
@@ -260,7 +272,7 @@ def serve(
         raise
     finally:
         _stop_server(status, server_lock, scope_hold)
-    raise typer.Exit(status)
+    raise typer.Exit(exit_status_after_stop(status))
 
 
 def _stop_server(status: int, server_lock: FileLock, scope_hold: ScopeHold | None) -> None:
@@ -284,8 +296,16 @@ def mcp_cmd(
     _report_upgrade_as_log_lines()
     from lilbee.mcp_server import main
 
+    # Set before the loop starts, so asyncio leaves Ctrl-C to this handler and no
+    # loop takes a signal disposition with it when it closes.
+    stop_on_interrupt()
     try:
         main()
     except SystemExit as exc:
         exit_after_signal(exc.code if isinstance(exc.code, int) else 1)
         raise
+    # The teardown runs here, not at atexit, so a signal that lands during it sets the status.
+    reset_services_on_exit()
+    status = exit_status_after_stop(0)
+    if status:
+        raise typer.Exit(status)

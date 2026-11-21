@@ -1,5 +1,6 @@
 """Model formats on the Hugging Face Hub: tags, file selection, listing parameters."""
 
+import json
 import posixpath
 import re
 from collections.abc import Iterable
@@ -9,7 +10,7 @@ from lilbee.catalog.types import ModelFormat
 
 _GGUF_SEARCH_TERM = "GGUF"
 _SAFETENSORS_SUFFIX = ".safetensors"
-_SAFETENSORS_INDEX = "model.safetensors.index.json"
+SAFETENSORS_INDEX = "model.safetensors.index.json"
 _SHARD_RE = re.compile(r"-\d+-of-\d+\.safetensors$")
 _SHARD_PARTS_RE = re.compile(r"(.*)-(\d+)-of-(\d+)\.safetensors")
 _IR_MODEL = "openvino_model.xml"
@@ -20,6 +21,7 @@ _IR_COMPANIONS = (
     "openvino_detokenizer.xml",
     "openvino_detokenizer.bin",
 )
+_PROCESSOR_FILES = ("preprocessor_config.json", "processor_config.json")
 _TOKENIZER_FILES = (
     "added_tokens.json",
     "chat_template.jinja",
@@ -37,8 +39,11 @@ _MODULE_FILE_RE = re.compile(r"\d+_[^/]+/(?:config\.json|model\.safetensors)")
 
 
 def formats_from_tags(tags: Iterable[str]) -> frozenset[ModelFormat]:
-    """The formats a repo's Hub tags name; an MLX repo is not plain safetensors."""
-    found = {fmt for fmt in ModelFormat if fmt.value in set(tags)}
+    """The formats a repo's Hub tags name; an MLX repo is not plain safetensors.
+
+    No tag names XDNA: those models are named by engine tag, not by Hub repo.
+    """
+    found = {fmt for fmt in ModelFormat if fmt is not ModelFormat.XDNA and fmt.value in set(tags)}
     if ModelFormat.MLX in found:
         found.discard(ModelFormat.SAFETENSORS)
     return frozenset(found)
@@ -61,13 +66,16 @@ def select_files(fmt: ModelFormat, filenames: Iterable[str]) -> list[str]:
 
     Selection reads the listing, never the Hub tags: a tag only says the format
     exists somewhere in the repo. Only exact names and weight suffixes match, so
-    a hash-named blob or a pickled ``pytorch_model.bin`` is never chosen.
+    a hash-named blob or a pickled ``pytorch_model.bin`` is never chosen. An XDNA
+    model has no repo files to select: its engine downloads it.
     """
     names = sorted(set(filenames))
     if fmt == ModelFormat.GGUF:
         selected = _select_gguf(names)
     elif fmt == ModelFormat.OPENVINO:
         selected = _select_openvino(names)
+    elif fmt == ModelFormat.XDNA:
+        selected = []
     else:
         selected = _select_safetensors(fmt, names)
     _refuse_unsafe_names(selected)
@@ -91,6 +99,17 @@ def _require_whole_shard_sets(names: list[str], shards: list[str]) -> None:
                 raise ValueError(f"Incomplete model: {expected} is missing from the file list")
 
 
+def require_declared_shards(index_text: str, selected: list[str]) -> None:
+    """Raise ValueError naming the first shard that the index file declares and *selected* lacks."""
+    try:
+        declared = sorted(set(json.loads(index_text)["weight_map"].values()))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise ValueError(f"Unusable model: {SAFETENSORS_INDEX} lists no weight_map") from None
+    for shard in declared:
+        if shard not in selected:
+            raise ValueError(f"Incomplete model: {shard} is missing from the file list")
+
+
 def _present(names: list[str], wanted: Iterable[str]) -> list[str]:
     return [name for name in wanted if name in names]
 
@@ -107,10 +126,11 @@ def _select_safetensors(fmt: ModelFormat, names: list[str]) -> list[str]:
     if not weights:
         return []
     _require_whole_shard_sets(names, shards)
-    index = _present(names, [_SAFETENSORS_INDEX])
+    index = _present(names, [SAFETENSORS_INDEX])
     extras = _present(names, ["config.json", *_TOKENIZER_FILES])
     if fmt == ModelFormat.SAFETENSORS:
-        extras += _present(names, ["generation_config.json"]) + _module_files(names)
+        extras += _present(names, ["generation_config.json", *_PROCESSOR_FILES])
+        extras += _module_files(names)
     entry = index + weights if shards else weights + index
     return [*entry, *sorted(extras)]
 

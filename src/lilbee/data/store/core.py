@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
@@ -74,8 +74,11 @@ from .lance_helpers import (
     _vector_index_dangling,
     ensure_table,
     escape_sql_string,
+    newest_meta_row,
     open_committed,
+    prune_old_versions,
     refs_compatible,
+    stored_width,
     table_names,
 )
 from .locations import SourceLocations, root_location, under_sql
@@ -90,9 +93,8 @@ from .schema import (
     _wiki_mentions_schema,
 )
 from .types import (
-    ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
+    INGEST_FAILURES,
     KEYED_SCHEMA_VERSION,
-    META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
     SOURCE_STAT_UNKNOWN,
@@ -318,10 +320,12 @@ _UPGRADE_THREAD_PREFIX = "library-upgrade"
 _PATH = "path"
 # The ``_sources`` column that names why a sync holds a row's path out (``HeldOut``).
 _HELD_OUT = "held_out"
-# The content hash a sync holds the path out at, and the reason shown for it.
+# The content hash a sync holds the path out at, the reason shown, and the settings of the hold.
 _HELD_HASH = "held_hash"
 _HELD_REASON = "held_reason"
-_HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON)
+_HELD_INPUTS = "held_inputs"
+_HELD_COLUMNS = (_HELD_OUT, _HELD_HASH, _HELD_REASON, _HELD_INPUTS)
+_HELD_RECORD_COLUMNS = (_HELD_HASH, _HELD_REASON, _HELD_INPUTS)
 
 # Tables that hold a source's rows, deleted with the source. The concept
 # nodes/edges tables carry no source column (corpus-level aggregates).
@@ -363,10 +367,13 @@ _UNSTAMPED = f"schema_version >= 2 AND schema_version < {KEYED_SCHEMA_VERSION}"
 # The type column of ``_sources``, and of the chunks table.
 _SOURCE_TYPE = "source_type"
 _CHUNK_TYPE = "chunk_type"
+# The rows whose held kind is a failed ingest, which keep the document they hold.
+_INGEST_FAILED_KINDS = ", ".join(f"'{kind}'" for kind in sorted(INGEST_FAILURES))
+_INGEST_FAILED = f"{_HELD_OUT} IN ({_INGEST_FAILED_KINDS})"
 # The source rows a listing shows: each that holds a document, failed at a later edit or not.
 _LISTED = (
     f"{_SOURCE_TYPE} != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
-    f" OR {_HELD_OUT} = '{HeldOut.FAILED}' AND file_hash IS NOT NULL)"
+    f" OR {_INGEST_FAILED} AND file_hash IS NOT NULL)"
 )
 # The source rows stored at their location; every other source is stored by its key.
 _DOCUMENT = f"{_SOURCE_TYPE} = '{SourceType.DOCUMENT}'"
@@ -380,10 +387,7 @@ _NOT_WIKI_CHUNK = f"({_CHUNK_TYPE} IS NULL OR NOT ({_WIKI_CHUNK}))"
 _WIKI_ID_SUFFIX = "wiki"
 _WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
 # The source rows a move found by a sync carries: the listed ones and every failure.
-_MOVABLE = (
-    f"{_SOURCE_TYPE} != '{SourceType.WIKI}'"
-    f" AND ({_HELD_OUT} IS NULL OR {_HELD_OUT} = '{HeldOut.FAILED}')"
-)
+_MOVABLE = f"{_SOURCE_TYPE} != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL OR {_INGEST_FAILED})"
 # The source rows an upgrade compares a document key with: any row whose type is not wiki.
 _NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR NOT ({_WIKI}))"
 
@@ -419,6 +423,7 @@ _CITED_ONLY_SQL = {
     "chunk_count": "0",
     _HELD_HASH: _NULL_TEXT_SQL,
     _HELD_REASON: _NULL_TEXT_SQL,
+    _HELD_INPUTS: _NULL_TEXT_SQL,
 }
 
 # Rows a location fill reads and writes back in one batch: bounds its memory at any row count.
@@ -493,6 +498,22 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
                 f"Vector dimension mismatch: expected {embedding_dim}, "
                 f"got {len(vec)} (source={rec.get('source', '?')})"
             )
+
+
+def _meta_drift(
+    meta: StoreMeta | None, current_model: str, current_dim: int
+) -> EmbeddingModelMismatchError | None:
+    """The drift between the *meta* row and the current embedder, or ``None``."""
+    if meta is None or refs_compatible(
+        meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
+    ):
+        return None
+    return EmbeddingModelMismatchError(
+        persisted_model=meta["embedding_model"],
+        persisted_dim=meta["embedding_dim"],
+        current_model=current_model,
+        current_dim=current_dim,
+    )
 
 
 def _citations_for_wiki_predicate(wiki_source: str) -> str:
@@ -783,7 +804,7 @@ def _wiki_id(key: str) -> str:
 def _holds_document(row: Mapping[str, Any]) -> bool:
     """Whether a document source *row* holds an indexed document, as ``_LISTED`` reads it."""
     kind = row[_HELD_OUT]
-    return kind is None or (kind == HeldOut.FAILED and row["file_hash"] is not None)
+    return kind is None or (kind in INGEST_FAILURES and row["file_hash"] is not None)
 
 
 def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) -> dict[str, Any]:
@@ -793,8 +814,9 @@ def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) 
         _HELD_OUT: record.kind.value,
         _HELD_HASH: record.file_hash,
         _HELD_REASON: record.reason,
+        _HELD_INPUTS: record.inputs or None,
     }
-    if record.kind is HeldOut.FAILED and holds_document:
+    if record.kind in INGEST_FAILURES and holds_document:
         return held
     return {**held, "file_hash": None, "chunk_count": 0}
 
@@ -836,7 +858,7 @@ def _held_unmigrated(db: LanceDBConnection, data_root: Path) -> bool:
     if legacy_files(data_root):
         return True
     sources = open_committed(db, SOURCES_TABLE)
-    return sources is not None and not {_HELD_HASH, _HELD_REASON} <= set(sources.schema.names)
+    return sources is not None and not set(_HELD_RECORD_COLUMNS) <= set(sources.schema.names)
 
 
 def _add_held_columns(db: LanceDBConnection) -> None:
@@ -844,7 +866,7 @@ def _add_held_columns(db: LanceDBConnection) -> None:
     sources = open_committed(db, SOURCES_TABLE)
     if sources is None:
         return
-    missing = [name for name in (_HELD_HASH, _HELD_REASON) if name not in sources.schema.names]
+    missing = [name for name in _HELD_RECORD_COLUMNS if name not in sources.schema.names]
     if missing:
         sources.add_columns(dict.fromkeys(missing, _NULL_TEXT_SQL))
 
@@ -1259,20 +1281,19 @@ class Store:
             )
 
     def get_meta(self) -> StoreMeta | None:
-        """Return the persisted store metadata row, or ``None`` if unset."""
+        """Return the persisted store metadata row, or ``None`` if unset or holding no width."""
         table = self.open_table(META_TABLE)
         if table is None:
             return None
-        rows = table.search().limit(None).to_list()
-        if not rows:
+        row = newest_meta_row(table)
+        if row is None:
             return None
-        # _meta is meant to hold one row, but a swallowed delete on rewrite could
-        # leave a stale one behind; take the newest so identity reads stay
-        # deterministic rather than returning an arbitrary row.
-        row = max(rows, key=lambda r: r["updated_at"])
+        width = stored_width(row["embedding_dim"])
+        if width is None:
+            return None
         return StoreMeta(
             embedding_model=row["embedding_model"],
-            embedding_dim=int(row["embedding_dim"]),
+            embedding_dim=width,
             schema_version=int(row["schema_version"]),
             updated_at=row["updated_at"],
         )
@@ -1280,10 +1301,9 @@ class Store:
     def canary_state(self) -> CanaryState | None:
         """The canary baseline in the ``_meta`` row, or ``None`` when the row holds none."""
         table = self.open_table(META_TABLE)
-        rows = table.search().limit(None).to_list() if table is not None else []
-        if not rows:
+        row = None if table is None else newest_meta_row(table)
+        if row is None:
             return None
-        row = max(rows, key=lambda r: r["updated_at"])
         vectors = row.get(CANARY_VECTORS_COLUMN)
         if not vectors or len(vectors) != len(CANARY_TEXTS):
             return None
@@ -1308,26 +1328,16 @@ class Store:
         baseline stays as the row holds it unless *canary* replaces it.
         """
         state = self.canary_state() if isinstance(canary, str) else canary
-        db = self.get_db()
-        table = ensure_table(db, META_TABLE, _meta_schema())
-        if CANARY_VECTORS_COLUMN in table.schema.names:
-            _safe_delete_unlocked(table, META_DELETE_ALL_PREDICATE)
-        else:
-            db.drop_table(META_TABLE)
-            table = ensure_table(db, META_TABLE, _meta_schema())
-        table.add(
-            [
-                {
-                    "embedding_model": embedding_model,
-                    "embedding_dim": embedding_dim,
-                    "schema_version": META_SCHEMA_VERSION,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                    CANARY_VECTORS_COLUMN: state.vectors if state else None,
-                    "canary_trigger": state.trigger if state else None,
-                    "canary_verified": state.verified if state else None,
-                }
-            ]
-        )
+        row = {
+            "embedding_model": embedding_model,
+            "embedding_dim": embedding_dim,
+            "schema_version": META_SCHEMA_VERSION,
+            "updated_at": datetime.now(UTC).isoformat(),
+            CANARY_VECTORS_COLUMN: state.vectors if state else None,
+            "canary_trigger": state.trigger if state else None,
+            "canary_verified": state.verified if state else None,
+        }
+        self.get_db().create_table(META_TABLE, [row], schema=_meta_schema(), mode="overwrite")
         # A rebuild is the remedy the prefix warning names, so the next query
         # re-decides instead of logging a mismatch this write just resolved.
         self._doc_prefix_warned = False
@@ -1365,28 +1375,38 @@ class Store:
         """Public predicate: True iff the store currently holds at least one chunk."""
         return self._has_chunks()
 
+    def _chunks_width(self) -> int:
+        """The width of the vectors the chunks table holds. Call it when chunks exist."""
+        chunks = self.open_table(CHUNKS_TABLE)
+        assert chunks is not None  # callers checked for chunks  # noqa: S101
+        return cast("int", chunks.schema.field("vector").type.list_size)
+
     def initialize_meta_if_legacy(self) -> bool:
-        """Pin a legacy store's identity to the current cfg if not already set.
+        """Pin a legacy store's identity to the cfg model and the stored chunks width.
 
         Returns ``True`` when a meta row was just written. No-op when meta already
         exists or no chunks are present. This is the path that converts a
         pre-upgrade store (chunks present, no ``_meta``) into a gated store. It
-        snapshots cfg under the write lock to keep the recorded identity coherent
-        with what the gate is comparing against.
+        reads the cfg model and the chunks width under the write lock, so a rebuild
+        cannot change either between the read and the stamp.
         """
         if self.get_meta() is not None:
             return False
         if not self._has_chunks():
             return False
-        embedding_model = self._config.embedding_model
-        embedding_dim = self._config.embedding_dim
         with self._write_lock():
             # Re-check under the lock so two callers do not both warn-and-write.
             if self.get_meta() is not None:
                 return False
+            # A rebuild that ran before the lock may have dropped the chunks.
+            if not self._has_chunks():
+                return False
+            embedding_model = self._config.embedding_model
+            embedding_dim = self._chunks_width()
             log.warning(
-                "Legacy store has chunks but no _meta row. Initializing _meta from "
-                "the current configuration (embedding_model=%s, embedding_dim=%d). "
+                "Legacy store has chunks but no _meta row. Initializing _meta from the "
+                "current embedding_model and the width of the stored chunks "
+                "(embedding_model=%s, embedding_dim=%d). "
                 "If you changed embedding_model before upgrading, run `lilbee rebuild` "
                 "to ensure the store is consistent.",
                 embedding_model,
@@ -1419,19 +1439,7 @@ class Store:
         """
         current_model = self._config.embedding_model if model is None else model
         current_dim = self._config.embedding_dim if dim is None else dim
-        meta = self.get_meta()
-        if meta is None:
-            return None
-        if refs_compatible(
-            meta["embedding_model"], current_model, meta["embedding_dim"], current_dim
-        ):
-            return None
-        return EmbeddingModelMismatchError(
-            persisted_model=meta["embedding_model"],
-            persisted_dim=meta["embedding_dim"],
-            current_model=current_model,
-            current_dim=current_dim,
-        )
+        return _meta_drift(self.get_meta(), current_model, current_dim)
 
     def _embed_canaries(self, probe: CanaryProbe) -> list[Vector] | None:
         """Embed the canary texts, or ``None`` when the embedder is down."""
@@ -1545,15 +1553,44 @@ class Store:
         """The verdict a report shows: the embedder name first, then the canary check."""
         return self.index_mismatch() or self.canary_mismatch()
 
+    def ensure_servable(self) -> None:
+        """Raise ``EmbeddingModelMismatchError`` when the index cannot answer cfg's embedder.
+
+        Callers run it before they embed a query, so a switched model fails with the
+        rebuild advice instead of a width error from its own vector. A store with no
+        meta row has no verdict. Call it with no write lock held.
+        """
+        self.initialize_meta_if_legacy()
+        self.canonicalize_meta_if_legacy()
+        self._ensure_embedding_servable()
+
     def _ensure_embedding_servable(self) -> None:
         """Raise when the index and the embedder disagree. Call it with no write lock held."""
         mismatch = self.embedding_mismatch()
         if mismatch is not None:
             raise mismatch
 
+    def _unstamped_width_mismatch(self) -> EmbeddingModelMismatchError | None:
+        """The width drift of stored chunks that no meta row describes, or None."""
+        if not self._has_chunks():
+            return None
+        width = self._chunks_width()
+        if width == self._config.embedding_dim:
+            return None
+        return EmbeddingModelMismatchError(
+            persisted_model=self._config.embedding_model,
+            persisted_dim=width,
+            current_model=self._config.embedding_model,
+            current_dim=self._config.embedding_dim,
+        )
+
     def _ensure_embedding_compat(self) -> None:
         """Raise when the persisted embedding identity drifts from cfg."""
-        mismatch = self.index_mismatch()
+        meta = self.get_meta()
+        if meta is None:
+            mismatch = self._unstamped_width_mismatch()
+        else:
+            mismatch = _meta_drift(meta, self._config.embedding_model, self._config.embedding_dim)
         if mismatch is not None:
             raise mismatch
 
@@ -1799,20 +1836,20 @@ class Store:
         """Upgrade *db* under the write lock, waiting for it without a deadline, and report it."""
         self._upgrade_started = time.monotonic()
         try:
+            self._record_upgrade_running()
             with ExitStack() as held:
                 try:
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=0.0))
                 except LockTimeoutError:
                     self._report_upgrade(UpgradePhase.WAITING)
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
+                    self._report_upgrade(UpgradePhase.TABLE)
                 # Another process can have upgraded it during the wait.
                 if self._upgrade_needed(db):
                     self._upgrade_unlocked(db)
         except BaseException:
             self._report_upgrade(UpgradePhase.FAILED)
             raise
-        finally:
-            self._upgrade = None
         self._report_upgrade(UpgradePhase.DONE)
 
     def _upgrade_unlocked(self, db: LanceDBConnection) -> None:
@@ -1822,11 +1859,16 @@ class Store:
             _add_held_columns(db)
         if _upgrade_pending(db):
             self._migrate_unlocked(db)
+            self._record_upgrade_running()
         if held:
             self._import_held_unlocked(db)
         if legacy_crawl_files(self._config.data_dir):
             import_legacy_crawl_files(db, self._config.data_dir)
         _fill_locations(db, self._locations())
+
+    def _record_upgrade_running(self) -> None:
+        """Record the upgrade as running with no table in hand, without reporting an event."""
+        self._upgrade = LibraryUpgradeEvent(phase=UpgradePhase.TABLE)
 
     def _report_upgrade(self, phase: UpgradePhase, step: _TableStep | None = None) -> None:
         """Pass *phase* to the reporter, timed from the upgrade's start; record it while it runs."""
@@ -1958,7 +2000,7 @@ class Store:
                 self._fts_ready = True
                 try:
                     # One optimize folds new rows into every index on the table.
-                    table.optimize()
+                    prune_old_versions(table, keep_version=table.version)
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                     if _index_registry(table, self._config.lancedb_dir) is None:
                         # Suspected producer of an index without files; unconfirmed.
@@ -2217,7 +2259,7 @@ class Store:
             if _vector_index_dangling(table, indices, self._config.lancedb_dir):
                 return self._rebuild_dangling_vector_index(table)
             if _has_vector_index(indices):
-                table.optimize()
+                prune_old_versions(table, keep_version=table.version)
                 log.debug("Vector index optimized on '%s'", CHUNKS_TABLE)
                 if _index_registry(table, self._config.lancedb_dir) is None:
                     # Repair in the same step when the prune dropped FTS files.
@@ -2367,9 +2409,7 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
-        self.initialize_meta_if_legacy()
-        self.canonicalize_meta_if_legacy()
-        self._ensure_embedding_servable()
+        self.ensure_servable()
         self._warn_stale_doc_prefix()
 
         if not self._scalar_ready:
@@ -2671,7 +2711,8 @@ class Store:
         """The persisted entity schema row, or ``None`` when never induced.
 
         The schema is machine state induced from the corpus and lives inside
-        the index, so it travels with the data.
+        the index, so it travels with the data. A row written before the
+        document count was recorded reads as 0 (corpus size unknown).
         """
         table = self.open_table(ENTITY_SCHEMA_TABLE)
         if table is None:
@@ -2684,25 +2725,21 @@ class Store:
         return EntitySchemaState(
             schema_json=str(row["schema_json"]),
             applied=bool(row["applied"]),
-            source_count=int(row["source_count"]),
+            source_count=int(row.get("source_count") or 0),
             updated_at=str(row["updated_at"]),
         )
 
     def save_entity_schema(self, schema_json: str, *, applied: bool, source_count: int) -> None:
         """Overwrite the single persisted entity schema row."""
         with self._write_lock():
-            db = self.get_db()
-            table = ensure_table(db, ENTITY_SCHEMA_TABLE, _entity_schema_state_schema())
-            _safe_delete_unlocked(table, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
-            table.add(
-                [
-                    {
-                        "schema_json": schema_json,
-                        "applied": applied,
-                        "source_count": source_count,
-                        "updated_at": datetime.now(UTC).isoformat(),
-                    }
-                ]
+            row = {
+                "schema_json": schema_json,
+                "applied": applied,
+                "source_count": source_count,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            self.get_db().create_table(
+                ENTITY_SCHEMA_TABLE, [row], schema=_entity_schema_state_schema(), mode="overwrite"
             )
 
     def mark_entity_schema_applied(self) -> None:
@@ -3365,7 +3402,7 @@ class Store:
             if table is None:
                 return
             try:
-                table.optimize()
+                prune_old_versions(table, keep_version=table.version)
             except Exception:
                 log.debug("Sources table optimize failed", exc_info=True)
 
@@ -3537,7 +3574,10 @@ class Store:
         name = self._locations().name
         return {
             name(row[_PATH]): HeldRecord(
-                HeldOut(row[_HELD_OUT]), row[_HELD_HASH], row[_HELD_REASON]
+                HeldOut(row[_HELD_OUT]),
+                row[_HELD_HASH],
+                row[_HELD_REASON],
+                row[_HELD_INPUTS] or "",
             )
             for row in rows
         }
@@ -3570,6 +3610,33 @@ class Store:
                 batch = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
                 self._release_unlocked(f"{_PATH} IN ({batch})")
         self._invalidate_source_cache()
+
+    def release_retries(
+        self, keep: Collection[str], owns: Callable[[str], bool] | None = None
+    ) -> list[str]:
+        """Release each retry record but those of *keep*, of the paths *owns* takes; sorted paths.
+
+        A sync's retry records are then the files it could not finish: a moved or
+        deleted file loses its record. With no *owns*, every path is taken.
+        """
+        released: list[str] = []
+        with self._write_lock():
+            table = self.open_table(SOURCES_TABLE)
+            if table is None:
+                return []
+            name = self._locations().name
+            query = table.search().where(f"{_HELD_OUT} = '{HeldOut.RETRY}'")
+            rows = query.select([_SOURCE_ID, _PATH]).limit(None).to_list()
+            stale = sorted(
+                row[_SOURCE_ID]
+                for row in rows
+                if (path := name(row[_PATH])) not in keep and (owns is None or owns(path))
+            )
+            for start in range(0, len(stale), _SOURCE_STAT_BATCH_ROWS):
+                batch = _in_list(stale[start : start + _SOURCE_STAT_BATCH_ROWS])
+                released += self._release_unlocked(f"{_SOURCE_ID} IN ({batch})")
+        self._invalidate_source_cache()
+        return sorted(released)
 
     def release_failed(self) -> list[str]:
         """Hold no failed file out of a sync any more; returns their paths, sorted."""
@@ -4084,7 +4151,8 @@ class Store:
         The snapshot, embed, and table swap all run under the write lock so a
         concurrent ``add_memory`` cannot commit into the read-then-swap window and
         be erased; it either lands before the snapshot or blocks until the rebuild
-        finishes.
+        finishes. The overwrite leaves the old table versions on disk, so they are
+        pruned after it; the replaced version stays, for a reader that opened it.
         """
         with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
@@ -4093,6 +4161,7 @@ class Store:
             rows = table.search().limit(None).to_list()
             if not rows:
                 return 0
+            replaced_version = table.version
             memories = [MemoryRow(**r) for r in rows]
             vectors = embed([m.text for m in memories])
             dim = self._config.embedding_dim
@@ -4108,12 +4177,17 @@ class Store:
                     )
                 # MemoryRow serializes to JSON on write, which has no ndarray encoding.
                 memory.vector = vector.tolist()
-            self.get_db().create_table(
+            rebuilt = self.get_db().create_table(
                 MEMORIES_TABLE,
                 data=[m.model_dump(mode="json") for m in memories],
                 schema=self._memories_schema(),
                 mode="overwrite",
             )
+            try:
+                prune_old_versions(rebuilt, keep_version=replaced_version)
+            except Exception as exc:
+                # The rebuilt rows are committed; a failed prune leaves old versions for the next.
+                log.warning("Pruning old versions of %s failed: %s", MEMORIES_TABLE, exc)
         return len(memories)
 
     def close(self) -> None:

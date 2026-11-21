@@ -23,7 +23,7 @@ from tests.test_ingest_fanout import _CANCEL_BOUND_S, FakeContext
 
 @pytest.fixture(autouse=True)
 def restored_environ():
-    """The fan-out gate applies the fleet's GPU env; siblings must not inherit it."""
+    """The fan-out gate sets the GPU env; siblings do not inherit it."""
     snapshot = dict(os.environ)
     yield
     os.environ.clear()

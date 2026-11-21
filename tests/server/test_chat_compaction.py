@@ -19,6 +19,7 @@ from lilbee.retrieval.query.compaction import (
     history_budget,
     summary_messages,
 )
+from lilbee.retrieval.query.searcher import RagContext
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalStreamEvent,
     ContentBlockDelta,
@@ -73,7 +74,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.build_rag_context.return_value = None
+    searcher.build_rag_context.return_value = RagContext([], [], refused=True)
     searcher.search_unavailable.return_value = False
     searcher.pre_retrieval_answer.return_value = None
     searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]

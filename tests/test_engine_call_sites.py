@@ -32,6 +32,8 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, fixed_weights_estimate
+from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
@@ -96,6 +98,9 @@ class SpyEngine(BundledFakeAdapter):
     def runtime_env(self) -> Mapping[str, str]:
         return SPY_ENV
 
+    def target_env(self, target: Any, cards: int) -> Mapping[str, str]:
+        return {}
+
     def swap_extras(self, launch: Any) -> Mapping[str, Any]:
         return SPY_EXTRAS
 
@@ -150,6 +155,18 @@ def spy(tmp_path: Path, model_file: Path, monkeypatch: pytest.MonkeyPatch) -> Sp
     planning.clear_read_device_cache()
 
 
+class UnsizedSpy(SpyEngine):
+    """A spy that cannot read the model's size and answers with the unknown-size reserve."""
+
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        return fixed_weights_estimate(None)
+
+
+@pytest.fixture
+def unsized_spy(spy: SpyEngine) -> UnsizedSpy:
+    return UnsizedSpy(spy.binary())
+
+
 class FlakySpy(SpyEngine):
     """A spy whose first probe lists no device, as a transient init error does."""
 
@@ -181,15 +198,113 @@ class TestDeviceReads:
         assert spy.probed == [spy.binary()]
 
     def test_gpu_device_count_counts_the_engine_devices(self, spy: SpyEngine) -> None:
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         two = SpyEngine(
             spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
         )
         assert replicas.gpu_device_count(two) == 2
 
     def test_gpu_device_count_is_one_without_an_engine_binary(self, spy: SpyEngine) -> None:
-        replicas.gpu_device_count.cache_clear()
+        replicas._probed_gpu_count.cache_clear()
         assert replicas.gpu_device_count(_binaryless(spy)) == 1
+
+    def test_gpu_device_count_reads_the_cards_again_once_the_binary_is_installed(
+        self, spy: SpyEngine
+    ) -> None:
+        """A count read with no binary is not kept: the engine counts its cards once installed."""
+
+        class LateBinary(SpyEngine):
+            installed = False
+
+            def binary(self) -> Path:
+                if not self.installed:
+                    raise ProviderError("spy binary missing", provider="spy")
+                return super().binary()
+
+        late = LateBinary(
+            spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
+        )
+        replicas._probed_gpu_count.cache_clear()
+        assert replicas.gpu_device_count(late) == 1
+        late.installed = True
+        assert replicas.gpu_device_count(late) == 2
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_is_one_when_the_engine_cannot_load(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sizing read needs no engine: a missing DLL sizes as a GPU-less host."""
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert replicas.gpu_device_count(spy) == 1
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_is_one_when_the_engine_dies_on_an_illegal_instruction(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A build this CPU cannot run sizes as a GPU-less host, as a missing DLL does."""
+        from lilbee.providers.fleet.devices import EngineIllegalInstructionError
+
+        def cannot_run(_binary: Path, _engine: object) -> None:
+            raise EngineIllegalInstructionError("illegal instruction", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_run)
+        assert replicas.gpu_device_count(spy) == 1
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_reads_the_cards_again_once_the_runtime_is_installed(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A count read while the DLL was missing is not kept: a live process sees both cards."""
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert replicas.gpu_device_count(spy) == 1
+        two_cards = [SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4)]
+        monkeypatch.setattr(planning, "resolve_devices", lambda _binary, _engine: two_cards)
+        assert replicas.gpu_device_count(spy) == 2
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_a_sync_that_needs_no_engine_plans_with_an_engine_that_cannot_load(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sync on an empty library starts no engine, so a missing DLL must not stop its plan."""
+        from lilbee.data.ingest import fanout
+        from lilbee.providers.fleet.devices import EngineDllMissingError
+
+        def cannot_load(_binary: Path, _engine: object) -> None:
+            raise EngineDllMissingError("DLL missing", provider="llama")
+
+        services = SimpleNamespace(
+            engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=spy))
+        )
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr("lilbee.app.services._state.singleton", services)
+        monkeypatch.setattr(planning, "resolve_devices", cannot_load)
+        assert fanout.plan_fanout() == []
+        replicas._probed_gpu_count.cache_clear()
+
+    def test_gpu_device_count_still_raises_a_wedged_probe(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def wedged(_binary: Path, _engine: object) -> None:
+            raise ProviderError("probe timed out", provider="llama")
+
+        replicas._probed_gpu_count.cache_clear()
+        monkeypatch.setattr(planning, "resolve_devices", wedged)
+        with pytest.raises(ProviderError, match="probe timed out"):
+            replicas.gpu_device_count(spy)
+        replicas._probed_gpu_count.cache_clear()
 
     def test_probed_devices_and_backend_come_from_the_engine(self, spy: SpyEngine) -> None:
         assert planning.probed_devices(spy) == (SPY_DEVICE,)
@@ -278,6 +393,7 @@ class TestMemoryEstimates:
             flash_attn=False,
             kv_cache_type=cfg.kv_cache_type,
             unified=False,
+            on_cpu=False,
             ctx_ceiling=4096,
             expert_offload=(),
         )
@@ -322,6 +438,39 @@ class TestMemoryEstimates:
         self, spy: SpyEngine, model_file: Path
     ) -> None:
         assert planning._chat_host_estimate(model_file, 100, 2, spy) == 100 * 2 * BYTES_PER_CTX + 7
+
+    def test_an_unsized_chat_has_no_host_estimate_to_compare_a_spill_against(
+        self, unsized_spy: SpyEngine, model_file: Path
+    ) -> None:
+        assert planning._chat_host_estimate(model_file, 100, 2, unsized_spy) == 0
+
+    def test_an_unknown_size_role_carries_the_reserve_as_host_bytes(
+        self, unsized_spy: SpyEngine
+    ) -> None:
+        placed = planning._estimate_role(WorkerRole.EMBED, "embed-ref", engine=unsized_spy)
+        assert not placed.size_known
+        assert placed.est_ram_bytes == UNKNOWN_SIZE_RESERVE_BYTES
+
+    def test_an_unknown_size_model_is_refused_on_a_host_smaller_than_its_reserve(
+        self, unsized_spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(planning, "_host_bytes_must_be_resident", lambda *_a: True)
+
+        def admitted(total_gib: int) -> object:
+            monkeypatch.setattr(planning, "total_system_memory", lambda: total_gib << 30)
+            return planning._estimate_or_fallback(
+                WorkerRole.EMBED,
+                "embed-ref",
+                engine=unsized_spy,
+                unified_budget=None,
+                chat_reservation=0,
+                device_count=0,
+                total_vram=0,
+                skipped_not_installed={},
+            )
+
+        assert admitted(64) is not None
+        assert admitted(4) is None
 
     def test_declared_reserve_is_the_engine_figure(self, spy: SpyEngine, model_file: Path) -> None:
         request = MemoryRequest(
@@ -392,7 +541,7 @@ class TestMemoryEstimates:
         assert fitter is not None
         assert spy.meta_paths
         assert target == planning._placement_estimate_ctx(
-            WorkerRole.CHAT, spy.meta_paths[0], dict(SPY_META)
+            WorkerRole.CHAT, spy.meta_paths[0], dict(SPY_META), engine=spy
         )
         assert target == 4096
 
@@ -433,7 +582,9 @@ class TestModelMeta:
             1 << 30,
             role=WorkerRole.CHAT,
             meta=dict(SPY_META),
-            ctx=planning._placement_estimate_ctx(WorkerRole.CHAT, model_file, dict(SPY_META)),
+            ctx=planning._placement_estimate_ctx(
+                WorkerRole.CHAT, model_file, dict(SPY_META), engine=spy
+            ),
             slots=planning._placement_estimate_slots(WorkerRole.CHAT, dict(SPY_META)),
             engine=spy,
         )
@@ -480,6 +631,16 @@ class _NoFitSpy(SpyEngine):
         return False
 
 
+class _FitOfItsOwnBinarySpy(SpyEngine):
+    """A spy that supports a fit target for its own binary and for no other path."""
+
+    def supports_fit_target(self, binary: Path) -> bool:
+        return binary == self._binary
+
+
+_SPY_CARDS = {SPY_DEVICE.index: SPY_DEVICE}
+
+
 class TestLaunchBuild:
     @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
     def test_launch_is_built_from_the_engine_answers(
@@ -502,6 +663,18 @@ class TestLaunchBuild:
         launch = planning.build_single_role_launch(WorkerRole.CHAT, model_file, engine=spy)
         assert any(a.startswith("--spy-fit=(") and a != "--spy-fit=()" for a in launch.argv)
         assert f"--spy-kv={launch.ctx}" in launch.argv
+
+    def test_a_launch_for_a_role_other_than_chat_leaves_no_fit_target(self, spy: SpyEngine) -> None:
+        plan = InstancePlan(role=WorkerRole.EMBED, devices=(SPY_DEVICE.index,))
+        launch = planning._launch_for(plan, "org/repo/embed.gguf", _SPY_CARDS, engine=spy)
+        assert "--spy-fit=()" in launch.argv
+
+    def test_the_chat_fit_target_is_asked_about_the_engine_binary(self, spy: SpyEngine) -> None:
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(SPY_DEVICE.index,))
+        launch = planning._launch_for(
+            plan, "org/repo/chat.gguf", _SPY_CARDS, engine=_FitOfItsOwnBinarySpy(spy._binary)
+        )
+        assert any(a.startswith("--spy-fit=(") and a != "--spy-fit=()" for a in launch.argv)
 
     def test_the_launch_needs_the_engine_binary(self, spy: SpyEngine, model_file: Path) -> None:
         with pytest.raises(ProviderError, match="spy binary missing"):
@@ -697,6 +870,76 @@ class TestProvider:
         provider._reload_pass()
         warnings = self._no_engine_warnings(routing)
         assert [code for code, _ in warnings] == [WarningCode.ENGINE_FALLBACK]
+
+
+class TestProviderCallersAskTheRoleEngine:
+    """Chat on the host engine and the other roles on a spy: a caller must ask the role's own."""
+
+    @pytest.fixture
+    def mixed(self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+        book = {**engines_for_all_roles(spy), WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        monkeypatch.setattr(planning, "snapshot_engine", lambda engines: LLAMA)
+
+    def test_supports_rerank_asks_the_rerank_engine(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(type(spy), "served_roles", frozenset({WorkerRole.EMBED}))
+        assert WorkerRole.RERANK in LLAMA.served_roles
+        assert FleetProvider().supports_rerank() is False
+
+    def test_supports_rerank_is_false_when_no_engine_holds_the_rerank_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        book = {WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        assert FleetProvider().supports_rerank() is False
+
+    def test_embed_token_cap_reads_the_model_with_the_embed_engine(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        FleetProvider().embed_token_cap()
+        assert spy.meta_paths
+
+    def test_embed_token_cap_is_none_when_the_embed_role_has_no_engine(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        book = {WorkerRole.CHAT: LLAMA}
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
+        assert FleetProvider().embed_token_cap() is None
+
+    def test_the_placeable_check_asks_each_role_engine_and_the_total_asks_the_host(
+        self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import lilbee.providers.fleet.provider as prov_mod
+
+        asked: dict[WorkerRole, Any] = {}
+        totals: list[Any] = []
+
+        def _placeable(role: WorkerRole, model: str, total: int, *, engine: Any) -> bool:
+            asked[role] = engine
+            return True
+
+        plan = SimpleNamespace(
+            launches=[
+                SimpleNamespace(role=role, settings={})
+                for role in (WorkerRole.CHAT, WorkerRole.EMBED)
+            ],
+            skipped_not_installed={},
+            refused_roles={},
+        )
+        monkeypatch.setattr(planning, "plan_all_launches", lambda **_k: plan)
+        monkeypatch.setattr(planning, "role_model_placeable", _placeable)
+        monkeypatch.setattr(
+            planning, "placeable_total_vram", lambda engine: totals.append(engine) or 1
+        )
+        monkeypatch.setattr(prov_mod, "_configured_model_for", lambda role: "ref")
+        monkeypatch.setattr(prov_mod, "_demanded_chat_ctx", lambda launches, pairs: 0)
+        monkeypatch.setattr(prov_mod, "_demanded_vision_slots", lambda pairs: 0)
+        prov_mod._placeable_demand(LLAMA, {**engines_for_all_roles(spy), WorkerRole.CHAT: LLAMA})
+        assert asked == {WorkerRole.CHAT: LLAMA, WorkerRole.EMBED: spy}
+        assert totals == [LLAMA]
 
 
 class TestSelfCheck:

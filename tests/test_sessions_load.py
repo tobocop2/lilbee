@@ -19,6 +19,7 @@ Randomised, but seeded: a failure here reproduces exactly.
 from __future__ import annotations
 
 import random
+import sys
 import threading
 from pathlib import Path
 
@@ -174,6 +175,51 @@ def test_concurrent_writers_never_lose_or_corrupt_turns(store, tmp_path) -> None
         assert [m.content for m in session.messages] == [
             f"{sid[:4]}-{i}" for i in range(per_session)
         ], "a concurrent writer lost or interleaved a turn"
+
+
+def test_parallel_listings_while_sessions_are_created_never_raise(store) -> None:
+    """Listings run in parallel while a thread creates sessions.
+
+    A listing prunes the meta cache while another listing inserts a new key, so
+    without the cache lock the prune raises "dictionary changed size during iteration".
+    A tiny switch interval makes the thread switch land inside the prune.
+    """
+    for _ in range(300):
+        store.create(model_ref="m", scope="both")
+    store.list()
+    errors: list[BaseException] = []
+    done = threading.Event()
+
+    def create() -> None:
+        try:
+            for _ in range(150):
+                store.create(model_ref="m", scope="both")
+        except BaseException as exc:  # surfaced via the assert below, not swallowed
+            errors.append(exc)
+        finally:
+            done.set()
+
+    def keep_listing() -> None:
+        try:
+            while not done.is_set():
+                store.list()
+        except BaseException as exc:  # surfaced via the assert below, not swallowed
+            errors.append(exc)
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=create)]
+        threads += [threading.Thread(target=keep_listing) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(previous)
+
+    assert not errors, f"a listing raised: {errors[:2]}"
+    assert len(store.list()) == 450
 
 
 def test_listing_stays_correct_at_volume(store) -> None:

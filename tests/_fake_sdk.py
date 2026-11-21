@@ -1,6 +1,6 @@
 """A stand-in for the ``liter_llm`` module, injected where the extra is not installed.
 
-It models the declared surface of liter-llm 2.4.1 (its type stub), never the adapter's
+It models the declared surface of liter-llm 2.5.0 (its type stub), never the adapter's
 reading of it: reply objects carry the documented accessors and nothing the stub omits.
 It has the async ``chat`` / ``chat_stream`` / ``embed`` / ``rerank`` functions, the
 request and options types, and the typed exception hierarchy. Each call
@@ -32,12 +32,29 @@ ERROR_NAMES = (
     "LiterLlmTimeoutError",
     "NetworkError",
     "NotFoundError",
+    "OutboundForbiddenError",
     "ProviderQuotaExceededError",
     "RateLimitedError",
     "ServerError",
     "ServiceUnavailableError",
     "StreamingError",
 )
+
+
+# The classes whose stub declares ``message`` and ``status``; a raised one carries the
+# server's reply and its HTTP status.
+STATUS_ERROR_NAMES = ("BadRequestError",)
+
+
+def _status_error_init(self: Any, message: str, status: int = 400) -> None:
+    """Set the reply text and status.
+
+    The SDK sets ``message`` to the ``error.message`` of an OpenAI-style reply, as bare text,
+    and to the raw body for any other reply.
+    """
+    Exception.__init__(self, message)
+    self.message = message
+    self.status = status
 
 
 def _ns(**kwargs: Any) -> types.SimpleNamespace:
@@ -105,7 +122,7 @@ def finish_member(wire: str) -> FinishReason:
 
 
 class ReasoningEffort(_Enum):
-    """Mirrors ``liter_llm.ReasoningEffort`` 2.4.1."""
+    """Mirrors ``liter_llm.ReasoningEffort`` 2.5.0."""
 
     LOW: ReasoningEffort
     MEDIUM: ReasoningEffort
@@ -298,7 +315,8 @@ class FakeSdk:
         base = type("LiterLlmError", (Exception,), {})
         mod.LiterLlmError = base  # type: ignore[attr-defined]
         for name in ERROR_NAMES:
-            setattr(mod, name, type(name, (base,), {}))
+            body = {"__init__": _status_error_init} if name in STATUS_ERROR_NAMES else {}
+            setattr(mod, name, type(name, (base,), body))
         for cls in (_ClientOptions, _ChatRequest, _EmbedRequest, _RerankRequest, _Tool):
             setattr(mod, cls.public_name, cls)
         mod.FinishReason = FinishReason  # type: ignore[attr-defined]
@@ -354,10 +372,18 @@ class FakeSdk:
         self.calls.append(("list_catalog_models", {"provider": provider}))
         return [m for m in self.catalog if not provider or m.provider == provider]
 
-    def error(self, name: str, message: str = "boom") -> BaseException:
-        """Build an instance of the fake module's exception class *name*."""
+    def error(
+        self, name: str, message: str = "boom", *, status: int | None = None
+    ) -> BaseException:
+        """Build an instance of the fake module's exception class *name*.
+
+        *status* is the HTTP status of the reply, for a class that carries one.
+        """
         error_class: type[BaseException] = getattr(self.module_cached(), name)
-        return error_class(message)
+        if status is None:
+            return error_class(message)
+        assert name in STATUS_ERROR_NAMES, f"{name} carries no status"
+        return error_class(message, status)
 
     def module_cached(self) -> types.ModuleType:
         """The module injected by ``installed``; built once per fake."""

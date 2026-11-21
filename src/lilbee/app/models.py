@@ -10,12 +10,13 @@ from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
 from lilbee.catalog.query import reclassify_by_name
-from lilbee.catalog.refs import model_format
+from lilbee.catalog.refs import canonical_ref, model_format
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.modelhub.model_manager import RemoteModel
+    from lilbee.modelhub.model_manager import ModelManager, RemoteModel
     from lilbee.modelhub.registry import ModelManifest
     from lilbee.runtime.cancellation import CancelSignal
 
@@ -176,6 +177,7 @@ class PullResult(BaseModel):
     source: str
     status: PullStatus
     path: str | None = None
+    warning: str | None = None
 
 
 class PullProgressEvent(BaseModel):
@@ -200,6 +202,7 @@ class AdoptResult(BaseModel):
     model: str
     status: AdoptStatus
     reindex_required: bool = False
+    warning: str | None = None
 
 
 def adopt_embedder(ref: str) -> AdoptResult:
@@ -209,28 +212,31 @@ def adopt_embedder(ref: str) -> AdoptResult:
     rebuild: the persisted vectors already match *ref*, so the switch routes
     through the settings boundary, which normally reports ``reindex_required``
     false. The result carries the boundary's verdict as is: true when the index
-    still does not match *ref*, and the CLI then shows the rebuild hint.
+    still does not match *ref*, and the CLI then shows the rebuild hint. It
+    also carries the warning of the download.
     """
     from lilbee.app.settings import apply_settings_update
     from lilbee.catalog.types import ModelSource
 
+    ref = canonical_ref(ref)
     manager = get_services().model_manager
     installed = manager.is_installed(ref, ModelSource.NATIVE)
     already_active = cfg.embedding_model == ref and installed
-    if not installed:
-        pull_model_data(ref, ModelSource.NATIVE)
+    warning = None if installed else pull_model_data(ref, ModelSource.NATIVE).warning
     result = apply_settings_update({"embedding_model": ref})
     return AdoptResult(
         model=ref,
         status=AdoptStatus.ALREADY_ACTIVE if already_active else AdoptStatus.ADOPTED,
         reindex_required=result.reindex_required,
+        warning=warning,
     )
 
 
 def installed_chat_model_refs() -> list[str]:
-    """Return sorted refs for every chat-task model in the registry."""
+    """Return sorted refs for every chat model whose format an installed engine loads."""
     registry = get_services().registry
-    return sorted(m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+    chat_refs = (m.ref for m in registry.list_installed() if m.task == ModelTask.CHAT)
+    return sorted(loadable_refs(chat_refs, WorkerRole.CHAT))
 
 
 def with_configured_chat(refs: list[str], configured: str) -> list[str]:
@@ -328,6 +334,11 @@ def show_model_data(ref: str) -> ShowModelResult:
     from lilbee.catalog import find_pick
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
+    ref = canonical_ref(ref)
+    if ModelRegistry(cfg.models_dir).has_unreadable_ticket(ref):
+        raise ModelNotFoundError(
+            f"model not found: {ref}. Its ticket is unreadable. Pull it again."
+        )
     entry = find_pick(ref)
     source = get_services().model_manager.get_source(ref)
     if entry is None and source is None:
@@ -344,29 +355,87 @@ def show_model_data(ref: str) -> ShowModelResult:
 
 
 def _vision_projector_missing(ref: str) -> bool:
-    """True when *ref*'s mmproj projector does not resolve on disk."""
+    """True when *ref* is a GGUF whose mmproj projector does not resolve on disk."""
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
-    from lilbee.providers.gguf_meta import find_mmproj_for_model
+    from lilbee.providers.gguf_meta import find_mmproj_for_model, needs_sidecar_projector
 
     try:
-        find_mmproj_for_model(resolve_model_path(ref))
+        path = resolve_model_path(ref)
+        if needs_sidecar_projector(path):
+            find_mmproj_for_model(path)
     except (ProviderError, OSError, ValueError, KeyError):
         return True
     return False
 
 
-def _ensure_vision_projector(ref: str) -> None:
-    """Fetch a vision model's mmproj projector when a cached install lacks it.
+def _no_projector_warning(ref: str) -> str:
+    return f"{ref} is named as a vision model, but its repo lists no projector file."
 
-    No-op for non-vision refs and when the projector already resolves on disk,
-    so pulling a complete install never touches the network.
+
+def _unchecked_projector_warning(ref: str) -> str:
+    return (
+        f"Could not check {ref} for a vision projector: the model listing is unreadable. "
+        "Run the pull again when the network is back."
+    )
+
+
+def ensure_vision_projector(
+    ref: str, *, warn_unreadable: bool, cancel: CancelSignal | None = None
+) -> str | None:
+    """Fetch the projector a GGUF lacks when its repo lists one; return a warning if unsure.
+
+    Runs after a fresh pull and for an installed model. A complete install never
+    touches the network. An unreadable listing never fails, so an offline pull
+    of a cached model still succeeds; it warns only when *warn_unreadable* is
+    set, which a pull that just fetched the model sets. A projector fetched but
+    not found by the engine launch judge raises. A set *cancel* ends the fetch.
     """
     from lilbee.catalog import download_mmproj, resolve_pull_target
+    from lilbee.catalog.download import ProjectorListingError
 
     entry = resolve_pull_target(ref)
-    if entry is not None and entry.task is ModelTask.VISION and _vision_projector_missing(ref):
-        download_mmproj(entry)
+    if entry is None or not _vision_projector_missing(ref):
+        return None
+    try:
+        fetched = download_mmproj(entry, cancel=cancel)
+    except ProjectorListingError as exc:
+        log.info("Could not check %s for a missing projector: %s", ref, exc)
+        return _unchecked_projector_warning(ref) if warn_unreadable else None
+    if fetched is None:
+        return _no_projector_warning(ref) if entry.task is ModelTask.VISION else None
+    if _vision_projector_missing(ref):
+        raise RuntimeError(
+            f"Fetched the projector {fetched.name} for {ref}, "
+            "but the engine does not find it beside the model."
+        )
+    return None
+
+
+def join_warnings(*parts: str | None) -> str | None:
+    """The notices in *parts* as one warning text, or ``None`` when there are none."""
+    texts = [part for part in parts if part]
+    return " ".join(texts) if texts else None
+
+
+def is_repeat_pull(manager: ModelManager, ref: str, source: ModelSource) -> bool:
+    """True when *ref* is already installed, so a pull of it adds nothing new.
+
+    A GGUF found only in the HF cache is not listed until a manifest records it.
+    Pulling again registers it, or fails with the reason it cannot, so it is no repeat.
+    """
+    return manager.is_installed(ref, source) and (
+        source is not ModelSource.NATIVE or manager.is_registered(ref)
+    )
+
+
+def refreshes_safetensors_files(manager: ModelManager, ref: str, source: ModelSource) -> bool:
+    """True when a repeat pull of *ref* only checks an installed safetensors model for files."""
+    return (
+        source is ModelSource.NATIVE
+        and model_format(ref) is ModelFormat.SAFETENSORS
+        and is_repeat_pull(manager, ref, source)
+    )
 
 
 def pull_model_data(
@@ -387,32 +456,39 @@ def pull_model_data(
     """
     # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
     from lilbee.catalog import make_download_callback
+    from lilbee.catalog.download import ListingOfflineError
 
+    ref = canonical_ref(ref)
     manager = get_services().model_manager
 
-    # A GGUF found only in the HF cache is not listed until a manifest records it.
-    # Pulling again registers it, or fails with the reason it cannot.
-    if manager.is_installed(ref, source) and (
-        source is not ModelSource.NATIVE or manager.is_registered(ref)
-    ):
-        if source is ModelSource.NATIVE and model_format(ref) is ModelFormat.SAFETENSORS:
+    if is_repeat_pull(manager, ref, source):
+        if refreshes_safetensors_files(manager, ref, source):
             # A pull made before the module files were selected lacks them; the
-            # pull fetches only the files the cache does not hold.
+            # pull fetches only the files the cache does not hold. An unreachable
+            # Hub leaves the install as it is; any other fault reaches the caller.
             try:
                 manager.pull(ref, source, cancel=cancel)
-            except (RuntimeError, NoEngineError) as exc:
+            except ListingOfflineError as exc:
                 log.info("Could not check %s for missing module files: %s", ref, exc)
-        # A cached vision install may carry the main GGUF but not its mmproj
-        # projector; without it llama-server can't serve OCR, so ensure it before
-        # reporting already-installed.
-        _ensure_vision_projector(ref)
-        return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
+        # A cached install may carry the main GGUF but not the projector its
+        # repo lists; without it llama-server can't serve OCR, so ensure it
+        # before reporting already-installed.
+        warning = (
+            ensure_vision_projector(ref, warn_unreadable=False, cancel=cancel)
+            if source is ModelSource.NATIVE
+            else None
+        )
+        return PullResult(
+            model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED, warning=warning
+        )
 
     bytes_cb = make_download_callback(on_update) if on_update is not None else None
+    notices: list[str] = []
     path = manager.pull(
         ref,
         source,
         on_bytes=bytes_cb,
+        on_notice=notices.append,
         allow_unsupported=allow_unsupported,
         cancel=cancel,
     )
@@ -421,6 +497,9 @@ def pull_model_data(
         source=source.value,
         status=PullStatus.OK,
         path=str(path) if path is not None else None,
+        warning=join_warnings(
+            *notices, ensure_vision_projector(ref, warn_unreadable=True, cancel=cancel)
+        ),
     )
 
 
@@ -440,6 +519,7 @@ def remove_model_data(
     source: ModelSource | None = None,
 ) -> RemoveResult:
     """Remove *ref* and return a typed result with freed size."""
+    ref = canonical_ref(ref)
     manager = get_services().model_manager
     manifests = _native_manifest_index()
     # disk_size_bytes is the full multi-shard total; size_bytes alone would report

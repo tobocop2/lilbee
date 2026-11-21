@@ -17,7 +17,7 @@ from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widget import AwaitMount
+from textual.widget import Widget
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 from textual.worker import Worker, WorkerState
 
@@ -33,11 +33,13 @@ from lilbee.catalog import (
 )
 from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
 from lilbee.catalog.models import CatalogResult, estimate_min_ram_gb
-from lilbee.catalog.refs import is_gguf_filename
+from lilbee.catalog.refs import canonical_ref, is_gguf_filename
 from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.engine_install_flow import install_then
+from lilbee.cli.tui.format_rows import FormatRow, format_rows
 from lilbee.cli.tui.screens.catalog_grouping import (
     GridSection,
     flatten_sections,
@@ -174,6 +176,19 @@ class _GridCacheKey(NamedTuple):
     data_version: int
     rows: tuple[tuple[str, bool], ...]
     search: str
+
+
+def _shown_sections(container: Widget) -> tuple[list[ModelGrid], list[Static]]:
+    """The grids and section headings of *container* that are not being removed.
+
+    Textual keeps a removed widget among the children until its removal ends,
+    with display False; a query would still count it.
+    """
+    shown = container.displayed_children
+    # isinstance: the children mix headings, grids and CTA lines
+    grids = [w for w in shown if isinstance(w, ModelGrid)]
+    headings = [w for w in shown if isinstance(w, Static) and w.has_class("section-heading")]
+    return grids, headings
 
 
 class CatalogScreen(Screen[None]):
@@ -613,9 +628,7 @@ class CatalogScreen(Screen[None]):
             self.set_focus(self._grid_container.query(GridSelect).first())
 
     def _initial_focus_first_grid(self) -> None:
-        """on_mount initial focus: skip if a later refresh-tick has already
-        landed focus elsewhere (e.g. a test focused #catalog-search before
-        the streaming-section mount drained its scheduled callbacks)."""
+        """Focus the first grid on open, unless something already holds focus."""
         if self.focused is not None:
             return
         self._focus_first_grid()
@@ -1416,10 +1429,7 @@ class CatalogScreen(Screen[None]):
         Returns True iff the in-place path applied; the caller falls
         through to a teardown + remount on False.
         """
-        existing_grids = list(self._grid_container.query(ModelGrid))
-        existing_headings = [
-            w for w in self._grid_container.query(".section-heading") if isinstance(w, Static)
-        ]
+        existing_grids, existing_headings = _shown_sections(self._grid_container)
         if not existing_grids or len(existing_grids) != len(sections):
             return False
         # Heading + grid mounts each compose on their own frame, so a
@@ -1436,30 +1446,27 @@ class CatalogScreen(Screen[None]):
         return True
 
     def _remount_grid_sections(self, sections: list[GridSection], hf_count: int) -> None:
-        """Teardown + remount the grid for a section-count change.
+        """Replace every section in one step, keeping the scroll offset and the focused section.
 
-        Captures the user's current cursor + scroll position before the
-        teardown so both can be restored after remount; otherwise the
-        ``_focus_first_grid`` fallback snaps the cursor back to the top
-        of the catalog mid-keypress, and the layout shift from extra
-        sections drifts the visible window away from where the user was
-        looking.
+        Focus moves to a new grid only when the tab strip shows this pane: the teardown
+        has already reset focus, and a focus inside a hidden pane would switch the tab.
         """
         focus_anchor = self._capture_focused_section()
         container = self._grid_container
         prior_scroll_y = container.scroll_y
         container.remove_children()
-        self._mount_grid_section(sections[0], container)
-        # Pass the container itself; the deferred callback must not re-query
-        # by id because the pane can be unmounted before it runs.
-        self.call_after_refresh(
-            self._mount_remaining_grid_sections,
-            container,
-            sections[1:],
-            hf_count=hf_count,
-            focus_anchor=focus_anchor,
-            prior_scroll_y=prior_scroll_y,
-        )
+        grids = [self._mount_grid_section(section, container) for section in sections]
+        self._mount_grid_ctas(hf_count=hf_count)
+        if prior_scroll_y:
+            # scroll_to applies after the next refresh, once the new sections have a layout.
+            container.scroll_to(y=prior_scroll_y, animate=False)
+        if self._grid_view and not self._search_focused and self._pane_is_shown(container):
+            self._restore_focused_section(grids, focus_anchor)
+
+    def _pane_is_shown(self, container: VerticalScroll) -> bool:
+        """Whether *container* sits in the tab pane the tab strip shows right now."""
+        pane = container.parent
+        return pane is not None and pane.id == self.query_one("#catalog-tabs", TabbedContent).active
 
     def _capture_focused_section(self) -> tuple[str, int | None] | None:
         """Return ``(heading, highlighted_index)`` for the focused grid.
@@ -1474,81 +1481,24 @@ class CatalogScreen(Screen[None]):
             return None
         return (focused.name, focused.highlighted)
 
-    def _restore_focused_section(self, anchor: tuple[str, int | None] | None) -> bool:
-        """Refocus the grid whose ``name`` matches the captured anchor.
+    def _restore_focused_section(
+        self, grids: list[ModelGrid], anchor: tuple[str, int | None] | None
+    ) -> None:
+        """Focus the grid of *grids* named by *anchor* at its cursor, else the first grid."""
+        heading, highlighted = anchor if anchor is not None else (None, None)
+        match = next((grid for grid in grids if grid.name == heading), None)
+        if match is None:
+            self.set_focus(next(iter(grids)))
+            return
+        if highlighted is not None:
+            match.highlighted = min(highlighted, len(match.rows) - 1)
+        self.set_focus(match)
 
-        Returns True when the previous focus position was successfully
-        restored; False when no anchor was given or the matching section
-        no longer exists (caller falls back to ``_focus_first_grid``).
-        """
-        if anchor is None:
-            return False
-        target_heading, target_highlighted = anchor
-        for grid in self._grid_container.query(ModelGrid):
-            if grid.name != target_heading:
-                continue
-            grid.focus()
-            if target_highlighted is not None and grid.rows:
-                grid.highlighted = min(target_highlighted, len(grid.rows) - 1)
-            return True
-        return False
-
-    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> AwaitMount:
-        # ``name=section.heading`` doubles as the section identity used by
-        # ``_capture_focused_section`` / ``_restore_focused_section`` to
-        # preserve the cursor across teardown + remount.
-        #
-        # Returns mount_all's awaitable so a caller that needs the widgets to
-        # exist can wait for them. Pilot.pause only waits on the widgets that
-        # were present when it was called, so it never covers these.
+    def _mount_grid_section(self, section: GridSection, container: VerticalScroll) -> ModelGrid:
+        """Mount the heading and grid of *section*; the grid's name is the section identity."""
         grid = ModelGrid(section.rows, name=section.heading, classes="catalog-section")
-        return container.mount_all(
-            [
-                Static(section.heading, classes="section-heading"),
-                grid,
-            ]
-        )
-
-    def _mount_remaining_grid_sections(
-        self,
-        container: VerticalScroll,
-        remaining: list[GridSection],
-        hf_count: int,
-        focus_anchor: tuple[str, int | None] | None = None,
-        prior_scroll_y: float = 0.0,
-    ) -> list[AwaitMount]:
-        # Runs one refresh after _remount_grid_sections; the pane can be
-        # unmounted by then (screen teardown, tab remount). Returns one
-        # awaitable per mounted section (empty when the pane is gone) so a
-        # caller can wait for the sections to exist; the production caller
-        # runs from call_after_refresh and ignores it.
-        if not container.is_running:
-            return []
-        mounts = [self._mount_grid_section(section, container) for section in remaining]
-        self._mount_grid_ctas(hf_count=hf_count)
-        # Restore the prior viewport position; mounting fresh sections shifts
-        # the layout and ``focus()`` below would otherwise overshoot.
-        if prior_scroll_y:
-            container.scroll_to(y=prior_scroll_y, animate=False)
-        # Lock focus onto a grid once mount completes so j / k / PgDn /
-        # PgUp dispatch correctly. Without this, on first paint the focus
-        # race can leave nothing focused and the catalog feels frozen
-        # until the user toggles to list view and back. When the previous
-        # paint had a focused grid, restore the cursor to the same
-        # section + highlighted index instead of jumping to the top.
-        if not self._grid_view or self._focused_grid() is not None:
-            return mounts
-        # ...but "no grid has focus" is not "nothing has focus". This runs from
-        # call_after_refresh, so the user may have pressed `/` since the mount
-        # was scheduled; _focused_grid() is None while the filter Input owns the
-        # cursor, so the check above would let a repaint yank it out of the
-        # field they just opened. Same invariant _initial_focus_first_grid keeps.
-        if self._search_focused:
-            return mounts
-        if self._restore_focused_section(focus_anchor):
-            return mounts
-        self._focus_first_grid()
-        return mounts
+        container.mount_all([Static(section.heading, classes="section-heading"), grid])
+        return grid
 
     def _grid_scroll_hint_text(self, hf_count: int) -> str:
         """Pick the bottom scroll-hint text based on fetch state."""
@@ -1641,7 +1591,14 @@ class CatalogScreen(Screen[None]):
             return
         rows = grid.rows
         row = rows[index] if 0 <= index < len(rows) else None
-        drawer.update_for_row(row)
+        drawer.update_for_row(row, self._installed_ref_of(row))
+
+    def _installed_ref_of(self, row: CatalogRow | None) -> str | None:
+        """The installed file name of an installed local row, or None for any other row."""
+        if not isinstance(row, LocalCatalogRow) or not row.installed:
+            return None
+        ref = self._resolve_delete_ref(row.ref)
+        return ref if ref in self._installed_names else None
 
     def on_key(self, event: Key) -> None:
         """Intercept 1-6 to jump tabs even when a focused widget owns digits.
@@ -2169,14 +2126,30 @@ class CatalogScreen(Screen[None]):
 
     def _install_model(self, model: CatalogModel) -> None:
         if len(model.formats) > 1:
-
-            def _after_pick(chosen: ModelFormat | None) -> None:
-                if chosen is not None:
-                    self._install_format(replace(model, format=chosen))
-
-            self.app.push_screen(FormatPicker(model.display_name, model.formats), _after_pick)
+            self.run_worker(lambda: self._offer_formats(model), thread=True)
             return
         self._install_format(model)
+
+    def _offer_formats(self, model: CatalogModel) -> None:
+        """Work out the format rows off the UI thread (a safetensors row reads the Hub)."""
+        rows = format_rows(model, self._available_memory_bytes)
+        call_from_thread(self, self._pick_format, model, rows)
+
+    def _pick_format(self, model: CatalogModel, rows: list[FormatRow]) -> None:
+        """Ask which format to install; a format whose engine is missing installs it first."""
+        by_format = {row.fmt: row for row in rows}
+
+        def _after_pick(chosen: ModelFormat | None) -> None:
+            if chosen is None:
+                return
+            picked = replace(model, format=chosen)
+            missing = by_format[chosen].missing
+            if missing is None:
+                self._install_format(picked)
+            else:
+                install_then(self.app, missing.name, lambda: self._install_format(picked))
+
+        self.app.push_screen(FormatPicker(model.display_name, rows), _after_pick)
 
     def _install_format(self, model: CatalogModel) -> None:
         if self.app.task_bar.pending_download(model) is not None:
@@ -2186,8 +2159,8 @@ class CatalogScreen(Screen[None]):
         # file is named here, so the check asks HuggingFace what it really costs.
         needed = int(model.size_gb * _BYTES_PER_GB)
         try:
-            engine = get_services().engines.for_ref(model.pull_ref)
             if model.format is ModelFormat.GGUF:
+                engine = get_services().engines.for_ref(model.pull_ref)
                 filename = resolve_filename(model, engine)
                 dest = cfg.models_dir / filename
                 if dest.exists():
@@ -2362,8 +2335,10 @@ class CatalogScreen(Screen[None]):
         Featured / HF browse rows surface a bare hf_repo while the
         registry deletes by ``<hf_repo>/<file>.gguf``. Bare repos
         resolve to the lexicographically-first matching installed
-        manifest; full refs and remote names pass through.
+        manifest; full refs and remote names pass through. A ``#gguf``
+        qualifier reads as the plain ref.
         """
+        identity = canonical_ref(identity)
         if "/" in identity and is_gguf_filename(identity):
             return identity
         prefix = identity + "/"
@@ -2440,9 +2415,8 @@ class CatalogScreen(Screen[None]):
             return
         clamped = max(0, min(index, count - 1))
         self._list_widget.highlighted = clamped
-        # Same invariant as _mount_remaining_grid_sections: this is reached from
-        # call_after_refresh, so it can run after the user has opened the filter
-        # with `/`, and taking the cursor back would strand them mid-keystroke.
+        # Reached from call_after_refresh, so it can run after the user has opened
+        # the filter with `/`; taking the cursor back would strand them mid-keystroke.
         if self._search_focused:
             return
         self.set_focus(self._list_widget)

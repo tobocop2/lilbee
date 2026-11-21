@@ -21,7 +21,9 @@ from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.data.store import SourceType
 from lilbee.modelhub.role_validator import TaskMismatchError
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.progress import EmbedEvent, EventType
+from lilbee.server.handlers.rag import SearchResponse
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests.server.conftest import parse_sse_events
 
@@ -111,7 +113,7 @@ class TestGpuStatsStreamRoute:
 
         view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
         with (
-            mock.patch("lilbee.app.placement.get_placement", return_value=view),
+            mock.patch("lilbee.app.placement.get_planned_placement", return_value=view),
             mock.patch("lilbee.server.handlers.gpu_stats_stream", side_effect=_fake_stats),
         ):
             resp = client.get("/api/gpus/stream")
@@ -121,7 +123,11 @@ class TestGpuStatsStreamRoute:
 
 
 class TestSearchRoute:
-    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
+    @mock.patch(
+        "lilbee.server.handlers.search",
+        new_callable=AsyncMock,
+        return_value=SearchResponse([], ()),
+    )
     def test_empty_results(self, mock_search, client):
         resp = client.get("/api/search", params={"q": "hello", "top_k": "3"})
         assert resp.status_code == 200
@@ -131,14 +137,18 @@ class TestSearchRoute:
     @mock.patch(
         "lilbee.server.handlers.search",
         new_callable=AsyncMock,
-        return_value=[{"source": "a.md", "chunks": []}],
+        return_value=SearchResponse([{"source": "a.md", "chunks": []}], ()),
     )
     def test_with_results(self, mock_patched, client):
         resp = client.get("/api/search", params={"q": "test"})
         assert resp.status_code == 200
         assert len(resp.json()) == 1
 
-    @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
+    @mock.patch(
+        "lilbee.server.handlers.search",
+        new_callable=AsyncMock,
+        return_value=SearchResponse([], ()),
+    )
     def test_omitted_top_k_forwarded_as_none(self, mock_search, client):
         """The route carries no hardcoded default; the handler resolves an omitted top_k."""
         client.get("/api/search", params={"q": "x"})
@@ -150,20 +160,34 @@ class TestSearchRoute:
         from tests.conftest import make_mock_services
 
         searcher = mock.MagicMock()
-        searcher.search.return_value = []
+        searcher.search_report.return_value = SearchReport([])
         services = make_mock_services(searcher=searcher)
         cfg.top_k = 7
         set_services(services)
         try:
             resp = client.get("/api/search", params={"q": "x"})
             assert resp.status_code == 200
-            searcher.search.assert_called_once_with("x", top_k=7, chunk_type=None)
+            searcher.search_report.assert_called_once_with("x", top_k=7, chunk_type=None)
         finally:
             set_services(None)
 
     def test_invalid_chunk_type_rejected_with_400(self, client):
         resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
         assert resp.status_code == 400
+
+
+def test_a_request_after_the_engine_stop_began_gets_a_503(client):
+    """The stop refuses new containers; the request learns lilbee is stopping."""
+    from lilbee.app.services import ServicesStoppingError
+
+    with mock.patch(
+        "lilbee.server.handlers.status",
+        new_callable=AsyncMock,
+        side_effect=ServicesStoppingError(),
+    ):
+        resp = client.get("/api/status")
+    assert resp.status_code == 503
+    assert "lilbee is stopping" in resp.json()["detail"]
 
 
 class TestSearchDoesNotLeakInternals:
@@ -819,6 +843,31 @@ class TestModelsPullArchPrecheck:
         assert resp.status_code == 409
         assert resp.json()["extra"]["code"] == "unsupported_arch"
 
+    def test_the_refusal_body_names_five_supported_examples(self, client):
+        from lilbee.catalog.compat import UnsupportedArchError
+
+        manager = mock.MagicMock()
+        manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+        services = mock.MagicMock(model_manager=manager)
+        services.engines.for_ref.return_value.architectures = frozenset(
+            {"qwen2", "llama", "gemma", "phi3", "mistral", "falcon", "bert"}
+        )
+        with mock.patch("lilbee.server.handlers.models.get_services", return_value=services):
+            resp = client.post(
+                "/api/models/pull", json={"model": "acme/foo-GGUF", "source": "native"}
+            )
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["detail"] == "unsupported_arch"
+        assert body["extra"] == {
+            "code": "unsupported_arch",
+            "arch": "kimi_k2",
+            "ref": "acme/foo-GGUF",
+            "supported_examples": ["bert", "falcon", "gemma", "llama", "mistral"],
+            "total_supported": 7,
+        }
+        services.engines.for_ref.assert_called_once_with("acme/foo-GGUF")
+
 
 class TestSyncRoute:
     @mock.patch("lilbee.server.handlers.sync_stream")
@@ -1067,6 +1116,20 @@ class TestSetRerankerModelRoute:
         assert mock_set.call_args.args[1] == full_ref
 
 
+class TestSetModelConfigUnreadable:
+    @mock.patch(
+        "lilbee.providers.server_registry.stored_entries",
+        side_effect=PermissionError(13, "Permission denied"),
+    )
+    def test_set_chat_model_answers_503_with_the_config_read_text(self, mock_store, client):
+        services = mock.Mock()
+        services.provider.list_models.return_value = []
+        with mock.patch("lilbee.server.handlers.models.get_services", return_value=services):
+            resp = client.put("/api/models/chat", json={"model": "wired/m"})
+        assert resp.status_code == 503
+        assert "Could not read config.toml" in resp.json()["detail"]
+
+
 class TestModelsCatalogRoute:
     @mock.patch(
         "lilbee.server.handlers.models_catalog",
@@ -1176,11 +1239,11 @@ class TestModelsPullByFormat:
     """A pull names the weight format with the ``<repo>#<format>`` reference."""
 
     def test_pull_of_a_repo_hash_mlx_fetches_the_mlx_files(self, client, tmp_path, monkeypatch):
-        from lilbee.app import engine_choice
+        from lilbee.catalog import runnable
         from lilbee.catalog.types import ModelFormat
         from lilbee.providers.fleet.engines import choice
         from lilbee.providers.fleet.engines.base import EngineName
-        from lilbee.providers.fleet.engines.choice import HostFacts
+        from lilbee.providers.fleet.host_caps import collect
         from tests.conformance.fake_adapter import BundledFakeAdapter
 
         class _MlxEngine(BundledFakeAdapter):
@@ -1189,7 +1252,9 @@ class TestModelsPullByFormat:
 
         monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, _MlxEngine())
         monkeypatch.setattr(
-            engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+            runnable,
+            "session_host",
+            lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
         )
         fetched = []
 
@@ -1197,7 +1262,10 @@ class TestModelsPullByFormat:
             fetched.append((entry.hf_repo, entry.format))
             return tmp_path / "unused"
 
-        with mock.patch("lilbee.catalog.download_model", _download):
+        with (
+            mock.patch("lilbee.catalog.download_model", _download),
+            mock.patch("lilbee.server.handlers.models.ensure_vision_projector", return_value=None),
+        ):
             resp = client.post(
                 "/api/models/pull", json={"model": "acme/two#mlx", "source": "native"}
             )
@@ -1930,6 +1998,18 @@ class TestOpenAPISchema:
         assert resp.status_code == 200
 
 
+@pytest.fixture()
+def stub_services():
+    """Give a server start a stub container, so its startup build cannot fail."""
+    from lilbee.app.services import set_services
+    from tests.conftest import make_mock_services
+
+    set_services(make_mock_services())
+    yield
+    set_services(None)
+
+
+@pytest.mark.usefixtures("stub_services")
 class TestCors:
     @mock.patch(
         "lilbee.server.handlers.health",
@@ -1996,6 +2076,7 @@ class TestCors:
         assert resp.headers.get("access-control-allow-origin") == "http://localhost:7433"
 
 
+@pytest.mark.usefixtures("stub_services")
 class TestCorsDefaultRegex:
     """Default cors_origin_regex should allow Obsidian (desktop + mobile) and any
     localhost origin out of the box, without any config or env var."""
@@ -2339,11 +2420,34 @@ class TestLifespan:
         mock_svc.embedder.validate_model.assert_called_once()
 
     @mock.patch("lilbee.server.app.get_services", side_effect=RuntimeError("no provider"))
-    async def test_provider_failure_does_not_block(self, mock_get_svc):
+    async def test_a_failed_build_ends_the_startup_and_logs_the_error(self, mock_get_svc, caplog):
+        from lilbee.server.app import _lifespan, _server_loop
+        from lilbee.server.auth import server_json_path
+
+        with (
+            caplog.at_level(logging.ERROR, logger="lilbee.server.app"),
+            pytest.raises(RuntimeError, match="no provider"),
+        ):
+            async with _lifespan(mock.MagicMock()):
+                pytest.fail("the server served after a failed services build")
+        assert "The services build failed" in caplog.text
+        assert "no provider" in caplog.text
+        assert not server_json_path().exists()
+        assert _server_loop.running() is None
+
+    async def test_a_stop_during_the_build_ends_the_startup_without_a_build_error(self, caplog):
+        from lilbee.app.services import ServicesStoppingError
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            pass
+        with (
+            mock.patch("lilbee.server.app.get_services", side_effect=ServicesStoppingError),
+            caplog.at_level(logging.INFO, logger="lilbee.server.app"),
+            pytest.raises(ServicesStoppingError),
+        ):
+            async with _lifespan(mock.MagicMock()):
+                pytest.fail("the server served after a stop during its build")
+        assert "A stop arrived during the services build" in caplog.text
+        assert "The services build failed" not in caplog.text
 
     @mock.patch("lilbee.server.app.get_services")
     async def test_a_raising_embedding_check_warns_and_does_not_block(self, mock_get_svc, caplog):

@@ -6,6 +6,7 @@ import itertools
 import json
 import logging
 import random
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -13,120 +14,33 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers import engine_params
 from lilbee.providers.fleet import devices as devices_module
-from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
+from lilbee.providers.fleet import gpu_hardware, planning
+from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines.base import LaunchRequest
 from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.launch import InstanceLaunch
-from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.swap_config import build_swap_config
-from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from tests._fleet_engines import (
+    GIB,
     CardEngine,
     Role,
+    SizedEngine,
     cards_of,
+    engine_pair,
     engines_for_all_roles,
     model_file,
+    one_machine,
     prepare_host,
 )
 from tests.conformance.fake_adapter import FakeAdapter
 from tests.test_fleet_one_engine_cards import GOLDEN, SCENARIOS, run_scenario
 
-_GIB = 1 << 30
 _PLANNING_LOG = "lilbee.providers.fleet.planning"
-_ALL_ROLES = frozenset({WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION})
-
-
-class _SizedEngine(FakeAdapter):
-    """An engine that charges a fixed footprint for every model it loads."""
-
-    served_roles = _ALL_ROLES
-
-    def __init__(self, name: str, binary: Path, kind: MemoryKind, footprint: int, device) -> None:
-        self.name = name
-        self.memory_kind = kind
-        self._binary = binary
-        self._footprint = footprint
-        self._device = device
-
-    def __hash__(self) -> int:
-        return hash(self.name)
-
-    def binary(self) -> Path:
-        return self._binary
-
-    def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(
-            devices=list(self._device), output="", spoke_protocol=False, backend=EngineBackend.CUDA
-        )
-
-    def estimate_memory(self, request) -> MemoryEstimate:
-        return MemoryEstimate(
-            kind=self.memory_kind,
-            device_bytes=self._footprint,
-            host_bytes=0,
-            shared_bytes=self._footprint,
-            per_device=(self._footprint,),
-            per_device_shared=(self._footprint,),
-        )
-
-    def model_meta(self, path: Path):
-        return {"architecture": "fakearch", "context_length": "4096"}
-
-    def check_readback(self, binary: Path) -> bool:
-        return False
-
-    def supports_fit_target(self, binary: Path) -> bool:
-        return False
-
-    def supports_shared_kv(self, binary: Path) -> bool:
-        return False
-
-    def runtime_env(self):
-        return {}
-
-    def swap_extras(self, launch):
-        return {}
-
-
-def _host(
-    monkeypatch, tmp_path: Path, *, unified: bool, total: int, cards: int = 1
-) -> list[FleetDevice]:
-    """Patch one machine with *cards* devices of *total* bytes each."""
-    model = tmp_path / "model.bin"
-    model.write_bytes(b"x" * 4096)
-    monkeypatch.setattr(engine_params, "resolve_model_path", lambda ref: model)
-    planning.clear_read_device_cache()
-    for module in (planning, planning.model_cache):
-        monkeypatch.setattr(module, "total_system_memory", lambda: total)
-        monkeypatch.setattr(module, "free_system_memory", lambda: total)
-    monkeypatch.setattr(cfg, "system_memory_reserve_gb", 0)
-    monkeypatch.setattr(cfg, "gpu_memory_fraction", 1.0)
-    monkeypatch.setattr(cfg, "num_ctx", None)
-    monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
-    monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
-    monkeypatch.setattr(cfg, "reranker_model", "")
-    monkeypatch.setattr(cfg, "vision_model", "")
-    monkeypatch.setattr(cfg, "placement", None)
-    return [
-        FleetDevice("CUDA", index, f"gpu{index}", total, total, unified=unified)
-        for index in range(cards)
-    ]
-
-
-def _pair(tmp_path: Path, device, chat_gib: int, other_gib: int, *, other_kind=MemoryKind.SIZED):
-    """Two engines with their own binaries: one for chat, one for the other role."""
-    first = tmp_path / "engine-a-server"
-    second = tmp_path / "engine-b-server"
-    first.write_bytes(b"a")
-    second.write_bytes(b"b")
-    chat = _SizedEngine("engine-a", first, MemoryKind.SIZED, chat_gib * _GIB, device)
-    other = _SizedEngine("engine-b", second, other_kind, other_gib * _GIB, device)
-    return chat, other
 
 
 def _warnings(caplog) -> str:
@@ -157,7 +71,28 @@ def _m2(model: str, need: float, usable: float) -> str:
     )
 
 
-def _m3(model: str, gpus: int, engine: str) -> str:
+_NVIDIA_PCI_ID = 0x10DE
+_TABLES = pytest.mark.parametrize("listed", [False, True], ids=["no-table", "listed-table"])
+
+
+def _nvidia_tables(monkeypatch, cards: int, *, listed: bool) -> None:
+    """Fix both NVIDIA card tables, so the host count never reads the machine running the test.
+
+    ``listed`` gives each table *cards* NVIDIA cards; otherwise the host lists none.
+    """
+    rows = cards if listed else 0
+    monkeypatch.setattr(
+        gpu_hardware, "installed_gpu_counts", lambda: Counter({_NVIDIA_PCI_ID: rows})
+    )
+    monkeypatch.setattr(planning, "nvidia_card_rows", lambda: rows)
+
+
+def _said(cards: int, *, listed: bool) -> int | str:
+    """The count a refusal states for *cards* NVIDIA cards: exact when a table lists them."""
+    return cards if listed else f"at least {cards}"
+
+
+def _m3(model: str, gpus: int | str, engine: str) -> str:
     return (
         f"{model} will not be served: this host has {gpus} GPUs and {engine} cannot be "
         "told which one to use. Use another engine for this role."
@@ -169,8 +104,8 @@ class TestMixedPlanOnOneMemoryPool:
     def test_roles_that_fit_together_are_all_served_without_a_warning(
         self, monkeypatch, tmp_path, caplog, unified
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=unified, total=24 * _GIB)
-        chat, embed = _pair(tmp_path, device, 8, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=unified, total=24 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 8, 2)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(
                 engines={WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
@@ -182,8 +117,8 @@ class TestMixedPlanOnOneMemoryPool:
     def test_a_role_that_does_not_fit_is_refused_and_names_its_engine(
         self, monkeypatch, tmp_path, caplog, unified
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=unified, total=10 * _GIB)
-        chat, embed = _pair(tmp_path, device, 9, 3, other_kind=MemoryKind.FIXED_RESERVE)
+        device = one_machine(monkeypatch, tmp_path, unified=unified, total=10 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 9, 3, other_kind=MemoryKind.FIXED_RESERVE)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(
                 engines={WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
@@ -206,8 +141,8 @@ class TestMixedPlanOnOneMemoryPool:
     def test_a_role_that_fits_alone_stays_served_beside_one_that_never_fits(
         self, monkeypatch, tmp_path, caplog, unified
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=unified, total=8 * _GIB)
-        chat, embed = _pair(tmp_path, device, 4, 20)
+        device = one_machine(monkeypatch, tmp_path, unified=unified, total=8 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 4, 20)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(
                 engines={WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
@@ -222,12 +157,56 @@ class TestMixedPlanOnOneMemoryPool:
         assert "tight" not in _warnings(caplog)
 
 
+class TestCleanBoxSnapshotCharge:
+    @pytest.fixture(autouse=True)
+    def _reset_probe(self):
+        planning.clear_plan_probe()
+        yield
+        planning.clear_plan_probe()
+
+    def test_a_tenant_holding_the_card_cuts_both_the_admission_and_the_room_it_reports(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        # Another process holds 12 of the card's 24 GiB: 10.8 GiB are usable, so
+        # chat (9) and embed (3) cannot both sit there, though 21.6 GiB would hold them.
+        held = [FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 12 * GIB)]
+        chat, embed = engine_pair(tmp_path, held, 9, 3, other_kind=MemoryKind.FIXED_RESERVE)
+        engines = {WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
+        planning.capture_plan_probe(engines)
+        with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
+            plan = planning.plan_all_launches(engines=engines)
+        served = {launch.role for launch in plan.launches}
+        refused = {WorkerRole.CHAT, WorkerRole.EMBED} - served
+        assert len(refused) == 1
+        (role,) = refused
+        engine = chat if role is WorkerRole.CHAT else embed
+        ref = cfg.chat_model if role is WorkerRole.CHAT else cfg.embedding_model
+        need, other_need = (9, 3) if role is WorkerRole.CHAT else (3, 9)
+        others = "embed" if role is WorkerRole.CHAT else "chat"
+        model = f"{role.value} model {ref} ({engine.name})"
+        assert _m1(model, need, 12 * 0.9 - other_need, others) in _warnings(caplog)
+
+    def test_the_same_tenant_without_a_snapshot_is_charged_against_the_total(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        one_machine(monkeypatch, tmp_path, unified=False, total=24 * GIB)
+        held = [FleetDevice("CUDA", 0, "gpu0", 24 * GIB, 12 * GIB)]
+        chat, embed = engine_pair(tmp_path, held, 9, 3, other_kind=MemoryKind.FIXED_RESERVE)
+        with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
+            plan = planning.plan_all_launches(
+                engines={WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
+            )
+        assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
+        assert "will not be served" not in _warnings(caplog)
+
+
 class TestUnifiedHostRefusal:
     def test_u1_chat_too_big_is_refused_and_embed_takes_no_card(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=True, total=16 * _GIB)
-        chat, embed = _pair(tmp_path, device, 20, 4)
+        device = one_machine(monkeypatch, tmp_path, unified=True, total=16 * GIB)
+        chat, embed = engine_pair(tmp_path, device, 20, 4)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(
                 engines={WorkerRole.CHAT: chat, WorkerRole.EMBED: embed}
@@ -343,6 +322,9 @@ _T_ROWS = {
         frozenset({E}),
         group=frozenset({C, V}),
     ),
+    # Sizes that print differently under 1024**3 and 1025**3 with one decimal.
+    "T22": Row((96,), (Role(C, 100), Role(E, 2)), {(E, 0): (0,)}, frozenset({C})),
+    "T23": Row((96,), (Role(C, 60), Role(E, 60)), {(E, 0): (0,)}, frozenset({C})),
 }
 
 
@@ -374,11 +356,12 @@ def _tensor_split(plan) -> tuple[int, ...]:
 
 
 def _charge_on_card(plan, row: Row, card: int) -> float:
-    """GiB resident on *card*: every lone role, plus a swap group's largest member."""
+    """GiB resident on *card*: every lone role, plus a swap group's largest class."""
     sizes = {r.role: r.gib for r in row.roles}
     on_card = [launch.role for launch in plan.launches if card in _cards_of_launch(launch)]
     alone = sum(sizes[role] for role in on_card if role not in plan.co_tenants)
-    return alone + max((sizes[role] for role in on_card if role in plan.co_tenants), default=0)
+    classes = [sum(sizes[role] for role in on_card if role in c) for c in plan.swap_classes]
+    return alone + max(classes, default=0)
 
 
 class TestMixedPlanAcrossCards:
@@ -387,7 +370,7 @@ class TestMixedPlanAcrossCards:
     @pytest.mark.parametrize("row_id", sorted(_T_ROWS))
     def test_table_row(self, monkeypatch, tmp_path, caplog, row_id) -> None:
         row = _T_ROWS[row_id]
-        prepare_host(monkeypatch, tmp_path, row.roles, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, row.roles, 64 * GIB)
         engines = _mixed_engines(tmp_path, row, cards_of(row.cards))
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(engines=engines)
@@ -406,8 +389,8 @@ class TestMixedPlanAcrossCards:
         self, monkeypatch, tmp_path, caplog
     ) -> None:
         roles = (Role(C, 5), Role(E, 1))
-        prepare_host(monkeypatch, tmp_path, roles, 64 * _GIB)
-        busy = [replace(card, free_bytes=4 * _GIB) for card in cards_of((8,))]
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
+        busy = [replace(card, free_bytes=4 * GIB) for card in cards_of((8,))]
         chat = CardEngine("engine-a", tmp_path / "a", roles, busy)
         embed = CardEngine("engine-b", tmp_path / "b", roles, busy)
         planning.capture_plan_probe({WorkerRole.CHAT: chat})
@@ -420,7 +403,7 @@ class TestMixedPlanAcrossCards:
         self, monkeypatch, tmp_path, caplog
     ) -> None:
         row = _T_ROWS["T9"]
-        prepare_host(monkeypatch, tmp_path, row.roles, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, row.roles, 64 * GIB)
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         engine = CardEngine(
             "engine-a", tmp_path / "engine-a-server", row.roles, cards_of(row.cards)
@@ -435,15 +418,36 @@ class TestMixedPlanAcrossCards:
         placement = plan_placement(
             [
                 ModelPlacementInput(role=E, est_vram_bytes=0, replicas=2),
-                ModelPlacementInput(role=C, est_vram_bytes=4 * _GIB),
+                ModelPlacementInput(role=C, est_vram_bytes=4 * GIB),
             ],
-            [(0, 8 * _GIB), (1, 8 * _GIB)],
+            [(0, 8 * GIB), (1, 8 * GIB)],
             estimate_peak=lambda _role, _ratio: (),
             refuse_oversize=True,
         )
         cards = [(plan.role, plan.replica, plan.devices) for plan in placement.instances]
         assert sorted(cards, key=str) == sorted([(E, 0, ()), (E, 1, ()), (C, 0, (0,))], key=str)
         assert placement.unplaceable_roles == ()
+
+    def test_the_refusing_search_sizes_each_role_and_split_once(self) -> None:
+        asked: list[tuple[WorkerRole, tuple[int, ...]]] = []
+
+        def estimate(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+            asked.append((role, ratio))
+            return tuple(6 * GIB for _ in ratio)
+
+        placement = plan_placement(
+            [
+                ModelPlacementInput(role=C, est_vram_bytes=12 * GIB),
+                ModelPlacementInput(role=E, est_vram_bytes=12 * GIB),
+                ModelPlacementInput(role=WorkerRole.VISION, est_vram_bytes=12 * GIB),
+            ],
+            [(0, 8 * GIB), (1, 8 * GIB)],
+            estimate_peak=estimate,
+            refuse_oversize=True,
+        )
+        assert placement.unplaceable_roles
+        assert len(asked) > 0
+        assert len(asked) == len(set(asked))
 
 
 @dataclass(frozen=True)
@@ -523,10 +527,14 @@ def _pin_engines(tmp_path: Path, row: PinRow):
 class TestMixedPlanPins:
     """A pin that reaches its process, or a refusal, through plan_all_launches."""
 
+    @_TABLES
     @pytest.mark.parametrize("row_id", sorted(_P_ROWS))
-    def test_table_row(self, monkeypatch, tmp_path, caplog, row_id) -> None:
+    def test_table_row(self, monkeypatch, tmp_path, caplog, row_id, listed) -> None:
         row = _P_ROWS[row_id]
-        prepare_host(monkeypatch, tmp_path, row.roles, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, row.roles, 64 * GIB)
+        # Only a CUDA row has NVIDIA cards to list; every other row sees no NVIDIA card.
+        listed_cards = len(row.cards) if listed and row.backend == "CUDA" else 0
+        _nvidia_tables(monkeypatch, listed_cards, listed=bool(listed_cards))
         monkeypatch.setattr(devices_module, "amd_visible_var", lambda _env: _ROCM_VAR)
         engines = _pin_engines(tmp_path, row)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
@@ -538,7 +546,9 @@ class TestMixedPlanPins:
         for role in row.refused:
             name = engines[role].name
             model = f"{role.value} model org/repo/{model_file(role)} ({name})"
-            assert _m3(model, len(row.cards), name) in _warnings(caplog)
+            # A CUDA card is an NVIDIA card: exact when a table lists it, a floor when none does.
+            said = _said(len(row.cards), listed=listed) if row.backend == "CUDA" else len(row.cards)
+            assert _m3(model, said, name) in _warnings(caplog)
         assert _warnings(caplog).count("will not be served") == len(row.refused)
 
     def test_a_role_too_big_for_any_card_that_no_pin_reaches_reads_as_the_pin(
@@ -546,7 +556,7 @@ class TestMixedPlanPins:
     ) -> None:
         roles = (Role(C, 7), Role(E, 20))
         row = PinRow((8, 8), "Vulkan", roles, frozenset({E}), {C: "--device"}, frozenset({E}))
-        prepare_host(monkeypatch, tmp_path, roles, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(engines=_pin_engines(tmp_path, row))
         assert {launch.role for launch in plan.launches} == {C}
@@ -556,7 +566,7 @@ class TestMixedPlanPins:
 
     def test_p5_a_cpu_only_role_takes_no_card_and_no_pin(self, monkeypatch, tmp_path) -> None:
         roles = _PAIR
-        prepare_host(monkeypatch, tmp_path, roles, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
         chat = CardEngine("engine-a", tmp_path / "a", roles, cards_of((8, 8)))
         embed = CardEngine("engine-b", tmp_path / "b", roles, [], cpu_only=True)
         plan = planning.plan_all_launches(engines={C: chat, E: embed})
@@ -579,18 +589,20 @@ class TestMixedPlanPins:
     def test_p9_one_engine_without_device_names_keeps_the_base_rule(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * GIB)
         engine = CardEngine("engine-a", tmp_path / "a", _PAIR, cards_of((8, 8), "Vulkan"))
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(engines=engines_for_all_roles(engine))
         assert {launch.role for launch in plan.launches} == {C, E}
         assert "will not be served" not in _warnings(caplog)
 
+    @_TABLES
     def test_an_engine_whose_devices_cannot_be_read_is_refused(
-        self, monkeypatch, tmp_path, caplog
+        self, monkeypatch, tmp_path, caplog, listed
     ) -> None:
         cards = cards_of((8, 8))
-        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * GIB)
+        _nvidia_tables(monkeypatch, 2, listed=listed)
         chat = CardEngine("engine-a", tmp_path / "a", _PAIR, cards)
         embed = CardEngine("engine-b", tmp_path / "b", _PAIR, cards)
         real_get = planning._read_device_cache.get
@@ -605,24 +617,26 @@ class TestMixedPlanPins:
             plan = planning.plan_all_launches(engines={C: chat, E: embed})
         assert {launch.role for launch in plan.launches} == {C}
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
-        assert _m3(model, 2, "engine-b") in _warnings(caplog)
+        assert _m3(model, _said(2, listed=listed), "engine-b") in _warnings(caplog)
 
+    @_TABLES
     def test_a_charged_engine_that_reports_no_device_is_refused(
-        self, monkeypatch, tmp_path, caplog
+        self, monkeypatch, tmp_path, caplog, listed
     ) -> None:
-        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * GIB)
+        _nvidia_tables(monkeypatch, 2, listed=listed)
         chat = CardEngine("engine-a", tmp_path / "a", _PAIR, cards_of((8, 8)))
         embed = CardEngine("engine-b", tmp_path / "b", _PAIR, [])
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(engines={C: chat, E: embed})
         assert {launch.role for launch in plan.launches} == {C}
         model = f"embed model org/repo/{model_file(E)} (engine-b)"
-        assert _m3(model, 2, "engine-b") in _warnings(caplog)
+        assert _m3(model, _said(2, listed=listed), "engine-b") in _warnings(caplog)
 
     def test_a_saved_placement_with_a_role_the_pin_cannot_reach_falls_back_with_a_warning(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
+        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * GIB)
         spec = {"chat": {"devices": [0]}, "embed": {"devices": [1]}}
         monkeypatch.setattr(cfg, "placement", json.dumps(spec))
         engines = _pin_engines(tmp_path, _P_ROWS["P2"])
@@ -631,6 +645,25 @@ class TestMixedPlanPins:
         assert {launch.role for launch in plan.launches} == {C}
         assert "cannot be told which GPU to use" in _warnings(caplog)
         assert "using automatic placement" in _warnings(caplog)
+
+    def test_a_saved_placement_that_names_a_target_refuses_only_the_pin_role(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        roles = (Role(C, 7), Role(E, 2), Role(V, 2))
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
+        spec = {"chat": {"devices": [0]}, "embed": {"devices": [1]}, "vision": {"target": "cpu"}}
+        monkeypatch.setattr(cfg, "placement", json.dumps(spec))
+        row = PinRow((8, 8), "Vulkan", roles, frozenset({E}), {})
+        with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
+            plan = planning.plan_all_launches(engines=_pin_engines(tmp_path, row))
+        assert {launch.role for launch in plan.launches} == {C, V}
+        refusal = (
+            "embed: this engine cannot be told which GPU to use. "
+            "Set its target to cpu, or use another engine for this role."
+        )
+        assert plan.refused_roles == {E: refusal}
+        assert refusal in _warnings(caplog)
+        assert "using automatic placement" not in _warnings(caplog)
 
 
 class TestDeviceNameContract:
@@ -706,13 +739,16 @@ def _some_assignment_fits(sizes: dict[WorkerRole, float], cards: list[int]) -> b
 
 
 def _overcommits(placement, sizes, cards) -> bool:
-    """Whether a card holds more than its usable part, a swap group charged at its largest."""
+    """Whether a card holds more than its usable part, a swap group charged at its largest class."""
     for card, size in enumerate(cards):
         on_card = [plan.role for plan in placement.instances if card in plan.devices]
         for phase in {p for role in on_card for p in ROLE_REGISTRY[role].phases}:
             in_phase = [role for role in on_card if phase in ROLE_REGISTRY[role].phases]
             lone = sum(sizes[r] for r in in_phase if r not in placement.co_tenants)
-            group = max((sizes[r] for r in on_card if r in placement.co_tenants), default=0)
+            group = max(
+                (sum(sizes[r] for r in on_card if r in c) for c in placement.swap_classes),
+                default=0,
+            )
             if lone + group > size * 0.9 + 1e-6:
                 return True
     return False
@@ -725,8 +761,8 @@ def generated_comparison(count: int, *, seed: int = 7, **kwargs) -> dict[str, in
     for _ in range(count):
         cards, sizes = _generated_input(rng)
         placement = plan_placement(
-            [ModelPlacementInput(role=r, est_vram_bytes=int(s * _GIB)) for r, s in sizes.items()],
-            [(i, size * _GIB) for i, size in enumerate(cards)],
+            [ModelPlacementInput(role=r, est_vram_bytes=int(s * GIB)) for r, s in sizes.items()],
+            [(i, size * GIB) for i, size in enumerate(cards)],
             estimate_peak=lambda _role, _ratio: (),
             **kwargs,
         )
@@ -756,8 +792,8 @@ class TestEngineIdentityIsItsName:
     def test_two_adapter_instances_of_one_engine_each_launch_their_own_binary(
         self, monkeypatch, tmp_path
     ) -> None:
-        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
-        busy = [replace(card, free_bytes=_GIB) for card in cards_of((8, 8))]
+        prepare_host(monkeypatch, tmp_path, _PAIR, 64 * GIB)
+        busy = [replace(card, free_bytes=GIB) for card in cards_of((8, 8))]
         chat = CardEngine("engine-a", tmp_path / "first", _PAIR, busy)
         twin = CardEngine("engine-a", tmp_path / "second", _PAIR, cards_of((8, 8)))
         plan = planning.plan_all_launches(engines={C: chat, E: twin})
@@ -769,10 +805,10 @@ class TestEngineIdentityIsItsName:
     def test_two_adapter_instances_of_one_engine_keep_the_one_engine_rule(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=8 * _GIB)
-        chat, _ = _pair(tmp_path, device, 12, 2)
-        embed = _SizedEngine(
-            "engine-a", tmp_path / "engine-a-server", MemoryKind.SIZED, 2 * _GIB, device
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=8 * GIB)
+        chat, _ = engine_pair(tmp_path, device, 12, 2)
+        embed = SizedEngine(
+            "engine-a", tmp_path / "engine-a-server", MemoryKind.SIZED, 2 * GIB, device
         )
         assert chat is not embed
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
@@ -788,8 +824,8 @@ class TestOneEngineKeepsTheBaseRule:
     def test_one_engine_on_one_gpu_loads_a_role_that_does_not_fit_tight(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=False, total=8 * _GIB)
-        chat, _ = _pair(tmp_path, device, 12, 2)
+        device = one_machine(monkeypatch, tmp_path, unified=False, total=8 * GIB)
+        chat, _ = engine_pair(tmp_path, device, 12, 2)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             plan = planning.plan_all_launches(engines=engines_for_all_roles(chat))
         assert {launch.role for launch in plan.launches} == {WorkerRole.EMBED}
@@ -800,8 +836,8 @@ class TestOneEngineKeepsTheBaseRule:
     def test_one_engine_on_unified_memory_names_no_engine_when_a_role_does_not_fit(
         self, monkeypatch, tmp_path, caplog
     ) -> None:
-        device = _host(monkeypatch, tmp_path, unified=True, total=8 * _GIB)
-        chat, _ = _pair(tmp_path, device, 20, 1)
+        device = one_machine(monkeypatch, tmp_path, unified=True, total=8 * GIB)
+        chat, _ = engine_pair(tmp_path, device, 20, 1)
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             planning.plan_all_launches(engines=engines_for_all_roles(chat))
         assert (
@@ -815,12 +851,12 @@ class TestMixedCoTenantGroup:
 
     @pytest.fixture
     def mixed_plan(self, monkeypatch, tmp_path):
-        device = _host(monkeypatch, tmp_path, unified=True, total=10 * _GIB)
+        device = one_machine(monkeypatch, tmp_path, unified=True, total=10 * GIB)
         monkeypatch.setattr(cfg, "embedding_model", "")
         monkeypatch.setattr(cfg, "vision_model", "org/repo/vision.gguf")
         monkeypatch.setattr(planning, "vision_role_wanted", lambda _ref: True)
         monkeypatch.setattr(planning, "vision_mmproj", lambda _ref: tmp_path / "mmproj.gguf")
-        chat, vision = _pair(tmp_path, device, 7, 6)
+        chat, vision = engine_pair(tmp_path, device, 7, 6)
         engines = {WorkerRole.CHAT: chat, WorkerRole.VISION: vision}
         return planning.plan_all_launches(engines=engines), chat, vision
 
@@ -839,9 +875,10 @@ class TestMixedCoTenantGroup:
         ]
         ports = {launch.model_id: 5900 + i for i, launch in enumerate(members)}
         config = json.loads(build_swap_config(members, ports, swap=True))
-        (group,) = config["groups"].values()
-        assert group["swap"] is True
-        assert sorted(group["members"]) == sorted(launch.model_id for launch in members)
+        groups = config["groups"].values()
+        assert all(group["exclusive"] is True for group in groups)
+        listed = [mid for group in groups for mid in group["members"]]
+        assert sorted(listed) == sorted(launch.model_id for launch in members)
         commands = {mid: entry["cmd"] for mid, entry in config["models"].items()}
         chat_id = next(launch.model_id for launch in members if launch.role is WorkerRole.CHAT)
         vision_id = next(launch.model_id for launch in members if launch.role is WorkerRole.VISION)

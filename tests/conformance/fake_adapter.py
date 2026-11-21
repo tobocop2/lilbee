@@ -8,16 +8,17 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile
+from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile, ServerProcess
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
-from lilbee.providers.fleet.host_caps import HostCaps, nvidia_feature
+from lilbee.providers.fleet.host_caps import Feature, HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _FAKE_BINARY = Path(__file__).with_name("fake_binary.py")
 _SHA = "b" * 64
@@ -52,14 +53,19 @@ class FakeAdapter:
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
+    server_process = ServerProcess(name="fake-engine-server")
     backend: str | None = "cpu"
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
 
     def host_gate(self, host: HostCaps) -> HostGate:
-        return gate_on(host.avx2, nvidia_feature(host))
+        nvidia = Feature(
+            bool(host.gpus), host.nvidia_reason or "no NVIDIA GPU", known=host.nvidia_known
+        )
+        return gate_on(host.avx2, nvidia)
 
     def binary(self) -> Path:
         return _binary_path()
@@ -78,16 +84,19 @@ class FakeAdapter:
                 "linux-x86_64": {
                     "url": "https://example.org/fake-engine-linux.tar.gz",
                     "sha256": _SHA,
+                    "size": 1,
                     "min_os": None,
                 },
                 "macos-arm64": {
                     "url": "https://example.org/fake-engine-mac.tar.gz",
                     "sha256": _SHA,
+                    "size": 1,
                     "min_os": "14.0",
                 },
             },
             "memory": {"sizing": ["{binary}", "--estimate", "{model}"], "rule": None},
             "licenses": ["MIT"],
+            "tool": "server",
         }
 
     def role_spec(
@@ -124,10 +133,13 @@ class FakeAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
+        return {}
+
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         return {}
 
     def check_readback(self, binary: Path) -> bool:
@@ -138,6 +150,9 @@ class FakeAdapter:
 
     def supports_shared_kv(self, binary: Path) -> bool:
         return False
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        return frozenset({RoleTarget.GPU, RoleTarget.CPU})
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {

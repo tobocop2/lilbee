@@ -19,7 +19,7 @@ uv sync --extra providers --extra crawler --extra graph
 # The CUDA llama-server built by cloud-setup.sh lives in the engine wheel's
 # bin/ (untracked, so it survives the reset --hard). Rebuild via cloud-setup.sh
 # if it's missing; verify it still runs before kicking off the matrix.
-ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine/bin"
+ENGINE_BIN_DIR="${WORK_DIR}/packaging/engine-wheel/lilbee_engine_llama_cpp/bin"
 if [ ! -x "${ENGINE_BIN_DIR}/llama-server" ]; then
   echo "no llama-server at ${ENGINE_BIN_DIR}; run tools/qa/cloud-setup.sh first" >&2
   exit 1

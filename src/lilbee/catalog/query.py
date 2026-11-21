@@ -10,25 +10,26 @@ from typing import Any
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.app.services import get_services
+from lilbee.catalog import runnable
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
     HiddenModel,
+    ListsModels,
     page_window,
 )
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
-    hf_repo_from_ref,
-    is_native_gguf_shape,
+    installed_keys,
     parse_model_ref,
 )
 from lilbee.catalog.runnable import (
     EngineOffer,
+    EngineState,
     default_offers,
     explain,
     runnable_formats,
-    session_host,
 )
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelFormat, ModelTask
 from lilbee.providers.fleet.host_caps import HostCaps
@@ -95,7 +96,7 @@ def get_catalog(
     HuggingFace exposes no count, so it is None.
     """
     all_picks = get_picks()
-    host, offers = session_host(), default_offers()
+    host, offers = runnable.session_host(), default_offers()
     refused: list[tuple[CatalogModel, HiddenModel]] = []
     picks = list(_runnable_rows(all_picks, host, offers, refused))
     keep = _row_filter(
@@ -107,10 +108,15 @@ def get_catalog(
         featured=featured,
     )
     leading = _sort_models([m for m in picks if keep(m)], sort)
+    if not featured:
+        engine_rows = _engine_rows(offers)
+        leading += [m for m in _runnable_rows(engine_rows, host, offers, refused) if keep(m)]
     wanted = offset + limit + 1 - len(leading)
     hf_matches: list[CatalogModel] = []
     scan = _HfScan(
-        task, search, sorted({ModelFormat(f) for o in offers for f in o.adapter.formats})
+        task,
+        search,
+        sorted({ModelFormat(f) for o in offers for f in o.adapter.formats} - {ModelFormat.XDNA}),
     )
     if not featured and wanted > 0:
         pick_repos = {m.hf_repo for m in all_picks}
@@ -131,6 +137,18 @@ def get_catalog(
         truncated=scan.truncated,
         hidden=tuple({h.hf_repo: h for m, h in refused if keep(m)}.values()),
     )
+
+
+def _engine_rows(offers: Sequence[EngineOffer]) -> list[CatalogModel]:
+    """The rows of the model lists that the offered engines publish, in file order."""
+    hf_client = get_services().hf_client
+    # isinstance: only some engines publish a model list, so the offers are narrowed by capability
+    return [
+        m
+        for o in offers
+        if isinstance(o.adapter, ListsModels) and o.state is not EngineState.UNAVAILABLE
+        for m in hf_client.fetch_engine_models(o.adapter)
+    ]
 
 
 def _runnable_rows(
@@ -200,9 +218,10 @@ def _installed_filter(
     """Row predicate for the installed filter, or None when it is off."""
     if installed is None or model_manager is None:
         return None
-    # A repo is installed if any of its quants has a manifest.
-    installed_repos = {hf_repo_from_ref(ref) for ref in _get_installed_models(model_manager)}
-    return lambda m: (m.hf_repo in installed_repos) == installed
+    refs = _get_installed_models(model_manager)
+    # A row is installed if its repo has a manifest in the row's own format.
+    keys = installed_keys(refs)
+    return lambda m: ((m.hf_repo, m.format) in keys) == installed
 
 
 def _row_filter(
@@ -331,7 +350,7 @@ def build_adhoc_entry(
 
 def _format_pull_target(hf_repo: str, fmt: ModelFormat) -> CatalogModel | None:
     """The pullable entry for ``<repo>#<format>``, or None when the repo id is malformed."""
-    if not _is_hf_repo_id(hf_repo):
+    if fmt is not ModelFormat.XDNA and not _is_hf_repo_id(hf_repo):
         return None
     task = ModelTask(reclassify_by_name(hf_repo, ModelTask.CHAT))
     return build_adhoc_entry(hf_repo, task=task, fmt=fmt)
@@ -353,16 +372,17 @@ def resolve_pull_target(model: str) -> CatalogModel | None:
         return None
     if parsed.format is not ModelFormat.GGUF:
         return _format_pull_target(parsed.hf_repo, parsed.format)
-    if is_native_gguf_shape(model):
+    if parsed.filename:
         try:
             hf_repo, gguf_filename = parse_hf_ref(model)
         except ValueError:
             return None
         task = ModelTask(reclassify_by_name(model, ModelTask.CHAT))
         return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
-    if not _is_hf_repo_id(model):
+    if not _is_hf_repo_id(parsed.hf_repo):
         return None
-    return build_adhoc_entry(model, task=ModelTask(reclassify_by_name(model, ModelTask.CHAT)))
+    task = ModelTask(reclassify_by_name(parsed.hf_repo, ModelTask.CHAT))
+    return build_adhoc_entry(parsed.hf_repo, task=task)
 
 
 # Embedding detection by name, for servers (LM Studio) that report ids but no

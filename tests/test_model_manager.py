@@ -1,8 +1,12 @@
 """Tests for model_manager.py: model lifecycle management across sources."""
 
+import json
+import logging
+import re
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 
@@ -11,7 +15,8 @@ import pytest
 from cachetools import TTLCache
 
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelSource, ModelTask
+from lilbee.catalog.refs import REPO_ID_HINT
+from lilbee.catalog.types import ModelFormat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import (
     ModelManager,
@@ -22,6 +27,7 @@ from lilbee.providers.factory import sdk_library
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests import _fake_sdk
+from tests._quiet_http_server import QuietHTTPServer
 from tests._sys_modules import inject_modules
 from tests._unreadable import POSIX_DENIES_READS, unreadable
 
@@ -798,6 +804,135 @@ class TestModelManagerPull:
         assert entry.gguf_filename == "gemma-2-2b-it-Q4_K_M.gguf"
         assert entry.featured is False
 
+    @staticmethod
+    def _pull_entry(
+        tmp_path: Path,
+        fmt: ModelFormat,
+        task: ModelTask,
+        *,
+        size_known: bool = True,
+        on_notice: Callable[[str], None] | None = None,
+    ) -> list[object]:
+        """Pull one entry through ``_pull_native``; return the fit and download steps in order."""
+        from lilbee.catalog.pull_fit import PullFit
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        entry = CatalogModel(
+            hf_repo="acme/test-model",
+            gguf_filename="model.safetensors",
+            size_gb=0.0,
+            min_ram_gb=0.0,
+            description="",
+            featured=False,
+            downloads=0,
+            task=task,
+            format=fmt,
+        )
+        steps: list[object] = []
+
+        engine = mock.Mock()
+
+        def fit(repo: str, picked: object, *, token: object = None) -> PullFit:
+            steps.append(("fit", repo, picked is engine))
+            return PullFit(
+                device_bytes=5 * 1024**3, ctx=8192, size_known=size_known, upper_bound=False
+            )
+
+        def download(*_args: object, **_kwargs: object) -> Path:
+            steps.append("download")
+            return models_dir / "model.safetensors"
+
+        with (
+            mock.patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+            mock.patch("lilbee.catalog.pull_fit.chat_pull_fit", side_effect=fit),
+            mock.patch("lilbee.catalog.download_model", side_effect=download),
+        ):
+            ModelManager(models_dir, cfg)._pull_native(
+                "acme/test-model", engine, on_notice=on_notice
+            )
+        return steps
+
+    @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
+    def test_a_safetensors_chat_pull_works_out_the_memory_need_before_the_download(
+        self, fmt: ModelFormat, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="lilbee.modelhub.model_manager.core"):
+            steps = self._pull_entry(tmp_path, fmt, ModelTask.CHAT)
+        assert steps == [("fit", "acme/test-model", True), "download"]
+        assert "acme/test-model: This model needs 5.0 GiB at a context of" in caplog.text
+        assert [r.levelno for r in caplog.records if "needs 5.0 GiB" in r.message] == [logging.INFO]
+
+    def test_an_unknown_size_goes_to_the_notice_callback(self, tmp_path: Path) -> None:
+        notices: list[str] = []
+        self._pull_entry(
+            tmp_path,
+            ModelFormat.SAFETENSORS,
+            ModelTask.CHAT,
+            size_known=False,
+            on_notice=notices.append,
+        )
+        assert notices == ["The size of this model is unknown, so 5.0 GiB is reserved for it."]
+
+    def test_a_pull_logs_an_unknown_size_once(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            self._pull_entry(tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False)
+        assert len([r for r in caplog.records if "is unknown" in r.getMessage()]) == 1
+
+    def test_a_known_size_sends_no_notice(self, tmp_path: Path) -> None:
+        notices: list[str] = []
+        self._pull_entry(
+            tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, on_notice=notices.append
+        )
+        assert notices == []
+
+    def test_an_unknown_size_pull_without_a_callback_still_downloads(self, tmp_path: Path) -> None:
+        steps = self._pull_entry(
+            tmp_path, ModelFormat.SAFETENSORS, ModelTask.CHAT, size_known=False
+        )
+        assert steps[-1] == "download"
+
+    def test_a_gguf_qualified_pull_downloads_what_the_bare_repo_downloads(
+        self, tmp_path: Path
+    ) -> None:
+        downloaded: list[CatalogModel] = []
+
+        def download(entry: CatalogModel, *_args: object, **_kwargs: object) -> Path:
+            downloaded.append(entry)
+            return tmp_path / "model.gguf"
+
+        manager = ModelManager(tmp_path, cfg)
+        with (
+            mock.patch("lilbee.catalog.download_model", side_effect=download),
+            mock.patch("lilbee.catalog.download.resolve_filename", return_value="m-Q4_K_M.gguf"),
+        ):
+            for ref in ("acme/Repo-GGUF", "acme/Repo-GGUF#gguf"):
+                manager._pull_native(ref, mock.Mock())
+        assert len(downloaded) == 2
+        assert downloaded[0] == downloaded[1]
+        assert (downloaded[1].hf_repo, downloaded[1].gguf_filename) == (
+            "acme/Repo-GGUF",
+            "m-Q4_K_M.gguf",
+        )
+
+    @pytest.mark.parametrize(
+        ("fmt", "task"),
+        [
+            (ModelFormat.GGUF, ModelTask.CHAT),
+            (ModelFormat.SAFETENSORS, ModelTask.EMBEDDING),
+            (ModelFormat.SAFETENSORS, ModelTask.RERANK),
+            (ModelFormat.OPENVINO, ModelTask.CHAT),
+        ],
+    )
+    def test_a_pull_that_is_not_a_safetensors_chat_model_reads_no_memory_need(
+        self, fmt: ModelFormat, task: ModelTask, tmp_path: Path
+    ) -> None:
+        with mock.patch("lilbee.catalog.download.resolve_filename", return_value="m.gguf"):
+            steps = self._pull_entry(tmp_path, fmt, task)
+        assert steps == ["download"]
+
     def test_native_pull_unknown_short_name_raises(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -805,7 +940,7 @@ class TestModelManagerPull:
         mgr = ModelManager(models_dir, cfg)
         with (
             mock.patch("lilbee.catalog.resolve_pull_target", return_value=None),
-            pytest.raises(RuntimeError, match="HuggingFace repo id"),
+            pytest.raises(RuntimeError, match=re.escape(REPO_ID_HINT)),
         ):
             mgr.pull("nonexistent-model", ModelSource.NATIVE)
 
@@ -1251,7 +1386,7 @@ class TestRemoteModelProvider:
         monkeypatch.setattr(cfg, "ollama_base_url", "")
         monkeypatch.setattr(cfg, "lm_studio_base_url", "")
 
-        def fake_get(url: str, timeout: float) -> mock.Mock:
+        def fake_get(url: str, timeout: float, headers: dict[str, str] | None = None) -> mock.Mock:
             resp = mock.Mock()
             resp.raise_for_status = mock.Mock()
             if "/api/tags" in url:
@@ -1674,9 +1809,113 @@ class TestDiscoveryHttpSeam:
         client = mock.Mock()
         with mock.patch.object(discovery, "_discovery_client", return_value=client):
             discovery._http_get("http://x/api/tags", timeout=1.5)
-        client.get.assert_called_once_with("http://x/api/tags", timeout=1.5)
+        client.get.assert_called_once_with("http://x/api/tags", timeout=1.5, headers=None)
+
+    def test_http_get_passes_headers_to_the_shared_client(self) -> None:
+        from lilbee.modelhub.model_manager import discovery
+
+        client = mock.Mock()
+        with mock.patch.object(discovery, "_discovery_client", return_value=client):
+            discovery._http_get("http://x/v1/models", timeout=1.5, headers={"A": "b"})
+        client.get.assert_called_once_with("http://x/v1/models", timeout=1.5, headers={"A": "b"})
 
     def test_discovery_client_is_shared(self) -> None:
         from lilbee.modelhub.model_manager.discovery import _discovery_client
 
         assert _discovery_client() is _discovery_client()
+
+
+_KEYED_MODELS = {"data": [{"id": "qwen3-8b"}, {"id": "nomic-embed-text-v1.5"}]}
+
+
+@pytest.fixture
+def keyed_lm_studio() -> Iterator[tuple[str, list[str | None]]]:
+    """A fake LM Studio that answers 401 unless the request carries ``Bearer sk-lms``.
+
+    Yields its ``/v1`` base URL and the list of Authorization headers it saw.
+    """
+    seen: list[str | None] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            auth = self.headers.get("Authorization")
+            seen.append(auth)
+            if self.path != "/v1/models" or auth != "Bearer sk-lms":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = json.dumps(_KEYED_MODELS).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = QuietHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/v1", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestKeyedLmStudioDiscovery:
+    """Discovery sends the key the chat request sends, so a keyed LM Studio lists its models."""
+
+    def test_classify_sends_the_configured_key(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
+
+        base_url, seen = keyed_lm_studio
+        cfg.llm_api_key = "sk-lms"
+        models = classify_remote_models(base_url, LM_STUDIO)
+        assert {m.name: m.task for m in models} == {
+            "qwen3-8b": ModelTask.CHAT,
+            "nomic-embed-text-v1.5": ModelTask.EMBEDDING,
+        }
+        assert seen == ["Bearer sk-lms"]
+
+    def test_classify_all_sends_the_configured_key(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_all_remote_models
+
+        base_url, _seen = keyed_lm_studio
+        cfg.llm_api_key = "sk-lms"
+        cfg.lm_studio_base_url = base_url
+        cfg.ollama_base_url = "http://127.0.0.1:9"
+        assert {m.name for m in classify_all_remote_models()} == {
+            "qwen3-8b",
+            "nomic-embed-text-v1.5",
+        }
+
+    def test_without_a_key_the_server_refuses_and_nothing_is_listed(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import LM_STUDIO
+
+        base_url, seen = keyed_lm_studio
+        cfg.llm_api_key = ""
+        assert classify_remote_models(base_url, LM_STUDIO) == []
+        assert seen == [None]
+
+    def test_ollama_discovery_never_sends_the_key(
+        self, keyed_lm_studio: tuple[str, list[str | None]]
+    ) -> None:
+        from lilbee.modelhub.model_manager import classify_remote_models
+        from lilbee.providers.local_servers import OLLAMA
+
+        base_url, seen = keyed_lm_studio
+        cfg.llm_api_key = "sk-lms"
+        classify_remote_models(base_url.removesuffix("/v1"), OLLAMA)
+        assert seen == [None]

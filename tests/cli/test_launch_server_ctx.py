@@ -10,6 +10,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._stated_sizes import state_size
 
 
 def _health(monkeypatch, body: dict) -> None:
@@ -140,27 +141,72 @@ def test_planned_chat_ctx_sizes_a_local_model_the_way_the_fleet_does(monkeypatch
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 65536)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic", lambda _p: True
+    )
 
     # A 40,960-token trained window caps the 65,536 target.
     assert launch_mod.planned_chat_ctx() == 40960
 
 
+def _pin_on_trained_window(monkeypatch, tmp_path, *, trained: str | None) -> None:
+    gguf = tmp_path / "chat.gguf"
+    gguf.write_bytes(b"0" * 1024)
+    meta = {"architecture": "qwen3"}
+    if trained is not None:
+        meta["context_length"] = trained
+    monkeypatch.setattr(cfg, "chat_model", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
+    monkeypatch.setattr(cfg, "num_ctx_max", None)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic", lambda _p: True
+    )
+
+
 @pytest.mark.no_warm_default
-def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(monkeypatch, tmp_path):
+def test_planned_chat_ctx_clamps_a_pin_past_the_trained_window(monkeypatch, tmp_path):
+    from lilbee.cli.launchers import server as launch_mod
+
+    _pin_on_trained_window(monkeypatch, tmp_path, trained="4096")
+    monkeypatch.setattr(cfg, "num_ctx", 8192)
+    assert launch_mod.planned_chat_ctx() == 4096
+
+
+@pytest.mark.no_warm_default
+def test_planned_chat_ctx_keeps_a_pin_inside_the_trained_window(monkeypatch, tmp_path):
+    from lilbee.cli.launchers import server as launch_mod
+
+    _pin_on_trained_window(monkeypatch, tmp_path, trained="40960")
+    monkeypatch.setattr(cfg, "num_ctx", 8192)
+    assert launch_mod.planned_chat_ctx() == 8192
+
+
+@pytest.mark.no_warm_default
+def test_client_chat_ctx_advertises_the_clamped_pin_while_the_engine_is_cold(monkeypatch, tmp_path):
+    from lilbee.cli.launchers import server as launch_mod
+
+    _pin_on_trained_window(monkeypatch, tmp_path, trained="4096")
+    monkeypatch.setattr(cfg, "num_ctx", 8192)
+    _health(monkeypatch, {"chat_ready": False, "chat_ctx": None})
+    assert launch_mod.client_chat_ctx(8765) == 4096
+
+
+@pytest.mark.no_warm_default
+def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(
+    monkeypatch, tmp_path, stated_sizes
+):
     # The advertised window has to be the one the fleet will serve. Sized against
     # host memory instead, an 8 GiB card is told to expect the whole trained
     # window and the client trims history to a window it never gets.
-    import os
-
     from lilbee.cli.launchers import server as launch_mod
     from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.fleet import planning as planning_mod
     from lilbee.providers.fleet.devices import FleetDevice
 
     gguf = tmp_path / "chat.gguf"
-    gguf.touch()
-    os.truncate(gguf, 2 * 1024**3)
+    state_size(gguf, 2 * 1024**3)
     meta = {
         "architecture": "qwen3",
         "block_count": "36",
@@ -177,7 +223,10 @@ def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(monkeypatch, 
     monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr("lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda _p: meta)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.engines.llama.starts_with_gguf_magic", lambda _p: True
+    )
     monkeypatch.setattr(
         "lilbee.providers.fleet.engines.llama.resolve_llama_server", lambda: Path("/bin/srv")
     )
@@ -227,7 +276,6 @@ def test_both_grant_surfaces_report_the_window_the_estimator_fits(monkeypatch, t
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "chat_n_ctx_target", 262144)
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _ref: gguf)
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: meta)
     monkeypatch.setattr(planning_mod, "fit_chat_ctx", lambda *_a, **_k: fitted)
 
     assert launch_mod.planned_chat_ctx() == fitted

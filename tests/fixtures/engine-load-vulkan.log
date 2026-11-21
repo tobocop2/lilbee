@@ -8,7 +8,7 @@
 0.00.105.257 I srv          init: using 8 threads for HTTP server
 0.00.105.827 I srv         start: binding port with default address family
 0.00.107.052 I srv  llama_server: loading model
-0.00.107.074 I srv    load_model: loading model '/home/tobias/.cache/huggingface/hub/models--bartowski--SmolLM2-135M-Instruct-GGUF/snapshots/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q4_K_M.gguf'
+0.00.107.074 I srv    load_model: loading model '<home>/.cache/huggingface/hub/models--bartowski--SmolLM2-135M-Instruct-GGUF/snapshots/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q4_K_M.gguf'
 0.00.107.138 I common_init_result: fitting params to device memory ...
 0.00.107.141 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
 0.00.107.154 I common_params_fit_impl: getting device memory data for initial parameters:
@@ -19,7 +19,7 @@
 0.00.335.975 I common_params_fit_impl: will leave 8106 >= 1024 MiB of free device memory, no changes needed
 0.00.335.976 I common_fit_params: successfully fit params to free device memory
 0.00.335.982 I common_fit_params: fitting params to free memory took 0.23 seconds
-0.00.355.301 I llama_model_loader: loaded meta data with 37 key-value pairs and 272 tensors from /home/tobias/.cache/huggingface/hub/models--bartowski--SmolLM2-135M-Instruct-GGUF/snapshots/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q4_K_M.gguf (version GGUF V3 (latest))
+0.00.355.301 I llama_model_loader: loaded meta data with 37 key-value pairs and 272 tensors from <home>/.cache/huggingface/hub/models--bartowski--SmolLM2-135M-Instruct-GGUF/snapshots/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q4_K_M.gguf (version GGUF V3 (latest))
 0.00.355.324 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 0.00.355.329 I llama_model_loader: - kv   0:                       general.architecture str              = llama
 0.00.355.330 I llama_model_loader: - kv   1:                               general.type str              = model

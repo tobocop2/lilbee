@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import ValidationError
 
+from lilbee.app.engine_choice import resolve_engines
 from lilbee.app.settings_map import CHUNK_LIMIT_KEY, SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.catalog.hf_client import is_hf_token_sendable
 from lilbee.config_meta import (
@@ -52,14 +53,18 @@ from lilbee.core.config.schema import field_type_name
 from lilbee.core.crawl_patterns import exclude_patterns_refusal
 from lilbee.core.project_state import dismiss_tip
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import is_header_safe
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.reload_keys import FLEET_RELOAD_KEYS
 from lilbee.providers.roles import (
     MODEL_FIELD_TO_ROLE,
     ROLE_GATE_FIELD_TO_ROLE,
+    WorkerRole,
 )
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
+    from lilbee.catalog.types import ModelTask
     from lilbee.modelhub.registry import ModelRegistry
 
 log = logging.getLogger(__name__)
@@ -158,17 +163,38 @@ def list_setting_value(raw: str) -> list[str]:
     return [line.strip() for line in raw.split("\n") if line.strip()]
 
 
+def _no_engine_notices(changed_keys: set[str]) -> tuple[str, ...]:
+    """The engine notice of each changed local model that no installed engine loads."""
+    fields = [key for key in MODEL_FIELD_TO_ROLE if key in changed_keys]
+    if not fields:
+        return ()
+    choices = resolve_engines(cfg).choices
+    notices = []
+    for key in fields:
+        ref = str(getattr(cfg, key))
+        choice = choices[MODEL_FIELD_TO_ROLE[key]]
+        if ref and choice.name is None and not parse_model_ref(ref).is_remote:
+            notices.append(choice.notice or "")
+    return tuple(notices)
+
+
 def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
-    """The notice for a vision model picked while ocr = off keeps it unused."""
-    return ocr_off_vision_notice() if "vision_model" in changed_keys else ()
+    """The notices for a vision model picked while ocr = off, and for a model with no engine."""
+    ocr = ocr_off_vision_notice() if "vision_model" in changed_keys else ()
+    return ocr + _no_engine_notices(changed_keys)
+
+
+def _field_flag(key: str, flag: str) -> bool:
+    """Return True when the declaration of *key* carries the marker *flag*."""
+    extra = Config.model_fields[key].json_schema_extra
+    if isinstance(extra, dict):
+        return bool(extra.get(flag, False))
+    return False
 
 
 def _is_write_only(key: str) -> bool:
     """Return True for fields persisted but never read back (API keys, hf_token)."""
-    extra = Config.model_fields[key].json_schema_extra
-    if isinstance(extra, dict):
-        return bool(extra.get("write_only", False))
-    return False
+    return _field_flag(key, "write_only")
 
 
 def _secret_refusal(key: str, error: ValidationError) -> str:
@@ -351,6 +377,15 @@ def _validate_crawl_login(updates: dict[str, Any]) -> None:
     )
 
 
+def _validate_header_values(updates: dict[str, Any]) -> None:
+    """Reject a secret that a header cannot carry; the field declaration names such secrets."""
+    for key, value in updates.items():
+        if not isinstance(value, str) or not _field_flag(key, "header_value"):
+            continue
+        if not is_header_safe(value):
+            raise ValueError(f"{key} holds a character that cannot be sent. Copy it again.")
+
+
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
@@ -361,6 +396,7 @@ def _validate(updates: dict[str, Any]) -> None:
     if refusal is not None:
         raise ValueError(refusal)
     _validate_crawl_login(updates)
+    _validate_header_values(updates)
     hf_token = updates.get("hf_token")
     if isinstance(hf_token, str) and not is_hf_token_sendable(hf_token):
         raise ValueError("hf_token holds a character that cannot be sent. Copy it again.")
@@ -542,23 +578,9 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:
         return
-    if changed_keys & MODEL_ROLE_FIELDS:
-        # heavy: model_info reads GGUF headers with the gguf parser (~130 ms)
-        from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
-
-        invalidate_arch_cache()
     if changed_keys & FLEET_RELOAD_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
-    if "token_sizing" in changed_keys:
-        # Unregister lilbee's xberg tokenizer backend when token_sizing is turned
-        # off (via any settings path); the chunker binds it on demand when on.
-        from lilbee.app.services import peek_services
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        services = peek_services()
-        if services is not None:
-            sync_xberg_backend(BackendKind.TOKENIZER, services.provider)
     if "mcp_tool_threads" in changed_keys:
         # Resize the running server's thread pool now instead of only at startup.
         from lilbee.server.app import reapply_thread_pool_ceiling
@@ -764,6 +786,22 @@ def _put_back(snapshot: SettingsSnapshot, *, invalidate_caches: bool = True) -> 
         _invalidate_caches(set(snapshot.values))
 
 
+def role_command(role: WorkerRole) -> str:
+    """The command line that sets the model of *role*."""
+    if role is WorkerRole.EMBED:
+        return "lilbee use-embedder <ref>"
+    return f"lilbee model use {role.value} <ref>"
+
+
+def task_command(task: ModelTask) -> str:
+    """The command line that sets the role that models of *task* belong to."""
+    # heavy: role_validator pulls catalog + modelhub transitively (~300 ms)
+    from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK
+
+    field = next(name for name, field_task in MODEL_FIELD_TO_TASK.items() if field_task == task)
+    return role_command(MODEL_FIELD_TO_ROLE[field])
+
+
 def _refuse_model_roles(keys: Iterable[str]) -> None:
     """Refuse model-role keys, which the dedicated model route owns."""
     rejected = MODEL_ROLE_FIELDS & set(keys)
@@ -771,7 +809,8 @@ def _refuse_model_roles(keys: Iterable[str]) -> None:
         offender = sorted(rejected)[0]
         raise ValueError(
             f"'{offender}' must be set through the dedicated model route "
-            "(on the command line, lilbee model), not the general settings update."
+            f"(on the command line, {role_command(MODEL_FIELD_TO_ROLE[offender])}), "
+            "not the general settings update."
         )
 
 
@@ -826,7 +865,7 @@ def apply_ephemeral_model_swap(field: str, ref: str) -> None:
     """
     if field == "embedding_model":
         _pin_legacy_store_meta()
-        dim = _embedder_dim_from_gguf(ref)
+        dim = _embedder_dim(ref)
         setattr(cfg, field, ref)
         if dim is not None:
             cfg.embedding_dim = dim
@@ -842,21 +881,41 @@ def _pin_legacy_store_meta() -> None:
     get_services().store.initialize_meta_if_legacy()
 
 
-def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> int | None:
-    """The embedder's output width from its GGUF header (``<arch>.embedding_length``).
+def _concatenates_pooling(ref: str) -> bool:
+    """Whether the engine that serves *ref* gives one vector block per pooling mode.
 
-    None when the model can't be resolved or the header lacks the field. Cheap: a
-    cached header read, no load. *registry* is forwarded to resolve the GGUF without
-    ``get_services()`` (callers running inside its construction).
+    False when no installed engine loads the model: one block is the width
+    that the engines which serve a single mode give.
+    """
+    from lilbee.app.engine_choice import engine_for_ref
+    from lilbee.providers.fleet.engines.choice import NoEngineError
+
+    try:
+        return engine_for_ref(ref, cfg).concatenates_pooling
+    except NoEngineError:
+        return False
+
+
+def _embedder_dim(ref: str, registry: ModelRegistry | None = None) -> int | None:
+    """The embedder's output width, read from the model itself.
+
+    A model folder gives it from its config files; a GGUF file from its header
+    (``<arch>.embedding_length``). None when the model can't be resolved or
+    carries no width. Cheap: no load. *registry* is forwarded to resolve the
+    model without ``get_services()`` (callers running inside its construction).
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.folder_embed_width import folder_embedding_width
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     try:
         # resolve_model_path raises ProviderError for a non-native (ollama/SDK) ref,
-        # which has no local GGUF -- those embedders carry no width to derive here.
-        meta = read_gguf_metadata(resolve_model_path(ref, registry))
+        # which has no local model -- those embedders carry no width to derive here.
+        path = resolve_model_path(ref, registry)
+        if path.is_dir():
+            return folder_embedding_width(path, concatenates_pooling=_concatenates_pooling(ref))
+        meta = read_gguf_metadata(path)
     except (ProviderError, ValueError, OSError, RuntimeError, TypeError):
         return None
     raw = meta.get("embedding_length") if meta else None
@@ -872,10 +931,17 @@ def _embedder_dim_from_gguf(ref: str, registry: ModelRegistry | None = None) -> 
 def reconcile_embedding_dim(
     registry: ModelRegistry | None = None, config: Config | None = None
 ) -> None:
-    """Pin the embedding dim of *config* (default cfg) to the native embedder's GGUF width;
-    no-op for non-native embedders or an already-matching dim."""
+    """Pin the embedding dim of *config* (default cfg) to the width of its embedder.
+
+    The width comes from the model itself; a model that gives none (a non-native ref) takes
+    the width of an index that the same model built. No-op when neither names a width.
+    """
+    from lilbee.data.store.lance_helpers import persisted_embedding_width
+
     target = cfg if config is None else config
-    dim = _embedder_dim_from_gguf(target.embedding_model, registry)
+    dim = _embedder_dim(target.embedding_model, registry)
+    if dim is None:
+        dim = persisted_embedding_width(target.lancedb_dir, target.embedding_model)
     if dim is not None and dim != target.embedding_dim:
         target.embedding_dim = dim
 
@@ -963,7 +1029,7 @@ def embed_pick_needs_rebuild(ref: str) -> bool:
         canonical = canonical_model_ref(_coerce_value("embedding_model", ref))
     except ValueError:  # the write refuses this ref on its own
         canonical = ref
-    dim = _embedder_dim_from_gguf(canonical) or cfg.embedding_dim
+    dim = _embedder_dim(canonical) or cfg.embedding_dim
     return store.index_mismatch(model=canonical, dim=dim) is not None
 
 

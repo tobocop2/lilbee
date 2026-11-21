@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from lilbee.providers.fleet.gpu_select import PCIVendorID
 from lilbee.providers.fleet.proc import run_bounded
 
 _SMI_TIMEOUT_S = 5.0
@@ -33,7 +34,24 @@ class UtilSample:
 class UtilBackend(Protocol):
     """One vendor's live-util probe: given indices, returns per-index samples."""
 
+    @property
+    def pci_vendor(self) -> PCIVendorID | None: ...
+
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]: ...
+
+
+def run_tool(tool: str, args: Sequence[str], timeout: float) -> tuple[str, int | None]:
+    """Resolve tool via shutil.which and run it: ``(stdout, exit code)``.
+
+    The exit code is ``None`` when the tool cannot start or hits the time limit.
+    """
+    binary = shutil.which(tool) or tool
+    try:
+        return run_bounded(
+            [binary, *args], timeout_s=timeout, kill_wait_s=_SMI_KILL_WAIT_S, label=tool
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "", None
 
 
 def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> str:
@@ -41,13 +59,7 @@ def run_smi(tool: str, args: Sequence[str], timeout: float = _SMI_TIMEOUT_S) -> 
 
     Returns "" when the tool is not found, exits non-zero, or raises.
     """
-    binary = shutil.which(tool) or tool
-    try:
-        stdout, returncode = run_bounded(
-            [binary, *args], timeout_s=timeout, kill_wait_s=_SMI_KILL_WAIT_S, label=tool
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    stdout, returncode = run_tool(tool, args, timeout)
     return stdout if returncode == 0 else ""
 
 

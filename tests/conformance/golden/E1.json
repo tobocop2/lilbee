@@ -4,7 +4,10 @@
     1,
     12,
     22,
-    38
+    38,
+    57,
+    70,
+    80
   ],
   "request": null,
   "assert": "GET the preset health_path, else /health, answers 200. If none does, GET /v1/models 200 gives fallback."

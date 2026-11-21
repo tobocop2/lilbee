@@ -18,6 +18,7 @@ from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
 from lilbee.core.config import cfg
 from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
@@ -114,8 +115,9 @@ async def test_the_notice_shows_a_bracketed_path_as_written(sessions, workdir, f
         screen.resume_session(source)
         await _submit(pilot, f"/export-chat {folder}/")
         target = (workdir / folder / f"torque-{source[:8]}.md").resolve()
-        notification = list(app._notifications)[-1]
-        assert notification.message == msg.EXPORT_CHAT_DONE.format(path=target)
+        done = msg.EXPORT_CHAT_DONE.format(path=target)
+        assert await wait_until(pilot, lambda: any(n.message == done for n in app._notifications))
+        notification = next(n for n in app._notifications if n.message == done)
         assert notification.markup is False
         assert app.is_running
     assert target.is_file()
@@ -129,9 +131,11 @@ async def test_the_failure_notice_is_not_markup(sessions, workdir):
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
         await _submit(pilot, "/export-chat [draft]/out.md")
-        notification = list(app._notifications)[-1]
+        assert await wait_until(
+            pilot, lambda: any(n.severity == "error" for n in app._notifications)
+        )
+        notification = next(n for n in app._notifications if n.severity == "error")
         assert notification.markup is False
-        assert notification.severity == "error"
 
 
 async def test_export_into_a_directory_uses_the_default_name(sessions, workdir):

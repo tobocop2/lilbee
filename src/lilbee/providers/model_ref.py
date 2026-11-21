@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from lilbee.catalog.refs import is_gguf_filename, is_native_gguf_shape, model_format
+from lilbee.catalog.refs import canonical_ref, is_gguf_filename, is_native_gguf_shape, model_format
 from lilbee.catalog.types import ModelFormat, ModelSource
 from lilbee.providers.base import (
     ChosenSeed,
@@ -154,8 +154,9 @@ def canonical_model_ref(raw: str) -> str:
 
     A ref that names a stored server preset and a ref that names none both keep
     the text as written, so this reads no stored preset. The config validators call it.
+    A ``#gguf`` qualifier reads as the plain ref, so config holds one spelling.
     """
-    return _classify(raw, read_presets=False).for_openai_prefix()
+    return _classify(canonical_ref(raw), read_presets=False).for_openai_prefix()
 
 
 def parse_model_ref(raw: str) -> ProviderModelRef:
@@ -227,8 +228,8 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
     ``num_ctx``) plus a ``top_k`` and ``repeat_penalty`` drop: hosted APIs do not
     take either, so dropping them keeps the wire request clean. An Anthropic ref
     refuses a ``seed`` or penalty set to any value, zero included, with a bad-request
-    error; when ``response_format`` is set it drops them and sends the request,
-    and it drops a seed that is a :class:`ChosenSeed` instead of refusing it.
+    error, with or without ``response_format``; it drops a seed that is a
+    :class:`ChosenSeed` instead of refusing it.
     ``cache_prompt`` is a llama-server field, and no ref here gets it.
     """
     if not ref.is_api:
@@ -242,15 +243,13 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
         return filtered
     api_options = normalize_generation_options(options)
     if ref.provider == "anthropic":
-        # A ``response_format`` marks an internal call, and so does a seed lilbee chose:
-        # the fix the refusal asks for is not the user's to make.
-        if "response_format" not in api_options:
-            chosen = isinstance(options.get("seed"), ChosenSeed)
-            _refuse_unsupported(
-                {k: v for k, v in api_options.items() if not (chosen and k == "seed")},
-                ref,
-                _ANTHROPIC_UNSUPPORTED,
-            )
+        # A seed lilbee chose is not the user's to remove, so it is dropped, not refused.
+        chosen = isinstance(options.get("seed"), ChosenSeed)
+        _refuse_unsupported(
+            {k: v for k, v in api_options.items() if not (chosen and k == "seed")},
+            ref,
+            _ANTHROPIC_UNSUPPORTED,
+        )
         for name in _ANTHROPIC_UNSUPPORTED:
             api_options.pop(name, None)
     api_options.pop("cache_prompt", None)

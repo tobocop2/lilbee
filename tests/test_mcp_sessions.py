@@ -82,6 +82,12 @@ def test_session_get_carries_the_summary(store):
     assert session_get(session_id)["summary"] == "earlier: torque is 85 Nm"
 
 
+def test_session_create_stores_a_gguf_qualified_ref_as_the_plain_ref(store):
+    created = session_create(model_ref="org/repo/f.gguf#gguf")
+    assert created["model_ref"] == "org/repo/f.gguf"
+    assert session_get(created["id"])["meta"]["model_ref"] == "org/repo/f.gguf"
+
+
 def test_session_create_then_append_and_read_back(store):
     """An agent can own a conversation end to end over MCP."""
     created = session_create(model_ref="qwen3-4b", scope="both")

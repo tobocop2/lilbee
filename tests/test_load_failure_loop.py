@@ -7,6 +7,7 @@ from itertools import pairwise
 import pytest
 
 from lilbee.providers.base import ProviderErrorKind
+from lilbee.providers.fleet.engines import LLAMA
 
 _GB = 1024**3
 
@@ -64,26 +65,26 @@ class TestATightRolePlacesAcrossCardsNotOntoOne:
     than a slower refusal."""
 
     def test_the_widest_group_is_used_when_no_single_card_fits(self) -> None:
-        from lilbee.providers.fleet.placement import _place_tight
+        from lilbee.providers.fleet.placement import _place_tight, _SwapGroup
 
         remaining = {0: 10.0 * _GB, 1: 9.0 * _GB, 2: 8.0 * _GB}
-        placed, _refunds, shortfall = _place_tight(_oversize(24 * _GB), remaining, charges={})
+        placed, shortfall = _place_tight(_oversize(24 * _GB), remaining, {}, _SwapGroup())
         assert placed.plan.devices == (0, 1, 2)
         assert shortfall <= 0  # across the three it fits; on any one of them it does not
 
     def test_a_model_too_big_for_every_card_together_still_reports_a_shortfall(self) -> None:
-        from lilbee.providers.fleet.placement import _place_tight
+        from lilbee.providers.fleet.placement import _place_tight, _SwapGroup
 
         remaining = {0: 10.0 * _GB, 1: 9.0 * _GB}
-        placed, _refunds, shortfall = _place_tight(_oversize(40 * _GB), remaining, charges={})
+        placed, shortfall = _place_tight(_oversize(40 * _GB), remaining, {}, _SwapGroup())
         assert placed.plan.devices == (0, 1)
         assert shortfall == 21 * _GB
 
     def test_a_model_that_fits_one_card_still_takes_one(self) -> None:
-        from lilbee.providers.fleet.placement import _place_tight
+        from lilbee.providers.fleet.placement import _place_tight, _SwapGroup
 
         remaining = {0: 30.0 * _GB, 1: 9.0 * _GB}
-        placed, _refunds, _shortfall = _place_tight(_oversize(24 * _GB), remaining, charges={})
+        placed, _shortfall = _place_tight(_oversize(24 * _GB), remaining, {}, _SwapGroup())
         assert placed.plan.devices == (0,)
 
 
@@ -145,9 +146,12 @@ class TestAnAutoContextStepsDownAfterAnOom:
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 32768, raising=False)
         monkeypatch.setattr(engine_params, "chat_ctx_ceiling", lambda *_: 32768)
         planning.clear_ctx_downshift()
-        full = planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None)
+        full = planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None, engine=LLAMA)
         planning.record_ctx_downshift(WorkerRole.CHAT)
-        assert planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None) == full // 2
+        assert (
+            planning._placement_estimate_ctx(WorkerRole.CHAT, _PATH, None, engine=LLAMA)
+            == full // 2
+        )
         planning.clear_ctx_downshift()
 
 

@@ -15,15 +15,10 @@ from lilbee.providers.fleet.swap_manager import EngineLifetime
 
 @pytest.fixture(autouse=True)
 def _restore_cfg():
-    # max_workers caches a value derived from cfg, so it is invalidated wherever
-    # cfg is restored; otherwise one test's ingest_max_inflight sets the ceiling
-    # every later test reads.
     snapshot = cfg.model_copy()
-    offload.max_workers.cache_clear()
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
-    offload.max_workers.cache_clear()
 
 
 class TestKeepFleetWarm:

@@ -15,6 +15,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests._signals import child_preexec
+
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="SIGINT is POSIX here")
 
 # The fake write bound is longer than the shutdown bound, so the signal lands with
@@ -27,10 +29,9 @@ _WAIT_FOR_SERVER_S = 30.0
 _INTERRUPTED_STATUS = 130
 _SIGTERM_STATUS = 143
 _SIGHUP_STATUS = 129
-_STILL_STARTING = f"The engines are still starting after {_WRITE_BOUND_S} s."
 _STOPPING = "The server is stopping."
 _OPEN_EXIT_NOTE = "lilbee: the library is still opening; exiting now. The next start finishes it."
-_LIBRARY_WAIT = "lilbee is upgrading the library. Try again in a few seconds."
+_LIBRARY_WAIT = "lilbee is opening the library. Try again in a few seconds."
 _SAVED_PLACEMENT = 'placement = "{}"\n'
 
 _PROBE_SETUP = f"""
@@ -129,7 +130,6 @@ _PROBE_NO_ENGINE = _PROBE_SETUP + _NO_BUNDLED_ENGINE + _BUILD_WITH_THE_LIBRARY_O
 
 # The placement route plans before it saves, and the plan reads the engine's devices.
 _FAKE_LLAMA_SERVER = "#!/bin/sh\necho 'Available devices:'\n"
-_NO_ENGINE_DETAIL = "llama-server binary not found."
 
 
 def _plant_engine(home: Path) -> Path:
@@ -162,6 +162,7 @@ class _Server:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding="utf-8",
+            preexec_fn=child_preexec(),
         )
         self.lines: list[str] = []
         self._changed = threading.Condition()
@@ -260,7 +261,7 @@ def _assert_ended_by_the_signal(
     if open_still_running:
         assert _OPEN_EXIT_NOTE in server.lines, "\n".join(server.lines)
     else:
-        assert "interrupted" in server.lines
+        assert f"exit {_INTERRUPTED_STATUS}" in server.lines
     assert server.lines.count("teardown") == 1, "\n".join(server.lines)
 
 
@@ -369,13 +370,37 @@ def test_a_hard_exit_signal_with_a_queued_write_says_it_is_saved_and_keeps_its_s
     assert "Timeout (" not in next(tmp_path.rglob("server-fault.log")).read_text(encoding="utf-8")
 
 
-def test_a_server_with_an_open_read_ends_after_sigint(server: _Server, tmp_path: Path) -> None:
+def test_a_server_with_a_queued_memory_write_ends_after_sigint(
+    server: _Server, tmp_path: Path
+) -> None:
     elapsed, answer = _sigint_with_a_request_open(
         server, tmp_path, "POST", "/api/memories", {"text": "a note"}
     )
     _assert_ended_by_the_signal(server, elapsed)
     assert answer.status_code == 503
-    assert answer.json()["detail"] == _STILL_STARTING
+    assert answer.json()["detail"] == _STOPPING
+
+
+@pytest.mark.parametrize(
+    ("signal_name", "status"),
+    [
+        ("SIGINT", _INTERRUPTED_STATUS),
+        ("SIGTERM", _SIGTERM_STATUS),
+        ("SIGHUP", _SIGHUP_STATUS),
+    ],
+)
+def test_a_queued_memory_write_answers_at_once_on_a_stop_signal(
+    server_with_the_real_write_wait: _Server, tmp_path: Path, signal_name: str, status: int
+) -> None:
+    """The write waits the full bound on the engines; the client waits 20 s, so it fails late."""
+    server = server_with_the_real_write_wait
+    _, answer = _signal_with_a_request_open(
+        server, tmp_path, "POST", "/api/memories", {"text": "a note"}, signal.Signals[signal_name]
+    )
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == _STOPPING
+    assert server.process.returncode == status, "\n".join(server.lines)
+    assert server.lines.count("teardown") == 1, "\n".join(server.lines)
 
 
 def test_a_server_with_a_queued_placement_write_says_it_is_saved(
@@ -423,7 +448,7 @@ def test_a_request_before_the_library_opens_changes_nothing_and_joins_nothing(
     _assert_ended_by_the_signal(server, server.stop_and_time_the_exit(), open_still_running=True)
 
 
-def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothing(
+def test_a_placement_clear_with_no_engine_removes_the_saved_placement(
     server_with_no_engine: _Server, tmp_path: Path
 ) -> None:
     server = server_with_no_engine
@@ -432,11 +457,9 @@ def test_a_placement_clear_with_no_engine_says_how_to_install_it_and_saves_nothi
     config = tmp_path / "config.toml"
     config.write_text(_SAVED_PLACEMENT, encoding="utf-8")
     answer = _request(tmp_path, port, "DELETE", "/api/placement", None)
-    assert answer.status_code == 503
-    detail = answer.json()["detail"]
-    assert detail.startswith(_NO_ENGINE_DETAIL)
-    assert "lilbee[engine]" in detail
-    assert config.read_text(encoding="utf-8") == _SAVED_PLACEMENT
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["manual"] is False
+    assert "placement" not in config.read_text(encoding="utf-8")
     assert not any(line.startswith("joined") for line in server.lines), server.lines
     _assert_ended_by_the_signal(server, server.stop_and_time_the_exit())
 

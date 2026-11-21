@@ -1,0 +1,587 @@
+"""What a model folder is charged, and a pin on one card with no per-card breakdown."""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import pytest
+
+from lilbee.catalog import runnable
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
+from lilbee.providers import engine_params
+from lilbee.providers.fleet import host_caps, model_memory, planning
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.engines.tei import TEI
+from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.placement import (
+    InstancePlan,
+    ModelPlacementInput,
+    _charge_devices,
+    card_refusal,
+    placement_from_spec,
+    plan_placement,
+)
+from lilbee.providers.fleet.placement_spec import (
+    PlacementError,
+    PlacementSpec,
+    RolePlacement,
+    TargetRefusedError,
+)
+from lilbee.providers.roles import RoleTarget, WorkerRole
+from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
+from tests._safetensors import safetensors_header
+from tests._stated_sizes import state_size
+
+GIB = 1024**3
+_CARD = 24 * GIB
+_REF = "org/repo/model"
+
+
+pytestmark = pytest.mark.usefixtures("stated_sizes")
+
+# Heads that divide over two cards and no layer count, so a split has no per-card breakdown.
+_HEADS_CONFIG = '{"num_attention_heads": 32, "num_key_value_heads": 8}'
+
+
+@pytest.fixture(autouse=True)
+def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host whose mistral.rs build can split over two cards, whatever runs the tests."""
+    nvidia = {
+        "driver": "570.0",
+        "cuda_driver": 12080,
+        "gpus": [{"name": "NVIDIA L4", "cc": [8, 9]}] * 2,
+    }
+    host = host_caps.collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvidia=nvidia,
+    )
+    pick_cuda_on_gpu_hosts(monkeypatch)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+
+
+def _sparse(path: Path, size: int) -> None:
+    state_size(path, size)
+
+
+def _folder(root: Path, *shards: int) -> Path:
+    """A flat model folder of *shards*, with the small files a pull also brings."""
+    folder = root / "model"
+    folder.mkdir()
+    for index, size in enumerate(shards):
+        _sparse(folder / f"model-{index:05d}.safetensors", size)
+    (folder / "config.json").write_text(_HEADS_CONFIG, encoding="utf-8")
+    (folder / "tokenizer.json").write_text("{}", encoding="utf-8")
+    return folder
+
+
+def _snapshot(root: Path, size: int) -> Path:
+    """A Hugging Face snapshot: the folder holds symlinks to a blob elsewhere."""
+    blob = root / "blobs" / "abc"
+    _sparse(blob, size)
+    blob.write_bytes(safetensors_header(size))
+    folder = root / "snapshots" / "rev"
+    folder.mkdir(parents=True)
+    (folder / "model.safetensors").symlink_to(blob)
+    return folder
+
+
+_CACHE_BYTES_PER_TOKEN = 2 * 2 * 1 * 4 * 2
+"""Two layers, one key-value head of width 4, a key and a value, 2 bytes each."""
+
+
+def _write_cache_config(folder: Path) -> None:
+    """A config.json whose cache is 32 bytes per token."""
+    config = {
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 4,
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+def _charged(weights: int) -> int:
+    """What one slot of `_request` costs: weights, its cache, and the runtime allowance."""
+    return weights + _CACHE_BYTES_PER_TOKEN * 4096 + model_memory.CHAT_RUNTIME_BYTES
+
+
+def _request(path: Path) -> MemoryRequest:
+    return MemoryRequest(
+        model_path=path,
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.F16,
+    )
+
+
+class _StatedEngine(type(MISTRAL)):
+    """The mistral.rs adapter with a stated estimate in place of its own."""
+
+    def __init__(self, estimate: MemoryEstimate) -> None:
+        self.estimate = estimate
+
+    def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
+        return self.estimate
+
+
+def _pin(engine, role: WorkerRole, path: Path, devices: tuple[int, ...], monkeypatch, alone=False):
+    """Place *role* through the planner's own estimator and the manual placement path."""
+    monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: path)
+    peak = planning._peak_estimator({role: "ref"}, {role: engine})
+    roles = {role: RolePlacement(devices=devices)}
+    if alone:
+        roles[WorkerRole.RERANK] = RolePlacement(devices=(), target=RoleTarget.CPU)
+    return placement_from_spec(
+        PlacementSpec(roles=roles), (role,), dict.fromkeys(range(2), _CARD), estimate_peak=peak
+    )
+
+
+class TestTheFolderTotal:
+    def test_the_adapter_sums_the_shards_of_a_folder(self, tmp_path: Path) -> None:
+        folder = _folder(tmp_path, 4 * GIB, 3 * GIB)
+        _write_cache_config(folder)
+        estimate = MISTRAL.estimate_memory(_request(folder))
+        assert estimate.device_bytes == _charged(7 * GIB)
+        assert estimate.shared_bytes == _charged(7 * GIB)
+        assert estimate.host_bytes == 0
+        assert estimate.size_known is True
+
+    def test_the_adapter_follows_the_symlinks_of_a_snapshot(self, tmp_path: Path) -> None:
+        snapshot = _snapshot(tmp_path, 3 * GIB)
+        _write_cache_config(snapshot)
+        assert MISTRAL.estimate_memory(_request(snapshot)).device_bytes == _charged(3 * GIB)
+
+    def test_an_empty_folder_is_charged_the_reserve(self, tmp_path: Path) -> None:
+        estimate = MISTRAL.estimate_memory(_request(_folder(tmp_path)))
+        assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert estimate.size_known is False
+
+    def test_a_single_file_is_charged_its_size(self, tmp_path: Path) -> None:
+        model = tmp_path / "m.gguf"
+        _sparse(model, 3 * GIB)
+        assert MISTRAL.estimate_memory(_request(model)).device_bytes == 3 * GIB
+
+    def test_a_missing_file_is_charged_the_reserve(self, tmp_path: Path) -> None:
+        estimate = MISTRAL.estimate_memory(_request(tmp_path / "gone.gguf"))
+        assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert estimate.size_known is False
+
+
+class TestTheFolderWeights:
+    def test_weights_sum_the_shards_and_skip_the_small_files(self, tmp_path: Path) -> None:
+        assert planning._weights_bytes(_folder(tmp_path, GIB, 2 * GIB)) == 3 * GIB
+
+    def test_weights_follow_the_symlinks_of_a_snapshot(self, tmp_path: Path) -> None:
+        assert planning._weights_bytes(_snapshot(tmp_path, GIB)) == GIB
+
+    def test_an_empty_folder_has_no_weights(self, tmp_path: Path) -> None:
+        assert planning._weights_bytes(_folder(tmp_path)) == 0
+
+    def test_a_folder_named_like_a_shard_is_still_a_folder(self, tmp_path: Path) -> None:
+        folder = tmp_path / "m-00001-of-00002.gguf"
+        _sparse(folder / "model.safetensors", GIB)
+        assert planning._weights_bytes(folder) == GIB
+
+    def test_an_empty_folder_reads_as_not_installed(self, tmp_path: Path, monkeypatch) -> None:
+        folder = _folder(tmp_path)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        assert planning._role_weights_bytes(WorkerRole.CHAT, _REF) == 0
+        assert not planning.role_model_placeable(WorkerRole.CHAT, _REF, _CARD, engine=MISTRAL)
+
+
+class TestThePeakEstimator:
+    def _peak(self, tmp_path: Path, monkeypatch, estimate: MemoryEstimate, ratio: tuple[int, ...]):
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: tmp_path)
+        (tmp_path / "config.json").write_text(_HEADS_CONFIG, encoding="utf-8")
+        role = WorkerRole.CHAT
+        peak = planning._peak_estimator({role: "ref"}, {role: _StatedEngine(estimate)})
+        return peak(role, ratio)
+
+    def test_one_card_with_no_breakdown_takes_the_device_bytes(self, tmp_path, monkeypatch) -> None:
+        estimate = MemoryEstimate(
+            kind=MemoryKind.SIZED, device_bytes=5 * GIB, host_bytes=7 * GIB, shared_bytes=11 * GIB
+        )
+        assert self._peak(tmp_path, monkeypatch, estimate, (1,)) == (5 * GIB,)
+
+    def test_two_cards_with_no_breakdown_get_no_shares(self, tmp_path, monkeypatch) -> None:
+        estimate = MemoryEstimate(
+            kind=MemoryKind.SIZED, device_bytes=5 * GIB, host_bytes=7 * GIB, shared_bytes=11 * GIB
+        )
+        assert self._peak(tmp_path, monkeypatch, estimate, (1, 1)) == ()
+
+    def test_a_breakdown_keeps_its_own_figure(self, tmp_path, monkeypatch) -> None:
+        estimate = MemoryEstimate(
+            kind=MemoryKind.SIZED,
+            device_bytes=5 * GIB,
+            host_bytes=7 * GIB,
+            shared_bytes=11 * GIB,
+            per_device=(3 * GIB,),
+            per_device_shared=(13 * GIB,),
+        )
+        assert self._peak(tmp_path, monkeypatch, estimate, (1,)) == (3 * GIB,)
+
+    def test_a_total_of_zero_gets_no_share(self, tmp_path, monkeypatch) -> None:
+        estimate = MemoryEstimate(
+            kind=MemoryKind.SIZED, device_bytes=0, host_bytes=7 * GIB, shared_bytes=11 * GIB
+        )
+        assert self._peak(tmp_path, monkeypatch, estimate, (1,)) == ()
+
+
+@pytest.mark.parametrize("alone", [False, True], ids=["whole-spec", "role-alone"])
+class TestAOneCardPin:
+    def test_a_folder_that_fits_is_placed(self, tmp_path, monkeypatch, alone) -> None:
+        folder = _folder(tmp_path, 8 * GIB)
+        placed = _pin(MISTRAL, WorkerRole.CHAT, folder, (0,), monkeypatch, alone)
+        assert placed.instances[0].devices == (0,)
+
+    def test_a_folder_too_large_is_refused_with_its_size(
+        self, tmp_path, monkeypatch, alone
+    ) -> None:
+        folder = _folder(tmp_path, 30 * GIB)
+        with pytest.raises(PlacementError, match=r"chat pinned to device 0 needs 30\.0 GiB"):
+            _pin(MISTRAL, WorkerRole.CHAT, folder, (0,), monkeypatch, alone)
+
+    def test_tei_is_placed(self, tmp_path, monkeypatch, alone) -> None:
+        folder = _folder(tmp_path, GIB)
+        placed = _pin(TEI, WorkerRole.EMBED, folder, (0,), monkeypatch, alone)
+        assert placed.instances[0].devices == (0,)
+
+    def test_no_figure_at_all_is_refused(self, tmp_path, monkeypatch, alone) -> None:
+        engine = _StatedEngine(
+            MemoryEstimate(kind=MemoryKind.SIZED, device_bytes=0, host_bytes=1, shared_bytes=1)
+        )
+        with pytest.raises(PlacementError, match="memory estimate covers 0"):
+            _pin(engine, WorkerRole.CHAT, tmp_path, (0,), monkeypatch, alone)
+
+
+@pytest.mark.parametrize("alone", [False, True], ids=["whole-spec", "role-alone"])
+def test_a_pin_on_two_cards_with_no_breakdown_says_to_pin_one(tmp_path, monkeypatch, alone) -> None:
+    folder = _folder(tmp_path, GIB)
+    expected = (
+        r"^chat has no per-card memory figure, so it cannot be pinned to 2 cards\. "
+        r"Pin one card, or set its target to auto\.$"
+    )
+    with pytest.raises(PlacementError, match=expected):
+        _pin(MISTRAL, WorkerRole.CHAT, folder, (0, 1), monkeypatch, alone)
+
+
+def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
+    with pytest.raises(PlacementError, match=r"2 device\(s\) but its memory estimate covers 1"):
+        _charge_devices(
+            WorkerRole.CHAT,
+            (0, 1),
+            (GIB,),
+            dict.fromkeys(range(2), float(_CARD)),
+            dict.fromkeys(range(2), _CARD),
+            refuse_alone=False,
+            held={},
+        )
+
+
+def test_the_refusal_of_a_two_card_pin_names_the_role_alone(tmp_path, monkeypatch) -> None:
+    with pytest.raises(TargetRefusedError) as refused:
+        _pin(MISTRAL, WorkerRole.CHAT, _folder(tmp_path, GIB), (0, 1), monkeypatch, alone=True)
+    assert set(refused.value.reasons) == {WorkerRole.CHAT}
+
+
+def test_the_role_weights_of_a_folder_are_its_shards(tmp_path, monkeypatch) -> None:
+    folder = _folder(tmp_path, 3 * GIB)
+    monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+    assert planning._role_weights_bytes(WorkerRole.CHAT, "ref") == 3 * GIB
+
+
+def test_a_folder_larger_than_the_hardware_is_not_placeable(tmp_path, monkeypatch) -> None:
+    folder = _folder(tmp_path, 40 * GIB)
+    monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+    monkeypatch.setattr(planning.model_cache, "total_system_memory", lambda: 8 * GIB)
+    monkeypatch.setattr(planning, "total_system_memory", lambda: 8 * GIB)
+    assert not planning.role_model_placeable(WorkerRole.CHAT, _REF, _CARD, engine=MISTRAL)
+
+
+def test_the_adapter_sums_a_folder_named_like_a_shard(tmp_path: Path) -> None:
+    folder = tmp_path / "m-00001-of-00002.gguf"
+    _sparse(folder / "model.safetensors", GIB)
+    _write_cache_config(folder)
+    estimate = MISTRAL.estimate_memory(_request(folder))
+    assert (estimate.device_bytes, estimate.shared_bytes) == (_charged(GIB), _charged(GIB))
+
+
+class TestOversizeModelOnSeveralCards:
+    def _plan(self, tmp_path: Path, monkeypatch, kind: MemoryKind, peak=None) -> tuple[int, ...]:
+        folder = _folder(tmp_path, 30 * GIB)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        peak = peak or planning._peak_estimator(
+            {WorkerRole.CHAT: "ref"}, {WorkerRole.CHAT: MISTRAL}
+        )
+        model = ModelPlacementInput(role=WorkerRole.CHAT, est_vram_bytes=30 * GIB, kind=kind)
+        placed = plan_placement([model], [(0, 24 * GIB), (1, 24 * GIB)], estimate_peak=peak)
+        return placed.instances[0].devices
+
+    def test_a_fixed_reserve_takes_one_card(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._plan(tmp_path, monkeypatch, MemoryKind.FIXED_RESERVE) == (0,)
+
+    def test_a_sized_model_with_no_share_keeps_the_group(self, tmp_path, monkeypatch) -> None:
+        assert self._plan(tmp_path, monkeypatch, MemoryKind.SIZED) == (0, 1)
+
+    def test_a_sized_share_that_overruns_keeps_the_group(self, tmp_path, monkeypatch) -> None:
+        def over(_role, _ratio):
+            return (29 * GIB, 29 * GIB)
+
+        assert self._plan(tmp_path, monkeypatch, MemoryKind.SIZED, over) == (0, 1)
+
+
+class TestTheCardRefusal:
+    def test_a_model_that_fills_the_room_exactly_has_no_refusal(self) -> None:
+        assert card_refusal("chat", 0, 10 * GIB, 10 * GIB, 24 * GIB, fix=True) is None
+
+    def test_a_model_past_the_room_names_both_figures_and_the_fix(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        assert card_refusal("The chat model m", 2, 22 * GIB, 21.6 * GIB, 24 * GIB, fix=True) == (
+            "The chat model m needs 22.0 GiB but device 2 has 21.6 GiB usable "
+            "(24.0 GiB total, 90% headroom). Use a smaller model, or set its target to cpu."
+        )
+
+    def test_a_refusal_with_a_fallback_offers_no_fix(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.8)
+        assert card_refusal(
+            "chat pinned to device 0", 0, 22 * GIB, 19.2 * GIB, 24 * GIB, fix=False
+        ) == (
+            "chat pinned to device 0 needs 22.0 GiB but device 0 has 19.2 GiB usable "
+            "(24.0 GiB total, 80% headroom)"
+        )
+
+
+class TestAFixedReserveWindow:
+    def test_the_window_is_the_upper_bound_whatever_the_budget(self, tmp_path, monkeypatch) -> None:
+        folder = _folder(tmp_path, 20 * GIB)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 6000)
+        monkeypatch.setattr(cfg, "num_ctx_max", None)
+        meta = {"context_length": "8192"}
+        assert (
+            engine_params.resolve_chat_ctx(folder, meta, engine=MISTRAL, available_bytes=1) == 6000
+        )
+
+
+class TestACpuRoleWindow:
+    def _budget(self, target: RoleTarget, tmp_path: Path, monkeypatch) -> int:
+        """The budget that a sized chat on *target* gets to size its window."""
+        folder = _folder(tmp_path, 20 * GIB)
+        monkeypatch.setattr(planning, "plan_sizing_budget", lambda _engine, _device=None: 6 * GIB)
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 64 * GIB)
+        monkeypatch.setattr(
+            engine_params, "resolve_chat_ctx", lambda *_a, **kw: kw["available_bytes"]
+        )
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(), target=target)
+        return planning._placed_role_ctx(plan, folder, None, None, engine=LLAMA)
+
+    def test_the_cpu_window_reads_system_memory(self, tmp_path, monkeypatch) -> None:
+        assert self._budget(RoleTarget.CPU, tmp_path, monkeypatch) == 64 * GIB
+
+    def test_a_card_target_still_reads_the_card(self, tmp_path, monkeypatch) -> None:
+        assert self._budget(RoleTarget.GPU, tmp_path, monkeypatch) == 6 * GIB
+
+    def test_unreadable_memory_gives_no_budget(self, monkeypatch) -> None:
+        def unreadable() -> int:
+            raise RuntimeError("no reading")
+
+        monkeypatch.setattr(planning, "total_system_memory", unreadable)
+        assert planning._cpu_sizing_budget() == 0
+
+
+class TestAnUnknownSizeInThePlan:
+    def _estimate(self, folder: Path, monkeypatch) -> ModelPlacementInput:
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        return planning._estimate_role(WorkerRole.CHAT, _REF, engine=MISTRAL, slots=1)
+
+    def test_the_plan_charges_the_reserve_and_leaves_the_log_to_the_notice(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger=planning.log.name):
+            placed = self._estimate(_folder(tmp_path), monkeypatch)
+        assert placed.est_vram_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert "is unknown" not in caplog.text
+
+    def test_the_input_records_that_the_size_is_unknown(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._estimate(_folder(tmp_path), monkeypatch).size_known is False
+
+    def test_the_input_records_a_known_size(self, tmp_path: Path, monkeypatch) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        assert self._estimate(folder, monkeypatch).size_known is True
+
+    def _resolved(self, folder: Path, monkeypatch):
+        from lilbee.providers.fleet.devices import FleetDevice
+        from lilbee.providers.roles import EngineBackend
+
+        card = FleetDevice(
+            backend="CUDA", index=0, name="card", total_bytes=24 * GIB, free_bytes=24 * GIB
+        )
+        reading = planning.DeviceReading(devices=[card], backend=EngineBackend.CUDA)
+        monkeypatch.setattr(cfg, "chat_model", _REF)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref, registry=None: folder)
+        monkeypatch.setattr(planning._read_device_cache, "get", lambda _binary, _engine: reading)
+        monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: Path("/nonexistent/mistralrs"))
+        return planning.resolve_placement_plan(None, engines={WorkerRole.CHAT: MISTRAL})
+
+    def _unknown_chat_model(self, folder: Path, monkeypatch) -> None:
+        """Plan the real placement of one installed chat model whose size is unknown."""
+        from lilbee.app import placement as app_placement
+        from lilbee.app.engine_choice import BookReading
+
+        monkeypatch.setattr(
+            app_placement,
+            "_planning_engines",
+            lambda: BookReading(adapters={WorkerRole.CHAT: MISTRAL}, notices={}),
+        )
+        monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+        self._resolved(folder, monkeypatch)
+
+    def _announce_cold_asks(self, asks: int = 2):
+        """Cold asks that announce the embed then the chat engine; the printed lines of each."""
+        from unittest import mock
+
+        from lilbee.app.services import set_services
+        from lilbee.cli import helpers
+
+        services = mock.MagicMock()
+        services.provider.warm_progress.return_value = None
+        set_services(services)
+        printed: list[list[str]] = []
+        for _ask in range(asks):
+            err = mock.MagicMock()
+            helpers.announce_ready(err, WorkerRole.EMBED)
+            helpers.announce_ready(err, WorkerRole.CHAT)
+            printed.append(
+                [c.args[0] for c in err.print.call_args_list if "is unknown" in c.args[0]]
+            )
+        return printed
+
+    @staticmethod
+    def _unknown_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if "is unknown" in r.getMessage()]
+
+    def test_each_cold_ask_logs_the_unknown_size_once_and_a_warm_ask_logs_nothing(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.cli import helpers
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        counts = []
+        with caplog.at_level(logging.DEBUG):
+            for _ask in range(2):
+                caplog.clear()
+                self._announce_cold_asks(asks=1)
+                counts.append(self._unknown_records(caplog))
+            caplog.clear()
+            helpers.announce_ready(None, WorkerRole.EMBED)
+            helpers.announce_ready(None, WorkerRole.CHAT)
+            warm = self._unknown_records(caplog)
+        assert [len(records) for records in counts] == [1, 1]
+        assert [r.levelno for r in counts[0]] == [logging.WARNING]
+        assert "the chat model" in counts[0][0].getMessage()
+        assert warm == []
+
+    def test_a_cold_ask_prints_the_unknown_size_once_when_the_log_is_not_on_the_terminal(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            printed = self._announce_cold_asks()
+        assert [len(lines) for lines in printed] == [1, 1]
+
+    def test_a_cold_ask_shows_the_unknown_size_once_when_the_log_prints_on_stderr(
+        self, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import sys
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(logging.WARNING)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            printed = self._announce_cold_asks()
+        finally:
+            root.removeHandler(handler)
+        logged = [line for line in capsys.readouterr().err.splitlines() if "is unknown" in line]
+        assert [len(lines) for lines in printed] == [0, 0]
+        assert len(logged) == 2
+
+    def test_reading_the_placement_view_logs_the_unknown_size_once_per_read(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.app import placement as app_placement
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            view = app_placement.get_placement()
+            first = self._unknown_records(caplog)
+            app_placement.get_placement()
+            both = self._unknown_records(caplog)
+        assert [u.role for u in view.size_unknown] == [WorkerRole.CHAT]
+        assert (len(first), len(both)) == (1, 2)
+
+    def test_a_known_size_logs_nothing_on_a_view_read(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.app import placement as app_placement
+
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        self._unknown_chat_model(folder, monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            view = app_placement.get_placement()
+        assert view.size_unknown == ()
+        assert self._unknown_records(caplog) == []
+
+    def test_the_launch_plan_logs_the_unknown_size_once(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.providers.fleet.devices import FleetDevice
+
+        folder = _folder(tmp_path)
+        self._resolved(folder, monkeypatch)
+        card = FleetDevice(
+            backend="CUDA", index=0, name="card", total_bytes=24 * GIB, free_bytes=24 * GIB
+        )
+        with caplog.at_level(logging.DEBUG):
+            planning.plan_launches(None, {0: card}, [card], engines={WorkerRole.CHAT: MISTRAL})
+        records = self._unknown_records(caplog)
+        assert [r.levelno for r in records] == [logging.WARNING]
+        assert "the chat model" in records[0].getMessage()
+
+    def test_the_resolved_placement_lists_the_role_of_unknown_size(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        resolved = self._resolved(_folder(tmp_path), monkeypatch)
+        assert resolved.size_unknown_roles == (WorkerRole.CHAT,)
+
+    def test_the_resolved_placement_records_the_charge_the_planner_made(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        resolved = self._resolved(_folder(tmp_path), monkeypatch)
+        assert resolved.charged_bytes == {WorkerRole.CHAT: model_memory.UNKNOWN_SIZE_RESERVE_BYTES}
+
+    def test_the_resolved_placement_lists_no_role_of_known_size(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        assert self._resolved(folder, monkeypatch).size_unknown_roles == ()
+
+    def test_a_known_size_adds_no_warning(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        with caplog.at_level(logging.WARNING, logger=planning.log.name):
+            self._estimate(folder, monkeypatch)
+        assert "is unknown" not in caplog.text

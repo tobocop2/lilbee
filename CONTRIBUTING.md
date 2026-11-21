@@ -16,7 +16,7 @@ No external services are required. lilbee downloads models locally (native GGUF)
 
 ```bash
 git clone https://github.com/tobocop2/lilbee && cd lilbee
-uv sync
+uv sync --extra providers  # make check replays the recorded presets, which needs this extra
 uv run lilbee self-check   # downloads a tiny model, runs an inference + embedding
 uv run lilbee              # launch the terminal app
 ```
@@ -25,9 +25,22 @@ Optional extras (only needed if you work on those areas):
 
 ```bash
 uv sync --extra crawler    # website crawling (/crawl, Playwright)
-uv sync --extra providers    # hosted-provider bridge (Ollama, LM Studio, cloud)
 uv sync --extra graph      # concept-graph search
 ```
+
+To get the real engine (the `engine` extra) in a dev install, run this inside the checkout:
+
+```bash
+uv pip install -e .[engine]
+```
+
+From another folder, add `--no-sources` (or `--project <checkout>`):
+
+```bash
+uv pip install --no-sources -e <checkout>[engine]
+```
+
+Without one of these, `uv` resolves `lilbee-engine-llama-cpp` to the 0.0.0 placeholder package in `packaging/engine-wheel`, which has no `llama-server` binary. `uv sync --extra engine` does the same, because it reads the lock file, which records the placeholder. The `[tool.uv.pip] no-sources` setting in `pyproject.toml` only applies when `uv` runs inside the checkout.
 
 Optionally install the git hooks so lint, format, and type checks run on each commit (the same checks CI enforces):
 
@@ -62,7 +75,7 @@ Tests live under `tests/`, mirroring the source layout, with `tests/integration/
 
 ```bash
 make format        # auto-format (ruff)
-make check         # lint + license-check + format-check + typecheck + tests (same as CI)
+make check         # lint + license-check + format-check + typecheck + tests + preset replay (same as CI)
 ```
 
 `make check` is the gate CI runs. Run it locally and make sure it's green before opening a PR.

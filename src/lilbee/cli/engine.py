@@ -8,16 +8,22 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.text import Text
 
 from lilbee.app import engine_service
+from lilbee.catalog.models import DownloadProgress
 from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
 from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
+from lilbee.runtime.progress import SseErrorCode
+from lilbee.runtime.progress.columns import literal_text_column
 
 engine_app = typer.Typer(
     name="engine",
@@ -50,21 +56,19 @@ def stop() -> None:
     console.print(_STOPPED if stopped else _NOTHING_RUNNING)
 
 
+def _print_engines_folder() -> None:
+    """Name the engines folder and the variable that moves it."""
+    folder = engine_service.engines_folder()
+    console.print(engine_service.FOLDER_LINE.format(folder=folder), soft_wrap=True)
+
+
 @engine_app.command("list")
 def list_builds() -> None:
     """List the engine builds installed beside the models."""
-    builds = engine_service.builds()
-    absent = engine_service.not_installed()
+    view = engine_service.engine_list()
+    builds, absent = view.builds, view.not_installed
     if cfg.json_mode:
-        json_out(
-            {
-                "command": "engine list",
-                "builds": [
-                    {"engine": b.engine, "version": b.version, "backend": b.backend} for b in builds
-                ],
-                "not_installed": absent,
-            }
-        )
+        json_out({"command": "engine list", **view.payload()})
         return
     if not builds:
         console.print(engine_service.NO_BUILDS)
@@ -73,19 +77,23 @@ def list_builds() -> None:
         if build.engine not in absent:
             console.print(build.label)
     for name in absent:
+        clause = not_run_clause(not_run_on(name))
         if name in stale:
             old = stale[name]
             console.print(
                 f"{name} not installed: the installed build {old.version} ({old.backend}) "
-                "differs from the pin"
+                f"differs from the pin{clause}"
             )
         else:
-            console.print(f"{name} not installed")
+            console.print(f"{name} not installed{clause}")
+    _print_engines_folder()
 
 
 @engine_app.command("install")
 def install(
-    name: str = typer.Argument(help="Engine name, as 'lilbee engine roles' shows it."),
+    name: str = typer.Argument(
+        EngineName.LLAMA.value, help="Engine name, as 'lilbee engine roles' shows it."
+    ),
     wheel: Annotated[
         Path | None,
         typer.Option("--wheel", help="Install from this wheel file instead of the packs folder."),
@@ -97,40 +105,53 @@ def install(
             "engine install",
             engine_service.EngineRefusedError(f"{wheel} is not a file. Name a wheel file."),
         )
+    err = PlainConsole(stderr=True)
     try:
-        built = engine_service.install(name, wheel)
+        with Progress(
+            literal_text_column("Downloading {task.description}"),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            literal_text_column("{task.fields[detail]}"),
+            console=err,
+            transient=True,
+        ) as progress:
+            task_id = progress.add_task(name, total=100, detail="")
+
+            def on_update(p: DownloadProgress) -> None:
+                progress.update(task_id, completed=p.percent, detail=p.detail)
+
+            built = engine_service.install(
+                name, wheel, on_update=on_update, on_retry=lambda text: err.print(text)
+            )
     except engine_service.EngineRefusedError as exc:
         raise _refuse("engine install", exc) from exc
-    label = f"{built.engine} {built.version} ({built.backend})"
+    label = built.label
     if cfg.json_mode:
-        json_out({"command": "engine install", "installed": label, "note": built.note})
+        json_out(
+            {
+                "command": "engine install",
+                "installed": label,
+                "note": built.note,
+                "not_run_on": list(built.not_run_on),
+                "engines_folder": str(engine_service.engines_folder()),
+            }
+        )
         return
     console.print(f"Installed engine {label}.")
+    _print_engines_folder()
     if built.note:
         console.print(built.note)
-
-
-@engine_app.command("remove")
-def remove(
-    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
-    version: str = typer.Argument(help="Build version."),
-    backend: str = typer.Argument(help="Build backend."),
-) -> None:
-    """Remove one installed engine build."""
-    try:
-        label = engine_service.remove_build(engine, version, backend)
-    except engine_service.EngineRefusedError as exc:
-        raise _refuse("engine remove", exc) from exc
-    if cfg.json_mode:
-        json_out({"command": "engine remove", "removed": label})
-        return
-    console.print(engine_service.REMOVE_DONE.format(build=label))
 
 
 def _refuse(command: str, exc: Exception) -> typer.Exit:
     """Show a refusal from the engine service on the surface and return the exit."""
     if cfg.json_mode:
-        json_out({"command": command, "error": str(exc)})
+        code = (
+            {"code": SseErrorCode.ENGINE_INSTALL_REFUSED}
+            if isinstance(exc, engine_service.EngineInstallRefusedError)
+            else {}
+        )
+        json_out({"command": command, "error": str(exc), **code})
     else:
         PlainConsole(stderr=True).print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
     return typer.Exit(1)
@@ -222,3 +243,26 @@ def prefer(
         json_out({"command": "engine prefer", "engine": chosen})
         return
     console.print(f"The preferred engine is {chosen}.")
+
+
+@engine_app.command("remove")
+def remove(
+    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
+    version: str = typer.Argument(help="Build version."),
+    backend: str = typer.Argument(help="Build backend."),
+    yes: bool = _YES_OPTION,
+) -> None:
+    """Remove one installed engine build."""
+    try:
+        label = _confirming(
+            lambda confirmed: engine_service.remove_build(
+                engine, version, backend, confirmed=confirmed
+            ),
+            yes,
+        )
+    except engine_service.EngineRefusedError as exc:
+        raise _refuse("engine remove", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine remove", "removed": label})
+        return
+    console.print(engine_service.REMOVE_DONE.format(build=label))

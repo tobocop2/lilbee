@@ -46,6 +46,7 @@ class SseEvent(StrEnum):
     REASONING = "reasoning"
     SOURCES = "sources"
     RETRIEVAL_QUERY = "retrieval_query"
+    SEARCH_DEGRADED = "search_degraded"
     ERROR = "error"
     DONE = "done"
     PROGRESS = "progress"
@@ -66,6 +67,7 @@ class SseErrorCode(StrEnum):
     MODEL_NOT_INSTALLED = "model_not_installed"
     INDEX_EMBEDDER_MISMATCH = "index_embedder_mismatch"
     EMBEDDING_MISMATCH = "embedding_mismatch"
+    ENGINE_INSTALL_REFUSED = "engine_install_refused"
 
 
 class FileStartEvent(BaseModel):
@@ -308,6 +310,7 @@ UPGRADE_HEADLINE = (
     "Large libraries take about a minute; nothing is re-embedded."
 )
 
+_UPGRADE_START_TEXT = "Upgrading the library · {seconds} s"
 _UPGRADE_TEXT: dict[UpgradePhase, str] = {
     UpgradePhase.WAITING: (
         "Waiting for another lilbee process to finish with the library · {seconds} s"
@@ -326,7 +329,8 @@ class LibraryUpgradeEvent(BaseModel):
 
     ``tables_done`` of ``tables_total`` counts finished tables, so it only rises;
     ``work``, ``table`` and ``rows`` say what is done to the one in progress;
-    ``elapsed_s`` is the time since the upgrade began, wait included.
+    ``elapsed_s`` is the time since the upgrade began, wait included. A table event that
+    names no table says the upgrade runs a step that reports no table.
     """
 
     phase: UpgradePhase
@@ -345,6 +349,8 @@ class LibraryUpgradeEvent(BaseModel):
     def line_at(self, elapsed_s: float) -> str:
         """The line every surface shows for this event, *elapsed_s* into the upgrade."""
         fields = self.model_dump() | {"elapsed_s": elapsed_s, "seconds": int(elapsed_s)}
+        if self.phase is UpgradePhase.TABLE and not self.table:
+            return _UPGRADE_START_TEXT.format(**fields)
         return _UPGRADE_TEXT[self.phase].format(**fields)
 
     @property

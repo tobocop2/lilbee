@@ -463,19 +463,41 @@ one Enter keeps the engine. The REST routes and the MCP tools take
 `embed_engine_confirm_required`, the library name and the document count. Send
 the request again with `confirm_embed_change` set to `true` to write the change.
 
+Removing the engine build that the embedder runs on asks the same question,
+because the next start runs the canary check on the index. `engine remove`,
+`/engine remove`, the Engines tab in Settings, the `engine_remove` tool and
+`DELETE /api/engines/{engine}/{version}/{backend}` take the same answer. The
+REST route reads `confirm_embed_change` from the query.
+
 #### See the installed engines
 
 Run `lilbee engine list` to see the engine builds installed beside the models.
-If none is installed, it prints `No engine builds are installed.` Run
+If none is installed, it prints `No engine builds are installed.` The command
+and `lilbee engine install` print the line `Engines folder:` with its path. The
+list in a chat session shows it too.
+Every data directory shares that folder, so `LILBEE_DATA` does not move it. To
+move it, set `LILBEE_MODELS_DIR`. That variable also moves the models folder and
+the Hugging Face cache. `LILBEE_ENGINE_DIR` moves the machine engine slot. To
+isolate a run fully, follow the steps in [What the data directory
+holds](#what-the-data-directory-holds). Run
 `lilbee engine remove <engine> <version> <backend>` to delete one build. Use
 the three values that `engine list` shows. The `/engine list` and
 `/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,
 and the REST routes `GET /api/engines` and
-`DELETE /api/engines/{engine}/{version}/{backend}` do the same. On the HTTP
+`DELETE /api/engines/{engine}/{version}/{backend}` do the same. With `--json`, the
+CLI, the MCP tool and the REST route return the same three fields: `builds`,
+`not_installed` (the engines with no installed build) and `engines_folder` (the
+path that the `Engines folder:` line shows). The `/engine list` chat command ends
+with the same `Engines folder:` line. On the HTTP
 server the removal needs `allow_http_engines`.
 
 If the build of an engine differs from the pin, `engine list` prints one line:
 the engine is not installed, and the line names the build that differs.
+
+If lilbee has no recorded run of an engine on a device, the line ends with
+`, not run on <device>`. The install output prints the same words. Each build in
+the JSON list has a `not_run_on` field with the same devices. `auto` never
+chooses an engine that has a device in this list.
 
 #### The saved choice
 
@@ -504,6 +526,37 @@ the model of that role. A role with no model shows a message instead.
 In insert mode the prompt takes the key as text. Press Esc to leave insert mode,
 then focus the button and press `e`.
 
+#### Pick the engine with the model
+
+The model picker shows each model with its engine, for example
+`engine: llama.cpp (auto)`. `(auto)` means lilbee chose the engine. A model in
+two formats shows its format after the name.
+
+Press Enter on a model to open the engine picker for it. The saved engine of
+the model is highlighted, or `auto` when none is saved, so Enter and Enter
+again keep the choice. Press Esc to return to the model list. If only one
+engine can load the model file, the picker does not open.
+
+If the engine you pick is not installed, the picker closes and asks to
+download it. The role keeps its old model while the engine installs, and the
+switch happens when the install ends. If the install fails, the role keeps its
+old model and the task center shows the error. If you pick another model for
+the role while the engine installs, the role keeps that newer model.
+
+Press `e` on a model, or `ctrl+l` anywhere in the picker, to change the engine
+without picking the model. After you start to type a search, `e` is a letter
+of the search: a letter typed on the list goes on into the search field. The
+`choose_engine_on_pick` setting, on the Engines tab, turns the engine step on
+Enter off. It is on by default.
+
+#### Manage engines in Settings
+
+The Engines tab in Settings sits after the Models tab. It holds the preferred
+engine and a table with one row per engine: the version, the backend, the size,
+the state, and the roles that use it. Move to a row and press Enter to install
+the engine, or to remove an installed build. Remove asks first, and names the
+roles when a role uses the engine. An install runs as a task in the task bar.
+
 #### A running server
 
 A running server reloads a role when its engine changes.
@@ -515,26 +568,73 @@ choice was not saved.
 
 #### Pull a model with no engine
 
-If no installed engine loads the format of a model, `lilbee model pull` stops
-before it downloads a file. For the reference `org/repo#openvino`, it prints:
+A pull of a model in a format other than GGUF needs no engine. The download
+finishes and lilbee records the model as installed. The engine is needed when
+the model loads or when you assign it to a role. If no engine is chosen for the
+format, the pull prints a warning after the download. For the reference
+`org/repo#openvino`, with no installed engine that loads it:
 
 ```
-Error: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
+Warning: No installed engine loads the openvino format of org/repo#openvino. Run lilbee engine list to see the installed engines.
 ```
+
+If an installed engine loads the format but is not chosen, the warning names
+`lilbee engine prefer`. `lilbee use-embedder` prints the same warning after it
+downloads the model.
+
+Until an engine loads it, the model does not appear in the chat model pickers.
+`lilbee ask` prints the same message as an error when the only chat models
+installed have no engine. `lilbee model use` assigns such a model and prints the
+message as a warning.
+
+A GGUF pull still needs an engine, because the engine decides which file in the
+repository to download.
 
 To pull a model in a format other than GGUF, add the format name to the
 reference as `org/repo#format`. Here `openvino` and `mlx` are names of weight
-formats, not engines. The format name is `gguf`, `mlx`, `openvino` or
-`safetensors`. A reference with no `#format` is GGUF.
+formats, not engines. The format name is `gguf`, `mlx`, `openvino`, `safetensors`
+or `xdna`. A reference with no `#format` is GGUF.
+
+An `xdna` reference names an NPU model by its tag, as in `qwen3:0.6b#xdna`. The pull
+writes a small record and no weights. The record lists the model as installed, so you can
+assign it to a role. Lemonade downloads the model the first time it loads it.
+
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 ### Install an engine
 
-An engine that is not bundled needs a pack. No pack of ik_llama.cpp, mistral.rs
-or TEI is published yet, so today all three engines refuse to install and print
-the no-pack text. Nothing is installed, and llama.cpp stays in use.
+An engine that is not bundled needs a pack. Packs of ik_llama.cpp, mistral.rs and
+TEI are published for Linux x86_64. No pack of mlx, openvino or lemonade is published
+yet, so those engines refuse to install and print the no-pack text. A host with no pack
+for its platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 
-When a pack exists, copy it into the `packs` folder of the engines folder. Name the file
-`<engine>-<version>-<backend>.whl`. Then run:
+The mistral.rs packs include software developed by the OpenSSL Project for use in the
+OpenSSL Toolkit (http://www.openssl.org/) and cryptographic software written by Eric Young
+(eay@cryptsoft.com).
+
+If the `lilbee-engine-llama-cpp` wheel is installed, the llama.cpp of that
+wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel
+with `pip uninstall lilbee-engine-llama-cpp`, then run
+`lilbee engine install`.
+
+Lemonade has no pack, so you install it yourself. Follow the
+[Lemonade install guide](https://lemonade-server.ai/docs/guide/install/), or unpack the
+`lemonade-embeddable` archive from the Lemonade releases. Then put the folder with `lemond`
+on `PATH`. lilbee finds `lemond` there, and `lilbee engine list` no longer lists lemonade
+as not installed.
+
+Lemonade serves chat and embed models on an AMD XDNA2 NPU, through its `flm` recipe. It does
+not serve rerank, and it does not run GGUF models. On Windows lilbee cannot read the NPU, so
+Lemonade runs only when you choose it. lilbee has no recorded run of Lemonade on an NPU.
+
+OpenVINO serves chat on the CPU, an Intel GPU or an Intel NPU. lilbee offers it only on a
+computer with an Intel GPU or an Intel NPU. On the NPU, a role runs with one slot and a
+context of at most 512 tokens.
+
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+
+To install from a local pack, copy it into the `packs` folder of the engines folder.
+Name the file `<engine>-<version>-<backend>.whl`. Then run:
 
 ```bash
 lilbee engine install <engine>
@@ -549,9 +649,28 @@ lilbee engine install <engine> --wheel /path/to/pack.whl
 
 The install checks that the host can run the engine, then checks the digest and
 the licence of the wheel. If the host fails the check, the command names the
-feature it lacks and installs nothing. Nothing downloads on first use. The same
+feature it lacks and installs nothing. Only the llama.cpp pack installs on first
+use, when a model needs it. Every other engine needs this command. The same
 action exists as `/engine install ENGINE`, the MCP tool `engine_install` and the
-REST route `POST /api/engines/install`.
+REST route `POST /api/engines/install`. The JSON answer of `lilbee --json engine install`, the
+REST route and the MCP tool carry `engines_folder`, the same field as the list.
+
+When the install refuses an engine it knows, for example because no pack of the
+engine is published, the REST route answers 422 with the code `engine_install_refused`.
+The MCP tool returns the same `code`, and `lilbee --json engine install` prints it.
+An unknown engine name has no code.
+
+Every engine starts behind the llama-swap router. `lilbee engine install` also installs
+the router from its pinned release (MIT licence, digest checked) into the `router` folder of
+the engines folder, so an install without llama.cpp can start its engine. To install the
+router with no network, copy the release archive into the `packs` folder
+(for example `llama-swap_272_linux_amd64.tar.gz`). The router also installs on first use.
+A `llama-swap` on PATH, or one inside the llama.cpp pack, is used when no router is installed.
+
+During the download, the command line shows a progress bar on stderr, and the
+chat screen shows the bytes in the task bar. Each failed attempt prints its
+cause and its number. The MCP tool and the REST route return one result at the
+end and show no progress.
 
 ## Memory
 
@@ -750,6 +869,7 @@ lilbee --json ask "question"                   # full local RAG (local llama-ser
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
 lilbee --json model rm <ref>                   # delete an installed model
+lilbee --json model use chat <ref>             # set the chat model (also rerank, vision)
 lilbee --json reset --yes                      # factory reset (destructive, requires --yes)
 lilbee --json init [path]                      # create a .lilbee/ in a directory
 ```
@@ -784,6 +904,19 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   when your agent has its own LLM and just needs context from your files. `ask` runs
   lilbee's local RAG end-to-end and returns an answer with sources. Most
   non-MCP agents want `search`.
+- **Read `warnings`.** When a search step fails (hyde blend, query
+  expansion, concept boost, concept expansion or reranking), the search still
+  returns the rows it has, and `warnings` names each failed step with a `code`, a
+  `message` and a `remedy`. The rows can miss matches, or stay in retrieval
+  order when reranking failed. A `rerank_failed` `message` names the kind of
+  failure in fixed text (the server log holds the full error). The text CLI prints
+  the same warnings on stderr. `GET /api/search` keeps its array body and
+  sends the list in the `X-Lilbee-Warnings` response header, only when it is
+  not empty. `/api/ask` and `/api/chat` carry `warnings` in the body, the
+  streams send a `search_degraded` event before the first token, and the MCP
+  `search` tool returns `warnings` in its structured result. The first search
+  after the engine pack installs on a computer with a GPU the pack cannot use
+  carries one more warning, with the code `gpu_not_served`, once.
 - **Citation rule still applies.** Every fact stated from `search` results must
   trace back to a chunk's `source` + line range, exactly as returned. Don't
   invent.
@@ -794,12 +927,12 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 // lilbee --json search "oil change interval" --top-k 3
 {"command": "search", "query": "oil change interval", "results": [
   {"source": "manual.pdf", "label": "manual.pdf", "chunk": "Change oil every 5,000 miles...", "distance": 0.23, "chunk_type": "raw"}
-]}
+], "warnings": []}
 
 // lilbee --json ask "oil change interval?"  (each source also carries the [n] the answer cites it by)
 {"command": "ask", "question": "oil change interval?", "answer": "Every 5,000 miles [1].", "sources": [
   {"source": "manual.pdf", "label": "manual.pdf", "citation_number": 1, "chunk": "Change oil every 5,000 miles...", "chunk_type": "raw"}
-], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null}
+], "cited_sources": [...], "dropped_sources": [...], "retrieval_query": null, "warnings": []}
 
 // lilbee --json status  (sources: the newest 10; document_count: the real count)
 {"command": "status", "config": {...}, "sources": [{"filename": "manual.pdf", "file_hash": "3f9a1c0b7d2e", "chunk_count": 42, "ingested_at": "2026-10-16T09:30:12"}], "source_kinds": {"document": 1}, "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0, "ocr_note": "..."}
@@ -810,6 +943,8 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
 {"event": "done", "model": "...", "installed": true}
+// "warning" is optional: it is a string only when the pull could not confirm a vision projector
+{"event": "done", "model": "...", "installed": true, "warning": "... is named as a vision model, but its repo lists no projector file."}
 ```
 
 **Gaps vs MCP.** The CLI doesn't expose `crawl` (non-blocking URL crawling) or
@@ -1256,6 +1391,12 @@ shuts down as an external SIGTERM would, except that it gives responses in
 flight 10 seconds in place of 1 second and exits with status 0. Its locks
 release the moment it exits.
 
+The server builds its services (the model provider, the embedder and the library)
+before it serves. If that build fails, the server does not start: it writes the error
+to its log and exits with status 1. Fix the cause with `lilbee settings`, then start
+the server again. A stop signal during the build ends the server with the status of
+that signal, as at any other time.
+
 Every route needs the session token, reads included, `GET /api/health` among
 them; the daemon writes the token to `server.json` (mode `0600`) next to the
 port file, and `lilbee agent-config` hands it to local clients. The surface
@@ -1329,6 +1470,24 @@ lilbee resolves the data directory in this order (highest priority first):
 | Linux | `~/.local/share/lilbee/` |
 | Windows | `%LOCALAPPDATA%/lilbee/` |
 
+### What the data directory holds
+
+The data directory holds your documents, the search index, `config.toml`
+and the logs. Four locations stay outside it and are shared by every data
+directory:
+
+| Location | Platform default | Variable that moves it |
+|----------|------------------|------------------------|
+| Models folder (also the Hugging Face cache) | `models/` in the platform data folder | `LILBEE_MODELS_DIR` |
+| Engines folder | `engines/` next to the models folder | follows `LILBEE_MODELS_DIR` |
+| Machine engine slot | `engine/` in the platform state folder | `LILBEE_ENGINE_DIR` |
+| GGUF metadata cache | the platform cache folder | `XDG_CACHE_HOME` (Linux), `HOME` (macOS) |
+
+A model you pull once is available to every data directory. To isolate a
+run fully, set `LILBEE_DATA`, `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR`
+to new folders. On Linux, also set `XDG_DATA_HOME`, `XDG_STATE_HOME` and
+`XDG_CACHE_HOME`. On macOS, set `HOME`.
+
 Run `lilbee init` to create a `.lilbee/` directory in your project. It
 contains `documents/` (your indexed files), `data/` (the search index), a
 `.gitignore` that excludes derived data, and a commented `.lilbeeignore` to
@@ -1389,43 +1548,53 @@ never drifts from the code.
 ## Optional extras
 
 Extras exist only on a `pip` or `uv` install. If you installed a bundled build
-(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all four
+(standalone binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, Scoop) all three
 are already inside it and none of this applies to you.
 
-`[engine]` is the `llama-server` that runs your models, and it is the one extra
-that is not really optional. `[graph]`, `[crawler]` and `[providers]` add
-capabilities you can happily live without.
+The model engine is not an extra. Run `lilbee engine install` to get the
+`llama-server` that runs your models, or let lilbee install it the first time a
+model needs it. `[graph]`, `[crawler]` and `[providers]` add capabilities you
+can happily live without.
 
 <details>
-<summary><strong>pip / uv: installing the engine extra</strong></summary>
+<summary><strong>pip / uv: installing the engine</strong></summary>
 
-`[engine]` is not on PyPI. The CUDA and ROCm wheels run 444 MiB to 863 MiB each,
-several times [PyPI's default 100 MiB per-file limit](https://pypi.org/help/#file-size-limit),
-so every backend is published from lilbee's own
-[PEP 503](https://peps.python.org/pep-0503/) package index at `lilbee.sh`. That
-is what `--extra-index-url` is for. Install without it and lilbee still starts,
-but the first call that needs a model fails with an error naming the engine and
-repeating the command for your hardware.
-
-The builds are not interchangeable, so pick the index for your hardware: `cpu` is
-built with every GPU backend off, `metal` ships only a macOS arm64 wheel, and
-`vulkan` only Linux and Windows ones.
+Install lilbee, then install the engine pack:
 
 ```bash
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/    # NVIDIA (CUDA)
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/rocm/     # AMD (ROCm)
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/metal/    # Apple silicon
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/vulkan/   # other GPUs
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/      # no GPU
+pip install --pre lilbee
+lilbee engine install
 ```
 
-Use the `uv` form that matches how you installed lilbee. The error message picks it for you.
-Swap the index the same way as above.
+The command downloads the pack for your hardware into lilbee's engine cache and
+checks its digest. Packs exist for Apple silicon (Metal), NVIDIA on Linux and
+Windows (CUDA), AMD and Intel GPUs on Linux and Windows (Vulkan), AMD GPUs on
+Linux (ROCm), and x86_64 Linux and Windows (CPU). lilbee picks the CUDA pack
+when it finds a usable NVIDIA driver. Next it picks the ROCm pack for a Linux
+computer with a supported AMD GPU, then the Vulkan pack for an AMD or Intel GPU.
+The ROCm pack needs the NUMA library on the host: install `numactl-libs` on
+Fedora and RHEL, or `libnuma1` on Debian and Ubuntu. Without it, the computer
+gets the Vulkan pack. The Vulkan pack needs the Vulkan loader on Linux:
+install `vulkan-loader` or `libvulkan1`. Without it, the computer gets the CPU
+pack. If you skip the command, lilbee runs the
+same install the first time a model needs an engine. A computer with no network
+needs the pack copied into the `packs` folder of the engine cache by hand. The
+error from a failed download names the file to copy.
+
+**Your own engine.** No pack exists for Linux on ARM, Windows on ARM, or Intel
+Macs. On a computer with an AMD or Intel GPU that no pack can use, lilbee
+installs the CPU pack and logs a warning that names the GPU vendor. On those
+computers, use a bundled build, or run your own `llama-server`. Build `llama-server` from llama.cpp for your hardware. For ROCm,
+build with `GGML_HIP=ON`. For Vulkan, build with `GGML_VULKAN=ON`. Install
+lilbee with any of these commands. Then set `LILBEE_LLAMA_SERVER_PATH` to the
+binary.
 
 ```bash
-uv tool install --force --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/   # uv tool install
-uv pip install --prerelease=allow 'lilbee[engine]' --extra-index-url https://lilbee.sh/cpu/             # a uv venv or a source checkout
-pipx install --force --pip-args='--pre --extra-index-url https://lilbee.sh/cpu/' 'lilbee[engine]'     # pipx
+pip install --pre lilbee                       # pip
+uv tool install --prerelease=allow lilbee      # uv tool install
+uv pip install --prerelease=allow lilbee       # a uv venv
+pipx install --pip-args=--pre lilbee           # pipx
+export LILBEE_LLAMA_SERVER_PATH=/path/to/llama-server
 ```
 
 </details>
@@ -1447,14 +1616,14 @@ uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[providers]'
 ```
 
-Install several at once, engine included:
+Install several at once:
 
 ```bash
 # uv tool
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
+uv tool install --prerelease=allow 'lilbee[graph,crawler,providers]'
 
 # pip
-pip install --pre 'lilbee[engine,graph,crawler,providers]' --extra-index-url https://lilbee.sh/cu125/
+pip install --pre 'lilbee[graph,crawler,providers]'
 ```
 
 </details>
@@ -1467,14 +1636,14 @@ setups. Same `lilbee` command, links straight against your NVIDIA driver:
 brew install tobocop2/lilbee/lilbee-cuda
 paru -S lilbee-cuda
 nix run github:tobocop2/lilbee#lilbee-cuda
-pip install --pre 'lilbee[engine]' --extra-index-url https://lilbee.sh/cu125/   # devs
+pip install --pre lilbee   # devs; downloads the CUDA engine pack
 ```
 
 The `lilbee-cuda` AUR package conflicts with `lilbee` and provides it, so
 `paru -S lilbee-cuda` swaps automatically. On Homebrew, run `brew
 uninstall lilbee` first because the two formulas both ship a `lilbee`
 binary. For older drivers swap `cu125` for `cu124` or `cu121` (run
-`nvidia-smi` to see which matches). cu121 and cu124 are wheel-index and
+`nvidia-smi` to see which matches). cu121 and cu124 are
 direct-download only; cu125 is the variant fanned out to the package
 managers.
 
@@ -1752,7 +1921,11 @@ running, if a model that offloads to host memory is being refused.
 Both are writable at runtime through `/settings`, `lilbee settings set`, and MCP.
 
 **If a model is refused for memory it looks like it should have:** run
-`lilbee placement preview` to see what the planner budgeted. The planner charges
+`lilbee placement preview` to see what the planner budgeted. Each role row shows
+its `charge`: the memory the planner charges for one instance of the role, on a
+card for a GPU role and in system memory for a CPU role. `GET /api/placement`
+returns the same figure as `charge_bytes`, or `null` when the planner has no
+charge for the role. The planner charges
 free VRAM rather than the card's total, so another process holding memory shows
 up here. On a partially offloaded model, check `system_memory_reserve_gb` too:
 the host side is budgeted separately from the card.
@@ -1764,20 +1937,29 @@ lowering `usable_vram_fraction` fixes it more directly than pinning placement.
 
 ### Use another llama-server build
 
-Set `llama_server_path` (`LILBEE_LLAMA_SERVER_PATH`) to any llama-server binary, for example a build of ik_llama.cpp:
+Set `llama_server_path` (`LILBEE_LLAMA_SERVER_PATH`) to any llama-server binary, for example a CPU build of ik_llama.cpp:
 
 ```bash
-LILBEE_LLAMA_SERVER_PATH=/path/to/ik_llama.cpp/build/bin/llama-server lilbee
+git clone https://github.com/ikawrakow/ik_llama.cpp
+cd ik_llama.cpp
+git checkout 229c703c4c948382e634a0c563a049740ceac3ff
+cmake -B build -DGGML_NATIVE=OFF
+cmake --build build -j --target llama-server
+LILBEE_LLAMA_SERVER_PATH=$PWD/build/bin/llama-server lilbee
 ```
 
-lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues.
+lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`, `--device`, `--tensor-split`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues. The one exception is `--pooling` for a cross-encoder reranker, described below.
 
-Two rules keep the launch safe:
+These rules keep the launch safe:
 
 - If the binary prints no help text, lilbee writes every optional flag and logs one warning.
-- lilbee always writes `--embeddings`, `--device` and `--tensor-split` where placement asks for them. A build that lacks one of them stops with its own error.
+- lilbee always writes `--embeddings` for an embedding model and for a reranker. It does not check the help text for this flag. A build that lacks it stops with its own error.
+- A cross-encoder reranker needs `--pooling`. If the help text does not list it, lilbee refuses to load the reranker and names the build and the flag. Chat and embedding models still load. Set `reranker_type` to `llm` to rerank with such a build.
+- A build whose help text does not list `--device` or `--tensor-split` gets neither flag. Placement across several GPUs then does not apply to that build.
 
-An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build.
+An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build. The CPU build of the commit below answered chat and embed requests from lilbee.
+
+The help text of ik_llama.cpp commit 229c703c4c948382e634a0c563a049740ceac3ff (2026-11-03) lists `--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling` and `--memory`. It does not list `--device`, `--tensor-split`, `--kv-unified`, `--list-devices` or `--load-mode`. It lists the embedding flag as `--embedding(s)`.
 
 ---
 

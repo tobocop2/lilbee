@@ -123,6 +123,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.providers.base import is_header_safe
+from lilbee.providers.fleet.devices import DLL_MISSING_LEAD
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -139,7 +140,7 @@ from lilbee.retrieval.query.formatting import AnswerSources, SourceRef
 from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
@@ -161,6 +162,8 @@ from lilbee.sessions import (
 )
 
 if TYPE_CHECKING:
+    from lilbee.catalog.models import DownloadProgress
+    from lilbee.cli.tui.engine_commands import EngineCommandResult
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
     from lilbee.data.types import SyncResult
 log = logging.getLogger(__name__)
@@ -654,9 +657,15 @@ class ChatScreen(Screen[None]):
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
     def on_key(self, event: events.Key) -> None:
-        """In INSERT mode, type a printable key into the prompt when focus sits elsewhere."""
+        """In INSERT mode, type a printable key into the prompt unless the focused pill binds it."""
         inp = self._chat_input
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
+        if (
+            self._insert_mode
+            and not inp.has_focus
+            and event.is_printable
+            and event.character
+            and not self._focused_strip_member_binds(event.key)
+        ):
             self.set_focus(inp)
             inp.insert(event.character)
             event.prevent_default()
@@ -1558,14 +1567,43 @@ class ChatScreen(Screen[None]):
         )
 
     def _cmd_engine(self, args: str) -> None:
-        self._run_engine_command(args)
+        from lilbee.cli.tui.engine_commands import install_name
+        from lilbee.cli.tui.task_queue import TaskType
+
+        name = install_name(args)
+        if name is None:
+            self._run_engine_command(args)
+            return
+
+        def target(reporter: ProgressReporter) -> None:
+            def on_update(p: DownloadProgress) -> None:
+                reporter.update(p.percent, f"{name}: {p.detail}")
+
+            result = self._engine_command(args, on_update, reporter)
+            if not result.ok:
+                raise RuntimeError(result.text)
+
+        self._task_bar.start_task(msg.ENGINE_TASK_NAME.format(engine=name), TaskType.ENGINE, target)
 
     @work(thread=True)
     def _run_engine_command(self, args: str) -> None:
+        self._engine_command(args)
+
+    def _engine_command(
+        self,
+        args: str,
+        on_update: Callable[[DownloadProgress], None] | None = None,
+        cancel: CancelSignal | None = None,
+    ) -> EngineCommandResult:
+        """Run an /engine command on a worker thread, show its result and return it."""
         from lilbee.cli.tui.engine_commands import announce, run_engine_command
 
-        result = run_engine_command(args)
+        def on_retry(text: str) -> None:
+            call_from_thread(self, self.notify, text, severity="warning")
+
+        result = run_engine_command(args, on_update, on_retry, cancel)
         call_from_thread(self, announce, self.app, result)
+        return result
 
     def _cmd_rebuild(self, _args: str) -> None:
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
@@ -2059,6 +2097,7 @@ class ChatScreen(Screen[None]):
             chat_engine_ready,
             chat_warm_error,
             request_engine_warm,
+            size_unknown_notices,
             wait_chat_ready,
         )
 
@@ -2087,15 +2126,18 @@ class ChatScreen(Screen[None]):
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: self._turn_stopped(turn)):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")
+            for notice in size_unknown_notices(WorkerRole.CHAT):
+                call_from_thread(self, self.notify, notice, severity="warning")
             return True
         if self._turn_stopped(turn):
             return False
         error = chat_warm_error()
-        text = (
-            f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
-            if error is not None
-            else msg.ENGINE_NOT_READY
-        )
+        if error is None:
+            text = msg.ENGINE_NOT_READY
+        elif DLL_MISSING_LEAD in error:
+            text = msg.ENGINE_LOAD_FAILED.format(error=error)
+        else:
+            text = f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
         with contextlib.suppress(Exception):
             call_from_thread(self, widget.append_content, text)
         return False
@@ -2221,8 +2263,7 @@ class ChatScreen(Screen[None]):
                 break
             try:
                 if isinstance(token, RetrievalNotice):
-                    status = msg.SEARCHING_FOR.format(query=token.query)
-                    call_from_thread(self, widget.set_thinking_status, status)
+                    self._show_retrieval_notice(widget, token)
                     continue
                 if isinstance(token, AnswerSources):
                     # Shown under the answer, saved beside it: never part of its text.
@@ -2235,6 +2276,15 @@ class ChatScreen(Screen[None]):
                 break  # App shutting down (Ctrl-C) -- stop streaming
         with contextlib.suppress(Exception):
             flush()
+
+    def _show_retrieval_notice(self, widget: Any, notice: RetrievalNotice) -> None:
+        """Show the rewritten query in the status row and a toast for each failed search step."""
+        if notice.query is not None:
+            call_from_thread(
+                self, widget.set_thinking_status, msg.SEARCHING_FOR.format(query=notice.query)
+            )
+        for warning in notice.degraded:
+            call_from_thread(self, self.notify, warning.line, severity="warning")
 
     @staticmethod
     def _buffer_token(
@@ -2883,6 +2933,11 @@ class ChatScreen(Screen[None]):
         """
         focused = self.focused
         return bool(focused and any(isinstance(n, ModelBar) for n in focused.ancestors_with_self))
+
+    def _focused_strip_member_binds(self, key: str) -> bool:
+        """True when the focused model-strip member has its own binding for *key*."""
+        binding = self.active_bindings.get(key)
+        return binding is not None and binding.node is self.focused and self._focus_in_model_bar()
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement

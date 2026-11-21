@@ -19,10 +19,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 _RELEASE_WORKFLOW = _ROOT / ".github" / "workflows" / "release.yml"
 
 # lancedb is resolved from the +compat index instead, because the version the
-# lock records is the one with no wheel for this platform. lilbee-engine is a
+# lock records is the one with no wheel for this platform. lilbee-engine-llama-cpp is a
 # local path, which uv rejects as a constraint.
 _UNPINNED_PACKAGES = {"lancedb"}
-_UNNAMED_PACKAGES = {"lilbee-engine"}
+_UNNAMED_PACKAGES = {"lilbee-engine-llama-cpp"}
 
 
 def _run_scripts() -> list[str]:

@@ -200,3 +200,62 @@ def test_another_os_error_still_surfaces_from_the_launcher(
 
     with pytest.raises(PermissionError, match="denied"):
         launcher.main()
+
+
+class TestMissingVcRuntimeWarning:
+    """A pip install on Windows without msvcp140 fails later with 'DLL load failed'."""
+
+    @staticmethod
+    def _run(monkeypatch, capsys, *, platform: str, loads: bool, frozen: bool) -> str:
+        import ctypes
+
+        def win_dll(_name: str) -> None:
+            if not loads:
+                raise OSError("not found")
+
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr(ctypes, "WinDLL", win_dll, raising=False)
+        if frozen:
+            monkeypatch.setitem(launcher.__dict__, "__compiled__", object())
+        launcher._warn_missing_vc_runtime()
+        return capsys.readouterr().err
+
+    def test_warns_when_windows_cannot_load_the_runtime(self, monkeypatch, capsys) -> None:
+        err = self._run(monkeypatch, capsys, platform="win32", loads=False, frozen=False)
+        assert "Visual C++ runtime" in err
+        assert "learn.microsoft.com/cpp/windows/latest-supported-vc-redist" in err
+
+    @pytest.mark.parametrize(
+        ("platform", "loads", "frozen"),
+        [
+            ("win32", True, False),
+            ("darwin", False, False),
+            ("win32", False, True),
+        ],
+    )
+    def test_silent_otherwise(self, monkeypatch, capsys, platform, loads, frozen) -> None:
+        assert self._run(monkeypatch, capsys, platform=platform, loads=loads, frozen=frozen) == ""
+
+    def test_no_path_variable_does_not_stop_the_start(self, monkeypatch, capsys) -> None:
+        monkeypatch.delenv("PATH", raising=False)
+        err = self._run(monkeypatch, capsys, platform="win32", loads=True, frozen=False)
+        assert err == ""
+
+    def test_no_stderr_does_not_stop_the_start(self, monkeypatch) -> None:
+        import ctypes
+
+        def fail(_name: str) -> None:
+            raise AssertionError("the runtime must not be probed without a stream")
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(ctypes, "WinDLL", fail, raising=False)
+        monkeypatch.setattr(sys, "stderr", None)
+        launcher._warn_missing_vc_runtime()
+
+    def test_main_runs_the_check(self, monkeypatch) -> None:
+        calls = Mock()
+        monkeypatch.setattr(launcher, "_warn_missing_vc_runtime", calls)
+        monkeypatch.setattr(launcher, "_run_cli", Mock())
+        monkeypatch.setattr(sys, "argv", ["lilbee", "status"])
+        launcher.main()
+        calls.assert_called_once_with()

@@ -41,6 +41,12 @@
    "detail": "colour_named=True"
   }
  },
+ "error_answers": [
+  [
+   400,
+   "{\"error\":{\"code\":\"context_length_exceeded\",\"details\":{\"backend\":\"llama-server\",\"response\":{\"error\":{\"code\":400,\"message\":\"request (60009 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"n_ctx\":4096,\"n_prompt_tokens\":60009,\"type\":\"exceed_context_size_error\"}}},\"message\":\"request (60009 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"status_code\":400,\"type\":\"invalid_request_error\"}}"
+  ]
+ ],
  "exchanges": [
   {
    "method": "POST",

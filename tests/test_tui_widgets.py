@@ -39,6 +39,10 @@ from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
+def _no_late_pick(_ref: str) -> None:
+    """The model picker in these tests never changes an engine, so no pick comes late."""
+
+
 def _refs(*sources: str) -> list[SourceRef]:
     """A Sources list of local files, each labelled by its path and numbered by its position."""
     return [SourceRef(s, s, i) for i, s in enumerate(sources, 1)]
@@ -302,11 +306,12 @@ class TestAssistantMessageAsync:
             am = app._am
             am.append_reasoning("a ")
             assert am._reasoning_static is not None
+            # The first append fired an update on its own. Keep the debounce
+            # window open for the burst, so a slow host cannot let it lapse.
+            am._last_reasoning_update = float("inf")
             with mock.patch.object(am._reasoning_static, "update") as mock_update:
                 am.append_reasoning("b ")
                 am.append_reasoning("c ")
-                # The first append fired an update on its own; subsequent
-                # bursts inside the 0.1 s debounce window do not.
                 assert mock_update.call_count == 0
                 am.finish()
                 # finish() flushes the buffered tail.
@@ -1986,7 +1991,9 @@ class TestModelPickerModal:
             def _capture(value: str | None) -> None:
                 results.append(value)
 
-            app.push_screen(ModelPickerModal(scope="chat", options=opts), _capture)
+            app.push_screen(
+                ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick), _capture
+            )
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2011,7 +2018,7 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="chat", options=opts))
+            app.push_screen(ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick))
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2042,7 +2049,7 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="chat", options=opts))
+            app.push_screen(ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick))
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2071,7 +2078,9 @@ class TestModelPickerModal:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.push_screen(
-                ModelPickerModal(scope="embed", options=[ModelOption("X", "x")]),
+                ModelPickerModal(
+                    scope="embed", options=[ModelOption("X", "x")], pick_later=_no_late_pick
+                ),
                 _capture,
             )
             await pilot.pause()
@@ -2095,7 +2104,7 @@ class TestModelPickerModal:
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             app.push_screen(
-                ModelPickerModal(scope="chat", options=opts),
+                ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick),
                 lambda v: results.append(v),
             )
             await pilot.pause()
@@ -2120,7 +2129,7 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="chat", options=[]))
+            app.push_screen(ModelPickerModal(scope="chat", options=[], pick_later=_no_late_pick))
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2143,7 +2152,11 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(scope="embed", options=[ModelOption("X", "x")]))
+            app.push_screen(
+                ModelPickerModal(
+                    scope="embed", options=[ModelOption("X", "x")], pick_later=_no_late_pick
+                )
+            )
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)

@@ -215,12 +215,10 @@ class TestValidatePresetUrl:
     def test_a_6to4_address_with_a_public_ipv4_is_allowed(self):
         assert blocked_networks.validate_preset_url("http://[2002:808:808::]/") is None
 
-    def test_a_6to4_host_name_with_a_blocked_ipv4_is_refused_at_save_and_at_request(self, dns):
+    def test_a_6to4_host_name_with_a_blocked_ipv4_is_refused_at_save(self, dns):
         dns["sixtofour.test"] = ["2002:a9fe:a9fe::"]
         with pytest.raises(ValueError, match=METADATA_REFUSAL):
             blocked_networks.validate_preset_url("http://sixtofour.test/")
-        with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            blocked_networks.check_request_address("http://sixtofour.test/")
 
     @pytest.mark.parametrize(
         "address",
@@ -230,12 +228,10 @@ class TestValidatePresetUrl:
         with pytest.raises(ValueError, match="blocked address"):
             blocked_networks.validate_preset_url(f"http://[{address}]/")
 
-    def test_a_host_name_with_a_tunnel_answer_is_refused_at_save_and_at_request(self, dns):
+    def test_a_host_name_with_a_tunnel_answer_is_refused_at_save(self, dns):
         dns["tunnel.test"] = ["8.8.8.8", "2001:0:4136:e378:8000:63bf:3fff:fdd2"]
         with pytest.raises(ValueError, match="blocked address 2001:0:4136"):
             blocked_networks.validate_preset_url("http://tunnel.test/")
-        with pytest.raises(ValueError, match="blocked address 2001:0:4136"):
-            blocked_networks.check_request_address("http://tunnel.test/")
 
     def test_a_host_name_with_a_mapped_answer_is_read_as_the_address_it_embeds(self, dns):
         dns["mapped.test"] = ["::ffff:169.254.169.254"]
@@ -252,37 +248,6 @@ class TestValidatePresetUrl:
         monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", refuses)
         with pytest.raises(ValueError, match="not a valid host name"):
             blocked_networks.validate_preset_url("http://long.test/")
-
-
-class TestCheckRequestAddress:
-    def test_a_public_answer_is_allowed(self):
-        assert blocked_networks.check_request_address(URL) is None
-
-    def test_an_os_error_from_the_lookup_is_no_answer(self, monkeypatch):
-        def getaddrinfo(_host, _port):
-            raise OSError("no route")
-
-        monkeypatch.setattr(blocked_networks.socket, "getaddrinfo", getaddrinfo)
-        blocked_networks.validate_preset_url("http://offline.test/")
-        with pytest.raises(ValueError, match="no DNS answer"):
-            blocked_networks.check_request_address("http://offline.test/")
-
-    def test_a_literal_address_needs_no_dns(self):
-        assert blocked_networks.check_request_address(OTHER_URL) is None
-
-    def test_a_blocked_literal_is_refused(self):
-        with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            blocked_networks.check_request_address(BLOCKED_URL)
-
-    def test_no_dns_answer_is_refused(self):
-        with pytest.raises(ValueError, match="no DNS answer"):
-            blocked_networks.check_request_address("http://offline.test/")
-
-    def test_an_answer_that_turned_blocked_after_save_is_refused(self, dns):
-        presets.add_preset("alpha", URL, roles=["chat"])
-        dns[PUBLIC_HOST] = ["169.254.169.254"]
-        with pytest.raises(ValueError, match=METADATA_REFUSAL):
-            blocked_networks.check_request_address(URL)
 
 
 class TestAdd:
@@ -688,23 +653,33 @@ class TestWholeList:
 class TestOneBadEntry:
     """A bad stored entry stops no read, no clear and no key change of another preset."""
 
-    BAD_ENTRIES = (
+    OTHER_FAULTS = (
         _entry("bad", BLOCKED_URL) | {"api_key": KEY},
         _entry("bad", f"http://me:{KEY}@good.test/") | {"api_key": KEY},
         _entry("bad", f"http://good.test/?api_key={KEY}") | {"api_key": KEY},
         {"name": "bad", "url": URL, "roles": ["speak"], "api_key": KEY},
         {"name": "bad", "url": URL, "roles": [], "api_key": KEY},
         {"name": "bad", "url": URL, "roles": ["chat"], "extra": 1, "api_key": KEY},
-        {
-            "name": "bad",
-            "url": URL,
-            "roles": ["chat"],
-            "api_key": "lone\ud800",  # pragma: allowlist secret
-        },
     )
+    BAD_KEY_ENTRIES = (
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "lone\ud800"},
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "tab\tkey"},
+        {"name": "bad", "url": URL, "roles": ["chat"], "api_key": "klúč-key"},
+    )
+    BAD_ENTRIES = (*OTHER_FAULTS, *BAD_KEY_ENTRIES)
 
     @pytest.fixture(params=BAD_ENTRIES)
     def bad(self, request):
+        _store(_entry("good", URL) | {"api_key": KEY}, request.param)
+        return request.param
+
+    @pytest.fixture(params=OTHER_FAULTS)
+    def faulty(self, request):
+        _store(_entry("good", URL) | {"api_key": KEY}, request.param)
+        return request.param
+
+    @pytest.fixture(params=BAD_KEY_ENTRIES)
+    def bad_key(self, request):
         _store(_entry("good", URL) | {"api_key": KEY}, request.param)
         return request.param
 
@@ -736,11 +711,42 @@ class TestOneBadEntry:
         presets.remove_preset("bad")
         assert [entry["name"] for entry in _stored()] == ["good"]
 
-    def test_a_key_change_on_the_bad_entry_is_refused(self, bad):
+    def test_a_key_change_is_refused_when_the_key_is_not_the_only_fault(self, faulty):
         before = _stored()
         with pytest.raises(ValueError, match="'bad' is refused"):
             presets.edit_preset("bad", api_key=KEY + "-2")
         assert _stored() == before
+
+    def test_a_new_key_replaces_a_stored_key_that_cannot_be_a_header_value(self, bad_key):
+        view = presets.edit_preset("bad", api_key=KEY + "-2")
+        assert (view.valid, view.has_key, view.base_url) == (True, True, URL)
+        assert _stored()[1] == {**bad_key, "api_key": KEY + "-2"}
+        assert _stored()[0]["api_key"] == KEY
+
+    def test_a_bad_new_key_leaves_the_bad_entry_as_it_was(self, bad_key):
+        before = _stored()
+        with pytest.raises(ValueError, match="cannot be stored"):
+            presets.edit_preset("bad", api_key="new\tkey")
+        assert _stored() == before
+
+    def test_an_edit_that_names_no_key_leaves_the_bad_key_refused(self, bad_key):
+        before = _stored()
+        with pytest.raises(ValueError, match="'bad' is refused"):
+            presets.edit_preset("bad", roles=["chat", "embed"])
+        assert _stored() == before
+
+    def test_a_new_origin_with_no_new_key_is_refused_for_a_bad_key_too(self, bad_key):
+        before = _stored()
+        with pytest.raises(ValueError, match="stored key does not follow"):
+            presets.edit_preset("bad", url=OTHER_URL)
+        assert _stored() == before
+
+    def test_a_new_key_and_a_new_url_repair_a_row_that_holds_no_url(self):
+        _store({"name": "bad", "url": 5, "roles": ["chat"], "api_key": KEY})
+        with pytest.raises(ValueError, match="stored key does not follow"):
+            presets.edit_preset("bad", url=URL)
+        presets.edit_preset("bad", url=URL, api_key=KEY + "-2")
+        assert _stored() == [{"name": "bad", "url": URL, "roles": ["chat"], "api_key": KEY + "-2"}]
 
     def test_an_add_and_a_role_edit_beside_it_are_still_refused(self, bad):
         before = _stored()
@@ -833,8 +839,6 @@ class TestDnsAndTheLock:
         dns[PUBLIC_HOST] = ["169.254.169.254"]
         presets.add_preset("beta", OTHER_URL, roles=["chat"])
         assert [entry["name"] for entry in _stored()] == ["alpha", "beta"]
-        with pytest.raises(ValueError, match="blocked address"):
-            blocked_networks.check_request_address(URL)
 
 
 class TestList:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.models import ListsModels
 from lilbee.catalog.types import ModelFormat
 from lilbee.providers.fleet.host_caps import HostCaps, collect, detect
 
@@ -50,33 +51,43 @@ class Hidden:
 
 
 def default_offers() -> list[EngineOffer]:
-    """The shipped engines, read from the engine table."""
+    """llama.cpp, and each engine that publishes a model list of its own."""
+    # circular: the engine modules import the catalog
     from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.engines.choice import ADAPTERS, installed_engines
 
-    return [EngineOffer(LLAMA, EngineState.INSTALLED)]
+    here = installed_engines()
+    # isinstance: only some engines publish a model list, so the offers are narrowed by capability
+    publishers = [a for a in ADAPTERS.values() if isinstance(a, ListsModels)]
+    return [EngineOffer(LLAMA, EngineState.INSTALLED)] + [
+        EngineOffer(a, EngineState.INSTALLED if a.name in here else EngineState.INSTALLABLE)
+        for a in publishers
+    ]
 
 
 @functools.cache
+def _read_host() -> HostCaps:
+    """Read the live host; a failed read raises, so the cache keeps no answer for it."""
+    return detect()
+
+
 def session_host() -> HostCaps:
     """The host answer, read once for the session; a read that fails leaves every field unknown.
 
-    Detection reads ``platform`` (``OSError`` when the OS refuses the query) and parses the
-    answers (``ValueError``). Neither may close the catalog: the gates treat an unknown field
-    as a pass, so every row stays listed.
+    A failed read is not kept: the next call reads the host again. The gates treat an unknown
+    field as a pass, so a failed read never closes the catalog.
     """
     try:
-        return detect()
-    except (OSError, ValueError) as exc:
+        return _read_host()
+    except Exception as exc:
         log.warning("Host detection failed, the catalog lists every row: %s", exc)
-        unreadable = {"driver": None, "cuda_driver": None, "gpus": None}
-        return collect(
-            system="", machine="", mac_ver="", cpu_info={}, nvml=unreadable, npu_devices=()
-        )
+        unreadable = {"cuda_driver": None, "gpus": None}
+        return collect(system="", machine="", cpu_info={}, nvidia=unreadable)
 
 
 def refresh_session_host() -> HostCaps:
     """Read the host now and make it the session host; an engine install calls this."""
-    session_host.cache_clear()
+    _read_host.cache_clear()
     return session_host()
 
 
@@ -113,8 +124,8 @@ def explain(
     gates = [o.adapter.host_gate(host) for o in naming]
     if any(g.ok for g in gates):
         return None
-    reasons = "; ".join(dict.fromkeys(g.reason for g in gates if g.reason))
-    return Hidden(HiddenReason.HOST_UNSUPPORTED, f"this host cannot run it: {reasons}")
+    reasons = " ".join(dict.fromkeys(g.reason for g in gates if g.reason))
+    return Hidden(HiddenReason.HOST_UNSUPPORTED, f"This host cannot run it. {reasons}")
 
 
 def hidden_reason(

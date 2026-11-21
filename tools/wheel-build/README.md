@@ -13,12 +13,18 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   (Vulkan SDK on Linux/Windows; CUDA Toolkit when `BACKEND=cuXXX`; ROCm when
   `BACKEND=rocm`; no-op on macOS where Metal ships with the OS).
 - `build_llama_server.sh` — builds the self-contained `llama-server` (binary +
-  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine` wheel
+  ggml/llama/mtmd libs with a baked rpath) into the `lilbee-engine-llama-cpp` wheel
   package's `bin/` for the requested backend.
 - `bundle_rocm_runtime.sh` — packs the ROCm userspace `llama-server` links
   (discovered by walking `DT_NEEDED`, plus the rocBLAS Tensile kernels) beside
-  the binary, so an AMD user needs only a kernel driver. Called by
-  `build_llama_server.sh` for the rocm backend; tested on its own.
+  the binary, so an AMD user needs only a kernel driver and six host libraries
+  (libnuma, libelf, libdrm, libdrm_amdgpu, zlib, zstd; the script bundles none
+  of them). Called by `build_llama_server.sh` for the rocm backend; tested on its
+  own.
+- `llama_gpu_manylinux.sh` — builds the Linux CPU, Vulkan or ROCm engine pack in the
+  manylinux_2_34 image for the build workflow of the engine-packs repository.
+- `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
+  or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
   executable, bundling the engine wheel built above.
 
@@ -29,7 +35,7 @@ Scripts read these env vars:
 - `LLAMA_CPP_REPO` / `LLAMA_CPP_REF` — the llama.cpp repo and ref to build
   from (optional; the build script defaults to the pin in engine-versions.env).
 - `BACKEND` — one of `cpu`, `vulkan`, `metal`, `cu121`, `cu122`, `cu123`,
-  `cu124`, `rocm`, `sycl`.
+  `cu124`, `rocm`.
 - `LLAMA_BUILD_DIR` — output directory for the built/fetched wheel.
 - `RUNNER_OS` — `Linux`, `macOS`, or `Windows`. (CI sets this; locally,
   scripts auto-detect.)

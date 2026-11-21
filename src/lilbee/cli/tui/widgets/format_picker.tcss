@@ -3,7 +3,7 @@ FormatPicker {
 }
 
 FormatPicker #format-root {
-    width: 50;
+    width: 80;
     max-width: 90%;
     height: auto;
     border: $rail-heavy $primary;

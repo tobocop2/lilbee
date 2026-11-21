@@ -35,8 +35,8 @@ check() { # check <name> <0-for-pass>
   if [ "$2" -eq 0 ]; then note "PASS: $1"; PASS=$((PASS + 1)); else note "FAIL: $1"; FAIL=$((FAIL + 1)); fi
 }
 
-engine_llama_servers() { pgrep -fc "lilbee_engine/bin/llama-server"; }
-engine_swaps() { pgrep -fc "lilbee_engine/bin/llama-swap"; }
+engine_llama_servers() { pgrep -fc "lilbee_engine_llama_cpp/bin/llama-server"; }
+engine_swaps() { pgrep -fc "lilbee_engine_llama_cpp/bin/llama-swap"; }
 vram_used_mb() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1; }
 user_locks() { ls "$LILBEE_ENGINE_DIR/engine-users/" 2>/dev/null | wc -l; }
 
@@ -112,7 +112,7 @@ wire_opencode() { # wire_opencode <proj-index>: launcher-equivalent config, per-
 import json
 import os
 
-from lilbee.cli.agent_configs.opencode import opencode_config
+from lilbee.app.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.server import client_chat_ctx
 
 port = int(os.environ["LILBEE_PORT"])

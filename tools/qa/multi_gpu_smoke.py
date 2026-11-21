@@ -97,6 +97,7 @@ def _check_placement() -> None:
     cards the plan named and that an unequal split is by capacity.
     """
     from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, ROCR_VISIBLE_VAR
     from lilbee.providers.fleet.planning import plan_all_launches
     from lilbee.providers.roles import ROLE_REGISTRY
 
@@ -110,7 +111,7 @@ def _check_placement() -> None:
         print(f"      {shared} share a swap group (one resident at a time)")
     for launch in launches:
         env = launch.env_overrides
-        pinned = env.get("CUDA_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES") or "(host)"
+        pinned = env.get(CUDA_VISIBLE_VAR) or env.get(ROCR_VISIBLE_VAR) or "(host)"
         n_gpu = len(pinned.split(",")) if pinned != "(host)" else 0
         split = " (tensor-split)" if n_gpu > 1 else ""
         print(f"      {launch.model_id}: GPU(s)={pinned}{split}")

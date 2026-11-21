@@ -141,7 +141,7 @@ flowchart LR
     rebuild -.->|keeps| table
 ```
 
-- **Crawl page table.** The `_crawl_pages` table in the index holds one row per page and file, keyed by address and file. Each address has one current row, which names the file the page owns; its other rows are earlier copies. A rebuild, a rebuild under another embedding model and the clear of a rebuild cut short keep the table, as they keep memories; only a reset deletes it. The current row also holds the hash of the text the file held before the save (`replaces`), so a save cut between its claim and its file is finished by the next crawl. The page file is written to a temporary file, synced, and put in place, so it never holds part of a text. A save adds a row and never rewrites one, so the table is folded every 100 commits and when a crawl that committed ends: the rows a later row of their key replaced are deleted, and the versions are compacted into one. A version a fold replaces stays readable for 10 seconds, so a reader in another process still reads it.
+- **Crawl page table.** The `_crawl_pages` table in the index holds one row per page and file, keyed by address and file. Each address has one current row, which names the file the page owns; its other rows are earlier copies. A rebuild, a rebuild under another embedding model and the clear of a rebuild cut short keep the table, as they keep memories; only a reset deletes it. The current row also holds the hash of the text the file held before the save (`replaces`), so a save cut between its claim and its file is finished by the next crawl. The page file is written to a temporary file, synced, and put in place, so it never holds part of a text. A save adds a row and never rewrites one, so the table is folded every 100 commits and when a crawl that committed ends: the rows a later row of their key replaced are deleted, and the versions are compacted into one. A version a fold replaces stays readable for 5 minutes, so a reader in another process still reads it.
 - **Crawl lock.** A page save holds `crawl_pages.lock` beside the table, not the index write lock, for the check, the claim, the file write and the retire of earlier copies. So a save never waits behind a sync batch. The claim commits before the file is written, so a file at a page's name always has a row. The lock order is the crawl lock, then the index write lock, never the reverse. A hold keeps the rows in memory. The import of an older release's files commits under the index upgrade lock, not the crawl lock, so correctness rests on the version check: each hold checks the latest version and the id of the table, and reads the rows again only when another commit came since, or a reset made the table again. The crawl keeps no page text after its save. LanceDB does not document an fsync of a local commit, so a power loss can drop a claim whose file survives; the next crawl takes the file back as described below.
 - **Page title.** The row holds the page's own `<title>`, on one line and at most 512 characters, as crawlberg reports it. A crawl that reports no title keeps the title of the page's row, so a missing title never clears one. Ingest gives a crawled page this title, else its leading `# Heading`, else its file name; the file name keeps its cut. A crawl that finds a page's text unchanged but its title new writes the row and no file, and sync ingests a crawled page again when its stored title is not the title of its row. A row from an earlier release has no title, so its page keeps the title it has until it is crawled again. The Sources list of an answer, a restored or exported chat and `GET /api/source` show a crawled page by its stored title, read from its source row. The title and every Sources label are plain text in every data structure and every raw output: the stored session, the model history, `lilbee ask` piped or on a terminal, `--json`, REST and MCP. Only a component that renders markdown escapes the labels, in the string it is about to parse: the TUI markdown widget and the chat export. So a title never opens a link, image, code span, tag, entity, emphasis or block where markdown is rendered, and shows as typed everywhere else.
 - **A file the table does not give the page.** A file at a page's name is written over only when it holds the text of the page's current row or the text that row replaced. When it holds the page's new text, the crawl records it and writes nothing, so a page whose row was lost is taken back. Any other file, folder or symbolic link at the name is left alone, and the page is not saved. One warning names the path and the remedy (move or delete it), and the crawl goes on. A file where a folder of the page belongs gets one warning per crawl. A user's note is never written over.
@@ -807,8 +807,8 @@ flowchart LR
     fallback are never pinned: they carry raw loader ordinals, so the engine is
     left to select for itself.
   - By environment (`devices.visible_env`): **CUDA** via `CUDA_VISIBLE_DEVICES`
-    with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the environment presets another
-    order), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
+    with `CUDA_DEVICE_ORDER=PCI_BUS_ID` (a preset order is replaced with a
+    warning), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
     (never both: ROCr filters first and HIP re-indexes within the survivors, so
     writing both double-filters). When the parent environment already restricts a
     visible-devices var (a pod preset like `CUDA_VISIBLE_DEVICES=2,3`), the probe's
@@ -894,9 +894,31 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
+- **A role that a tensor-parallel engine splits over several cards**: the launch runs as equal tensor-parallel
+  shards and carries no layer flag. Placement offers such an engine only equal
+  shares, so on cards of different sizes the smallest card must hold its equal share
+  or the role is refused. The card order is the order of
+  `CUDA_VISIBLE_DEVICES`. A launch that is not a split turns the card collectives off: one
+  card, no card pinned, or the CPU target. A split sets `NCCL_P2P_LEVEL=NVL`, so
+  peer-to-peer runs only over NVLink and a PCIe pair does not stall at start. To
+  choose otherwise, set `NCCL_P2P_LEVEL` or `NCCL_P2P_DISABLE` in the environment;
+  the launch then adds neither. The engine drops a layer map when
+  collectives are on, and the map it keeps with collectives off answered wrongly on
+  two cards. So the launch refuses an uneven ratio (every entry must be the same
+  number) and a model whose attention heads do not divide over the card count (the
+  GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
+  `num_key_value_heads` in `config.json`). The message names the model and the
+  llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
+  each card its layer share of the estimate. For a model folder the estimate is the
+  weights, the cache at the launch context and the runtime allowance. For a GGUF file
+  it is the weights only. Every chat or vision launch, split or not, also passes
+  `--max-model-len` with the context of the launch: the `num_ctx` pin, else
+  `chat_n_ctx_target` within the trained window and `num_ctx_max`. A split passes the
+  largest context that fits each card, never more.
+
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process
-  (one per role, except co-tenant chat and vision which share one), and a reload
+  (one per role, except the co-tenant roles, which share one), and a reload
   re-plans the whole fleet but restarts **only the groups whose launches
   changed**. That diff is sound because launches are a pure function of config,
   hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
@@ -974,6 +996,25 @@ what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
 
+The `GET /api/placement` response lists the engine's devices in `gpus`. On a
+Vulkan build, a machine with GPUs from two vendors hides one vendor's GPU from the
+engine at launch, so `gpus` has no row for it and no pin can name it. The
+`hidden_gpus` field lists the vendor names of that hidden hardware, for example
+`["Intel"]`. The field is an empty list when nothing is hidden, and it stays
+empty when `VK_LOADER_DRIVERS_DISABLE` is set before launch, because the engine
+then lists every GPU. `lilbee placement show` prints the same fact as a note
+under the table.
+
+When a saved spec is not in use, `refusal` holds the reason in words and
+`refusal_kind` names the case: `waiting_for_engine` or `waiting_for_model` when the
+spec applies once an engine or a model is installed, `unreadable` when the saved
+text cannot be parsed, and
+`refused` when an engine refuses roles or the spec places no role on this
+machine. The field is null when there is no refusal, and also for a saved spec
+that does not fit the hardware: that reply carries `rejected_spec_json` alone.
+A client reads `refusal_kind`, not the sentence, to decide whether the spec is
+kept or must be corrected.
+
 - **Resident tiers and the elastic ingest pool**: placement charges roles in the
   registry's `placement_rank` order. The pinned tier goes first: one embed server
   (`embed-0`), rerank, and one vision server (`vision-0`). Chat is charged last,
@@ -993,14 +1034,22 @@ touching the running fleet.
   other's models in VRAM. Roles that share
   no run **phase** (`RoleInfo.phases`) are never resident together, so when they
   cannot all co-reside a role that does not fit **refunds** the already-charged
-  phase-disjoint roles and retries; the roles that let it in become co-tenants of a
-  single `swap: true` llama-swap group. On a tight card this pulls the query-only
-  rerank and chat into vision's swap group, so ingest's embed + vision fits exactly
-  as it did in-process. Only one member is resident at a time, so the group is
-  charged its largest member and each co-tenant runs a single instance (a
-  `swap: true` group evicts same-group siblings, so a second replica inside it would
-  evict the first). Interleaving a query with an ingest costs a model reload each
-  way. With the VRAM to hold everything at once, no swap group forms and every role
+  phase-disjoint roles and retries; the roles that let it in become co-tenants of
+  one swap process. On a tight card this pulls the query-only rerank and chat into
+  vision's swap process, so ingest's embed + vision fits exactly as it did
+  in-process. The co-tenants split into **residency classes**: roles that share a
+  run phase (chat and rerank both answer one query) stay loaded together, and
+  loading a role of another class evicts them. One router group holds each
+  class (`swap: false`, `exclusive: true`, `persistent: false`), so the router
+  itself does the eviction. Placement first packs the fleet as before, each
+  co-tenant in a class of its own. It then merges chat and rerank into one class only
+  when the class fits in the room left after every role is placed; otherwise they
+  stay apart and evict each other, as every co-tenant did before. A tight role holds what is left
+  of its card and joins no class. The swap process is charged its largest class,
+  the members of that class added up, and each co-tenant runs a single instance
+  (the elastic tier does not replicate a role inside the process). Interleaving a
+  query with an ingest costs a model reload each way. With the VRAM to hold
+  everything at once, no swap group forms and every role
   pins to its own group. A plan with several engines on discrete cards gives each
   role a named card or a refusal, and a refused role takes no card. It checks three
   causes in order: the engine cannot be pinned on several cards (it reports another
@@ -1081,7 +1130,11 @@ touching the running fleet.
   on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
-  member servers' ports, plus the owner's pid and create time; before the next build
+  member servers' ports, plus the owner's pid and create time, and `ready_at` once the builder sees a load succeed. A
+  later lilbee binds an answering engine only when `/running` lists a member ready or starting, or the record has
+  `ready_at`, or the record is younger than the slowest member's cold-load ceiling plus 30 s, or another lilbee holds
+  the engine (a holder that never warmed leaves no proof of a load); an older record that never loaded and has no
+  holder is rebuilt. Before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped
@@ -1571,6 +1624,7 @@ While `wiki` is off, generated pages are excluded from retrieval regardless of s
 - `lilbee search "query"`: vector search, no LLM generation
 - `lilbee sync` / `lilbee add` / `lilbee remove`: document management
 - `lilbee model pull <name>` / `model list` / `model rm`: native GGUF model management
+- `lilbee model use <chat|rerank|vision> <ref>`: set a role's model with the checks the `PUT /api/models` routes apply (the embedding model has `lilbee use-embedder`)
 - `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune` / `wiki wipe`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
@@ -1584,7 +1638,7 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 ### REST API (Litestar)
 - OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions` (streaming + tools). Errors use the OpenAI envelope with the codes in `src/lilbee/server/chat_completions_api/errors.py::CompletionsErrorCode` (`invalid_request`, `model_not_found`, `model_does_not_support_tools`, `context_length_exceeded`, `invalid_api_key`, `rate_limit_exceeded`, `internal_error`). The active model's `/v1/models` entry carries the granted engine shape (`context_window`, `slots`); a `reasoning` request field (`separate`/`inline`/`off`, default from the `completions_reasoning` setting) picks how thinking is presented. The usage block reports prompt tokens the engine served from its cache under `prompt_tokens_details.cached_tokens`, a subset of `prompt_tokens`.
 - Anthropic-compatible: `POST /v1/messages` (streaming + tools), the route Claude Code talks to. Errors reuse the completions codes in the Anthropic envelope. The `thinking` request parameter (`{"type": "disabled"}` / `{"type": "enabled"}`) turns reasoning off or on for one call, over the `messages_reasoning` setting (`separate`/`inline`/`off`) that picks how thinking is presented. Its `budget_tokens` tightens the reasoning cap for that call, and must be 1024 or more to match Anthropic's minimum. The usage block reports prompt tokens the engine served from its cache under `cache_read_input_tokens`; as Anthropic defines them, `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` are disjoint and sum to the prompt, and the creation count is always zero because the engine has no paid cache write. The streamed opener carries those keys with zero counts, because the engine reports usage only when the stream ends.
-- Images and models by path: the two `/v1` chat routes drop image parts, answer from the text, and report the count in the `X-Lilbee-Images-Dropped` response header, with one warning in the server log. This holds for every model, vision-tagged or not, because the chat path cannot pass images on. A request with images and no other content is a 400. A chat model configured as the absolute path of a GGUF file resolves in both routes the way the fleet loads it, and `/v1/models` lists it.
+- Images and models by path: the two `/v1` chat routes drop image parts, answer from the text, and report the count in the `X-Lilbee-Images-Dropped` response header and the cause in the `X-Lilbee-Images-Dropped-Reason` header, with one warning in the server log. This holds for every model, because chat does not load the vision projector; use the vision role to read images. No chat model reports the `vision` capability. A request with images and no other content is a 400. A chat model configured as the absolute path of a GGUF file resolves in both routes the way the fleet loads it, and `/v1/models` lists it.
 - Token counting: `POST /v1/messages/count_tokens` answers `{"input_tokens": N}` for the `/v1/messages` body minus the sampling fields. The system prompt, the conversation and the tool schemas go to the chat server as the body a chat call would send; its `/apply-template` renders the prompt and its `/tokenize` counts the render, so the number includes the template's role markers and tool-call preamble. Counting runs no tool, so the route skips the tool-capability check `/v1/messages` runs. It is not free of generation: the first count against a fresh replica sends the one-token exchange that probes for consecutive same-role turns, and a count that finds the chat model cold loads it. A backend that renders no prompt locally — a cloud SDK backend, or a local engine whose build carries no render route — gets an estimate instead: the request's own text in UTF-8 bytes, plus four fixed allowances for the template text the request does not carry (the preamble, the role markers per wire message, the tool-calling instructions, and the wrapper around each tool schema). A message returning several tool results becomes several wire messages, so the per-message allowance follows that count. The allowances come from a survey of 47 chat templates across 51 repositories, taken 2026-09-18; four templates exceed one, so the estimate can read low as well as high, and raising a constant only moves which template breaks it. Every answer carries the `X-Lilbee-Token-Count-Accuracy` response header, `exact` when the backend measured the number and `estimated` when it did not, so a client can tell the two apart while the body keeps the one field Anthropic documents.
 - Both chat APIs bound thinking with `max_reasoning_chars` through `src/lilbee/server/chat_dispatch/reasoning_cap.py`. On a streaming call the wrapper closes the upstream stream when reasoning passes the cap, writes the cap notice into the open thinking block, and splices in a continuation asking the model to answer directly; the continuation is not capped again. On a non-streaming call the provider returns one finished result, so the wrapper re-issues only when the capped turn produced no answer.
 - Search: `GET /api/search`, `POST /api/ask`, `POST /api/chat`, `POST /api/ask/stream`, `POST /api/chat/stream` (SSE)
@@ -1682,7 +1736,9 @@ bee = Lilbee("./docs")
 bee.sync()
 results = bee.search("authentication")
 page = bee.documents(limit=50, offset=0)  # one page of indexed documents
+report = bee.search_report("authentication")  # report.rows, report.degraded
 ```
+`bee.search()` returns the rows. `bee.search_report()` returns the same rows and `degraded`, the warnings for each search step that failed (for example `rerank_failed`). REST, MCP and the CLI show the same warnings.
 `bee.status()` returns the real `document_count` and the newest 10 source names. `bee.documents()` pages the listing that `GET /api/documents` pages, with the same default and bounds (limit 1 to 1000, default 50).
 
 `Lilbee` composes the same `Store`, `Embedder`, `Searcher`, `Reranker`, and `ConceptGraph` the CLI and server use.
@@ -1844,7 +1900,7 @@ One optimisation was tried and rejected for exactly this reason. Gating the CUDA
 
 ### Notes
 
-- **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-gpu-executables.yml` the CUDA exes. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
+- **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine-llama-cpp` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-gpu-executables.yml` the CUDA exes. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
 - **PyPI publishes early; the fan-out waits.** `publish.yml` gates on the lilbee wheel + sdist + the three default engine wheels (Vulkan Linux/Win, Metal macOS) being complete in the RC run, then uploads all of them so a plain `pip install lilbee` resolves the engine. The Homebrew/AUR/Nix/Docker fan-out for the default `lilbee` package pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
 - **CUDA fan-out is its own lane.** `publish.yml`'s `dispatch-cuda` job runs in parallel with `publish-pypi` (it needs `guard` only, not the PyPI upload), polls the release for `lilbee-linux-x86_64-cu125`, and dispatches `publish-cuda-packages.yml` as soon as that asset attaches. That workflow updates the `lilbee-cuda` Homebrew formula, the `lilbee-cuda` AUR package, and the `sources-cuda.json` flake entry. Vulkan and CUDA fan-outs are fully decoupled: a slow Windows CUDA cell can't stall the `lilbee` Homebrew update, and a PyPI hiccup can't stall the `lilbee-cuda` update.
 - **`sources-cuda.json` is the CUDA flake state.** `publish-packages.yml` rewrites `sources.json` from scratch on every release (the Vulkan/Metal entries); the CUDA flake entry lives in a separate `sources-cuda.json` so the Vulkan publish can't wipe it. `flake.nix` reads both files; the `lilbee-cuda` package output only appears when `sources-cuda.json` lists a system. `flake-check.yml` triggers on either file.
@@ -1861,5 +1917,5 @@ One optimisation was tried and rejected for exactly this reason. Gating the CUDA
 - **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates. `build-gpu-executables.yml` has no such gate (CI cost there is dominated by the CUDA-toolkit install + Nuitka build itself, not the test re-run).
 - **Package versions auto-increment.** `publish-docker.yml`, `publish-packages.yml`, and `publish-cuda-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formulas, the AUR `PKGBUILD`s, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.
-- **The engine ships as the `lilbee-engine` wheel.** `build-multigpu.yml` builds a self-contained `llama-server` (binary + ggml/llama/mtmd libs, rpath-baked) per backend via `tools/wheel-build/build_llama_server.sh`, plus the `llama-swap` supervisor/proxy and the `gguf-parser` VRAM estimator (static Go binaries built from pinned source in the same script). The default backends (Vulkan on Linux/Win, Metal on macOS) publish to PyPI so a plain `pip install lilbee` pulls the engine; the CUDA/ROCm/CPU variants live on the per-backend PEP 503 index (`lilbee.sh/<backend>/`). The standalone executables bundle the same self-contained engine via Nuitka, so brew / Docker / AUR carry it too. The llama.cpp source tag and the llama-swap / gguf-parser source tags are pinned in `engine-versions.env`.
+- **The engine ships as the `lilbee-engine-llama-cpp` wheel.** `build-multigpu.yml` builds a self-contained `llama-server` (binary + ggml/llama/mtmd libs, rpath-baked) per backend via `tools/wheel-build/build_llama_server.sh`, plus the `llama-swap` supervisor/proxy and the `gguf-parser` VRAM estimator (static Go binaries built from pinned source in the same script). The wheels go to the per-backend PEP 503 index (`lilbee.sh/<backend>/`), never to PyPI. A `pip` or `uv` install of `lilbee` has no engine extra; it downloads an engine pack with `lilbee engine install`. The standalone executables bundle the same self-contained engine via Nuitka, so brew / Docker / AUR carry it too. The llama.cpp source tag and the llama-swap / gguf-parser source tags are pinned in `engine-versions.env`. The llama-swap router also installs on its own, from the upstream release of the same pinned version (`router_install.py`: asset name, size and sha256 per OS and CPU, kept in `<engines>/router/<version>/` with the MIT notice), so an install of another engine without the llama.cpp pack can start. The lookup order is the bundled wheel, the installed router, the llama.cpp pack copy, then PATH. The pack copy stays until the pack build drops it.
 

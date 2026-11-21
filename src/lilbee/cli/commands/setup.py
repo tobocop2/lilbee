@@ -31,6 +31,7 @@ from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
 from lilbee.providers.base import is_header_safe
 from lilbee.providers.factory import sdk_library
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
@@ -97,6 +98,7 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
     so the check exercises the model the user actually runs.
     """
     from lilbee.catalog.query import reclassify_by_name
+    from lilbee.catalog.types import ModelFormat
     from lilbee.modelhub.registry import ModelRegistry
 
     registry = ModelRegistry(cfg.models_dir)
@@ -106,7 +108,9 @@ def _installed_model_path(want: str, configured: str) -> Path | None:
         ]
     except Exception:
         return None
-    refs = [m.ref for m in manifests]
+    for skipped in (m for m in manifests if m.format is not ModelFormat.GGUF):
+        console.print(f"Skipping {skipped.ref}: the self-check loads GGUF files only.")
+    refs = [m.ref for m in manifests if m.format is ModelFormat.GGUF]
     ordered = [configured, *refs] if configured in refs else refs
     for ref in ordered:
         try:
@@ -251,7 +255,7 @@ def _self_check_leg(
         console.print(Text.assemble(f"Loading {label} model ", str(model_path)), soft_wrap=True)
         result = check(model_path)
     except Exception as exc:
-        _self_check_emit_failure(repr(exc))
+        _self_check_emit_failure(str(exc) if isinstance(exc, PlacementError) else repr(exc))
         raise typer.Exit(1) from exc
     finally:
         if download_dir is not None:
@@ -371,7 +375,7 @@ def self_check_cmd(
         console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
-_SELF_CHECK_EXTRAS = ("providers", "crawlberg", "ada_url", "spacy", "graspologic_native")
+_SELF_CHECK_EXTRAS = ("providers", "crawlberg", "ada_url", "spacy", "graspologic_native", "xberg")
 
 
 def self_check_extras_cmd() -> None:

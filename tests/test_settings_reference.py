@@ -166,6 +166,13 @@ class TestSurfaceColumns:
         assert "| `top_k` | `LILBEE_TOP_K` |" in text
 
     @pytest.mark.parametrize("key", sorted(MODEL_ROLE_FIELDS))
+    def test_the_cli_column_of_a_model_role_reads_the_command_text_of_that_role(
+        self, generator, key
+    ):
+        with patch.object(generator, "role_command", return_value="lilbee a-command <ref> now"):
+            assert generator._cli_cell(key) == "`lilbee a-command REF now`"
+
+    @pytest.mark.parametrize("key", sorted(MODEL_ROLE_FIELDS))
     def test_model_roles_are_http_role_api_not_patch_config(self, generator, key):
         # PATCH /api/config passes allow_model_roles=False, so the roles are only
         # settable through PUT /api/models/<role>.
@@ -197,6 +204,19 @@ class TestSurfaceColumns:
         # There is no general `lilbee set`; the column must not imply one.
         assert generator._cli_cell("top_k") == "no"
         assert "use-embedder" in generator._cli_cell("embedding_model")
+
+    def test_a_setting_on_a_dedicated_tab_names_that_tab_in_the_tui_column(self, generator):
+        from lilbee.app.settings_map import SETTINGS_MAP
+        from lilbee.cli.tui import messages as msg
+
+        assert SETTINGS_MAP["choose_engine_on_pick"].tab == msg.SETTINGS_ENGINES_TAB
+        assert generator._tui_cell("choose_engine_on_pick") == "Engines tab"
+        assert "| `choose_engine_on_pick` |" in generator.render()
+        for key, defn in SETTINGS_MAP.items():
+            if defn.tab is not None:
+                assert generator._tui_cell(key) == f"{defn.tab} tab"
+            elif defn.hidden:
+                assert generator._tui_cell(key) == "no"
 
     def test_advanced_column_matches_the_settings_map_flag(self, generator):
         from lilbee.app.settings_map import SETTINGS_MAP

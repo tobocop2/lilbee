@@ -44,6 +44,16 @@ WIRE_FACTS = [
     ),
     ("lemonade", 33, "POST", "/rerank", {"query": "a", "documents": ["a"]}, 404, b"error"),
     ("mlx_lm", 2, "POST", "/upstream/m/tokenize", {"content": "x"}, 404, b"Not Found"),
+    (
+        "omlx_chat",
+        86,
+        "POST",
+        _CHAT,
+        {"messages": [{"role": "user", "content": "w " * 60000}]},
+        400,
+        b"context_length_exceeded",
+    ),
+    ("omlx_embed", 85, "POST", "/upstream/m/tokenize", {"content": "x"}, 422, b"messages"),
     ("tei_embed", 13, "GET", "/v1/models", None, 404, b""),
     ("tei_embed", 12, "GET", "/health", None, 200, b"ok"),
     ("tei_rerank", 20, "POST", "/rerank", {"query": "q", "texts": ["a", "b"]}, 200, b'"score"'),
@@ -135,7 +145,11 @@ def test_the_generated_image_reads_back_red() -> None:
     url = "data:image/png;base64," + base64.b64encode(png((255, 0, 0))).decode()
     blue = "data:image/png;base64," + base64.b64encode(png((0, 0, 255))).decode()
     assert image_colour(url) == "red"
-    assert image_colour(blue) == "other"
+    assert image_colour(blue) == "blue"
+    assert (
+        image_colour("data:image/png;base64," + base64.b64encode(png((0, 255, 0))).decode())
+        == "other"
+    )
 
 
 def test_every_profile_cites_the_rows_it_copies() -> None:

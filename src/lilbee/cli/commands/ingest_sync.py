@@ -56,6 +56,7 @@ from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.providers.base import ProviderError
+from lilbee.runtime.cancellation import CancelSignal, SignalFlag
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
@@ -229,7 +230,7 @@ def _crawl_urls_blocking(
     crawl: bool,
     depth: int | None,
     max_pages: int | None,
-    cancel_event: threading.Event,
+    cancel_event: CancelSignal,
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
 ) -> _CrawlOutcome:
@@ -327,7 +328,7 @@ def _run_crawl_with_signal_cancel(
     depth: int | None,
     max_pages: int | None,
     on_progress: DetailedProgressCallback,
-    cancel_event: threading.Event,
+    cancel_event: CancelSignal,
     crawl_and_save: Callable[..., Awaitable[list[Path]]],
     include_subdomains: bool = False,
     login: CrawlLogin = NO_LOGIN,
@@ -361,7 +362,7 @@ def _run_crawl_with_signal_cancel(
 
 
 def _cancellable_progress(
-    cancel_event: threading.Event, chain: DetailedProgressCallback
+    cancel_event: CancelSignal, chain: DetailedProgressCallback
 ) -> DetailedProgressCallback:
     """Wrap *chain* so a set *cancel_event* aborts the in-flight file cooperatively.
 
@@ -401,7 +402,7 @@ def _exit_cancelled(
 
 
 @contextmanager
-def _ctrl_c_sets(cancel_event: threading.Event) -> Iterator[None]:
+def _ctrl_c_sets(cancel_event: SignalFlag) -> Iterator[None]:
     """Make Ctrl+C set *cancel_event* instead of raising KeyboardInterrupt, for the block."""
     import signal
 
@@ -422,7 +423,7 @@ def _ctrl_c_sets(cancel_event: threading.Event) -> Iterator[None]:
 
 
 @contextmanager
-def _ctrl_c_stops(cancel_event: threading.Event, rollback: AddRollback) -> Iterator[None]:
+def _ctrl_c_stops(cancel_event: SignalFlag, rollback: AddRollback) -> Iterator[None]:
     """Run a command under Ctrl+C; one it stops exits 130 after *rollback*."""
     try:
         # Only the user's Ctrl+C sets this cancel.
@@ -441,7 +442,7 @@ def run_sync_with_signal_cancel(
     started_by: str = "lilbee sync",
 ) -> SyncResult:
     """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
-    cancel_event = threading.Event()
+    cancel_event = SignalFlag()
     with _ctrl_c_stops(cancel_event, AddRollback()):
         return _run_sync(
             cancel_event,
@@ -485,7 +486,7 @@ def _default_progress() -> DetailedProgressCallback:
 
 
 def _run_sync(
-    cancel_event: threading.Event,
+    cancel_event: CancelSignal,
     *,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
@@ -531,6 +532,19 @@ def _run_sync(
         asyncio.set_event_loop(None)
 
 
+def _exit_if_failed(result: object) -> None:
+    """Exit 1 when a sync failed a file, held out failed files, or met another embedder's index.
+
+    Call it after printing, so the result names the failed files or the rebuild advice.
+    """
+    from lilbee.data.ingest import SyncResult
+
+    if isinstance(result, SyncResult) and (
+        result.has_failures() or result.index_mismatch is not None
+    ):
+        raise SystemExit(1)
+
+
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -542,6 +556,8 @@ def sync_cmd(
     processes: int | None = _processes_option,
 ) -> None:
     """Manually trigger document sync."""
+    from lilbee.data.ingest import SyncResult
+
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
     if max_cpus is not None:
@@ -559,12 +575,15 @@ def sync_cmd(
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
         json_output(sync_result_to_json(result))
-        return
-    console.print(result)
-    if _changed_content(result):
-        print_tip_if_shown(cfg.data_root)
+    else:
+        console.print(result)
+        if _changed_content(result):
+            print_tip_if_shown(cfg.data_root)
+    _exit_if_failed(result)
 
 
 def _changed_content(result: SyncResult) -> bool:
@@ -638,8 +657,7 @@ def rebuild(
             print_prefixed(
                 console, "Error: ", rebuild_failure_message(result.failed), style=theme.ERROR
             )
-    if result.failed:
-        raise SystemExit(1)
+    _exit_if_failed(result)
 
 
 def index(
@@ -685,7 +703,7 @@ def _crawl_urls_step(
     depth: int | None,
     max_pages: int | None,
     include_subdomains: bool,
-    cancel_event: threading.Event,
+    cancel_event: CancelSignal,
     typed_login: CrawlLogin,
 ) -> _CrawlOutcome:
     """Crawl URLs; without the crawler extra every URL fails with the install message."""
@@ -785,10 +803,14 @@ def _register_and_sync(
     crawled_paths: list[Path],
     *,
     force: bool,
-    cancel_event: threading.Event,
+    cancel_event: CancelSignal,
     rollback: AddRollback,
+    sync_results: list[object],
 ) -> dict | None:
-    """Register the files and sync; returns the JSON result, or None after human output."""
+    """Register the files and sync; returns the JSON result, or None after human output.
+
+    Each sync result lands in *sync_results*, so the caller can set the exit code after output.
+    """
 
     synced = False
 
@@ -801,6 +823,7 @@ def _register_and_sync(
             started_by="lilbee add",
         )
         synced = _changed_content(result)
+        sync_results.append(result)
         return result
 
     if cfg.json_mode:
@@ -858,9 +881,10 @@ def add(
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
 
-    cancel_event = threading.Event()
+    cancel_event = SignalFlag()
     rollback = AddRollback(paths=file_paths, at_sync=False)
     outcome = _CrawlOutcome()
+    sync_results: list[object] = []
     try:
         with _ctrl_c_stops(cancel_event, rollback):
             outcome = _crawl_urls_step(
@@ -878,6 +902,7 @@ def add(
                 force=force,
                 cancel_event=cancel_event,
                 rollback=rollback,
+                sync_results=sync_results,
             )
             # An add that ends before its sync under a Ctrl+C still stops; a sync
             # that returned has finished, and its result stands.
@@ -886,6 +911,8 @@ def add(
     except RuntimeError as exc:
         _report_add_error(exc, outcome.failed)
     _report_failed_sources(payload, outcome.failed)
+    for result in sync_results:
+        _exit_if_failed(result)
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")

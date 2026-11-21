@@ -6,13 +6,14 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
-from lilbee.providers.fleet.engine_manifest import pack_digest
+from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import (
     EngineNotInstalledError,
     EngineStore,
@@ -23,12 +24,15 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    ServerProcess,
 )
-from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
+from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.fleet.model_memory import estimate_installed_encoder
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 _VERSION = "1.9.4"
 _CPU = "cpu"
@@ -37,10 +41,10 @@ _CUDA_PREFIX = "cuda-sm"
 _MIN_COMPUTE = (7, 5)
 _CUDA_CELLS = (75, 80, 86, 89, 90, 100, 120)
 """The compute capabilities (major * 10 + minor) a CUDA build exists for."""
-_RESERVE_BYTES = 2 * 1024**3
-"""The figure charged for one instance; two small models peaked at 886 MiB in the recording."""
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
+_RERANK_QUERY_TOKENS = 128
+"""The floor of the batch-token figure for a rerank query; lilbee sets no query limit."""
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
@@ -51,14 +55,19 @@ _PROFILE = RequestProfile(
     detokenize_path=None,
     apply_template_path="/apply-template",
     label="text-embeddings-inference",
-    context_overflow=re.compile(r"must have less than \d+ tokens"),
+    context_overflow=re.compile(r"must have less than \d+ (?:tokens|characters)"),
     batch_overflow=None,
     unreadable_embedding_hint="the server returns vectors that could not be decoded.",
     reasoning_field="reasoning_content",
     rerank_path="/rerank",
     batch_limit=_BATCH_LIMIT,
     batch_count_refusal=re.compile(r"maximum allowed batch size"),
+    rerank_fields={"truncate": False},
+    context_overflow_status=422,
+    input_count_path="/tokenize",
+    input_limit_path="/info",
 )
+_TOOL = "text-embeddings-router"
 _PIN_LAUNCH = ["{binary}", "--model-id", "{model}", "--hostname", "127.0.0.1", "--port", "{port}"]
 
 
@@ -95,6 +104,17 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
     return BuildPick(f"{_CUDA_PREFIX}{cell}")
 
 
+def _longest_input_tokens() -> int:
+    """The token ceiling of the longest input lilbee sends: a chunk, plus a rerank query.
+
+    The chunker counts tokens with this server's tokenizer, so a chunk has about ``chunk_size``
+    tokens, and up to 2 more when the sizing leaves out the special tokens. The rerank margin
+    absorbs the difference. The router warms up with one batch of this length, so it must not
+    grow with the context.
+    """
+    return cfg.chunk_size + _RERANK_QUERY_TOKENS
+
+
 class TeiAdapter:
     """text-embeddings-inference behind the engine contract; embed and rerank only."""
 
@@ -104,7 +124,9 @@ class TeiAdapter:
     served_roles = _SERVED
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
+    server_process = ServerProcess(name=_TOOL)
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -122,14 +144,18 @@ class TeiAdapter:
         return BuildPick(None, "No build exists for this operating system and CPU architecture.")
 
     def host_gate(self, host: HostCaps) -> HostGate:
+        if host.os is None or host.arch is None:
+            return PLATFORM_UNREAD
         pick = self.pick_build(host)
         return PASS if pick.backend is not None else HostGate(False, pick.reason)
 
     def binary(self) -> Path:
+        from lilbee.providers.fleet.engines.choice import install_advice
+
         record = self._record()
         if record is None or record.binary is None:
             raise EngineNotInstalledError(
-                f"Engine {self.name} is not installed. Run lilbee engine install {self.name}."
+                f"Engine {self.name} is not installed. {install_advice(self)}"
             )
         return record.binary
 
@@ -153,14 +179,16 @@ class TeiAdapter:
 
         host = session_host()
         backend = self.pick_build(host).backend
+        platforms = pack_platforms(self.name.value, _VERSION, host, backend)
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": backend,
-            "sha256": pack_digest(self.name.value, host, backend),
+            "sha256": pack_digest(self.name.value, _VERSION, host, backend),
+            "tool": _TOOL,
             "launch": _PIN_LAUNCH,
-            "platforms": {},
-            "memory": {"sizing": None, "rule": f"fixed {_RESERVE_BYTES} bytes"},
+            "platforms": platforms,
+            "memory": {"sizing": None, "rule": MemoryKind.FIXED_RESERVE.value},
             "licenses": ["Apache-2.0"],
         }
 
@@ -182,6 +210,8 @@ class TeiAdapter:
             "127.0.0.1",
             "--max-client-batch-size",
             str(_PROFILE.batch_limit),
+            "--max-batch-tokens",
+            str(_longest_input_tokens()),
             *spec.extra_args,
         ]
 
@@ -189,16 +219,25 @@ class TeiAdapter:
         from lilbee.catalog.runnable import session_host
 
         if self.pick_build(session_host()).backend in (None, _CPU):
-            return DeviceProbe(devices=[], output="", spoke_protocol=False)
-        return DeviceProbe(devices=visible_nvidia_cards(), output="", spoke_protocol=False)
+            return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
+        return DeviceProbe(
+            devices=visible_nvidia_cards(), output="", spoke_protocol=False, has_listing=False
+        )
+
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        from lilbee.catalog.runnable import session_host
+
+        if self.pick_build(session_host()).backend in (None, _CPU):
+            return frozenset({RoleTarget.CPU})
+        return frozenset({RoleTarget.GPU, RoleTarget.CPU})
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        return MemoryEstimate(
-            kind=self.memory_kind,
-            device_bytes=_RESERVE_BYTES,
-            host_bytes=0,
-            shared_bytes=_RESERVE_BYTES,
-        )
+        """The weights plus a runtime allowance; a CUDA build holds float32 weights as float16."""
+        from lilbee.catalog.runnable import session_host
+
+        backend = self.pick_build(session_host()).backend
+        narrow_f32 = backend is not None and backend.startswith(_CUDA_PREFIX)
+        return estimate_installed_encoder(request.model_path, narrow_f32=narrow_f32)
 
     def check_readback(self, binary: Path) -> bool:
         return False
@@ -212,11 +251,15 @@ class TeiAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
         return {}
+
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
+        """A CPU role hides every card: the CUDA build of TEI has no CPU flag."""
+        return {CUDA_VISIBLE_VAR: ""} if target is RoleTarget.CPU else {}
 
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]:
         return {"checkEndpoint": "/health"}

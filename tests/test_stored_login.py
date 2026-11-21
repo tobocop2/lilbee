@@ -168,6 +168,22 @@ class TestSettingsRefuseABadLogin:
         assert "8Lm" not in str(caught.value)
         assert all(getattr(cfg, key) == "" for key in updates)
 
+    @pytest.mark.parametrize(
+        "updates",
+        [
+            {"crawl_authorization": "Bearer t-8\nLm"},
+            {"crawl_username": "a", "crawl_password": "pw-8\nLm"},
+            {"crawl_cookie": "sid=8\nLm"},
+        ],
+        ids=["authorization", "password", "cookie"],
+    )
+    def test_a_crawl_secret_with_a_newline_is_refused_and_stores_nothing(self, persisted, updates):
+        with pytest.raises(ValueError, match="control character") as caught:
+            apply_settings_update(updates)
+        assert "Lm" not in str(caught.value)
+        assert persisted == []
+        assert all(getattr(cfg, key) == "" for key in updates)
+
     @pytest.mark.parametrize("field", LOGIN_FIELDS)
     @pytest.mark.parametrize("value", [123456, ["a"], {"k": "v"}], ids=["int", "list", "dict"])
     def test_a_value_that_is_not_text_is_a_validation_error(self, persisted, field, value):

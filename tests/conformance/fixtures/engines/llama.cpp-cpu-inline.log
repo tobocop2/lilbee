@@ -1,0 +1,12 @@
+engine: llama.cpp-cpu-inline
+version: version: 0.8.0-dev (build 1, commit dde879b)
+host: Linux-7.0.0-1017-gcp-x86_64-with-glibc2.39
+backend: cpu
+models: chat=Qwen3-0.6B
+STEP llama.cpp-cpu-inline template ok=True finish=stop
+STEP llama.cpp-cpu-inline tool ok=True tool_calls=['get_weather']
+STEP llama.cpp-cpu-inline overflow ok=True kind=context_overflow
+STEP llama.cpp-cpu-inline json_object ok=True finish=stop
+STEP llama.cpp-cpu-inline json_schema ok=True finish=stop
+STEP llama.cpp-cpu-inline reasoning ok=True finish=stop
+STEP llama.cpp-cpu-inline named ok=True log=['served by engine=llama-cpp-cpu-inline version=preset build=none role=chat model=llama-cpp-cpu-inline/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'llama-cpp-cpu-inline'}

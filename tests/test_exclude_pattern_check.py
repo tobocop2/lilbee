@@ -20,7 +20,7 @@ from lilbee.core.crawl_patterns import refused_exclude_patterns
 from lilbee.mcp_server import settings_set
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._sys_modules import inject_modules
-from tests.conftest import clean_env
+from tests.conftest import child_pythonpath, clean_env
 
 # Python's re module compiles it; crawlberg's regex rules refuse it.
 PYTHON_ONLY = r"\Z"
@@ -170,7 +170,7 @@ class TestImportTime:
         )
         script = tmp_path.parent / f"{tmp_path.name}-probe.py"
         script.write_text(_PROBE, encoding="utf-8")
-        env = {**clean_env(tmp_path), "PYTHONPATH": os.pathsep.join(sys.path)}
+        env = {**clean_env(tmp_path), "PYTHONPATH": child_pythonpath(*sys.path)}
         done = subprocess.run(
             [sys.executable, str(script)],
             env=env,
@@ -183,7 +183,7 @@ class TestImportTime:
         assert done.stdout.strip() == "['/custom/', '/other'] []"
 
     def test_the_check_module_imports_first_in_a_fresh_process(self, tmp_path):
-        env = {**clean_env(tmp_path), "PYTHONPATH": os.pathsep.join(sys.path)}
+        env = {**clean_env(tmp_path), "PYTHONPATH": child_pythonpath(*sys.path)}
         done = subprocess.run(
             [sys.executable, "-c", "import lilbee.core.crawl_patterns"],
             env=env,

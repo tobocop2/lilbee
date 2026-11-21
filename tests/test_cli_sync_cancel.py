@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from lilbee.cli.commands import ingest_sync
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import SignalFlag, TaskCancelledError
 from lilbee.runtime.progress import EventType, FileStartEvent
 
 
@@ -64,7 +64,8 @@ def test_run_sync_with_signal_cancel_passes_cancel_event(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
     ingest_sync.run_sync_with_signal_cancel(force_rebuild=True, retry_skipped=True)
-    assert isinstance(captured["cancel"], threading.Event)
+    assert isinstance(captured["cancel"], SignalFlag)
+    assert not isinstance(captured["cancel"], threading.Event)
     assert captured["force_rebuild"] is True
     assert captured["retry_skipped"] is True
     assert captured["quiet"] is True  # json_mode -> quiet bar
@@ -160,3 +161,20 @@ def test_run_crawl_with_signal_cancel_returns_its_pages_off_the_main_thread(monk
     t.join(timeout=10)
     assert not exc, f"unexpected exception in thread: {exc}"
     assert result == [[]]
+
+
+def test_ctrl_c_handler_records_without_an_event_or_a_lock(monkeypatch) -> None:
+    def _forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the SIGINT handler took a lock")
+
+    cancel = SignalFlag()
+    assert not cancel.is_set()
+    with ingest_sync._ctrl_c_sets(cancel):
+        handler = signal.getsignal(signal.SIGINT)
+        monkeypatch.setattr(threading.Event, "set", _forbidden)
+        monkeypatch.setattr(threading.Condition, "__enter__", _forbidden)
+        monkeypatch.setattr(threading, "Lock", _forbidden)
+        monkeypatch.setattr(threading, "RLock", _forbidden)
+        handler(signal.SIGINT, None)
+        monkeypatch.undo()
+    assert cancel.is_set()

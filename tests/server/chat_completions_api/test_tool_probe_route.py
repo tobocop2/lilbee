@@ -26,6 +26,7 @@ from lilbee.providers.fleet import provider as fleet
 from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.chat_dispatch.concurrency import chat_gate
+from tests._safetensors import safetensors_bytes
 
 _TOOL = {
     "type": "function",
@@ -82,7 +83,7 @@ _HEADERS: dict[str, dict[str, str] | None] = {
 def _model_folder(tmp_path: Path) -> Path:
     folder = tmp_path / "snapshot"
     folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 64)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(64))
     return folder
 
 

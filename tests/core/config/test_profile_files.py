@@ -87,6 +87,28 @@ def test_unknown_key_without_min_lilbee_is_unknown_setting(tmp_path):
     )
 
 
+def test_a_removed_token_sizing_key_is_ignored_with_the_config_toml_warning(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+        entry = _entry(tmp_path, "[values]\ntoken_sizing = true\nchunk_size = 768\n")
+    assert entry.error is None
+    assert entry.file is not None
+    assert dict(entry.file.values) == {"chunk_size": 768}
+    assert [r.getMessage() for r in caplog.records] == [
+        "court-filings.toml: token_sizing is not a setting and is ignored; "
+        "chunk_size always counts the embedding model's tokens"
+    ]
+
+
+def test_a_removed_token_sizing_key_leaves_validation_clean(tmp_path):
+    path = _write(tmp_path / "p", "court-filings", "[values]\ntoken_sizing = true\n")
+    assert validate_file(path, ProfileFolder.GLOBAL).problems == ()
+
+
+def test_a_key_after_a_removed_token_sizing_key_is_still_checked(tmp_path):
+    entry = _entry(tmp_path, "[values]\ntoken_sizing = true\nchunk_size = 10\n")
+    assert entry.error == "Bad value for chunk_size: Input should be greater than or equal to 64"
+
+
 @pytest.mark.parametrize(
     "key", ["chat_model", "num_ctx", "hf_token", "ocr_timeout", "table_model", "wiki", "theme"]
 )

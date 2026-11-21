@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -122,6 +122,7 @@ SERVICE_ONLY_FIELDS = frozenset({"server_presets", "preferred_engine", "engine_c
 _NOT_SETTINGS: dict[str, str] = {
     # llama-server reads it only under split mode none, which no fleet launch uses.
     "main_gpu": "choose the cards with gpu_devices or placement",
+    "token_sizing": "chunk_size always counts the embedding model's tokens",
 }
 
 # A field no environment string parses into, by name, and what to use instead.
@@ -181,7 +182,10 @@ class Config(BaseSettings):
         description=(
             "Root directory for this library. Resolved at start from LILBEE_DATA, "
             "then a .lilbee/ directory walked up from the working directory, then "
-            "the platform default. Every other path below hangs off it"
+            "the platform default. The documents, index, config file and logs live "
+            "under it. The models folder (also the Hugging Face cache), the engines "
+            "folder, the machine engine slot and the gguf metadata cache stay in the "
+            "platform folders. LILBEE_MODELS_DIR and LILBEE_ENGINE_DIR move the first three"
         ),
     )
     # Writable so plugin-managed servers can pivot storage to a vault path on
@@ -347,7 +351,8 @@ class Config(BaseSettings):
     # Outer wall-clock budget for the streamed pool drain: load grace plus
     # per_page * pages. Tune up for slow hardware (M1 Pro vision is
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
-    # per-page expectation that drives the total budget.
+    # per-page expectation that drives the total budget. With ocr_timeout 0 it also
+    # bounds a page's wait for a reload to bring vision back (0: no wait).
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
     # Hard cap on tokens generated per OCR page. A real page is well under this;
     # the vision request's repeat penalty stops a page looping one line, and the cap
@@ -388,11 +393,6 @@ class Config(BaseSettings):
     # Boundary-similarity threshold; only applied when semantic_chunking is on.
     topic_threshold: float = ConfigField(
         default=0.75, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST, reindex=True
-    )
-    # Size chunks in real tokens via the embedder's tokenizer backend, not the
-    # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
-    token_sizing: bool = ConfigField(
-        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
     )
     # Index each recognized table as its own markdown-serialized chunk.
     table_extraction: bool = ConfigField(
@@ -474,22 +474,30 @@ class Config(BaseSettings):
     max_tokens: int | None = ConfigField(default=None, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
-    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
-    # wheel binary, else a llama-server on PATH.
+    # Path to a llama-server binary. Empty = the bundled lilbee-engine-llama-cpp wheel
+    # binary, else a llama-server on PATH, else the llama.cpp pack installed on first use.
     llama_server_path: str = ConfigField(default="", writable=True)
     # Per-server local model-manager URLs. Blank means "use the server's spec
     # default" (resolved in providers.local_servers.config_urls); the default
     # URL literal lives only in the spec, which core must not import.
     ollama_base_url: str = ConfigField(default="", writable=True)
     lm_studio_base_url: str = ConfigField(default="", writable=True)
-    llm_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openrouter_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    anthropic_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    openai_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    mistral_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    deepseek_api_key: str = ConfigField(default="", writable=True, write_only=True)
-    hf_token: str = ConfigField(default="", writable=True, write_only=True)
+    llm_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    openrouter_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    gemini_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    anthropic_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    openai_api_key: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
+    mistral_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    deepseek_api_key: str = ConfigField(
+        default="", writable=True, write_only=True, header_value=True
+    )
+    hf_token: str = ConfigField(default="", writable=True, write_only=True, header_value=True)
 
     # Retrieval quality knobs.
 
@@ -702,8 +710,10 @@ class Config(BaseSettings):
     )
 
     # Reranker model ref. Empty disables reranking. Native GGUFs run on
-    # llama-server (rank pooling or LLM logprob scoring); hosted refs
-    # (cohere/voyage/jina/together/hf-tei) need the backend extra.
+    # llama-server (rank pooling or LLM logprob scoring). A ref runs hosted only
+    # when its prefix is a built-in provider (openrouter, openai, ...) or a
+    # stored server preset; any other ref, such as cohere/x, runs locally, as
+    # for the embedding model.
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
@@ -1043,8 +1053,9 @@ class Config(BaseSettings):
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
-    # set, it fully replaces the automatic placement planner: each active role pins
-    # to the listed device indices, with an optional tensor_split and replica count.
+    # set, it fully replaces the automatic placement planner: each active role names
+    # a target (cpu, or gpu with device indices), with an optional tensor_split and
+    # replica count. A role with no target key runs on the listed device indices.
     # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
     # settings list, so public=False. None hands off to the VRAM-aware auto planner.
     placement: str | None = ConfigField(
@@ -1054,8 +1065,9 @@ class Config(BaseSettings):
         derived=True,
         description=(
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
-            "each active role pins to the listed device indices. Edit it with the "
-            "placement commands, not the settings list. Empty uses the VRAM-aware planner"
+            "each active role runs on the CPU or pins to the listed device indices. "
+            "Edit it with the placement commands, not the settings list. "
+            "Empty uses the VRAM-aware planner"
         ),
     )
 
@@ -1084,6 +1096,15 @@ class Config(BaseSettings):
             f"{', '.join(EngineSetting)}. auto picks one "
             "from the model format and the host. Change it with the engine commands, "
             "not the settings list"
+        ),
+    )
+
+    choose_engine_on_pick: bool = ConfigField(
+        default=True,
+        writable=True,
+        description=(
+            "Ask which engine runs a model when you pick it in the model picker. "
+            "Off means the picked model uses its saved engine, or auto"
         ),
     )
 
@@ -1700,6 +1721,14 @@ def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
 def _not_a_setting(name: str, key: str) -> str:
     """The warning for *name*, which sets *key* although *key* is not a setting."""
     return f"{name} is not a setting and is ignored; {(_NOT_SETTINGS | _NOT_FROM_ENV)[key]}"
+
+
+def ignore_not_settings(label: str, keys: Iterable[str]) -> set[str]:
+    """The keys in *keys* that are not settings, each reported under *label* as ignored."""
+    found = _NOT_SETTINGS.keys() & set(keys)
+    for key in sorted(found):
+        warn_on_load(f"{label}: {_not_a_setting(key, key)}")
+    return found
 
 
 def _expected(error: ErrorDetails) -> str:

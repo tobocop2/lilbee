@@ -348,6 +348,8 @@ _PROPERTY_SETTINGS = settings(max_examples=1000, deadline=None, derandomize=True
 
 
 class TestSavedNames:
+    pytestmark = pytest.mark.timeout(300)
+
     @_PROPERTY_SETTINGS
     @given(one=_addresses, data=st.data())
     def test_two_addresses_never_share_a_saved_path(self, one: _Address, data: st.DataObject):

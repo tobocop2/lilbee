@@ -1,4 +1,4 @@
-"""Binds lilbee's providers into xberg's process-global OCR/embedding/tokenizer backends.
+"""Binds lilbee's providers into xberg's process-global OCR backend.
 
 Each backend module declares an :class:`XbergBinding` and self-registers it here at
 import. A bind is a locked unregister-then-register: a rebuild invalidates the
@@ -22,18 +22,15 @@ class BackendKind(Enum):
     """Which xberg registry a binding targets (selects the register trio)."""
 
     OCR = auto()
-    EMBEDDING = auto()
-    TOKENIZER = auto()
 
 
 @dataclass(frozen=True)
 class XbergBinding:
     """How to bind one lilbee backend into xberg. Declared by each backend module.
 
-    ``enabled`` gates registration at services init on live cfg (embedding is
-    always on; OCR is opt-in; the tokenizer only unregisters when off, and the
-    chunker binds it on demand). ``make`` builds the backend from
-    the current provider, capturing the provider callable the binding routes through.
+    ``enabled`` gates registration at services init on live cfg (OCR is opt-in).
+    ``make`` builds the backend from the current provider, capturing the provider
+    callable the binding routes through.
     """
 
     kind: BackendKind
@@ -54,16 +51,6 @@ def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
             xberg.register_ocr_backend,
             xberg.unregister_ocr_backend,
         ),
-        BackendKind.EMBEDDING: (
-            xberg.list_embedding_backends,
-            xberg.register_embedding_backend,
-            xberg.unregister_embedding_backend,
-        ),
-        BackendKind.TOKENIZER: (
-            xberg.list_tokenizer_backends,
-            xberg.register_tokenizer_backend,
-            xberg.unregister_tokenizer_backend,
-        ),
     }[kind]
 
 
@@ -71,7 +58,6 @@ def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
 class _BackendRegistry:
     """The binding table, the bind lock, and the provider each kind was last bound to."""
 
-    # Keyed by kind, not name: embedding and tokenizer both register as "lilbee".
     bindings: dict[BackendKind, XbergBinding] = field(default_factory=dict)
     bound: dict[BackendKind, LLMProvider] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -98,15 +84,11 @@ class _BackendRegistry:
                 unregister_fn(binding.name)
 
     def sync(self, kind: BackendKind, provider: LLMProvider, cfg: Config) -> None:
-        """Bind or unbind *kind* as its ``enabled`` gate says under *cfg*.
-
-        An enabled tokenizer is left to the chunker's on-demand bind: binding it
-        counts through the provider, which must not run while services are built.
-        """
-        if not self.bindings[kind].enabled(cfg):
-            self.unbind(kind)
-        elif kind is not BackendKind.TOKENIZER:
+        """Bind or unbind *kind* as its ``enabled`` gate says under *cfg*."""
+        if self.bindings[kind].enabled(cfg):
             self.bind(kind, provider, cfg)
+        else:
+            self.unbind(kind)
 
 
 _registry = _BackendRegistry()
@@ -119,7 +101,7 @@ def register_binding(binding: XbergBinding) -> None:
 
 def _load_bindings() -> None:
     """Import the backend modules so their ``register_binding`` calls have run."""
-    from . import embedding, tokenizer, vision_ocr  # noqa: F401
+    from . import vision_ocr  # noqa: F401
 
 
 def sync_xberg_backends(provider: LLMProvider) -> None:

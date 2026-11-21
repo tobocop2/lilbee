@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from lilbee.catalog.download import ListingFailedError, ListingOfflineError
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.models import CatalogModel
@@ -59,7 +60,9 @@ child then resolves restarts this clock, so the budget does not grow with
 the shard count."""
 
 # The child's translated errors, rebuilt in the parent by type name.
-_ERRORS_BY_NAME: dict[str, type[Exception]] = {PermissionError.__name__: PermissionError}
+_ERRORS_BY_NAME: dict[str, type[Exception]] = {
+    error.__name__: error for error in (PermissionError, ListingOfflineError, ListingFailedError)
+}
 
 
 @dataclass(frozen=True)
@@ -187,7 +190,7 @@ def download_in_subprocess(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None,
     *,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
@@ -227,7 +230,7 @@ def _run_one_attempt(
     entry: CatalogModel,
     models_dir: Path,
     token: HfToken,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None,
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
 ) -> Path:
@@ -241,27 +244,48 @@ def _run_one_attempt(
     owned: list[str] = []
     try:
         try:
-            return _relay_until_done(entry, worker, receiver, on_progress, cancel, owned)
-        finally:
-            _stop_worker(worker)
-            receiver.close()
-    # The inner finally must terminate the child before this delete runs, or the
-    # delete races the child's own writer.
+            path = _relay_until_done(entry, worker, receiver, on_progress, cancel, owned)
+        except BaseException:
+            _release_worker_keeping_error(entry.hf_repo, worker, receiver)
+            raise
+        _release_worker(worker, receiver)
+        return path
+    # The child must be stopped before this delete runs, or the delete races the
+    # child's own writer.
     except (Exception, KeyboardInterrupt):
         _discard_partial_blobs(models_dir, entry.hf_repo, owned)
         raise
 
 
+def _release_worker(worker: _Worker, receiver: Connection) -> None:
+    """Stop the child and close the pipe, closing it even when the stop fails."""
+    try:
+        _stop_worker(worker)
+    finally:
+        receiver.close()
+
+
+def _release_worker_keeping_error(hf_repo: str, worker: _Worker, receiver: Connection) -> None:
+    """Release the child for a failed attempt; a cleanup failure is logged, never raised."""
+    try:
+        _release_worker(worker, receiver)
+    except Exception:
+        log.warning("Could not stop the download process for %s", hf_repo, exc_info=True)
+
+
 def _discard_partial_blobs(models_dir: Path, hf_repo: str, owned: list[str]) -> None:
-    """Delete the partial blobs the child reported owning, which nothing reads."""
+    """Delete the partial blobs the child reported owning; a failure is logged, never raised."""
     # heavy: lilbee.catalog.download (>50ms; huggingface_hub fanout)
     from lilbee.catalog.download import discard_partial_blobs
 
-    discard_partial_blobs(models_dir, hf_repo, owned)
+    try:
+        discard_partial_blobs(models_dir, hf_repo, owned)
+    except Exception:
+        log.warning("Could not clear the partial download of %s", hf_repo, exc_info=True)
 
 
 def _start_worker(
-    entry: CatalogModel, models_dir: Path, token: HfToken, engine: EngineAdapter
+    entry: CatalogModel, models_dir: Path, token: HfToken, engine: EngineAdapter | None
 ) -> tuple[_Worker, Connection]:
     """Spawn the download child; fork is unsafe under the parent's threads.
 
@@ -362,7 +386,7 @@ def _run_download_child(
     entry: CatalogModel,
     models_dir: str,
     token: HfToken,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None,
 ) -> None:
     """Child-process entry: fetch the files and report the verdict over *conn*."""
     _silence_output()

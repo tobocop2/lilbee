@@ -23,21 +23,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.catalog.download import cached_file_path
 from lilbee.catalog.formats import select_files
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import (
     ModelRef,
+    canonical_ref,
     format_native_gguf_ref,
+    invalid_repo_id_message,
     is_bare_hf_repo,
     is_gguf_filename,
+    model_format,
     parse_model_ref,
     split_shard_filenames,
 )
 from lilbee.catalog.types import ModelFormat, ModelTask
+from lilbee.catalog.xdna import read_checkpoint, read_task, ticket_path, ticket_paths
 from lilbee.core.config.model import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.providers import gguf_meta
 from lilbee.providers.base import ProviderError
+from lilbee.providers.fleet.engines.choice import loadable_refs
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.catalog.models import CatalogModel
@@ -59,7 +66,7 @@ _MANIFEST_SUFFIX = ".json"
 def _validate_hf_repo(hf_repo: str) -> str:
     """Validate that a HuggingFace repo id has the form ``org/name``."""
     if not hf_repo or not _REPO_SEGMENT_RE.match(hf_repo) or ".." in hf_repo:
-        raise ValueError(f"Invalid hf_repo: {hf_repo!r}")
+        raise ValueError(invalid_repo_id_message(hf_repo))
     return hf_repo
 
 
@@ -273,10 +280,56 @@ class ModelRegistry:
         upgrade keep working without anyone purging their lilbee data dir; it is
         deliberately the exception here, not a pattern to follow elsewhere.
         """
+        parsed = parse_model_ref(ref)
+        if parsed.format is ModelFormat.XDNA:
+            return self._resolve_ticket(ref, parsed.hf_repo)
         non_gguf = _non_gguf_repo(ref)
         if non_gguf is not None:
             return self._resolve_file_set(ref, *non_gguf)
-        return self._resolve_gguf(ref)
+        return self._resolve_gguf(parsed.canonical)
+
+    def _remove_ticket(self, tag: str) -> bool:
+        """Delete the ticket of the NPU model *tag*; the engine keeps its own download."""
+        ticket = ticket_path(self._root, tag)
+        if not ticket.is_file():
+            return False
+        ticket.unlink()
+        return True
+
+    def _resolve_ticket(self, ref: str, tag: str) -> Path:
+        """The ticket of the installed NPU model *tag*; ``KeyError`` if not installed."""
+        ticket = ticket_path(self._root, tag)
+        if self._ticket_manifest(ticket) is None:
+            raise KeyError(f"Model {ref} not installed")
+        return ticket
+
+    def has_unreadable_ticket(self, ref: str) -> bool:
+        """True when *ref* is an NPU model whose ticket exists but cannot be read."""
+        try:
+            parsed = parse_model_ref(ref)
+        except ValueError:
+            return False
+        if parsed.format is not ModelFormat.XDNA:
+            return False
+        ticket = ticket_path(self._root, parsed.hf_repo)
+        return ticket.is_file() and self._ticket_manifest(ticket) is None
+
+    def _ticket_manifest(self, ticket: Path) -> ModelManifest | None:
+        """The manifest an NPU ticket stands for, or None when it is absent or unreadable."""
+        try:
+            tag = read_checkpoint(ticket)
+            task = read_task(ticket)
+        except ValueError:
+            return None
+        return ModelManifest(
+            hf_repo=tag,
+            gguf_filename="",
+            size_bytes=0,
+            task=task,
+            downloaded_at=datetime.fromtimestamp(ticket.stat().st_mtime, UTC).isoformat(),
+            total_size_bytes=0,
+            format=ModelFormat.XDNA,
+        )
 
     def _resolve_gguf(self, ref: str) -> Path:
         """Resolve a GGUF ref, or a bare ``<org>/<repo>``, to a loadable path."""
@@ -410,15 +463,8 @@ class ModelRegistry:
         Returns the symlink, not the blob, so a split GGUF loads from a dir where
         its sibling shards are co-located under their real names.
         """
-        from huggingface_hub import try_to_load_from_cache
-
-        hit = try_to_load_from_cache(
-            repo_id=hf_repo, filename=gguf_filename, cache_dir=str(self._root)
-        )
-        candidate: Path | None = None
-        if isinstance(hit, str):  # exact repo-relative match
-            candidate = Path(hit)
-        else:  # None or the _CACHED_NO_EXIST sentinel: locate the basename instead
+        candidate = cached_file_path(hf_repo, gguf_filename, self._root)
+        if candidate is None:  # no exact repo-relative match: locate the basename instead
             snapshots = self._repo_cache_dir(hf_repo) / "snapshots"
             if snapshots.is_dir():
                 basename = Path(gguf_filename).name
@@ -510,15 +556,20 @@ class ModelRegistry:
             log.debug("Could not re-register %s from the model cache", ref, exc_info=True)
 
     def has_vision_projector(self, ref: str) -> bool:
-        """True when *ref* is installed with an mmproj projector beside its weights.
+        """True when *ref* is installed as a vision model.
 
-        A vision model is a chat model with a projector, so the manifest task
-        cannot tell the two apart. The vision picker and the vision-role check
-        both ask this question. The lookup walks the HF cache layout, so it
-        finds the projector from a content-hashed blob path too.
+        A GGUF is one when an mmproj projector sits beside its weights; the
+        lookup walks the HF cache layout, so a content-hashed blob path works.
+        A model folder is one when its ``config.json`` has a ``vision_config``
+        and an installed engine loads its format for the vision role.
+        The vision picker and the vision-role check both ask this question.
         """
         try:
-            gguf_meta.find_mmproj_for_model(self.resolve(ref))
+            path = self.resolve(ref)
+            if not gguf_meta.needs_sidecar_projector(path):
+                served = bool(loadable_refs([ref], WorkerRole.VISION))
+                return served and gguf_meta.declares_vision_config(path)
+            gguf_meta.find_mmproj_for_model(path)
         except (KeyError, ValueError, ProviderError):
             return False
         return True
@@ -537,7 +588,8 @@ class ModelRegistry:
         ``is_installed`` also answers True for a GGUF found in the HF cache,
         which the model list does not show until a manifest exists.
         """
-        if is_bare_hf_repo(ref):
+        ref = canonical_ref(ref)
+        if is_bare_hf_repo(ref) and model_format(ref) is ModelFormat.GGUF:
             return self.installed_ref_for_repo(ref) is not None
         return self.get_manifest(ref) is not None
 
@@ -585,6 +637,9 @@ class ModelRegistry:
         deleted model leaves no orphan bytes behind.
         """
         try:
+            parsed = parse_model_ref(ref)
+            if parsed.format is ModelFormat.XDNA:
+                return self._remove_ticket(parsed.hf_repo)
             hf_repo, gguf_filename, fmt = _ref_key(ref)
         except ValueError:
             return False
@@ -741,6 +796,17 @@ class ModelRegistry:
         An absent manifest tree is an empty list. A tree that is present but
         cannot be read raises ``OSError``, because "unknown" is not "none".
         """
+        manifests = self._list_file_manifests()
+        for ticket in ticket_paths(self._root):
+            manifest = self._ticket_manifest(ticket)
+            if manifest is None:
+                log.warning("Ticket %s is unreadable. Pull the model again.", ticket)
+            else:
+                manifests.append(manifest)
+        return manifests
+
+    def _list_file_manifests(self) -> list[ModelManifest]:
+        """The installed models that have a manifest file and blobs on disk."""
         manifests: list[ModelManifest] = []
         try:
             repo_dirs = sorted(self._manifests_dir.iterdir())
@@ -779,6 +845,9 @@ class ModelRegistry:
     def get_manifest(self, ref: str) -> ModelManifest | None:
         """Return the manifest for *ref* or None if not installed."""
         try:
+            parsed = parse_model_ref(ref)
+            if parsed.format is ModelFormat.XDNA:
+                return self._ticket_manifest(ticket_path(self._root, parsed.hf_repo))
             hf_repo, gguf_filename, fmt = _ref_key(ref)
         except ValueError:
             return None
@@ -840,15 +909,22 @@ class ModelRegistry:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and _is_unknown_format(data.get("format", ModelFormat.GGUF)):
+                log.warning("Manifest uses a newer format than this lilbee reads: %s", path)
+                return None
             return ModelManifest(**data)
         # UnicodeDecodeError is a ValueError, not a JSONDecodeError.
-        # An unknown format name is a ValueError, as a bad key is a TypeError.
         except (ValueError, TypeError, KeyError):
             log.warning("Corrupt manifest: %s", path)
             return None
 
 
 _HF_SNAPSHOTS_DIR = "snapshots"
+
+
+def _is_unknown_format(value: object) -> bool:
+    """True when *value* is a string naming no ``ModelFormat`` this lilbee knows."""
+    return isinstance(value, str) and value not in [f.value for f in ModelFormat]
 
 
 def _repo_relative_gguf_name(file_path: Path) -> str:

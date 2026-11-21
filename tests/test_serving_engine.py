@@ -15,9 +15,12 @@ from lilbee.providers.fleet.engines import LLAMA, EngineName, choice
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.providers.serving import (
+    NO_BUILD,
     PRESET_VERSION,
     REMOTE_VERSION,
+    UNKNOWN_ENGINE,
     UNKNOWN_VERSION,
+    ServingEngine,
     log_name,
     served_by,
     serving_engine,
@@ -27,6 +30,7 @@ from tests.conftest import make_mock_services
 
 NATIVE = "org/chat-GGUF/chat.gguf"
 PIN = str(LLAMA.pin_record()["version"])
+BUILD = str(LLAMA.pin_record()["upstream_ref"])
 
 
 @pytest.fixture()
@@ -41,17 +45,18 @@ def _served_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 def test_a_native_ref_is_served_by_the_pinned_engine() -> None:
-    served = serving_engine(WorkerRole.CHAT, NATIVE, LLAMA)
-    assert (served.engine, served.version) == ("llama.cpp", PIN)
+    served = serving_engine(NATIVE, LLAMA)
+    assert (served.engine, served.version, served.build) == ("llama.cpp", PIN, BUILD)
+    assert BUILD != PIN
 
 
 def test_a_preset_ref_is_served_by_the_preset(preset_cfg: None) -> None:
-    served = serving_engine(WorkerRole.CHAT, "box/model-a", LLAMA)
-    assert (served.engine, served.version) == ("box", PRESET_VERSION)
+    served = serving_engine("box/model-a", LLAMA)
+    assert (served.engine, served.version, served.build) == ("box", PRESET_VERSION, NO_BUILD)
 
 
 def test_a_hosted_prefix_is_served_by_its_provider() -> None:
-    served = serving_engine(WorkerRole.CHAT, "openai/gpt-4o", LLAMA)
+    served = serving_engine("openai/gpt-4o", LLAMA)
     assert (served.engine, served.version) == ("openai", REMOTE_VERSION)
 
 
@@ -156,12 +161,12 @@ def test_each_request_logs_the_engine_that_serves_it(
         provider.rerank("q", ["a"])
         provider.vision_ocr(b"", "box/vision-a")
     assert _served_lines(caplog) == [
-        "served by engine=box version=preset role=chat model=box/chat-a",
-        f"served by engine=llama.cpp version={PIN} role=chat model={NATIVE}",
-        "served by engine=box version=preset role=chat model=box/chat-a",
-        "served by engine=box version=preset role=embed model=box/embed-a",
-        "served by engine=box version=preset role=rerank model=box/rerank-a",
-        "served by engine=box version=preset role=vision model=box/vision-a",
+        f"served by engine=box version=preset build={NO_BUILD} role=chat model=box/chat-a",
+        f"served by engine=llama.cpp version={PIN} build={BUILD} role=chat model={NATIVE}",
+        f"served by engine=box version=preset build={NO_BUILD} role=chat model=box/chat-a",
+        f"served by engine=box version=preset build={NO_BUILD} role=embed model=box/embed-a",
+        f"served by engine=box version=preset build={NO_BUILD} role=rerank model=box/rerank-a",
+        f"served by engine=box version=preset build={NO_BUILD} role=vision model=box/vision-a",
     ]
 
 
@@ -173,7 +178,8 @@ def test_a_native_rerank_logs_the_pinned_engine(
     with caplog.at_level(logging.INFO, logger="lilbee.providers.routing_provider"):
         provider.rerank("q", ["a"])
     assert _served_lines(caplog) == [
-        f"served by engine=llama.cpp version={PIN} role=rerank model=org/rerank-GGUF/rerank.gguf"
+        f"served by engine=llama.cpp version={PIN} build={BUILD} role=rerank "
+        "model=org/rerank-GGUF/rerank.gguf"
     ]
 
 
@@ -191,10 +197,10 @@ def test_the_placement_response_names_the_engine_of_each_role() -> None:
     assert [r.engine for r in PlacementResponse.from_view(view).roles] == ["llama.cpp"]
 
 
-HOSTED_RERANK = "cohere/rerank-v3"
+HOSTED_RERANK = "openrouter/cohere/rerank-v3"
 
 
-def test_a_hosted_rerank_ref_with_an_unknown_prefix_gets_one_answer(
+def test_a_hosted_rerank_ref_gets_one_answer(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     provider, _local, sdk = _provider(monkeypatch)
@@ -206,11 +212,12 @@ def test_a_hosted_rerank_ref_with_an_unknown_prefix_gets_one_answer(
     with caplog.at_level(logging.INFO, logger="lilbee.providers.routing_provider"):
         provider.rerank("q", ["a"])
     assert _served_lines(caplog) == [
-        f"served by engine=cohere version={REMOTE_VERSION} role=rerank model={HOSTED_RERANK}"
+        f"served by engine=openrouter version={REMOTE_VERSION} build={NO_BUILD} role=rerank "
+        f"model={HOSTED_RERANK}"
     ]
     assert serving_roles() == [
         ServingStatus(
-            role=WorkerRole.RERANK, model=HOSTED_RERANK, engine="cohere", version=REMOTE_VERSION
+            role=WorkerRole.RERANK, model=HOSTED_RERANK, engine="openrouter", version=REMOTE_VERSION
         )
     ]
 
@@ -219,11 +226,8 @@ def test_a_hosted_rerank_ref_with_an_unknown_prefix_gets_one_answer(
     "model",
     ["nosuchengine", HOSTED_RERANK, "ollama/x", "/abs/dir/m.gguf", NATIVE, "//"],
 )
-@pytest.mark.parametrize("role", list(WorkerRole))
-def test_the_engine_of_a_ref_is_defined_for_every_ref(
-    role: WorkerRole, model: str, preset_cfg: None
-) -> None:
-    served = serving_engine(role, model, LLAMA)
+def test_the_engine_of_a_ref_is_defined_for_every_ref(model: str, preset_cfg: None) -> None:
+    served = serving_engine(model, LLAMA)
     assert served.engine
     assert served.version
 
@@ -232,7 +236,53 @@ def test_a_pin_that_cannot_be_read_is_reported_as_unknown() -> None:
     engine = MagicMock()
     engine.name = "llama.cpp"
     engine.pin_record.side_effect = OSError("gone")
-    assert served_by(NATIVE, engine, native=True).version == UNKNOWN_VERSION
+    served = served_by(NATIVE, engine, native=True)
+    assert served == ServingEngine("llama.cpp", UNKNOWN_VERSION, UNKNOWN_VERSION, "OSError: gone")
+
+
+def test_a_pin_with_no_upstream_ref_has_no_build() -> None:
+    engine = MagicMock()
+    engine.name = "tei"
+    engine.pin_record.return_value = {"version": "1.9.4"}
+    served = served_by(NATIVE, engine, native=True)
+    assert served == ServingEngine("tei", "1.9.4", NO_BUILD)
+
+
+@pytest.mark.parametrize("ref", ["", None])
+def test_a_pin_with_an_empty_upstream_ref_has_no_build(ref: str | None) -> None:
+    engine = MagicMock()
+    engine.name = "tei"
+    engine.pin_record.return_value = {"version": "1.9.4", "upstream_ref": ref}
+    served = served_by(NATIVE, engine, native=True)
+    assert served == ServingEngine("tei", "1.9.4", NO_BUILD)
+
+
+def test_a_pin_with_no_version_is_reported_as_unknown() -> None:
+    engine = MagicMock()
+    engine.name = "tei"
+    engine.pin_record.return_value = {"upstream_ref": "abc"}
+    assert served_by(NATIVE, engine, native=True) == ServingEngine("tei", UNKNOWN_VERSION, "abc")
+
+
+def test_a_native_ref_with_no_engine_is_served_by_an_unknown_engine() -> None:
+    assert served_by(NATIVE, None, native=True) == ServingEngine(
+        UNKNOWN_ENGINE, UNKNOWN_VERSION, NO_BUILD
+    )
+
+
+def test_a_hosted_ref_is_served_by_the_first_segment_of_the_ref() -> None:
+    assert served_by("openrouter/org/model", None, native=False) == ServingEngine(
+        "openrouter", REMOTE_VERSION, NO_BUILD
+    )
+
+
+def test_a_preset_removed_after_the_ref_parsed_is_served_as_remote(
+    preset_cfg: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("lilbee.providers.serving.route_for", lambda prefix: None)
+    assert served_by("box/model-a", None, native=False) == ServingEngine(
+        "box", REMOTE_VERSION, NO_BUILD
+    )
 
 
 def test_chat_answers_when_the_pin_lookup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,7 +311,7 @@ def test_a_local_path_is_logged_by_its_file_name(
     with caplog.at_level(logging.INFO, logger="lilbee.providers.routing_provider"):
         provider.chat([], model=None)
     assert _served_lines(caplog) == [
-        f"served by engine=llama.cpp version={PIN} role=chat model=model.gguf"
+        f"served by engine=llama.cpp version={PIN} build={BUILD} role=chat model=model.gguf"
     ]
     assert log_name("C:\\models\\m.gguf") == "m.gguf"
     assert log_name("org/chat-GGUF/chat.gguf") == "org/chat-GGUF/chat.gguf"

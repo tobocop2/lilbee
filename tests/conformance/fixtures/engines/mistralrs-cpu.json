@@ -49,7 +49,7 @@
   },
   "named": {
    "ok": true,
-   "detail": "log=['served by engine=mistralrs-cpu version=preset role=chat model=mistralrs-cpu/Qwen/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'mistralrs-cpu', <WorkerRole.EMBED: 'embed'>: 'mistralrs-cpu'}"
+   "detail": "log=['served by engine=mistralrs-cpu version=preset build=none role=chat model=mistralrs-cpu/Qwen/Qwen3-0.6B'] status={<WorkerRole.CHAT: 'chat'>: 'mistralrs-cpu', <WorkerRole.EMBED: 'embed'>: 'mistralrs-cpu'}"
   }
  },
  "exchanges": [

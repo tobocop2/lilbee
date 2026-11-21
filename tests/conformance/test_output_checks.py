@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,20 +12,29 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.providers.routing_provider import RoutingProvider
-from tests.conformance import preset_check, record_presets
+from tests import _fake_sdk as fakes
+from tests.conformance import preset_check, record_presets, request_set
 from tests.conformance.fake_engine import Behaviour, FakeEngine
 from tests.conformance.harness import (
     NEAR_COPY_COSINE,
     Verdict,
     answer_fault,
+    colour_fault,
     cosine,
     embed_fault,
     json_fault,
     reasoning_fault,
+    reasoning_split_fault,
     run,
     tool_arguments_fault,
 )
-from tests.conformance.preset_check import ENGINE_FIXTURES, FIXTURES, Setup, load_fixture, steps_for
+from tests.conformance.preset_check import (
+    FIXTURES,
+    Setup,
+    harness_recordings,
+    load_fixture,
+    steps_for,
+)
 
 _SCHEMA = {
     "type": "object",
@@ -84,9 +94,9 @@ def test_tool_arguments_name_the_cause(arguments: Any, fault: str) -> None:
         ({"content": "<think>hm</think>Rome."}, "stop", True),
         # the chat template supplies the opening tag
         ({"content": "hm</think>Rome."}, "stop", True),
-        # a tag word in the answer text, with the reasoning in its own field
-        ({"reasoning_content": "hm", "content": "Write <think> to start."}, "stop", True),
-        ({"reasoning_content": "hm", "content": "Rome.</think>"}, "stop", True),
+        # a tag in the answer beside the field is a leak, open or closing
+        ({"reasoning_content": "hm", "content": "Write <think> to start."}, "stop", False),
+        ({"reasoning_content": "hm", "content": "Rome.</think>"}, "stop", False),
         # a full block in the answer beside the field is a leak
         ({"reasoning_content": "hm", "content": "<think>hm</think>Rome."}, "stop", False),
         ({"content": "<think>hm Rome."}, "stop", False),
@@ -100,6 +110,37 @@ def test_tool_arguments_name_the_cause(arguments: Any, fault: str) -> None:
 )
 def test_reasoning_split(message: dict[str, Any], finish: str, ok: bool) -> None:
     assert (reasoning_fault(message, finish) == "") is ok
+
+
+@pytest.mark.parametrize("check", [reasoning_fault, reasoning_split_fault])
+@pytest.mark.parametrize(
+    ("message", "ok"),
+    [
+        ({"content": "<think>hm Rome."}, False),
+        ({"reasoning_content": "hm", "content": "Write <think> to start."}, False),
+        ({"content": "<think>hm</think>Rome."}, True),
+        ({"reasoning_content": "hm", "content": "<think>hm</think>Rome."}, False),
+        ({"content": "hm</think>Rome."}, True),
+        ({"reasoning_content": "hm", "content": "Rome.</think>"}, False),
+        ({"reasoning_content": "hm", "content": "a<think>b Rome."}, False),
+        ({"reasoning_content": "hm", "content": "Rome."}, True),
+        ({"reasoning": "hm", "content": "Rome."}, True),
+        ({"reasoning_content": "", "content": "Rome."}, False),
+        # a blank field is no field: the answer needs its own closed think block
+        ({"reasoning_content": "  ", "content": "Rome."}, False),
+        ({"reasoning_content": "  ", "content": "<think>hm</think>Rome."}, True),
+        ({"reasoning_content": "  ", "content": "<think>hm Rome."}, False),
+        # text that is not a tag is no leak: the plain word, an escaped tag and an entity tag
+        ({"reasoning_content": "hm", "content": "I think Rome."}, True),
+        ({"reasoning_content": "hm", "content": "Use \\<think\\> to start."}, True),
+        ({"reasoning_content": "hm", "content": "Use &lt;think&gt; to start."}, True),
+        ({"reasoning_content": "hm", "content": ""}, False),
+    ],
+)
+def test_both_reasoning_checks_give_one_answer_for_the_think_tags(
+    check: Callable[[dict[str, Any], str], str], message: dict[str, Any], ok: bool
+) -> None:
+    assert (check(message, "stop") == "") is ok
 
 
 def test_answer_fault_accepts_plain_text_and_names_an_open_tag() -> None:
@@ -138,7 +179,13 @@ def test_run_fails_empty_tool_arguments_and_names_the_cause() -> None:
 def test_run_fails_a_vision_server_that_answers_red_for_every_image() -> None:
     got, reasons = _verdicts(Behaviour(vision="const"), {"chat", "vision"})
     assert got["E10"] == Verdict.FAIL
-    assert "blue image was called red" in reasons["E10"]
+    assert "the blue image is answered ['red'], not the one word blue" in reasons["E10"]
+
+
+def test_run_names_the_one_word_rule_for_a_sentence_answer() -> None:
+    got, reasons = _verdicts(Behaviour(vision="sentence"), {"chat", "vision"})
+    assert got["E10"] == Verdict.FAIL
+    assert "the red image is answered ['the', 'colour', 'is', 'red']" in reasons["E10"]
 
 
 def test_run_fails_prose_for_response_format_and_names_the_cause() -> None:
@@ -207,7 +254,7 @@ def _reasoning_outcome(
 ) -> preset_check.Outcome:
     """Run the reasoning step against a server that sends *message* as its one reply."""
     setup = Setup(("chat",), dict(_MODELS), strict=True)
-    request = {"messages": [preset_check._REASONING_ASK], "model": "m", "stream": False}
+    request = {"messages": [request_set.REASONING_ASK], "model": "m", "stream": False}
     reply = {"choices": [{"message": message, "finish_reason": finish}]}
     exchange = preset_check.Exchange(
         "POST", "/v1/chat/completions", request, 200, "application/json", json.dumps(reply)
@@ -268,6 +315,59 @@ def test_preset_vision_step_needs_the_blue_image_not_called_red(
     assert _outcome(monkeypatch, "vision", vision=["red", "red"]) is False
 
 
+@pytest.mark.parametrize(
+    ("answers", "ok"),
+    [
+        (["red", "blue"], True),
+        (["Red.", "Blue"], True),
+        (["the colour is red", "blue"], False),
+        (["red", "the colour is blue"], False),
+        (["red", "bored"], False),
+        (["red red", "blue"], False),
+    ],
+)
+def test_preset_vision_step_uses_the_one_word_rule(
+    monkeypatch: pytest.MonkeyPatch, answers: list[str], ok: bool
+) -> None:
+    assert _outcome(monkeypatch, "vision", vision=answers) is ok
+
+
+def test_the_non_strict_preset_vision_step_uses_the_one_word_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: _Provider(vision=["red"]))
+    plain = Setup(("vision",), {"vision": "m"})
+    assert preset_check._STEP_FUNCTIONS["vision"](plain).ok is True
+    monkeypatch.setattr(
+        preset_check, "create_sdk_provider", lambda: _Provider(vision=["it is red"])
+    )
+    assert preset_check._STEP_FUNCTIONS["vision"](plain).ok is False
+
+
+def _recorded_colour_answers(exchanges: list[Any]) -> list[tuple[str, str]]:
+    """The (colour, answer text) of each answered image request; the run asks red, then blue."""
+    texts = []
+    for exchange in exchanges:
+        if "image_url" in json.dumps(exchange.request) and exchange.status == 200:
+            texts.append(json.loads(exchange.body)["choices"][0]["message"]["content"])
+    return list(zip(("red", "blue"), texts, strict=False))
+
+
+def test_every_recorded_vision_answer_passes_the_one_word_rule() -> None:
+    """The one-word rule gives each recorded vision step the verdict its fixture stores."""
+    checked = 0
+    for path in [*sorted(FIXTURES.glob("*.json")), *harness_recordings()]:
+        setup, recorded, exchanges, _doc = load_fixture(path)
+        pairs = _recorded_colour_answers(exchanges)
+        if "vision" not in recorded or not pairs:
+            continue
+        checked += 1
+        faults = [colour_fault(answer, colour) for colour, answer in pairs]
+        assert len(pairs) == (2 if setup.strict else 1), path.name
+        assert recorded["vision"].ok == (not any(faults)), path.name
+    assert checked > 0
+
+
 def test_every_recorded_answer_passes_the_stricter_checks() -> None:
     """The stored exchanges of each preset fixture still satisfy the tool and embed checks."""
     seen = {"tool": 0, "embed": 0}
@@ -326,7 +426,8 @@ def test_named_step_reads_the_log_line_and_the_status_of_the_first_role(
 ) -> None:
     outcome = _named_outcome(monkeypatch, tmp_path, roles, **answers)
     assert outcome.ok, outcome.detail
-    assert f"engine=check version=preset role={roles[0]} model=check/m" in outcome.detail
+    want = f"engine=check version=preset build=none role={roles[0]} model=check/m"
+    assert want in outcome.detail
 
 
 def test_named_step_reads_the_engine_of_the_recording(
@@ -339,7 +440,8 @@ def test_named_step_reads_the_engine_of_the_recording(
     with preset_check.configured("http://127.0.0.1:1", setup, tmp_path):
         outcome = preset_check._STEP_FUNCTIONS["named"](setup)
     assert outcome.ok, outcome.detail
-    assert "engine=llama-cpp-cpu version=preset role=chat model=llama-cpp-cpu/m" in outcome.detail
+    want = "engine=llama-cpp-cpu version=preset build=none role=chat model=llama-cpp-cpu/m"
+    assert want in outcome.detail
     assert "engine=check" not in outcome.detail
 
 
@@ -356,9 +458,7 @@ def test_the_preset_is_named_after_the_recorded_engine() -> None:
     assert Setup(("chat",), {}, server="llama.cpp-cpu").preset == "llama-cpp-cpu"
 
 
-@pytest.mark.parametrize(
-    "path", sorted(ENGINE_FIXTURES.glob("**/*.json")), ids=lambda path: path.stem
-)
+@pytest.mark.parametrize("path", harness_recordings(), ids=lambda path: path.stem)
 def test_a_recording_names_its_own_engine(path: Path) -> None:
     setup, recorded, _exchanges, doc = load_fixture(path)
     head = dict(
@@ -384,35 +484,67 @@ def test_the_recorder_sets_strict_only_when_asked() -> None:
     assert record_presets.setup_from(parser.parse_args(_ARGS)).strict is False
 
 
-@pytest.mark.parametrize(
-    "path", sorted(ENGINE_FIXTURES.glob("**/*.json")), ids=lambda path: path.stem
-)
+@pytest.mark.parametrize("path", harness_recordings(), ids=lambda path: path.stem)
 def test_every_engine_recording_sets_strict(path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8")).get("strict") is True
 
 
 def test_the_engine_recordings_folder_is_not_empty() -> None:
-    assert sorted(ENGINE_FIXTURES.glob("**/*.json"))
+    assert harness_recordings()
 
 
 def test_the_recorder_log_names_the_front_only_when_one_is_set(tmp_path: Path) -> None:
     parser = record_presets.build_parser()
     out = ["--out", str(tmp_path / "e.json")]
     results = {"chat": preset_check.Outcome(True, "Rome")}
-    plain = record_presets.run_log(parser.parse_args([*_ARGS, *out]), results)
+    none = record_presets.DeviceSource.NONE
+    plain = record_presets.run_log(parser.parse_args([*_ARGS, *out]), results, [], none)
     fronted = record_presets.run_log(
-        parser.parse_args([*_ARGS, "--front", "llama-swap v267", *out]), results
+        parser.parse_args([*_ARGS, "--front", "llama-swap v267", *out]), results, [], none
     )
     assert "front:" not in plain
-    assert fronted.splitlines()[5] == "front: llama-swap v267"
+    assert fronted.splitlines()[8] == "front: llama-swap v267"
+
+
+def test_a_failed_step_names_the_harness_address_not_its_random_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_setup: Setup) -> preset_check.Outcome:
+        raise ValueError("no route at http://127.0.0.1:54321 or http://127.0.0.1:7")
+
+    monkeypatch.setitem(preset_check._STEP_FUNCTIONS, "embed", refused)
+    results = preset_check.run_steps(Setup(roles=("embed",), models={"embed": "m"}))
+    assert results["embed"] == preset_check.Outcome(
+        False, "ValueError: no route at http://harness or http://harness"
+    )
+
+
+@pytest.mark.parametrize("name", ["tei-rerank-v1", "mlxlm-vision", "vllmmlx-rerank"])
+def test_a_404_fixture_detail_is_the_text_lilbee_prints(name: str, tmp_path: Path) -> None:
+    """The recorded detail of a 404 failure is what a run prints for a 404 answer."""
+    setup, recorded, exchanges, _doc = load_fixture(FIXTURES / f"{name}.json")
+    assert recorded
+    sdk = fakes.FakeSdk()
+    sdk.chat_error = sdk.embed_error = sdk.rerank_error = sdk.error("NotFoundError", "x")
+    with (
+        fakes.installed(sdk),
+        preset_check.replaying(exchanges) as url,
+        preset_check.configured(url, setup, tmp_path),
+    ):
+        replayed = preset_check.run_steps(setup)
+    assert replayed == recorded
 
 
 def test_the_recorder_log_names_the_run(tmp_path: Path) -> None:
     args = record_presets.build_parser().parse_args(
         [*_ARGS[:-2], "--backend", "cuda", "--out", str(tmp_path / "e.json")]
     )
-    log = record_presets.run_log(args, {"chat": preset_check.Outcome(True, "Rome")})
+    results = {"chat": preset_check.Outcome(True, "Rome")}
+    log = record_presets.run_log(args, results, ["CUDA0"], record_presets.DeviceSource.MEMORY)
     assert log.splitlines()[:2] == ["engine: e", "version: 1"]
     assert "backend: cuda" in log
+    assert "reported-backend: cuda" in log
+    assert "devices: CUDA0" in log
+    assert "devices-from: memory" in log
     assert "models: chat=a,embed=b" in log
     assert "STEP e chat ok=True Rome" in log

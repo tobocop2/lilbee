@@ -21,7 +21,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
-from lilbee.data.types import SyncResult
+from lilbee.data.types import SkippedSource, SyncResult
 from lilbee.runtime.cancellation import TaskCancelledError
 from tests._unreadable import deny_listing
 from tests.conftest import make_mock_services, make_pdf
@@ -436,6 +436,28 @@ def test_add_prints_the_tip_after_the_sync_result(project, notes):
     assert flat.count(TIP_TEXT) == 1
 
 
+def test_the_add_command_scopes_ctrl_c_with_a_plain_flag(project, notes):
+    import threading
+    from contextlib import contextmanager
+
+    from lilbee.runtime.cancellation import SignalFlag
+
+    seen: list[object] = []
+
+    @contextmanager
+    def _scope(cancel_event, rollback):
+        seen.append(cancel_event)
+        raise SystemExit(0)
+        yield
+
+    with mock.patch("lilbee.cli.commands.ingest_sync._ctrl_c_stops", _scope):
+        result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+    assert isinstance(seen[0], SignalFlag)
+    assert not isinstance(seen[0], threading.Event)
+
+
 @pytest.mark.parametrize("ingest", [_refused_ingest, _cancelled_ingest])
 def test_an_add_that_fails_or_cancels_prints_no_tip(project, notes, ingest):
     with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_refused_add_paths(ingest)):
@@ -501,7 +523,7 @@ _NOTHING_CHANGED = [
     {},
     {"unchanged": 5},
     {"unchanged": 2, "relocated": ["moved.md"]},
-    {"failed": ["bad.md"], "skipped": ["scan.pdf"]},
+    {"skipped": ["scan.pdf"]},
 ]
 
 
@@ -515,6 +537,42 @@ def test_sync_that_added_updated_and_removed_nothing_prints_no_tip(project, coun
     assert result.exit_code == 0, result.output
     assert "SYNC RESULT" in result.output
     assert "lilbee analyze" not in result.output
+
+
+def test_sync_that_left_a_failed_file_exits_one_and_prints_no_tip(project):
+    with mock.patch(
+        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
+        return_value=_Shown(failed=["bad.md"], skipped=["scan.pdf"]),
+    ):
+        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+    assert result.exit_code == 1, result.output
+    assert "SYNC RESULT" in result.output
+    assert "lilbee analyze" not in result.output
+
+
+_HELD = [SkippedSource(filename="bees.md", reason="dimension mismatch")]
+
+
+@pytest.mark.parametrize(
+    ("counts", "exit_code"),
+    [
+        ({"held_out": _HELD}, 1),
+        ({"held_out": _HELD, "skipped": ["scan.pdf"]}, 1),
+        ({"held_out": _HELD, "added": ["a.md"]}, 0),
+        ({"held_out": _HELD, "updated": ["a.md"]}, 0),
+        ({"held_out": _HELD, "unchanged": 2}, 0),
+        ({"held_out": _HELD, "relocated": ["moved.md"]}, 0),
+    ],
+)
+def test_sync_that_only_held_out_failed_files_exits_one(project, counts, exit_code):
+    """Every document failed in an earlier sync: nothing indexed or kept, so the exit says so."""
+    with mock.patch(
+        "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
+        return_value=_Shown(**counts),
+    ):
+        result = runner.invoke(app, ["sync", "--data-dir", str(project)])
+    assert result.exit_code == exit_code, result.output
+    assert "SYNC RESULT" in result.output
 
 
 @pytest.mark.parametrize(

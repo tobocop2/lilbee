@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 
 from lilbee.app.engine_choice import EngineBook
@@ -19,6 +19,41 @@ def isolated_cfg():
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture()
+def parts(monkeypatch):
+    """Stand in for every part ``build_services`` and ``reset_store`` make, to see each call."""
+    import lilbee.data.extract.backends as backends_mod
+    import lilbee.modelhub.role_validator as validator_mod
+    import lilbee.retrieval.canary_probe as canary_mod
+    import lilbee.retrieval.clustering as clustering_mod
+    import lilbee.retrieval.concepts as concepts_mod
+    import lilbee.retrieval.embedder as embedder_mod
+    import lilbee.retrieval.query as query_mod
+    import lilbee.retrieval.reranker as reranker_mod
+    from lilbee.app import services as services_mod
+
+    made = SimpleNamespace(
+        store=MagicMock(name="new store"),
+        canary_probe=MagicMock(name="canary_probe"),
+        embedder=MagicMock(name="Embedder"),
+        reranker=MagicMock(name="Reranker"),
+        concepts=MagicMock(name="ConceptGraph"),
+        clusterer=MagicMock(name="Clusterer"),
+        searcher=MagicMock(name="Searcher"),
+    )
+    made.new_store = MagicMock(name="_new_store", return_value=made.store)
+    monkeypatch.setattr(services_mod, "_new_store", made.new_store)
+    monkeypatch.setattr(canary_mod, "canary_probe", made.canary_probe)
+    monkeypatch.setattr(embedder_mod, "Embedder", made.embedder)
+    monkeypatch.setattr(reranker_mod, "Reranker", made.reranker)
+    monkeypatch.setattr(concepts_mod, "ConceptGraph", made.concepts)
+    monkeypatch.setattr(clustering_mod, "Clusterer", made.clusterer)
+    monkeypatch.setattr(query_mod, "Searcher", made.searcher)
+    monkeypatch.setattr(backends_mod, "sync_xberg_backends", MagicMock())
+    monkeypatch.setattr(validator_mod, "warn_unregistered_role_refs", MagicMock())
+    return made
 
 
 class TestSyncVisionOcrBackend:
@@ -53,6 +88,19 @@ class TestSyncVisionOcrBackend:
         unreg.assert_called_once_with("lilbee-vision")
         reg.assert_called_once()
 
+    def test_bind_backend_registers_once_per_provider(self, monkeypatch):
+        """A second bind of the provider that is already registered changes nothing."""
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+
+        listed: list[str] = []
+        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
+        reg.side_effect = lambda backend: listed.append(backend.name())
+        provider = MagicMock()
+        bind_backend(BackendKind.OCR, provider)
+        bind_backend(BackendKind.OCR, provider)
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
     def test_unregisters_when_model_cleared(self, monkeypatch):
         from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
@@ -85,241 +133,6 @@ class TestSyncVisionOcrBackend:
             reg.assert_called_once()
         finally:
             set_services(None)
-
-
-class TestSyncEmbeddingBackend:
-    def _patch_xberg(self, monkeypatch, *, listed):
-        reg = MagicMock()
-        unreg = MagicMock()
-        monkeypatch.setattr("xberg.list_embedding_backends", lambda: listed)
-        monkeypatch.setattr("xberg.register_embedding_backend", reg)
-        monkeypatch.setattr("xberg.unregister_embedding_backend", unreg)
-        return reg, unreg
-
-    def test_registers_when_absent(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
-        sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
-        reg.assert_called_once()
-        unreg.assert_not_called()
-
-    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
-        """A rebuilt provider must replace the stale binding: unregister then re-register,
-        else xberg keeps embedding through the shut-down provider after reset_services."""
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
-        sync_xberg_backend(BackendKind.EMBEDDING, MagicMock())
-        unreg.assert_called_once_with("lilbee")
-        reg.assert_called_once()
-
-    def test_registered_backend_routes_to_provider_embed(self, monkeypatch):
-        """The registered backend must call provider.embed and report cfg.embedding_dim."""
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
-        monkeypatch.setattr(cfg, "embedding_dim", 7)
-        provider = MagicMock()
-        # The backend passes the provider's numpy vectors straight through; xberg accepts them.
-        vectors = [np.zeros(7, dtype=np.float32)]
-        provider.embed.return_value = vectors
-        sync_xberg_backend(BackendKind.EMBEDDING, provider)
-        backend = reg.call_args.args[0]
-        assert backend.name() == "lilbee"
-        assert backend.dimensions() == 7
-        assert backend.embed(["hello"]) is vectors
-        provider.embed.assert_called_once_with(["hello"])
-        provider.embed.assert_called_once_with(["hello"])
-        # Lifecycle hooks are no-ops but must exist (xberg calls initialize).
-        assert backend.initialize() is None
-        assert backend.shutdown() is None
-
-
-@contextmanager
-def _isolated_tokenizer_binding():
-    """Run with xberg's process-global tokenizer slot empty, and leave it empty."""
-    import xberg
-
-    from lilbee.data.types import TokenizerBackendName
-
-    if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
-        xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
-    try:
-        yield
-    finally:
-        if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
-            xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
-
-
-class TestSyncTokenizerBackend:
-    def _patch_xberg(self, monkeypatch, *, listed):
-        reg = MagicMock()
-        unreg = MagicMock()
-        monkeypatch.setattr("xberg.list_tokenizer_backends", lambda: listed)
-        monkeypatch.setattr("xberg.register_tokenizer_backend", reg)
-        monkeypatch.setattr("xberg.unregister_tokenizer_backend", unreg)
-        return reg, unreg
-
-    def test_sync_leaves_an_enabled_tokenizer_to_the_chunker(self, monkeypatch):
-        """Sync never counts through the provider: services init must not start it."""
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
-        provider = MagicMock()
-        provider.count_tokens.return_value = 7
-        sync_xberg_backend(BackendKind.TOKENIZER, provider)
-        reg.assert_not_called()
-        unreg.assert_not_called()
-        provider.count_tokens.assert_not_called()
-
-    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
-        """A rebuilt provider must replace the stale binding: unregister then re-register,
-        else xberg keeps counting through the shut-down provider after reset_services."""
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
-        provider = MagicMock()
-        provider.count_tokens.return_value = 7
-        bind_backend(BackendKind.TOKENIZER, provider)
-        unreg.assert_called_once_with("lilbee")
-        reg.assert_called_once()
-
-    def test_unregisters_when_disabled(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
-        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
-        unreg.assert_called_once_with("lilbee")
-        reg.assert_not_called()
-
-    def test_noop_when_disabled_and_absent(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
-        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
-        reg.assert_not_called()
-        unreg.assert_not_called()
-
-    def test_registered_backend_routes_to_provider_count_tokens(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
-        provider = MagicMock()
-        provider.count_tokens.return_value = 42
-        bind_backend(BackendKind.TOKENIZER, provider)
-        backend = reg.call_args.args[0]
-        assert backend.name() == "lilbee"
-        assert backend.count_tokens("hello") == 42
-        assert provider.count_tokens.call_count == 2  # probe, then the routed count
-        provider.count_tokens.assert_called_with("hello")
-
-    def test_bind_backend_registers_once_per_provider(self, monkeypatch):
-        """The chunker binds on demand; a second call for the same provider is a no-op."""
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        listed: list[str] = []
-        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
-        reg.side_effect = lambda backend: listed.append(backend.name())
-        provider = MagicMock()
-        provider.count_tokens.return_value = 7
-        bind_backend(BackendKind.TOKENIZER, provider)
-        bind_backend(BackendKind.TOKENIZER, provider)
-        reg.assert_called_once()
-        unreg.assert_not_called()
-
-    def test_bind_backend_rebinds_a_different_provider(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        listed: list[str] = []
-        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
-        reg.side_effect = lambda backend: listed.append(backend.name())
-        first = MagicMock()
-        first.count_tokens.return_value = 7
-        second = MagicMock()
-        second.count_tokens.return_value = 7
-        bind_backend(BackendKind.TOKENIZER, first)
-        bind_backend(BackendKind.TOKENIZER, second)
-        assert reg.call_count == 2
-        unreg.assert_called_once_with("lilbee")
-
-    def test_bind_backend_rebinds_after_an_external_unregister(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-
-        monkeypatch.setattr(cfg, "token_sizing", False)
-        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
-        provider = MagicMock()
-        provider.count_tokens.return_value = 7
-        bind_backend(BackendKind.TOKENIZER, provider)
-        bind_backend(BackendKind.TOKENIZER, provider)
-        assert reg.call_count == 2
-
-    def test_settings_change_syncs_tokenizer_backend(self, monkeypatch):
-        """Turning token_sizing off via any settings path unregisters the backend."""
-        from lilbee.app.services import set_services
-        from lilbee.app.settings import _invalidate_caches
-        from tests.conftest import make_mock_services
-
-        set_services(make_mock_services())
-        try:
-            monkeypatch.setattr(cfg, "token_sizing", False)
-            reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
-            _invalidate_caches({"token_sizing"})
-            unreg.assert_called_once_with("lilbee")
-            reg.assert_not_called()
-        finally:
-            set_services(None)
-
-    def test_bind_backend_raises_the_real_count_error(self):
-        """Mid-ingest binding fails loud with the count error itself, not xberg's
-        validation mask, so the file fails with its actionable cause."""
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-        from lilbee.providers.base import ProviderError
-
-        provider = MagicMock()
-        provider.count_tokens.side_effect = ProviderError("No embedding model is configured")
-        with (
-            _isolated_tokenizer_binding(),
-            pytest.raises(ProviderError, match="No embedding model is configured"),
-        ):
-            bind_backend(BackendKind.TOKENIZER, provider)
-
-    def test_bind_survives_a_provider_that_stops_after_the_probe(self):
-        """A count failing after the probe cannot reach xberg's probe, which masks it as zero."""
-        import xberg
-
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-        from lilbee.data.types import TokenizerBackendName
-        from lilbee.providers.base import ProviderError
-
-        provider = MagicMock()
-        provider.count_tokens.side_effect = [1, ProviderError("The embedding server stopped")]
-        with _isolated_tokenizer_binding():
-            bind_backend(BackendKind.TOKENIZER, provider)
-            assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
-        provider.count_tokens.assert_called_once()
-
-    def test_bind_registers_an_sdk_backend_on_its_estimate(self, monkeypatch):
-        """SDK embedders have no local tokenizer; the estimate still passes the
-        real xberg probe, so registration succeeds."""
-        import xberg
-
-        from lilbee.data.extract.backends import BackendKind, bind_backend
-        from lilbee.data.types import TokenizerBackendName
-
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        provider = MagicMock()
-        provider.count_tokens.side_effect = NotImplementedError("no local tokenizer")
-        with _isolated_tokenizer_binding():
-            bind_backend(BackendKind.TOKENIZER, provider)
-            assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
 
 
 class TestServicesDataclass:
@@ -459,7 +272,6 @@ class TestFirstBuildUnderTokenSizing:
         from lilbee.app import services as services_mod
         from lilbee.providers.engine_params import resolve_model_path
 
-        cfg.token_sizing = True
         cfg.worker_pool_eager_start = False
         cfg.embedding_model = "org/embed-GGUF/embed.gguf"
         provider = MagicMock()
@@ -477,14 +289,13 @@ class TestFirstBuildUnderTokenSizing:
         worker = threading.Thread(
             target=lambda: built.append(services_mod.get_services()), daemon=True
         )
-        with _isolated_tokenizer_binding():
-            try:
-                worker.start()
-                worker.join(timeout=10)
-                assert not worker.is_alive(), "get_services() deadlocked on its own build"
-                assert built[0].provider is provider
-            finally:
-                services_mod.set_services(None)
+        try:
+            worker.start()
+            worker.join(timeout=10)
+            assert not worker.is_alive(), "get_services() deadlocked on its own build"
+            assert built[0].provider is provider
+        finally:
+            services_mod.set_services(None)
 
 
 class TestBuildServices:
@@ -510,6 +321,134 @@ class TestBuildServices:
             assert services.searcher is not None
         finally:
             services.store.close()
+
+    def test_builds_each_part_from_the_config_and_hands_it_to_the_services(self, parts):
+        from lilbee.app.services import build_services
+
+        config = cfg.model_copy()
+        provider = MagicMock(name="provider")
+        registry = MagicMock(name="registry")
+
+        services = build_services(config, provider=provider, registry=registry)
+
+        embedder = parts.embedder.return_value
+        reranker = parts.reranker.return_value
+        concepts = parts.concepts.return_value
+        parts.embedder.assert_called_once_with(config, provider)
+        parts.canary_probe.assert_called_once_with(config, embedder, registry)
+        parts.new_store.assert_called_once_with(config, parts.canary_probe.return_value)
+        parts.reranker.assert_called_once_with(config)
+        parts.concepts.assert_called_once_with(config, parts.store)
+        parts.clusterer.assert_called_once_with(config, parts.store)
+        parts.searcher.assert_called_once_with(
+            config, provider, parts.store, embedder, reranker, concepts
+        )
+        assert services.provider is provider
+        assert services.registry is registry
+        assert services.store is parts.store
+        assert services.embedder is embedder
+        assert services.reranker is reranker
+        assert services.concepts is concepts
+        assert services.clusterer is parts.clusterer.return_value
+        assert services.searcher is parts.searcher.return_value
+
+    @pytest.mark.parametrize(("limit", "slots"), [(0, None), (1, 1), (2, 2)])
+    def test_the_crawl_semaphore_follows_crawl_max_concurrent(self, parts, limit, slots):
+        from lilbee.app.services import build_services
+
+        config = cfg.model_copy()
+        config.crawl_max_concurrent = limit
+
+        semaphore = build_services(config, provider=MagicMock()).crawler_semaphore
+
+        if slots is None:
+            assert semaphore is None
+            return
+        assert semaphore is not None
+
+        async def taken_while_free() -> list[bool]:
+            states = []
+            for _ in range(slots):
+                states.append(semaphore.locked())
+                await semaphore.acquire()
+            states.append(semaphore.locked())
+            return states
+
+        # Free until the last of its slots is taken, then full: one slot for a limit of one.
+        assert asyncio.run(taken_while_free()) == [False] * slots + [True]
+
+    @staticmethod
+    def _a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store):
+        """Make ``build_services`` fail on the concept graph, after the store exists."""
+        import lilbee.retrieval.canary_probe as canary_mod
+        import lilbee.retrieval.concepts as concepts_mod
+        from lilbee.app import services as services_mod
+
+        cfg.data_root = tmp_path
+        cfg.documents_dir = tmp_path / "documents"
+        cfg.data_dir = tmp_path / "data"
+        cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+        monkeypatch.setattr(canary_mod, "canary_probe", MagicMock())
+        monkeypatch.setattr(services_mod, "_new_store", lambda *_args: new_store)
+        monkeypatch.setattr(concepts_mod, "ConceptGraph", MagicMock(side_effect=OSError("boom")))
+
+    def test_a_failed_build_closes_its_store_and_leaves_a_supplied_provider_open(
+        self, monkeypatch, tmp_path
+    ):
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+        provider = MagicMock()
+
+        with pytest.raises(OSError, match="boom"):
+            build_services(cfg, provider=provider)
+
+        new_store.close.assert_called_once_with()
+        provider.shutdown.assert_not_called()
+
+    def test_a_failed_build_shuts_down_the_provider_it_created(self, monkeypatch, tmp_path):
+        import lilbee.providers.factory as factory_mod
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+        created = MagicMock()
+        monkeypatch.setattr(factory_mod, "create_provider", lambda *_a, **_k: created)
+
+        with pytest.raises(OSError, match="boom"):
+            build_services(cfg)
+
+        new_store.close.assert_called_once_with()
+        created.shutdown.assert_called_once_with()
+
+    def test_an_interrupt_during_the_build_still_cleans_up(self, monkeypatch, tmp_path):
+        import lilbee.retrieval.concepts as concepts_mod
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+        monkeypatch.setattr(concepts_mod, "ConceptGraph", MagicMock(side_effect=KeyboardInterrupt))
+        provider = MagicMock()
+
+        with pytest.raises(KeyboardInterrupt):
+            build_services(cfg, provider=provider)
+
+        new_store.close.assert_called_once_with()
+
+    def test_a_cleanup_error_is_logged_and_the_build_error_stays(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        from lilbee.app.services import build_services
+
+        new_store = MagicMock()
+        new_store.close.side_effect = RuntimeError("close failed")
+        self._a_build_that_fails_after_the_store(monkeypatch, tmp_path, new_store)
+
+        with caplog.at_level("WARNING"), pytest.raises(OSError, match="boom"):
+            build_services(cfg, provider=MagicMock())
+
+        assert "Cleanup after a failed services build failed" in caplog.text
 
 
 class TestServicesScope:
@@ -596,6 +535,40 @@ class TestResetStore:
             assert after.model_manager is old_model_manager
         finally:
             reset_services()
+
+    def test_rebuilds_the_graph_clusterer_searcher_and_services_from_the_config_and_new_store(
+        self, parts
+    ):
+        """The rebuilt parts take the config and the new store, and the services hold them."""
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        old = make_mock_services(
+            provider=MagicMock(name="provider"),
+            embedder=MagicMock(name="embedder"),
+            reranker=MagicMock(name="reranker"),
+            registry=MagicMock(name="registry"),
+            searcher=MagicMock(name="old searcher"),
+        )
+        services_mod.set_services(old)
+        concepts = parts.concepts.return_value
+        try:
+            services_mod.reset_store()
+            after = services_mod.peek_services()
+            parts.canary_probe.assert_called_once_with(cfg, old.embedder, old.registry)
+            parts.new_store.assert_called_once_with(cfg, parts.canary_probe.return_value)
+            parts.concepts.assert_called_once_with(cfg, parts.store)
+            parts.clusterer.assert_called_once_with(cfg, parts.store)
+            parts.searcher.assert_called_once_with(
+                cfg, old.provider, parts.store, old.embedder, old.reranker, concepts
+            )
+            assert after.store is parts.store
+            assert after.concepts is concepts
+            assert after.clusterer is parts.clusterer.return_value
+            assert after.searcher is parts.searcher.return_value
+            old.store.close.assert_called_once_with()
+        finally:
+            services_mod.set_services(None)
 
     def test_no_op_when_services_uncached(self):
         """``reset_store`` is a no-op if Services has not been built yet."""

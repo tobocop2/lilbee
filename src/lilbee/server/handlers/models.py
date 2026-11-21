@@ -11,8 +11,14 @@ from typing import TYPE_CHECKING, Literal
 from cachetools import TTLCache
 from pydantic import BaseModel
 
-from lilbee.app.models import list_models_data
-from lilbee.app.services import get_services
+from lilbee.app.models import (
+    ensure_vision_projector,
+    is_repeat_pull,
+    join_warnings,
+    list_models_data,
+    refreshes_safetensors_files,
+)
+from lilbee.app.services import ServicesStoppingError, get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
     CatalogResult,
@@ -24,9 +30,16 @@ from lilbee.catalog import (
     page_window,
     picks_for,
 )
-from lilbee.catalog.refs import hf_repo_from_ref, is_bare_hf_repo
+from lilbee.catalog.refs import canonical_ref, hf_repo_from_ref, is_bare_hf_repo, model_format
 from lilbee.catalog.runnable import hidden_summary
-from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSource, ModelTask
+from lilbee.catalog.types import (
+    CatalogSize,
+    CatalogSort,
+    KeyStatus,
+    ModelFormat,
+    ModelSource,
+    ModelTask,
+)
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
@@ -46,7 +59,7 @@ from lilbee.runtime.hardware import (
     make_fit_filter,
 )
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
+from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import (
     CatalogEntryResponse,
     ExternalModelsResponse,
@@ -218,6 +231,7 @@ def _require_model_available(model: str) -> str:
     )
     if not model:
         raise not_available
+    model = canonical_ref(model)
     available = set(get_services().provider.list_models())
     if model in available:
         return model
@@ -489,7 +503,7 @@ async def models_catalog(
         )
 
     registry = get_services().registry
-    installed_refs = {m.ref for m in registry.list_installed()}
+    installed_refs = {m.ref for m in await asyncio.to_thread(registry.list_installed)}
     enriched = enrich_catalog(result, installed_refs)
 
     families_by_repo = _families_by_repo()
@@ -522,7 +536,9 @@ async def models_installed(task: ModelTask | None = None) -> ModelsInstalledResp
 async def enforce_pull_arch_compat(
     model: str, *, source: str = "native", allow_unsupported: bool = False
 ) -> None:
-    """Raise HTTP 409 for an unsupported architecture before the pull stream opens.
+    """Raise HTTP 409 for a GGUF with no engine or an unsupported architecture, before the stream.
+
+    A model of another format needs no engine to download, so it passes.
 
     The route must await this BEFORE returning ``Stream(models_pull(...))``: a raise
     inside the ``models_pull`` async generator fires only on first iteration, after
@@ -534,6 +550,9 @@ async def enforce_pull_arch_compat(
     from lilbee.catalog.compat import UnsupportedArchError
 
     if _parse_source(source) is not ModelSource.NATIVE:
+        return
+    model = canonical_ref(model)
+    if model_format(model) is not ModelFormat.GGUF:
         return
     manager = get_services().model_manager
     try:
@@ -585,13 +604,23 @@ async def models_pull(
             sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
         try:
+            repeat = is_repeat_pull(manager, model, src)
+            refresh = refreshes_safetensors_files(manager, model, src)
+            notices: list[str] = []
             manager.pull(
                 model,
                 src,
                 on_bytes=_on_bytes,
+                on_notice=None if refresh else notices.append,
                 allow_unsupported=allow_unsupported,
                 cancel=sse.cancel,
             )
+            warning = join_warnings(
+                *notices,
+                ensure_vision_projector(model, warn_unreadable=not repeat, cancel=sse.cancel),
+            )
+            done = {} if warning is None else {"warning": warning}
+            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_done(done))
         except TaskCancelledError:
             log.info("Model pull for %s aborted: client disconnected", model)
         except Exception as exc:
@@ -624,7 +653,7 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
     try:
         # Delegate to the shared remove path so REST reports the same freed size
         # (full multi-shard total) as the CLI and MCP, not a hardcoded 0.
-        result = remove_model_data(model, src)
+        result = await asyncio.to_thread(remove_model_data, model, src)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ModelsDeleteResponse(
@@ -653,6 +682,8 @@ async def list_external_models() -> ExternalModelsResponse:
         result = ExternalModelsResponse(models=models)
         _external_cache[key] = result
         return result
+    except ServicesStoppingError:
+        raise
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)
         return ExternalModelsResponse(models=[], error=str(exc))

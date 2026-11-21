@@ -79,7 +79,9 @@ def _build_pdf() -> bytes:
     return bytes(out)
 
 
-def test_layout_extraction_keeps_column_order_and_table_spaces(monkeypatch, run_async):
+def test_layout_extraction_keeps_column_order_and_table_spaces(
+    monkeypatch, run_async, counting_provider
+):
     """The stored text reads the left column first and keeps the spaces in a table row."""
     from xberg import ExtractInput, ExtractInputKind, extract
 

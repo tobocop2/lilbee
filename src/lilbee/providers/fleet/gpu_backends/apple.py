@@ -25,6 +25,8 @@ _UTIL_RE = re.compile(r'"Device Utilization %"=(\d+)')
 class AppleBackend:
     """Apple Metal util via ioreg; VRAM stays structural via the orchestrator."""
 
+    pci_vendor = None
+
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
         return _ioreg_samples(indices)
 

@@ -400,6 +400,66 @@ class TestRunServer:
 
         assert seen_handler is _log_loop_exception
 
+    def test_a_failed_services_build_ends_the_server_with_a_startup_failure(self):
+        import uvicorn
+
+        from lilbee.cli.commands.servers import (
+            _STARTUP_FAILED_EXIT_STATUS,
+            LOCK_REFUSAL_EXIT_CODE,
+            _run_server,
+        )
+        from lilbee.server.app import create_app
+
+        config = uvicorn.Config(create_app(), host="127.0.0.1", port=0, log_config=None)
+        server = uvicorn.Server(config)
+        # A server that does start returns at once instead of serving.
+        server.should_exit = True
+
+        with mock.patch(
+            "lilbee.server.app.get_services", side_effect=RuntimeError("chat model missing")
+        ):
+            status = asyncio.run(_run_server(server, config, "127.0.0.1"))
+
+        assert status == _STARTUP_FAILED_EXIT_STATUS
+        assert status != LOCK_REFUSAL_EXIT_CODE
+        assert not (cfg.data_dir / "server.port").exists()
+
+    def test_a_stop_signal_during_a_failed_start_keeps_its_status(self):
+        from lilbee.app.services import request_server_exit
+        from lilbee.cli.commands.servers import _run_server
+
+        async def stopped_then_failed():
+            request_server_exit(143)
+            raise SystemExit(3)
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.startup = stopped_then_failed
+
+        status = asyncio.run(_run_server(fake_server_obj, mock.MagicMock(), "127.0.0.1"))
+
+        assert status == 143
+
+    def test_a_port_already_in_use_ends_the_server_with_a_startup_failure(self):
+        import socket
+
+        import uvicorn
+
+        from lilbee.cli.commands.servers import _STARTUP_FAILED_EXIT_STATUS, _run_server
+
+        async def no_app(scope, receive, send):
+            raise AssertionError("the server served on a port it could not bind")
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+            held.bind(("127.0.0.1", 0))
+            held.listen()
+            port = held.getsockname()[1]
+            config = uvicorn.Config(
+                no_app, host="127.0.0.1", port=port, lifespan="off", log_config=None
+            )
+            status = asyncio.run(_run_server(uvicorn.Server(config), config, "127.0.0.1"))
+
+        assert status == _STARTUP_FAILED_EXIT_STATUS
+
     def test_does_not_call_shutdown_when_startup_fails(self):
         """If `startup()` raises, `server.servers` was never assigned. Calling
         `shutdown()` then would crash inside uvicorn (`AttributeError: 'Server'

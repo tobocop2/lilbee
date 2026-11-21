@@ -48,7 +48,7 @@ dependencies = [
     "pillow>=13.0.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
-    "httpx",
+    "httpx<1.0",
     "httpx2",
     "diskcache>=5.6.1",
     "jinja2>=2.11.3",
@@ -62,9 +62,7 @@ dependencies = [
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
     "regex",
-    # GPU and CPU probes for the hardware report: NVML bindings (BSD) and a
-    # pure-Python CPU reader (MIT).
-    "nvidia-ml-py>=13.615.71",
+    # CPU probe for the hardware report: a pure-Python CPU reader (MIT).
     "py-cpuinfo>=9.0.0",
     # llama.cpp's own Python package, for the ggml block and type sizes the
     # download-size estimate prices a quant with. It is not a second GGUF
@@ -90,22 +88,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The bundled llama-server and gguf-parser. Not a hard dependency because the
-# distribution is published on lilbee.sh rather than PyPI, and a hard reference
-# to a name PyPI answers 404 for made the documented install command backtrack
-# to a months-old release that predated it. Installing without this leaves a
-# working lilbee that says what to install the moment it needs an engine.
-# The floor is below every published engine wheel (they carry lilbee's own
-# version), so it never excludes a real release; its jobs are to keep the
-# in-repo 0.0.0 stub from satisfying an index install and, because the
-# specifier names a pre-release, to let plain `pip` resolve the beta-versioned
-# wheels without `--pre`.
-engine = ["lilbee-engine>=0.6.90b1"]
-providers = ["liter-llm>=2.4.1,<3"]
+providers = ["liter-llm>=2.5.0,<3"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
 # ada-url parses a page address with the URL standard the crawler keys pages by.
-crawler = ["crawlberg>=1.12.3", "playwright>=1.61.0", "ada-url>=4.0.0"]
+crawler = ["crawlberg>=1.12.4", "playwright>=1.61.0", "ada-url>=4.0.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
@@ -143,28 +130,21 @@ packages = ["src/lilbee"]
 
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
-# building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
-# the index instead -- this source override is workspace metadata, not published deps.
+# building. A release install (`pip install lilbee`) does not depend on the engine wheel:
+# lilbee downloads an engine pack. This source override is workspace metadata.
 [tool.uv.sources]
-lilbee-engine = { path = "packaging/engine-wheel" }
-
-# `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
-# above no matter the specifier (uv drops version bounds on sourced packages),
-# so it silently installed the binariless stub where the deployment wanted the
-# real engine wheel. This turns sources off for the `uv pip` interface only:
-# that command now resolves lilbee-engine from the index, while `uv sync` /
-# `uv lock` (the project interface) keep using the stub.
-[tool.uv.pip]
-no-sources = true
+lilbee-engine-llama-cpp = { path = "packaging/engine-wheel" }
 
 [dependency-groups]
+# Builds the PEP 503 indexes behind lilbee.sh (tools/build_wheel_indexes.py).
+index = ["dumb-pypi==1.15.0"]
 dev = [
-    # The bundled engine is an optional extra for users, because the wheel is
-    # published on lilbee.sh rather than PyPI and a hard reference to a name
-    # PyPI answers 404 for breaks the documented install. Development and CI
-    # still need it: the pin test reads its metadata, and the local source
-    # below makes it a workspace path rather than an index lookup.
-    "lilbee-engine",
+    {include-group = "index"},
+    # The engine wheel is published on lilbee.sh rather than PyPI, so no
+    # runtime dependency names it. Development and CI need it: the pin test
+    # reads its metadata, and the local source above makes it a workspace path
+    # rather than an index lookup.
+    "lilbee-engine-llama-cpp",
     # The saved-page names and their tests parse addresses with ada-url, which
     # otherwise only the crawler and release extras install.
     "ada-url>=4.0.0",
@@ -177,7 +157,7 @@ dev = [
     "pytest-cov",
     "reportlab",
     "ruff>=0.15.4",
-    "httpx>=0.27",
+    "httpx>=0.27,<1.0",
     "pytest-httpserver",
     "types-pyyaml>=6.0.12.20250915",
     "pytest-xdist>=3.8.0",
@@ -212,13 +192,17 @@ markers = [
     "slow: integration tests that download models or take >10s",
     "real_model_classify: opt out of the global _classify_installed_models mock",
     "real_provider_sdk_probe: opt out of the global provider_sdk_available True override",
+    "real_engine_model_lists: opt out of the seal on the model lists that engines publish",
     "real_engine_resolution: opt out of the engine-binary seal (host PATH and LILBEE_LLAMA_SERVER_PATH resolve again)",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
     "no_health_default: opt out of the launch tests' default-healthy fixture",
     "no_warm_default: opt out of the launch tests' default chat-warm fixture",
+    "real_host_read: opt out of the fixed session host (the test reads the live host, as detection tests do)",
     "live_picks: opt out of the seeded SAMPLE_PICKS and resolve picks for real",
     "real_hf_client: opt out of the global hf_client.fetch_models stub (tests the client itself)",
     "download_child: opt out of the in-process download stub (drives the real child-process relay)",
+    "real_nvidia_smi: opt out of the nvidia-smi seal (the test drives the tool runner itself)",
+    "real_windows_registry: opt out of the Windows adapter seal (the test injects its own registry)",
     "fleet_warm_up: the test runs a real fleet warm-up thread and joins it itself",
 ]
 
@@ -314,7 +298,9 @@ extend-immutable-calls = ["litestar.params.Body"]
     "N802", "N806", "N818", "N817",
 ]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
-"tools/build_compat_index.py" = ["S603", "S607"]
+"tools/build_wheel_indexes.py" = ["S603", "S607"]
+# Invokes the trusted `gh` CLI with fixed args to read the release assets.
+"tools/gen_engine_packs.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]

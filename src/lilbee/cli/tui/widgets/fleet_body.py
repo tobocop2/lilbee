@@ -18,6 +18,7 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -26,17 +27,22 @@ from textual.widgets import Label, Static
 
 from lilbee.app import engine_service
 from lilbee.app.placement import (
+    PlacementRefusal,
     get_placement,
     preview_placement,
     set_placement,
     wait_chat_ready,
 )
+from lilbee.catalog.refs import canonical_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
+from lilbee.cli.tui.engine_install_flow import choose_for_model
+from lilbee.cli.tui.engine_mark import engine_dot, engine_mark
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+from lilbee.cli.tui.widgets.gpu_fleet_panel import Badge, GpuFleetPanel
+from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.roles import REPLICATED_ROLES, WorkerRole
+from lilbee.providers.roles import REPLICATED_ROLES, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -54,7 +60,7 @@ def _clean_model_name(ref: str) -> str:
 
     "Qwen/Qwen3-235B-A22B-GGUF/Q4_K_M/...-00001-of-00005.gguf" -> "Qwen3-235B-A22B".
     """
-    parts = ref.split("/")
+    parts = canonical_ref(ref).split("/")
     for component in parts[1:]:  # skip the org; the repo name is the friendly one
         if component.endswith(_GGUF_REPO_SUFFIXES):
             return component.rsplit("-", 1)[0]
@@ -76,8 +82,12 @@ _FLEET_PANEL_ID = "#gpu-fleet-panel"
 # Only the replicated roles show a replica stepper; the others always serve one.
 _REPLICA_ROLES = REPLICATED_ROLES
 _HINT = (
-    "Toggle a GPU for each role; -/+ sets replicas.  ctrl+r preview · ctrl+s apply · ctrl+x auto"
+    "Toggle a GPU for each role; -/+ sets replicas.  "
+    "ctrl+r preview · ctrl+s apply · ctrl+x auto · e engine"
 )
+_ENGINE_PILL_PREFIX = "eng-"
+# The role named by the id of a pill in a role row, such as dev-chat-0 or eng-chat.
+_ROW_PILL_RE = re.compile(r"^(?:dev|tgt|rep|eng)-([a-z]+)")
 _CMD_PREVIEW = "cmd-preview"
 _CMD_APPLY = "cmd-apply"
 _CMD_AUTO = "cmd-auto"
@@ -86,6 +96,8 @@ _PLACEMENT_PAGE_SIZE = 8
 # rerank is a single pinned instance on one card (a small cross-encoder that never
 # tensor-splits), so its GPU choice is single-select, unlike the multi-GPU roles.
 _SINGLE_ROLES = (WorkerRole.RERANK,)
+# The targets a role row offers beside its cards: a role off the cards, or planned for it.
+_TARGET_CHOICES = (RoleTarget.CPU, RoleTarget.AUTO)
 # Editor row order: the multi-GPU roles first, rerank last -- the single-card odd
 # one out sits at the bottom instead of between the replicated roles.
 _EDITOR_ROLE_ORDER = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION, WorkerRole.RERANK)
@@ -150,6 +162,68 @@ class _RoleEdit:
     devices: set[int]
     replicas: int
     tensor_split: tuple[int, ...] | None = None
+    target: RoleTarget | None = None
+    # True while the role shares a swap group the plan made and the user named no
+    # card for it: pinning it to its card would drop the group, so the saved spec
+    # leaves the role to the planner.
+    planned: bool = False
+    # The engine that runs the model of the role, for the Engine column; None when unknown.
+    engine: str | None = None
+
+
+def _engine_cell(edit: _RoleEdit) -> Content:
+    """The Engine column of one role row: the color mark and the name, or why there is none."""
+    if not edit.model.strip():
+        return Content.styled(msg.FLEET_ENGINE_UNSET, "$text-muted")
+    if not edit.engine:
+        return Content.styled(msg.ENGINE_NEEDS, "$warning")
+    return engine_mark(edit.engine)
+
+
+def _edits_from_view(view: PlacementView) -> dict[WorkerRole, _RoleEdit]:
+    """One editor row per role: what the saved spec names, else what the plan runs.
+
+    A refused spec holds the user's choices, so its roles keep their rows and
+    targets even when the plan runs something else for them.
+    """
+    spec_json = view.spec_json or view.rejected_spec_json
+    named = PlacementSpec.from_json(spec_json).roles if spec_json else {}
+    edits: dict[WorkerRole, _RoleEdit] = {}
+    for r in view.roles:
+        entry = named.get(r.role)
+        if entry is None:
+            edits[r.role] = _RoleEdit(
+                r.role,
+                r.model,
+                set(r.devices),
+                r.replicas,
+                r.tensor_split,
+                planned=r.role in view.co_tenants,
+                engine=r.engine,
+            )
+        elif view.rejected_spec_json:
+            edits[r.role] = _edit_from_entry(r.role, r.model, entry)
+        else:
+            edits[r.role] = _RoleEdit(
+                r.role,
+                r.model,
+                set(r.devices),
+                r.replicas,
+                r.tensor_split,
+                entry.target,
+                engine=r.engine,
+            )
+    if view.rejected_spec_json and view.refusal_kind is not PlacementRefusal.WAITING_FOR_ENGINE:
+        for role, entry in named.items():
+            if role not in edits:
+                edits[role] = _edit_from_entry(role, "", entry)
+    return edits
+
+
+def _edit_from_entry(role: WorkerRole, model: str, entry: RolePlacement) -> _RoleEdit:
+    return _RoleEdit(
+        role, model, set(entry.devices), entry.replicas, entry.tensor_split, entry.target
+    )
 
 
 class FleetBody(Widget):
@@ -157,6 +231,10 @@ class FleetBody(Widget):
 
     app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("e", "pick_engine", "Engine", show=True),
+    ]
 
     applying: reactive[bool] = reactive(False)
 
@@ -240,6 +318,47 @@ class FleetBody(Widget):
         self.query_one("#placement-engines", Static).update(
             "\n".join([chips_text(views), *notices])
         )
+        self._refresh_engine_cells(views)
+
+    def _refresh_engine_cells(self, views: list[engine_service.RoleView]) -> None:
+        """Repaint the Engine column from the engine each role runs on now."""
+        live = {view.role: view.engine for view in views}
+        for role, edit in self._edits.items():
+            if role in live:
+                edit.engine = live[role]
+            with contextlib.suppress(NoMatches):
+                self.query_one(f"#{_ENGINE_PILL_PREFIX}{role.value}", FleetPill).update(
+                    _engine_cell(edit)
+                )
+
+    def action_pick_engine(self) -> None:
+        """Open the engine picker for the role row that holds the focus."""
+        focused = self.app.focused
+        found = _ROW_PILL_RE.match(focused.id or "") if focused is not None else None
+        if found is not None:
+            self.pick_engine(WorkerRole(found.group(1)))
+
+    def pick_engine(self, role: WorkerRole) -> None:
+        """Open the engine picker for *role*; the choice is saved for the model of the role."""
+        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+
+        view = next(v for v in engine_service.roles() if v.role is role)
+        if not view.model.strip():
+            self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")
+            return
+        modal = EnginePickerModal(
+            msg.ENGINE_PICKER_TITLE.format(role=role),
+            msg.ENGINE_PICKER_SUBTITLE.format(model=view.model, format=view.format),
+            view.engine,
+            engine_service.engine_options(view.model),
+        )
+        self.app.push_screen(modal, lambda option: self._on_engine_picked(view, option))
+
+    def _on_engine_picked(
+        self, view: engine_service.RoleView, option: engine_service.EngineOption | None
+    ) -> None:
+        if option is not None:
+            choose_for_model(self.app, view.model, option, role=view.role)
 
     @work(thread=True, exit_on_error=False)
     def _load_worker(self) -> None:
@@ -267,10 +386,7 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        edits = {
-            r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas, r.tensor_split)
-            for r in view.roles
-        }
+        edits = _edits_from_view(view)
         # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
         self._edits = {role: edits.pop(role) for role in _EDITOR_ROLE_ORDER if role in edits}
         self._edits.update(edits)
@@ -279,17 +395,16 @@ class FleetBody(Widget):
         self._refresh_title(dirty=False)
         self._update_fleet_panel(view)
         self._render_skipped(view)
-        if view.co_tenants:
-            names = ", ".join(role.value for role in view.co_tenants)
-            self.notify(f"Sharing memory, one loaded at a time: {names}", severity="information")
+        if view.swap_classes:
+            self.notify(swap_summary(view.swap_classes), severity="information")
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
-        if view.rejected_spec_json:
+        if view.rejected_spec_json and not view.refusal:
             self.notify(msg.FLEET_SAVED_PLACEMENT_IGNORED, severity="warning")
 
     def _render_skipped(self, view: PlacementView) -> None:
-        """Show a line per role skipped for a missing model or for no engine."""
+        """Show a line per role skipped, why a saved spec is refused, and any hidden GPU."""
         widget = self.query_one(_SKIPPED_ID, Static)
         lines = [
             msg.FLEET_MODEL_NOT_DOWNLOADED.format(
@@ -301,6 +416,12 @@ class FleetBody(Widget):
             msg.FLEET_ROLE_WITHOUT_ENGINE.format(role=skipped.role.value, notice=skipped.notice)
             for skipped in view.skipped_no_engine
         )
+        lines.extend(unknown.notice for unknown in view.size_unknown)
+        lines.extend(tight.notice for tight in view.tight)
+        if view.refusal:
+            lines.append(view.refusal)
+        if view.hidden_note:
+            lines.append(view.hidden_note)
         widget.display = bool(lines)
         widget.update("\n".join(lines))
 
@@ -317,28 +438,39 @@ class FleetBody(Widget):
     def _build_editor(self) -> None:
         """Rebuild the placement grid: GPU header, one row per role, optional pager.
 
-        A single-GPU fleet has nothing to arrange -- every role can only live on
-        that card -- so the grid, command pills, and hint collapse to a one-line
-        note and the drawer stays a pure live monitor.
+        A single-GPU fleet keeps the grid: every role can only live on that card,
+        or on the CPU, so the cpu choice is what the drawer offers there.
         """
         container = self.query_one(_EDITOR_ID, Vertical)
         container.remove_children()
-        single = len(self._device_indices) <= 1
-        for selector in (_COMMANDS_ID, _HINT_WIDGET_ID):
-            self.query_one(selector).display = not single
-        if single:
+        if len(self._device_indices) <= 1:
             container.mount(Label(msg.FLEET_SINGLE_GPU_NOTE, classes="single-gpu-note"))
-            return
         devices = self._page_devices()
         widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
             kind = _role_kind(role)
-            children: list[FleetPill | Label] = [Label(f"{role.value:<7}", classes="role-name")]
+            children: list[FleetPill | Label] = [
+                Label(f"{role.value:<7}", classes="role-name"),
+                FleetPill(
+                    _engine_cell(edit),
+                    id=f"{_ENGINE_PILL_PREFIX}{role.value}",
+                    classes="engine-pill",
+                ),
+            ]
             for idx in devices:
                 on = " on" if idx in edit.devices else ""
                 children.append(
                     FleetPill(
                         f" {idx} ", id=f"dev-{role.value}-{idx}", classes=f"dev-toggle {kind}{on}"
+                    )
+                )
+            for target in _TARGET_CHOICES:
+                on = " on" if edit.target is target else ""
+                children.append(
+                    FleetPill(
+                        f" {target.value} ",
+                        id=f"tgt-{role.value}-{target.value}",
+                        classes=f"dev-toggle {kind}{on}",
                     )
                 )
             if role in _REPLICA_ROLES:
@@ -358,7 +490,10 @@ class FleetBody(Widget):
 
     def _gpu_header_row(self, devices: tuple[int, ...]) -> Horizontal:
         """A header labelling the visible GPU columns."""
-        cells: list[Label] = [Label("GPU", classes="role-name gpu-hdr-lead")]
+        cells: list[Label] = [
+            Label("GPU", classes="role-name gpu-hdr-lead"),
+            Label(msg.FLEET_ENGINE_HEADER, classes="engine-hdr"),
+        ]
         cells += [Label(str(idx), classes="gpu-hdr") for idx in devices]
         return Horizontal(*cells, classes="gpu-header-row")
 
@@ -392,10 +527,15 @@ class FleetBody(Widget):
         except NoMatches:
             return
         labels = {g.index: g.label for g in view.gpus}
-        roles: dict[int, str] = {}
+        roles: dict[int, Badge] = {}
         for r in view.roles:
             short_model = _clean_model_name(r.model) if r.model else ""
-            badge = f"{r.role.value} - {short_model}" if short_model else r.role.value
+            text = f"{r.role.value} - {short_model}" if short_model else r.role.value
+            badge: Badge = (
+                Content.assemble(engine_dot(r.engine), " ", (text, "$secondary"))
+                if r.engine
+                else text
+            )
             for idx in r.devices:
                 roles[idx] = badge
         panel.set_devices(view.gpus, labels=labels, roles=roles)
@@ -408,6 +548,13 @@ class FleetBody(Widget):
             return None
         roles: dict[WorkerRole, RolePlacement] = {}
         for edit in self._edits.values():
+            if edit.planned:
+                roles[edit.role] = RolePlacement(devices=(), target=RoleTarget.AUTO)
+                continue
+            if edit.target in _TARGET_CHOICES:
+                replicas = edit.replicas if edit.target is RoleTarget.CPU else 1
+                roles[edit.role] = RolePlacement(devices=(), replicas=replicas, target=edit.target)
+                continue
             if not edit.devices:
                 raise PlacementError(f"{edit.role.value} needs at least one GPU")
             devices = tuple(sorted(edit.devices))
@@ -419,9 +566,53 @@ class FleetBody(Widget):
                 else None
             )
             roles[edit.role] = RolePlacement(
-                devices=devices, replicas=edit.replicas, tensor_split=split
+                devices=devices, replicas=edit.replicas, tensor_split=split, target=edit.target
             )
         return PlacementSpec(roles=roles)
+
+    def _choose_target(self, key: str) -> None:
+        """Toggle the cpu or auto choice named by *key* (``role-target``) on its role."""
+        role_value, target_value = key.rsplit("-", 1)
+        edit = self._edits[WorkerRole(role_value)]
+        chosen = RoleTarget(target_value)
+        edit.planned = False
+        edit.target = None if edit.target is chosen else chosen
+        if edit.target is not None:
+            edit.devices = set()
+            edit.tensor_split = None
+        self._build_editor()
+
+    def _toggle_card(self, pill: FleetPill, key: str) -> None:
+        """Toggle the card named by *key* (``role-index``) on its role."""
+        role_value, idx_str = key.rsplit("-", 1)
+        role = WorkerRole(role_value)
+        edit = self._edits[role]
+        idx = int(idx_str)
+        edit.planned = False
+        # A card the machine no longer has cannot stay beside the one just picked.
+        edit.devices &= set(self._device_indices)
+        # Editing the device set invalidates any loaded manual split (its
+        # length was sized for the old cards); fall back to a capacity split.
+        edit.tensor_split = None
+        if edit.target in _TARGET_CHOICES:
+            # A card pressed on a cpu or auto role puts the role on that card alone.
+            edit.target = None
+            edit.devices = {idx}
+            self._build_editor()
+        elif role in _SINGLE_ROLES:
+            # Single pinned instance: the picked card becomes the only one.
+            edit.devices = {idx}
+            for other in self._page_devices():
+                self.query_one(f"#dev-{role.value}-{other}", FleetPill).set_class(
+                    other == idx, "on"
+                )
+        elif idx in edit.devices:
+            if len(edit.devices) > 1:  # keep at least one GPU per role
+                edit.devices.discard(idx)
+                pill.remove_class("on")
+        else:
+            edit.devices.add(idx)
+            pill.add_class("on")
 
     def on_fleet_pill_pressed(self, event: FleetPill.Pressed) -> None:
         """Handle a GPU toggle, a replica -/+ press, or a command pill."""
@@ -430,37 +621,23 @@ class FleetBody(Widget):
         if command is not None:
             command()
             return
+        if bid.startswith(_ENGINE_PILL_PREFIX):
+            self.pick_engine(WorkerRole(bid.removeprefix(_ENGINE_PILL_PREFIX)))
+            return
         if bid in ("pg-prev", "pg-next"):
             step = -1 if bid == "pg-prev" else 1
             self._page = min(max(0, self._page + step), self._page_count() - 1)
             self._build_editor()
             return
-        if bid.startswith("dev-"):
-            role_value, idx_str = bid.removeprefix("dev-").rsplit("-", 1)
-            role = WorkerRole(role_value)
-            edit = self._edits[role]
-            idx = int(idx_str)
-            # Editing the device set invalidates any loaded manual split (its
-            # length was sized for the old cards); fall back to a capacity split.
-            edit.tensor_split = None
-            if role in _SINGLE_ROLES:
-                # Single pinned instance: the picked card becomes the only one.
-                edit.devices = {idx}
-                for other in self._page_devices():
-                    self.query_one(f"#dev-{role.value}-{other}", FleetPill).set_class(
-                        other == idx, "on"
-                    )
-            elif idx in edit.devices:
-                if len(edit.devices) > 1:  # keep at least one GPU per role
-                    edit.devices.discard(idx)
-                    event.pill.remove_class("on")
-            else:
-                edit.devices.add(idx)
-                event.pill.add_class("on")
+        if bid.startswith("tgt-"):
+            self._choose_target(bid.removeprefix("tgt-"))
+        elif bid.startswith("dev-"):
+            self._toggle_card(event.pill, bid.removeprefix("dev-"))
         elif bid.startswith("rep-"):
             role_value, op = bid.removeprefix("rep-").rsplit("-", 1)
             role = WorkerRole(role_value)
             edit = self._edits[role]
+            edit.planned = False
             edit.replicas = max(1, edit.replicas + (1 if op == "inc" else -1))
             self.query_one(f"#repn-{role.value}", Label).update(f"x{edit.replicas}")
         else:

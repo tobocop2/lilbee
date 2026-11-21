@@ -29,7 +29,7 @@ from lilbee.cli.tui.engine_commands import (
     ENGINE_SETTING_KEYS,
     EngineCommandResult,
     announce,
-    chips_text,
+    engine_line,
 )
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
@@ -37,6 +37,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick, config_key_for_scope
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
+from lilbee.providers.fleet.engines.choice import loadable_refs
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
@@ -119,11 +120,14 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
 
         from lilbee.catalog.query import reclassify_by_name
 
+        loadable = set(loadable_refs(m.ref for m in manifests))
         for manifest in manifests:
             ref = manifest.ref
             if _is_mmproj(manifest.gguf_filename) or ref in seen:
                 continue
             task = reclassify_by_name(ref, manifest.task)
+            if task == ModelTask.CHAT and ref not in loadable:
+                continue
             label = _native_label(
                 manifest.hf_repo, manifest.gguf_filename, repo_counts[manifest.hf_repo]
             )
@@ -136,7 +140,7 @@ def _collect_native_models(buckets: dict[ModelTask, list[ModelOption]], seen: se
             # Surface it under the vision picker too without dropping its
             # primary classification, so a chat model with vision (e.g.
             # gemma-3 with mmproj) shows up in both pickers.
-            if task != ModelTask.VISION and registry.has_vision_projector(ref):
+            if task == ModelTask.CHAT and registry.has_vision_projector(ref):
                 buckets[ModelTask.VISION].append(ModelOption(label=label, ref=ref))
     except Exception:
         log.debug("Could not read native model registry", exc_info=True)
@@ -249,7 +253,7 @@ class ModelPickerButton(Static, can_focus=True):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "open_picker", "Pick model", show=False),
         Binding("space", "open_picker", "Pick model", show=False),
-        Binding("e", "pick_engine", "Pick engine", show=False),
+        Binding("e", "pick_engine", "Pick engine", show=True),
     ]
 
     def __init__(self, *, scope: PickerScope, button_id: str) -> None:
@@ -311,13 +315,27 @@ class ModelPickerButton(Static, can_focus=True):
         if not view.model.strip():
             self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")
             return
-        modal = EnginePickerModal(view, engine_service.engine_names(view.model))
-        self.app.push_screen(modal, lambda name: self._on_engine_picked(role, name))
+        modal = EnginePickerModal(
+            msg.ENGINE_PICKER_TITLE.format(role=role),
+            msg.ENGINE_PICKER_SUBTITLE.format(model=view.model, format=view.format),
+            view.engine,
+            engine_service.engine_options(view.model),
+        )
+        self.app.push_screen(modal, lambda option: self._on_engine_picked(role, option))
 
-    def _on_engine_picked(self, role: WorkerRole, name: str | None) -> None:
+    def _on_engine_picked(
+        self, role: WorkerRole, option: engine_service.EngineOption | None
+    ) -> None:
         self._focus_chat_prompt()
-        if name is not None:
-            self._save_engine(role, name)
+        if option is None:
+            return
+        if option.installed:
+            self._save_engine(role, option.name)
+            return
+        # The role keeps its model and engine until the install task ends.
+        from lilbee.cli.tui.engine_install_flow import confirm_and_install
+
+        confirm_and_install(self.app, option, lambda: self._save_engine(role, option.name))
 
     @work(thread=True)
     def _save_engine(self, role: WorkerRole, name: str, confirmed: bool = False) -> None:
@@ -370,11 +388,15 @@ class ModelPickerButton(Static, can_focus=True):
         # modal (ref "" disables it) so disabling isn't only a pill click.
         if self._is_nullable() and getattr(cfg, self._key):
             options.append(ModelOption(label=msg.MODEL_PICKER_TURN_OFF, ref=""))
-        modal = ModelPickerModal(scope=self._scope, options=options)
+        modal = ModelPickerModal(scope=self._scope, options=options, pick_later=self._apply_pick)
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
         self._focus_chat_prompt()
+        self._apply_pick(ref)
+
+    def _apply_pick(self, ref: str | None) -> None:
+        """Put the picked model in the role; a late pick leaves the focus where the user is."""
         if ref is not None and ref == getattr(cfg, self._key):
             return
         # Chat swaps reset services in _commit_after_change -> apply_model_change,
@@ -606,6 +628,13 @@ class RoleRow(Widget, can_focus=False):
             self.query_one(ModelPickerButton).repaint()
 
 
+class EngineLine(Static):
+    """The engine line of the bar; a click on a role opens the engine picker of that role."""
+
+    def action_pick(self, name: str) -> None:
+        self.query_ancestor(ModelBar).pick_engine(WorkerRole(name))
+
+
 class ModelBar(Widget, can_focus=False):
     """Horizontal band of the four role pickers + the Search/Chat toggle, below the input.
 
@@ -695,7 +724,7 @@ class ModelBar(Widget, can_focus=False):
             for scope in self._SCOPES:
                 yield RoleRow(scope=scope)
             yield ChatModeToggle()
-        yield Static("", id=_ENGINE_CHIPS_ID, classes="engine-chips", markup=False)
+        yield EngineLine("", id=_ENGINE_CHIPS_ID, classes="engine-chips")
         yield Static("", id=_ENGINE_NOTICE_ID, classes="engine-notice", markup=False)
         yield Static("", id=_CLOUD_WARNING_ID, classes="cloud-warning")
 
@@ -752,13 +781,19 @@ class ModelBar(Widget, can_focus=False):
                 self._options_cache[row.scope] = fingerprint
         self._refresh_cloud_warning()
 
+    def pick_engine(self, role: WorkerRole) -> None:
+        """Open the engine picker for *role*, as the ``e`` key does on its button."""
+        for row in self.query(RoleRow):
+            if row.scope == role.value:
+                row.query_one(ModelPickerButton).action_pick_engine()
+
     def refresh_engines(self) -> None:
         """Repaint the engine chips and the fallback notices from the engine service."""
         views = [v for v in engine_service.roles() if v.model.strip()]
-        chips = chips_text(views)
+        chips = engine_line(views)
         notices = list(dict.fromkeys(v.notice for v in views if v.notice))
         with contextlib.suppress(NoMatches):
-            self.query_one(f"#{_ENGINE_CHIPS_ID}", Static).update(chips)
+            self.query_one(f"#{_ENGINE_CHIPS_ID}", EngineLine).update(chips)
             notice = self.query_one(f"#{_ENGINE_NOTICE_ID}", Static)
             notice.update("\n".join(notices))
             notice.set_class(bool(notices), "-visible")

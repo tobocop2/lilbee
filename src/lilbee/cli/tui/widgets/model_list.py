@@ -19,6 +19,8 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from lilbee.catalog.types import ModelCompat
+from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.cli.tui.screens.catalog_utils import (
     NATIVE_BACKEND,
     CatalogRow,
@@ -171,6 +173,20 @@ def _render_local_headline(row: LocalCatalogRow) -> list[Content]:
         parts.append(Content.styled("    installed", "$success italic"))
     parts.extend(_fit_tag(row.fit))
     parts.extend(_compat_tag(row.compat))
+    parts.extend(_engine_tag(row))
+    return parts
+
+
+def _engine_tag(row: LocalCatalogRow) -> list[Content]:
+    """The labelled engine of a picker row: ``engine: ■ llama.cpp (auto)``; empty off the picker."""
+    if row.engine is None:
+        return []
+    label = Content.styled(f"    {msg.MODEL_PICKER_ENGINE_LABEL} ", "$text-muted")
+    if not row.engine:
+        return [label, Content.styled(msg.MODEL_PICKER_ENGINE_NONE, "$text-muted")]
+    parts = [label, engine_mark(row.engine)]
+    if row.engine_auto:
+        parts.append(Content.styled(f" {msg.MODEL_PICKER_ENGINE_AUTO}", "$text-muted"))
     return parts
 
 

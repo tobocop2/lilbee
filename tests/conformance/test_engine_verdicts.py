@@ -6,6 +6,9 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
+from lilbee.providers.fleet.engines.tei import TEI
+from lilbee.providers.roles import WorkerRole
+from tests.conformance import harness
 from tests.conformance.fake_engine import PROFILES, Behaviour, FakeEngine
 from tests.conformance.harness import REQUIREMENTS, Verdict, run
 
@@ -56,6 +59,12 @@ PROFILE_CASES = [
         PROFILES["mlx_lm"].behaviour,
         claims=frozenset({"chat", "reasoning"}),
         expect={"E12": F},
+    ),
+    Case(
+        "mlx_lm_claiming_json",
+        _profile("mlx_lm", json_mode="ignored"),
+        claims=frozenset({"chat", "reasoning", "json"}),
+        expect={"E12": F, "E14": F},
     ),
     Case(
         "tei_embed",
@@ -168,6 +177,12 @@ MUTANT_CASES = [
     ),
     Case("vision_400", Behaviour(vision="400"), expect={"E10": F}, quality_modes=(True,)),
     Case(
+        "vision_answers_in_a_sentence_not_one_word",
+        Behaviour(vision="sentence"),
+        expect_quality={"E10": F},
+        quality_modes=(True,),
+    ),
+    Case(
         "chat_random",
         Behaviour(deterministic=False),
         expect_quality={"E11": F},
@@ -222,10 +237,20 @@ MUTANT_CASES = [
         expect={"E4": F, "E5": F, "E6": F},
         expect_quality={"E11": F},
     ),
+    Case(
+        "chat_answers_but_stops_at_the_length_limit",
+        Behaviour(chat="truncated"),
+        claims=frozenset({"chat"}),
+        expect={"E4": F},
+    ),
     Case("embed_swapped_order", Behaviour(embed="swapped"), expect={"E8": F}),
     Case("embed_swapped_from_9", Behaviour(embed="swapped-from-9"), expect={"E8": F}),
     Case("embed_swapped_from_33", Behaviour(embed="swapped-from-33"), expect={"E8": F}),
-    Case("embed_swapped_past_the_largest_batch", Behaviour(embed="swapped-from-34")),
+    Case("embed_swapped_from_34", Behaviour(embed="swapped-from-34"), expect={"E8": F}),
+    Case("embed_swapped_from_64", Behaviour(embed="swapped-from-64"), expect={"E8": F}),
+    Case("embed_swapped_from_65", Behaviour(embed="swapped-from-65"), expect={"E8": F}),
+    Case("embed_swapped_from_129", Behaviour(embed="swapped-from-129"), expect={"E8": F}),
+    Case("embed_swapped_past_the_largest_batch", Behaviour(embed="swapped-from-130")),
     Case("rerank_one_based_index", Behaviour(rerank="onebased"), expect={"E9": F}),
     Case(
         "embed_server_answers_chat_400",
@@ -334,3 +359,11 @@ def test_every_tier_one_requirement_is_judged_by_some_case() -> None:
         "E12",
         "E13",
     } <= judged
+
+
+def test_the_order_check_probes_at_and_past_the_real_batch_limit() -> None:
+    tei_limit = TEI.request_profile(WorkerRole.EMBED).batch_limit
+    limit = harness.EMBED_REQUEST_LIMIT
+    assert limit == tei_limit
+    assert {limit, limit + 1} <= set(harness._ORDER_BATCHES)
+    assert max(harness._ORDER_BATCHES) > 2 * limit

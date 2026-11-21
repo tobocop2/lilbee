@@ -1,10 +1,15 @@
+import errno
+
 import pytest
 
 from lilbee.app import placement as app_placement
+from lilbee.core.security import FileLockUnavailableError
+from lilbee.core.settings import ReadOnlyConfigError
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.placement import InstancePlan
-from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.planning import ResolvedPlacement
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import engines_for_all_roles
@@ -146,13 +151,18 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, engines, **_k: (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
 
     def refuse(placement, *_a, **_kw):
         if placement is None:
             return Placement(instances=(), unplaceable_roles=())
-        raise PlacementError("embed pinned to device 1 but only 0 GPU(s) detected")
+        raise PlacementError("embed is pinned to device 1, but this machine lists no devices.")
 
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     planning.clear_read_device_cache()
@@ -161,6 +171,8 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
 
     assert view.manual is False
     assert view.rejected_spec_json == spec.to_json()
+    assert view.refusal is None
+    assert view.refusal_kind is None
     planning.clear_read_device_cache()
 
 
@@ -180,6 +192,8 @@ def test_get_placement_reports_a_saved_spec_that_did_not_apply_as_auto(monkeypat
 
     assert view.manual is False
     assert view.spec_json is None
+    assert view.refusal is None
+    assert view.refusal_kind is None
 
 
 def test_get_placement_reports_an_applied_spec_as_manual(monkeypatch):
@@ -275,6 +289,24 @@ def test_set_reports_what_runs_when_the_environment_outranks_the_saved_spec(monk
         app_placement.cfg.placement = prior
 
 
+def test_set_reports_a_saved_spec_as_manual_and_a_cleared_one_as_auto(monkeypatch):
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    monkeypatch.setattr(app_placement, "clear_read_device_cache", lambda: None)
+    prior = app_placement.cfg.placement
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(1, 1))})
+    try:
+        saved = app_placement.set_placement(spec)
+        cleared = app_placement.set_placement(None)
+    finally:
+        app_placement.cfg.placement = prior
+    assert saved.manual is True
+    assert saved.spec_json == spec.to_json()
+    assert cleared.manual is False
+    assert cleared.spec_json is None
+
+
 def test_set_clears_read_device_cache_when_nothing_runs(monkeypatch):
     """With no services built, the next boot should probe devices fresh."""
     cleared = {"called": False}
@@ -310,6 +342,56 @@ def test_set_keeps_device_probe_on_the_live_path(monkeypatch):
         assert cleared["called"] is False
     finally:
         app_placement.cfg.placement = prior
+
+
+_EMBED_SPEC = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
+_DISK_FULL = OSError(errno.ENOSPC, "No space left on device", "/data/config.toml")
+
+
+class TestAFailedConfigWriteIsNotAProbeFailure:
+    """A config write failure is named as one; the read-only and lock errors pass through."""
+
+    @staticmethod
+    def _host(monkeypatch):
+        def plan(spec, **_kw):
+            return _resolved()
+
+        monkeypatch.setattr(app_placement, "resolve_placement_plan", plan)
+        monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+        monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+
+    @staticmethod
+    def _fail_write(monkeypatch, spec, error):
+        def boom(*_args):
+            raise error
+
+        name = "delete_values" if spec is None else "update_values"
+        monkeypatch.setattr(app_placement.settings, name, boom)
+
+    @pytest.mark.parametrize("spec", [None, _EMBED_SPEC])
+    def test_a_disk_full_write_keeps_its_errno_and_reason(self, spec, monkeypatch):
+        self._host(monkeypatch)
+        self._fail_write(monkeypatch, spec, _DISK_FULL)
+        with pytest.raises(app_placement.PlacementConfigWriteError) as raised:
+            app_placement.set_placement(spec)
+        assert raised.value.errno == errno.ENOSPC
+        assert raised.value.strerror == "No space left on device"
+        assert raised.value.filename == "/data/config.toml"
+
+    @pytest.mark.parametrize("spec", [None, _EMBED_SPEC])
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ReadOnlyConfigError("/data/config.toml is read-only"),
+            FileLockUnavailableError("config.toml is locked"),
+        ],
+    )
+    def test_the_read_only_and_lock_errors_pass_through(self, spec, error, monkeypatch):
+        self._host(monkeypatch)
+        self._fail_write(monkeypatch, spec, error)
+        with pytest.raises(type(error)) as raised:
+            app_placement.set_placement(spec)
+        assert raised.value is error
 
 
 def test_set_none_clears(monkeypatch):
@@ -538,3 +620,106 @@ def test_get_placement_names_the_engine_that_serves_each_role(monkeypatch):
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     assert [r.engine for r in app_placement.get_placement().roles] == ["llama.cpp"]
     assert [r.engine for r in app_placement.preview_placement().roles] == ["llama.cpp"]
+
+
+def _resolved_size_unknown():
+    from dataclasses import replace
+
+    return replace(_resolved(), size_unknown_roles=(WorkerRole.CHAT,))
+
+
+def test_view_lists_a_role_of_unknown_size_with_its_notice(monkeypatch):
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_size_unknown()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    view = app_placement.get_placement()
+    assert view.size_unknown == (
+        app_placement.SizeUnknownRole(
+            role=WorkerRole.CHAT,
+            model="org/chat.gguf",
+            notice="The size of the chat model org/chat.gguf is unknown, "
+            "so 8.0 GiB is reserved for it.",
+        ),
+    )
+
+
+def test_view_lists_nothing_when_every_size_is_known(monkeypatch):
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    assert app_placement.get_placement().size_unknown == ()
+
+
+def test_the_response_carries_the_role_of_unknown_size(monkeypatch):
+    from lilbee.server.models import PlacementResponse
+
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_size_unknown()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    body = PlacementResponse.from_view(app_placement.get_placement()).model_dump(mode="json")
+    assert body["size_unknown"] == [
+        {
+            "role": "chat",
+            "model": "org/chat.gguf",
+            "notice": "The size of the chat model org/chat.gguf is unknown, "
+            "so 8.0 GiB is reserved for it.",
+        }
+    ]
+
+
+def test_the_mcp_placement_tool_carries_the_role_of_unknown_size(monkeypatch):
+    from lilbee.mcp_server import get_placement_tool
+
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved_size_unknown()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    assert [s["role"] for s in get_placement_tool()["size_unknown"]] == ["chat"]
+
+
+def test_size_unknown_notices_keeps_the_notices_of_the_asked_role(monkeypatch):
+    from dataclasses import replace
+
+    view = replace(
+        _bare_view(),
+        size_unknown=(
+            app_placement.SizeUnknownRole(WorkerRole.CHAT, "a", "chat notice"),
+            app_placement.SizeUnknownRole(WorkerRole.EMBED, "b", "embed notice"),
+        ),
+    )
+    monkeypatch.setattr(app_placement, "_read_placement", lambda _reading: view)
+    assert app_placement.size_unknown_notices(WorkerRole.CHAT) == ["chat notice"]
+    assert app_placement.size_unknown_notices(WorkerRole.VISION) == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ProviderError("llama-server binary not found."),
+        PlacementError("A saved spec names a card the machine lacks."),
+        OSError("model folder unreadable"),
+    ],
+    ids=["provider", "placement", "os"],
+)
+def test_size_unknown_notices_is_empty_when_the_placement_cannot_be_read(monkeypatch, failure):
+    def unreadable(_reading):
+        raise failure
+
+    monkeypatch.setattr(app_placement, "_read_placement", unreadable)
+    assert app_placement.size_unknown_notices(WorkerRole.CHAT) == []
+
+
+def test_size_unknown_notices_lets_a_programming_error_through(monkeypatch):
+    def broken(_reading):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(app_placement, "_read_placement", broken)
+    with pytest.raises(RuntimeError, match="bug"):
+        app_placement.size_unknown_notices(WorkerRole.CHAT)
+
+
+def _bare_view():
+    return app_placement.PlacementView(
+        gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None
+    )

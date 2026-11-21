@@ -48,6 +48,8 @@ from lilbee.cli.tui.color_compat import (
     resolve_term_program,
 )
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.engine_mark import engine_variables
+from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens.analyze_report import start_analysis
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -60,6 +62,7 @@ from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import ConfigReadError
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
@@ -276,6 +279,8 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
+        # One order for the model bar and Settings: both pick models for the same roles.
+        self.model_picks = PickOrder()
         self.last_analysis: FinishedAnalysis | None = None
 
     def notify(
@@ -305,6 +310,7 @@ class LilbeeApp(App[None]):
         variables = super().get_css_variables()
         variables["rail"] = "solid" if self._plain_glyphs else "tall"
         variables["rail-heavy"] = "heavy" if self._plain_glyphs else "thick"
+        variables.update(engine_variables(variables))
         return variables
 
     def get_line_filters(self) -> Sequence[LineFilter]:
@@ -548,7 +554,7 @@ class LilbeeApp(App[None]):
             # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
                 apply_settings_update({field: canon.effective})
-            except (ValueError, OSError):
+            except (ValueError, OSError, ConfigReadError):
                 log.warning(
                     msg.MODEL_FALLBACK_FAILED.format(
                         label=label,
@@ -647,11 +653,12 @@ class LilbeeApp(App[None]):
         except FileLockUnavailableError as exc:
             self.notify(config_write_failure_message(exc), severity="error")
             return None
-        except (ValueError, OSError, RuntimeError) as exc:  # RuntimeError: a store error
+        # RuntimeError: a store error
+        except (ValueError, OSError, RuntimeError, ConfigReadError) as exc:
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return None
         self.notify_warnings(result.warnings)
-        self.settings_changed_signal.publish((key, getattr(cfg, key)))
+        self.publish_settings([key])
         return result
 
     def notify_warnings(self, warnings: Sequence[str]) -> None:
@@ -680,6 +687,9 @@ class LilbeeApp(App[None]):
             result = apply_settings_update({key: value})
         except OSError as exc:
             self.notify(config_write_failure_message(exc), severity="error")
+            return False
+        except ConfigReadError as exc:
+            self.notify(str(exc), severity="error")
             return False
         self.notify_warnings(result.warnings)
         self.publish_settings([key])
@@ -752,9 +762,15 @@ class LilbeeApp(App[None]):
         self.adopt_external_settings()
 
     def publish_settings(self, keys: Iterable[str]) -> None:
-        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value."""
+        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value.
+
+        Every change of a role's model comes through here, so it takes the next pick
+        number of the role: a pick that still waits on its engine loses to it.
+        """
         for key in keys:
             normalized = getattr(cfg, key)
+            if key in MODEL_ROLE_FIELDS:
+                self.model_picks.take(key, normalized or "")
             if (
                 key == "theme"
                 and isinstance(normalized, str)

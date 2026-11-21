@@ -12,6 +12,7 @@ import pytest
 
 from lilbee.app import engine_choice, engine_service
 from lilbee.app.engine_choice import EngineBook, engine_for_ref, resolve_engines, stored_choices
+from lilbee.catalog import runnable
 from lilbee.catalog.hf_client import HfClient
 from lilbee.catalog.types import ModelCompat
 from lilbee.core import settings
@@ -23,9 +24,10 @@ from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import (
     AUTO,
-    HostFacts,
     NoEngineError,
 )
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.chat_dispatch import capability
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
@@ -61,9 +63,8 @@ OPENVINO_ENGINE = _OpenvinoEngine()
 
 @pytest.fixture(autouse=True)
 def _host(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
-    )
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
+    monkeypatch.setattr(runnable, "session_host", lambda: mac)
 
 
 @pytest.fixture
@@ -448,6 +449,9 @@ class _StoreEngine(FakeAdapter):
 
     name = "mistral.rs"
     formats = frozenset({"gguf"})
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
 
 
 @pytest.fixture

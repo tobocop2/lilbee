@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 
     from lilbee.providers.fleet.launch import InstanceLaunch
 
-# One group holds this process's members. Swap disabled keeps them co-resident (a
-# role's replicas); enabled makes llama-swap evict one to load another.
+# Prefix of every group name. Without swap one group holds the process's members
+# co-resident (a role's replicas); with swap each residency class is a group.
 _GROUP_NAME = "lilbee"
 # Cold-load ceiling floor per role; the member's weights scale it up from here.
 # An embedder's weights stream in seconds, so its floor covers only process start
@@ -55,9 +55,11 @@ PORT_FLAG = "--port"
 # many processes, each at its own ceiling: the larger of the slots and the
 # ingest pool, whose every thread can hold one embed or OCR request.
 _CONCURRENCY_PROCESSES = 4
-# Part of the engine pin, so a peer never binds an engine whose config lacks a
-# key it relies on. 1: every model carries concurrencyLimit.
-SWAP_CONFIG_REVISION = 1
+# Part of the engine pin, so a peer never binds an engine launched under another
+# contract. Raise it when a launch rule changes. 1: every model carries
+# concurrencyLimit. 2: an equal split across cards runs tensor parallel. 3: a swap
+# process keeps a residency class loaded together.
+SWAP_CONFIG_REVISION = 3
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
@@ -87,9 +89,10 @@ def build_swap_config(
 
     Each launch becomes a model whose id is its replica model id and whose
     command is the llama-server argv plus the explicit port from *member_ports*;
-    one group holds them behind this group's proxy endpoint. ``swap`` makes the
-    members evict each other on load, so only one is resident at a time; the
-    default keeps them co-resident. ``ttl_seconds`` is llama-swap's idle unload
+    one group holds them behind this group's proxy endpoint. ``swap`` makes one
+    group of each residency class (``InstanceLaunch.swap_class``): members of a
+    class stay loaded together, and loading a member evicts every other class;
+    the default keeps all members co-resident. ``ttl_seconds`` is llama-swap's idle unload
     timer per member; 0 keeps weights loaded forever. Ports are allocated fresh per start (never
     llama-swap's fixed ``startPort`` range) so a previous instance's lingering
     server can't collide with the new fleet's bind.
@@ -119,19 +122,40 @@ def build_swap_config(
         entry.update(launch.swap_extras)
         models[launch.model_id] = entry
     config: dict[str, object] = {
-        _KEY_HEALTH_TIMEOUT: _health_check_timeout_s(launches),
+        _KEY_HEALTH_TIMEOUT: health_check_timeout_s(launches),
         _KEY_LOG_LEVEL: _LOG_LEVEL,
         _KEY_MODELS: models,
-        _KEY_GROUPS: {
-            _GROUP_NAME: {
-                _KEY_SWAP: swap,
-                _KEY_EXCLUSIVE: False,
-                _KEY_PERSISTENT: True,
-                _KEY_MEMBERS: [launch.model_id for launch in launches],
-            }
-        },
+        _KEY_GROUPS: _evicting_groups(launches) if swap else _resident_group(launches),
     }
     return json.dumps(config, indent=2)
+
+
+def _resident_group(launches: list[InstanceLaunch]) -> dict[str, object]:
+    """One group whose members stay loaded together."""
+    return {
+        _GROUP_NAME: {
+            _KEY_SWAP: False,
+            _KEY_EXCLUSIVE: False,
+            _KEY_PERSISTENT: True,
+            _KEY_MEMBERS: [launch.model_id for launch in launches],
+        }
+    }
+
+
+def _evicting_groups(launches: list[InstanceLaunch]) -> dict[str, object]:
+    """One group per residency class; loading a member unloads every other group."""
+    members: dict[str, list[str]] = {}
+    for launch in launches:
+        members.setdefault(launch.swap_class or launch.model_id, []).append(launch.model_id)
+    return {
+        f"{_GROUP_NAME}-{name}": {
+            _KEY_SWAP: False,
+            _KEY_EXCLUSIVE: True,
+            _KEY_PERSISTENT: False,
+            _KEY_MEMBERS: ids,
+        }
+        for name, ids in members.items()
+    }
 
 
 def _concurrency_limit(launch: InstanceLaunch) -> int:
@@ -149,7 +173,7 @@ def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:
     return max(_COLD_LOAD_FLOOR_S[role], weights_bytes // _COLD_LOAD_BYTES_PER_S)
 
 
-def _health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
+def health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
     """Slowest member's cold-load ceiling; the timeout is proxy-global in
     llama-swap, so the slowest possible load sets it."""
     return max(

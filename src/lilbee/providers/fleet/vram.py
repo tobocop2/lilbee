@@ -6,6 +6,7 @@ See docs/architecture.md (VRAM estimation).
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -22,6 +23,9 @@ _FLAG_PATH = "--path"
 _FLAG_CTX = "--ctx-size"
 _FLAG_PARALLEL = "--parallel"
 _FLAG_GPU_LAYERS = "--gpu-layers"
+# The parser refuses llama.cpp's auto layer count (-1) and every value below -2;
+# its value for a full offload is -2. Every negative setting maps to it.
+_PARSER_GPU_LAYERS_ALL = -2
 _FLAG_CACHE_K = "--cache-type-k"
 _FLAG_CACHE_V = "--cache-type-v"
 _FLAG_MMPROJ = "--mmproj-path"
@@ -33,6 +37,28 @@ _SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
 _FLAG_OVERRIDE_TENSOR = "--override-tensor"
 _BUFFER_TYPE_CPU = "CPU"
+_FLAG_RAW = "--raw"
+
+# The raw header lists each tensor with its ggml type id and shape. The llama.cpp CPU
+# build repacks two-dimensional Q4_0, Q4_K and IQ4_NL tensors into an anonymous copy
+# (measured on an AVX2 host; other quant types stay in the mapped file).
+_KEY_TENSOR_INFOS = "tensorInfos"
+_KEY_TENSOR_TYPE = "type"
+_KEY_TENSOR_DIMS = "nDimensions"
+_KEY_TENSOR_SHAPE = "dimensions"
+_REPACKED_TYPES = frozenset({2, 12, 20})
+_MATRIX_DIMS = 2
+
+# The raw header's metadata list; an array value reports its length under "len".
+_KEY_HEADER = "header"
+_KEY_HEADER_KV = "metadataKV"
+_KEY_HEADER_KEY = "key"
+_KEY_HEADER_VALUE = "value"
+_KEY_ARRAY_LEN = "len"
+_GGUF_ARCH = "general.architecture"
+_GGUF_HEADS = "attention.head_count"
+_GGUF_KV_HEADS = "attention.head_count_kv"
+_GGUF_TOKENS = "tokenizer.ggml.tokens"
 
 # gguf-parser JSON keys: the per-instance footprint lives under estimate.items
 # (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
@@ -43,6 +69,8 @@ _KEY_RAM = "ram"
 _KEY_VRAMS = "vrams"
 _KEY_UMA = "uma"
 _KEY_NONUMA = "nonuma"
+_KEY_METADATA = "metadata"
+_KEY_FILE_SIZE = "fileSize"
 
 _PROVIDER = "llama-server"
 _PARSE_TIMEOUT_S = 60
@@ -88,7 +116,9 @@ class GgufVramEstimate:
     ram_bytes: int
     """Discrete-GPU model: host RAM bytes (mmap pages, compute buffers)."""
     unified_bytes: int
-    """Unified-memory model: total resident footprint (RAM + would-be VRAM)."""
+    """Unified-memory model: the footprint without the mapped weights."""
+    mapped_weights_bytes: int = 0
+    """Weight file bytes (the parser's file size) that ``unified_bytes`` leaves out."""
     per_device_vram: tuple[int, ...] = ()
     """Discrete-GPU VRAM per device (gguf-parser ``vrams[].nonuma``)."""
     per_device_unified: tuple[int, ...] = ()
@@ -176,6 +206,7 @@ def _corrected_projector_estimate(
         vram_bytes=base.vram_bytes + projector,
         ram_bytes=with_projector.ram_bytes,
         unified_bytes=with_projector.unified_bytes,
+        mapped_weights_bytes=base.mapped_weights_bytes + mmproj_bytes,
         per_device_vram=per_device_vram,
         per_device_unified=with_projector.per_device_unified,
     )
@@ -267,7 +298,7 @@ def estimator_argv(
         _FLAG_PARALLEL,
         str(slots),
         _FLAG_GPU_LAYERS,
-        str(gpu_layers),
+        str(_PARSER_GPU_LAYERS_ALL if gpu_layers < 0 else gpu_layers),
         _FLAG_CACHE_K,
         kv_cache_type,
         _FLAG_CACHE_V,
@@ -319,6 +350,88 @@ def _run_parser(argv: list[str], path_str: str) -> str:
     return stdout
 
 
+def repacked_weight_bytes(model_path: Path) -> int:
+    """Bytes of the weights the llama.cpp CPU build copies into its repacked layout."""
+    return _cached_repacked_bytes(
+        engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
+    )
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cached_repacked_bytes(_engine_id: str, path_str: str, _mtime_ns: int) -> int:
+    """Memoised sum of the matrix tensors that have a repacked CPU layout."""
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
+    try:
+        tensors = json.loads(_run_parser(argv, path_str))[_KEY_TENSOR_INFOS]
+        total = 0
+        for tensor in tensors:
+            if (
+                tensor[_KEY_TENSOR_TYPE] not in _REPACKED_TYPES
+                or tensor[_KEY_TENSOR_DIMS] != _MATRIX_DIMS
+            ):
+                continue
+            block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType(tensor[_KEY_TENSOR_TYPE])]
+            total += math.prod(tensor[_KEY_TENSOR_SHAPE]) // block * type_size
+        return total
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError(
+            f"Could not size the model {path_str!r}: the estimator returned unreadable output.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        ) from exc
+
+
+@dataclass(frozen=True)
+class AttentionShape:
+    """The header fields the CPU score and logits terms read."""
+
+    heads: int
+    kv_heads: int
+    vocab: int
+
+
+def attention_shape(model_path: Path) -> AttentionShape | None:
+    """Scalar head counts and vocabulary size of a GGUF file; None when the header has no such."""
+    return _cached_attention_shape(
+        engine_build_identity(), str(model_path), model_path.stat().st_mtime_ns
+    )
+
+
+def _shape_from_entries(entries: dict[str, object]) -> AttentionShape | None:
+    """The shape, or None when a head count is absent or per layer, or the vocabulary is absent."""
+    arch = entries.get(_GGUF_ARCH)
+    heads = entries.get(f"{arch}.{_GGUF_HEADS}")
+    kv_heads = entries.get(f"{arch}.{_GGUF_KV_HEADS}")
+    tokens = entries.get(_GGUF_TOKENS)
+    # The raw header is untyped JSON: a scalar count is a number, a per-layer count and the
+    # token list are array objects.
+    if not (isinstance(heads, int) and isinstance(kv_heads, int) and isinstance(tokens, dict)):
+        return None
+    return AttentionShape(heads=heads, kv_heads=kv_heads, vocab=int(tokens[_KEY_ARRAY_LEN]))
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _cached_attention_shape(
+    _engine_id: str, path_str: str, _mtime_ns: int
+) -> AttentionShape | None:
+    """Memoised head counts and vocabulary length from the raw header."""
+    argv = [str(resolve_gguf_parser()), _FLAG_PATH, path_str, _FLAG_RAW]
+    try:
+        entries = {
+            entry[_KEY_HEADER_KEY]: entry[_KEY_HEADER_VALUE]
+            for entry in json.loads(_run_parser(argv, path_str))[_KEY_HEADER][_KEY_HEADER_KV]
+        }
+        return _shape_from_entries(entries)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderError(
+            f"Could not size the model {path_str!r}: the estimator returned unreadable output.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        ) from exc
+
+
 def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
     """Parse gguf-parser JSON into a UMA-aware footprint.
 
@@ -327,7 +440,8 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
     past the pin still sizes instead of failing every launch plan.
     """
     try:
-        estimate = json.loads(stdout)[_KEY_ESTIMATE]
+        report = json.loads(stdout)
+        estimate = report[_KEY_ESTIMATE]
         item = (estimate.get(_KEY_ITEMS) or estimate[_KEY_MEMORY])[0]
         ram = item[_KEY_RAM]
         vrams = item[_KEY_VRAMS]
@@ -337,10 +451,11 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
             vram_bytes=sum(per_device_vram),
             ram_bytes=int(ram[_KEY_NONUMA]),
             unified_bytes=int(ram[_KEY_UMA]) + sum(per_device_unified),
+            mapped_weights_bytes=int((report.get(_KEY_METADATA) or {}).get(_KEY_FILE_SIZE, 0)),
             per_device_vram=per_device_vram,
             per_device_unified=per_device_unified,
         )
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise ProviderError(
             f"Could not size the model {path_str!r}: unexpected estimator output "
             f"({type(exc).__name__}: {exc}).",

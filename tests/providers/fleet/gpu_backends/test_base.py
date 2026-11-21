@@ -107,6 +107,21 @@ def test_run_smi_returns_empty_on_oserror(monkeypatch: pytest.MonkeyPatch) -> No
     assert run_smi("missing-tool", []) == ""
 
 
+def test_run_tool_keeps_the_exit_code_and_its_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(base_mod, "run_bounded", lambda *_a, **_k: ("Failed\n", 18))
+    assert base_mod.run_tool("nvidia-smi", [], 5.0) == ("Failed\n", 18)
+
+
+def test_run_tool_has_no_exit_code_when_the_tool_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(base_mod, "run_bounded", _boom)
+    assert base_mod.run_tool("nvidia-smi", [], 5.0) == ("", None)
+
+
 def test_run_smi_resolves_which_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
     resolved: list[str] = []
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -13,7 +12,7 @@ from typing import IO, TYPE_CHECKING, cast
 from lilbee.data.extract.document import _title_scope, chunk_and_embed_pages
 from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.data.title import derive_title
-from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -161,7 +160,7 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
 _WRITE_BATCH_ROWS = 10_000
 
 
-def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: threading.Event | None = None) -> None:
+def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: CancelSignal | None = None) -> None:
     """Encode *table* into *sink* as parquet, one row group per batch.
 
     Driving a ParquetWriter row group by row group rather than calling
@@ -181,7 +180,7 @@ def _write_parquet(table: pa.Table, sink: IO[bytes], cancel: threading.Event | N
             writer.write_table(pa.Table.from_batches([batch], table.schema))
 
 
-def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: threading.Event | None = None) -> None:
+def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: CancelSignal | None = None) -> None:
     """Encode *table* into *sink* as jsonl, one write per batch.
 
     One JSON object per row, keyed by the table's columns, so jsonl stays in step
@@ -214,7 +213,7 @@ def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
 
 
 def write_dataset(
-    table: pa.Table, path: Path, fmt: DatasetFormat, cancel: threading.Event | None = None
+    table: pa.Table, path: Path, fmt: DatasetFormat, cancel: CancelSignal | None = None
 ) -> None:
     """Write the dataset *table* to *path* in the given format, a batch at a time.
 

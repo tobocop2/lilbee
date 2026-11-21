@@ -10,11 +10,13 @@ import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import pytest
 
-from tests.conformance.preset_check import recording
+from tests.conformance.preset_check import Setup, fixture_json, recording
 from tests.conformance.record_presets import build_parser, token_from
+from tests.conformance.request_set import JSON_ASK
 
 _TOKEN = "s3cret-token-value"  # pragma: allowlist secret
 
@@ -217,3 +219,195 @@ class TestRedirects:
         ):
             assert _post(proxy, "/v1/embeddings")[0] == 200
         assert seen == [("lilbee", "/v1/embeddings", f"Bearer {_TOKEN}")]
+
+
+class TestFixtureJson:
+    def test_the_fixture_holds_the_status_and_body_of_each_error_answer(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+        with _server("lilbee", seen) as upstream, recording(upstream) as (proxy, tape):
+            assert _post(proxy, "/v1/chat/completions")[0] == 401
+        setup = Setup(("chat",), {"chat": "m"})
+        doc = fixture_json("lilbee", "1", setup, {}, tape)
+        assert doc["error_answers"] == [[401, '{"ok": false, "from": "lilbee"}']]
+
+
+class TestOverflowStep:
+    def test_a_served_window_refuses_the_prompt_before_any_request(self, tmp_path) -> None:
+        from tests.conformance.preset_check import _overflow, configured, replaying
+
+        setup = Setup(("chat",), {"chat": "m"}, window=40960)
+        with (
+            replaying([]) as url,
+            recording(url) as (proxy, tape),
+            configured(proxy, setup, tmp_path),
+        ):
+            outcome = _overflow(setup)
+        assert tape.exchanges == []
+        assert outcome.ok
+        assert outcome.detail == "kind=context_overflow"
+
+    def test_a_step_with_no_answer_fails_at_the_cap(self, tmp_path, monkeypatch) -> None:
+        import time
+
+        from tests.conformance import preset_check
+
+        class Hangs:
+            def chat(self, *args: object, **kwargs: object) -> None:
+                time.sleep(5)
+
+        monkeypatch.setattr(preset_check, "create_sdk_provider", lambda: Hangs())
+        monkeypatch.setattr(preset_check, "_OVERFLOW_CAP_S", 0.2)
+        setup = Setup(("chat",), {"chat": "m"})
+        started = time.monotonic()
+        outcome = preset_check._overflow(setup)
+        assert time.monotonic() - started < 2
+        assert not outcome.ok
+        assert outcome.detail == "no answer within the cap"
+
+    def test_the_window_is_read_from_the_fixture(self, tmp_path) -> None:
+        from tests.conformance.preset_check import load_fixture
+
+        doc = fixture_json(
+            "s", "1", Setup(("chat",), {"chat": "m"}, window=4096), {}, _empty_tape()
+        )
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        assert load_fixture(path)[0].window == 4096
+
+
+def _empty_tape():
+    from tests.conformance.preset_check import _Tape
+
+    return _Tape()
+
+
+@contextmanager
+def _chat_server(
+    content: str, bodies: list[dict], finish: str = "stop", ask_status: int = 200
+) -> Iterator[str]:
+    """A local chat server that keeps each request body and answers *content* to every one.
+
+    The JSON ask gets *ask_status*; every other request gets 200.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            size = int(self.headers.get("Content-Length") or 0)
+            request = json.loads(self.rfile.read(size))
+            bodies.append(request)
+            message = {"role": "assistant", "content": content}
+            reply = {"choices": [{"message": message, "finish_reason": finish}]}
+            body = json.dumps(reply).encode()
+            asked = request.get("messages", [{}])[0].get("content") == JSON_ASK
+            self.send_response(ask_status if asked else 200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+_FENCED = '```json\n{"city": "Paris", "pop": 2100000}\n```'
+_BARE = '{"city": "Paris", "pop": 2100000}'
+
+
+def _run_json_step(
+    tmp_path, engine: str, content: str, step: str, finish: str = "stop", ask_status: int = 200
+) -> tuple[Any, list[dict]]:
+    from tests.conformance import preset_check
+
+    bodies: list[dict] = []
+    setup = Setup(("chat",), {"chat": "m"}, strict=True, engine=engine)
+    server = _chat_server(content, bodies, finish, ask_status)
+    with server as url, preset_check.configured(url, setup, tmp_path):
+        outcome = preset_check._STEP_FUNCTIONS[step](setup)
+    return outcome, bodies
+
+
+def _formats(bodies: list[dict]) -> list[Any]:
+    return [body["response_format"] for body in bodies if "response_format" in body]
+
+
+class TestEngineJsonSteps:
+    def test_mlx_refuses_a_schema_before_the_chat_request(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "mlx", _BARE, "json_schema")
+        assert outcome.ok
+        assert outcome.detail == "refused kind=bad_request"
+        assert _formats(bodies) == []
+        assert all(body["messages"][0]["content"] != JSON_ASK for body in bodies)
+
+    def test_mlx_drops_json_object_and_the_scan_finds_the_fenced_object(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "mlx", _FENCED, "json_object")
+        assert outcome.ok
+        assert "scan found an object=True" in outcome.detail
+        assert _formats(bodies) == []
+        assert any(body["messages"][0]["content"] == JSON_ASK for body in bodies)
+
+    @pytest.mark.parametrize("engine", ["mlx", "llama.cpp"])
+    def test_the_json_ask_goes_out_as_lilbee_sends_one(self, tmp_path, engine: str) -> None:
+        """lilbee asks for JSON with thinking off, so a thinking model does not spend the cap."""
+        _, bodies = _run_json_step(tmp_path, engine, _FENCED, "json_object")
+        ask = next(body for body in bodies if body["messages"][0]["content"] == JSON_ASK)
+        assert ask["chat_template_kwargs"] == {"enable_thinking": False}
+        assert ask["max_tokens"] == 256
+
+    def test_mlx_passes_json_object_on_a_full_answer_the_scan_cannot_read(self, tmp_path) -> None:
+        """MLX promises no JSON: the step judges that lilbee drops the format, not the model."""
+        broken = '```json\n{"city": "Paris", "population": 16,000,000}\n```'
+        outcome, bodies = _run_json_step(tmp_path, "mlx", broken, "json_object")
+        assert outcome.ok
+        assert "scan found an object=False" in outcome.detail
+        assert _formats(bodies) == []
+
+    def test_mlx_fails_json_object_when_the_answer_is_cut_off(self, tmp_path) -> None:
+        outcome, _ = _run_json_step(tmp_path, "mlx", _FENCED, "json_object", finish="length")
+        assert not outcome.ok
+        assert "finish=length" in outcome.detail
+
+    def test_llama_cpp_sends_the_schema_and_judges_the_reply(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "llama.cpp", _BARE, "json_schema")
+        assert outcome.ok
+        assert [f["type"] for f in _formats(bodies)] == ["json_schema"]
+
+    def test_a_server_error_on_the_schema_ask_fails_the_step(self, tmp_path) -> None:
+        """Only lilbee's own refusal on an engine without the format passes; an error fails."""
+        outcome, bodies = _run_json_step(
+            tmp_path, "llama.cpp", _BARE, "json_schema", ask_status=500
+        )
+        assert not outcome.ok
+        assert outcome.detail.startswith("refused kind=")
+        assert outcome.detail != "refused kind=bad_request"
+        assert [f["type"] for f in _formats(bodies)] == ["json_schema"]
+
+    def test_llama_cpp_fails_a_fenced_reply_to_json_object(self, tmp_path) -> None:
+        outcome, bodies = _run_json_step(tmp_path, "llama.cpp", _FENCED, "json_object")
+        assert not outcome.ok
+        assert [f["type"] for f in _formats(bodies)] == ["json_object"]
+
+    def test_the_engine_is_read_from_the_fixture(self, tmp_path) -> None:
+        from tests.conformance.preset_check import load_fixture
+
+        setup = Setup(("chat",), {"chat": "m"}, engine="mlx")
+        doc = fixture_json("s", "1", setup, {}, _empty_tape())
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        assert load_fixture(path)[0].engine == "mlx"
+
+    def test_the_parser_takes_an_engine_name_and_refuses_another_word(self) -> None:
+        base = ["--server", "s", "--version", "1", "--url", "u", "--roles", "chat"]
+        rest = ["--models", "chat=m", "--out", "o.json"]
+        assert build_parser().parse_args([*base, *rest, "--engine", "mlx"]).engine == "mlx"
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([*base, *rest, "--engine", "mlx-lm"])

@@ -50,6 +50,7 @@ def _sources_schema() -> pa.Schema:
             pa.field("held_out", pa.utf8()),
             pa.field("held_hash", pa.utf8()),
             pa.field("held_reason", pa.utf8()),
+            pa.field("held_inputs", pa.utf8()),
         ]
     )
 

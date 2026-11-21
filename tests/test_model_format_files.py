@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import httpx
 import pytest
 
 from lilbee.app.services import get_services
-from lilbee.catalog import download
-from lilbee.catalog.formats import formats_from_tags, hf_listing_params, select_files
-from lilbee.catalog.models import CatalogModel
+from lilbee.catalog import download, formats
+from lilbee.catalog.formats import (
+    formats_from_tags,
+    hf_listing_params,
+    select_files,
+)
+from lilbee.catalog.models import CatalogModel, estimate_size_gb
 from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry, register_downloaded_model
@@ -186,6 +192,7 @@ class TestSelectFiles:
             ModelFormat.MLX: ["m-Q4_K_M.gguf", "config.json"],
             ModelFormat.SAFETENSORS: ["m-Q4_K_M.gguf", "openvino_model.xml"],
             ModelFormat.OPENVINO: ["m-Q4_K_M.gguf", "model.safetensors"],
+            ModelFormat.XDNA: ["m-Q4_K_M.gguf", "model.safetensors"],
         }[fmt]
         assert select_files(fmt, [*blobs, *other, "params"]) == []
 
@@ -237,6 +244,48 @@ class TestHfClientFormat:
         row = _hub_row("o/m", files, ["safetensors"])
         page, _params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
         assert page.models == []
+
+    def test_the_listing_asks_for_the_safetensors_figures(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], ["safetensors"])
+        _page, params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
+        assert "safetensors" in params.get_list("expand")
+
+    @pytest.mark.parametrize("fmt", [ModelFormat.SAFETENSORS, ModelFormat.MLX])
+    def test_a_row_carries_its_weight_size_from_the_listing_counts(
+        self, monkeypatch: pytest.MonkeyPatch, fmt: ModelFormat
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], [fmt.value, "safetensors"])
+        counts = {"BF16": 3 * 1024**3, "F32": 1024**3 // 4}
+        row["safetensors"] = {"parameters": counts, "total": sum(counts.values())}
+        page, _params = self._fetch(monkeypatch, [row], fmt)
+        assert page.models[0].size_gb == 7.0
+
+    def test_a_row_with_no_figures_keeps_a_size_of_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], ["safetensors"])
+        page, _params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
+        assert page.models[0].size_gb == 0.0
+
+    def test_a_row_with_unreadable_figures_keeps_a_size_of_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m", ["config.json", "model.safetensors"], ["safetensors"])
+        row["safetensors"] = {"parameters": {"BF16": -1}, "total": -1}
+        page, _params = self._fetch(monkeypatch, [row], ModelFormat.SAFETENSORS)
+        assert page.models[0].size_gb == 0.0
+
+    def test_a_gguf_row_keeps_its_size_from_the_gguf_parameter_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = _hub_row("o/m-gguf", ["m-Q4_K_M.gguf"], ["gguf"])
+        row["safetensors"] = {"parameters": {"BF16": 100 * 1024**3}, "total": 100 * 1024**3}
+        row["gguf"] = {"total": 8_000_000_000}
+        page, _params = self._fetch(monkeypatch, [row], ModelFormat.GGUF)
+        assert page.models[0].size_gb == estimate_size_gb(8_000_000_000, "m-Q4_K_M.gguf")
+        assert 0 < page.models[0].size_gb < 100
 
     def test_gguf_listing_stays_gguf_with_the_search_word(
         self, monkeypatch: pytest.MonkeyPatch
@@ -316,7 +365,7 @@ class TestDownloadRouting:
             ),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _repo, name, _dir: tmp_path / name if name in old else None,
             ),
             mock.patch.object(download, "_fetch_files", side_effect=fake_fetch),
@@ -362,7 +411,7 @@ class TestDownloadRouting:
         seen: list[tuple[int, int]] = []
         with (
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
-            mock.patch.object(download, "_cached_path", side_effect=lambda _r, n, d: d / n),
+            mock.patch.object(download, "cached_file_path", side_effect=lambda _r, n, d: d / n),
             mock.patch.object(download, "fetch_remote_file") as probe,
         ):
             path = download.fetch_format_files(
@@ -383,7 +432,7 @@ class TestDownloadRouting:
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _r, n, d: d / n if n in cached else None,
             ),
             mock.patch.object(
@@ -401,6 +450,31 @@ class TestDownloadRouting:
             download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
         assert fetch.call_count == 3
 
+    def test_an_unreadable_cache_stops_a_non_gguf_install_with_a_plain_error(
+        self, tmp_path: Path
+    ) -> None:
+        names = ["model.safetensors"]
+
+        real_glob = Path.glob
+
+        def _refuse(self: Path, pattern: str, **kwargs: Any) -> object:
+            if not self.is_relative_to(tmp_path):
+                return real_glob(self, pattern, **kwargs)
+            raise PermissionError(13, "Permission denied")
+
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=names),
+            mock.patch.object(download, "cached_file_path", return_value=None),
+            mock.patch.object(
+                download,
+                "fetch_remote_file",
+                return_value=download.RemoteFile(10, "model.safetensors"),
+            ),
+            mock.patch.object(Path, "glob", _refuse),
+            pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*models--"),
+        ):
+            download.fetch_format_files(_entry(ModelFormat.MLX), tmp_path, None)
+
     def test_the_space_check_still_refuses_when_the_missing_files_do_not_fit(
         self, tmp_path: Path
     ) -> None:
@@ -410,7 +484,7 @@ class TestDownloadRouting:
             mock.patch.object(download, "_repo_sibling_files", return_value=names),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _r, n, d: d / n if n == "config.json" else None,
             ),
             mock.patch.object(
@@ -442,6 +516,67 @@ class TestDownloadRouting:
                 on_progress=lambda a, b: seen.append((a, b)),
             )
         assert seen == [(15, 15)]
+
+
+_INDEX = "model.safetensors.index.json"
+
+
+def _index_text(*shards: str) -> str:
+    return json.dumps({"weight_map": {f"layer{n}": shard for n, shard in enumerate(shards)}})
+
+
+class TestIndexDeclaredShards:
+    def test_a_shard_the_index_names_and_the_listing_lacks_is_refused(self) -> None:
+        selected = [_INDEX, "part-a.safetensors", "config.json"]
+        with pytest.raises(ValueError, match=r"Incomplete model: part-b\.safetensors is missing"):
+            formats.require_declared_shards(
+                _index_text("part-a.safetensors", "part-b.safetensors"), selected
+            )
+
+    def test_a_complete_declared_set_passes(self) -> None:
+        selected = [_INDEX, "part-a.safetensors", "part-b.safetensors"]
+        formats.require_declared_shards(
+            _index_text("part-a.safetensors", "part-b.safetensors"), selected
+        )
+
+    @pytest.mark.parametrize("text", ["not json", "[]", "{}", '{"weight_map": []}'])
+    def test_an_index_without_a_weight_map_is_refused(self, text: str) -> None:
+        with pytest.raises(ValueError, match="lists no weight_map"):
+            formats.require_declared_shards(text, [_INDEX])
+
+    def test_a_pull_refuses_a_missing_declared_shard_before_any_weight_fetch(
+        self, tmp_path: Path
+    ) -> None:
+        listing = [_INDEX, "part-a.safetensors", "config.json"]
+        entry = _entry(ModelFormat.SAFETENSORS)
+        probe = mock.Mock()
+        index = mock.Mock(spec=Path)
+        index.read_text.return_value = _index_text("part-a.safetensors", "part-b.safetensors")
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=listing),
+            mock.patch.object(download, "cached_file_path", return_value=None) as cached,
+            mock.patch.object(download, "_fetch_files", return_value=[index]) as fetch,
+            pytest.raises(ValueError, match=r"part-b\.safetensors is missing"),
+        ):
+            download.fetch_format_files(entry, tmp_path, "token", on_probe=probe)
+        cached.assert_called_once_with("org/repo", _INDEX, tmp_path)
+        fetch.assert_called_once_with(entry, tmp_path, "token", [_INDEX], None, probe)
+        index.read_text.assert_called_once_with(encoding="utf-8")
+
+    def test_a_cached_index_is_read_without_a_fetch(self, tmp_path: Path) -> None:
+        listing = [_INDEX, "part-a.safetensors", "part-b.safetensors"]
+        index = tmp_path / _INDEX
+        index.write_text(_index_text("part-a.safetensors", "part-b.safetensors"), encoding="utf-8")
+        for name in listing[1:]:
+            (tmp_path / name).write_bytes(b"x")
+        with (
+            mock.patch.object(download, "_repo_sibling_files", return_value=listing),
+            mock.patch.object(download, "cached_file_path", side_effect=lambda _r, n, d: d / n),
+            mock.patch.object(download, "_fetch_files") as fetch,
+        ):
+            path = download.fetch_format_files(_entry(ModelFormat.SAFETENSORS), tmp_path, None)
+        assert path == tmp_path / "part-a.safetensors"
+        fetch.assert_not_called()
 
 
 def _seed_snapshot(models_dir: Path, files: dict[str, bytes]) -> dict[str, Path]:
@@ -478,6 +613,15 @@ class TestNonGgufManifest:
             hashlib.sha256(files[n]).hexdigest() for n in ("config.json", "tokenizer.json")
         )
 
+    def test_a_manifest_records_the_ref_that_names_its_format(self, tmp_path: Path) -> None:
+        paths = _seed_snapshot(tmp_path, {"model.safetensors": b"w" * 8, "config.json": b"{}"})
+        with mock.patch.object(cfg, "models_dir", tmp_path):
+            register_downloaded_model(_entry(ModelFormat.SAFETENSORS), paths["model.safetensors"])
+        registry = ModelRegistry(tmp_path)
+        assert registry.has_manifest("org/repo#safetensors")
+        assert not registry.has_manifest("org/repo#mlx")
+        assert not registry.has_manifest("org/repo")
+
     def test_gguf_install_still_records_gguf(self, tmp_path: Path) -> None:
         paths = _seed_snapshot(tmp_path, {"m-Q4_K_M.gguf": b"GGUF" + b"\x00" * 8})
         entry = _entry(ModelFormat.GGUF, "m-Q4_K_M.gguf")
@@ -510,7 +654,7 @@ class _PullingManager:
             mock.patch.object(download, "_repo_sibling_files", return_value=_DENSE_LISTING),
             mock.patch.object(
                 download,
-                "_cached_path",
+                "cached_file_path",
                 side_effect=lambda _r, name, _d: (
                     self.tmp_path / name if name in self.cached else None
                 ),
@@ -542,6 +686,30 @@ class TestPullOfAnInstalledModel:
         assert len(manager.fetched) == 1
         assert {"modules.json", "2_Dense/model.safetensors"} <= set(manager.fetched[0])
 
+    def test_a_repeat_pull_of_an_installed_safetensors_model_reports_already_installed(
+        self, tmp_path: Path
+    ) -> None:
+        from lilbee.app import models as models_mod
+        from lilbee.catalog.types import ModelSource
+        from lilbee.modelhub.model_manager import ModelManager
+
+        paths = _seed_snapshot(tmp_path, {"model.safetensors": b"w" * 8, "config.json": b"{}"})
+        with mock.patch.object(cfg, "models_dir", tmp_path):
+            register_downloaded_model(_entry(ModelFormat.SAFETENSORS), paths["model.safetensors"])
+        manager = ModelManager(tmp_path, cfg)
+        assert manager.is_installed(self._REF, ModelSource.NATIVE)
+        with (
+            mock.patch.object(manager, "pull") as pull,
+            mock.patch.object(
+                models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
+            ),
+            mock.patch.object(models_mod, "ensure_vision_projector", return_value=None),
+        ):
+            result = models_mod.pull_model_data(self._REF, ModelSource.NATIVE)
+        assert result.status == models_mod.PullStatus.ALREADY_INSTALLED
+        assert result.warning is None
+        assert "on_notice" not in pull.call_args.kwargs
+
     @staticmethod
     def _pull_offline(ref: str, error: Exception) -> tuple[str, int]:
         from lilbee.app import models as models_mod
@@ -554,7 +722,7 @@ class TestPullOfAnInstalledModel:
             mock.patch.object(
                 models_mod, "get_services", return_value=mock.Mock(model_manager=manager)
             ),
-            mock.patch.object(models_mod, "_ensure_vision_projector"),
+            mock.patch.object(models_mod, "ensure_vision_projector", return_value=None),
         ):
             result = models_mod.pull_model_data(ref, ModelSource.NATIVE)
         return result.status, manager.pull.call_count
@@ -572,15 +740,21 @@ class TestPullOfAnInstalledModel:
     def test_every_ref_kind_stays_installed_offline(self, ref: str, calls: int) -> None:
         from lilbee.app.models import PullStatus
 
-        error = RuntimeError("Cannot query files for org/repo: offline")
+        error = download.ListingOfflineError("Cannot reach HuggingFace to list org/repo")
         assert self._pull_offline(ref, error) == (PullStatus.ALREADY_INSTALLED, calls)
 
-    def test_a_safetensors_pull_without_an_engine_stays_installed(self) -> None:
-        from lilbee.app.models import PullStatus
-        from lilbee.providers.fleet.engines.choice import NoEngineError
-
-        status, calls = self._pull_offline("org/repo#safetensors", NoEngineError("none"))
-        assert (status, calls) == (PullStatus.ALREADY_INSTALLED, 1)
+    @pytest.mark.parametrize(
+        "error",
+        [
+            download.ListingFailedError("Cannot query files for org/repo: HTTP 503"),
+            RuntimeError("No safetensors model files found in org/repo"),
+            PermissionError("org/repo requires HuggingFace authentication."),
+        ],
+        ids=["failed-fetch", "empty-repo", "gated"],
+    )
+    def test_a_real_fault_on_a_repeat_pull_reaches_the_caller(self, error: Exception) -> None:
+        with pytest.raises(type(error), match=str(error)[:20]):
+            self._pull_offline("org/repo#safetensors", error)
 
     def test_a_bug_in_the_fetch_still_surfaces(self) -> None:
         with pytest.raises(KeyError, match="bug"):

@@ -55,6 +55,15 @@ class Phase(StrEnum):
     QUERY = "query"
 
 
+class RoleTarget(StrEnum):
+    """The kind of device a user names for one role."""
+
+    AUTO = "auto"
+    CPU = "cpu"
+    GPU = "gpu"
+    NPU = "npu"
+
+
 class RerankMode(StrEnum):
     """Resolved reranker serving mode for one RERANK server.
 

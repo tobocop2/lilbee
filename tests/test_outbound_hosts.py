@@ -20,6 +20,7 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
     {
         # Runtime endpoints.
         "huggingface.co",  # model catalog + hub downloads
+        "raw.githubusercontent.com",  # NPU model list, one GET at a release tag pinned in source
         "localhost",  # default Ollama / remote backend (user-configurable)
         "127.0.0.1",  # lilbee serve default bind address, used in agent-config output
         # API-key checks in providers/key_check.py: one authenticated GET per
@@ -42,6 +43,9 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         # the reader gets the install command for their hardware. A string in a
         # message; nothing fetches it.
         "lilbee.sh",
+        # Lemonade install guide, named in the message that says the engine is missing.
+        # A string in a message; nothing fetches it.
+        "lemonade-server.ai",
         # Agent-client documentation links cited from agent_configs/ module docstrings.
         "docs.litellm.ai",
         "opencode.ai",

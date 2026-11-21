@@ -6,6 +6,7 @@ the health probe are fake.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.binary import engine_pin
@@ -90,7 +92,7 @@ def _new_process_ladder(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, states: _States
 ) -> tuple[bool | None, FleetProvider]:
     """Run the real ladder as a new process on the current config, with live users present."""
-    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir: dict(states))
+    monkeypatch.setattr(prov_mod, "_healthy_states", lambda _dir, **_kw: dict(states))
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda _dir, **_kw: True)
     monkeypatch.setattr(prov_mod, "_watch_bound_engine", lambda _dir: None)
     monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted, _engine: True)
@@ -346,6 +348,46 @@ def test_the_restart_log_names_each_launch_field_that_moved() -> None:
     assert prov_mod._launch_changes((), (after,)) == "replicas 0 -> 1"
 
 
+def test_the_restart_log_skips_a_field_outside_the_launch_plan() -> None:
+    before = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=2048, trained_ctx=0)
+    after = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=1536, trained_ctx=4096)
+    assert prov_mod._launch_changes((before,), (after,)) == "ctx 2048 -> 1536"
+    same_plan = InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m", ctx=2048, trained_ctx=4096)
+    assert prov_mod._launch_changes((before,), (same_plan,)) == "no launch field moved"
+
+
+def test_a_reload_keeps_a_group_whose_launches_differ_only_outside_the_plan(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    provider, states = _owner(monkeypatch, tmp_path)
+    kept = dict(states)
+    with provider._lock:
+        for group, launches in list(provider._launches.items()):
+            provider._launches[group] = tuple(
+                dataclasses.replace(launch, trained_ctx=launch.trained_ctx + 4096)
+                for launch in launches
+            )
+        assert provider._launches
+    provider._reload_pass()
+    assert all(states[group] is kept[group] for group in kept)
+    assert set(states) == set(kept)
+    with provider._lock:
+        provider._launches[SwapGroup.CHAT] = tuple(
+            dataclasses.replace(launch, ctx=launch.ctx + 1)
+            for launch in provider._launches[SwapGroup.CHAT]
+        )
+    provider._reload_pass()
+    assert states[SwapGroup.CHAT] is not kept[SwapGroup.CHAT]
+
+
+def test_every_launch_field_but_the_plan_time_one_is_in_the_plan_record() -> None:
+    fields = {field.name for field in dataclasses.fields(InstanceLaunch)}
+    record = set(InstanceLaunch(WorkerRole.CHAT, ["x"], {}, "m").to_state())
+    assert fields
+    assert fields - record == {"trained_ctx"}
+    assert record <= fields
+
+
 @pytest.mark.parametrize(
     ("keys", "roles", "replans"),
     [
@@ -377,6 +419,23 @@ def test_a_thread_that_cannot_start_leaves_no_reload_in_flight(
     assert provider._reload_owed == frozenset()
 
 
+def test_a_request_never_waits_on_a_reload_that_could_not_start(
+    real_planner, monkeypatch, tmp_path: Path
+) -> None:
+    provider, _states = _owner(monkeypatch, tmp_path)
+    monkeypatch.setattr(prov_mod, "_RELOAD_GAP_WAIT_S", 0.2)
+
+    def refuse(_thread: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    with pytest.raises(RuntimeError, match="start new thread"):
+        provider.replan_fleet()
+    provider._clients[WorkerRole.CHAT] = []
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        provider._require_clients(WorkerRole.CHAT)
+
+
 def _peer_mid_call_over_an_owner_restart(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, flash_attention: bool
 ) -> tuple[FleetProvider, _States, list[Path]]:
@@ -402,7 +461,7 @@ def _peer_mid_call_over_an_owner_restart(
     # bind builds there.
     monkeypatch.setattr(prov_mod, "live_users_exist", lambda d, **_kw: Path(d) == tmp_path)
     monkeypatch.setattr(
-        prov_mod, "_healthy_states", lambda d: dict(states) if Path(d) == tmp_path else {}
+        prov_mod, "_healthy_states", lambda d, **_kw: dict(states) if Path(d) == tmp_path else {}
     )
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
     monkeypatch.setattr(prov_mod, "engine_record_exists", lambda _d: False)

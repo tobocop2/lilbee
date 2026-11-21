@@ -13,7 +13,8 @@ from typing import Any
 import pytest
 
 from lilbee.app import engine_choice
-from lilbee.app.engine_choice import engine_for_format, host_facts, resolve_engines
+from lilbee.app.engine_choice import engine_for_format, resolve_engines
+from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
@@ -23,11 +24,12 @@ from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
 from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
     EngineAssignment,
-    HostFacts,
     NoEngineError,
     choose_engine,
     installed_engines,
 )
+from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
+from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
@@ -88,7 +90,9 @@ def test_a_role_with_no_engine_raises_and_the_others_still_answer() -> None:
 def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
     kwargs = dict(
         fmt=ModelFormat.GGUF,
-        host=HostFacts(system="linux", machine="x86_64"),
+        host=lambda: collect(
+            system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None
+        ),
         installed={EngineName.LLAMA: frozenset({ModelFormat.GGUF})},
         preferred="mlx",
         override=None,
@@ -118,13 +122,6 @@ def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
         **{**kwargs, "fmt": ModelFormat.MLX, "preferred": "auto"}, role=WorkerRole.EMBED
     )
     assert named.notice == f"For embed: {none.notice}"
-
-
-def test_host_facts_are_lower_case(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("platform.system", lambda: "Darwin")
-    monkeypatch.setattr("platform.machine", lambda: "ARM64")
-    facts = host_facts()
-    assert (facts.system, facts.machine) == ("darwin", "arm64")
 
 
 def test_placement_plans_with_the_adapter_the_chat_role_resolves(
@@ -160,7 +157,7 @@ class _StoreEngine(FakeAdapter):
     sha = ""
 
     def pin_record(self) -> Mapping[str, Any]:
-        return {**super().pin_record(), "sha256": self.sha}
+        return {**super().pin_record(), "sha256": self.sha, "platforms": {}}
 
 
 def _install_build(models_dir: Path, version: str = "1.2.3") -> str:
@@ -171,7 +168,7 @@ def _install_build(models_dir: Path, version: str = "1.2.3") -> str:
         archive.writestr(tool, "#!/bin/sh\n")
         archive.writestr("pkg-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    lock = PinLock("mistral.rs", version, "cpu", {}, ("MIT",), sha)
+    lock = PinLock("mistral.rs", version, "cpu", {}, ("MIT",), sha, "server")
     EngineStore(engines_root(models_dir)).install_from_wheel(lock, wheel)
     return sha
 
@@ -354,13 +351,13 @@ def test_an_adapter_that_never_states_bundled_is_reported_not_hidden(
 
 GGUF = ModelFormat.GGUF
 BOTH = {EngineName.LLAMA: frozenset({GGUF}), EngineName.MISTRAL: frozenset({GGUF})}
-LINUX = HostFacts(system="linux", machine="x86_64")
+LINUX = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
 
 
 def _rule(role: WorkerRole, preferred: str = "auto", override: str | None = None) -> Any:
     return choose_engine(
         fmt=GGUF,
-        host=LINUX,
+        host=lambda: LINUX,
         installed=BOTH,
         preferred=preferred,
         override=override,
@@ -372,8 +369,52 @@ def _rule(role: WorkerRole, preferred: str = "auto", override: str | None = None
 def test_a_preferred_engine_that_does_not_serve_rerank_leaves_rerank_on_the_next_engine() -> None:
     rerank = _rule(WorkerRole.RERANK, preferred="mistral.rs")
     assert (rerank.name, rerank.notice_kind, rerank.notice) == (EngineName.LLAMA, None, None)
-    for role in (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION):
+    for role in (WorkerRole.CHAT, WorkerRole.VISION):
         assert _rule(role, preferred="mistral.rs").name is EngineName.MISTRAL
+
+
+def test_a_gguf_embed_model_never_goes_to_mistral_by_preference() -> None:
+    embed = _rule(WorkerRole.EMBED, preferred="mistral.rs")
+    assert (embed.name, embed.notice_kind, embed.notice) == (EngineName.LLAMA, None, None)
+
+
+def test_a_stored_override_of_mistral_for_a_gguf_embed_falls_back_and_names_the_format() -> None:
+    embed = _rule(WorkerRole.EMBED, override="mistral.rs")
+    assert embed.name is EngineName.LLAMA
+    assert embed.notice == (
+        "Engine mistral.rs for embed cannot load the gguf format of org/m. Using llama.cpp."
+    )
+
+
+def test_a_gguf_embed_model_has_no_engine_when_only_mistral_is_installed() -> None:
+    only_mistral = {EngineName.MISTRAL: frozenset({GGUF})}
+    embed = choose_engine(
+        fmt=GGUF,
+        host=lambda: LINUX,
+        installed=only_mistral,
+        preferred="mistral.rs",
+        override="mistral.rs",
+        role=WorkerRole.EMBED,
+        model="org/m",
+    )
+    assert embed.name is None
+    assert embed.notice == (
+        "Engine mistral.rs for embed cannot load the gguf format of org/m. "
+        "No installed engine loads the gguf format for embed."
+    )
+
+
+def test_a_safetensors_embed_model_still_goes_to_mistral() -> None:
+    embed = choose_engine(
+        fmt=ModelFormat.SAFETENSORS,
+        host=lambda: LINUX,
+        installed={EngineName.MISTRAL: frozenset({ModelFormat.SAFETENSORS})},
+        preferred="mistral.rs",
+        override=None,
+        role=WorkerRole.EMBED,
+        model="org/m",
+    )
+    assert embed.name is EngineName.MISTRAL
 
 
 def test_a_stored_override_for_an_unserved_role_falls_back_with_a_notice() -> None:
@@ -388,11 +429,14 @@ def test_a_stored_override_for_an_unserved_role_falls_back_with_a_notice() -> No
 class _NoChat(FakeAdapter):
     served_roles = frozenset({WorkerRole.RERANK, WorkerRole.EMBED})
 
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
+
 
 def test_a_stand_in_with_no_chat_is_never_chosen_for_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(ADAPTERS, EngineName.TEI, _NoChat())  # type: ignore[arg-type]
     installed = {**BOTH, EngineName.TEI: frozenset({GGUF})}
-    kwargs: dict[str, Any] = dict(fmt=GGUF, host=LINUX, installed=installed, override=None)
+    kwargs: dict[str, Any] = dict(fmt=GGUF, host=lambda: LINUX, installed=installed, override=None)
     chat = choose_engine(**kwargs, preferred="tei", role=WorkerRole.CHAT)
     embed = choose_engine(**kwargs, preferred="tei", role=WorkerRole.EMBED)
     assert (chat.name, embed.name) == (EngineName.LLAMA, EngineName.TEI)
@@ -406,16 +450,36 @@ def test_the_default_skips_an_engine_that_does_not_serve_the_role(
     assert chat.name is None
     assert chat.notice == (
         "For chat: No engine is chosen by default for the gguf format of org/m. "
-        "Choose mistral.rs with lilbee engine use or lilbee engine prefer."
+        "Choose mistral.rs with lilbee engine use for this model, "
+        "or with lilbee engine prefer for every model without its own choice."
     )
     assert _rule(WorkerRole.EMBED).name is EngineName.LLAMA
+
+
+class _ChatOnly(FakeAdapter):
+    served_roles = frozenset({WorkerRole.CHAT})
+
+    def host_gate(self, host: HostCaps) -> HostGate:
+        return PASS
+
+
+def test_an_override_for_an_unserved_role_names_what_no_engine_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(ADAPTERS, EngineName.LLAMA, _ChatOnly())  # type: ignore[arg-type]
+    rerank = _rule(WorkerRole.RERANK, override="mistral.rs")
+    assert rerank.name is None
+    assert rerank.notice == (
+        "Engine mistral.rs for rerank does not serve this role. "
+        "No installed engine serves this role."
+    )
 
 
 def test_the_launch_plan_puts_rerank_on_the_next_engine_after_the_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(engine_choice, "installed_engines", lambda: BOTH)
-    monkeypatch.setattr(engine_choice, "host_facts", lambda: LINUX)
+    monkeypatch.setattr(runnable, "session_host", lambda: LINUX)
     config = Config()
     config.preferred_engine = EngineSetting.MISTRAL
     config.reranker_model = "org/rerank/r.gguf"

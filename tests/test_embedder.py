@@ -46,6 +46,31 @@ class TestTruncate:
         assert embedder.truncate(text) == text
 
 
+class TestEmbedOverflow:
+    def test_a_context_overflow_is_named_as_the_embedding_calls(self, embedder, mock_provider):
+        from lilbee.providers.base import (
+            EmbeddingOverflowError,
+            ProviderError,
+            ProviderErrorKind,
+        )
+
+        mock_provider.embed.side_effect = ProviderError(
+            "too long", provider="llama", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+        )
+        with pytest.raises(EmbeddingOverflowError, match="too long") as caught:
+            embedder.embed_batch(["a chunk"])
+        assert caught.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+        assert caught.value.provider == "llama"
+
+    def test_another_provider_error_passes_through_unchanged(self, embedder, mock_provider):
+        from lilbee.providers.base import EmbeddingOverflowError, ProviderError
+
+        mock_provider.embed.side_effect = ProviderError("engine crashed")
+        with pytest.raises(ProviderError, match="engine crashed") as caught:
+            embedder.embed_batch(["a chunk"])
+        assert not isinstance(caught.value, EmbeddingOverflowError)
+
+
 class TestEmbed:
     def test_returns_vector(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.1] * 768]

@@ -8,17 +8,16 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import httpx
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.engines import LLAMA
 from tests import _fake_sdk as fakes
 from tests._exit_probe import assert_probe_exits
-from tests._gguf_fixture import has_gguf_parser
+from tests._gguf_fixture import needs_gguf_parser as _needs_gguf_parser
 from tests._sys_modules import inject_modules
 
 if TYPE_CHECKING:
@@ -508,6 +507,29 @@ class TestRoutingProvider:
         with pytest.raises(NotImplementedError):
             rp.count_chat_prompt_tokens([{"role": "user", "content": "some text"}])
 
+    def test_routes_count_chat_text_tokens_to_local_engine_for_local_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.count_chat_text_tokens.return_value = 17
+        mock_sdk = mock.MagicMock()
+        rp._local = mock_llama
+        rp._sdk_provider = mock_sdk
+
+        cfg.chat_model = "vendor/Model-GGUF/model-Q4_K_M.gguf"
+        assert rp.count_chat_text_tokens("some text") == 17
+        mock_llama.count_chat_text_tokens.assert_called_once_with("some text")
+        mock_sdk.count_chat_text_tokens.assert_not_called()
+
+    def test_count_chat_text_tokens_for_remote_ref_is_none(self) -> None:
+        """A cloud model has no tokenize route, so the caller keeps the character rule."""
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+        rp = self._make_provider()
+        rp._sdk_provider = SdkLLMProvider(mock.MagicMock())
+
+        cfg.chat_model = "ollama/qwen3:8b"
+        assert rp.count_chat_text_tokens("some text") is None
+
     def test_local_ref_never_falls_through_to_sdk(self) -> None:
         """Local HF refs stay on the local engine even when the providers extra is installed.
 
@@ -813,6 +835,16 @@ class TestRoutingProvider:
         assert caps == ["completion", "vision"]
         mock_sdk.get_capabilities.assert_called_once_with("ollama/llava:7b")
 
+    def test_a_routed_sdk_model_does_not_report_vision(self) -> None:
+        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+        from tests.providers.test_sdk_llm_provider import FakeBackend
+
+        rp = self._make_provider()
+        backend = FakeBackend(show_model_result={"capabilities": ["completion", "vision"]})
+        rp._sdk_provider = SdkLLMProvider(backend)
+
+        assert rp.get_capabilities("ollama/llava:7b") == ["completion"]
+
     def test_warm_up_pool_forwards_to_native(self) -> None:
         """``warm_up_pool`` lazily constructs the native provider and warms it."""
         rp = self._make_provider()
@@ -1064,7 +1096,7 @@ class TestShowModelCapabilities:
 
         assert result is None
 
-    def test_get_capabilities_returns_list(self) -> None:
+    def test_get_capabilities_returns_the_list_without_vision(self) -> None:
         provider = self._make_provider()
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"capabilities": ["completion", "vision", "tools"]}
@@ -1073,7 +1105,7 @@ class TestShowModelCapabilities:
         with mock.patch("httpx.post", return_value=mock_resp):
             caps = provider.get_capabilities("ollama/llava:7b")
 
-        assert caps == ["completion", "vision", "tools"]
+        assert caps == ["completion", "tools"]
 
     def test_get_capabilities_returns_empty_on_error(self) -> None:
         provider = self._make_provider()
@@ -1190,11 +1222,6 @@ class TestChatCapacityComesFromTheAdoptedLaunch:
         # Nothing adopted: serialize rather than assume an engine with room.
         assert FleetProvider().max_concurrent_chats() == 1
         assert FleetProvider().served_chat_slots() is None
-
-
-_needs_gguf_parser = pytest.mark.skipif(
-    not has_gguf_parser(), reason="no gguf-parser on PATH (installed in the integration lane)"
-)
 
 
 class TestReadMmprojProjectorType:
@@ -1939,10 +1966,10 @@ class TestIterLinuxVulkanManifestPaths:
 
         real_glob = Path.glob
 
-        def _fake_glob(self: Path, pattern: str) -> object:
+        def _fake_glob(self: Path, pattern: str, **kwargs: Any) -> object:
             if self == unreadable:
                 raise OSError("simulated EACCES")
-            return real_glob(self, pattern)
+            return real_glob(self, pattern, **kwargs)
 
         with (
             mock.patch.object(Path, "glob", _fake_glob),
@@ -2681,7 +2708,7 @@ class TestReadGgufMetadata:
     def test_returns_none_when_no_parser_is_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without the engine extra there is no reader, and no engine to load with either."""
+        """With no engine installed there is no reader, and no engine to load with either."""
         from lilbee.providers.gguf_meta import read_gguf_metadata
 
         def _no_parser() -> Path:
@@ -3673,7 +3700,7 @@ class TestRoutingProviderRerank:
         rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.reranker_model = "openrouter/cohere/rerank-english-v3.0"
         scores = rp.rerank("q", ["a", "b"])
         assert scores == [0.9, 0.1]
         mock_sdk.rerank.assert_called_once_with("q", ["a", "b"])
@@ -3689,7 +3716,7 @@ class TestRoutingProviderRerank:
         rp._local = mock_llama
         rp._sdk_provider = mock_sdk
 
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.reranker_model = "openrouter/cohere/rerank-english-v3.0"
         with pytest.raises(ProviderError, match="hosted rerank backend not available"):
             rp.rerank("q", ["a", "b"])
         mock_sdk.rerank.assert_not_called()
@@ -3700,10 +3727,6 @@ class TestRoutingProviderRerank:
         assert rp.supports_rerank() is True
 
     def test_supports_rerank_native_delegates_to_llama(self) -> None:
-        """A bare repo is native once it is installed; the registry decides."""
-        from conftest import install_fake_model
-
-        install_fake_model("gpustack/bge-reranker-v2-m3-GGUF", "bge-Q4_K_M.gguf", "rerank")
         rp = self._make_provider()
         mock_llama = mock.MagicMock()
         mock_llama.supports_rerank.return_value = True
@@ -3713,50 +3736,81 @@ class TestRoutingProviderRerank:
         assert rp.supports_rerank() is True
         mock_llama.supports_rerank.assert_called_once()
 
-    def test_uninstalled_bare_repo_is_not_native(self) -> None:
-        """Nothing can vouch for an uninstalled bare repo, so it goes hosted."""
-        from lilbee.providers.serving import is_native_rerank_ref
+    def _engines(self, monkeypatch) -> None:
+        """Stand in for the engine assignment: every role has an engine."""
+        from types import SimpleNamespace
 
-        assert is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF", engine=LLAMA) is False
+        from lilbee.providers import routing_provider
+        from lilbee.providers.roles import WorkerRole
 
-    def test_native_ref_is_not_native_when_the_engine_serves_no_rerank_role(self) -> None:
-        from lilbee.providers.fleet.engines import LLAMA
-        from lilbee.providers.serving import is_native_rerank_ref
-        from tests.conformance.fake_adapter import FAKE
+        assignment = SimpleNamespace(
+            choices={role: SimpleNamespace(notice=None) for role in WorkerRole},
+            for_role=lambda role: None,
+        )
+        monkeypatch.setattr(routing_provider, "resolve_engines", lambda config: assignment)
 
-        ref = "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf"
-        assert is_native_rerank_ref(ref, LLAMA) is True
-        assert is_native_rerank_ref(ref, FAKE) is False
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "gpustack/bge-reranker-v2-m3-GGUF",
+            "BAAI/bge-reranker-v2-m3#safetensors",
+            "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf",
+            "ollama/bge-reranker#safetensors",
+            "lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf",
+            "cohere/rerank-english-v3.0",
+            "openrouter/cohere/rerank-english-v3.0",
+            "wired/bge-reranker",
+            "wired/bge-reranker#safetensors",
+        ],
+    )
+    def test_rerank_and_embed_route_a_ref_the_same_way(self, monkeypatch, tmp_path, ref) -> None:
+        """One rule decides local or remote: rerank sends a ref where embed sends it."""
+        from lilbee.app import presets
 
-    def test_unreadable_registry_refuses_instead_of_going_hosted(self, tmp_path: Path) -> None:
-        """A registry that cannot be read fails the rerank; it never reroutes it."""
-        from conftest import make_mock_services
-        from lilbee.app.services import set_services
-        from lilbee.modelhub.registry import ModelRegistry
-
-        # A plain file where the manifests directory belongs: the real registry
-        # raises on the directory read instead of reporting nothing installed.
-        (tmp_path / "manifests").write_text("not a directory", encoding="utf-8")
-        set_services(make_mock_services(registry=ModelRegistry(tmp_path)))
+        self._engines(monkeypatch)
+        monkeypatch.setattr(cfg, "data_root", tmp_path)
+        monkeypatch.setattr(cfg, "server_presets", None)
+        presets.add_preset("wired", "http://127.0.0.1:1", roles=("embed", "rerank"))
         rp = self._make_provider()
-        mock_llama = mock.MagicMock()
-        mock_sdk = mock.MagicMock()
-        mock_sdk.supports_rerank.return_value = True
-        mock_sdk.rerank.return_value = [0.9, 0.1]
-        rp._local = mock_llama
-        rp._sdk_provider = mock_sdk
+        rp._local = mock.MagicMock()
+        rp._sdk_provider = mock.MagicMock()
+        rp._sdk_provider.supports_rerank.return_value = True
+        cfg.embedding_model = ref
+        rp.embed(["t"])
+        embed_local = rp._local.embed.called
+        assert embed_local is not rp._sdk_provider.embed.called
+        cfg.reranker_model = ref
+        rp.rerank("q", ["a"])
+        assert rp._local.rerank.called is embed_local
+        assert rp._sdk_provider.rerank.called is not embed_local
 
-        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
-        with pytest.raises(OSError):
-            rp.rerank("q", ["a", "b"])
-        mock_sdk.rerank.assert_not_called()
-        mock_llama.rerank.assert_not_called()
+    def test_bare_org_repo_routes_local_like_embed(self, monkeypatch) -> None:
+        """A bare ``<org>/<repo>`` that no provider claims runs on the managed engine."""
+        from lilbee.providers.serving import routes_native
+
+        assert routes_native("gpustack/bge-reranker-v2-m3-GGUF") is True
+
+    def test_rerank_with_no_engine_for_the_role_refuses_like_embed(self, monkeypatch) -> None:
+        """A local rerank ref in a format no installed engine loads gets the engine refusal."""
+        from lilbee.providers.fleet.engines import choice
+        from lilbee.providers.fleet.engines.base import EngineName
+        from lilbee.providers.fleet.engines.choice import NoEngineError
+
+        monkeypatch.delitem(choice.ADAPTERS, EngineName.MLX, raising=False)
+        rp = self._make_provider()
+        rp._local = mock.MagicMock()
+        rp._sdk_provider = mock.MagicMock()
+        cfg.reranker_model = "acme/reranker#mlx"
+        with pytest.raises(NoEngineError, match="No installed engine loads the mlx format"):
+            rp.rerank("q", ["a"])
+        rp._local.rerank.assert_not_called()
+        rp._sdk_provider.rerank.assert_not_called()
 
     def test_supports_rerank_hosted_delegates_to_sdk(self) -> None:
         rp = self._make_provider()
         mock_sdk = mock.MagicMock()
         rp._sdk_provider = mock_sdk
-        cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.reranker_model = "openrouter/cohere/rerank-english-v3.0"
 
         mock_sdk.supports_rerank.return_value = False
         assert rp.supports_rerank() is False
@@ -3780,44 +3834,28 @@ class TestRoutingProviderRerank:
         mock_llama.rerank.assert_called_once_with("q", ["a", "b"])
         mock_sdk.rerank.assert_not_called()
 
-    def test_empty_reranker_model_routes_to_sdk(self) -> None:
-        """An empty ``cfg.reranker_model`` is treated as non-native (hosted)."""
-        from lilbee.providers.serving import is_native_rerank_ref
-
-        assert is_native_rerank_ref("", engine=LLAMA) is False
-
     def test_native_gguf_ref_routes_native_even_when_not_featured(self) -> None:
         """Any 3+ slash, .gguf-ending ref is recognised as a native reranker.
 
         Users install community GGUF rerankers that are not in SAMPLE_PICKS.
-        Without this fall-back, the route silently falls through to the SDK
-        provider and surfaces a misleading 'hosted rerank backend not
-        available' error to the user (bb-4zvk).
         """
-        from lilbee.providers.serving import is_native_rerank_ref
+        from lilbee.providers.serving import routes_native
 
-        assert (
-            is_native_rerank_ref(
-                "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf",
-                engine=LLAMA,
-            )
-            is True
+        assert routes_native(
+            "pyarn/bge-reranker-v2-gemma-Q4_K_M-GGUF/bge-reranker-v2-gemma-q4_k_m.gguf"
         )
 
     def test_non_gguf_two_part_ref_is_not_native(self) -> None:
-        """Two-part refs (e.g. ``cohere/rerank-v3``) still go to the SDK."""
-        from lilbee.providers.serving import is_native_rerank_ref
+        """A built-in provider prefix still goes to the SDK."""
+        from lilbee.providers.serving import routes_native
 
-        assert is_native_rerank_ref("cohere/rerank-english-v3.0", engine=LLAMA) is False
+        assert routes_native("openrouter/cohere/rerank-english-v3.0") is False
 
     def test_lm_studio_gguf_path_reranker_is_not_native(self) -> None:
         """A local-server-prefixed GGUF path keeps the prefix exemption, like chat refs."""
-        from lilbee.providers.serving import is_native_rerank_ref
+        from lilbee.providers.serving import routes_native
 
-        assert (
-            is_native_rerank_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf", engine=LLAMA)
-            is False
-        )
+        assert routes_native("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf") is False
 
     def test_rerank_routes_lm_studio_gguf_path_to_sdk(self) -> None:
         """An ``lm_studio/`` reranker whose id looks like a GGUF path goes to LM Studio."""
@@ -3834,6 +3872,49 @@ class TestRoutingProviderRerank:
         assert scores == [0.7, 0.3]
         mock_sdk.rerank.assert_called_once_with("q", ["a", "b"])
         mock_llama.rerank.assert_not_called()
+
+    def test_safetensors_ref_is_native(self) -> None:
+        from lilbee.providers.serving import routes_native
+
+        assert routes_native("BAAI/bge-reranker-v2-m3#safetensors") is True
+
+    def test_safetensors_ref_with_a_provider_prefix_is_not_native(self) -> None:
+        from lilbee.providers.serving import routes_native
+
+        assert routes_native("ollama/bge-reranker#safetensors") is False
+
+    def test_rerank_routes_safetensors_ref_to_the_local_worker(self, monkeypatch) -> None:
+        """A rerank ref chosen for TEI reaches the local worker and never the SDK."""
+        self._engines(monkeypatch)
+        rp = self._make_provider()
+        mock_local = mock.MagicMock()
+        mock_local.rerank.return_value = [0.8, 0.2]
+        mock_sdk = mock.MagicMock()
+        rp._local = mock_local
+        rp._sdk_provider = mock_sdk
+
+        cfg.reranker_model = "BAAI/bge-reranker-v2-m3#safetensors"
+        assert rp.rerank("q", ["a", "b"]) == [0.8, 0.2]
+        mock_local.rerank.assert_called_once_with("q", ["a", "b"])
+        mock_sdk.rerank.assert_not_called()
+
+    def test_served_by_names_the_tei_engine_for_a_safetensors_rerank_ref(
+        self, monkeypatch, caplog
+    ) -> None:
+        from lilbee.providers import routing_provider, serving
+        from lilbee.providers.fleet.engines.tei import TEI
+
+        self._engines(monkeypatch)
+        rp = self._make_provider()
+        rp._local = mock.MagicMock()
+        monkeypatch.setattr(serving, "role_engine", lambda role: TEI)
+        cfg.reranker_model = "BAAI/bge-reranker-v2-m3#safetensors"
+        with caplog.at_level("INFO", logger=routing_provider.log.name):
+            rp.rerank("q", ["a"])
+        served = [r.getMessage() for r in caplog.records if "served by" in r.getMessage()]
+        assert len(served) == 1
+        assert "engine=tei" in served[0]
+        assert "engine=BAAI" not in served[0]
 
     def test_rerank_with_empty_model_raises_provider_error(self) -> None:
         """rerank() raises ProviderError when cfg.reranker_model is empty."""

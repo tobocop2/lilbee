@@ -27,13 +27,15 @@ An environment value that its setting refuses stops every command with one line 
 
 `main_gpu` is not a setting. A `main_gpu` key in `config.toml` or a `LILBEE_MAIN_GPU` variable prints a warning and is ignored: choose the cards with `gpu_devices` or `placement`.
 
-There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
+`token_sizing` is not a setting. A `token_sizing` key in `config.toml` or in a profile file, or a `LILBEE_TOKEN_SIZING` variable, prints a warning and is ignored: `chunk_size` always counts the embedding model's tokens.
+
+There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
 
 **Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
-**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
+**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. A tab name, such as `Engines tab`, means the setting is on that tab of the settings screen, with its own control. `no` is not on the screen.
 
 **MCP.** `yes` is settable with `lilbee_settings_set` and listed by `lilbee_settings_list`. `write-only` is settable but never readable: the API keys carry a `write_only` flag, so `lilbee_settings_get` refuses them and `lilbee_settings_list` skips them. `no` means the environment or the config file is the only way in.
 
@@ -61,13 +63,14 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |
 |---|---|---|---|---|---|---|---|---|---|
-| `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | no | no | LLM used for chat generation (vision and reranking are separate slots). |
+| `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use chat REF` | no | LLM used for chat generation (vision and reranking are separate slots). |
+| `choose_engine_on_pick` | `LILBEE_CHOOSE_ENGINE_ON_PICK` | `bool` | `true` | Engines tab | yes | yes | no | no | Ask which engine runs a model when you pick it in the model picker (off = the picked model uses its saved engine, or auto). |
 | `embedding_model` | `LILBEE_EMBEDDING_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee use-embedder REF` | no | Model used to embed document chunks. |
 | `include_uncensored` | `LILBEE_INCLUDE_UNCENSORED` | `bool` | `false` | yes | yes | yes | no | no | Recommend safety-stripped models in Picks and Discover (browse and search always list them). |
-| `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | no | Cross-encoder model for result reranking (empty = off). |
+| `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use rerank REF` | no | Cross-encoder model for result reranking (empty = off). |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `str` | `auto` | yes | yes | yes | no | yes | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
-| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | no | Picks the OCR engine: a set vision model reads scanned pages, an empty one (including an empty LILBEE_VISION_MODEL) leaves them to Tesseract. The ocr setting decides whether pages are read. |
+| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use vision REF` | no | Picks the OCR engine: a set vision model reads scanned pages, an empty one (including an empty LILBEE_VISION_MODEL) leaves them to Tesseract. The ocr setting decides whether pages are read. |
 
 ## Retrieval
 
@@ -123,8 +126,8 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | `fast_model_downloads` | `LILBEE_FAST_MODEL_DOWNLOADS` | `bool` | `false` | yes | yes | yes | no | yes | Warning: Hugging Face states this mode uses all available bandwidth and CPU cores, and buffers far more of the download in memory. Faster on a fast connection, at the cost of everything else running on the machine. Leave it off unless the machine can spare that. Requires a restart to take effect. |
 | `flash_attention` | `LILBEE_FLASH_ATTENTION` | `bool|null` | *(none)* | yes | yes | yes | no | yes | Flash attention. Empty (auto) enables it; disable for backends or models where it misbehaves. Resolves the V-cache padding warning on models with uneven per-layer V dims. On Vulkan and SYCL lilbee sends auto, not on, even when this is true. |
 | `general_system_prompt` | `LILBEE_GENERAL_SYSTEM_PROMPT` | `str` | *(built-in text)* | yes | yes | yes | no | no | System prompt sent when there are no documents to ground the answer. |
-| `gpu_devices` | `LILBEE_GPU_DEVICES` | `str|null` | *(none)* | yes | yes | yes | no | yes | Restrict llama.cpp to specific GPU indexes on dual-GPU machines (e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect. |
-| `gpu_memory_fraction` | `LILBEE_GPU_MEMORY_FRACTION` | `float` | `0.75` | yes | yes | yes | no | yes | Fraction of GPU memory the model is allowed to claim (0.1-1.0). |
+| `gpu_devices` | `LILBEE_GPU_DEVICES` | `str|null` | *(none)* | yes | yes | yes | no | yes | Restrict the engine to specific GPU indexes on dual-GPU machines (e.g. NVIDIA dGPU + integrated). Comma-separated, like '0' or '0,1'. Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect. |
+| `gpu_memory_fraction` | `LILBEE_GPU_MEMORY_FRACTION` | `float` | `0.75` | yes | yes | yes | no | yes | Fraction of GPU memory used to size the context window (0.1-1.0). |
 | `kv_cache_type` | `LILBEE_KV_CACHE_TYPE` | `str` | `q8_0` | yes | yes | yes | no | yes | KV cache element type for both K and V. q8_0 / q4_0 halve or quarter cache memory and apply only where lilbee sends flash attention on. On Vulkan and SYCL lilbee sends auto, so the cache is f16 there; it is also f16 when flash attention is off. One of `f16`, `f32`, `q8_0`, `q4_0`. |
 | `max_reasoning_chars` | `LILBEE_MAX_REASONING_CHARS` | `int` | `64000` | yes | yes | yes | no | yes | Maximum reasoning characters before lilbee forces the model to answer (0 = unlimited; per-model overrides apply on top). |
 | `max_tokens` | `LILBEE_MAX_TOKENS` | `int|null` | *(none)* | yes | yes | yes | no | no | Hard cap on generated tokens per response (blank = the model's context window). |
@@ -170,7 +173,6 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | `semantic_chunking` | `LILBEE_SEMANTIC_CHUNKING` | `bool` | `false` | yes | yes | yes | no | no | Opt-in topic-aware chunker (default off; may fragment numbered procedures) (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `table_extraction` | `LILBEE_TABLE_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | no | Index each extracted table as its own chunk (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `table_model` | `LILBEE_TABLE_MODEL` | `str` | `slanet_auto` | yes | yes | yes | no | yes | Table structure model used when layout detection is on: slanet_auto (docling-parity default), other slanet variants, tatr, or disabled (changes invalidate the index). One of `disabled`, `tatr`, `slanet_auto`, `slanet_plus`, `slanet_wired`, `slanet_wireless`. **Reindex** with `lilbee rebuild` after changing. |
-| `token_sizing` | `LILBEE_TOKEN_SIZING` | `bool` | `false` | yes | yes | yes | no | no | Size chunks by real embedder tokens, not chars; on by itself when the embedder's window is below the character budget (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `topic_threshold` | `LILBEE_TOPIC_THRESHOLD` | `float` | `0.75` | yes | yes | yes | no | yes | Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `worker_pool_eager_start` | `LILBEE_WORKER_POOL_EAGER_START` | `bool` | `true` | yes | yes | yes | no | yes | Spawn every configured role server at TUI startup instead of on first use. Trades cold-start time per role for first-call latency. |
 
@@ -181,8 +183,8 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | `force_ocr_pages` | `LILBEE_FORCE_OCR_PAGES` | `list` | *(empty)* | yes | yes | yes | no | yes | PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3) or one per line. |
 | `ocr_scan_confidence` | `LILBEE_OCR_SCAN_CONFIDENCE` | `float` | `0.7` | yes | yes | yes | no | yes | How sure xberg must be that a page is a scan before it OCRs it (0-1). Applies only when ocr_strategy is scanned_pages. Lower it to 0.5 to also OCR slides with a full-page background image. |
 | `ocr_strategy` | `LILBEE_OCR_STRATEGY` | `str` | `auto` | yes | yes | yes | no | yes | PDF pages to OCR: auto (each page without usable text: its text layer is missing, garbled or under 32 non-blank characters) or scanned_pages (also every page that looks like a scan, e.g. a scanned page with a hidden text layer). One of `auto`, `scanned_pages`. |
-| `ocr_timeout` | `LILBEE_OCR_TIMEOUT` | `float` | `300.0` | yes | yes | yes | no | yes | Per-page timeout in seconds for vision OCR (0 = no limit). |
-| `vision_load_budget_s` | `LILBEE_VISION_LOAD_BUDGET_S` | `float` | `300.0` | yes | yes | yes | no | yes | Wall-clock seconds reserved for the vision worker to load the model. Total PDF-OCR budget = load_budget + ocr_timeout * pages. |
+| `ocr_timeout` | `LILBEE_OCR_TIMEOUT` | `float` | `300.0` | yes | yes | yes | no | yes | Per-page timeout in seconds for vision OCR (0 = no limit; a wait for a reload of the vision model still ends at vision_load_budget_s). |
+| `vision_load_budget_s` | `LILBEE_VISION_LOAD_BUDGET_S` | `float` | `300.0` | yes | yes | yes | no | yes | Wall-clock seconds reserved for the vision worker to load the model. Total PDF-OCR budget = load_budget + ocr_timeout * pages. With ocr_timeout 0, a page waits this long for a reload to bring the vision model back (0 = no wait). |
 | `vision_ocr_concurrency` | `LILBEE_VISION_OCR_CONCURRENCY` | `int` | `4` | yes | yes | yes | no | yes | Pages OCR'd concurrently per vision server; each slot adds KV cache memory. |
 | `vision_ocr_max_tokens` | `LILBEE_VISION_OCR_MAX_TOKENS` | `int` | `4096` | yes | yes | yes | no | yes | Hard cap on tokens generated per OCR page (bounds runaway repetition loops); raising it lengthens page generation, so give ocr_timeout headroom. |
 | `vision_replicas` | `LILBEE_VISION_REPLICAS` | `int` | `0` | yes | yes | yes | no | yes | Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count). |
@@ -268,9 +270,9 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | `anthropic_api_key` | `LILBEE_ANTHROPIC_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | Anthropic API key (enables frontier models in chat picker). |
 | `deepseek_api_key` | `LILBEE_DEEPSEEK_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | DeepSeek API key (enables frontier models in chat picker). |
 | `gemini_api_key` | `LILBEE_GEMINI_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | Google Gemini API key (enables frontier models in chat picker). |
-| `llama_server_path` | `LILBEE_LLAMA_SERVER_PATH` | `str` | *(empty)* | yes | yes | yes | no | yes | Path to a llama-server binary (empty: bundled wheel or PATH). |
+| `llama_server_path` | `LILBEE_LLAMA_SERVER_PATH` | `str` | *(empty)* | yes | yes | yes | no | yes | llama-server path (empty: bundled wheel, PATH, then the engine pack). |
 | `llm_api_key` | `LILBEE_LLM_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | API key for the remote OpenAI-compatible endpoint and local model servers such as LM Studio. Ollama and hosted models never get this key; hosted models use their own provider key. |
-| `llm_provider` | `LILBEE_LLM_PROVIDER` | `str` | `auto` | yes | yes | refused | no | no | Inference provider: auto (default, runs models locally on llama-server) or remote (external OpenAI-compatible endpoint). One of `auto`, `remote`. Refused over HTTP and over MCP mounted on the HTTP server. |
+| `llm_provider` | `LILBEE_LLM_PROVIDER` | `str` | `auto` | yes | yes | refused | no | no | Inference provider: auto (default, runs models locally on the managed engine) or remote (external OpenAI-compatible endpoint). One of `auto`, `remote`. Refused over HTTP and over MCP mounted on the HTTP server. |
 | `mistral_api_key` | `LILBEE_MISTRAL_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | Mistral API key (enables frontier models in chat picker). |
 | `openai_api_key` | `LILBEE_OPENAI_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | OpenAI API key (enables frontier models in chat picker). |
 | `openrouter_api_key` | `LILBEE_OPENROUTER_API_KEY` | `str` | *(empty)* | yes | write-only | write-only | no | no | OpenRouter API key (enables frontier models in chat picker). |
@@ -309,7 +311,7 @@ These settings have no row on the `/settings` screen, so they belong to no group
 | `cors_origins` | `LILBEE_CORS_ORIGINS` | `list` | *(empty)* | no | no | no | no | no | Extra browser origins the HTTP server accepts, in addition to cors_origin_regex. |
 | `crawl_max_concurrent` | `LILBEE_CRAWL_MAX_CONCURRENT` | `int` | `0` | no | no | no | no | no | Pages fetched in parallel during a crawl. 0 = unlimited; default = CPU count. |
 | `data_dir` | `LILBEE_DATA_DIR` | `str` | *(computed)* | no | no | no | no | no | Directory holding the database. Defaults to data_root/data. |
-| `data_root` | `LILBEE_DATA_ROOT` | `str` | *(computed)* | no | no | no | no | no | Root directory for this library. Resolved at start from LILBEE_DATA, then a .lilbee/ directory walked up from the working directory, then the platform default. Every other path below hangs off it. |
+| `data_root` | `LILBEE_DATA_ROOT` | `str` | *(computed)* | no | no | no | no | no | Root directory for this library. Resolved at start from LILBEE_DATA, then a .lilbee/ directory walked up from the working directory, then the platform default. The documents, index, config file and logs live under it. The models folder (also the Hugging Face cache), the engines folder, the machine engine slot and the gguf metadata cache stay in the platform folders. LILBEE_MODELS_DIR and LILBEE_ENGINE_DIR move the first three. |
 | `embed_batch_sequences` | `LILBEE_EMBED_BATCH_SEQUENCES` | `int` | `64` | no | yes | yes | no | no | Passages packed into one embed request. Larger batches keep a GPU's continuous-batching slots full. The engine re-splits to its physical batch, so raising this helps only up to the server's --batch. |
 | `embedding_dim` | `LILBEE_EMBEDDING_DIM` | `int` | `768` | no | no | no | no | no | Vector width the index is built with. The embedding model sets it; change it only to match a model lilbee cannot introspect. |
 | `engine_choices` | no | `str|null` | *(none)* | no | no | no | no | no | The engine chosen for each model, by model reference. Change it with the engine commands, not the settings list. |
@@ -324,8 +326,8 @@ These settings have no row on the `/settings` screen, so they belong to no group
 | `markdown_rendering` | `LILBEE_MARKDOWN_RENDERING` | `bool` | `true` | no | no | no | no | no | Render chat replies as Markdown in the TUI. Off draws plain text, which is faster. |
 | `max_embed_chars` | `LILBEE_MAX_EMBED_CHARS` | `int` | `2000` | no | no | no | no | no | Maximum characters sent to the embedding model per chunk. Longer text is cut. |
 | `models_dir` | `LILBEE_MODELS_DIR` | `str` | *(computed)* | no | no | no | no | no | Directory holding downloaded model files. Shared across libraries, so a model pulled for one is available to all. |
-| `placement` | `LILBEE_PLACEMENT` | `str|null` | *(none)* | no | write-only | write-only | `lilbee placement set` | no | Manual multi-GPU placement spec. It fully replaces the automatic planner: each active role pins to the listed device indices. Edit it with the placement commands, not the settings list. Empty uses the VRAM-aware planner. |
-| `preferred_engine` | no | `str` | `auto` | no | no | no | no | no | The engine for every model that has no engine of its own: auto, llama.cpp, ik_llama.cpp, mistral.rs, tei, mlx, openvino. auto picks one from the model format and the host. Change it with the engine commands, not the settings list. |
+| `placement` | `LILBEE_PLACEMENT` | `str|null` | *(none)* | no | write-only | write-only | `lilbee placement set` | no | Manual multi-GPU placement spec. It fully replaces the automatic planner: each active role runs on the CPU or pins to the listed device indices. Edit it with the placement commands, not the settings list. Empty uses the VRAM-aware planner. |
+| `preferred_engine` | no | `str` | `auto` | no | no | no | no | no | The engine for every model that has no engine of its own: auto, llama.cpp, ik_llama.cpp, mistral.rs, tei, mlx, openvino, lemonade, ovms. auto picks one from the model format and the host. Change it with the engine commands, not the settings list. |
 | `server_host` | `LILBEE_SERVER_HOST` | `str` | `127.0.0.1` | no | no | no | no | no | Address `lilbee serve` binds. Loopback by default; set 0.0.0.0 to accept connections from the network. |
 | `server_port` | `LILBEE_SERVER_PORT` | `int` | `0` | no | no | no | no | no | Port `lilbee serve` binds. 0 picks a free port and prints it. |
 | `server_presets` | no | `str|null` | *(none)* | no | no | no | no | no | User-defined OpenAI-compatible servers, with their API keys. Edit them with the preset commands, not the settings list. |
@@ -338,7 +340,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 |---|---|
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
-| `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
+| `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it. It moves the documents, index, config file and logs. The models folder, the engines folder, the machine engine slot and the gguf metadata cache stay outside it; set `LILBEE_MODELS_DIR` and `LILBEE_ENGINE_DIR` to move the first three |
 | `LILBEE_ENGINE_DIR` | Engine directory for this process. Set it to a separate directory to run an engine of its own while other lilbee processes hold the shared one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
 | `LILBEE_INGEST_CONCURRENCY` | Extraction-admission mode: `static` (the default), `adaptive-conservative`, or `adaptive-aggressive` |

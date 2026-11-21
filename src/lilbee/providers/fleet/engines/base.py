@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Hashable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Hashable, Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, assert_never, runtime_checkable
 
+from lilbee.catalog.hf_client import HfToken
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.adapters import RoleServerSpec
@@ -33,6 +35,33 @@ class EngineName(StrEnum):
     TEI = "tei"
     MLX = "mlx"
     OPENVINO = "openvino"
+    LEMONADE = "lemonade"
+    OVMS = "ovms"
+
+
+class RerankShape(StrEnum):
+    """The request and answer shape of an engine's rerank route."""
+
+    TEXTS = "texts"
+    """The request holds ``query`` and ``texts``; the answer lists ``index`` and ``score``."""
+    DOCUMENTS = "documents"
+    """The Cohere shape: ``query`` and ``documents``; the answer holds ``results`` of ``index``
+    and ``relevance_score``."""
+
+
+@dataclass(frozen=True)
+class ServerProcess:
+    """How a running server of an engine shows in the process table.
+
+    ``name`` is the executable name, matched whole. ``folder`` returns a directory that the
+    server's command line points into, or is ``None`` when the server is found by its
+    ``--port`` only. ``interpreted`` is true for a script server: its process name is the
+    interpreter's, and ``name`` is the script's file name, the first argument that is no flag.
+    """
+
+    name: str
+    folder: Callable[[], Path] | None = None
+    interpreted: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,6 +86,8 @@ class LaunchRequest:
     memory_endpoint: bool = False
     fit_target_mib: tuple[int, ...] = ()
     kv_unified_per_slot: int | None = None
+    target: RoleTarget = RoleTarget.GPU
+    replica: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,13 +106,20 @@ class RequestProfile:
     label: str
     """The name of the engine's server in error messages."""
     context_overflow: re.Pattern[str]
-    """Matches a 400 body that reports a prompt past the context window."""
+    """Matches an error body that reports a prompt past the context window."""
     batch_overflow: re.Pattern[str] | None
     """Matches a 500 body that reports an input past the physical batch, or None."""
     unreadable_embedding_hint: str
     """What to tell the user when embedding vectors do not decode."""
     reasoning_field: str
     """The response field that carries reasoning text apart from the answer."""
+    structured_output: bool = True
+    """Whether the server enforces ``response_format``; if not, the client drops or refuses it."""
+    works_on_after_disconnect: bool = False
+    """Whether the server keeps working on a request after its client goes away.
+
+    Such a server makes every later request wait, so a timed-out request restarts it.
+    """
     rerank_path: str | None = None
     """The route that scores a query against texts, or None to rank through embeddings."""
     batch_limit: int | None = None
@@ -95,6 +133,46 @@ class RequestProfile:
     """True when the engine reads the ``cache_prompt`` field of a chat body; others never get it."""
     takes_seed: bool = False
     """True when the engine reads ``seed``; others never get a seed that lilbee chose."""
+    rerank_fields: Mapping[str, Any] = field(default_factory=dict)
+    """Extra fields on a rerank route request, such as one that stops silent truncation."""
+    context_overflow_status: int = 400
+    """The status the server answers an input past its limit with."""
+    input_count_path: str | None = None
+    """The route that counts the tokens of a list of inputs, or None for an engine that has none."""
+    input_limit_path: str | None = None
+    """The route that reports ``max_input_length``, or None. An engine with both routes cuts an
+    over-limit embed input without a sign, so the client counts and warns."""
+    rerank_shape: RerankShape = RerankShape.TEXTS
+    """The shape of the rerank route; it matters only when ``rerank_path`` is set."""
+    rerank_model: str | None = None
+    """The model name the rerank request body carries, or None for a route that takes none."""
+
+    def rerank_body(
+        self, query: str, texts: list[str], extra: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """The rerank request body for *texts*; *extra* holds fields such as ``truncate``."""
+        extra = self.rerank_fields if extra is None else extra
+        match self.rerank_shape:
+            case RerankShape.TEXTS:
+                return {"query": query, "texts": texts, **extra}
+            case RerankShape.DOCUMENTS:
+                body: dict[str, Any] = {"query": query, "documents": texts, "top_n": len(texts)}
+                if self.rerank_model is not None:
+                    body["model"] = self.rerank_model
+                return {**body, **extra}
+        assert_never(self.rerank_shape)  # pragma: no cover
+
+    def rerank_scores(self, payload: Any) -> dict[int, float]:
+        """The score of each candidate by index, from the answer of the rerank route."""
+        match self.rerank_shape:
+            case RerankShape.TEXTS:
+                return {int(item["index"]): float(item["score"]) for item in payload}
+            case RerankShape.DOCUMENTS:
+                return {
+                    int(item["index"]): float(item["relevance_score"])
+                    for item in payload["results"]
+                }
+        assert_never(self.rerank_shape)  # pragma: no cover
 
 
 class EngineAdapter(Protocol, Hashable):
@@ -104,6 +182,8 @@ class EngineAdapter(Protocol, Hashable):
     executable, ``discover_devices`` probes it, ``estimate_memory`` sizes a
     plan, ``role_spec`` and ``launch_argv`` build each command line, and
     ``check_readback`` says whether the running instance reports its memory.
+    ``device_targets`` runs after ``binary()``, before ``launch_argv``, and only
+    for a role that names a target other than gpu.
     """
 
     @property
@@ -115,11 +195,20 @@ class EngineAdapter(Protocol, Hashable):
     architectures: frozenset[str]
     served_roles: frozenset[WorkerRole]
     memory_kind: MemoryKind
-    """How far this engine's memory figures can be trusted, known without an estimate."""
+    """A fixed reserve's figure does not follow the window and has no share per card."""
     bundled: bool
     """Whether the engine ships in the package, so it needs no build in the engine store."""
     takes_device_names: bool
     """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
+    server_process: ServerProcess
+    """How the orphan sweep recognises this engine's server after its llama-swap is gone."""
+
+    concatenates_pooling: bool
+    """Whether a model that enables several pooling modes gets one vector block per mode.
+
+    An engine that is False serves the first enabled mode only, so the vector
+    keeps the width of one block.
+    """
 
     def supports_architecture(self, architecture: str) -> bool: ...
 
@@ -141,6 +230,10 @@ class EngineAdapter(Protocol, Hashable):
 
     def discover_devices(self, binary: Path) -> DeviceProbe: ...
 
+    def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
+        """The targets *binary* can run a role on; ``launch_argv`` writes their flags."""
+        ...
+
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
         """Size one instance; ``per_device`` follows a ratio only if ``launch_argv`` honours it."""
         ...
@@ -161,14 +254,67 @@ class EngineAdapter(Protocol, Hashable):
         """Header metadata of the model file at *path*, or ``None`` when it has none."""
         ...
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
-        """Raise ``UnsupportedQuantError`` when the engine cannot load the remote file."""
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
+        """Raise ``UnsupportedQuantError`` when the engine cannot load the remote file.
+
+        *token* is a Hugging Face token. A string is the token to send. ``False`` means
+        a token was refused, so the request goes anonymous. ``None`` means none was found.
+        The adapter sends no token for ``False`` or ``None``.
+        """
         ...
 
     def runtime_env(self) -> Mapping[str, str]:
         """Extra environment variables for a spawned engine process."""
         ...
 
+    def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
+        """Environment variables for a process on *target* with *cards* pinned cards."""
+        ...
+
     def swap_extras(self, launch: InstanceLaunch) -> Mapping[str, Any]: ...
 
     def request_profile(self, role: WorkerRole) -> RequestProfile: ...
+
+
+def engine_label(engine: EngineAdapter) -> str:
+    """The name of *engine*'s server in messages, from the profile of its first role."""
+    return engine.request_profile(min(engine.served_roles)).label
+
+
+class SplitRefusedError(ProviderError):
+    """An engine's launch refuses a tensor split; the message names the rule."""
+
+
+@runtime_checkable
+class SplitChecked(Protocol):
+    """An engine whose launch refuses some tensor splits; placement asks the same rule."""
+
+    equal_split_only: bool
+    """True when the launch accepts only an equal share on each card."""
+
+    def check_split(self, model_path: Path, ratio: tuple[int, ...]) -> None:
+        """Raise ``SplitRefusedError`` naming why *ratio* cannot launch over its cards."""
+        ...
+
+
+@runtime_checkable
+class RoleFormatChecked(Protocol):
+    """An engine that loads a format for some roles and not for others."""
+
+    refused_role_formats: Mapping[WorkerRole, frozenset[str]]
+    """The formats the engine cannot load for each role, though it loads them for another."""
+
+
+@runtime_checkable
+class UserInstalled(Protocol):
+    """An engine that lilbee has no pack for: the user installs it and lilbee finds it."""
+
+    install_hint: str
+    """How to get the engine, for a message that says it is missing."""
+
+    install_docs_url: str
+    """The page that tells how to install the engine; empty when there is none."""
+
+    def user_binary(self) -> Path | None:
+        """The executable the user installed, or ``None`` when there is none."""
+        ...

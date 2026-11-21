@@ -6,6 +6,7 @@ role runs on the mlx adapter. A site that asks for the wrong role receives the w
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,7 @@ import pytest
 from lilbee.app import engine_choice, placement
 from lilbee.app import services as services_mod
 from lilbee.app.engine_choice import EngineBook, engine_for_ref
+from lilbee.catalog import runnable
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.commands import setup as setup_cmd
@@ -25,7 +27,8 @@ from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as ingest_pipeline
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.choice import HostFacts, NoEngineError
+from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
@@ -62,7 +65,9 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        engine_choice, "host_facts", lambda: HostFacts(system="darwin", machine="arm64")
+        runnable,
+        "session_host",
+        lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )
 
 
@@ -169,7 +174,6 @@ def test_the_launcher_sizes_the_chat_window_with_the_chat_engine(
         lambda ref: SimpleNamespace(is_local=True),
     )
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda ref: Path(ref))
-    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda path: {})
     monkeypatch.setattr(
         "lilbee.providers.fleet.planning.plan_sizing_budget",
         lambda engine: seen.append(_tag(engine)) or 1,
@@ -398,15 +402,38 @@ def test_the_first_use_of_the_chat_role_raises_the_user_text(chat_without_engine
         chat_without_engine.provider.chat([{"role": "user", "content": "hi"}])
 
 
-def test_the_embed_offload_target_does_not_hide_a_missing_embed_engine(
-    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from lilbee.core.config import cfg
-
+@pytest.fixture
+def embed_without_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The same container, with chat on a loadable format and embed on one no engine loads."""
+    monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
     monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    return chat_without_engine
+
+
+def test_a_chat_launch_config_builds_while_only_embed_has_no_engine(
+    embed_without_engine: Any,
+) -> None:
+    from lilbee.providers.fleet import swap_config
+    from lilbee.providers.fleet.launch import InstanceLaunch
+
+    launch = InstanceLaunch(
+        role=WorkerRole.CHAT, replica=0, argv=["/bin/llama-server"], env_overrides={}, model="m"
+    )
+    offload.max_workers.cache_clear()
+    config = json.loads(swap_config.build_swap_config([launch], {launch.model_id: 9000}))
+    assert config["models"][launch.model_id]["concurrencyLimit"] > 0
+
+
+def test_an_embed_run_still_refuses_with_the_user_text(embed_without_engine: Any) -> None:
     with pytest.raises(NoEngineError, match="For embed: No installed engine loads the mlx format"):
-        offload.embed_inflight_target()
+        embed_without_engine.provider.embed(["hello"])
+
+
+def test_the_embed_offload_target_is_zero_when_the_embed_engine_is_missing(
+    embed_without_engine: Any,
+) -> None:
+    assert offload.embed_inflight_target() == 0
 
 
 _NO_MLX_TEXT = "No installed engine loads the mlx format"
@@ -485,6 +512,25 @@ def test_the_placement_route_returns_the_notice_with_status_200(
     )
 
 
+@pytest.mark.parametrize("reader", ["get_placement", "get_planned_placement"])
+def test_a_placement_read_looks_at_the_engines_once(
+    chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    from lilbee.app import placement
+
+    readings = []
+    real = placement._planning_engines
+
+    def _counted() -> Any:
+        readings.append(1)
+        return real()
+
+    monkeypatch.setattr(placement, "_planning_engines", _counted)
+    monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
+    getattr(placement, reader)()
+    assert len(readings) == 1
+
+
 def test_the_gpu_stream_route_starts_while_one_role_has_no_engine(
     chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -503,9 +549,11 @@ def test_the_gpu_stream_route_starts_while_one_role_has_no_engine(
 
 
 _NO_ENGINE_ANYWHERE = (
-    "No engine is assigned to any role, so there is nothing to plan. "
-    "Run lilbee engine list to see the installed engines."
+    "No engine is assigned to any role, so there is nothing to plan. Run lilbee engine install "
 )
+
+
+_SAVED_SPEC = '{"chat": {"devices": [0]}}'
 
 
 @pytest.fixture
@@ -516,32 +564,42 @@ def no_role_has_an_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
     monkeypatch.setattr(cfg, "vision_model", MLX_REF)
     monkeypatch.setattr(cfg, "reranker_model", MLX_REF)
+    monkeypatch.setattr(cfg, "placement", _SAVED_SPEC)
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
     return chat_without_engine
 
 
-def test_the_placement_command_refuses_when_no_role_has_an_engine(
-    no_role_has_an_engine: Any,
+def test_the_placement_command_shows_each_missing_engine_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any, tmp_path: Path
 ) -> None:
     from typer.testing import CliRunner
 
     from lilbee.cli.placement import placement_app
+    from lilbee.core import settings
 
-    result = CliRunner().invoke(placement_app, ["show"])
-    assert result.exit_code == 1
-    assert _NO_ENGINE_ANYWHERE in " ".join(result.output.split())
+    settings.update_values(tmp_path, {"placement": _SAVED_SPEC})
+    result = CliRunner().invoke(placement_app, ["show", "--data-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    output = " ".join(result.output.split())
+    assert "Placement (auto)" in output
+    assert "No installed engine loads" in output
     assert "Traceback" not in result.output
 
 
-def test_the_mcp_placement_tool_refuses_when_no_role_has_an_engine(
+def test_the_mcp_placement_tool_shows_each_missing_engine_when_no_role_has_an_engine(
     no_role_has_an_engine: Any,
 ) -> None:
     from lilbee.mcp_server import get_placement_tool
 
-    assert _NO_ENGINE_ANYWHERE in get_placement_tool()["error"]
+    out = get_placement_tool()
+    assert "error" not in out
+    assert out["spec_json"] is None
+    assert out["rejected_spec_json"] == '{"chat": {"devices": [0]}}'
+    assert out["roles"] == []
+    assert out["skipped_no_engine"]
 
 
-def test_the_placement_route_answers_503_when_no_role_has_an_engine(
+def test_the_placement_route_shows_each_missing_engine_when_no_role_has_an_engine(
     no_role_has_an_engine: Any,
 ) -> None:
     from lilbee.server.routes.placement import placement_route
@@ -549,8 +607,31 @@ def test_the_placement_route_answers_503_when_no_role_has_an_engine(
 
     with create_test_client([placement_route]) as client:
         response = client.get("/api/placement")
+    assert response.status_code == 200
+    assert response.json()["spec_json"] is None
+    assert response.json()["rejected_spec_json"] == '{"chat": {"devices": [0]}}'
+    assert response.json()["roles"] == []
+    assert response.json()["skipped_no_engine"]
+
+
+def test_the_gpus_route_answers_503_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.server.routes.placement import gpus_route
+    from tests._litestar_test_client import create_test_client
+
+    with create_test_client([gpus_route]) as client:
+        response = client.get("/api/gpus")
     assert response.status_code == 503
     assert _NO_ENGINE_ANYWHERE in response.text
+
+
+def test_the_mcp_gpus_tool_refuses_when_no_role_has_an_engine(
+    no_role_has_an_engine: Any,
+) -> None:
+    from lilbee.mcp_server import get_gpus_tool
+
+    assert _NO_ENGINE_ANYWHERE in get_gpus_tool()["error"]
 
 
 def test_the_gpu_stream_route_answers_503_when_no_role_has_an_engine(
@@ -589,18 +670,18 @@ def pulls(no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return started
 
 
-async def test_the_mcp_pull_of_a_format_nothing_loads_starts_no_download(
+async def test_the_mcp_pull_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.mcp_server import model_pull
 
     result = await model_pull(MLX_REF, source="native")
-    assert _NO_MLX_TEXT in result["error"]
-    assert pulls == []
-    assert not no_mlx_engine.exists()
+    assert "error" not in result
+    assert _NO_MLX_TEXT in result["warning"]
+    assert pulls == ["download"]
 
 
-def test_the_rest_pull_of_a_format_nothing_loads_is_refused_with_the_text(
+def test_the_rest_pull_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.server.routes.models import models_pull_route
@@ -612,13 +693,28 @@ def test_the_rest_pull_of_a_format_nothing_loads_is_refused_with_the_text(
             {"model": MLX_REF, "allow_unsupported": True},
         ):
             response = client.post("/api/models/pull", json=body)
-            assert response.status_code == 409
-            assert _NO_MLX_TEXT in response.text
+            assert response.status_code == 201
+            done = response.text.split("event: done")[-1]
+            assert _NO_MLX_TEXT in done
+    assert pulls == ["download", "download"]
+
+
+def test_the_rest_pull_of_a_gguf_nothing_loads_is_refused_with_the_text(
+    pulls: list[str], no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.app import engine_choice
+    from lilbee.server.routes.models import models_pull_route
+    from tests._litestar_test_client import create_test_client
+
+    monkeypatch.setattr(engine_choice, "installed_engines", lambda: {})
+    with create_test_client([models_pull_route]) as client:
+        response = client.post("/api/models/pull", json={"model": GGUF_REF})
+    assert response.status_code == 409
+    assert "No installed engine loads the gguf format" in response.text
     assert pulls == []
-    assert not no_mlx_engine.exists()
 
 
-def test_the_cli_pull_of_a_format_nothing_loads_prints_the_text(
+def test_the_cli_pull_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from typer.testing import CliRunner
@@ -626,24 +722,36 @@ def test_the_cli_pull_of_a_format_nothing_loads_prints_the_text(
     from lilbee.cli import app
 
     result = CliRunner().invoke(app, ["model", "pull", MLX_REF])
-    assert result.exit_code == 1
-    assert _NO_MLX_TEXT in result.output
-    assert pulls == []
-    assert not no_mlx_engine.exists()
+    assert result.exit_code == 0
+    assert f"Warning: {_NO_MLX_TEXT}" in " ".join(result.output.split())
+    assert pulls == ["download"]
 
 
-def test_the_task_bar_download_of_a_format_nothing_loads_fails_with_the_text(
+def test_the_task_bar_download_of_a_format_nothing_loads_downloads_it_and_warns(
     pulls: list[str], no_mlx_engine: Path
 ) -> None:
     from lilbee.cli.tui.widgets.task_bar_controller import _download_target
 
-    with pytest.raises(RuntimeError, match=_NO_MLX_TEXT):
-        _download_target(SimpleNamespace(), SimpleNamespace(pull_ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
+    warnings: list[str] = []
+    reporter = SimpleNamespace(update=lambda *_a: None, warn=warnings.append)
+    _download_target(reporter, SimpleNamespace(pull_ref=MLX_REF, display_name="m"))  # type: ignore[arg-type]
+    assert pulls == ["download"]
+    assert any(_NO_MLX_TEXT in w for w in warnings)
+
+
+def test_the_task_bar_download_of_a_gguf_nothing_loads_fails_with_the_text(
+    pulls: list[str], no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.app import engine_choice
+    from lilbee.cli.tui.widgets.task_bar_controller import _download_target
+
+    monkeypatch.setattr(engine_choice, "installed_engines", lambda: {})
+    with pytest.raises(RuntimeError, match="No installed engine loads the gguf format"):
+        _download_target(SimpleNamespace(), SimpleNamespace(pull_ref=GGUF_REF, display_name="m"))  # type: ignore[arg-type]
     assert pulls == []
-    assert not no_mlx_engine.exists()
 
 
-async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_nothing(
+async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_it(
     no_mlx_engine: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import dataclasses
@@ -659,7 +767,45 @@ async def test_the_catalog_install_of_a_format_nothing_loads_enqueues_nothing(
         notices: list[str] = []
         monkeypatch.setattr(screen, "_enqueue_download", lambda m: enqueued.append(m.hf_repo))
         monkeypatch.setattr(screen, "notify", lambda message, **_kw: notices.append(str(message)))
-        screen._install_model(dataclasses.replace(_model(), hf_repo=MLX_REF))
-    assert enqueued == []
-    assert any(_NO_MLX_TEXT in n for n in notices)
-    assert not no_mlx_engine.exists()
+        screen._install_model(
+            dataclasses.replace(_model(), hf_repo=MLX_REF, format=ModelFormat.MLX)
+        )
+    assert enqueued == [MLX_REF]
+    assert notices == []
+
+
+def test_a_container_retries_on_the_engine_choice_the_file_now_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.app.services import build_services, set_config_refresh
+    from lilbee.providers.fleet.provider import FleetProvider
+    from lilbee.providers.routing_provider import RoutingProvider
+    from tests.test_fleet_provider import _connection_error
+
+    other_ref = "org/other/file.gguf"
+    monkeypatch.setattr(cfg, "data_root", tmp_path)
+    monkeypatch.setattr(cfg, "documents_dir", tmp_path / "documents")
+    monkeypatch.setattr(cfg, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "data" / "lancedb")
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
+    services = build_services(cfg)
+    try:
+        # Another process writes the new choice; the surface takes it when asked.
+        set_config_refresh(lambda: monkeypatch.setattr(cfg, "chat_model", other_ref))
+        attempts: list[str] = []
+
+        def call() -> str:
+            attempts.append(cfg.chat_model)
+            if len(attempts) == 1:
+                raise _connection_error()
+            return cfg.chat_model
+
+        assert isinstance(services.provider, RoutingProvider)
+        engine = services.provider._get_local()
+        assert isinstance(engine, FleetProvider)
+        assert engine._with_rediscover(call) == other_ref
+        assert attempts == [GGUF_REF, other_ref]
+    finally:
+        services.store.close()

@@ -18,6 +18,18 @@ CTX_CHARS = 100_000
 _HANG_S = 3.0
 _THINK_TOKENS = 256
 _ENVELOPE = {"error": {"message": "The requested endpoint does not exist"}}
+# oMLX 0.7.3 (row 85): the route exists and refuses the llama-server body, which has `content`.
+# The spike records the status only; the body shape here is an assumption.
+_TOKENIZE_REFUSAL = {
+    "detail": [{"type": "missing", "loc": ["body"], "msg": "Field required: messages or prompt"}]
+}
+
+
+# oMLX 0.7.3 (row 86): the 400 for a prompt past the window carries a code.
+_CODE_OVERFLOW = {
+    "message": "Prompt is too long: 60009 tokens > 40960 maximum context length",
+    "code": "context_length_exceeded",
+}
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,7 @@ class Behaviour:
     deterministic: bool = True
     order_ok: bool = True
     envelope_404: bool = False
+    tokenize: str = "absent"
     dim: int = 8
 
 
@@ -66,6 +79,8 @@ PROFILES: dict[str, Profile] = {
     "lemonade_reranker_as_embed": Profile(
         (32,), Behaviour(health=404, live=200, embed="zero", envelope_404=True)
     ),
+    "omlx_chat": Profile((86,), Behaviour(overflow="400-code")),
+    "omlx_embed": Profile((85, 88), Behaviour(tokenize="422")),
     "mistralrs_cpu": Profile((43, 50, 52, 54, 55), Behaviour(overflow="400-seq")),
     "mistralrs_cuda": Profile((36, 37, 38, 44), Behaviour(chat="503")),
 }
@@ -81,12 +96,14 @@ def _vector(text: str, dim: int, normalized: bool) -> list[float]:
 
 
 def image_colour(data_url: str) -> str:
-    """ "red" when the first pixel of a PNG data URL is red, else "other"."""
+    """ "red" or "blue" when the first pixel of a PNG data URL is that colour, else "other"."""
     blob = base64.b64decode(data_url.split(",", 1)[1])
     pos = blob.index(b"IDAT")
     length = struct.unpack(">I", blob[pos - 4 : pos])[0]
     red, green, blue = zlib.decompress(blob[pos + 4 : pos + 4 + length])[1:4]
-    return "red" if red > 200 and green < 60 and blue < 60 else "other"
+    if red > 200 and green < 60 and blue < 60:
+        return "red"
+    return "blue" if blue > 200 and red < 60 and green < 60 else "other"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -149,6 +166,8 @@ class _Handler(BaseHTTPRequestHandler):
             "onebased",
         ):
             self._rerank(req)
+        elif self.path.endswith("/tokenize") and self.cfg.tokenize == "422":
+            self._send(422, _TOKENIZE_REFUSAL)
         elif self.path == "/rerank" and self.cfg.rerank == "tei":
             self._send(200, [{"index": i, "score": 0.5} for i in range(len(req["texts"]))])
         else:
@@ -161,6 +180,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"choices": [{"message": {"content": "late"}}]})
         elif mode == "500":
             self._send(500, {"error": {"message": "boom"}})
+        elif mode == "400-code":
+            self._send(400, {"error": {**_CODE_OVERFLOW, "type": "invalid_request_error"}})
         else:
             text = (
                 "request (300000 tokens) exceeds the available context size (40960 tokens)"
@@ -189,7 +210,7 @@ class _Handler(BaseHTTPRequestHandler):
             return "ans-" + os.urandom(3).hex()
         if req.get("temperature") == 0 and req.get("seed") is not None:
             return "ans-" + hashlib.sha256((prompt + str(req["seed"])).encode()).hexdigest()[:6]
-        return "ok"
+        return "Rome." if "Italy" in prompt else "ok"
 
     def _tool_message(
         self, req: dict[str, Any], message: dict[str, Any]
@@ -242,6 +263,12 @@ class _Handler(BaseHTTPRequestHandler):
             message["reasoning_content"] = thought
         return "length" if budget_ended else "stop"
 
+    def _finish_reason(self, message: dict[str, Any], req: dict[str, Any], finish: str) -> str:
+        """The finish reason of a reply; truncated ends a plain call at length."""
+        finish = self._exhaust_budget(message, req) or finish
+        plain = not req.get("stream") and not req.get("tools")
+        return "length" if self.cfg.chat == "truncated" and plain else finish
+
     def _chat(self, req: dict[str, Any]) -> None:
         prompt = json.dumps(req["messages"])
         if self.cfg.chat == "503":
@@ -265,17 +292,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": {"message": "images are not supported"}})
             return
         if images:
-            seen = {
-                "ok": lambda: image_colour(images[0]["image_url"]["url"]),
+            colour = image_colour(images[0]["image_url"]["url"])
+            message["content"] = {
+                "ok": lambda: colour,
+                "sentence": lambda: f"the colour is {colour}",
                 "const": lambda: "red",
             }.get(self.cfg.vision, lambda: "nothing")()
-            message["content"] = f"I see {seen}"
         finish = "stop"
         self._with_response_format(req, message)
         if req.get("tools"):
             message, finish = self._tool_message(req, message)
         self._with_reasoning(message)
-        finish = self._exhaust_budget(message, req) or finish
+        finish = self._finish_reason(message, req, finish)
         if req.get("stream"):
             self._stream(message, finish)
         elif self.cfg.chat == "nochoices":

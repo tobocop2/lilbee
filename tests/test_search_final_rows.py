@@ -68,7 +68,7 @@ def _http(query: str, top_k: int | None) -> list[tuple[str, int]]:
 
 
 def _mcp(query: str, top_k: int | None) -> list[tuple[str, int]]:
-    rows = mcp_search(query, top_k=top_k)
+    rows = mcp_search(query, top_k=top_k).structured_content["result"]
     assert isinstance(rows, list)
     return [(r["source"], r["chunk_index"]) for r in rows]
 
