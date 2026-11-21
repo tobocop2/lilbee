@@ -2356,14 +2356,20 @@ def engine_list_tool() -> dict[str, Any]:
 
 
 @_tool_named("engine_remove")
-def engine_remove_tool(engine: str, version: str, backend: str) -> dict[str, Any]:
+def engine_remove_tool(
+    engine: str, version: str, backend: str, confirm_embed_change: bool = False
+) -> dict[str, Any]:
     """Remove one installed engine build, as ``engine_list`` shows it."""
     from lilbee.server.models import EngineRemovedResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
     return _engine_result(
-        lambda: EngineRemovedResponse(removed=engine_service.remove_build(engine, version, backend))
+        lambda: EngineRemovedResponse(
+            removed=engine_service.remove_build(
+                engine, version, backend, confirmed=confirm_embed_change
+            )
+        )
     )
 
 

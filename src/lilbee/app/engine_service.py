@@ -28,6 +28,7 @@ from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.binary import llama_server_ready
 from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, cell_key, host_cell
@@ -312,9 +313,49 @@ def engine_list(config: Config = cfg) -> EngineListView:
     return EngineListView(builds(config), not_installed(), engines_folder(config))
 
 
-def remove_build(engine: str, version: str, backend: str, config: Config = cfg) -> str:
-    """Remove one installed build and return its label; refuses a bundled, missing or busy one."""
+def _removal_changes_embedder(
+    store: EngineStore, registry: ModelRegistry, engine: str, version: str, backend: str
+) -> bool:
+    """True when the embedder trigger names this build, or this engine with no other build left."""
+    trigger = embedder_trigger(cfg, registry)
+    if trigger is None:
+        return False
+    if str(store.root / engine / f"{version}-{backend}") in trigger:
+        return True
+    others = [
+        b
+        for b in store.installed()
+        if b.engine == engine and (b.version, b.backend) != (version, backend)
+    ]
+    return f"|engine={engine}" in trigger and not others
+
+
+def _check_removal_keeps_embedder(
+    store: EngineStore, engine: str, version: str, backend: str, confirmed: bool
+) -> None:
+    """Refuse unless *confirmed* when removing the build changes the engine that embeds."""
+    services = peek_services()
+    if services is None or confirmed:
+        return
+    if (engine, version, backend) not in [
+        (b.engine, b.version, b.backend) for b in store.installed()
+    ]:
+        return
+    documents = services.store.source_summary(0).document_count
+    if documents and _removal_changes_embedder(store, services.registry, engine, version, backend):
+        raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
+
+
+def remove_build(
+    engine: str, version: str, backend: str, config: Config = cfg, confirmed: bool = False
+) -> str:
+    """Remove one installed build and return its label; refuses a bundled, missing or busy one.
+
+    A build that the embedder runs on needs *confirmed* when the library holds documents:
+    the next start finds a changed engine and runs the canary check on the index.
+    """
     store = EngineStore(engines_root(config.models_dir))
+    _check_removal_keeps_embedder(store, engine, version, backend, confirmed)
     try:
         store.remove(engine, version, backend, in_use=partial(launch_uses_engine, store.root))
     except STORE_REFUSALS as exc:

@@ -143,23 +143,6 @@ def install(
         console.print(built.note)
 
 
-@engine_app.command("remove")
-def remove(
-    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
-    version: str = typer.Argument(help="Build version."),
-    backend: str = typer.Argument(help="Build backend."),
-) -> None:
-    """Remove one installed engine build."""
-    try:
-        label = engine_service.remove_build(engine, version, backend)
-    except engine_service.EngineRefusedError as exc:
-        raise _refuse("engine remove", exc) from exc
-    if cfg.json_mode:
-        json_out({"command": "engine remove", "removed": label})
-        return
-    console.print(engine_service.REMOVE_DONE.format(build=label))
-
-
 def _refuse(command: str, exc: Exception) -> typer.Exit:
     """Show a refusal from the engine service on the surface and return the exit."""
     if cfg.json_mode:
@@ -260,3 +243,26 @@ def prefer(
         json_out({"command": "engine prefer", "engine": chosen})
         return
     console.print(f"The preferred engine is {chosen}.")
+
+
+@engine_app.command("remove")
+def remove(
+    engine: str = typer.Argument(help="Engine name, as 'lilbee engine list' shows it."),
+    version: str = typer.Argument(help="Build version."),
+    backend: str = typer.Argument(help="Build backend."),
+    yes: bool = _YES_OPTION,
+) -> None:
+    """Remove one installed engine build."""
+    try:
+        label = _confirming(
+            lambda confirmed: engine_service.remove_build(
+                engine, version, backend, confirmed=confirmed
+            ),
+            yes,
+        )
+    except engine_service.EngineRefusedError as exc:
+        raise _refuse("engine remove", exc) from exc
+    if cfg.json_mode:
+        json_out({"command": "engine remove", "removed": label})
+        return
+    console.print(engine_service.REMOVE_DONE.format(build=label))

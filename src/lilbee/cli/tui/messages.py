@@ -907,6 +907,10 @@ ENGINE_DOWNLOAD_ONLY_MESSAGE_NO_SIZE = "Download {engine}?"
 ENGINE_REMOVE_TITLE = "Remove {build}?"
 ENGINE_REMOVE_MESSAGE = "Remove {build} from this computer?"
 ENGINE_REMOVE_IN_USE_MESSAGE = "{build} is used by {roles}. Remove it anyway?"
+ENGINE_REMOVE_EMBED_MESSAGE = (
+    "Library {library} holds {documents} documents. {build} runs the embedding model. "
+    "Without it the vectors can become unusable by the index. Continue?"
+)
 SETTINGS_ENGINES_TAB = "Engines"
 ENGINES_TABLE_TITLE = "Engines"
 ENGINES_PREFERRED_LABEL = "Preferred engine"

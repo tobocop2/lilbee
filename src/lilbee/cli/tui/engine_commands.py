@@ -79,13 +79,14 @@ def _store_verb(
     on_update: Callable[[DownloadProgress], None] | None = None,
     on_retry: Callable[[str], None] | None = None,
     cancel: CancelSignal | None = None,
+    confirmed: bool = False,
 ) -> EngineCommandResult | None:
     """Run list, remove or install, the verbs that act on the engine store; None for any other."""
     if verb == _LIST and not args:
         return EngineCommandResult(True, _builds_text())
-    if verb == _REMOVE and len(args) == _REMOVE_ARGS:
-        name, version, backend = args
-        label = engine_service.remove_build(name, version, backend)
+    if verb == _REMOVE and len(words) == _REMOVE_ARGS:
+        name, version, backend = words
+        label = engine_service.remove_build(name, version, backend, confirmed=confirmed)
         return EngineCommandResult(True, engine_service.REMOVE_DONE.format(build=label))
     if verb == _INSTALL and len(words) == _INSTALL_ARGS:
         built = engine_service.install(
@@ -107,7 +108,7 @@ def _run(
     words = [word for word in args if word != YES_WORD]
     if verb == _ROLES and not words and not confirmed:
         return EngineCommandResult(True, _roles_text())
-    stored = _store_verb(verb, args, words, on_update, on_retry, cancel)
+    stored = _store_verb(verb, args, words, on_update, on_retry, cancel, confirmed)
     if stored is not None:
         return stored
     if verb == _USE and len(words) == _USE_ARGS:
