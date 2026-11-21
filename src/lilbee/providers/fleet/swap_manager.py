@@ -1440,8 +1440,8 @@ def _runs_server(name: str, cmdline: list[str], server: ServerProcess) -> bool:
     """
     if _is_server_name(name, server):
         return True
-    script = next((arg for arg in cmdline[1:] if not arg.startswith("-")), "")
-    return _is_server_name(Path(script).name, server)
+    script = Path(next((arg for arg in cmdline[1:] if not arg.startswith("-")), "")).name
+    return _is_server_name(script, server) or script in server.scripts
 
 
 def _is_under(arg: str, root: Path) -> bool:

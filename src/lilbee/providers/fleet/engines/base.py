@@ -56,12 +56,15 @@ class ServerProcess:
     ``name`` is the executable name, matched whole. ``folder`` returns a directory that the
     server's command line points into, or is ``None`` when the server is found by its
     ``--port`` only. ``interpreted`` is true for a script server: its process name is the
-    interpreter's, and ``name`` is the script's file name, the first argument that is no flag.
+    interpreter's, and the first argument that is no flag names the script. That argument
+    matches ``name``, or one of ``scripts`` when a launcher hands over to a script or module
+    of another name.
     """
 
     name: str
     folder: Callable[[], Path] | None = None
     interpreted: bool = False
+    scripts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

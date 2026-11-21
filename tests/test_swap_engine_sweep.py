@@ -128,6 +128,24 @@ def test_a_script_server_is_found_by_the_script_after_the_interpreter(
     assert sm._find_orphan_servers((_PORT,)) == ([proc] if found else [])
 
 
+def test_the_process_that_the_mlx_chat_launcher_leaves_is_found_by_its_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The launcher hands over to the interpreter, so the table shows its module, not itself."""
+    cmdline = ["/e/python/bin/python3", "-I", "-m", "mlx_lm.server", "--port", "5800"]
+    proc = FakeProcess(_INTERPRETER, cmdline)
+    _table(monkeypatch, [proc])
+    assert sm._find_orphan_servers((_PORT,)) == [proc]
+
+
+def test_a_script_named_by_no_engine_is_spared_on_a_member_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = FakeProcess(_INTERPRETER, [_INTERPRETER, "-I", "/e/other_server.py", "--port", "5800"])
+    _table(monkeypatch, [proc])
+    assert sm._find_orphan_servers((_PORT,)) == []
+
+
 def test_an_interpreter_that_runs_a_native_server_name_is_not_a_script_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
