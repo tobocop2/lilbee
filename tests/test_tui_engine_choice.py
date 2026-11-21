@@ -153,10 +153,12 @@ async def test_the_chips_follow_the_stored_choice_without_a_restart() -> None:
 async def test_the_bar_shows_a_choice_another_process_saved_when_the_terminal_regains_focus() -> (
     None
 ):
+    cfg.preferred_engine = EngineSetting.LLAMA
     app = _BarApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        assert app.query_one("#model-bar-engine-chips").region.height == 0
+        chips = "#model-bar-engine-chips"
+        assert _text(app, chips) == "engine: chat ■ llama.cpp  embed ■ llama.cpp"
         settings.set_value(cfg.data_root, "engine_choices", json.dumps({GGUF_REF: "openvino"}))
         app.on_app_focus()
         await pilot.pause()
