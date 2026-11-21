@@ -708,9 +708,7 @@ def test_engine_rows_show_a_build_that_differs_from_the_pin_after_the_install_ro
     )
     listed = engine_service.engine_list()
     stale = [
-        (b.engine, b.version, b.backend)
-        for b in listed.builds
-        if b.engine in listed.not_installed
+        (b.engine, b.version, b.backend) for b in listed.builds if b.engine in listed.not_installed
     ]
     rows = [r for r in engine_service.engine_rows() if r.engine == "ik_llama.cpp"]
     assert rows == [
