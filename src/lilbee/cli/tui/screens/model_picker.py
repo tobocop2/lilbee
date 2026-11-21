@@ -312,7 +312,9 @@ class ModelPickerModal(ModalScreen[str | None]):
             return
         app, pick_later = self.app, self._pick_later
         self.dismiss(None)
-        choose_for_model(app, ref, option, lambda: pick_later(ref))
+        # The app runs the save: a dialog pushed from the closed picker would send its answer
+        # to the picker, which no longer reads its messages.
+        app.call_later(choose_for_model, app, ref, option, lambda: pick_later(ref))
 
     def action_change_engine(self) -> None:
         """Open the engine picker for the highlighted model; the model stays unchanged."""
