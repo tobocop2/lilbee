@@ -56,6 +56,10 @@ class SettingDef:
     var: use it for transport/server knobs that aren't relevant to a
     typical TUI session.
 
+    ``tab`` names the dedicated settings tab that shows a ``hidden``
+    setting with its own control (the Engines tab, for example). The
+    settings reference prints that tab in its TUI column.
+
     ``advanced`` keeps the setting shown, but folded into a collapsed
     section at the bottom of its tab: use it for a setting a normal
     user never needs to get good results (engine internals, timeouts,
@@ -70,6 +74,7 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
+    tab: str | None = None
     advanced: bool = False
     # List editors validate each line as a regex only when this is set; flag-style
     # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
@@ -589,6 +594,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "(off = the picked model uses its saved engine, or auto)"
         ),
         hidden=True,
+        tab="Engines",
     ),
     "show_reasoning": SettingDef(
         bool,

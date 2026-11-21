@@ -35,7 +35,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 **Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
-**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
+**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. A tab name, such as `Engines tab`, means the setting is on that tab of the settings screen, with its own control. `no` is not on the screen.
 
 **MCP.** `yes` is settable with `lilbee_settings_set` and listed by `lilbee_settings_list`. `write-only` is settable but never readable: the API keys carry a `write_only` flag, so `lilbee_settings_get` refuses them and `lilbee_settings_list` skips them. `no` means the environment or the config file is the only way in.
 
@@ -64,7 +64,7 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |
 |---|---|---|---|---|---|---|---|---|---|
 | `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use chat REF` | no | LLM used for chat generation (vision and reranking are separate slots). |
-| `choose_engine_on_pick` | `LILBEE_CHOOSE_ENGINE_ON_PICK` | `bool` | `true` | no | yes | yes | no | no | Ask which engine runs a model when you pick it in the model picker (off = the picked model uses its saved engine, or auto). |
+| `choose_engine_on_pick` | `LILBEE_CHOOSE_ENGINE_ON_PICK` | `bool` | `true` | Engines tab | yes | yes | no | no | Ask which engine runs a model when you pick it in the model picker (off = the picked model uses its saved engine, or auto). |
 | `embedding_model` | `LILBEE_EMBEDDING_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee use-embedder REF` | no | Model used to embed document chunks. |
 | `include_uncensored` | `LILBEE_INCLUDE_UNCENSORED` | `bool` | `false` | yes | yes | yes | no | no | Recommend safety-stripped models in Picks and Discover (browse and search always list them). |
 | `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee model use rerank REF` | no | Cross-encoder model for result reranking (empty = off). |

@@ -205,6 +205,19 @@ class TestSurfaceColumns:
         assert generator._cli_cell("top_k") == "no"
         assert "use-embedder" in generator._cli_cell("embedding_model")
 
+    def test_a_setting_on_a_dedicated_tab_names_that_tab_in_the_tui_column(self, generator):
+        from lilbee.app.settings_map import SETTINGS_MAP
+        from lilbee.cli.tui import messages as msg
+
+        assert SETTINGS_MAP["choose_engine_on_pick"].tab == msg.SETTINGS_ENGINES_TAB
+        assert generator._tui_cell("choose_engine_on_pick") == "Engines tab"
+        assert "| `choose_engine_on_pick` |" in generator.render()
+        for key, defn in SETTINGS_MAP.items():
+            if defn.tab is not None:
+                assert generator._tui_cell(key) == f"{defn.tab} tab"
+            elif defn.hidden:
+                assert generator._tui_cell(key) == "no"
+
     def test_advanced_column_matches_the_settings_map_flag(self, generator):
         from lilbee.app.settings_map import SETTINGS_MAP
 
