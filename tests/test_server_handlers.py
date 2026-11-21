@@ -4278,6 +4278,74 @@ class TestModelsPull:
         assert len(done) == 1
         assert "warning" not in done[0]
 
+    async def test_a_repeat_safetensors_pull_streams_progress_before_done(self):
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = True
+
+        def refresh_pull(model, source, *, on_bytes=None, cancel=None):
+            on_bytes(500, 1000)
+
+        mock_manager.pull.side_effect = refresh_pull
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+        ):
+            events = [
+                e async for e in handlers.models_pull("org/repo#safetensors", source="native")
+            ]
+        names = [line for e in events if e for line in e.splitlines() if line.startswith("event:")]
+        assert names == ["event: progress", "event: done"]
+        progress = next(e for e in events if e and "event: progress" in e)
+        assert '"current": 500' in progress and '"total": 1000' in progress
+
+    async def test_a_disconnect_aborts_a_repeat_safetensors_refresh(self):
+        import threading
+
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        barrier = threading.Event()
+        finished_whole_download = threading.Event()
+        aborted: list[bool] = []
+        mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = True
+        mock_manager.is_registered.return_value = True
+
+        def refresh_pull(model, source, *, on_bytes=None, cancel=None):
+            on_bytes(100, 1000)
+            barrier.wait(timeout=2)
+            try:
+                on_bytes(1000, 1000)
+            except TaskCancelledError:
+                aborted.append(True)
+                raise
+            finished_whole_download.set()
+
+        mock_manager.pull.side_effect = refresh_pull
+        with (
+            patch(
+                "lilbee.server.handlers.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.app.models.ensure_vision_projector", return_value=None),
+        ):
+            gen = handlers.models_pull("org/repo#safetensors", source="native")
+            async for event in gen:
+                if event and "current" in event:
+                    await gen.aclose()
+                    barrier.set()
+                    break
+            for _ in range(200):
+                if aborted or finished_whole_download.is_set():
+                    break
+                await asyncio.sleep(0.01)
+
+        assert aborted == [True]
+        assert not finished_whole_download.is_set()
+
     @pytest.mark.parametrize(
         ("ref", "registered", "sink_passed", "warn_unreadable"),
         [
