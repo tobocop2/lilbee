@@ -127,7 +127,7 @@ def _seed_shared_store(
     xet_hash = hashlib.sha256(b"xet" + content).hexdigest()
     store = models_dir / "blobs" / xet_hash[:2] / xet_hash
     store.parent.mkdir(parents=True, exist_ok=True)
-    (models_dir / "blobs" / ".huggingface-shared-blobs").write_text("1\n")
+    (models_dir / "blobs" / ".huggingface-shared-blobs").write_text("1\n", encoding="utf-8")
     store.write_bytes(content)
     cache = models_dir / f"models--{repo_to_dir(repo)}"
     entry = cache / "blobs" / etag
@@ -137,7 +137,7 @@ def _seed_shared_store(
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(Path("..") / ".." / "blobs" / etag)
     (cache / "refs").mkdir(parents=True, exist_ok=True)
-    (cache / "refs" / "main").write_text(_FAKE_REV)
+    (cache / "refs" / "main").write_text(_FAKE_REV, encoding="utf-8")
     return link
 
 
