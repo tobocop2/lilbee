@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import subprocess
 import sys
@@ -31,13 +32,17 @@ def _package(
 
 
 def _run(
-    site: pathlib.Path, tmp: pathlib.Path, *supplied: pathlib.Path
+    site: pathlib.Path,
+    tmp: pathlib.Path,
+    *supplied: pathlib.Path,
+    mpl: pathlib.Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
             "-I",
             str(_SCRIPT),
+            *(["--mpl", str(mpl)] if mpl else []),
             str(site),
             str(tmp / "out"),
             str(tmp / "terms"),
@@ -281,3 +286,240 @@ def test_prints_usage_with_the_wrong_argument_count() -> None:
     )
     assert done.returncode != 0
     assert "Usage: collect_python_licences.py" in done.stderr
+
+
+def test_lists_each_package_whose_terms_hold_mpl(
+    site: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    _package(site, "tqdm", "License: MPL-2.0 AND MIT")
+    _package(site, "other", "License-Expression: MPL-2.0")
+    _package(site, "plain", "License: MIT")
+    mpl = tmp_path / "mpl.txt"
+    done = _run(site, tmp_path, mpl=mpl)
+    assert done.returncode == 0, done.stderr
+    assert mpl.read_text(encoding="utf-8").split() == ["other-1.0", "tqdm-1.0"]
+
+
+def test_writes_an_empty_mpl_list_when_no_package_uses_mpl(
+    site: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    _package(site, "plain", "License: MIT")
+    mpl = tmp_path / "mpl.txt"
+    assert _run(site, tmp_path, mpl=mpl).returncode == 0
+    assert mpl.read_text(encoding="utf-8") == ""
+
+
+_TARGET = "aarch64-apple-darwin"
+_BZIP2 = "This program, bzip2, is licensed under a BSD-style licence."
+_TCL = "This software is copyrighted by the Regents of the University of California."
+_ZLIB = "zlib licence: altered source versions must be plainly marked."
+
+
+def _extension(
+    terms: list[str], paths: list[str], link: str | None = "path_static"
+) -> list[dict[str, object]]:
+    links = [{"name": "lib", link: "build/lib/lib.a"}] if link else []
+    return [{"variant": "default", "licenses": terms, "license_paths": paths, "links": links}]
+
+
+def _interpreter(
+    tmp: pathlib.Path,
+    extensions: dict[str, list[dict[str, object]]],
+    texts: dict[str, str],
+    *,
+    version: str = "3.12.16",
+    target: str = _TARGET,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """The metadata folder of a full archive and an interpreter tree of the same version."""
+    meta = tmp / "pbs" / "python"
+    (meta / "licenses").mkdir(parents=True)
+    for name, text in texts.items():
+        (meta / "licenses" / name).write_text(text, encoding="utf-8")
+    info = {
+        "python_version": version,
+        "target_triple": target,
+        "build_info": {"extensions": extensions},
+    }
+    (meta / "PYTHON.json").write_text(json.dumps(info), encoding="utf-8")
+    header = tmp / "tree" / "include" / "python3.12" / "patchlevel.h"
+    header.parent.mkdir(parents=True)
+    header.write_text(
+        '#define PY_RELEASE_LEVEL 0xF\n#define PY_VERSION "3.12.16"\n', encoding="utf-8"
+    )
+    return meta, tmp / "tree"
+
+
+def _run_interpreter(
+    meta: pathlib.Path, tree: pathlib.Path, tmp: pathlib.Path
+) -> subprocess.CompletedProcess[str]:
+    (tmp / "terms").write_text("MIT\nPSF-2.0\n", encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(_SCRIPT),
+            "--interpreter",
+            str(meta),
+            str(tree),
+            str(tmp / "out"),
+            str(tmp / "terms"),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def test_copies_the_libraries_of_the_interpreter_and_adds_their_terms(
+    tmp_path: pathlib.Path,
+) -> None:
+    meta, tree = _interpreter(
+        tmp_path,
+        {
+            "_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"]),
+            "_tkinter": _extension(
+                ["TCL", "Zlib"], ["licenses/LICENSE.tcl.txt", "licenses/LICENSE.zlib.txt"]
+            ),
+            "zlib": _extension(["Zlib"], ["licenses/LICENSE.zlib.txt"]),
+        },
+        {
+            "LICENSE.bzip2.txt": _BZIP2,
+            "LICENSE.tcl.txt": _TCL,
+            "LICENSE.zlib.txt": _ZLIB,
+            "LICENSE.unused.txt": "nothing refers to this text",
+        },
+    )
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 0, done.stderr
+    terms = (tmp_path / "terms").read_text(encoding="utf-8").split()
+    assert terms == ["MIT", "PSF-2.0", "TCL", "Zlib", "bzip2-1.0.6"]
+    out = tmp_path / "out"
+    assert sorted(p.name for p in out.iterdir()) == [
+        "LICENSE.bzip2.txt",
+        "LICENSE.tcl.txt",
+        "LICENSE.zlib.txt",
+    ]
+    assert (out / "LICENSE.bzip2.txt").read_text(encoding="utf-8") == _BZIP2
+
+
+def test_an_extension_that_links_only_the_system_needs_no_licence_text(
+    tmp_path: pathlib.Path,
+) -> None:
+    meta, tree = _interpreter(
+        tmp_path,
+        {
+            "_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"]),
+            "_curses": _extension([], [], link=None),
+        },
+        {"LICENSE.bzip2.txt": _BZIP2},
+    )
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 0, done.stderr
+
+
+def test_refuses_a_bundled_library_that_has_no_licence_text(tmp_path: pathlib.Path) -> None:
+    meta, tree = _interpreter(
+        tmp_path,
+        {
+            "_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"]),
+            "_lzma": _extension(["0BSD"], []),
+        },
+        {"LICENSE.bzip2.txt": _BZIP2},
+    )
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 1
+    assert "_lzma: links lib and names no licence text" in done.stderr
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    ("texts", "message"),
+    [
+        ({}, "_bz2: the licence text licenses/LICENSE.bzip2.txt is missing or empty"),
+        ({"LICENSE.bzip2.txt": " \n"}, "the licence text licenses/LICENSE.bzip2.txt is missing"),
+        (
+            {"LICENSE.bzip2.txt": "GNU GENERAL PUBLIC LICENSE\nVersion 3"},
+            "_bz2: LICENSE.bzip2.txt holds a GNU licence text",
+        ),
+        (
+            {"LICENSE.bzip2.txt": "bzip2\n" * 600 + "GNU Lesser General Public License version 2"},
+            "_bz2: LICENSE.bzip2.txt holds a GNU licence text",
+        ),
+    ],
+)
+def test_refuses_a_licence_text_that_is_missing_empty_or_gnu(
+    tmp_path: pathlib.Path, texts: dict[str, str], message: str
+) -> None:
+    meta, tree = _interpreter(
+        tmp_path, {"_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"])}, texts
+    )
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 1
+    assert message in done.stderr
+    assert not (tmp_path / "out").exists()
+    assert (tmp_path / "terms").read_text(encoding="utf-8") == "MIT\nPSF-2.0\n"
+
+
+def test_refuses_a_licence_text_that_names_no_licence(tmp_path: pathlib.Path) -> None:
+    meta, tree = _interpreter(
+        tmp_path,
+        {"_bz2": _extension([], ["licenses/LICENSE.bzip2.txt"])},
+        {"LICENSE.bzip2.txt": _BZIP2},
+    )
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 1
+    assert "_bz2: names a licence text and no licence" in done.stderr
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"version": "3.12.17"}, "the tree is Python 3.12.16 and the metadata is for 3.12.17"),
+        ({"target": "x86_64-apple-darwin"}, "the metadata is for x86_64-apple-darwin"),
+    ],
+)
+def test_refuses_metadata_that_is_not_for_the_tree(
+    tmp_path: pathlib.Path, changes: dict[str, str], message: str
+) -> None:
+    meta, tree = _interpreter(
+        tmp_path,
+        {"_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"])},
+        {"LICENSE.bzip2.txt": _BZIP2},
+        **changes,
+    )
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 1
+    assert message in done.stderr
+
+
+def test_refuses_a_tree_that_has_no_version_header(tmp_path: pathlib.Path) -> None:
+    meta, tree = _interpreter(
+        tmp_path,
+        {"_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"])},
+        {"LICENSE.bzip2.txt": _BZIP2},
+    )
+    (tree / "include" / "python3.12" / "patchlevel.h").write_text("", encoding="utf-8")
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 1
+    assert "the tree is Python None" in done.stderr
+
+
+def test_refuses_a_folder_with_no_python_json(tmp_path: pathlib.Path) -> None:
+    meta, tree = _interpreter(tmp_path, {}, {})
+    (meta / "PYTHON.json").unlink()
+    done = _run_interpreter(meta, tree, tmp_path)
+    assert done.returncode == 1
+    assert "holds no PYTHON.json" in done.stderr
+
+
+def test_prints_usage_with_the_wrong_interpreter_argument_count() -> None:
+    done = subprocess.run(
+        [sys.executable, "-I", str(_SCRIPT), "--interpreter", "one", "two"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert done.returncode != 0
+    assert "--interpreter <metadata> <tree> <out> <terms>" in done.stderr

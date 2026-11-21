@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Copy the licence texts of a frozen Python tree and name its terms.
 
-Usage: collect_python_licences.py <site-packages> <out> <terms> [<supplied>]
+Usage: collect_python_licences.py [--mpl <mpl>] <site-packages> <out> <terms> [<supplied>]
+       collect_python_licences.py --interpreter <metadata> <tree> <out> <terms>
 
 Each ``*.dist-info`` of <site-packages> is read. Its licence files (the ``licenses`` folder and the
 licence, copying and notice files at the top of the dist-info) are copied to <out>/<package>/. A
@@ -17,10 +18,23 @@ wheel. It also stops when the bundled interpreter licence, ``LICENSE.txt`` in
 the parent of <site-packages>, is missing or is not the PSF licence. The term ``PSF-2.0`` joins the
 terms for the interpreter. The script does not judge permissive against weak copyleft terms such as
 MPL-2.0: the terms file states them, and the store reads the wheel metadata.
+
+With ``--mpl <mpl>`` the script also writes the ``<name>-<version>`` of each package whose terms hold
+MPL-2.0 to <mpl>, one for each line, for mpl_pypi_notice.py. The file is empty when no package does.
+
+The ``--interpreter`` mode reads the licences of the libraries that the bundled interpreter holds.
+<metadata> is the ``python`` folder of the python-build-standalone ``full`` archive of the
+interpreter: its ``PYTHON.json`` and its ``licenses`` folder. <tree> is the bundled interpreter that
+the wheel copies. The script stops when the version in ``PYTHON.json`` is not the version of the tree
+(``include/python3.N/patchlevel.h``), when the target is not Apple Silicon macOS, when a library that
+the interpreter links in has no licence text, or when a text is missing, is empty or is a GNU
+licence. It copies each text to <out> and adds the terms of the libraries to <terms>, which must
+exist.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import sys
@@ -36,6 +50,10 @@ LICENCE_FILE = re.compile(r"(licen[cs]e|copying|notice)", re.IGNORECASE)
 SHORT_FIELD = 200
 HEADING_BYTES = 2000
 INTERPRETER = "LICENSE.txt"
+METADATA_FILE = "PYTHON.json"
+INTERPRETER_TARGET = "aarch64-apple-darwin"
+PY_VERSION = re.compile(r'^#define\s+PY_VERSION\s+"([^"]+)"', re.MULTILINE)
+MPL_TERM = "MPL-2.0"
 JOINER = re.compile(r"\s+(?:AND|OR)\s+")
 # Names that packages write in place of an SPDX identifier, in lower case.
 NAMES = {
@@ -122,7 +140,11 @@ def _target(dist: Path, out: Path, name: str, path: Path) -> Path:
 
 
 def _problems(
-    dist: Path, out: Path, terms: set[str], supplied: dict[str, tuple[Path, str | None]]
+    dist: Path,
+    out: Path,
+    terms: set[str],
+    mpl: set[str],
+    supplied: dict[str, tuple[Path, str | None]],
 ) -> list[str]:
     name = dist.name.removesuffix(".dist-info")
     metadata = dist / "METADATA"
@@ -158,6 +180,8 @@ def _problems(
     ]
     if not problems:
         terms.update(found)
+        if MPL_TERM in found:
+            mpl.add(name)
         if extra is not None and replaced is not None:
             shutil.copyfile(extra, dist / replaced)
         for path in files:
@@ -179,28 +203,124 @@ def _interpreter_problems(site: Path) -> list[str]:
     return []
 
 
-def collect(site: Path, out: Path, supplied: Path | None = None) -> tuple[set[str], list[str]]:
-    """The terms of the tree and the problems found; the copies are written only for clean packages."""
+def collect(
+    site: Path, out: Path, supplied: Path | None = None
+) -> tuple[set[str], set[str], list[str]]:
+    """The terms and MPL-2.0 packages of the tree, and the problems found.
+
+    The copies are written only for clean packages.
+    """
     dists = sorted(site.glob("*.dist-info"))
     if not dists:
-        return set(), [f"{site} holds no package"]
+        return set(), set(), [f"{site} holds no package"]
     terms: set[str] = set()
+    mpl: set[str] = set()
     named = _supplied(supplied)
-    problems = [p for dist in dists for p in _problems(dist, out, terms, named)]
+    problems = [p for dist in dists for p in _problems(dist, out, terms, mpl, named)]
     problems += [f"{package}: a licence file is supplied for a package the tree does not hold" for package in named]
     interpreter = _interpreter_problems(site)
     if not interpreter:
         terms.add("PSF-2.0")
-    return terms, problems + interpreter
+    return terms, mpl, problems + interpreter
+
+
+def _tree_version(tree: Path) -> str | None:
+    """The PY_VERSION of the interpreter tree, or None when its header is missing."""
+    for header in sorted(tree.glob("include/python3.*/patchlevel.h")):
+        if found := PY_VERSION.search(header.read_text(encoding="utf-8", errors="replace")):
+            return found.group(1)
+    return None
+
+
+def _bundled(variant: dict) -> list[str]:
+    """The names of the libraries that an extension links from outside the system."""
+    return [
+        link["name"]
+        for link in variant.get("links", [])
+        if "path_static" in link or "path_dynamic" in link
+    ]
+
+
+def interpreter_licences(
+    metadata: Path, tree: Path, out: Path
+) -> tuple[set[str], list[str]]:
+    """The terms of the libraries in the interpreter tree and the problems found.
+
+    The licence texts are copied to *out* only when nothing is wrong.
+    """
+    path = metadata / METADATA_FILE
+    if not path.is_file():
+        return set(), [f"{metadata} holds no {METADATA_FILE}"]
+    info = json.loads(path.read_text(encoding="utf-8"))
+    problems = []
+    if info.get("target_triple") != INTERPRETER_TARGET:
+        problems.append(f"the metadata is for {info.get('target_triple')}, not {INTERPRETER_TARGET}")
+    version = _tree_version(tree)
+    if version != info.get("python_version"):
+        problems.append(
+            f"the tree is Python {version} and the metadata is for {info.get('python_version')}"
+        )
+    terms: set[str] = set()
+    texts: dict[str, Path] = {}
+    for module, variants in sorted(info["build_info"]["extensions"].items()):
+        for variant in variants:
+            names = variant.get("license_paths", [])
+            if not names and (bundled := _bundled(variant)):
+                problems.append(f"{module}: links {', '.join(bundled)} and names no licence text")
+            for name in names:
+                text = metadata / name
+                if not text.is_file() or not text.read_bytes().strip():
+                    problems.append(f"{module}: the licence text {name} is missing or empty")
+                elif GNU_HEADING.search(text.read_text(encoding="utf-8", errors="replace")) or _store_refuses(text):
+                    problems.append(f"{module}: {text.name} holds a GNU licence text")
+                else:
+                    texts[text.name] = text
+            if names and not variant.get("licenses"):
+                problems.append(f"{module}: names a licence text and no licence")
+            terms.update(variant.get("licenses", []))
+    if not problems:
+        out.mkdir(parents=True, exist_ok=True)
+        for name, text in texts.items():
+            shutil.copy2(text, out / name)
+    return terms, problems
+
+
+def _take_option(argv: list[str], name: str) -> tuple[Path | None, list[str]]:
+    """The value of the leading option *name*, and the other arguments."""
+    if argv[:1] == [name] and len(argv) >= 2:
+        return Path(argv[1]), argv[2:]
+    return None, argv
+
+
+def _stop(problems: list[str]) -> None:
+    for problem in problems:
+        print(f"collect_python_licences: {problem}", file=sys.stderr)
+    if problems:
+        raise SystemExit(1)
+
+
+def main(argv: list[str]) -> None:
+    if argv[:1] == ["--interpreter"]:
+        if len(argv) != 5:
+            raise SystemExit(__doc__)
+        metadata, tree, out, terms_file = map(Path, argv[1:])
+        names, found = interpreter_licences(metadata, tree, out)
+        _stop(found)
+        names |= set(terms_file.read_text(encoding="utf-8").split())
+        terms_file.write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8")
+        print(f"interpreter libraries, terms: {' '.join(sorted(names))}")
+        return
+    mpl_file, argv = _take_option(argv, "--mpl")
+    if len(argv) not in (3, 4):
+        raise SystemExit(__doc__)
+    site = Path(argv[0])
+    names, mpl, found = collect(site, Path(argv[1]), Path(argv[3]) if len(argv) == 4 else None)
+    _stop(found)
+    Path(argv[2]).write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8")
+    if mpl_file is not None:
+        mpl_file.write_text("".join(f"{p}\n" for p in sorted(mpl)), encoding="utf-8")
+    print(f"{len(list(site.glob('*.dist-info')))} packages, terms: {' '.join(sorted(names))}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (4, 5):
-        raise SystemExit(__doc__)
-    names, found = collect(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[4]) if len(sys.argv) == 5 else None)
-    for problem in found:
-        print(f"collect_python_licences: {problem}", file=sys.stderr)
-    if found:
-        raise SystemExit(1)
-    Path(sys.argv[3]).write_text("".join(f"{t}\n" for t in sorted(names)), encoding="utf-8")
-    print(f"{len(list(Path(sys.argv[1]).glob('*.dist-info')))} packages, terms: {' '.join(sorted(names))}")
+    main(sys.argv[1:])
