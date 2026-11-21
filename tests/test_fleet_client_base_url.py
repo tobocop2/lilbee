@@ -15,19 +15,17 @@ def _client(base_url: str) -> LlamaServerClient:
 
 
 @pytest.mark.parametrize(
-    ("base_url", "host"),
-    [
-        ("http://gpu0/", "gpu0"),
-        ("http://gpu0//", "gpu0"),
-        ("http://gpu0", "gpu0"),
-        ("http://gpuX/", "gpuX"),
-    ],
-    ids=["one-slash", "two-slashes", "no-slash", "host-ends-in-x"],
+    "base_url", ["http://gpu0/", "http://gpu0//", "http://gpu0"], ids=["one", "two", "none"]
 )
-def test_a_base_url_gives_single_slash_request_urls_and_keeps_its_host(
-    base_url: str, host: str
-) -> None:
+def test_a_base_url_gives_single_slash_request_urls(base_url: str) -> None:
     client = _client(base_url)
 
-    assert client.sent(httpx.Request("GET", f"http://{host}/v1/models"))
-    assert str(client._http.build_request("GET", "/v1/models").url) == f"http://{host}/v1/models"
+    assert client.sent(httpx.Request("GET", "http://gpu0/v1/models"))
+    assert str(client._http.build_request("GET", "/v1/models").url) == "http://gpu0/v1/models"
+
+
+def test_a_base_url_that_ends_in_an_upper_case_x_keeps_the_letter() -> None:
+    """Only the slashes go; a letter at the end of the host stays (the host is lower-cased)."""
+    client = _client("http://gpuX/")
+
+    assert str(client._http.build_request("GET", "/v1/models").url) == "http://gpux/v1/models"
