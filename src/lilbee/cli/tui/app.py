@@ -658,7 +658,7 @@ class LilbeeApp(App[None]):
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return None
         self.notify_warnings(result.warnings)
-        self.settings_changed_signal.publish((key, getattr(cfg, key)))
+        self.publish_settings([key])
         return result
 
     def notify_warnings(self, warnings: Sequence[str]) -> None:
@@ -762,9 +762,15 @@ class LilbeeApp(App[None]):
         self.adopt_external_settings()
 
     def publish_settings(self, keys: Iterable[str]) -> None:
-        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value."""
+        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value.
+
+        Every change of a role's model comes through here, so it takes the next pick
+        number of the role: a pick that still waits on its engine loses to it.
+        """
         for key in keys:
             normalized = getattr(cfg, key)
+            if key in MODEL_ROLE_FIELDS:
+                self.model_picks.take(key, normalized or "")
             if (
                 key == "theme"
                 and isinstance(normalized, str)

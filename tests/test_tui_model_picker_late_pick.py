@@ -11,15 +11,18 @@ from textual.app import ComposeResult
 from textual.widgets import OptionList
 
 from lilbee.app import engine_service
+from lilbee.app.settings import SettingsUpdateResult
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import EngineCommandResult
 from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens import model_picker
+from lilbee.cli.tui.screens.catalog import CatalogScreen
+from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_picker import ModelPickerModal
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.cli.tui.widgets.model_bar import ModelOption, ModelPickerButton
+from lilbee.cli.tui.widgets.model_bar import ModelOption, ModelPickerButton, RoleRow
 from lilbee.cli.tui.widgets.model_list import ModelList
 from lilbee.core.config import cfg
 from tests._async_wait import wait_until
@@ -100,14 +103,25 @@ def _hold_the_install(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
 
 
 def _recorder(seen: list[str | None]) -> Any:
-    """A stand-in for the model write that records each ref and puts it in the role."""
+    """A stand-in for the model write that records each ref and puts it in the role.
 
-    def record(_host: Any, *, key: str, ref: str | None, **_kw: Any) -> None:
+    It tells the app of the change as the real write does.
+    """
+
+    def record(host: Any, *, key: str, ref: str | None, **_kw: Any) -> None:
         seen.append(ref)
         if ref is not None:
             setattr(cfg, key, ref)
+            host.app.publish_settings([key])
 
     return record
+
+
+def _store(values: dict[str, Any]) -> SettingsUpdateResult:
+    """A stand-in for the config write under the real model write: cfg takes the values."""
+    for key, value in values.items():
+        setattr(cfg, key, value)
+    return SettingsUpdateResult(updated=list(values), reindex_required=False)
 
 
 async def _open_bar_picker(app: _BarApp, pilot) -> None:
@@ -334,6 +348,63 @@ async def test_the_newer_of_two_late_picks_wins(
             assert _stored() == {OTHER_REF: "openvino", THIRD_REF: "openvino"}
             assert seen == [None, None, THIRD_REF]
             assert msg.MODEL_PICKER_LATE_PICK_SKIPPED.format(model=THIRD_REF) not in _toasts(app)
+
+
+class _VisionBarApp(LilbeeAppHost):
+    def compose(self) -> ComposeResult:
+        yield ModelPickerButton(scope="vision", button_id="late-bar")
+
+
+async def _a_model_write_beats_the_late_pick(
+    monkeypatch: pytest.MonkeyPatch, app: LilbeeAppHost, key: str, write: Any, written: str
+) -> None:
+    """Pick a model whose engine installs, run *write*, then let the install end."""
+    setattr(cfg, key, GGUF_REF)
+    release = _hold_the_install(monkeypatch)
+    with (
+        mock.patch("lilbee.cli.tui.app.apply_settings_update", _store),
+        mock.patch("lilbee.cli.tui.widgets.model_pick.get_services"),
+    ):
+        async with app.run_test(size=(140, 50)) as pilot:
+            await _open_bar_picker(app, pilot)
+            await _pick_with_openvino(app, pilot, "oth")
+            await _confirm_the_download(app, pilot)
+            assert await wait_until(pilot, lambda: len(_engine_tasks(app)) == 1)
+            write(app)
+            assert await wait_until(pilot, lambda: getattr(cfg, key) == written)
+            release.set()
+            assert await wait_until(pilot, lambda: SKIPPED in _toasts(app))
+            assert _stored() == {OTHER_REF: "openvino"}
+            assert getattr(cfg, key) == written
+
+
+async def test_a_late_pick_loses_to_a_model_command_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def write(app: LilbeeAppHost) -> None:
+        ChatScreen._cmd_model(mock.Mock(app=app), THIRD_REF)
+
+    await _a_model_write_beats_the_late_pick(monkeypatch, _BarApp(), "chat_model", write, THIRD_REF)
+
+
+async def test_a_late_pick_loses_to_a_catalog_use_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def write(app: LilbeeAppHost) -> None:
+        CatalogScreen._activate(mock.Mock(app=app), "chat_model", THIRD_REF, "Using Third")
+
+    await _a_model_write_beats_the_late_pick(monkeypatch, _BarApp(), "chat_model", write, THIRD_REF)
+
+
+async def test_a_late_pick_loses_to_the_turn_off_pill_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def write(app: LilbeeAppHost) -> None:
+        RoleRow.on_click(mock.Mock(app=app, _key="vision_model"), mock.Mock())
+
+    await _a_model_write_beats_the_late_pick(
+        monkeypatch, _VisionBarApp(), "vision_model", write, ""
+    )
 
 
 def _app_with_picks() -> tuple[mock.Mock, PickOrder]:
