@@ -30,9 +30,21 @@ def test_the_pin_names_the_archive_that_was_measured() -> None:
     assert pin["OVMS_VERSION"] in pin["OVMS_ARCHIVE_URL"]
 
 
+def _licence_expression() -> str:
+    script = (ROOT / _pin()["OVMS_REPACKAGE_SCRIPT"]).read_text(encoding="utf-8")
+    found = re.search(r'^expression="([^"]+)"$', script, re.MULTILINE)
+    assert found is not None
+    return found.group(1)
+
+
+def test_the_licence_expression_names_the_ittnotify_bsd_choice() -> None:
+    assert "BSD-3-Clause" in _licence_expression().split(" AND ")
+
+
 def test_the_licence_expression_names_the_libgit2_exception() -> None:
     script = (ROOT / _pin()["OVMS_REPACKAGE_SCRIPT"]).read_text(encoding="utf-8")
     assert "GPL-2.0-only WITH GCC-exception-2.0" in script
+    assert _licence_expression().endswith("AND GPL-2.0-only WITH GCC-exception-2.0")
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="the script needs bash")
@@ -121,6 +133,14 @@ def test_the_wheel_holds_no_gpl_or_lgpl_text_but_the_one_of_libgit2(tmp_path: Pa
     assert copyleft == {"libgt2.LICENSE.txt"}
     assert "ittnotify-BSD-3-Clause.txt" in shipped
     assert (project / "LICENSE-ovms").is_file()
+    expression = _licence_expression()
+    named = {
+        match.group(1)
+        for name in shipped
+        if (match := re.search(r"-([A-Z][A-Za-z]*-\d[\w.]*(?:-[A-Za-z]+)*)\.txt$", name))
+    }
+    assert named == {"BSD-3-Clause"}
+    assert all(term in expression for term in named)
 
 
 def test_the_script_puts_libtbb_where_every_library_finds_it() -> None:

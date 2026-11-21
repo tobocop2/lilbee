@@ -192,9 +192,10 @@ def test_the_memory_estimate_charges_the_weights_of_the_ir_folder(tmp_path: Path
     assert estimate.device_bytes >= 4096
 
 
-def test_the_pin_record_names_the_licence_of_the_linked_libgit2() -> None:
+def test_the_pin_record_names_the_licences_of_the_linked_code() -> None:
     assert OVMS.pin_record()["licenses"] == [
         "Apache-2.0",
+        "BSD-3-Clause",
         "GPL-2.0-only WITH GCC-exception-2.0",
     ]
 
