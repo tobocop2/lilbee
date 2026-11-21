@@ -422,12 +422,15 @@ def test_an_extension_that_links_only_the_system_needs_no_licence_text(
     assert done.returncode == 0, done.stderr
 
 
-def test_refuses_a_bundled_library_that_has_no_licence_text(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("link", ["path_static", "path_dynamic"])
+def test_refuses_a_bundled_library_that_has_no_licence_text(
+    tmp_path: pathlib.Path, link: str
+) -> None:
     meta, tree = _interpreter(
         tmp_path,
         {
             "_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"]),
-            "_lzma": _extension(["0BSD"], []),
+            "_lzma": _extension(["0BSD"], [], link=link),
         },
         {"LICENSE.bzip2.txt": _BZIP2},
     )

@@ -37,8 +37,9 @@ def test_the_notice_holds_the_line_of_each_package_of_the_tree_and_no_other() ->
     assert text == _TQDM + "\n"
 
 
-def test_a_package_name_matches_in_the_form_of_pep_503() -> None:
-    text = tool.notice(["other-pkg-2.0"], [_TQDM, _OTHER])
+@pytest.mark.parametrize("package", ["other-pkg-2.0", "Other_Pkg-2.0", "OTHER.pkg-2.0"])
+def test_a_package_name_matches_in_the_form_of_pep_503(package: str) -> None:
+    text = tool.notice([package], [_TQDM, _OTHER])
     assert text == _OTHER + "\n"
 
 
