@@ -74,7 +74,8 @@ def _tokenizer_sizing() -> ChunkSizing:
 def _size_params(max_tokens: int | None = None) -> tuple[int, int, ChunkSizing]:
     """Return (max, overlap, sizing) in embedder tokens for the plain and heading chunkers.
 
-    The semantic chunker does not use this: it sizes by characters and ignores ChunkSizing.
+    The semantic chunker does not use this: it sizes by characters and ignores ChunkSizing,
+    so its chunks go through :func:`fit_token_budget` instead.
     """
     if max_tokens is None:
         max_tokens = token_budget()
@@ -119,7 +120,7 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     config = active_config()
     if use_semantic and config.semantic_chunking:
         # The semantic chunker sizes by characters and ignores ChunkSizing, so it
-        # stays on the character budget.
+        # stays on the character budget; fit_token_budget then cuts its chunks to tokens.
         max_chars, max_overlap = _char_budget()
         chunking = ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
@@ -167,10 +168,38 @@ def chunk_text(
         for c in _extract_chunks(text, mime_type, chunking):
             chunks.extend(_fit_breadcrumb(c.content, c.metadata.heading_context, budget))
         return chunks
-    return [
+    contents = [
         c.content
         for c in _extract_chunks(text, mime_type, build_chunking_config(use_semantic=use_semantic))
     ]
+    if not (use_semantic and active_config().semantic_chunking):
+        return contents
+    budget = token_budget()
+    return [piece for content in contents for piece in fit_token_budget(content, budget)]
+
+
+def fit_token_budget(content: str, budget: int) -> list[str]:
+    """*content* whole when the embedder counts it within *budget* tokens, else re-split to it.
+
+    The semantic chunker sizes by characters, and a byte-level tokenizer makes more than one
+    token from a character, so its chunks are counted with the embedder's own tokenizer.
+    """
+    if count_embed_tokens(content) <= budget:
+        return [content]
+    return _split_to_tokens(content, "text/plain", budget)
+
+
+def _split_to_tokens(content: str, mime_type: str, budget: int) -> list[str]:
+    """*content* cut into pieces of at most *budget* tokens of the embedder."""
+    from xberg import ChunkingConfig
+
+    max_size, overlap, sizing = _size_params(budget)
+    pieces = _extract_chunks(
+        content,
+        mime_type,
+        ChunkingConfig(max_characters=max_size, overlap=overlap, sizing=sizing),
+    )
+    return [p.content for p in pieces]
 
 
 def _extract_chunks(text: str, mime_type: str, chunking: ChunkingConfig) -> list[Any]:
@@ -214,15 +243,7 @@ def _fit_breadcrumb(content: str, context: HeadingContext | None, budget: int) -
     room = budget - count_embed_tokens(prefix)
     if room < budget // 2:
         return [content]
-    from xberg import ChunkingConfig
-
-    max_size, overlap, sizing = _size_params(room)
-    pieces = _extract_chunks(
-        content,
-        "text/markdown",
-        ChunkingConfig(max_characters=max_size, overlap=overlap, sizing=sizing),
-    )
-    return [prefix + p.content for p in pieces]
+    return [prefix + piece for piece in _split_to_tokens(content, "text/markdown", room)]
 
 
 class ChunkLimitError(Exception):
