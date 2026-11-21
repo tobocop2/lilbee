@@ -136,7 +136,7 @@ _HOLD_SWEEP_THREAD = "fleet-hold-sweep"
 _DRAIN_POLL_S = 0.25
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
     from contextlib import AbstractContextManager
 
     from lilbee.providers.base import (
@@ -1978,12 +1978,15 @@ class FleetProvider:
             return ()
         return tuple(launch for launch in self._launches.get(group, ()) if launch.role is role)
 
-    def _drop_group(self, group: SwapGroup) -> SwapManager | None:
+    def _drop_group(
+        self, group: SwapGroup, *, keep_open: Collection[LlamaServerClient] = ()
+    ) -> SwapManager | None:
         """Forget *group*'s swap/launches and every member role's clients, and the last failure.
 
         Caller holds ``self._lock``. Member clients are retired (closed at a later
         reload or shutdown, never while a reader could still hold one) and the chat
-        capacity falls back to its defaults when chat's group is dropped.
+        capacity falls back to its defaults when chat's group is dropped. The retired
+        clients in *keep_open* stay open; see ``_retire_clients``.
         """
         swap = self._swaps.pop(group, None)
         self._reload_failed = False
@@ -1993,13 +1996,18 @@ class FleetProvider:
         self._group_dirs.pop(group, None)
         for role in [r for r, g in self._role_group.items() if g is group]:
             del self._role_group[role]
-            self._retire_clients(self._clients.pop(role, []))
+            self._retire_clients(self._clients.pop(role, []), keep_open=keep_open)
             if role is WorkerRole.CHAT:
                 self._chat_slots = 1
                 self._chat_ctx = None
         return swap
 
-    def _retire_clients(self, old_clients: list[LlamaServerClient]) -> None:
+    def _retire_clients(
+        self,
+        old_clients: list[LlamaServerClient],
+        *,
+        keep_open: Collection[LlamaServerClient] = (),
+    ) -> None:
         """Close the previously-retired clients, then retire *old_clients*.
 
         Caller holds ``self._lock``. Retired clients are never handed to new
@@ -2008,10 +2016,13 @@ class FleetProvider:
         check confirms it before close, and any still-busy client stays retired
         for the next reload. This closes idle reloaded-away pools without ever
         closing one a reader could still use. Shutdown closes whatever remains.
+
+        A client in *keep_open* stays retired and open: a reload took it out of
+        dispatch for a group that has not stopped yet, and a failed pass gives it back.
         """
         still_busy: list[LlamaServerClient] = []
         for client in self._retiring_clients:
-            if client.in_flight == 0:
+            if client.in_flight == 0 and client not in keep_open:
                 client.close()
             else:
                 still_busy.append(client)
@@ -3583,7 +3594,8 @@ class FleetProvider:
 
         The clients in *drained* have drained already. Each leaves *drained* with the
         error line of its restart, so a request still running on one ends with that
-        line when its server stops.
+        line when its server stops. A client stays open until its own group stops: if
+        a stop raises, the pass gives the clients of the later groups back to dispatch.
         """
         for group in sorted(changed, key=lambda g: g.value):
             with self._lock:
@@ -3591,7 +3603,8 @@ class FleetProvider:
                     message = _cut_message(role, stuck=role in stuck, replanned=group in replanned)
                     for client in drained.pop(role, []):
                         client.restart_message = message
-                swap = self._drop_group(group)
+                later = [client for pool in drained.values() for client in pool]
+                swap = self._drop_group(group, keep_open=later)
             if swap is not None:
                 swap.shutdown()
 
@@ -3642,7 +3655,8 @@ class FleetProvider:
         group drains once. A pick reserves its client under the same lock, so a
         moved client gets no new request. The clients join the retired list, where a
         cancel and a shutdown reach them, and no earlier retired client is closed
-        here: a pass that fails gives the clients of *drained* back to dispatch.
+        here: a pass that fails gives the clients of *drained* back to dispatch, so
+        the stop phase keeps them open until their own group stops.
         """
         taken: list[LlamaServerClient] = []
         for role in [r for r, g in self._role_group.items() if g in groups and r not in drained]:
