@@ -210,13 +210,15 @@ async def test_one_model_in_two_formats_gives_two_rows_that_differ_in_text() -> 
         assert "Other (" not in rows[2]
 
 
-async def test_the_key_line_names_enter_and_e() -> None:
+async def test_the_key_line_names_enter_and_both_engine_keys() -> None:
     app = _PickerApp()
     async with app.run_test(size=(80, 20)) as pilot:
         modal = await _open(app, pilot)
-        hint = str(modal.query_one("#picker-hint").render())
-        assert "Enter use model" in hint and "e change engine" in hint
-        assert modal.query_one("#picker-hint").region.height == 1
+        hint_widget = modal.query_one("#picker-hint")
+        hint = str(hint_widget.render())
+        assert "Enter use model" in hint and "e or ctrl+l engine" in hint
+        assert hint_widget.region.height == 1
+        assert len(hint) <= hint_widget.content_region.width
 
 
 async def test_enter_opens_the_engine_step_with_auto_highlighted_when_nothing_is_saved() -> None:
@@ -342,6 +344,7 @@ async def test_the_arrow_keys_move_the_highlight_and_hand_focus_to_the_list() ->
         assert app.focused is ml
         await pilot.press("slash")
         assert app.focused is modal.query_one("#picker-search", Input)
+        assert modal.query_one("#picker-search", Input).value == ""
         await pilot.press("up")
         assert ml.highlighted == 0
         assert app.focused is ml

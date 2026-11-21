@@ -981,7 +981,10 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
     "or press m to open the Catalog and install it."
 )
 MODEL_PICKER_TURN_OFF = "Turn off this model"
-MODEL_PICKER_HINT = "Enter use model · e change engine · Esc close · / search"
+MODEL_PICKER_HINT = "Enter use model · e or ctrl+l engine · Esc close · / search"
+MODEL_PICKER_LATE_PICK_SKIPPED = (
+    "The engine is saved. {model} is not used: the role has another model now."
+)
 MODEL_PICKER_ENGINE_LABEL = "engine:"
 MODEL_PICKER_ENGINE_AUTO = "(auto)"
 MODEL_PICKER_ENGINE_NONE = "none"

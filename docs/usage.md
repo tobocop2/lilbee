@@ -540,7 +540,8 @@ engine can load the model file, the picker does not open.
 If the engine you pick is not installed, the picker closes and asks to
 download it. The role keeps its old model while the engine installs, and the
 switch happens when the install ends. If the install fails, the role keeps its
-old model and the task center shows the error.
+old model and the task center shows the error. If you pick another model for
+the role while the engine installs, the role keeps that newer model.
 
 Press `e` on a model, or `ctrl+l` anywhere in the picker, to change the engine
 without picking the model. After you start to type a search, `e` is a letter
