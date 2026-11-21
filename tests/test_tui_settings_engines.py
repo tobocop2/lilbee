@@ -422,6 +422,68 @@ async def test_a_refused_remove_shows_the_refusal_as_a_toast(
         assert table.row_count == 4
 
 
+_IK_MISSING = EngineRow(
+    "ik_llama.cpp", EngineState.NOT_INSTALLED, backend="cpu", download_bytes=_DOWNLOAD_BYTES
+)
+_IK_STALE = EngineRow(
+    "ik_llama.cpp", EngineState.DIFFERS_FROM_PIN, "1.2.3", "cuda", size_bytes=_BUILD_BYTES
+)
+
+
+async def test_a_build_that_differs_from_the_pin_shows_its_size_and_removes_on_yes(
+    service: _Rows, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service.rows = [_IK_MISSING, _IK_STALE]
+    remove = mock.Mock(return_value="ik_llama.cpp 1.2.3 (cuda)")
+    monkeypatch.setattr(engine_service, "remove_build", remove)
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot, rows=2)
+        shown = [[_plain(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        assert shown == [
+            ["■ ik_llama.cpp", "-", "cpu", "180 MB", "not installed", "", "Install"],
+            ["■ ik_llama.cpp", "1.2.3", "cuda", "412 MB", "differs from the pin", "", "Remove"],
+        ]
+        service.rows = [_IK_MISSING]
+        await _select_row(pilot, table, "ik_llama.cpp|1.2.3")
+        text = await _dialog_message(app, pilot, ConfirmDialog)
+        assert text == "Remove ik_llama.cpp 1.2.3 (cuda) from this computer?"
+        await pilot.press("y")
+        assert await wait_until(pilot, lambda: remove.called)
+        remove.assert_called_once_with("ik_llama.cpp", "1.2.3", "cuda")
+        assert await wait_until(pilot, lambda: table.row_count == 1)
+
+
+async def test_a_build_that_links_out_of_the_store_offers_no_remove_and_says_why(
+    service: _Rows, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    linked = EngineRow("ik_llama.cpp", EngineState.INSTALLED, "1.2.3", "cuda", outside_store=True)
+    service.rows = [linked]
+    remove = mock.Mock()
+    monkeypatch.setattr(engine_service, "remove_build", remove)
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot, rows=1)
+        assert [_plain(c) for c in table.get_row_at(0)] == [
+            "■ ik_llama.cpp",
+            "1.2.3",
+            "cuda",
+            "-",
+            "installed",
+            "",
+            "linked, not removable",
+        ]
+        await _select_row(pilot, table, "ik_llama.cpp")
+        folder = engine_service.engines_folder()
+        why = (
+            "The folder of ik_llama.cpp 1.2.3 (cuda) is a link to a place outside the engines "
+            f"folder {folder}. lilbee does not remove it. Delete the link yourself."
+        )
+        assert await wait_until(pilot, lambda: why in _toasts(app))
+        assert isinstance(app.screen, SettingsScreen)
+        remove.assert_not_called()
+
+
 # --- Install
 
 
@@ -630,8 +692,64 @@ def test_engine_rows_count_a_build_that_differs_from_the_pin_as_missing_as_the_l
     rows = engine_service.engine_rows()
     missing = {r.engine for r in rows if r.state is EngineState.NOT_INSTALLED}
     assert missing == set(engine_service.engine_list().not_installed)
-    assert _states(rows)["ik_llama.cpp"] == [EngineState.NOT_INSTALLED]
+    assert _states(rows)["ik_llama.cpp"] == [
+        EngineState.NOT_INSTALLED,
+        EngineState.DIFFERS_FROM_PIN,
+    ]
     assert "ik_llama.cpp" not in engine_service.offered_engines()
+
+
+def test_engine_rows_show_a_build_that_differs_from_the_pin_after_the_install_row(
+    fleet: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The store holds ik_llama.cpp 1.2.3 (cuda), and the pin names another build.
+    monkeypatch.setattr(
+        engine_service, "installed_engines", lambda: {EngineName.LLAMA: frozenset({"gguf"})}
+    )
+    listed = engine_service.engine_list()
+    stale = [
+        (b.engine, b.version, b.backend)
+        for b in listed.builds
+        if b.engine in listed.not_installed
+    ]
+    rows = [r for r in engine_service.engine_rows() if r.engine == "ik_llama.cpp"]
+    assert rows == [
+        EngineRow(
+            "ik_llama.cpp",
+            EngineState.NOT_INSTALLED,
+            backend="cpu",
+            download_bytes=_DOWNLOAD_BYTES,
+        ),
+        EngineRow(
+            "ik_llama.cpp",
+            EngineState.DIFFERS_FROM_PIN,
+            "1.2.3",
+            "cuda",
+            size_bytes=sum(_BUILD_FILES.values()),
+        ),
+    ]
+    assert [(r.engine, r.version, r.backend) for r in rows[1:]] == stale
+
+
+def test_engine_rows_mark_a_linked_build_folder_as_outside_the_store(
+    fleet: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside"
+    _files(outside, {"big": 50_000})
+    (engine_service.engines_folder() / "ik_llama.cpp" / "1.2.4-cuda").symlink_to(outside)
+    monkeypatch.setattr(
+        engine_service,
+        "builds",
+        lambda *_a, **_k: [
+            engine_service.BuildView("ik_llama.cpp", "1.2.3", "cuda"),
+            engine_service.BuildView("ik_llama.cpp", "1.2.4", "cuda"),
+        ],
+    )
+    rows = [r for r in engine_service.engine_rows() if r.engine == "ik_llama.cpp"]
+    assert [(r.version, r.size_bytes, r.outside_store) for r in rows] == [
+        ("1.2.3", sum(_BUILD_FILES.values()), False),
+        ("1.2.4", None, True),
+    ]
 
 
 def test_engine_rows_count_an_engine_the_user_installed_as_installed_as_the_list_does(
@@ -657,3 +775,57 @@ def test_the_store_reads_the_size_on_disk_of_a_build(fleet: None) -> None:
 def test_a_build_whose_folder_cannot_be_read_has_no_size(fleet: None) -> None:
     store = EngineStore(engine_service.engines_folder())
     assert store.build_size("ik_llama.cpp", "9.9.9", "cuda") is None
+
+
+def _files(folder: Path, sizes: dict[str, int]) -> None:
+    for name, size in sizes.items():
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(b"x" * size)
+
+
+def test_the_size_counts_only_its_own_build_folder_of_two_builds_of_one_engine(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "engines"
+    _files(root / "ik_llama.cpp" / "1.2.3-cuda", {"bin/s": 300, "lib/a.so": 100})
+    _files(root / "ik_llama.cpp" / "1.2.2-cuda", {"bin/s": 7000})
+    _files(root / "tei" / "0.9-cpu", {"bin/t": 9000})
+    store = EngineStore(root)
+    assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") == 400
+    assert store.build_size("ik_llama.cpp", "1.2.2", "cuda") == 7000
+
+
+def test_the_size_counts_a_link_inside_the_build_as_the_link_not_its_target(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    _files(outside, {"big": 50_000})
+    root = tmp_path / "engines"
+    build = root / "ik_llama.cpp" / "1.2.3-cuda"
+    _files(build, {"bin/s": 300})
+    (build / "dirlink").symlink_to(outside)
+    (build / "filelink").symlink_to(outside / "big")
+    link_bytes = (build / "filelink").lstat().st_size
+    assert EngineStore(root).build_size("ik_llama.cpp", "1.2.3", "cuda") == 300 + link_bytes
+
+
+def test_a_build_folder_that_is_a_link_out_of_the_store_has_no_size(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    _files(outside, {"big": 50_000})
+    root = tmp_path / "engines"
+    (root / "ik_llama.cpp").mkdir(parents=True)
+    (root / "ik_llama.cpp" / "1.2.3-cuda").symlink_to(outside)
+    store = EngineStore(root)
+    assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
+    assert not store.holds("ik_llama.cpp", "1.2.3", "cuda")
+
+
+def test_a_build_in_an_engine_folder_that_is_a_link_has_no_size(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    _files(outside / "1.2.3-cuda", {"big": 50_000})
+    root = tmp_path / "engines"
+    root.mkdir()
+    (root / "ik_llama.cpp").symlink_to(outside)
+    store = EngineStore(root)
+    assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
+    assert not store.holds("ik_llama.cpp", "1.2.3", "cuda")

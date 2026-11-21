@@ -471,12 +471,15 @@ class EngineState(StrEnum):
     """Whether an engine row is a build on disk, the bundled engine, a user install, or a download.
 
     ``USER_INSTALLED`` is an engine the user installed outside lilbee, such as a binary on PATH.
+    ``DIFFERS_FROM_PIN`` is a build on disk of an engine that is not installed: another
+    version, another backend, or another wheel than the pin names.
     """
 
     INSTALLED = "installed"
     BUNDLED = "bundled"
     USER_INSTALLED = "user_installed"
     NOT_INSTALLED = "not_installed"
+    DIFFERS_FROM_PIN = "differs_from_pin"
 
 
 @dataclass(frozen=True)
@@ -484,8 +487,10 @@ class EngineRow:
     """One row of the engine table: a build, the bundled engine, a user install, or a missing one.
 
     ``download_bytes`` is set only for a missing engine that has a pack for this computer.
-    ``size_bytes`` is the size on disk of an installed build, None when it cannot be read.
+    ``size_bytes`` is the size on disk of a build, None when it cannot be read.
     ``roles`` names the roles that use the engine now.
+    ``outside_store`` is True for a build whose folder links out of the engines folder;
+    remove refuses such a build, and it has no size.
     """
 
     engine: str
@@ -495,13 +500,30 @@ class EngineRow:
     download_bytes: int | None = None
     roles: tuple[str, ...] = ()
     size_bytes: int | None = None
+    outside_store: bool = False
+
+
+def _build_row(
+    store: EngineStore, build: BuildView, state: EngineState, users: tuple[str, ...] = ()
+) -> EngineRow:
+    """The row of one build on disk, with its size and whether remove can reach it."""
+    return EngineRow(
+        build.engine,
+        state,
+        build.version,
+        build.backend,
+        roles=users,
+        size_bytes=store.build_size(build.engine, build.version, build.backend),
+        outside_store=not store.holds(build.engine, build.version, build.backend),
+    )
 
 
 def engine_rows(config: Config = cfg) -> list[EngineRow]:
     """The engine list as table rows: one row per build, then each missing engine.
 
-    An engine counts as installed or missing by the rule of ``engine_list``, so a build
-    that differs from the pin is a missing engine and a user install is an installed one.
+    An engine counts as installed or missing by the rule of ``engine_list``, so a user
+    install is an installed one. A missing engine is followed by a row for each of its
+    builds on disk, as ``lilbee engine list`` names them, so the user can remove them.
     """
     used: dict[str, list[str]] = {}
     for view in roles(config):
@@ -514,32 +536,22 @@ def engine_rows(config: Config = cfg) -> list[EngineRow]:
     rows: list[EngineRow] = []
     for name, adapter in choice.ADAPTERS.items():
         key = str(name)
-        if key in missing:
-            option = _missing_option(name, adapter)
-            rows.append(
-                EngineRow(
-                    key,
-                    EngineState.NOT_INSTALLED,
-                    backend=option.backend,
-                    download_bytes=option.download_bytes,
+        mine = [b for b in listed.builds if b.engine == key]
+        if key in missing or name not in present:
+            if key in missing:
+                option = _missing_option(name, adapter)
+                rows.append(
+                    EngineRow(
+                        key,
+                        EngineState.NOT_INSTALLED,
+                        backend=option.backend,
+                        download_bytes=option.download_bytes,
+                    )
                 )
-            )
-            continue
-        if name not in present:
+            rows.extend(_build_row(store, b, EngineState.DIFFERS_FROM_PIN) for b in mine)
             continue
         users = tuple(used.get(key, ()))
-        mine = [b for b in listed.builds if b.engine == key]
-        rows.extend(
-            EngineRow(
-                key,
-                EngineState.INSTALLED,
-                b.version,
-                b.backend,
-                roles=users,
-                size_bytes=store.build_size(key, b.version, b.backend),
-            )
-            for b in mine
-        )
+        rows.extend(_build_row(store, b, EngineState.INSTALLED, users) for b in mine)
         if adapter.bundled:
             rows.append(
                 EngineRow(key, EngineState.BUNDLED, backend=_bundled_backend(name), roles=users)
