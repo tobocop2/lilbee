@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -241,6 +245,214 @@ def test_the_script_stops_when_numpy_bundles_libraries_again(tmp_path: Path) -> 
     )
     assert done.returncode == 1
     assert "numpy bundles libraries in numpy/.dylibs" in done.stderr
+
+
+def test_the_pin_names_the_archive_that_holds_the_interpreter_licences() -> None:
+    pin = _pin()
+    assert re.fullmatch(rf"{re.escape(pin['MLX_PYTHON'])}\.\d+", pin["MLX_PBS_VERSION"])
+    assert re.fullmatch(r"\d{8}", pin["MLX_PBS_TAG"])
+    assert re.fullmatch(r"[0-9a-f]{64}", pin["MLX_PBS_SHA256"])
+
+
+_PSF = "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2\n"
+_TQDM_LINE = (
+    "https://files.pythonhosted.org/packages/source/t/tqdm/tqdm-4.70.1.tar.gz "
+    "cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4"
+)
+_FAKE_PACK_UV = """
+case "$1 $2" in
+  "--version "*) echo "uv @UV@" ;;
+  "python install")
+    mkdir -p "$UV_PYTHON_INSTALL_DIR"
+    cp -R "@TEMPLATE@" "$UV_PYTHON_INSTALL_DIR/cp" ;;
+  "python find") echo "$UV_PYTHON_INSTALL_DIR/cp/bin/python3.12" ;;
+  "pip install")
+    while [ "$1" != --target ]; do shift; done
+    site="$2"
+    package() {
+      mkdir -p "$site/$1.dist-info/licenses"
+      printf 'Name: x\\nLicense-Expression: %s\\n' "$2" > "$site/$1.dist-info/METADATA"
+      echo "licence text of $1" > "$site/$1.dist-info/licenses/LICENSE"
+    }
+    package mlx_lm-@LM@ MIT
+    package mlx-@MLX@ MIT
+    package mlx_metal-@MLX@ MIT
+    package tqdm-4.70.1 "MPL-2.0 AND MIT"
+    echo "Tag: py3-none-macosx_14_0_arm64" > "$site/mlx_metal-@MLX@.dist-info/WHEEL" ;;
+esac
+"""
+
+
+def _pack_tree(
+    tmp_path: Path, *, sources: list[str], version: str | None = None, **changes: str
+) -> tuple[Path, dict[str, str]]:
+    """A build tree and the environment of a build that stops at `wheel pack`.
+
+    The stubs stand in for uv (it installs a small tree), curl (it serves a tar of the metadata
+    folder), zstd and python3 (it fails, so the wheel is never packed).
+    """
+    pin = _pin()
+    version = version or pin["MLX_PBS_VERSION"]
+    template = tmp_path / "template" / "cp"
+    (template / "bin").mkdir(parents=True)
+    (template / "bin" / "python3.12").write_text("", encoding="utf-8")
+    (template / "bin" / "python3").symlink_to(sys.executable)
+    (template / "lib" / "python3.12").mkdir(parents=True)
+    (template / "lib" / "python3.12" / "LICENSE.txt").write_text(_PSF, encoding="utf-8")
+    (template / "include" / "python3.12").mkdir(parents=True)
+    (template / "include" / "python3.12" / "patchlevel.h").write_text(
+        f'#define PY_VERSION "{pin["MLX_PBS_VERSION"]}"\n', encoding="utf-8"
+    )
+    folder = tmp_path / "archive" / "python"
+    (folder / "licenses").mkdir(parents=True)
+    (folder / "licenses" / "LICENSE.bzip2.txt").write_text("bzip2 licence", encoding="utf-8")
+    extension = {
+        "licenses": ["bzip2-1.0.6"],
+        "license_paths": ["licenses/LICENSE.bzip2.txt"],
+        "links": [{"name": "bz2", "path_static": "build/lib/libbz2.a"}],
+    }
+    (folder / "PYTHON.json").write_text(
+        json.dumps(
+            {
+                "python_version": version,
+                "target_triple": "aarch64-apple-darwin",
+                "build_info": {"extensions": {"_bz2": [extension]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    archive = tmp_path / "full.tar"
+    with tarfile.open(archive, "w") as bundle:
+        bundle.add(folder, arcname="python")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    top = _tree(tmp_path, **{"MLX_PBS_SHA256": digest, **changes})
+    project = top / "packaging" / "engine-mlx"
+    shutil.copytree(PROJECT / "lilbee_engine_mlx", project / "lilbee_engine_mlx")
+    (project / "supplied-licences.txt").write_text("# nothing supplied\n", encoding="utf-8")
+    (project / "SOURCE-MPL-2.0").write_text("\n".join(sources) + "\n", encoding="utf-8")
+    for tool in ("collect_python_licences.py", "mpl_pypi_notice.py"):
+        shutil.copy(ROOT / "tools" / "wheel-build" / tool, top / "tools" / "wheel-build" / tool)
+    stubs = tmp_path / "stubs"
+    uv = _FAKE_PACK_UV.replace("@UV@", pin["MLX_UV_VERSION"]).replace("@TEMPLATE@", str(template))
+    _stub(
+        stubs, "uv", uv.replace("@LM@", pin["MLX_LM_VERSION"]).replace("@MLX@", pin["MLX_VERSION"])
+    )
+    _stub(stubs, "delocate-wheel", f"echo {pin['MLX_DELOCATE_VERSION']}")
+    _stub(stubs, "uname", '[ "$1" = -s ] && echo Darwin || echo arm64')
+    calls = tmp_path / "curl-calls"
+    _stub(
+        stubs,
+        "curl",
+        f'echo "$@" >> {calls}; while [ "$1" != -o ]; do shift; done; cp {archive} "$2"',
+    )
+    _stub(stubs, "zstd", 'cat "$2"')
+    _stub(stubs, "python3", "exit 1")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(scratch)}
+    return top, env
+
+
+def _run_pack(top: Path, env: dict[str, str], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", str(top / "tools" / "wheel-build" / "mlx_wheel.sh"), str(tmp_path / "out")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+        env=env,
+    )
+
+
+def _dist(tmp_path: Path) -> Path:
+    (root,) = (tmp_path / "scratch").glob("mlx-wheel.*/pack/lilbee_engine_mlx-*")
+    return next(root.glob("*.dist-info"))
+
+
+needs_shasum = pytest.mark.skipif(shutil.which("shasum") is None, reason="the script needs shasum")
+
+
+@needs_bash
+@needs_shasum
+def test_the_wheel_carries_the_licences_and_terms_of_the_interpreter_libraries(
+    tmp_path: Path,
+) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    done = _run_pack(top, env, tmp_path)
+    assert done.returncode == 1, done.stderr
+    dist = _dist(tmp_path)
+    licences = dist / "licenses" / "THIRD-PARTY" / "mlx" / "python"
+    assert (licences / "LICENSE.bzip2.txt").read_text(encoding="utf-8") == "bzip2 licence"
+    metadata = (dist / "METADATA").read_text(encoding="utf-8")
+    assert "License-Expression: MIT AND MPL-2.0 AND PSF-2.0 AND bzip2-1.0.6\n" in metadata
+    assert "License-File: THIRD-PARTY/mlx/python/LICENSE.bzip2.txt\n" in metadata
+    url = (tmp_path / "curl-calls").read_text(encoding="utf-8")
+    pin = _pin()
+    assert (
+        f"{pin['MLX_PBS_TAG']}/cpython-{pin['MLX_PBS_VERSION']}%2B{pin['MLX_PBS_TAG']}"
+        "-aarch64-apple-darwin-pgo%2Blto-full.tar.zst"
+    ) in url
+
+
+@needs_bash
+@needs_shasum
+def test_the_script_stops_when_the_archive_is_not_the_pinned_one(tmp_path: Path) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE], MLX_PBS_SHA256="0" * 64)
+    done = _run_pack(top, env, tmp_path)
+    assert done.returncode == 1
+    assert "does not match MLX_PBS_SHA256" in done.stderr
+    assert not list((tmp_path / "scratch").glob("mlx-wheel.*/pack/*/*.dist-info/METADATA"))
+
+
+@needs_bash
+@needs_shasum
+def test_the_script_stops_when_the_interpreter_is_not_the_archive_version(tmp_path: Path) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE], version="3.12.99")
+    done = _run_pack(top, env, tmp_path)
+    assert done.returncode == 1
+    assert "is not the one that PYTHON.json describes" in done.stderr
+    assert "the metadata is for 3.12.99" in done.stderr
+
+
+@needs_bash
+@needs_shasum
+def test_the_notice_names_only_the_mpl_packages_of_the_tree(tmp_path: Path) -> None:
+    extra = _TQDM_LINE.replace("tqdm", "gone").replace("4.70.1", "1.0")
+    top, env = _pack_tree(tmp_path, sources=[extra, _TQDM_LINE])
+    assert _run_pack(top, env, tmp_path).returncode == 1
+    notice = _dist(tmp_path) / "licenses" / "SOURCE-MPL-2.0"
+    assert notice.read_text(encoding="utf-8") == _TQDM_LINE + "\n"
+
+
+@needs_bash
+@needs_shasum
+def test_the_script_stops_on_an_mpl_package_with_no_source_archive(tmp_path: Path) -> None:
+    other = _TQDM_LINE.replace("tqdm", "gone").replace("4.70.1", "1.0")
+    top, env = _pack_tree(tmp_path, sources=[other])
+    done = _run_pack(top, env, tmp_path)
+    assert done.returncode == 1
+    assert "the list of source archives has no line for tqdm-4.70.1" in done.stderr
+    assert "an MPL-2.0 package of the tree has no source archive" in done.stderr
+    assert not (_dist(tmp_path) / "licenses" / "SOURCE-MPL-2.0").exists()
+
+
+@needs_bash
+@needs_shasum
+def test_the_script_stops_when_zstd_is_not_installed(tmp_path: Path) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    tools = "bash sh grep mktemp mkdir cp chmod find dirname cat sed sort tar shasum awk head rm mv"
+    for name in tools.split():
+        if (found := shutil.which(name)) is not None:
+            (bare / name).symlink_to(found)
+    for stub in (tmp_path / "stubs").iterdir():
+        if stub.name not in {"zstd", "python3"}:
+            (bare / stub.name).symlink_to(stub)
+    done = _run_pack(top, {**env, "PATH": str(bare)}, tmp_path)
+    assert done.returncode == 1
+    assert "zstd is not on the PATH" in done.stderr
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="the launcher is a sh script")

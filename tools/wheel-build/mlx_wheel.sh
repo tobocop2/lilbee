@@ -6,19 +6,22 @@
 #
 # The pins are in engines/mlx.env; the package files and the hashed requirements are in
 # packaging/engine-mlx/. The PATH holds uv and delocate-wheel at the versions of the pin, and
-# python3 with the wheel package. The steps, in order:
+# python3 with the wheel package, curl, and zstd. The steps, in order:
 #   1. Refuse a host that is not macOS on arm64, and pins that do not agree: the mlx-lm version,
 #      and the mlx and mlx-metal files of the requirements against the macOS floor.
 #   2. `uv python install` puts python-build-standalone in a scratch directory. The tree copies it.
 #   3. `uv pip install --target` installs the hashed requirements into its site-packages.
 #   4. collect_python_licences.py copies every licence text of the tree to THIRD-PARTY/mlx, names the
-#      terms, and stops on a GPL-family licence.
+#      terms, lists the MPL-2.0 packages, and stops on a GPL-family licence. Its second run takes the
+#      licence texts and terms of the interpreter's libraries from the python-build-standalone full
+#      archive (pinned by sha256) into THIRD-PARTY/mlx/python. mpl_pypi_notice.py writes
+#      SOURCE-MPL-2.0 from the MPL-2.0 packages and the committed list of source archives.
 #   5. `wheel pack` writes the wheel: the launcher bin/mlx-lm-server, python/, and the dist-info.
 #   6. `delocate-wheel --require-target-macos-version` measures the floor of every Mach-O. Nothing
 #      may be grafted.
 #
 # Output on stdout, last line: `WHEEL <path>`. <outdir> also receives terms.txt, the SPDX terms of
-# the tree. The scratch directory is made under TMPDIR and left for the caller. Nothing is written
+# the tree, and mpl.txt, its MPL-2.0 packages. The scratch directory is made under TMPDIR and left for the caller. Nothing is written
 # outside the scratch directory and <outdir>.
 set -euo pipefail
 
@@ -93,17 +96,40 @@ grep -q "^Tag: py3-none-${platform}\$" "${site}/mlx_metal-${MLX_VERSION}.dist-in
 ! test -e "${site}/numpy/.dylibs" ||
   die "numpy bundles libraries in numpy/.dylibs, so its own LICENSE.txt must stay. Change packaging/engine-mlx/supplied-licences.txt."
 # The bundled interpreter runs the collector, so the Python on PATH may be older than 3.10.
-"${pkg}/python/bin/python3" -I "${here}/collect_python_licences.py" "${site}" "${dist}/licenses/THIRD-PARTY/mlx" \
-  "${outdir}/terms.txt" "${project}/supplied-licences.txt" ||
+"${pkg}/python/bin/python3" -I "${here}/collect_python_licences.py" --mpl "${outdir}/mpl.txt" "${site}" \
+  "${dist}/licenses/THIRD-PARTY/mlx" "${outdir}/terms.txt" "${project}/supplied-licences.txt" ||
   die "the tree holds a copyleft licence, a licence that the script cannot read, or a package with no licence file"
+
+# The uv install holds no licence text of the libraries that the interpreter links in (Tcl/Tk, bzip2,
+# OpenSSL, sqlite, xz, libffi, mpdecimal, expat, uuid and zstd). The full archive of the same
+# python-build-standalone release lists them in PYTHON.json and ships their texts, so the build
+# reads both from that archive, pinned by sha256. The collector stops when the version of the tree
+# is not the version of the archive.
+command -v curl >/dev/null || die "curl is not on the PATH. The build downloads the python-build-standalone metadata."
+command -v zstd >/dev/null || die "zstd is not on the PATH. Install it, for example with: brew install zstd"
+pbs="${scratch}/pbs"
+mkdir -p "${pbs}"
+curl -fsSL --retry 3 -o "${pbs}/full.tar.zst" \
+  "https://github.com/astral-sh/python-build-standalone/releases/download/${MLX_PBS_TAG}/cpython-${MLX_PBS_VERSION}%2B${MLX_PBS_TAG}-aarch64-apple-darwin-pgo%2Blto-full.tar.zst" ||
+  die "the python-build-standalone ${MLX_PBS_TAG} archive could not be downloaded"
+echo "${MLX_PBS_SHA256}  ${pbs}/full.tar.zst" | shasum -a 256 -c - >/dev/null ||
+  die "the python-build-standalone ${MLX_PBS_TAG} archive does not match MLX_PBS_SHA256 in engines/mlx.env"
+zstd -dc "${pbs}/full.tar.zst" | tar -x -C "${pbs}" python/PYTHON.json python/licenses ||
+  die "the python-build-standalone ${MLX_PBS_TAG} archive holds no PYTHON.json or licenses folder"
+"${pkg}/python/bin/python3" -I "${here}/collect_python_licences.py" --interpreter "${pbs}/python" "${pkg}/python" \
+  "${dist}/licenses/THIRD-PARTY/mlx/python" "${outdir}/terms.txt" ||
+  die "a library of the interpreter has no licence text, or the interpreter is not the one that PYTHON.json describes"
+
 cp "${site}/mlx_lm-${MLX_LM_VERSION}.dist-info/licenses/LICENSE" "${dist}/licenses/LICENSE-mlx-lm"
 cp "${site}/mlx-${MLX_VERSION}.dist-info/licenses/LICENSE" "${dist}/licenses/LICENSE-mlx"
 cp "${pkg}/python/lib/python${MLX_PYTHON}/LICENSE.txt" "${dist}/licenses/LICENSE-Python"
 # The engine store installs an MPL-2.0 tree only with this file: one PyPI source archive URL and its
-# sha256 for each MPL-2.0 package (tqdm), as engine_crates.MPL_PYPI_CHECKSUMS lists them.
-if grep -qx "MPL-2.0" "${outdir}/terms.txt"; then
-  cp "${project}/SOURCE-MPL-2.0" "${dist}/licenses/SOURCE-MPL-2.0"
-fi
+# sha256 for each MPL-2.0 package of the tree, as engine_crates.MPL_PYPI_CHECKSUMS lists them. The
+# build writes it from the packages that the collector found, and stops on a package that
+# packaging/engine-mlx/SOURCE-MPL-2.0 has no line for.
+"${pkg}/python/bin/python3" -I "${here}/mpl_pypi_notice.py" "${outdir}/mpl.txt" "${project}/SOURCE-MPL-2.0" \
+  "${dist}/licenses/SOURCE-MPL-2.0" ||
+  die "an MPL-2.0 package of the tree has no source archive in packaging/engine-mlx/SOURCE-MPL-2.0"
 
 # The expression names the terms of mlx-lm and mlx, then every other term of the tree.
 expression="${OWN_TERMS}"
