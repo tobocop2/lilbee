@@ -16833,6 +16833,9 @@ class _SyncWorkerApp:
     def notify(self, *_args, **_kwargs) -> None:
         pass
 
+    def publish_settings(self, _keys) -> None:
+        pass
+
     def run_worker(self, work, **_kwargs):
         work()
 
