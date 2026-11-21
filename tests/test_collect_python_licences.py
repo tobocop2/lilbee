@@ -318,7 +318,10 @@ _ZLIB = "zlib licence: altered source versions must be plainly marked."
 def _extension(
     terms: list[str], paths: list[str], link: str | None = "path_static"
 ) -> list[dict[str, object]]:
-    links = [{"name": "lib", link: "build/lib/lib.a"}] if link else []
+    if link == "system":
+        links = [{"name": "lib", "system": True}]
+    else:
+        links = [{"name": "lib", link: "build/lib/lib.a"}] if link else []
     return [{"variant": "default", "licenses": terms, "license_paths": paths, "links": links}]
 
 
@@ -411,6 +414,7 @@ def test_an_extension_that_links_only_the_system_needs_no_licence_text(
         {
             "_bz2": _extension(["bzip2-1.0.6"], ["licenses/LICENSE.bzip2.txt"]),
             "_curses": _extension([], [], link=None),
+            "_ctypes": _extension([], [], link="system"),
         },
         {"LICENSE.bzip2.txt": _BZIP2},
     )
