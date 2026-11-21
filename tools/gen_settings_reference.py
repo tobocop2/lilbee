@@ -205,6 +205,8 @@ def _render_default(key: str) -> str:
 
 def _tui_cell(key: str) -> str:
     definition = SETTINGS_MAP.get(key)
+    if definition is not None and definition.tab is not None:
+        return f"{definition.tab} tab"
     if definition is None or definition.hidden:
         return "no"
     if key in MODEL_ROLE_FIELDS:

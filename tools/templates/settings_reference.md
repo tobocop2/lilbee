@@ -35,7 +35,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 **Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
-**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
+**TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. A tab name, such as `Engines tab`, means the setting is on that tab of the settings screen, with its own control. `no` is not on the screen.
 
 **MCP.** `yes` is settable with `lilbee_settings_set` and listed by `lilbee_settings_list`. `write-only` is settable but never readable: the API keys carry a `write_only` flag, so `lilbee_settings_get` refuses them and `lilbee_settings_list` skips them. `no` means the environment or the config file is the only way in.
 
