@@ -1,1 +1,1 @@
-"""mlx-lm's server for lilbee; tools/wheel-build/mlx_wheel.sh adds ``python/`` and builds the wheel."""
+"""mlx-lm's chat server and lilbee's embed and rerank server; mlx_wheel.sh adds ``python/``."""

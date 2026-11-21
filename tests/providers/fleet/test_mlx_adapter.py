@@ -84,16 +84,87 @@ def test_a_host_whose_platform_cannot_be_read_neither_passes_nor_refuses() -> No
     assert (gate.ok, gate.known) == (True, False)
 
 
-def test_the_adapter_is_found_by_module_and_serves_chat_only() -> None:
+def test_the_adapter_is_found_by_module_and_serves_chat_embed_and_rerank() -> None:
     assert choice.ADAPTERS[EngineName.MLX] is MLX
     assert (MLX.bundled, MLX.formats) == (False, frozenset({"mlx"}))
-    assert MLX.served_roles == frozenset({WorkerRole.CHAT})
+    assert MLX.served_roles == frozenset({WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK})
 
 
-@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION])
-def test_a_role_other_than_chat_is_refused(role: WorkerRole) -> None:
-    with pytest.raises(ProviderError, match=f"does not serve {role}"):
-        MLX.role_spec(role, None, None)
+def test_vision_is_refused() -> None:
+    with pytest.raises(ProviderError, match=f"does not serve {WorkerRole.VISION}"):
+        MLX.role_spec(WorkerRole.VISION, None, None)
+
+
+@pytest.mark.parametrize(
+    ("role", "path", "task"),
+    [(WorkerRole.EMBED, "/v1/embeddings", "embed"), (WorkerRole.RERANK, "/v1/rerank", "rerank")],
+)
+def test_embed_and_rerank_run_the_embed_server_with_their_task(
+    role: WorkerRole, path: str, task: str, tmp_path: Path
+) -> None:
+    spec = MLX.role_spec(role, None, None)
+    assert (spec.endpoint_path, spec.extra_args) == (path, ("--task", task))
+    argv = MLX.launch_argv(spec, request(tmp_path / "bin", ctx_per_slot=2048))
+    assert argv[0] == str(tmp_path / "bin" / "mlx-embed-server")
+    assert argv[argv.index("--model") + 1] == str(tmp_path / "bin" / "model")
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+    assert argv[argv.index("--port") + 1] == PORT_SLOT
+    assert argv[argv.index("--max-length") + 1] == "2048"
+    assert argv[argv.index("--task") + 1] == task
+    assert not {"--max-tokens", "--prompt-cache-bytes", "--temp"} & set(argv)
+
+
+def test_chat_runs_mlx_lm_server_with_no_task() -> None:
+    assert MLX.role_spec(WorkerRole.CHAT, None, None).extra_args == ()
+
+
+def test_the_rerank_profile_posts_the_cohere_shape_to_the_rerank_route() -> None:
+    profile = MLX.request_profile(WorkerRole.RERANK)
+    assert profile.rerank_path == "/v1/rerank"
+    body = profile.rerank_body("q", ["a", "b"])
+    assert body == {"query": "q", "documents": ["a", "b"], "top_n": 2}
+    answer = {
+        "results": [{"index": 1, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.1}]
+    }
+    assert profile.rerank_scores(answer) == {0: 0.1, 1: 0.9}
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+def test_embed_and_rerank_split_requests_at_the_batch_of_the_server(role: WorkerRole) -> None:
+    profile = MLX.request_profile(role)
+    assert profile.batch_limit == 32
+    assert profile.label == "mlx embed server"
+    assert profile.context_overflow.search(
+        "the input holds 9000 tokens, which exceeds the window of 8192 tokens"
+    )
+    assert MLX.request_profile(WorkerRole.EMBED).rerank_path is None
+
+
+def test_the_chat_profile_keeps_no_batch_limit_and_no_rerank_route() -> None:
+    profile = MLX.request_profile(WorkerRole.CHAT)
+    assert (profile.batch_limit, profile.rerank_path, profile.label) == (None, None, "mlx-lm")
+
+
+def test_the_sweep_names_both_scripts_that_the_launchers_run() -> None:
+    process = MLX.server_process
+    assert (process.name, process.interpreted) == ("mlx-lm-server", True)
+    assert process.scripts == ("mlx_lm.server", "mlx_embed_server.py")
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+def test_a_planned_embed_or_rerank_launch_runs_the_embed_server_at_its_context(
+    role: WorkerRole, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.providers.fleet import planning
+
+    folder = model_dir(tmp_path, {"max_position_embeddings": CONTEXT})
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1024))
+    monkeypatch.setattr(cfg, "placement", "")
+    monkeypatch.setattr(type(MLX), "binary", lambda _self: tmp_path / "bin" / "mlx-lm-server")
+    launch = planning.build_single_role_launch(role, folder, engine=MLX)
+    assert launch.argv[0] == str(tmp_path / "bin" / "mlx-embed-server")
+    assert launch.argv[launch.argv.index("--max-length") + 1] == str(launch.ctx)
+    assert launch.argv[launch.argv.index("--task") + 1] == role.value
 
 
 def request(tmp_path: Path, **overrides: Any) -> LaunchRequest:
