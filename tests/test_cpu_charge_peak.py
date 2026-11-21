@@ -328,6 +328,17 @@ class TestWhatTheCpuChargeAsksFor:
         # The parser books the batch buffer to the device; a CPU load holds it in memory.
         assert charge == figures.slot_uma + figures.slot_vram + MODELS[cell.model].file_bytes
 
+    def test_a_device_booked_below_the_unified_figure_adds_no_buffer(self) -> None:
+        """A device figure below the unified one is clamped away, not a negative buffer."""
+        parsed = vram_mod.GgufVramEstimate(
+            vram_bytes=0,
+            ram_bytes=0,
+            unified_bytes=0,
+            per_device_vram=(100, 900),
+            per_device_unified=(300, 800),
+        )
+        assert model_memory_mod._device_booked_buffer_bytes(parsed) == 100
+
 
 class TestTheScoreTerm:
     def _off_minus_on(self, cell: Cell, parser_for: ParserFor) -> int:
