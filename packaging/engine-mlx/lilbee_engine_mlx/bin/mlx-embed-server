@@ -1,0 +1,6 @@
+#!/bin/sh
+# The embed and rerank server of the mlx pack: the bundled interpreter runs lilbee's own server
+# on mlx-lm, isolated from the user's Python. tools/wheel-build/mlx_wheel.sh puts the interpreter
+# in ../python.
+here="$(cd "$(dirname "$0")/.." && pwd)"
+exec "${here}/python/bin/python3" -I "${here}/mlx_embed_server.py" "$@"

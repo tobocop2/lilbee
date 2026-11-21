@@ -188,6 +188,32 @@
       "40",
       "--min-p",
       "0.05"
+    ],
+    "embed": [
+      "/engines/bin/mlx-embed-server",
+      "--model",
+      "/models/model.gguf",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--max-length",
+      "4096",
+      "--task",
+      "embed"
+    ],
+    "rerank": [
+      "/engines/bin/mlx-embed-server",
+      "--model",
+      "/models/model.gguf",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--max-length",
+      "4096",
+      "--task",
+      "rerank"
     ]
   },
   "tei": {

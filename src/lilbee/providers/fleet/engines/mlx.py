@@ -1,9 +1,14 @@
-"""The mlx-lm adapter; the only module that names mlx-lm's server and its flags."""
+"""The mlx adapter; the only module that names the servers of the mlx pack and their flags.
+
+mlx-lm's server serves chat. lilbee's own server in the same pack, on mlx-lm and mlx, serves
+embed and rerank: one process for each role, chosen by ``--task``.
+"""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +23,7 @@ from lilbee.providers.fleet.engines.base import (
     EngineName,
     LaunchRequest,
     RequestProfile,
+    RerankShape,
     ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate
@@ -32,6 +38,18 @@ _VERSION = "0.32.2"
 _TOOL = "mlx-lm-server"
 _CHAT_MODULE = "mlx_lm.server"
 """The module that the chat launcher runs; the process table shows it, not the launcher."""
+_EMBED_TOOL = "mlx-embed-server"
+"""The launcher of lilbee's embed and rerank server, beside the chat launcher in the pack."""
+_EMBED_SCRIPT = "mlx_embed_server.py"
+"""The script that the embed launcher runs; the process table shows it, not the launcher."""
+_TASKS = {WorkerRole.EMBED: "embed", WorkerRole.RERANK: "rerank"}
+_ENDPOINTS = {
+    WorkerRole.CHAT: ROLE_SPECS[WorkerRole.CHAT].endpoint_path,
+    WorkerRole.EMBED: "/v1/embeddings",
+    WorkerRole.RERANK: "/v1/rerank",
+}
+_EMBED_BATCH_LIMIT = 32
+"""The most inputs of one embed or rerank request; the server runs each request as one batch."""
 _HOST = "127.0.0.1"
 _METAL = "metal"
 _LICENCES = ["MIT", "Apache-2.0", "BSD-3-Clause"]
@@ -80,6 +98,24 @@ _PROFILE = RequestProfile(
     # reads its stop flag only between answer tokens and writes only at the end.
     works_on_after_disconnect=True,
 )
+_EMBED_PROFILE = replace(
+    _PROFILE,
+    label="mlx embed server",
+    # The server refuses an embed input past --max-length with a 400 in these words.
+    context_overflow=re.compile(r"exceeds the window of \d+ tokens"),
+    unreadable_embedding_hint="the mlx embed server returned vectors that could not be decoded.",
+    batch_limit=_EMBED_BATCH_LIMIT,
+)
+_RERANK_PROFILE = replace(
+    _EMBED_PROFILE,
+    rerank_path=_ENDPOINTS[WorkerRole.RERANK],
+    rerank_shape=RerankShape.DOCUMENTS,
+)
+_PROFILES = {
+    WorkerRole.CHAT: _PROFILE,
+    WorkerRole.EMBED: _EMBED_PROFILE,
+    WorkerRole.RERANK: _RERANK_PROFILE,
+}
 
 
 def _floor_text() -> str:
@@ -107,17 +143,22 @@ def _sampling_args(model: Path) -> list[str]:
 
 
 class MlxAdapter:
-    """mlx-lm behind the engine contract; chat only, on Apple Silicon with macOS 14 or newer."""
+    """The mlx pack behind the engine contract, on Apple Silicon with macOS 14 or newer.
+
+    Chat runs on mlx-lm's server; embed and rerank run on lilbee's own server of the pack.
+    """
 
     name = EngineName.MLX
     formats = frozenset({ModelFormat.MLX})
     architectures: frozenset[str] = frozenset()
-    served_roles = frozenset({WorkerRole.CHAT})
+    served_roles = frozenset(_ENDPOINTS)
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     concatenates_pooling = False
     bundled = False
-    server_process = ServerProcess(name=_TOOL, interpreted=True, scripts=(_CHAT_MODULE,))
+    server_process = ServerProcess(
+        name=_TOOL, interpreted=True, scripts=(_CHAT_MODULE, _EMBED_SCRIPT)
+    )
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -176,15 +217,33 @@ class MlxAdapter:
     ) -> RoleServerSpec:
         if role not in self.served_roles:
             raise ProviderError(f"Engine {self.name.value} does not serve {role}.")
-        return RoleServerSpec(role, ROLE_SPECS[role].endpoint_path, (), server_capable=True)
+        task = _TASKS.get(role)
+        extra = () if task is None else ("--task", task)
+        return RoleServerSpec(role, _ENDPOINTS[role], extra, server_capable=True)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        """The server command; mlx-lm places the model itself, so layers and context stay unset.
+        """The server command; mlx places the model itself, so layers stay unset.
 
         mlx-lm stops an answer at 512 tokens when the request names no max_tokens. A chat
         names none unless the user sets one, so the answer budget is the window. The model
         folder's own sampling defaults replace the server's greedy default.
+
+        Embed and rerank run the embed launcher beside the chat launcher. Its window is the
+        planned context: it refuses a longer embed input and cuts a longer rerank document.
         """
+        if spec.role in _TASKS:
+            return [
+                str(request.binary.with_name(_EMBED_TOOL)),
+                "--model",
+                str(request.model_path),
+                "--host",
+                _HOST,
+                "--port",
+                PORT_SLOT,
+                "--max-length",
+                str(request.ctx_per_slot),
+                *spec.extra_args,
+            ]
         return [
             str(request.binary),
             "--model",
@@ -245,7 +304,7 @@ class MlxAdapter:
         return {"useModelName": _SERVED_NAME}
 
     def request_profile(self, role: WorkerRole) -> RequestProfile:
-        return _PROFILE
+        return _PROFILES.get(role, _PROFILE)
 
 
 MLX = MlxAdapter()

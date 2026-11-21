@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -22,6 +23,8 @@ from lilbee.providers.roles import WorkerRole
 ROOT = Path(__file__).parents[1]
 PROJECT = ROOT / "packaging" / "engine-mlx"
 LAUNCHER = PROJECT / "lilbee_engine_mlx" / "bin" / "mlx-lm-server"
+EMBED_LAUNCHER = PROJECT / "lilbee_engine_mlx" / "bin" / "mlx-embed-server"
+SERVER = PROJECT / "lilbee_engine_mlx" / "mlx_embed_server.py"
 
 needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="the script needs bash")
 
@@ -87,7 +90,8 @@ def test_each_listed_mpl_package_is_a_requirement_at_its_version() -> None:
 def _tree(tmp_path: Path, **changes: str) -> Path:
     """A copy of the script, the pin and the requirements; *changes* replace pin values."""
     top = tmp_path / "tree"
-    for part in ("tools/wheel-build/mlx_wheel.sh", "engines/mlx.env", _pin()["MLX_REQUIREMENTS"]):
+    parts = ("tools/wheel-build/mlx_wheel.sh", "engines/mlx.env", _pin()["MLX_REQUIREMENTS"])
+    for part in (*parts, "LICENSE"):
         (top / part).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / part, top / part)
     env = top / "engines" / "mlx.env"
@@ -280,6 +284,7 @@ case "$1 $2" in
     package mlx_metal-@MLX@ MIT
     package tqdm-4.70.1 "MPL-2.0 AND MIT"
     [ -z "$FAKE_PIP_REQUIREMENT" ] || mkdir -p "$site/pip"
+    [ -z "$FAKE_GPL_EMBED" ] || mkdir -p "$site/$FAKE_GPL_EMBED"
     echo "Tag: py3-none-macosx_14_0_arm64" > "$site/mlx_metal-@MLX@.dist-info/WHEEL" ;;
 esac
 """
@@ -442,6 +447,60 @@ def test_the_script_stops_when_a_pip_folder_is_in_the_tree_at_the_collector(
 
 @needs_bash
 @needs_shasum
+@pytest.mark.parametrize("folder", ["mlx_embeddings", "mlx_embeddings-0.1.0.dist-info"])
+def test_the_script_stops_when_mlx_embeddings_is_in_the_tree_at_the_collector(
+    tmp_path: Path, folder: str
+) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    done = _run_pack(top, {**env, "FAKE_GPL_EMBED": folder}, tmp_path)
+    assert done.returncode == 1
+    assert "mlx-embeddings is in the interpreter tree" in done.stderr
+    assert f"site-packages/{folder})" in done.stderr
+    assert not (tmp_path / "out" / "terms.txt").exists()
+
+
+@needs_bash
+@needs_shasum
+def test_the_pack_holds_both_launchers_the_embed_server_and_the_lilbee_licence(
+    tmp_path: Path,
+) -> None:
+    top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE])
+    for launcher in (top / "packaging/engine-mlx/lilbee_engine_mlx/bin").iterdir():
+        launcher.chmod(0o644)
+    done = _run_pack(top, env, tmp_path)
+    assert done.returncode == 1, done.stderr
+    (root,) = (tmp_path / "scratch").glob("mlx-wheel.*/pack/lilbee_engine_mlx-*")
+    package = root / "lilbee_engine_mlx"
+    for name in ("mlx-lm-server", "mlx-embed-server"):
+        assert os.access(package / "bin" / name, os.X_OK), name
+    assert (package / "mlx_embed_server.py").is_file()
+    licence = _dist(tmp_path) / "licenses" / "LICENSE-lilbee"
+    assert licence.read_text(encoding="utf-8") == (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "License-File: LICENSE-lilbee\n" in (_dist(tmp_path) / "METADATA").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_the_requirements_hold_no_mlx_embeddings() -> None:
+    text = _requirements().lower().replace("_", "-")
+    assert "mlx-embeddings" not in text
+    assert "mlx-vlm" not in text
+
+
+def test_the_embed_server_imports_only_mlx_mlx_lm_numpy_and_the_standard_library() -> None:
+    tree = ast.parse(SERVER.read_text(encoding="utf-8"))
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            roots.add(node.module.split(".")[0])
+    outside = {name for name in roots if name not in sys.stdlib_module_names}
+    assert outside == {"mlx", "mlx_lm", "numpy"}
+
+
+@needs_bash
+@needs_shasum
 def test_the_script_stops_when_the_archive_is_not_the_pinned_one(tmp_path: Path) -> None:
     top, env = _pack_tree(tmp_path, sources=[_TQDM_LINE], MLX_PBS_SHA256="0" * 64)
     done = _run_pack(top, env, tmp_path)
@@ -531,8 +590,9 @@ def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_e
     paragraph = _mlx_paragraph()
     assert f"macOS {mlx.MACOS_FLOOR[0]} or newer" in paragraph
     assert "needs Apple Silicon" in paragraph
-    assert mlx.MLX.served_roles == {WorkerRole.CHAT}
-    assert "serves chat only" in paragraph
+    assert mlx.MLX.served_roles == {WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK}
+    assert "serves chat, embed and rerank" in paragraph
+    assert "Qwen3-Embedding and Qwen3-Reranker" in paragraph
     packs = (ROOT / "src" / "lilbee" / "providers" / "fleet" / "engine_packs.json").read_text(
         encoding="utf-8"
     )
@@ -543,3 +603,34 @@ def test_the_docs_paragraph_of_mlx_states_the_floor_the_roles_and_that_no_pack_e
 def test_the_launcher_is_executable_and_names_the_adapter_tool() -> None:
     assert os.access(LAUNCHER, os.X_OK)
     assert LAUNCHER.name == mlx.MLX.server_process.name
+
+
+def test_the_embed_launcher_is_executable_and_is_the_tool_of_the_embed_argv() -> None:
+    assert os.access(EMBED_LAUNCHER, os.X_OK)
+    assert EMBED_LAUNCHER.name == mlx._EMBED_TOOL
+    assert SERVER.name in mlx.MLX.server_process.scripts
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="the launcher is a sh script")
+def test_the_embed_launcher_runs_the_server_script_on_the_bundled_interpreter(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "engines" / "lilbee_engine_mlx"
+    (package / "bin").mkdir(parents=True)
+    launcher = package / "bin" / "mlx-embed-server"
+    shutil.copy(EMBED_LAUNCHER, launcher)
+    _stub(package / "python" / "bin", "python3", 'echo "$0" "$@"')
+    done = subprocess.run(
+        [str(launcher), "--task", "embed", "--port", "5"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+        cwd=tmp_path,
+    )
+    interpreter, *args = done.stdout.split()
+    assert Path(interpreter).resolve() == (package / "python" / "bin" / "python3").resolve()
+    assert args[0] == "-I"
+    assert Path(args[1]).resolve() == (package / SERVER.name).resolve()
+    assert args[2:] == ["--task", "embed", "--port", "5"]

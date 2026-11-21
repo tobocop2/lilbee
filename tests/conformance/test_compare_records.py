@@ -836,7 +836,7 @@ class TestServedSteps:
             ("ik_llama.cpp", {*cr.ROLE_STEPS[WorkerRole.CHAT], Step.EMBED}),
             ("mistral.rs", {*cr.ROLE_STEPS[WorkerRole.CHAT], Step.EMBED, Step.VISION}),
             ("openvino", set(cr.ROLE_STEPS[WorkerRole.CHAT])),
-            ("mlx", set(cr.ROLE_STEPS[WorkerRole.CHAT])),
+            ("mlx", {*cr.ROLE_STEPS[WorkerRole.CHAT], Step.EMBED, Step.RERANK}),
             ("tei", {Step.EMBED, Step.RERANK}),
             ("nope", set()),
         ],
