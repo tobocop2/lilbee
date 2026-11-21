@@ -218,6 +218,45 @@ class TestSearch:
             bee.search("authentication")
         assert run.call_args.kwargs["chunk_type"] is None
 
+    def test_search_without_top_k_asks_the_searcher_for_the_configured_default(self, tmp_path):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        with mock.patch.object(bee.searcher, "search_report", return_value=SearchReport([])) as run:
+            bee.search("authentication")
+        assert run.call_args.kwargs["top_k"] == 0
+
+    def test_search_report_without_top_k_asks_the_searcher_for_the_configured_default(
+        self, tmp_path
+    ):
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "proj")
+        with mock.patch.object(bee.searcher, "search_report", return_value=SearchReport([])) as run:
+            bee.search_report("authentication")
+        assert run.call_args.kwargs["top_k"] == 0
+
+    def test_search_report_runs_the_searcher_in_the_config_and_services_of_the_instance(
+        self, tmp_path
+    ):
+        from lilbee import Lilbee
+        from lilbee.app.services import get_services
+        from lilbee.core.config import active_config
+
+        bee = Lilbee(tmp_path / "proj")
+        seen: dict[str, object] = {}
+
+        def watch(*args: object, **kwargs: object) -> SearchReport:
+            seen["config"] = active_config()
+            seen["searcher"] = get_services().searcher
+            return SearchReport([])
+
+        with mock.patch.object(bee.searcher, "search_report", side_effect=watch):
+            bee.search_report("authentication")
+        assert seen["config"] is bee.config
+        assert seen["config"] is not cfg
+        assert seen["searcher"] is bee.searcher
+
     def test_search_report_carries_the_failed_steps_to_the_caller(self, tmp_path):
         """A library caller learns that the rerank failed, as REST, MCP and the CLI do."""
         from lilbee import Lilbee
