@@ -438,6 +438,44 @@ def refreshes_safetensors_files(manager: ModelManager, ref: str, source: ModelSo
     )
 
 
+def repeat_pull_result(
+    manager: ModelManager,
+    ref: str,
+    source: ModelSource,
+    *,
+    on_bytes: Callable[[int, int], None] | None = None,
+    cancel: CancelSignal | None = None,
+) -> PullResult | None:
+    """The already-installed result of a repeat pull of *ref*, or None when the pull is new.
+
+    A repeat pull downloads nothing, so an unreachable Hub leaves the install as
+    it is. Only a safetensors model asks the Hub, for module files that a pull
+    made before they were selected lacks; *on_bytes* receives that progress.
+    """
+    from lilbee.catalog.download import ListingOfflineError
+
+    if not is_repeat_pull(manager, ref, source):
+        return None
+    if refreshes_safetensors_files(manager, ref, source):
+        # The pull fetches only the files the cache does not hold. Any fault
+        # other than an unreachable Hub reaches the caller.
+        try:
+            manager.pull(ref, source, on_bytes=on_bytes, cancel=cancel)
+        except ListingOfflineError as exc:
+            log.info("Could not check %s for missing module files: %s", ref, exc)
+    # A cached install may carry the main GGUF but not the projector its
+    # repo lists; without it llama-server can't serve OCR, so ensure it
+    # before reporting already-installed.
+    warning = (
+        ensure_vision_projector(ref, warn_unreadable=False, cancel=cancel)
+        if source is ModelSource.NATIVE
+        else None
+    )
+    return PullResult(
+        model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED, warning=warning
+    )
+
+
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -456,31 +494,13 @@ def pull_model_data(
     """
     # heavy: lilbee.catalog (>50ms; huggingface_hub fanout)
     from lilbee.catalog import make_download_callback
-    from lilbee.catalog.download import ListingOfflineError
 
     ref = canonical_ref(ref)
     manager = get_services().model_manager
 
-    if is_repeat_pull(manager, ref, source):
-        if refreshes_safetensors_files(manager, ref, source):
-            # A pull made before the module files were selected lacks them; the
-            # pull fetches only the files the cache does not hold. An unreachable
-            # Hub leaves the install as it is; any other fault reaches the caller.
-            try:
-                manager.pull(ref, source, cancel=cancel)
-            except ListingOfflineError as exc:
-                log.info("Could not check %s for missing module files: %s", ref, exc)
-        # A cached install may carry the main GGUF but not the projector its
-        # repo lists; without it llama-server can't serve OCR, so ensure it
-        # before reporting already-installed.
-        warning = (
-            ensure_vision_projector(ref, warn_unreadable=False, cancel=cancel)
-            if source is ModelSource.NATIVE
-            else None
-        )
-        return PullResult(
-            model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED, warning=warning
-        )
+    installed = repeat_pull_result(manager, ref, source, cancel=cancel)
+    if installed is not None:
+        return installed
 
     bytes_cb = make_download_callback(on_update) if on_update is not None else None
     notices: list[str] = []

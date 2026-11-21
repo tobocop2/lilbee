@@ -4239,6 +4239,7 @@ class TestPlacementHandlersRunOffTheLoop:
 class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
 
         def fake_pull(
             model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
@@ -4267,12 +4268,12 @@ class TestModelsPull:
                 "lilbee.server.handlers.models.get_services",
                 return_value=MagicMock(model_manager=mock_manager),
             ),
-            patch("lilbee.server.handlers.models.ensure_vision_projector", return_value=None),
+            patch("lilbee.app.models.ensure_vision_projector", return_value=None),
         ):
             events = [
                 e async for e in handlers.models_pull("org/repo#safetensors", source="native")
             ]
-        assert mock_manager.pull.call_args.kwargs["on_notice"] is None
+        assert "on_notice" not in mock_manager.pull.call_args.kwargs
         done = [e for e in events if e and "event: done" in e]
         assert len(done) == 1
         assert "warning" not in done[0]
@@ -4281,7 +4282,7 @@ class TestModelsPull:
         ("ref", "registered", "sink_passed", "warn_unreadable"),
         [
             ("org/repo/model-Q4_K_M.gguf", False, True, True),
-            ("org/repo/model-Q4_K_M.gguf", True, True, False),
+            ("org/repo/model-Q4_K_M.gguf", True, None, False),
             ("org/repo#safetensors", False, True, True),
             ("org/repo#safetensors", True, False, False),
         ],
@@ -4305,10 +4306,17 @@ class TestModelsPull:
             ),
             patch(
                 "lilbee.server.handlers.models.ensure_vision_projector", return_value=None
-            ) as projector,
+            ) as fresh_projector,
+            patch(
+                "lilbee.app.models.ensure_vision_projector", return_value=None
+            ) as repeat_projector,
         ):
             _ = [e async for e in handlers.models_pull(ref, source="native")]
-        assert (mock_manager.pull.call_args.kwargs["on_notice"] is not None) is sink_passed
+        # None: a repeat GGUF pull downloads nothing, so the stream does not pull.
+        call = mock_manager.pull.call_args
+        passed = None if call is None else call.kwargs.get("on_notice") is not None
+        assert passed is sink_passed
+        projector = repeat_projector if registered else fresh_projector
         assert projector.call_args.kwargs["warn_unreadable"] is warn_unreadable
 
     async def test_done_event_joins_the_size_notice_and_the_projector_warning(self):
@@ -4339,6 +4347,7 @@ class TestModelsPull:
 
     async def test_error_yields_error_event(self):
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
         mock_manager.pull.side_effect = RuntimeError("fail")
         with patch(
             "lilbee.server.handlers.models.get_services",
@@ -4363,6 +4372,7 @@ class TestModelsPull:
         finished_whole_download = threading.Event()
         aborted: list[bool] = []
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
 
         def blocking_pull(
             model, source, *, on_bytes=None, on_notice=None, allow_unsupported=False, cancel=None
@@ -5881,6 +5891,7 @@ class TestModelPullProgressCancel:
         from lilbee.runtime.cancellation import TaskCancelledError
 
         mock_manager = MagicMock()
+        mock_manager.is_installed.return_value = False
         progress_called = threading.Event()
         aborted = threading.Event()
 

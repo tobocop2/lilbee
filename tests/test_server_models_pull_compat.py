@@ -75,6 +75,7 @@ async def test_models_pull_generator_does_not_precheck() -> None:
     """The generator no longer prechecks (the route does); a raise here would be too
     late. manager.pull still enforces compatibility during the pull itself."""
     mock_manager = MagicMock()
+    mock_manager.is_installed.return_value = False
     mock_manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
     mock_manager.pull.return_value = None
 
@@ -93,6 +94,7 @@ async def test_models_pull_generator_does_not_precheck() -> None:
 async def test_pull_native_with_allow_unsupported_skips_precheck() -> None:
     """allow_unsupported=True must bypass the pre-stream gate entirely."""
     mock_manager = MagicMock()
+    mock_manager.is_installed.return_value = False
 
     def fake_pull(
         model, source, *, on_progress=None, on_bytes=None, allow_unsupported=False, cancel=None
