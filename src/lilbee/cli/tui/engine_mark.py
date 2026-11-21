@@ -23,7 +23,7 @@ MARK = "■"
 UNKNOWN_ENGINE_COLOR = "$text-muted"
 
 # One hue in degrees for each engine. Success sits at 60 to 190 in the built-in themes,
-# warning at 15 to 45 and error at 335 to 10, so 205 to 325 stays clear of all three.
+# warning at 15 to 45 and error at 335 to 10, so 195 to 325 stays clear of all three.
 ENGINE_HUES: dict[EngineName, int] = {
     EngineName.LLAMA: 205,
     EngineName.OPENVINO: 225,
@@ -32,7 +32,7 @@ ENGINE_HUES: dict[EngineName, int] = {
     EngineName.MISTRAL: 285,
     EngineName.LEMONADE: 305,
     EngineName.MLX: 325,
-    EngineName.OVMS: 215,
+    EngineName.OVMS: 200,
 }
 
 # Saturation alternates along the hues, so two close hues still differ.
