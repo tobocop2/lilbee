@@ -1014,6 +1014,68 @@ class TestAddIngestMutex:
         assert first.startswith("event: already_ingesting\n")
         assert cfg.linked_roots == {"free.txt": str(free.resolve())}
 
+    async def test_a_close_at_already_ingesting_keeps_the_free_upload(self, isolated_env):
+        """An uploaded file exists only in the request, so a close at the first event must not lose it."""
+        from lilbee.app.services import get_services
+        from lilbee.core.config import cfg
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+        from lilbee.server.handlers import add_uploads_stream
+
+        unwound = asyncio.Event()
+        real_release = IngestLockRegistry.release
+
+        def _release(registry, acquired):
+            real_release(registry, acquired)
+            unwound.set()
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
+        assert lock is not None
+        gen = add_uploads_stream([("held.txt", b"held bytes"), ("free.txt", b"free bytes")])
+        try:
+            with (
+                mock.patch("lilbee.data.ingest.sync", new=_hang),
+                mock.patch.object(IngestLockRegistry, "release", _release),
+            ):
+                first = await gen.__anext__()
+                await gen.aclose()
+                await asyncio.wait_for(unwound.wait(), 30)
+        finally:
+            lock.release()
+
+        assert first.startswith("event: already_ingesting\n")
+        free = cfg.documents_dir / "free.txt"
+        assert free.is_file(), "the free upload was never written"
+        assert free.read_bytes() == b"free bytes"
+        assert not (cfg.documents_dir / "held.txt").exists()
+
+    async def test_the_run_has_taken_its_first_step_before_the_first_event(self, isolated_env):
+        """Closing the ingest stream at its first event cannot cancel a run that has not begun."""
+        from lilbee.app.services import get_services
+        from lilbee.server.handlers.ingest import _ingest_stream
+        from lilbee.server.models import AddSummary
+
+        began: list[str] = []
+
+        async def _run(locked, sse):
+            began.append("first step")
+            sse.queue.put_nowait(None)
+            return AddSummary(copied=[], errors=[])
+
+        lock = await get_services().ingest_lock_registry.try_acquire("held.txt")
+        assert lock is not None
+        gen = _ingest_stream([("held.txt", "held"), ("free.txt", "free")], _run, "Test stream")
+        try:
+            first = await gen.__anext__()
+            await gen.aclose()
+        finally:
+            lock.release()
+
+        assert first.startswith("event: already_ingesting\n")
+        assert began == ["first step"]
+
     async def test_distinct_relative_paths_get_distinct_locks(self, isolated_env):
         """Two uploads that land at different paths must not share one lock.
 
