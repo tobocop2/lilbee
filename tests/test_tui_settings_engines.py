@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from textual.widgets import DataTable, Select, Static, TabbedContent, TabPane
 
 from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineOption, EngineRow, EngineState
+from lilbee.catalog import runnable
 from lilbee.catalog.models import DownloadProgress
 from lilbee.cli.tui.engine_install_flow import confirm_text
 from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -27,13 +29,17 @@ from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.engine_store import EngineStore
-from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines import LLAMA, choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.host_gate import PASS
+from lilbee.providers.fleet.engines.llama import pack_backend
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.roles import WorkerRole
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._published import render_table, wheel_name
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
 _DOWNLOAD_BYTES = 180_000_000
@@ -675,6 +681,100 @@ def test_engine_rows_leave_out_an_engine_the_host_cannot_install(
     assert [row.engine for row in engine_service.engine_rows()] == ["llama.cpp", "ik_llama.cpp"]
 
 
+_REAL_BUNDLED_BACKEND = engine_service._bundled_backend
+_REAL_MISSING_OPTION = engine_service._missing_option
+_LLAMA_PACK_BYTES = 9_876_543
+
+
+@pytest.mark.parametrize("ready", [True, False], ids=["ready", "not-ready"])
+def test_the_llama_rows_name_the_pack_backend_of_the_host_with_the_real_reads(
+    fleet: None, monkeypatch: pytest.MonkeyPatch, ready: bool
+) -> None:
+    host = collect(
+        system="Darwin",
+        machine="arm64",
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvidia=None,
+        mac_ver="14.5",
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    backend = pack_backend(host)
+    assert backend
+    # The real llama.cpp adapter: its pin names no backend, so the row falls back to the pack's.
+    monkeypatch.setattr(choice, "ADAPTERS", {**choice.ADAPTERS, EngineName.LLAMA: LLAMA})
+    file = wheel_name(EngineName.LLAMA, LLAMA.pin_record()["version"], f"macos-arm64-{backend}")
+    monkeypatch.setattr(
+        engine_manifest, "MANIFESTS", render_table([(file, "1" * 64, _LLAMA_PACK_BYTES)])
+    )
+    monkeypatch.setattr(engine_service, "_bundled_backend", _REAL_BUNDLED_BACKEND)
+    monkeypatch.setattr(engine_service, "_missing_option", _REAL_MISSING_OPTION)
+    monkeypatch.setattr(engine_service, "llama_server_ready", lambda: ready)
+    llama = engine_service.engine_rows()[0]
+    if ready:
+        assert llama == EngineRow(
+            "llama.cpp", EngineState.BUNDLED, backend=backend, roles=("embed",)
+        )
+    else:
+        assert llama == EngineRow(
+            "llama.cpp",
+            EngineState.NOT_INSTALLED,
+            backend=backend,
+            download_bytes=_LLAMA_PACK_BYTES,
+        )
+
+
+def test_engine_rows_show_the_builds_of_an_engine_the_install_gate_refuses(
+    fleet: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The host gate passes, so the build is listed. The pin build is absent, and the install
+    # gate refuses the engine, so it is neither installed nor offered as missing.
+    monkeypatch.setattr(
+        engine_service, "installed_engines", lambda: {EngineName.LLAMA: frozenset({"gguf"})}
+    )
+    monkeypatch.setattr(
+        engine_service,
+        "_install_gate",
+        lambda name: SimpleNamespace(ok=name != EngineName.IK_LLAMA),
+    )
+    assert "ik_llama.cpp" not in engine_service.engine_list().not_installed
+    assert "ik_llama.cpp" not in engine_service.offered_engines()
+    rows = [r for r in engine_service.engine_rows() if r.engine == "ik_llama.cpp"]
+    assert rows == [
+        EngineRow(
+            "ik_llama.cpp",
+            EngineState.DIFFERS_FROM_PIN,
+            "1.2.3",
+            "cuda",
+            size_bytes=sum(_BUILD_FILES.values()),
+        )
+    ]
+
+
+async def test_the_tab_shows_a_build_of_an_engine_the_install_gate_refuses_with_remove(
+    fleet: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        engine_service, "installed_engines", lambda: {EngineName.LLAMA: frozenset({"gguf"})}
+    )
+    monkeypatch.setattr(
+        engine_service,
+        "_install_gate",
+        lambda name: SimpleNamespace(ok=name != EngineName.IK_LLAMA),
+    )
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot, rows=3)
+        shown = [[_plain(c) for c in table.get_row_at(i)] for i in range(table.row_count)]
+        ik = [row for row in shown if row[0] == "■ ik_llama.cpp"]
+        assert len(ik) == 1
+        assert (ik[0][1], ik[0][2], ik[0][4], ik[0][6]) == (
+            "1.2.3",
+            "cuda",
+            "differs from the pin",
+            "Remove",
+        )
+
+
 def _states(rows: list[EngineRow]) -> dict[str, list[EngineState]]:
     found: dict[str, list[EngineState]] = {}
     for row in rows:
@@ -807,15 +907,23 @@ def test_the_size_counts_a_link_inside_the_build_as_the_link_not_its_target(
     assert EngineStore(root).build_size("ik_llama.cpp", "1.2.3", "cuda") == 300 + link_bytes
 
 
-def test_a_build_folder_that_is_a_link_out_of_the_store_has_no_size(tmp_path: Path) -> None:
+def test_a_build_folder_that_is_a_link_out_of_the_store_has_no_size(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     outside = tmp_path / "outside"
     _files(outside, {"big": 50_000})
     root = tmp_path / "engines"
     (root / "ik_llama.cpp").mkdir(parents=True)
     (root / "ik_llama.cpp" / "1.2.3-cuda").symlink_to(outside)
     store = EngineStore(root)
-    assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.engine_store"):
+        assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
     assert not store.holds("ik_llama.cpp", "1.2.3", "cuda")
+    prefix = "The size of engine ik_llama.cpp 1.2.3 (cuda) is unknown: "
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(messages) == 1
+    assert messages[0].startswith(prefix)
+    assert len(messages[0]) > len(prefix)
 
 
 def test_a_build_in_an_engine_folder_that_is_a_link_has_no_size(tmp_path: Path) -> None:
