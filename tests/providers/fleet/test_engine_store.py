@@ -550,7 +550,10 @@ _SDIST_CHECKSUM = "cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474a
         (f"{_SDIST_URL.replace('/t/tqdm/tqdm-', '/t/tqdm/other-')} {_SDIST_CHECKSUM}\n", False),
         (f"{_SDIST_URL.replace('.tar.gz', '.zip')} {_SDIST_CHECKSUM}\n", False),
         (f"{_SDIST_URL.replace('https', 'http')} {_SDIST_CHECKSUM}\n", False),
-        (f"{_SDIST_URL.replace('files.pythonhosted.org', 'evil.example')} {_SDIST_CHECKSUM}\n", False),
+        (
+            f"{_SDIST_URL.replace('files.pythonhosted.org', 'evil.example')} {_SDIST_CHECKSUM}\n",
+            False,
+        ),
         (f"see {_SDIST_URL} {_SDIST_CHECKSUM}\n", False),
         (f"{_SDIST_URL} {_SDIST_CHECKSUM}\nMozilla Public License text\n", False),
     ],

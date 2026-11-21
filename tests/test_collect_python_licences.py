@@ -8,16 +8,22 @@ import sys
 
 import pytest
 
-_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/collect_python_licences.py"
+_SCRIPT = (
+    pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/collect_python_licences.py"
+)
 _PSF = "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2\n"
 _BSD3 = "Redistribution.\nNeither the name of the author nor the names of contributors."
 _BSD2 = "Redistribution and use in source and binary forms."
 
 
-def _package(site: pathlib.Path, name: str, *metadata: str, licence: str | None = "text") -> pathlib.Path:
+def _package(
+    site: pathlib.Path, name: str, *metadata: str, licence: str | None = "text"
+) -> pathlib.Path:
     dist = site / f"{name}-1.0.dist-info"
     dist.mkdir(parents=True)
-    (dist / "METADATA").write_text("\n".join(["Metadata-Version: 2.4", f"Name: {name}", *metadata]) + "\n")
+    (dist / "METADATA").write_text(
+        "\n".join(["Metadata-Version: 2.4", f"Name: {name}", *metadata]) + "\n"
+    )
     if licence is not None:
         (dist / "licenses").mkdir()
         (dist / "licenses" / "LICENSE").write_text(licence)
@@ -87,14 +93,26 @@ def test_copies_a_licence_file_from_the_top_of_the_dist_info(
     ("metadata", "licence", "message"),
     [
         (["License-Expression: GPL-3.0-only"], "text", "old-1.0: GPL-3.0-only is copyleft"),
-        (["Classifier: License :: OSI Approved :: GNU Lesser General Public License v3"], "text", "is copyleft"),
-        (["License-Expression: MIT"], "GNU GENERAL PUBLIC LICENSE\nVersion 3", "holds a GNU licence text"),
+        (
+            ["Classifier: License :: OSI Approved :: GNU Lesser General Public License v3"],
+            "text",
+            "is copyleft",
+        ),
+        (
+            ["License-Expression: MIT"],
+            "GNU GENERAL PUBLIC LICENSE\nVersion 3",
+            "holds a GNU licence text",
+        ),
         (["Name: nothing"], "text", "names no licence"),
         (["License-Expression: MIT"], None, "ships no licence file"),
     ],
 )
 def test_refuses_a_package_that_breaks_a_rule(
-    site: pathlib.Path, tmp_path: pathlib.Path, metadata: list[str], licence: str | None, message: str
+    site: pathlib.Path,
+    tmp_path: pathlib.Path,
+    metadata: list[str],
+    licence: str | None,
+    message: str,
 ) -> None:
     _package(site, "old", *metadata, licence=licence)
     done = _run(site, tmp_path)
@@ -162,14 +180,18 @@ def test_refuses_a_supplied_file_that_does_not_fit_the_tree(
     assert message in done.stderr
 
 
-_GCC_SECTION = "\n" * 60 + "Name: GCC runtime\n\n  GNU GENERAL PUBLIC LICENSE\n  Version 3, 29 June 2007\n"
+_GCC_SECTION = (
+    "\n" * 60 + "Name: GCC runtime\n\n  GNU GENERAL PUBLIC LICENSE\n  Version 3, 29 June 2007\n"
+)
 
 
 def test_refuses_a_licence_file_with_a_gnu_title_past_its_head(
     site: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
     """The store reads the whole text, so a title after the first 2000 bytes also refuses."""
-    _package(site, "numpy", "License-Expression: BSD-3-Clause", licence="BSD" + "x" * 3000 + _GCC_SECTION)
+    _package(
+        site, "numpy", "License-Expression: BSD-3-Clause", licence="BSD" + "x" * 3000 + _GCC_SECTION
+    )
     done = _run(site, tmp_path)
     assert done.returncode == 1
     assert "numpy-1.0: LICENSE holds a GNU licence text" in done.stderr
@@ -181,7 +203,11 @@ def test_a_replacing_file_is_written_over_the_tree_and_into_the_copy(
     dist = _package(site, "numpy", "License-Expression: BSD-3-Clause", licence="BSD" + _GCC_SECTION)
     (dist / "licenses" / "vendored").mkdir()
     (dist / "licenses" / "vendored" / "LICENSE").write_text("MIT text")
-    done = _run(site, tmp_path, _supplied(tmp_path, "numpy-1.0 LICENSE-Apache-2.0 replaces licenses/LICENSE"))
+    done = _run(
+        site,
+        tmp_path,
+        _supplied(tmp_path, "numpy-1.0 LICENSE-Apache-2.0 replaces licenses/LICENSE"),
+    )
     assert done.returncode == 0, done.stderr
     assert (dist / "licenses" / "LICENSE").read_text() == "Apache License text"
     copy = tmp_path / "out" / "numpy-1.0"
@@ -194,13 +220,19 @@ def test_refuses_to_replace_a_file_the_dist_info_lacks(
     site: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
     dist = _package(site, "numpy", "License-Expression: BSD-3-Clause", licence="BSD" + _GCC_SECTION)
-    done = _run(site, tmp_path, _supplied(tmp_path, "numpy-1.0 LICENSE-Apache-2.0 replaces licenses/COPYING"))
+    done = _run(
+        site,
+        tmp_path,
+        _supplied(tmp_path, "numpy-1.0 LICENSE-Apache-2.0 replaces licenses/COPYING"),
+    )
     assert done.returncode == 1
     assert "numpy-1.0: licenses/COPYING is not a licence file of its dist-info" in done.stderr
     assert "GNU GENERAL PUBLIC LICENSE" in (dist / "licenses" / "LICENSE").read_text()
 
 
-def test_stops_on_a_supplied_line_it_cannot_read(site: pathlib.Path, tmp_path: pathlib.Path) -> None:
+def test_stops_on_a_supplied_line_it_cannot_read(
+    site: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
     _package(site, "ok", "License: MIT")
     done = _run(site, tmp_path, _supplied(tmp_path, "ok-1.0 LICENSE-Apache-2.0 instead LICENSE"))
     assert done.returncode == 1
@@ -213,14 +245,14 @@ def test_refuses_a_supplied_file_for_a_package_the_tree_lacks(
     _package(site, "ok", "License: MIT")
     done = _run(site, tmp_path, _supplied(tmp_path, "gone-1.0 LICENSE-Apache-2.0"))
     assert done.returncode == 1
-    assert "gone-1.0: a licence file is supplied for a package the tree does not hold" in done.stderr
+    assert (
+        "gone-1.0: a licence file is supplied for a package the tree does not hold" in done.stderr
+    )
 
 
 def test_the_pack_supplies_a_file_that_exists_for_each_named_package() -> None:
     supplied = _SCRIPT.parents[2] / "packaging" / "engine-mlx" / "supplied-licences.txt"
-    lines = [
-        line.split() for line in supplied.read_text().splitlines() if line and line[0] != "#"
-    ]
+    lines = [line.split() for line in supplied.read_text().splitlines() if line and line[0] != "#"]
     assert lines
     requirements = (supplied.parent / "requirements.txt").read_text()
     for package, path, *replaces in lines:
@@ -237,6 +269,8 @@ def test_refuses_a_folder_with_no_package(site: pathlib.Path, tmp_path: pathlib.
 
 
 def test_prints_usage_with_the_wrong_argument_count() -> None:
-    done = subprocess.run([sys.executable, "-I", str(_SCRIPT)], capture_output=True, text=True, check=False)
+    done = subprocess.run(
+        [sys.executable, "-I", str(_SCRIPT)], capture_output=True, text=True, check=False
+    )
     assert done.returncode != 0
     assert "Usage: collect_python_licences.py" in done.stderr
