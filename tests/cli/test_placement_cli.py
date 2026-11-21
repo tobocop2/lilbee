@@ -14,6 +14,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.roles import WorkerRole
+from tests._cli_text import plain_cli_text
 
 runner = CliRunner()
 _GIB = 1024**3
@@ -535,4 +536,4 @@ def test_placement_command_refuses_global_with_data_dir(tmp_path: Path, argv: li
     """Each command passes --global and --data-dir on to the shared override check."""
     result = runner.invoke(placement_app, [*argv, "--global", "--data-dir", str(tmp_path)])
     assert result.exit_code == 2
-    assert "Cannot use --global with --data-dir" in result.output
+    assert "Cannot use --global with --data-dir" in plain_cli_text(result.output)

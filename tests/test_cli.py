@@ -22,7 +22,6 @@ import pytest
 from filelock import ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 from rich.progress import Progress
-from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
@@ -63,6 +62,7 @@ from tests._crafted_titles import (
     crafted_label,
     linked_label,
 )
+from tests._cli_text import plain_cli_text
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._gguf_fixture import GGUF_MAGIC
@@ -237,7 +237,7 @@ class TestStatus:
         cfg.vision_model = vision_model
         cfg.ocr_language = ["eng"]
         result = runner.invoke(app, ["status"])
-        output = _plain_help_text(result.output)
+        output = plain_cli_text(result.output)
         assert line in output
         assert output.count("Scanned pages:") == 1
         assert "Tesseract OCR:" not in output
@@ -4309,17 +4309,6 @@ class TestAskWithoutEmbedder:
 # ---------------------------------------------------------------------------
 
 
-def _plain_help_text(output: str) -> str:
-    """Flatten captured --help output to one space-joined line of plain text.
-
-    Rich's own decoder strips the ANSI styling. The box-drawing border and
-    every line wrap then collapse to a single space, so a phrase rich wraps
-    across lines still matches as one substring at any terminal width.
-    """
-    plain = Text.from_ansi(output).plain
-    return " ".join(plain.replace("│", " ").split())
-
-
 class TestOcrFlags:
     """Tests for --ocr and --ocr-timeout flags on sync, add, rebuild."""
 
@@ -4404,12 +4393,12 @@ class TestOcrFlags:
     def test_a_bad_ocr_flag_value_is_refused(self, flag, refusal):
         result = runner.invoke(app, ["sync", flag])
         assert result.exit_code == 2
-        assert refusal in _plain_help_text(result.output)
+        assert refusal in plain_cli_text(result.output)
 
     def test_ocr_help_names_every_mode(self):
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
-        normalized = _plain_help_text(result.output)
+        normalized = plain_cli_text(result.output)
         assert (
             "auto reads each page without usable text and keeps the text of every other"
             " page; all reads every page of every file; off skips them"
