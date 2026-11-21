@@ -318,7 +318,7 @@ async def test_fleet_view_shows_live_rows_with_role_badges(monkeypatch):
         await pilot.pause()
         panel = app.screen.query_one(GpuFleetPanel)
         # chat is on device 1; role badge for device 1 must start with "chat"
-        assert panel._roles[1].startswith("chat")
+        assert panel._roles[1].plain.startswith("\u25a0 chat")
 
 
 @pytest.mark.asyncio

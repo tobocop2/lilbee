@@ -92,11 +92,16 @@ def engine_variables(theme_variables: dict[str, str]) -> dict[str, str]:
     }
 
 
-def engine_mark(engine: str) -> Content:
-    """The mark and the name of *engine*: the mark takes the engine color, the name does not."""
+def engine_dot(engine: str) -> Content:
+    """The mark of *engine* alone, in the engine color."""
     known = engine in set(EngineName)
     color = f"${variable_name(engine)}" if known else UNKNOWN_ENGINE_COLOR
-    return Content.assemble((MARK, color), " ", engine)
+    return Content.styled(MARK, color)
+
+
+def engine_mark(engine: str) -> Content:
+    """The mark and the name of *engine*: the mark takes the engine color, the name does not."""
+    return Content.assemble(engine_dot(engine), " ", engine)
 
 
 _MB = 1_000_000

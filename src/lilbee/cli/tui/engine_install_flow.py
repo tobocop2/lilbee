@@ -17,6 +17,7 @@ from lilbee.cli.tui.engine_commands import (
     EngineCommandResult,
     announce,
     choose_engine_for_model,
+    choose_engine_for_role,
 )
 from lilbee.cli.tui.engine_mark import format_size
 from lilbee.cli.tui.task_queue import TaskType
@@ -26,6 +27,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.providers.roles import WorkerRole
 
 
 def confirm_text(option: EngineOption) -> str:
@@ -58,33 +60,43 @@ def install_then(app: LilbeeApp, name: str, then: Callable[[], object]) -> None:
 
 
 def choose_for_model(
-    app: LilbeeApp, model: str, option: EngineOption, after: Callable[[], object]
+    app: LilbeeApp,
+    model: str,
+    option: EngineOption,
+    after: Callable[[], object] | None = None,
+    role: WorkerRole | None = None,
 ) -> None:
     """Store the engine of *option* for *model*; run *after* once the choice is saved.
+
+    With a *role*, the model is the one of that role and the role must be able to use the engine.
 
     An engine that is not installed is saved only after the download confirm and the
     install task end well. A refusal or a failed install leaves the choice as it was.
     """
     if option.installed:
-        _save_for_model(app, model, option.name, after)
+        _save_for_model(app, model, option.name, after, role)
         return
-    confirm_and_install(app, option, lambda: _save_for_model(app, model, option.name, after))
+    confirm_and_install(app, option, lambda: _save_for_model(app, model, option.name, after, role))
 
 
 def _save_for_model(
     app: LilbeeApp,
     model: str,
     name: str,
-    after: Callable[[], object],
+    after: Callable[[], object] | None,
+    role: WorkerRole | None,
     confirmed: bool = False,
 ) -> None:
     """Write the choice off the UI thread, ask first when it can orphan the index vectors."""
 
     def write() -> None:
         try:
-            result = choose_engine_for_model(model, name, confirmed)
+            if role is None:
+                result = choose_engine_for_model(model, name, confirmed)
+            else:
+                result = choose_engine_for_role(role, name, confirmed)
         except engine_service.EmbedConfirmRequiredError as exc:
-            call_from_thread(app, _confirm_embed, app, model, name, exc, after)
+            call_from_thread(app, _confirm_embed, app, model, name, exc, after, role)
             return
         call_from_thread(app, _announce_and_after, app, result, after)
 
@@ -92,10 +104,11 @@ def _save_for_model(
 
 
 def _announce_and_after(
-    app: LilbeeApp, result: EngineCommandResult, after: Callable[[], object]
+    app: LilbeeApp, result: EngineCommandResult, after: Callable[[], object] | None
 ) -> None:
     announce(app, result)
-    after()
+    if after is not None:
+        after()
 
 
 def _confirm_embed(
@@ -103,7 +116,8 @@ def _confirm_embed(
     model: str,
     name: str,
     asked: engine_service.EmbedConfirmRequiredError,
-    after: Callable[[], object],
+    after: Callable[[], object] | None,
+    role: WorkerRole | None,
 ) -> None:
     dialog = CancelFirstConfirmDialog(
         msg.ENGINE_EMBED_CONFIRM_TITLE,
@@ -112,7 +126,7 @@ def _confirm_embed(
 
     def answered(yes: bool | None) -> None:
         if yes:
-            _save_for_model(app, model, name, after, True)
+            _save_for_model(app, model, name, after, role, True)
         else:
             app.notify(msg.ENGINE_EMBED_CANCELLED)
 

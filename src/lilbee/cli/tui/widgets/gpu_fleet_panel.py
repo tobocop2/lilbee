@@ -28,6 +28,9 @@ log = logging.getLogger(__name__)
 
 _CSS_FILE = Path(__file__).parent / "gpu_fleet_panel.tcss"
 
+# A role badge is text, or content a caller styled itself (for example with an engine mark).
+Badge = str | Content
+
 # Bar render constants. Fill/track glyphs come from msg.progress_bar_glyphs()
 # at render time: block elements where the terminal tiles them, box-drawing
 # elsewhere.
@@ -93,7 +96,7 @@ def _badge_content(badge: str, secondary: str, muted: str) -> Content:
 def _render_row(
     s: GpuStat,
     label: str,
-    badge: str,
+    badge: Badge,
     theme: dict[str, str],
 ) -> Content:
     """Render one GPU as a single table row: bullet, label, util bar, vram bar, badge."""
@@ -128,13 +131,15 @@ def _render_row(
     )
     if not badge:
         return row
+    if isinstance(badge, Content):
+        return Content.assemble(row, "  ", badge)
     return Content.assemble(row, "  ", _badge_content(badge, secondary, muted))
 
 
 def _render_stats(
     stats: dict[int, GpuStat],
     labels: dict[int, str],
-    roles: dict[int, str],
+    roles: dict[int, Badge],
     theme: dict[str, str],
     *,
     probed: bool,
@@ -170,7 +175,7 @@ class GpuFleetPanel(Static):
         super().__init__(f"  {msg.FLEET_GPU_PROBING}", id="gpu-fleet-panel")
         self._devices: Sequence[DeviceLike] = []
         self._labels: dict[int, str] = {}
-        self._roles: dict[int, str] = {}
+        self._roles: dict[int, Badge] = {}
         self._timer: Timer | None = None
         # Single-flight: True while a probe worker is running, so a probe
         # slower than the tick interval skips ticks instead of stacking
@@ -188,7 +193,7 @@ class GpuFleetPanel(Static):
         devices: Sequence[DeviceLike],
         *,
         labels: dict[int, str],
-        roles: dict[int, str] | None = None,
+        roles: dict[int, Badge] | None = None,
     ) -> None:
         """Register the GPU devices the panel probes on each tick.
 
@@ -245,7 +250,7 @@ class GpuFleetPanel(Static):
         self,
         devices: list[DeviceLike],
         labels: dict[int, str],
-        roles: dict[int, str],
+        roles: dict[int, Badge],
     ) -> None:
         """Probe GPU stats off the UI thread and push the result back."""
         try:
@@ -261,7 +266,7 @@ class GpuFleetPanel(Static):
         self,
         stats: dict[int, GpuStat],
         labels: dict[int, str],
-        roles: dict[int, str],
+        roles: dict[int, Badge],
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
         if self._probe_error is not None:

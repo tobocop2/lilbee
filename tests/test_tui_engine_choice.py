@@ -1128,3 +1128,197 @@ async def test_a_no_to_the_index_vector_question_keeps_the_engine() -> None:
             await pilot.press("n")
             assert await wait_until(pilot, lambda: msg.ENGINE_EMBED_CANCELLED in _toasts(app))
         assert calls == [False]
+
+
+# --- fleet placement editor: the Engine column and the e key
+
+_GIB = 1024**3
+
+
+def _fleet_view(*, chat_engine: str = "llama.cpp", embed_engine: str = "llama.cpp"):
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+
+    return PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * _GIB, 44 * _GIB),),
+        roles=(
+            RolePlacementView(WorkerRole.EMBED, EMBED_REF, (0,), None, 1, embed_engine),
+            RolePlacementView(WorkerRole.CHAT, GGUF_REF, (0,), None, 1, chat_engine),
+            RolePlacementView(WorkerRole.VISION, "", (), None, 1, ""),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+
+@pytest.fixture
+def _default_fleet_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    view = _fleet_view()
+    monkeypatch.setattr("lilbee.cli.tui.widgets.fleet_body.get_placement", lambda: view)
+
+
+async def _fleet_ready(app: LilbeeAppHost, pilot) -> None:
+    assert await wait_until(pilot, lambda: bool(app.query("#eng-chat")))
+
+
+def _pill_text(app: LilbeeAppHost, selector: str) -> str:
+    return str(app.query_one(selector, Static).render())
+
+
+async def test_the_fleet_editor_puts_an_engine_cell_with_the_mark_in_each_role_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual.containers import Horizontal
+
+    # The mount already starts a load, so the view is in place before the app starts.
+    view = _fleet_view(embed_engine="")
+    monkeypatch.setattr("lilbee.cli.tui.widgets.fleet_body.get_placement", lambda: view)
+
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement",
+            return_value=_fleet_view(embed_engine=""),
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        assert _pill_text(app, "#eng-chat") == "■ llama.cpp"
+        assert _pill_text(app, "#eng-embed") == "▲ none"
+        assert _pill_text(app, "#eng-vision") == "-"
+        row = app.query_one("#eng-chat").parent
+        assert isinstance(row, Horizontal)
+        assert [w.id for w in row.children][1:3] == ["eng-chat", "dev-chat-0"]
+        header = app.query_one(".gpu-header-row", Horizontal)
+        assert [str(w.render()) for w in header.children][:3] == ["GPU", "Engine", "0"]
+        assert str(app.query_one("#placement-hint", Static).render()).endswith("e engine")
+        badge = app.query_one(GpuFleetPanel)._roles[0]
+        assert badge.plain == "■ chat - " + GGUF_REF.rsplit("/", 1)[-1].removesuffix(".gguf")
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_key_e_on_a_role_row_saves_the_pick_and_the_cell_follows() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        await pilot.pause()
+        app.query_one("#dev-chat-0").focus()
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert _text(app.screen, "#engine-picker-title") == "Engine for the chat model"
+        await pilot.press("down", "down", "enter")
+        assert await wait_until(pilot, lambda: _stored() == {GGUF_REF: "openvino"})
+        assert await wait_until(pilot, lambda: _pill_text(app, "#eng-chat") == "■ openvino")
+        assert _pill_text(app, "#eng-embed") == "■ llama.cpp"
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_key_e_opens_the_picker_of_the_focused_role_row() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        await pilot.pause()
+        app.query_one("#dev-embed-0").focus()
+        await pilot.press("e")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert _text(app.screen, "#engine-picker-title") == "Engine for the embed model"
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_preview_shows_the_result_of_an_engine_change() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        await pilot.pause()
+        app.query_one("#dev-chat-0").focus()
+        await pilot.press("e", "down", "down", "enter")
+        assert await wait_until(pilot, lambda: _stored() == {GGUF_REF: "openvino"})
+        previewed = _fleet_view(chat_engine="openvino")
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.preview_placement", return_value=previewed
+        ):
+            app.query_one(FleetBody).action_preview()
+            assert await wait_until(pilot, lambda: _pill_text(app, "#eng-chat") == "■ openvino")
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_key_e_off_a_role_row_opens_nothing() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        app.query_one("#cmd-preview").focus()
+        await pilot.press("e")
+        await pilot.pause()
+        assert not isinstance(app.screen, EnginePickerModal)
+        app.set_focus(None)
+        app.query_one(FleetBody).action_pick_engine()
+        await pilot.pause()
+        assert not isinstance(app.screen, EnginePickerModal)
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_a_press_on_the_engine_cell_opens_the_picker_of_its_role() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody, FleetPill
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        app.query_one("#eng-embed", FleetPill).press()
+        assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
+        assert _text(app.screen, "#engine-picker-title") == "Engine for the embed model"
+        assert sum(isinstance(screen, EnginePickerModal) for screen in app.screen_stack) == 1
+
+
+@pytest.mark.usefixtures("_default_fleet_view")
+async def test_a_role_with_no_model_says_so_instead_of_opening_the_fleet_picker() -> None:
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody, FleetPill
+
+    app = _FleetApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        with mock.patch(
+            "lilbee.cli.tui.widgets.fleet_body.get_placement", return_value=_fleet_view()
+        ):
+            await pilot.pause()
+            app.query_one(FleetBody)._load_worker()
+            await _fleet_ready(app, pilot)
+        app.query_one("#eng-vision", FleetPill).press()
+        assert await wait_until(
+            pilot, lambda: msg.ENGINE_NO_MODEL.format(role=WorkerRole.VISION) in _toasts(app)
+        )
+        assert not isinstance(app.screen, EnginePickerModal)
