@@ -109,9 +109,12 @@ class CompletionsRequest(BaseModel):
       ``reasoning`` (lilbee extension: ``separate`` / ``inline`` / ``off``,
       overriding the ``completions_reasoning`` setting for this request).
     - Rejected with a 400: ``n`` greater than 1 (lilbee serves one choice).
+    - Forwarded to the engine as sent: ``response_format``. A value that is not
+      an object is a 400 at validation; the engine checks the object and answers
+      a malformed one with its own error.
     - Accepted but ignored (``extra="allow"`` keeps them off the parsed model and
-      the route logs their keys at debug): ``n == 1``, ``response_format``,
-      ``logprobs``, ``top_logprobs``, and any other unrecognised field.
+      the route logs their keys at debug): ``n == 1``, ``logprobs``,
+      ``top_logprobs``, and any other unrecognised field.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -132,6 +135,7 @@ class CompletionsRequest(BaseModel):
     stream: bool = False
     stream_options: StreamOptions | None = None
     reasoning: ReasoningMode | None = None
+    response_format: dict[str, Any] | None = None
 
     @field_validator("reasoning", mode="before")
     @classmethod

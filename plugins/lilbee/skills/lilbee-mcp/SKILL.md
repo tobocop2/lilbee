@@ -63,7 +63,8 @@ for CLI options. These tools also exist, and each description says what it does:
   `lilbee_preset_remove` store OpenAI-compatible servers. They appear only when
   `mcp_presets_enabled` is on. Open the settings reference before you use them.
 - **Engines.** `lilbee_engine_list`, `lilbee_engine_remove`, `lilbee_engine_roles`,
-  `lilbee_engine_use` and `lilbee_engine_prefer` read and set the engine of each role.
+  `lilbee_engine_use`, `lilbee_engine_prefer` and `lilbee_engine_install` read and set
+  the engine of each role, and install an engine that is not bundled.
   They appear only when `mcp_engines_enabled` is on. Open the settings reference before
   you use them.
 
