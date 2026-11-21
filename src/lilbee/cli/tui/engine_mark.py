@@ -32,6 +32,7 @@ ENGINE_HUES: dict[EngineName, int] = {
     EngineName.MISTRAL: 285,
     EngineName.LEMONADE: 305,
     EngineName.MLX: 325,
+    EngineName.OVMS: 215,
 }
 
 # Saturation alternates along the hues, so two close hues still differ.
