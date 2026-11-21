@@ -8,19 +8,23 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.catalog import runnable
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet import host_caps
+from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
 from lilbee.providers.fleet.engines import choice, proof
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
+from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.engines.openvino import (
     GPU_MISSING,
     NPU_MISSING,
     OPENVINO,
+    OPENVINO_RUNTIME_TERM,
     OpenvinoAdapter,
     parse_devices,
 )
 from lilbee.providers.fleet.host_caps import HostCaps
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from tests._published import render_table, wheel_name
 
 FIXTURES = Path(__file__).parent / "fixtures" / "host_caps"
 BINARY = Path("/engines/bin/llama-server")
@@ -266,6 +270,57 @@ def test_proof_the_npu_is_not_run_so_auto_never_picks_openvino() -> None:
 def test_s12_a_pack_for_the_engine_is_not_published_yet() -> None:
     assert OPENVINO.pin_record()["platforms"] == {}
     assert OPENVINO.pin_record()["sha256"] is None
+
+
+_OPENVINO_CELL = "linux-x86_64-openvino"
+
+
+def _publish_llama_cells(monkeypatch: pytest.MonkeyPatch, cells: dict[str, str]) -> None:
+    """Publish a llama.cpp wheel per cell, at the version of the llama.cpp packs, on Linux x86_64."""
+    rows = [
+        (wheel_name(EngineName.LLAMA, _WHEEL_VERSION, key, "2.34"), sha, 1)
+        for key, sha in cells.items()
+    ]
+    monkeypatch.setattr(engine_manifest, "MANIFESTS", render_table(rows))
+    monkeypatch.setattr(runnable, "session_host", lambda: _host("intel-core-ultra-linux"))
+
+
+def test_pack_the_openvino_cell_of_the_llama_cpp_pack_is_the_engine_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _publish_llama_cells(monkeypatch, {_OPENVINO_CELL: "a" * 64})
+    pin = OPENVINO.pin_record()
+    assert list(pin["platforms"]) == [_OPENVINO_CELL]
+    assert pin["sha256"] == "a" * 64
+    assert pin["platforms"][_OPENVINO_CELL]["min_os"] == "2.34"
+
+
+def test_pack_the_version_is_the_version_of_the_llama_cpp_packs() -> None:
+    assert OPENVINO.pin_record()["version"] == _WHEEL_VERSION
+
+
+def test_pack_a_vulkan_or_cpu_llama_cpp_pack_is_not_the_openvino_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _publish_llama_cells(
+        monkeypatch, {"linux-x86_64-vulkan": "b" * 64, "linux-x86_64-cpu": "c" * 64}
+    )
+    pin = OPENVINO.pin_record()
+    assert (pin["platforms"], pin["sha256"]) == ({}, None)
+
+
+def test_licence_the_pack_names_the_intel_runtime_licence() -> None:
+    (expression,) = OPENVINO.pin_record()["licenses"]
+    assert OPENVINO_RUNTIME_TERM in expression.split(" AND ")
+
+
+def test_licence_a_published_pack_is_refused_until_the_runtime_licence_is_ruled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _publish_llama_cells(monkeypatch, {_OPENVINO_CELL: "a" * 64})
+    lock = choice.pin_lock(OPENVINO.pin_record())
+    with pytest.raises(engine_store.LicenceRefusedError, match=OPENVINO_RUNTIME_TERM):
+        engine_store._check_licences(lock)
 
 
 def test_the_adapter_ships_in_the_choice_table() -> None:

@@ -21,6 +21,7 @@ from lilbee.providers.fleet.engines.base import (
     ServerProcess,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, HostGate, npu_gate
+from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION as _LLAMA_PACK_VERSION
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
@@ -29,11 +30,21 @@ from lilbee.providers.fleet.proc import run_bounded
 from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
-# The wheel version follows the llama.cpp rule: 1.<upstream build>.<wheel build>.
-_VERSION = "1.12020.1"
+# The pack is the openvino cell of the llama.cpp pack build: the llama.cpp wheel at the version
+# of the other llama.cpp packs, built from the same llama.cpp tag, with the build tag "openvino".
+_VERSION = _LLAMA_PACK_VERSION
+_PACK_ENGINE = EngineName.LLAMA.value
 _BACKEND = "openvino"
 _TOOL = "llama-server"
-_LICENCES = ["MIT", "Apache-2.0"]
+# The License-Expression of the pack: the llama.cpp terms of the Linux packs, the OpenVINO runtime
+# under its Intel distribution licence, oneTBB and oneDNN (Apache-2.0), hwloc (BSD-3-Clause) and
+# the OpenCL loader (BSD-2-Clause). The Intel term is not on the permissive list, so an install
+# refuses the pack until that licence is ruled on.
+OPENVINO_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
+_LICENCES = [
+    f"MIT AND {OPENVINO_RUNTIME_TERM} AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause "
+    "AND ISC AND MIT-0 AND Unlicense"
+]
 _DEVICE_VAR = "GGML_OPENVINO_DEVICE"
 _CPU_DEVICE = "CPU"
 _GPU_DEVICE = "GPU"
@@ -190,10 +201,10 @@ class OpenvinoAdapter:
             "engine": self.name.value,
             "version": _VERSION,
             "backend": _BACKEND,
-            "sha256": pack_digest(self.name.value, _VERSION, host, _BACKEND),
+            "sha256": pack_digest(_PACK_ENGINE, _VERSION, host, _BACKEND),
             "tool": _TOOL,
             "launch": _PIN_LAUNCH,
-            "platforms": pack_platforms(self.name.value, _VERSION, host, _BACKEND),
+            "platforms": pack_platforms(_PACK_ENGINE, _VERSION, host, _BACKEND),
             "memory": {"sizing": None, "rule": None},
             "licenses": _LICENCES,
         }
