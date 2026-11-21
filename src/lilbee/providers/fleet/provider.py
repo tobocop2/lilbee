@@ -1326,8 +1326,8 @@ class FleetProvider:
         # that gives up waiting for one of them gets the restart error.
         self._stuck_roles: frozenset[WorkerRole] = frozenset()
         # Roles whose server a reload pass stopped and then could not start again
-        # (role -> the start error). A request for such a role starts it again.
-        self._failed_starts: dict[WorkerRole, str] = {}
+        # (role -> the start exception). A request for such a role starts it again.
+        self._failed_starts: dict[WorkerRole, Exception] = {}
         # How the last fleet work ended.
         self._reload_failed = False
         # Roles the running reload pass may still bring a server back for: every role
@@ -2233,7 +2233,8 @@ class FleetProvider:
         Other roles' groups keep serving; only the dead group is torn down and
         respawned. The fleet work runs the same diff-driven pass as a reload, forcing
         *role* into the restart set so an unchanged plan still replaces its dead swap.
-        When *role* is left with no server because a start failed, the error says so.
+        When the error is the start failure that this pass recorded for *role*, the
+        error says that the start failed. Every other error keeps its own message.
         """
         work = self._force_restart(role, stopped_answering=False)
         if work is None:
@@ -2242,7 +2243,7 @@ class FleetProvider:
             self._join_fleet_work(work)
         except ProviderError as err:
             with self._lock:
-                if role not in self._failed_starts:
+                if self._failed_starts.get(role) is not err:
                     raise
             raise ProviderError(
                 _failed_start_message(role, str(err)), provider=_PROVIDER_NAME, kind=err.kind
@@ -3568,7 +3569,7 @@ class FleetProvider:
         with self._lock:
             for group in unstarted:
                 for role in _by_role(list(new[group])):
-                    self._failed_starts[role] = str(exc)
+                    self._failed_starts[role] = exc
 
     def _drain_stuck_groups(
         self, force: frozenset[WorkerRole]
