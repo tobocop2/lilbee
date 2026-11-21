@@ -6,7 +6,9 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import (
+    canonical_ref,
     hf_repo_from_ref,
+    installed_keys,
     is_gguf_filename,
     is_native_gguf_shape,
 )
@@ -67,6 +69,7 @@ def download_task_name(ref: str) -> str:
     ``Task.name``. Returns ``""`` for refs without an ``<owner>/<repo>``
     shape (empty, provider-prefixed without a slash, bare strings).
     """
+    ref = canonical_ref(ref)
     if not ref or "/" not in ref:
         return ""
     # A ``.gguf`` ref needs ``<owner>/<repo>/<file>`` (two slashes) to be a valid
@@ -85,6 +88,7 @@ def display_label_for_ref(ref: str) -> str:
     - Provider-prefixed (``ollama/``, ``openai/`` ...): the part after the prefix.
     - Anything else: returned unchanged.
     """
+    ref = canonical_ref(ref)
     if not ref:
         return ""
     if is_native_gguf_shape(ref):
@@ -175,9 +179,9 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
 
     *installed_refs* contains the ``hf_repo/filename`` refs returned by
     ``model_manager.list_installed()``. A repo is considered installed
-    when at least one of its quants has a manifest.
+    when at least one of its quants has a manifest in the row's own format.
     """
-    installed_repos = {hf_repo_from_ref(ref) for ref in installed_refs}
+    keys = installed_keys(installed_refs)
     enriched: list[EnrichedModel] = []
     for m in result.models:
         enriched.append(
@@ -193,7 +197,7 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
                 display_name=m.display_name,
                 param_count=derive_param_count(m),
                 quality_tier=quant_tier(extract_quant(m.gguf_filename)),
-                installed=m.hf_repo in installed_repos,
+                installed=(m.hf_repo, m.format) in keys,
                 source=ModelSource.NATIVE,
                 architecture=m.architecture,
                 compat=m.compat,

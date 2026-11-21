@@ -10,11 +10,13 @@ from types import SimpleNamespace
 import pytest
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet import adapters
 from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_SPEC,
     ROLE_SPECS,
+    RankPoolingMissingError,
     build_server_argv,
     embed_spec,
     expert_offload_patterns,
@@ -524,7 +526,7 @@ def _every_optional_flag_argv(
             raise OSError("no such file")
         return SimpleNamespace(stdout=help_text, stderr="")
 
-    binary_mod.engine_help.cache_clear()
+    binary_mod._read_help.cache_clear()
     monkeypatch.setattr(binary_mod.subprocess, "run", _run)
     monkeypatch.setattr(adapters, "engine_thread_count", lambda: 4)
     spec = replace(
@@ -805,3 +807,61 @@ def test_a_dropped_flag_is_logged_once_per_binary(monkeypatch, caplog) -> None:
         _every_optional_flag_argv(monkeypatch, help_text)
     lines = [r for r in caplog.records if "list --jinja;" in r.getMessage()]
     assert len(lines) == 1
+
+
+_NO_POOLING_HELP = _help_listing(["--model", "--embeddings", "--jinja"])
+_POOLING_HELP = _help_listing(["--model", "--embeddings", "--jinja", "--pooling"])
+
+
+def _role_argv(monkeypatch, help_text: str, spec) -> list[str]:
+    def _run(*_a, **_k):
+        return SimpleNamespace(stdout=help_text, stderr="")
+
+    binary_mod._read_help.cache_clear()
+    monkeypatch.setattr(binary_mod.subprocess, "run", _run)
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=spec,
+        model_path=Path("/models/m.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=512,
+    )
+
+
+def test_a_reranker_is_refused_on_a_build_that_lists_no_pooling_flag(monkeypatch) -> None:
+    with pytest.raises(RankPoolingMissingError) as raised:
+        _role_argv(monkeypatch, _NO_POOLING_HELP, ROLE_SPECS[WorkerRole.RERANK])
+    assert raised.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert str(raised.value) == (
+        f"The engine build {Path('/bin/llama-server')} does not list --pooling, so it cannot "
+        "score rerank results. Install an engine build that lists --pooling, "
+        "or use the LLM reranker type."
+    )
+
+
+def test_a_reranker_starts_on_a_build_that_lists_the_pooling_flag(monkeypatch) -> None:
+    argv = _role_argv(monkeypatch, _POOLING_HELP, ROLE_SPECS[WorkerRole.RERANK])
+    assert argv[-2:] == ["--pooling", "rank"]
+
+
+def test_a_reranker_on_a_build_with_no_help_text_is_not_judged(monkeypatch) -> None:
+    argv = _role_argv(monkeypatch, "", ROLE_SPECS[WorkerRole.RERANK])
+    assert argv[-2:] == ["--pooling", "rank"]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ROLE_SPECS[WorkerRole.CHAT],
+        ROLE_SPECS[WorkerRole.EMBED],
+        embed_spec({"architecture": "qwen3"}),
+        LLM_RERANK_SPEC,
+    ],
+    ids=["chat", "embed", "embed-last-pooling", "llm-rerank"],
+)
+def test_other_loads_still_start_on_a_build_that_lists_no_pooling_flag(monkeypatch, spec) -> None:
+    argv = _role_argv(monkeypatch, _NO_POOLING_HELP, spec)
+    assert "--pooling" not in argv
+    assert "--model" in argv

@@ -93,7 +93,9 @@
       "CUDA0,CUDA1",
       "--tensor-split",
       "1,1",
-      "--embeddings"
+      "--embeddings",
+      "--pooling",
+      "rank"
     ],
     "vision": [
       "/engines/bin/server",
@@ -125,6 +127,8 @@
       "text",
       "--paged-attn",
       "off",
+      "--max-model-len",
+      "4096",
       "-m",
       "/models",
       "-f",
@@ -171,7 +175,17 @@
       "--port",
       "{port}",
       "--prompt-cache-bytes",
-      "1073741824"
+      "1073741824",
+      "--max-tokens",
+      "4096",
+      "--temp",
+      "0.8",
+      "--top-p",
+      "0.95",
+      "--top-k",
+      "40",
+      "--min-p",
+      "0.05"
     ]
   },
   "tei": {
@@ -184,7 +198,7 @@
       "--max-client-batch-size",
       "64",
       "--max-batch-tokens",
-      "2176"
+      "640"
     ],
     "rerank": [
       "/engines/bin/server",
@@ -195,7 +209,7 @@
       "--max-client-batch-size",
       "64",
       "--max-batch-tokens",
-      "2176"
+      "640"
     ]
   }
 }

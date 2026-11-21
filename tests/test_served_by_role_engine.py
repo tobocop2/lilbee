@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.app import engine_choice
 from lilbee.app.status import chat_engine, serving_roles
+from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines import choice
@@ -43,7 +43,7 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, GGUF_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, MLX_ENGINE)  # type: ignore[arg-type]
     monkeypatch.setattr(
-        engine_choice,
+        runnable,
         "session_host",
         lambda: collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None),
     )

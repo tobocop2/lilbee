@@ -658,9 +658,15 @@ class ChatScreen(Screen[None]):
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
     def on_key(self, event: events.Key) -> None:
-        """In INSERT mode, type a printable key into the prompt when focus sits elsewhere."""
+        """In INSERT mode, type a printable key into the prompt unless the focused pill binds it."""
         inp = self._chat_input
-        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
+        if (
+            self._insert_mode
+            and not inp.has_focus
+            and event.is_printable
+            and event.character
+            and not self._focused_strip_member_binds(event.key)
+        ):
             self.set_focus(inp)
             inp.insert(event.character)
             event.prevent_default()
@@ -1578,7 +1584,7 @@ class ChatScreen(Screen[None]):
             if not result.ok:
                 raise RuntimeError(result.text)
 
-        self._task_bar.start_task(f"Install {name}", TaskType.DOWNLOAD, target)
+        self._task_bar.start_task(msg.ENGINE_TASK_NAME.format(engine=name), TaskType.ENGINE, target)
 
     @work(thread=True)
     def _run_engine_command(self, args: str) -> None:
@@ -2091,6 +2097,7 @@ class ChatScreen(Screen[None]):
             chat_engine_ready,
             chat_warm_error,
             request_engine_warm,
+            size_unknown_notices,
             wait_chat_ready,
         )
 
@@ -2119,6 +2126,8 @@ class ChatScreen(Screen[None]):
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: self._turn_stopped(turn)):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")
+            for notice in size_unknown_notices(WorkerRole.CHAT):
+                call_from_thread(self, self.notify, notice, severity="warning")
             return True
         if self._turn_stopped(turn):
             return False
@@ -2254,8 +2263,7 @@ class ChatScreen(Screen[None]):
                 break
             try:
                 if isinstance(token, RetrievalNotice):
-                    status = msg.SEARCHING_FOR.format(query=token.query)
-                    call_from_thread(self, widget.set_thinking_status, status)
+                    self._show_retrieval_notice(widget, token)
                     continue
                 if isinstance(token, AnswerSources):
                     # Shown under the answer, saved beside it: never part of its text.
@@ -2268,6 +2276,15 @@ class ChatScreen(Screen[None]):
                 break  # App shutting down (Ctrl-C) -- stop streaming
         with contextlib.suppress(Exception):
             flush()
+
+    def _show_retrieval_notice(self, widget: Any, notice: RetrievalNotice) -> None:
+        """Show the rewritten query in the status row and a toast for each failed search step."""
+        if notice.query is not None:
+            call_from_thread(
+                self, widget.set_thinking_status, msg.SEARCHING_FOR.format(query=notice.query)
+            )
+        for warning in notice.degraded:
+            call_from_thread(self, self.notify, warning.line, severity="warning")
 
     @staticmethod
     def _buffer_token(
@@ -2928,6 +2945,11 @@ class ChatScreen(Screen[None]):
         """
         focused = self.focused
         return bool(focused and any(isinstance(n, ModelBar) for n in focused.ancestors_with_self))
+
+    def _focused_strip_member_binds(self, key: str) -> bool:
+        """True when the focused model-strip member has its own binding for *key*."""
+        binding = self.active_bindings.get(key)
+        return binding is not None and binding.node is self.focused and self._focus_in_model_bar()
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement

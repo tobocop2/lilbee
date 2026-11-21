@@ -3155,15 +3155,23 @@ class TestCatalogGridFocus:
                     if app.screen.query(ModelGrid):
                         break
                 grid = app.screen.query(ModelGrid).first()
-                grid.focus()
-                grid.highlighted = 0
-                await pilot.pause()
+
+                def _focused_on_first_card() -> bool:
+                    if not grid.has_focus:
+                        app.screen.set_focus(grid)
+                    elif grid.highlighted is None:
+                        grid.highlighted = 0
+                    return grid.has_focus and grid.highlighted == 0
+
+                assert await wait_until(pilot, _focused_on_first_card, timeout=30.0)
                 notifications: list[str] = []
                 original_notify = app.notify
                 app.notify = lambda message, **kw: notifications.append(str(message))
                 try:
                     await pilot.press("G")
-                    await pilot.pause()
+                    assert await wait_until(
+                        pilot, lambda: grid.highlighted == len(grid.rows) - 1, timeout=30.0
+                    )
                 finally:
                     app.notify = original_notify
                 assert grid.highlighted == len(grid.rows) - 1

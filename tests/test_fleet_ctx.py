@@ -224,6 +224,7 @@ def _fit_single(model_path: Path, **overrides: object) -> int:
         "flash_attn": True,
         "kv_cache_type": KvCacheType.F16,
         "unified": False,
+        "on_cpu": False,
         "ctx_ceiling": 1_000_000,
         "expert_offload": (),
         "engine": LLAMA,
@@ -277,6 +278,48 @@ class TestFitSingleCtx:
         )
         result = _fit_single(Path("/m.gguf"), available_bytes=20 * _GB, unified=True)
         assert result == 19456
+
+
+class TestTheFitBacksTheMappedWeights:
+    def test_a_unified_host_backs_the_weights_the_unified_figure_leaves_out(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # 1 MiB per token against 20 GiB: 20480 tokens. Two GiB of weights come off.
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 131072)
+
+        import json
+
+        from lilbee.providers.fleet import vram as vram_mod
+
+        model = tmp_path / "m.gguf"
+        model.write_bytes(b"GGUF")
+        vram_mod._cached_footprint.cache_clear()
+        monkeypatch.setattr(
+            model_memory_mod, "estimate_instance_footprint", vram_mod.estimate_instance_footprint
+        )
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+
+        def priced(argv: list[str], _path: str) -> str:
+            total = int(argv[argv.index("--ctx-size") + 1]) * 1024**2
+            return json.dumps(
+                {
+                    "metadata": {"fileSize": 2 * _GB},
+                    "estimate": {
+                        "items": [
+                            {
+                                "ram": {"uma": 0, "nonuma": 0},
+                                "vrams": [{"uma": total, "nonuma": total}],
+                            }
+                        ]
+                    },
+                }
+            )
+
+        monkeypatch.setattr(vram_mod, "_run_parser", priced)
+        unified = _fit_single(model, available_bytes=20 * _GB, unified=True)
+        card = _fit_single(model, available_bytes=20 * _GB, unified=False)
+        assert unified == 18432
+        assert card == 20480
 
 
 class TestTheFitChargesWhatTheLaunchRuns:

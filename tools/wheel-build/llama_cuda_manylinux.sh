@@ -8,13 +8,14 @@
 #   BIN_DIR                       the wheel bin/ directory (bind mounted)
 #   OWNER                         uid:gid that owns the files left behind
 #   SHA_FILE                      where to write the sha256 of the three toolkit libraries
-# Writes BIN_DIR/* and SHA_FILE (the byte check compares the wheel against it).
+#   DEPS_DIR                      where to copy the source trees that the configure step fetched
+# Writes BIN_DIR/*, SHA_FILE (the byte check compares the wheel against it) and DEPS_DIR/<name>-src.
 #
 # The NVIDIA files are copied as they are: no strip, no patchelf, no auditwheel graft (EULA 2.3).
 
 set -euo pipefail
 
-: "${UPSTREAM_REPO:?}" "${UPSTREAM_TAG:?}" "${BIN_DIR:?}" "${OWNER:?}" "${SHA_FILE:?}"
+: "${UPSTREAM_REPO:?}" "${UPSTREAM_TAG:?}" "${BIN_DIR:?}" "${OWNER:?}" "${SHA_FILE:?}" "${DEPS_DIR:?}"
 cuda_dash=12-4
 cuda_dir=/usr/local/cuda-12.4
 jobs="$(nproc)"
@@ -35,7 +36,7 @@ src=/tmp/llama.cpp
 git clone -q --depth 1 --branch "${UPSTREAM_TAG}" "https://github.com/${UPSTREAM_REPO}.git" "${src}"
 
 # CMAKE_CUDA_ARCHITECTURES is left to the upstream default for CUDA 12.4:
-# 50 61 70 75 80 89 90 as virtual, 86 and 89 as real.
+# 50 61 70 75 80 90 as virtual, 86 and 89 as real.
 cmake -S "${src}" -B "${src}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER="${gcc13}/gcc" -DCMAKE_CXX_COMPILER="${gcc13}/g++" \
   -DCMAKE_CUDA_COMPILER="${cuda_dir}/bin/nvcc" -DCMAKE_CUDA_HOST_COMPILER="${gcc13}/g++" \
@@ -44,6 +45,12 @@ cmake -S "${src}" -B "${src}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=OFF \
   -DGGML_CUDA=ON -DGGML_CUDA_CCCL_VERSION=v3.4.3 \
   -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_METAL=OFF
+# The configure step fetched CCCL at the pinned tag; the licence collector reads the fetched trees from DEPS_DIR.
+mkdir -p "${DEPS_DIR}"
+for tree in "${src}"/build/_deps/*-src; do
+  [ -d "${tree}" ] && cp -a "${tree}" "${DEPS_DIR}/"
+done
+chown -R "${OWNER}" "${DEPS_DIR}"
 cmake --build "${src}/build" --parallel "${jobs}"
 
 mkdir -p "${BIN_DIR}"

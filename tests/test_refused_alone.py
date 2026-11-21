@@ -125,9 +125,11 @@ class _MappedEngine(CardEngine):
             device_bytes=6 * GIB,
             host_bytes=1 * GIB,
             shared_bytes=self.pool_bytes,
+            mapped_weights_bytes=self.mapped_bytes,
         )
 
     pool_bytes = 2 * GIB
+    mapped_bytes = 0
 
 
 class TestACpuRoleIsChargedItsSinglePool:
@@ -162,11 +164,22 @@ class TestACpuRoleIsChargedItsSinglePool:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         prepare_host(monkeypatch, tmp_path, self.ROLES, 5 * GIB)
-        monkeypatch.setattr(planning, "free_system_memory", lambda: pytest.fail("live free read"))
+        monkeypatch.setattr(
+            planning.model_cache, "free_system_memory", lambda: pytest.fail("live free read")
+        )
         spec = PlacementSpec.from_json(CHAT_NAMED_EMBED_CPU)
         inputs = [planning.ModelPlacementInput(WorkerRole.EMBED, 0, est_ram_bytes=2 * GIB)]
         launching = [InstancePlan(role=WorkerRole.EMBED, devices=())]
-        assert planning._cpu_roles_past_memory(spec, inputs, launching, unified=False) == {}
+        assert (
+            planning._cpu_roles_past_memory(
+                spec,
+                inputs,
+                launching,
+                free=0,
+                unified=False,
+            )[0]
+            == {}
+        )
 
     def test_a_chat_role_is_not_scaled_by_the_card_serve_budget(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -182,14 +195,13 @@ class TestACpuRoleIsChargedItsSinglePool:
         assert sized.est_vram_bytes == 0
         assert sized.est_ram_bytes == 2 * GIB
 
-    def test_a_chat_model_loaded_without_a_map_is_also_charged_its_weights(
+    def test_a_chat_model_is_charged_the_weights_its_pool_backs(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         roles = (Role(WorkerRole.CHAT, 3),)
         prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
         engine = _MappedEngine("engine-a", tmp_path / "engine-server", roles, cards_of((24,)))
-        monkeypatch.setattr(planning, "_host_bytes_must_be_resident", lambda _r, _ref: True)
-        monkeypatch.setattr(planning, "_role_weights_bytes", lambda _r, _ref: 7 * GIB)
+        engine.mapped_bytes = 7 * GIB
         sized = planning._estimate_cpu_role(
             WorkerRole.CHAT, cfg.chat_model, engine=engine, skipped_not_installed={}
         )

@@ -241,7 +241,7 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None):
+        def fake_pull(model, source, *, on_bytes=None, on_notice=None):
             if on_bytes:
                 on_bytes(100, 100)
             return
@@ -256,7 +256,7 @@ class TestPullWithProgress:
 
         mock_manager = mock.MagicMock()
 
-        def fake_pull(model, source, *, on_bytes=None):
+        def fake_pull(model, source, *, on_bytes=None, on_notice=None):
             if on_bytes:
                 on_bytes(0, 0)
             return
@@ -299,6 +299,27 @@ class TestPullWithProgressProjector:
         out = console.file.getvalue()
         assert "Warning: acme/vl is named as a vision model" in out
         assert "Model 'acme/vl-GGUF' ready." in out
+
+    def test_prints_the_size_notice_with_the_projector_warning(self):
+        services = self._services()
+        services.model_manager.pull.side_effect = lambda *a, on_notice=None, **k: on_notice(
+            "The size of this model is unknown, so 8.0 GiB is reserved for it."
+        )
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value="no projector"):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        out = console.file.getvalue()
+        assert (
+            "Warning: The size of this model is unknown, so 8.0 GiB is reserved for it. "
+            "no projector" in out
+        )
+
+    def test_prints_no_warning_when_nothing_is_wrong(self):
+        self._services()
+        console = models.PlainConsole(file=io.StringIO(), width=300)
+        with mock.patch("lilbee.app.models.ensure_vision_projector", return_value=None):
+            models.pull_with_progress("acme/vl-GGUF", console=console)
+        assert "Warning" not in console.file.getvalue()
 
     def test_unfetchable_projector_is_an_error(self):
         self._services()
@@ -472,3 +493,34 @@ class TestMalformedServerListing:
 
         with mock.patch("lilbee.modelhub.model_manager.discovery._http_get", return_value=response):
             assert models.list_installed_models() == [ref]
+
+
+class TestEnsureChatModelWithNoEngine:
+    """A chat model is installed but no installed engine loads it: say so, name the fix."""
+
+    @pytest.fixture
+    def no_engine(self, monkeypatch):
+        monkeypatch.setattr("lilbee.providers.fleet.engines.choice.installed_engines", dict)
+        monkeypatch.setattr("lilbee.modelhub.models.installed_engines", dict)
+        monkeypatch.setattr("lilbee.modelhub.model_manager.classify_all_remote_models", lambda: [])
+
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_names_the_missing_engine_and_the_command(self, no_engine, interactive):
+        ref = install_fake_model("tiny/Tiny-1B-GGUF", "tiny-1b-Q4_K_M.gguf", "chat")
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=interactive),
+            mock.patch.object(models, "pull_with_progress") as mock_pull,
+            pytest.raises(RuntimeError, match="No installed engine loads the gguf format") as err,
+        ):
+            models.ensure_chat_model()
+        assert ref in str(err.value)
+        assert "lilbee engine list" in str(err.value)
+        assert "No chat model is installed" not in str(err.value)
+        mock_pull.assert_not_called()
+
+    def test_with_no_model_installed_the_pull_guidance_stays(self, no_engine):
+        with (
+            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
+            pytest.raises(RuntimeError, match="No chat model is installed"),
+        ):
+            models.ensure_chat_model()

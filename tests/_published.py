@@ -1,15 +1,10 @@
 """Publish a fixture pack digest for the cell the session host runs.
 
-The table comes out of the generator, from file names and hashes, as a release does.
+The table comes out of the record loader, from file names and hashes, as a release does.
 """
 
 from __future__ import annotations
 
-import ast
-import importlib.util
-import sys
-from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -17,10 +12,10 @@ import pytest
 from lilbee.catalog import runnable
 from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.engine_manifest import cell_key
+from lilbee.providers.fleet.engine_record import build_manifests
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS
 
-GENERATOR = Path(__file__).resolve().parents[1] / "tools" / "gen_engine_digests.py"
 PREFIX = "https://index.test/packs/"
 NEWEST_HOST_OS = "99.0"
 _SLUGS = {
@@ -32,24 +27,13 @@ _SLUGS = {
 }
 
 
-def generator() -> ModuleType:
-    """The table generator, loaded from tools/."""
-    spec = importlib.util.spec_from_file_location("gen_engine_digests", GENERATOR)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def render_table(wheels: list[tuple[str, str, int]]) -> dict[str, Any]:
-    """The table the generator writes for *wheels*, as (file name, sha256, size) rows."""
-    packages = [{"filename": name, "hash": f"sha256={sha}"} for name, sha, _ in wheels]
-    sizes = {name: size for name, _, size in wheels}
-    tree = ast.parse(generator().render(packages, sizes, PREFIX))
-    assignment = next(node.value for node in tree.body if isinstance(node, ast.Assign))
-    table: dict[str, Any] = ast.literal_eval(assignment)
-    return table
+    """The table that the loader builds for *wheels*, as (file name, sha256, size) rows."""
+    record = [
+        {"file": name, "url": PREFIX + name, "sha256": sha, "size": size}
+        for name, sha, size in wheels
+    ]
+    return dict(build_manifests(record))
 
 
 def wheel_name(name: EngineName, version: str, key: str, min_os: str | None = None) -> str:

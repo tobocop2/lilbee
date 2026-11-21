@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from lilbee.providers.fleet import gpu_backends
+from lilbee.providers.fleet import devices, gpu_backends
 from lilbee.providers.fleet.devices import MIB
 from lilbee.providers.fleet.gpu_backends import base as base_mod
 from lilbee.providers.fleet.gpu_backends import nvidia as nvidia_mod
@@ -247,6 +248,7 @@ def test_concurrent_threads_probe_once(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 1
 
 
+@pytest.mark.real_nvidia_smi
 def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """run_tool resolves the binary via shutil.which on each call (tested in base)."""
     resolved: list[str] = []
@@ -360,6 +362,23 @@ def test_cards_are_unknown_when_a_row_does_not_parse(
     """Keeping the survivor would list it under the lost card's number."""
     _Smi(monkeypatch, cards=csv)
     assert nvidia_mod.cards() == []
+
+
+@pytest.mark.parametrize(
+    ("csv", "rows"),
+    [
+        (_NA_FIRST_CSV, 2),
+        ("0, GPU-a, 24576, 23552, n0\n1, GPU-b, [N/A], [N/A], n1\n", 2),
+        (_LOST_CARD0_CSV, 2),
+        ("", 0),
+    ],
+    ids=["unread-first", "unread-second", "unparsed-row-is-a-card", "cannot-run"],
+)
+def test_card_rows_count_every_row_the_driver_prints(
+    monkeypatch: pytest.MonkeyPatch, csv: str, rows: int
+) -> None:
+    _Smi(monkeypatch, cards=csv)
+    assert nvidia_mod.card_rows() == rows
 
 
 def test_card_totals_keep_a_row_that_does_not_parse_as_an_unread_card(
@@ -486,11 +505,12 @@ def test_an_exit_that_names_no_driver_or_no_card_reads_as_no_driver(
     assert nvidia_mod.host_facts() is None
 
 
-def test_rows_printed_by_a_failed_card_probe_are_not_cards(
+def test_rows_printed_by_a_failed_card_probe_are_still_cards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _Smi(monkeypatch, codes={"cards": 15})
-    assert (nvidia_mod.cards(), nvidia_mod.card_totals()) == ([], [])
+    _Smi(monkeypatch, codes={"cards": 255})
+    assert [c.index for c in nvidia_mod.cards()] == [0, 1]
+    assert [t.index for t in nvidia_mod.card_totals()] == [0, 1]
 
 
 @pytest.mark.parametrize("code", [1, 15, 18])
@@ -688,6 +708,7 @@ def test_a_fast_failure_of_a_host_query_is_run_again_after_the_short_cache(
     assert smi.runs.count(kind) == 2
 
 
+@pytest.mark.real_nvidia_smi
 @pytest.mark.skipif(sys.platform == "win32", reason="the stand-in tool is a shell script")
 def test_a_tool_that_never_answers_is_stopped_at_the_time_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -701,3 +722,197 @@ def test_a_tool_that_never_answers_is_stopped_at_the_time_limit(
     reading = nvidia_mod._cards_probe.read()
     assert time.monotonic() - started < 3.0
     assert reading == nvidia_mod.Reading("", True, None)
+
+
+_TWO_CARDS = (
+    "0, GPU-aaaa, 8192, 8000, NVIDIA GeForce GTX 1070 Ti\n"
+    "1, GPU-bbbb, 8192, 7000, NVIDIA GeForce GTX 1070 Ti\n"
+)
+_TWO_STATS = "0, 37, 61, 3536, 8192\n1, 12, 61, 3352, 8192\n"
+_DRIVER_ERROR = "Unable to determine the device handle for GPU 0000:01:00.0: Unknown Error\n"
+
+
+def _exits(code: int | None, printed: str):
+    def run(*_a: object, **_k: object) -> tuple[str, int | None]:
+        return printed, code
+
+    return run
+
+
+class TestNonZeroExit:
+    """nvidia-smi can print every card row and still exit non-zero."""
+
+    def test_the_cards_it_printed_are_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, _TWO_CARDS))
+        found = nvidia_mod.cards()
+        assert [(c.index, c.uuid, c.total_bytes) for c in found] == [
+            (0, "GPU-aaaa", 8192 * MIB),
+            (1, "GPU-bbbb", 8192 * MIB),
+        ]
+        assert nvidia_mod.card_rows() == 2
+        assert [t.index for t in nvidia_mod.card_totals()] == [0, 1]
+
+    def test_the_stats_probe_keeps_its_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, _TWO_STATS))
+        assert nvidia_mod.card_count() == 2
+        assert sorted(nvidia_mod._cache.stats()) == [0, 1]
+
+    def test_a_new_stats_cache_keeps_the_rows_of_a_failed_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, _TWO_STATS))
+        fresh = SmiCache()
+        assert fresh.cards() == 2
+        assert sorted(fresh.stats()) == [0, 1]
+
+    def test_one_warning_names_the_exit_code(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, _TWO_CARDS))
+        with caplog.at_level("WARNING", logger=nvidia_mod.__name__):
+            nvidia_mod.cards()
+            nvidia_mod.card_rows()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "exit code 255" in warnings[0].getMessage()
+
+    def test_a_repeated_exit_code_warns_once_and_a_new_one_warns_again(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "_CACHE_TTL_S", 0.0)
+        probe = nvidia_mod._Probe(nvidia_mod._CARD_ARGS, 0.0, len(nvidia_mod._CARD_COLUMNS))
+        with caplog.at_level("WARNING", logger=nvidia_mod.__name__):
+            for code in (255, 255, 10):
+                monkeypatch.setattr(nvidia_mod, "run_tool", _exits(code, _TWO_CARDS))
+                probe.read()
+        assert [r.getMessage().split()[3] for r in caplog.records] == ["255", "10"]
+
+    def test_an_exit_zero_warns_of_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(0, _TWO_CARDS))
+        with caplog.at_level("WARNING", logger=nvidia_mod.__name__):
+            assert len(nvidia_mod.cards()) == 2
+        assert caplog.records == []
+
+    def test_text_with_no_card_row_reports_no_cards(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, _DRIVER_ERROR))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.card_rows() == 0
+        assert nvidia_mod.card_count() == 0
+
+    def test_a_timeout_reports_no_cards(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(None, _TWO_CARDS))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.card_rows() == 0
+
+    def test_a_missing_binary_reports_no_cards(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(None, ""))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.host_facts() is None
+
+    def test_host_facts_still_say_the_driver_state_is_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, _TWO_CARDS))
+        assert nvidia_mod.host_facts() == {"cuda_driver": None, "gpus": None}
+
+    def test_a_failed_answer_is_read_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        reads: list[int] = []
+
+        def run(*_a: object, **_k: object) -> tuple[str, int | None]:
+            reads.append(1)
+            return _TWO_CARDS, 255
+
+        monkeypatch.setattr(nvidia_mod, "run_tool", run)
+        monkeypatch.setattr(nvidia_mod, "_CACHE_TTL_S", 0.0)
+        probe = nvidia_mod._Probe(nvidia_mod._CARD_ARGS, math.inf, nvidia_mod._FIELDS)
+        probe.read()
+        probe.read()
+        assert len(reads) == 2
+
+    def test_a_gap_in_the_printed_indices_pins_no_child(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rows 0 and 2 mean card 1 is lost; position numbering would pin a child to it."""
+        gap = _TWO_CARDS.replace("1, GPU-bbbb", "2, GPU-bbbb")
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, gap))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.card_rows() == 0
+        assert devices.visible_nvidia_cards() == []
+        assert devices.visible_env(tuple(devices.visible_nvidia_cards())) == {}
+
+    def test_a_gap_in_the_stats_rows_counts_no_card(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        gap = _TWO_STATS.replace("1, 12", "2, 12")
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, gap))
+        assert nvidia_mod.card_count() == 0
+        assert nvidia_mod._cache.stats() == {}
+
+    @pytest.mark.parametrize(
+        "printed",
+        [
+            _DRIVER_ERROR + "1, GPU-bbbb, 8192, 7000, NVIDIA GeForce GTX 1070 Ti\n"
+            "2, GPU-cccc, 8192, 7000, NVIDIA GeForce GTX 1070 Ti\n",
+            _DRIVER_ERROR + _TWO_CARDS,
+            _TWO_CARDS + _DRIVER_ERROR,
+        ],
+        ids=["error-then-rows-1-2", "error-then-rows-0-1", "rows-0-1-then-error"],
+    )
+    def test_an_unparsed_line_in_a_failed_run_keeps_no_row(
+        self, monkeypatch: pytest.MonkeyPatch, printed: str
+    ) -> None:
+        """An error line takes a position and hides a gap, so the run is not trusted."""
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, printed))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.card_rows() == 0
+        assert devices.visible_nvidia_cards() == []
+
+    @pytest.mark.parametrize(
+        "printed",
+        [
+            _DRIVER_ERROR + "1, 12, 61, 3352, 8192\n2, 40, 61, 3352, 8192\n",
+            _DRIVER_ERROR + _TWO_STATS,
+            _TWO_STATS + _DRIVER_ERROR,
+        ],
+        ids=["error-then-rows-1-2", "error-then-rows-0-1", "rows-0-1-then-error"],
+    )
+    def test_an_unparsed_line_in_failed_stats_counts_no_card(
+        self, monkeypatch: pytest.MonkeyPatch, printed: str
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(255, printed))
+        assert nvidia_mod.card_count() == 0
+        assert nvidia_mod._cache.stats() == {}
+
+    def test_a_gap_after_an_exit_zero_is_not_this_probes_rule(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gap = _TWO_CARDS.replace("1, GPU-bbbb", "2, GPU-bbbb")
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(0, gap))
+        assert [c.index for c in nvidia_mod.cards()] == [0, 2]
+
+    @pytest.mark.parametrize("code", [8, 10, 14, 255])
+    def test_a_card_state_exit_keeps_the_printed_rows(
+        self, monkeypatch: pytest.MonkeyPatch, code: int
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(code, _TWO_CARDS))
+        assert [c.index for c in nvidia_mod.cards()] == [0, 1]
+
+    @pytest.mark.parametrize("code", [2, 3, 4, 13, 15])
+    def test_an_exit_that_says_the_answer_is_not_a_card_list_keeps_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, code: int
+    ) -> None:
+        """A bad argument, a refused operation or a card off the bus makes the rows unknown."""
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(code, _TWO_CARDS))
+        assert nvidia_mod.cards() == []
+        assert nvidia_mod.card_rows() == 0
+        assert nvidia_mod.host_facts() == {"cuda_driver": None, "gpus": None}
+
+    @pytest.mark.parametrize("code", [6, 9, 12])
+    def test_a_no_driver_exit_keeps_nothing_and_agrees_with_the_host_facts(
+        self, monkeypatch: pytest.MonkeyPatch, code: int
+    ) -> None:
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(code, _TWO_CARDS))
+        assert (nvidia_mod.cards(), nvidia_mod.card_rows()) == ([], 0)
+        assert nvidia_mod.host_facts() is None
+        monkeypatch.setattr(nvidia_mod, "run_tool", _exits(code, _TWO_STATS))
+        assert nvidia_mod.card_count() == 0

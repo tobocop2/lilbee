@@ -622,7 +622,7 @@ class TestEnsureFtsIndex:
         assert table is not None
 
         with mock.patch.object(
-            type(table), "optimize", side_effect=lambda: _remove_index_files(test_config)
+            type(table), "optimize", side_effect=lambda **_: _remove_index_files(test_config)
         ):
             store.ensure_fts_index()
 
@@ -1677,7 +1677,7 @@ class TestEnsureVectorIndex:
         with mock.patch.object(
             type(table),
             "optimize",
-            side_effect=lambda: _remove_index_files(test_config, index_types={"FTS"}),
+            side_effect=lambda **_: _remove_index_files(test_config, index_types={"FTS"}),
         ):
             assert store.ensure_vector_index() is True
 
@@ -3455,6 +3455,14 @@ class TestChunkTypePredicate:
 class TestEmbeddingModelGate:
     """Refuse search/ingest when cfg.embedding_model drifts from the persisted _meta row."""
 
+    def test_a_meta_table_with_no_row_reads_as_no_meta(self, store):
+        """A _meta table left empty by an older version holds no identity to read."""
+        store.add_chunks(_make_records())
+        meta_table = store.open_table(META_TABLE)
+        assert meta_table is not None
+        meta_table.delete("embedding_model IS NOT NULL")
+        assert store.get_meta() is None
+
     def test_first_add_chunks_initializes_meta_from_cfg(self, store, test_config):
         """A fresh store has no _meta row; first ingest writes one from current cfg."""
         assert store.get_meta() is None
@@ -3530,12 +3538,7 @@ class TestEmbeddingModelGate:
         import logging
 
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
         assert store.get_meta() is None
 
         with caplog.at_level(logging.WARNING, logger="lilbee.data.store"):
@@ -3572,12 +3575,7 @@ class TestEmbeddingModelGate:
         adopting the new model as if it had built the store.
         """
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
         original_model = test_config.embedding_model
 
         wrote = store.initialize_meta_if_legacy()
@@ -3718,12 +3716,7 @@ class TestEmbeddingModelGate:
         """Defensive re-check inside the lock: if a concurrent caller already wrote
         meta between the unlocked pre-check and acquiring the lock, do not double-write."""
         store.add_chunks(_make_records())
-        meta_table = store.open_table(META_TABLE)
-        assert meta_table is not None
-        from lilbee.data.store.lance_helpers import _safe_delete_unlocked
-        from lilbee.data.store.types import META_DELETE_ALL_PREDICATE
-
-        _safe_delete_unlocked(meta_table, META_DELETE_ALL_PREDICATE)
+        store.get_db().drop_table(META_TABLE)
 
         winning_meta = {
             "embedding_model": "winner-model:v1",
@@ -3733,6 +3726,44 @@ class TestEmbeddingModelGate:
         }
         with mock.patch.object(store, "get_meta", side_effect=repeat_last(None, winning_meta)):
             assert store.initialize_meta_if_legacy() is False
+
+    def _legacy_store_with_writer_before_lock(self, store, rebuild):
+        """Make a legacy store whose first lock request runs *rebuild* just before it grants."""
+        store.add_chunks(_make_records())
+        store.get_db().drop_table(META_TABLE)
+        real_lock = store._write_lock
+        fired = []
+
+        def lock_after_writer(*args, **kwargs):
+            if not fired:
+                fired.append(True)
+                rebuild()
+            return real_lock(*args, **kwargs)
+
+        return mock.patch.object(store, "_write_lock", side_effect=lock_after_writer)
+
+    def test_legacy_stamp_reads_width_a_writer_set_before_the_lock(self, store, test_config):
+        """A rebuild at a new width between the has-chunks check and the lock is stamped as is."""
+        old_dim = test_config.embedding_dim
+        new_dim = old_dim + 16
+
+        def rebuild():
+            store.drop_all()
+            test_config.embedding_dim = new_dim
+            store.add_chunks(_make_records(dim=new_dim))
+            store.get_db().drop_table(META_TABLE)
+
+        with self._legacy_store_with_writer_before_lock(store, rebuild):
+            assert store.initialize_meta_if_legacy() is True
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_dim"] == new_dim
+
+    def test_legacy_stamp_writes_nothing_when_a_writer_dropped_the_chunks(self, store):
+        """A rebuild that drops the chunks between the check and the lock leaves no stamp."""
+        with self._legacy_store_with_writer_before_lock(store, store.drop_all):
+            assert store.initialize_meta_if_legacy() is False
+        assert store.get_meta() is None
 
 
 class TestSourceStatColumns:
@@ -3881,9 +3912,13 @@ class TestBatchedSourceUpserts:
 
     def test_optimize_sources_compacts(self, store):
         store.upsert_source("a.md", "h", 1)
-        with mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened:
+        with (
+            mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened,
+            mock.patch("lilbee.data.store.core.prune_old_versions") as prune,
+        ):
             store.optimize_sources()
-        opened.return_value.optimize.assert_called_once()
+        table = opened.return_value
+        prune.assert_called_once_with(table, keep_version=table.version)
 
     def test_optimize_sources_noop_without_table(self, store):
         with mock.patch.object(store, "open_table", return_value=None) as opened:
@@ -3891,11 +3926,15 @@ class TestBatchedSourceUpserts:
         opened.assert_called_once()
 
     def test_optimize_sources_survives_failure(self, store):
-        failing = mock.MagicMock()
-        failing.optimize.side_effect = RuntimeError("compaction failed")
-        with mock.patch.object(store, "open_table", return_value=failing):
+        with (
+            mock.patch.object(store, "open_table", return_value=mock.MagicMock()),
+            mock.patch(
+                "lilbee.data.store.core.prune_old_versions",
+                side_effect=RuntimeError("compaction failed"),
+            ) as prune,
+        ):
             store.optimize_sources()
-        failing.optimize.assert_called_once()
+        prune.assert_called_once()
 
 
 class TestDeleteBySourceConceptRows:

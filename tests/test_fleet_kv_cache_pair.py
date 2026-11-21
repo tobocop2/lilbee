@@ -98,7 +98,7 @@ def test_chat_placement_estimate_sizes_the_kv_type_the_launch_sends(
         return _estimate()
 
     monkeypatch.setattr(model_memory_mod, "estimate_instance_footprint", _record)
-    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m: 4096)
+    monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda _r, _p, _m, *, engine: 4096)
 
     planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1, engine=LLAMA)
 

@@ -1013,6 +1013,18 @@ async def test_update_drawer_for_grid_swallows_missing_drawer() -> None:
         query.assert_called_once_with("#catalog-detail-drawer", CatalogDetailDrawer)
 
 
+async def test_the_drawer_gets_the_installed_file_name_of_an_installed_row() -> None:
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._installed_names = {"acme/foo", "acme/foo/foo-q4_k_m.gguf"}
+        installed = _row("acme/foo", installed=True)
+        assert screen._installed_ref_of(installed) == "acme/foo/foo-q4_k_m.gguf"
+        assert screen._installed_ref_of(_row("acme/foo")) is None
+        assert screen._installed_ref_of(_row("acme/other", installed=True)) is None
+        assert screen._installed_ref_of(None) is None
+
+
 async def test_maybe_prefetch_on_grid_nav_skips_with_only_empty_grids() -> None:
     """When _grid_container.query(ModelGrid) finds grids but they're all empty,
     the total <= 0 short-circuit fires."""
@@ -1781,16 +1793,11 @@ async def test_spinner_tick_updates_the_loading_more_hint() -> None:
         assert "loading more models" in str(hint.render()).lower()
 
 
-async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
-    """A refresh that lands after `/` must leave the cursor in the filter.
-
-    `_mount_remaining_grid_sections` runs from call_after_refresh and used to
-    gate only on "is a grid focused", which is False while the Input owns the
-    cursor, so a mount arriving after the user pressed `/` pulled focus onto
-    the first grid. Driven directly rather than through a key race: the steal
-    is a property of the callback, so it should be reachable by construction.
-    """
+async def test_grid_remount_does_not_steal_the_filter_focus() -> None:
+    """A remount that lands after `/` leaves the cursor in the filter."""
     from textual.widgets import Input
+
+    from lilbee.cli.tui.screens.catalog import GridSection
 
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1800,12 +1807,11 @@ async def test_deferred_grid_mount_does_not_steal_the_filter_focus() -> None:
         await pilot.pause()
         assert isinstance(screen.focused, Input), "setup: filter should hold focus"
 
-        screen._mount_remaining_grid_sections(
-            screen._grid_container, [], hf_count=0, focus_anchor=None
-        )
+        rows = [_row("filter-focus-row")]
+        screen._remount_grid_sections([GridSection(heading="Chat", rows=rows)], hf_count=0)
         await pilot.pause()
         assert isinstance(screen.focused, Input), (
-            f"a deferred grid mount stole the filter focus; now on {screen.focused}"
+            f"a grid remount stole the filter focus; now on {screen.focused}"
         )
 
 

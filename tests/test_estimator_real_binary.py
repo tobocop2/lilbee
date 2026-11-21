@@ -14,23 +14,19 @@ from __future__ import annotations
 import pytest
 
 from lilbee.core.config.enums import KvCacheType
-from lilbee.providers.fleet.binary import EngineTool, resolve_engine_tool
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 
 # Opts out of the engine-binary seal on purpose: this is the one test whose
 # subject is the real parser, so blocking host resolution would leave it
 # asserting against a stub, which is what every other estimator test already
-# does. It skips cleanly where no parser is installed.
-pytestmark = [pytest.mark.slow, pytest.mark.real_engine_resolution]
-
-
-@pytest.fixture(scope="module")
-def parser() -> object:
-    try:
-        return resolve_engine_tool(EngineTool.GGUF_PARSER)
-    except Exception as exc:
-        pytest.skip(f"gguf-parser not installed: {exc}")
+# does. It skips where no parser is installed, and fails there when
+# LILBEE_REQUIRE_GGUF_PARSER is set, as the CI engine leg sets it.
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.real_engine_resolution,
+    pytest.mark.usefixtures("real_gguf_parser"),
+]
 
 
 @pytest.fixture(scope="module")
@@ -88,7 +84,7 @@ def _estimate(model, *, ctx: int, slots: int):
     )
 
 
-def test_the_kv_cache_scales_with_the_context(parser, tiny_gguf) -> None:
+def test_the_kv_cache_scales_with_the_context(tiny_gguf) -> None:
     # The property lilbee depends on: KV is linear in ctx, which is what makes
     # folding slots into --ctx-size equivalent to asking for that many slots.
     small = _estimate(tiny_gguf, ctx=1024, slots=1)
@@ -96,7 +92,7 @@ def test_the_kv_cache_scales_with_the_context(parser, tiny_gguf) -> None:
     assert large.vram_bytes > small.vram_bytes, (small, large)
 
 
-def test_slots_are_folded_into_the_context_not_passed_through(parser, tiny_gguf) -> None:
+def test_slots_are_folded_into_the_context_not_passed_through(tiny_gguf) -> None:
     # Dense attention has no per-sequence term, so folding is exact here. If a
     # future gguf-parser starts dividing the context by --parallel, these stop
     # matching and every placement decision shifts under a green suite. The
@@ -106,7 +102,7 @@ def test_slots_are_folded_into_the_context_not_passed_through(parser, tiny_gguf)
     assert folded.vram_bytes == doubled.vram_bytes
 
 
-def test_the_single_device_fit_lands_on_the_last_window_that_fits(parser, tiny_gguf) -> None:
+def test_the_single_device_fit_lands_on_the_last_window_that_fits(tiny_gguf) -> None:
     # The bisection against the real parser, not a stub of it: the window it
     # returns fits the budget and the next step up does not.
     from lilbee.providers.fleet.ctx import fit_single_ctx
@@ -122,6 +118,7 @@ def test_the_single_device_fit_lands_on_the_last_window_that_fits(parser, tiny_g
         flash_attn=False,
         kv_cache_type=KvCacheType.F16,
         unified=False,
+        on_cpu=False,
         ctx_ceiling=4096,
         expert_offload=(),
         engine=LLAMA,
@@ -184,7 +181,7 @@ def hybrid_gguf(tmp_path_factory) -> object:
     return path
 
 
-def test_a_hybrid_model_is_charged_per_slot_for_its_recurrent_state(parser, hybrid_gguf) -> None:
+def test_a_hybrid_model_is_charged_per_slot_for_its_recurrent_state(hybrid_gguf) -> None:
     """Folding slots into the context is exact for attention and not for recurrence.
 
     llama.cpp sizes the attention half by ``n_ctx / n_seq_max`` and the recurrent

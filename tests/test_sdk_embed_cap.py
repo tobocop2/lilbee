@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.backends.liter_llm.backend import LiterLlmBackend
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.sdk_llm_provider import EMBED_MAX_INPUTS, SdkLLMProvider
 from lilbee.retrieval.embedder import Embedder
 from tests import _fake_sdk as fakes
@@ -20,13 +21,17 @@ class _StockTei(fakes.FakeSdk):
     """A server that refuses more than 32 inputs, as a stock TEI does."""
 
     fail_on_call: int | None = None
+    limit = _TEI_LIMIT
 
     async def _embed(self, client: Any, req: Any) -> Any:
         inputs = req.fields["input"]
         self.calls.append(("embed", req.fields))
-        if len(inputs) > _TEI_LIMIT:
+        if len(inputs) > self.limit:
+            reply = f"batch size {len(inputs)} > maximum allowed batch size {self.limit}"
             raise self.error(
-                "BadRequestError", f"batch size {len(inputs)} > maximum allowed batch size 32"
+                "BadRequestError",
+                json.dumps({"error": reply, "error_type": "Validation"}),
+                status=422,
             )
         if self.fail_on_call == len(self.calls):
             raise self.error("ServerError", "boom")
@@ -80,6 +85,17 @@ def test_a_failed_slice_fails_the_whole_batch() -> None:
     with fakes.installed(fake), pytest.raises(ProviderError, match="is unavailable right now"):
         _provider().embed(["a"] * 70)
     assert _sizes(fake) == [32, 32]
+
+
+def test_a_server_with_a_lower_limit_names_its_limit_in_the_error() -> None:
+    fake = _StockTei()
+    fake.limit = 16
+    with fakes.installed(fake), pytest.raises(ProviderError) as caught:
+        _provider().embed(["a"] * 20)
+    assert "batch size 20 > maximum allowed batch size 16" in str(caught.value)
+    assert "Check the model name" not in str(caught.value)
+    assert caught.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert _sizes(fake) == [20]
 
 
 def test_the_embedder_packs_short_chunks_past_the_limit_without_a_422() -> None:

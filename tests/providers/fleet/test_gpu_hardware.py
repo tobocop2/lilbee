@@ -204,6 +204,7 @@ class TestLinuxSysfs:
         assert gpu_hardware.installed_gpu_vendor_ids() == frozenset()
 
 
+@pytest.mark.real_windows_registry
 class TestWindowsRegistry:
     def test_reads_vendors_from_display_adapter_hardware_ids(
         self, monkeypatch: pytest.MonkeyPatch
@@ -277,6 +278,7 @@ class TestCardCounts:
 
         assert gpu_hardware.installed_gpu_counts() == {NVIDIA: 2, AMD: 1}
 
+    @pytest.mark.real_windows_registry
     def test_windows_counts_one_card_for_each_adapter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

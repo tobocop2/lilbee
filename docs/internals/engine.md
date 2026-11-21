@@ -219,21 +219,31 @@ Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
-- **A mistral.rs role on several cards**: the launch runs as equal tensor-parallel
-  shards and carries no layer flag. The card order is the order of
-  `CUDA_VISIBLE_DEVICES`. A launch that is not a split sets `MISTRALRS_NO_NCCL=1`: one
-  card, no card pinned, or the CPU target. The engine drops a layer map when
+- **A role that a tensor-parallel engine splits over several cards**: the launch runs as equal tensor-parallel
+  shards and carries no layer flag. Placement offers such an engine only equal
+  shares, so on cards of different sizes the smallest card must hold its equal share
+  or the role is refused. The card order is the order of
+  `CUDA_VISIBLE_DEVICES`. A launch that is not a split turns the card collectives off: one
+  card, no card pinned, or the CPU target. A split sets `NCCL_P2P_LEVEL=NVL`, so
+  peer-to-peer runs only over NVLink and a PCIe pair does not stall at start. To
+  choose otherwise, set `NCCL_P2P_LEVEL` or `NCCL_P2P_DISABLE` in the environment;
+  the launch then adds neither. The engine drops a layer map when
   collectives are on, and the map it keeps with collectives off answered wrongly on
   two cards. So the launch refuses an uneven ratio (every entry must be the same
   number) and a model whose attention heads do not divide over the card count (the
   GGUF `head_count` and `head_count_kv`, or `num_attention_heads` and
   `num_key_value_heads` in `config.json`). The message names the model and the
   llama.cpp engine as the fix, as it does for a Metal or CPU build. Placement charges
-  each card the weights by layer share.
+  each card its layer share of the estimate. For a model folder the estimate is the
+  weights, the cache at the launch context and the runtime allowance. For a GGUF file
+  it is the weights only. Every chat or vision launch, split or not, also passes
+  `--max-model-len` with the context of the launch: the `num_ctx` pin, else
+  `chat_n_ctx_target` within the trained window and `num_ctx_max`. A split passes the
+  largest context that fits each card, never more.
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
   `provider._reload_pass`): each swap group runs behind its own llama-swap process
-  (one per role, except co-tenant chat and vision which share one), and a reload
+  (one per role, except the co-tenant roles, which share one), and a reload
   re-plans the whole fleet but restarts **only the groups whose launches
   changed**. That diff is sound because launches are a pure function of config,
   hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
@@ -320,6 +330,16 @@ empty when `VK_LOADER_DRIVERS_DISABLE` is set before launch, because the engine
 then lists every GPU. `lilbee placement show` prints the same fact as a note
 under the table.
 
+When a saved spec is not in use, `refusal` holds the reason in words and
+`refusal_kind` names the case: `waiting_for_engine` or `waiting_for_model` when the
+spec applies once an engine or a model is installed, `unreadable` when the saved
+text cannot be parsed, and
+`refused` when an engine refuses roles or the spec places no role on this
+machine. The field is null when there is no refusal, and also for a saved spec
+that does not fit the hardware: that reply carries `rejected_spec_json` alone.
+A client reads `refusal_kind`, not the sentence, to decide whether the spec is
+kept or must be corrected.
+
 - **Resident tiers and the elastic ingest pool**: placement charges roles in the
   registry's `placement_rank` order. The pinned tier goes first: one embed server
   (`embed-0`), rerank, and one vision server (`vision-0`). Chat is charged last,
@@ -339,14 +359,22 @@ under the table.
   other's models in VRAM. Roles that share
   no run **phase** (`RoleInfo.phases`) are never resident together, so when they
   cannot all co-reside a role that does not fit **refunds** the already-charged
-  phase-disjoint roles and retries; the roles that let it in become co-tenants of a
-  single `swap: true` llama-swap group. On a tight card this pulls the query-only
-  rerank and chat into vision's swap group, so ingest's embed + vision fits exactly
-  as it did in-process. Only one member is resident at a time, so the group is
-  charged its largest member and each co-tenant runs a single instance (a
-  `swap: true` group evicts same-group siblings, so a second replica inside it would
-  evict the first). Interleaving a query with an ingest costs a model reload each
-  way. With the VRAM to hold everything at once, no swap group forms and every role
+  phase-disjoint roles and retries; the roles that let it in become co-tenants of
+  one swap process. On a tight card this pulls the query-only rerank and chat into
+  vision's swap process, so ingest's embed + vision fits exactly as it did
+  in-process. The co-tenants split into **residency classes**: roles that share a
+  run phase (chat and rerank both answer one query) stay loaded together, and
+  loading a role of another class evicts them. One router group holds each
+  class (`swap: false`, `exclusive: true`, `persistent: false`), so the router
+  itself does the eviction. Placement first packs the fleet as before, each
+  co-tenant in a class of its own. It then merges chat and rerank into one class only
+  when the class fits in the room left after every role is placed; otherwise they
+  stay apart and evict each other, as every co-tenant did before. A tight role holds what is left
+  of its card and joins no class. The swap process is charged its largest class,
+  the members of that class added up, and each co-tenant runs a single instance
+  (the elastic tier does not replicate a role inside the process). Interleaving a
+  query with an ingest costs a model reload each way. With the VRAM to hold
+  everything at once, no swap group forms and every role
   pins to its own group. A plan with several engines on discrete cards gives each
   role a named card or a refusal, and a refused role takes no card. It checks three
   causes in order: the engine cannot be pinned on several cards (it reports another
@@ -427,7 +455,11 @@ under the table.
   on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
-  member servers' ports, plus the owner's pid and create time; before the next build
+  member servers' ports, plus the owner's pid and create time, and `ready_at` once the builder sees a load succeed. A
+  later lilbee binds an answering engine only when `/running` lists a member ready or starting, or the record has
+  `ready_at`, or the record is younger than the slowest member's cold-load ceiling plus 30 s, or another lilbee holds
+  the engine (a holder that never warmed leaves no proof of a load); an older record that never loaded and has no
+  holder is rebuilt. Before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped

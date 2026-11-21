@@ -10,7 +10,7 @@ from lilbee.core.vectors import Vector
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import EmbeddingOverflowError, LLMProvider, ProviderError
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
@@ -111,13 +111,23 @@ class Embedder:
         if len(vector) != self._config.embedding_dim:
             raise ValueError(
                 f"Embedding dimension mismatch: expected {self._config.embedding_dim}, "
-                f"got {len(vector)}"
+                f"got {len(vector)}. The embedding model changed width, so re-embed the "
+                "index under it: run `lilbee rebuild` (CLI), `/rebuild` (TUI), "
+                "POST /api/sync with force_rebuild true (REST), or the sync tool "
+                "with force_rebuild true (MCP)."
             )
         arr = np.asarray(vector, dtype=np.float64)
         bad = np.where(~np.isfinite(arr))[0]
         if bad.size:
             i = int(bad[0])
             raise ValueError(f"Embedding contains invalid value at index {i}: {vector[i]}")
+
+    def adopt_served_width(self, probe: str) -> None:
+        """Set ``embedding_dim`` to the width of the vector one embed call of *probe* returns."""
+        vectors = self._provider.embed([self._profile().doc_prefix + probe])
+        if not vectors or not len(vectors[0]):
+            raise ValueError("The embedding model returned no vector for the width probe.")
+        self._config.embedding_dim = len(vectors[0])
 
     def validate_model(self) -> bool:
         """Availability gate for the startup and ingest paths: warns when it fails.
@@ -187,6 +197,17 @@ class Embedder:
             texts, self._profile().query_instruction, source=source, on_progress=on_progress
         )
 
+    def _embed_batch_of(self, batch: list[str]) -> list[Vector]:
+        """Embed one batch, naming a context overflow as the embedding call's own."""
+        try:
+            return self._provider.embed(batch)
+        except ProviderError as exc:
+            if exc.repeats_on_retry:
+                raise EmbeddingOverflowError(
+                    str(exc), provider=exc.provider, kind=exc.kind
+                ) from exc
+            raise
+
     def _embed_with(
         self,
         texts: list[str],
@@ -213,7 +234,7 @@ class Embedder:
             truncated = prefix + self.truncate(text, reserved=len(prefix))
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
-                vectors.extend(self._provider.embed(batch))
+                vectors.extend(self._embed_batch_of(batch))
                 on_progress(
                     EventType.EMBED,
                     EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),
@@ -223,7 +244,7 @@ class Embedder:
             batch.append(truncated)
             batch_chars += chunk_len
         if batch:
-            vectors.extend(self._provider.embed(batch))
+            vectors.extend(self._embed_batch_of(batch))
             on_progress(
                 EventType.EMBED,
                 EmbedEvent(file=source, chunk=len(vectors), total_chunks=total_chunks),

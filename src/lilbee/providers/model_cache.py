@@ -6,10 +6,9 @@ import logging
 import platform
 from collections.abc import Callable
 from enum import StrEnum
-from pathlib import Path
 
 from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal, card_totals
-from lilbee.providers.fleet.gpu_env import gpu_environ
+from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, cuda_visible_cards, gpu_environ
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +28,6 @@ _KV_BYTES_PER_CTX_TOKEN = 2048
 
 # Metal/CUDA buffer overhead as fraction of model weight memory
 _BUFFER_OVERHEAD_FRACTION = 0.10
-
-# Default context length for estimation when metadata unavailable
-_DEFAULT_CTX_LEN = 2048
 
 # Floor for the dynamic n_ctx computation (smaller is unusable for chat)
 _DYNAMIC_CTX_FLOOR = 512
@@ -72,20 +68,6 @@ def kv_bytes_per_token(
     except (KeyError, ValueError, ZeroDivisionError):
         return _KV_BYTES_PER_CTX_TOKEN
     return int(n_layers * head_count_kv * (k_dim * k_elem_bytes + v_dim * v_elem_bytes))
-
-
-def estimate_model_memory(
-    model_path: Path,
-    n_ctx: int = _DEFAULT_CTX_LEN,
-    kv_bytes_per_tok: int = _KV_BYTES_PER_CTX_TOKEN,
-) -> int:
-    """Estimate memory consumption for a GGUF model.
-    Approximation: file_size (weights) + KV cache + 10% buffer overhead.
-    """
-    file_bytes = model_path.stat().st_size if model_path.exists() else 0
-    kv_bytes = n_ctx * kv_bytes_per_tok
-    overhead = int(file_bytes * _BUFFER_OVERHEAD_FRACTION)
-    return file_bytes + kv_bytes + overhead
 
 
 def compute_dynamic_ctx(
@@ -240,35 +222,10 @@ def _nvidia_device_totals() -> list[CardTotal] | None:
 def _apply_cuda_visible_mask(devices: list[CardTotal]) -> list[CardTotal]:
     """The subset of *devices* ``CUDA_VISIBLE_DEVICES`` exposes, in its order.
 
-    Entries are driver indexes or ``GPU-``/``MIG-`` UUIDs. An unset variable
-    exposes every card whose total reads; an empty one exposes nothing. CUDA
-    stops enumerating at the first entry that names no device, and so does
-    this, which is what makes ``0,9,1`` on a two-card host mean one card
-    rather than two. A named card whose total does not read stays in the
-    result, so the caller sees that the budget is unknown. NVIDIA documents no
-    rule for a repeated entry, so a mask that names one card twice exposes
-    nothing here: the budget is unknown.
+    The mask is read by ``cuda_visible_cards``. An unset variable exposes every
+    card whose total reads. A named card whose total does not read stays in the
+    result, so the caller sees that the budget is unknown.
     """
-    raw = gpu_environ().get("CUDA_VISIBLE_DEVICES")
-    if raw is None:
+    if gpu_environ().get(CUDA_VISIBLE_VAR) is None:
         return [card for card in devices if card.total_bytes is not None]
-    visible: list[CardTotal] = []
-    for entry in (part.strip() for part in raw.split(",")):
-        matched = _resolve_cuda_entry(entry, devices)
-        if matched is None:
-            break
-        if matched in visible:
-            return []
-        visible.append(matched)
-    return visible
-
-
-def _resolve_cuda_entry(entry: str, devices: list[CardTotal]) -> CardTotal | None:
-    """The card an entry of ``CUDA_VISIBLE_DEVICES`` names, ``None`` if it names none."""
-    if entry.isdigit():
-        return next((card for card in devices if card.index == int(entry)), None)
-    # UUIDs may be abbreviated to any unique prefix.
-    if entry.startswith(("GPU-", "MIG-")):
-        matches = [card for card in devices if card.uuid.startswith(entry)]
-        return matches[0] if len(matches) == 1 else None
-    return None
+    return cuda_visible_cards(devices)

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import faulthandler
 import logging
 import os
+import signal
 import sys
 import threading
-import time
 from collections.abc import Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -23,6 +24,7 @@ _SERVER_LOG_FILE_NAME = "server.log"
 _FAULT_LOG_FILE_NAME = "server-fault.log"
 
 _DEADLINE_EXIT_STATUS = 1
+_BACKSTOP_GRACE_S = 5.0
 _MAX_BYTES = 2_097_152  # 2 MiB
 _BACKUP_COUNT = 3
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -75,6 +77,7 @@ class _FaultLog:
 
     def __init__(self) -> None:
         self._handle: IO[str] | None = None
+        self._alarm_handle: IO[str] | None = None
 
     def enable(self) -> Path:
         """Open the fault log if needed and point faulthandler at it."""
@@ -83,6 +86,14 @@ class _FaultLog:
             self._handle = fault_path.open("a", encoding="utf-8")
             faulthandler.enable(file=self._handle)
         return fault_path
+
+    def dump_on_alarm(self) -> None:
+        """Dump every thread to the fault log on SIGALRM; the process then dies of it."""
+        with contextlib.suppress(OSError):  # pragma: no cover - POSIX only, no SIGALRM on Windows
+            self._alarm_handle = _fault_log_path().open("a", encoding="utf-8")
+            faulthandler.register(
+                signal.SIGALRM, file=self._alarm_handle, all_threads=True, chain=True
+            )
 
 
 _fault_log = _FaultLog()
@@ -94,8 +105,7 @@ def enable_fault_log() -> Path:
 
 
 def _exit_at_the_deadline(seconds: float) -> None:
-    """Wait out *seconds*, dump every thread while this one holds the GIL, then exit."""
-    time.sleep(seconds)
+    """Dump every thread to the fault log while this one holds the GIL, then exit."""
     try:
         with _fault_log_path().open("a", encoding="utf-8") as fault_log:
             fault_log.write(f"Timeout ({seconds:g} s)!\n")
@@ -105,11 +115,38 @@ def _exit_at_the_deadline(seconds: float) -> None:
         os._exit(_DEADLINE_EXIT_STATUS)
 
 
+class _ExitDeadline:
+    """Holds the one live exit timer; arming again cancels the earlier timer."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+
+    def arm(self, seconds: float) -> None:
+        timer = threading.Timer(seconds, _exit_at_the_deadline, args=(seconds,))
+        timer.name = "exit-deadline"
+        timer.daemon = True
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = timer
+            timer.start()
+
+
+_exit_deadline = _ExitDeadline()
+
+
 def arm_exit_deadline(seconds: float) -> None:
-    """End the process with status 1 after *seconds*; the fault log names what held it."""
-    threading.Thread(
-        target=_exit_at_the_deadline, args=(seconds,), name="exit-deadline", daemon=True
-    ).start()
+    """End the process with status 1 after *seconds*; the fault log names what held it.
+
+    A later call replaces the earlier deadline. A kernel timer kills the process
+    shortly after, for a hang in finalization, and writes every thread to the
+    fault log first.
+    """
+    _exit_deadline.arm(seconds)
+    if sys.platform != "win32":  # pragma: no cover - Windows has no interval timer
+        signal.setitimer(signal.ITIMER_REAL, seconds + _BACKSTOP_GRACE_S)
+        _fault_log.dump_on_alarm()
 
 
 class _ExceptHook:

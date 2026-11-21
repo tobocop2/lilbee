@@ -4,24 +4,35 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
-from lilbee.app.engine_choice import CHOICES_KEY, resolve_engines, stored_choices
-from lilbee.app.services import peek_services
+from lilbee.app.engine_choice import (
+    CHOICES_KEY,
+    engine_for_format,
+    resolve_engines,
+    stored_choices,
+)
+from lilbee.app.services import Services, peek_services
+from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import make_download_callback
 from lilbee.catalog.models import DownloadProgress
-from lilbee.catalog.refs import model_format
-from lilbee.catalog.runnable import refresh_session_host, session_host
+from lilbee.catalog.refs import canonical_ref, model_format
+from lilbee.catalog.runnable import refresh_session_host
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError
-from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
+from lilbee.providers.fleet.binary import llama_server_ready
+from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, cell_key, host_cell
 from lilbee.providers.fleet.engine_store import (
     BundledEngineError,
     ChecksumError,
@@ -32,7 +43,6 @@ from lilbee.providers.fleet.engine_store import (
     EngineStore,
     LicenceRefusedError,
     MissingPackError,
-    PackageInstallError,
     PackUrlError,
     StorePathError,
     UnsafeWheelError,
@@ -51,8 +61,9 @@ from lilbee.providers.fleet.engines.choice import (
     installed_engines,
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
-from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.llama import LLAMA, pack_backend
 from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
+from lilbee.providers.fleet.router_install import ROUTER_REFUSALS, install_router
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
 from lilbee.runtime.cancellation import CancelSignal
@@ -62,6 +73,9 @@ _T = TypeVar("_T")
 
 STORE_REFUSALS = (BundledEngineError, EngineInUseError, EngineNotInstalledError, StorePathError)
 NO_BUILDS = "No engine builds are installed."
+FOLDER_LINE = (
+    "Engines folder: {folder} (shared by every data directory; LILBEE_MODELS_DIR moves it)"
+)
 REMOVE_DONE = "Removed engine {build}."
 PREFERRED_KEY = "preferred_engine"
 NOT_APPLIED_CODE = "engine_not_applied"
@@ -69,6 +83,10 @@ NOT_APPLIED_CODE = "engine_not_applied"
 
 class EngineRefusedError(ValueError):
     """The engine service refuses a write; the text names the problem and the fix."""
+
+
+class EngineInstallRefusedError(EngineRefusedError):
+    """The install of a named engine is refused; every surface sends the same code."""
 
 
 class EngineNotAppliedError(Exception):
@@ -131,9 +149,9 @@ _STORE_REFUSALS = (
     ChecksumError,
     EngineConflictError,
     EngineDiskError,
+    EngineInUseError,
     LicenceRefusedError,
     MissingPackError,
-    PackageInstallError,
     PackUrlError,
     UnsafeWheelError,
     UnsupportedOsError,
@@ -150,8 +168,6 @@ _UNREADABLE_WHEEL = (
     RuntimeError,
     NotImplementedError,
 )
-
-WHEEL_CLI_ONLY = "The wheel option works only with the lilbee engine install command."
 
 
 def _unknown(name: str) -> EngineRefusedError:
@@ -185,7 +201,7 @@ def _require_installed(name: EngineName, installed: InstalledEngines) -> None:
     if name in installed:
         return
     has_build = name in installed_engines()
-    refusal = choice.host_answer(name, session_host) if has_build else _install_gate(name)
+    refusal = choice.host_answer(name, runnable.session_host) if has_build else _install_gate(name)
     if not refusal.ok:
         state = "installed, but" if has_build else "not installed, and"
         raise EngineRefusedError(
@@ -253,24 +269,30 @@ class BuildView:
         return f"{self.engine} {self.version} ({self.backend}){not_run_clause(self.not_run_on)}"
 
 
+def engines_folder(config: Config = cfg) -> Path:
+    """The machine-wide folder that holds the installed engine builds."""
+    return engines_root(config.models_dir)
+
+
 def builds(config: Config = cfg) -> list[BuildView]:
     """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
     return [
         BuildView(b.engine, b.version, b.backend, not_run_on(b.engine))
         for b in store.installed()
-        if choice.host_answer(b.engine, session_host).ok
+        if choice.host_answer(b.engine, runnable.session_host).ok
     ]
 
 
 @dataclass(frozen=True)
 class EngineListView:
-    """What every surface returns for the engine list: the builds and the missing engines."""
+    """What every surface returns for the engine list: builds, missing engines, engines folder."""
 
     builds: list[BuildView]
     not_installed: list[str]
+    folder: Path
 
-    def payload(self) -> dict[str, list[dict[str, Any]] | list[str]]:
+    def payload(self) -> dict[str, list[dict[str, Any]] | list[str] | str]:
         """The list as plain data, the same on the CLI, REST and MCP."""
         return {
             "builds": [
@@ -283,19 +305,79 @@ class EngineListView:
                 for b in self.builds
             ],
             "not_installed": self.not_installed,
+            "engines_folder": str(self.folder),
         }
 
 
 def engine_list(config: Config = cfg) -> EngineListView:
     """The installed builds and the engines with no installed build."""
-    return EngineListView(builds(config), not_installed())
+    return EngineListView(builds(config), not_installed(), engines_folder(config))
 
 
-def remove_build(engine: str, version: str, backend: str, config: Config = cfg) -> str:
-    """Remove one installed build and return its label; refuses a bundled, missing or busy one."""
-    store = EngineStore(engines_root(config.models_dir))
+def _removal_changes_embedder(
+    store: EngineStore, registry: ModelRegistry, engine: str, version: str, backend: str
+) -> bool:
+    """True when the embedder trigger names this build, or this engine with no other build left."""
+    trigger = embedder_trigger(cfg, registry)
+    if trigger is None:
+        return False
+    if f"{store.root / engine / f'{version}-{backend}'}{os.sep}" in trigger:
+        return True
+    others = [
+        b
+        for b in store.installed()
+        if b.engine == engine and (b.version, b.backend) != (version, backend)
+    ]
+    return f"|engine={engine}" in trigger and not others
+
+
+def _check_removal_keeps_embedder(
+    store: EngineStore, engine: str, version: str, backend: str, confirmed: bool
+) -> None:
+    """Refuse unless *confirmed* when removing the build changes the engine that embeds."""
+    if confirmed:
+        return
+    if (engine, version, backend) not in [
+        (b.engine, b.version, b.backend) for b in store.installed()
+    ]:
+        return
+    services = peek_services()
+    registry = services.registry if services is not None else ModelRegistry(cfg.models_dir)
+    if not _removal_changes_embedder(store, registry, engine, version, backend):
+        return
+    documents = _document_count(services)
+    if documents:
+        raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
+
+
+def _document_count(services: Services | None) -> int:
+    """The documents in the library: the running store's count, else the saved library's count."""
+    if services is not None:
+        return services.store.source_summary(0).document_count
+    if not cfg.lancedb_dir.exists():
+        return 0
+    # heavy: lilbee.data.store opens lancedb (>50ms)
+    from lilbee.data.store import Store
+
+    store = Store(cfg)
     try:
-        store.remove(engine, version, backend, in_use=launch_uses_engine)
+        return store.source_summary(0).document_count
+    finally:
+        store.close()
+
+
+def remove_build(
+    engine: str, version: str, backend: str, config: Config = cfg, confirmed: bool = False
+) -> str:
+    """Remove one installed build and return its label; refuses a bundled, missing or busy one.
+
+    A build that the embedder runs on needs *confirmed* when the library holds documents:
+    the next start finds a changed engine and runs the canary check on the index.
+    """
+    store = EngineStore(engines_root(config.models_dir))
+    _check_removal_keeps_embedder(store, engine, version, backend, confirmed)
+    try:
+        store.remove(engine, version, backend, in_use=partial(launch_uses_engine, store.root))
     except STORE_REFUSALS as exc:
         raise EngineRefusedError(str(exc)) from exc
     return BuildView(engine, version, backend).label
@@ -321,7 +403,7 @@ def _install_gate(name: EngineName) -> HostGate:
     adapter = choice.ADAPTERS.get(name)
     if adapter is None or adapter.bundled:
         return PASS
-    return choice.install_answer(adapter, session_host())
+    return choice.install_answer(adapter, runnable.session_host())
 
 
 def offered_engines() -> choice.InstalledEngines:
@@ -329,17 +411,21 @@ def offered_engines() -> choice.InstalledEngines:
     return {
         name: formats
         for name, formats in installed_engines().items()
-        if choice.host_answer(name, session_host).ok
+        if choice.host_answer(name, runnable.session_host).ok
     }
 
 
 def not_installed() -> list[str]:
     """The names of the engines with no installed build that the host gate lets this host run."""
     installed = installed_engines()
-    missing = [name for name in choice.ADAPTERS if name not in installed]
+    missing = [
+        name
+        for name, adapter in choice.ADAPTERS.items()
+        if not (llama_server_ready() if adapter.bundled else name in installed)
+    ]
     offered = [str(name) for name in missing if _install_gate(name).ok]
     hidden = [str(name) for name in missing if str(name) not in offered]
-    host = session_host()
+    host = runnable.session_host()
     if hidden and (host.os is None or host.arch is None):
         log.warning(
             "The engine list hides %s: the OS or CPU of this host could not be read.",
@@ -348,9 +434,195 @@ def not_installed() -> list[str]:
     return offered
 
 
-def engine_names(model: str) -> list[str]:
-    """The names a surface may offer for *model*: ``auto`` and each engine that loads it."""
-    return [AUTO, *engines_loading(model_format(model), offered_engines())]
+class InstallRoute(StrEnum):
+    """How a surface gets an engine that has no installed build."""
+
+    DOWNLOAD = "download"
+    """lilbee downloads the pack of the engine."""
+    NO_PACK = "no_pack"
+    """No pack of the engine is published yet, so nothing can be downloaded."""
+    BY_HAND = "by_hand"
+    """The user installs the engine; lilbee finds it."""
+
+
+@dataclass(frozen=True)
+class EngineOption:
+    """One row of the engine choice for a model: an engine it can run on, or ``auto``.
+
+    ``download_bytes`` is set only for an engine that is not installed and has a pack for
+    this computer. ``route`` says how an engine with no build is installed; ``docs_url``
+    is the install page of an engine the user installs by hand, or empty. The ``auto``
+    row carries the engine that ``auto`` picks now in ``auto_now``, or None when no
+    engine loads the model.
+    """
+
+    name: str
+    installed: bool = True
+    bundled: bool = False
+    backend: str = ""
+    download_bytes: int | None = None
+    auto_now: str | None = None
+    route: InstallRoute = InstallRoute.DOWNLOAD
+    docs_url: str = ""
+
+    @property
+    def offers_download(self) -> bool:
+        """True when the row is an engine with no build that lilbee can download."""
+        return not self.installed and self.route is InstallRoute.DOWNLOAD
+
+
+def _auto_now(model: str) -> str | None:
+    """The engine that ``auto`` picks for *model* now, or None when no engine loads it."""
+    try:
+        return engine_for_format(model_format(model), cfg).name
+    except choice.NoEngineError:
+        return None
+
+
+def _missing_option(name: EngineName, adapter: EngineAdapter) -> EngineOption:
+    """The row of an engine with no installed build: how to get it, its backend, its pack size.
+
+    llama.cpp reads the pin of its pack, as its install does: its own record names no backend.
+    """
+    if isinstance(adapter, UserInstalled):
+        return EngineOption(
+            str(name),
+            installed=False,
+            route=InstallRoute.BY_HAND,
+            docs_url=adapter.install_docs_url,
+        )
+    host = runnable.session_host()
+    pin = LLAMA.pack_pin() if name is EngineName.LLAMA else adapter.pin_record()
+    try:
+        lock = choice.pin_lock(pin)
+    except choice.NoPublishedPackError:
+        return EngineOption(str(name), installed=False, route=InstallRoute.NO_PACK)
+    except (choice.PinError, OSError):
+        return EngineOption(str(name), installed=False)
+    key = cell_key(host, lock.backend)
+    asset = lock.platforms.get(key) if key else None
+    size = asset.size if asset is not None else None
+    return EngineOption(str(name), installed=False, backend=lock.backend, download_bytes=size)
+
+
+def _bundled_backend(name: EngineName) -> str:
+    """The backend of the llama.cpp pack this host runs; empty for any other engine."""
+    return pack_backend(runnable.session_host()) if name is EngineName.LLAMA else ""
+
+
+def engine_options(model: str) -> list[EngineOption]:
+    """The rows a surface shows to choose the engine of *model*: ``auto``, then each engine.
+
+    An engine row appears for an engine that loads the format of *model* and that the host
+    gate lets this host run, whether or not a build of it is installed.
+    """
+    fmt = model_format(model)
+    present = offered_engines()
+    backends = {b.engine: b.backend for b in builds()}
+    rows = [EngineOption(AUTO, auto_now=_auto_now(model))]
+    for name, adapter in choice.ADAPTERS.items():
+        if fmt not in adapter.formats:
+            continue
+        if name in present:
+            backend = backends.get(str(name)) or _bundled_backend(name)
+            rows.append(EngineOption(str(name), bundled=adapter.bundled, backend=backend))
+        elif _install_gate(name).ok:
+            rows.append(_missing_option(name, adapter))
+    return rows
+
+
+class EngineState(StrEnum):
+    """Whether an engine row is a build on disk, the bundled engine, a user install, or a download.
+
+    ``USER_INSTALLED`` is an engine the user installed outside lilbee, such as a binary on PATH.
+    ``DIFFERS_FROM_PIN`` is a build on disk of an engine that is not installed: another
+    version, another backend, or another wheel than the pin names.
+    """
+
+    INSTALLED = "installed"
+    BUNDLED = "bundled"
+    USER_INSTALLED = "user_installed"
+    NOT_INSTALLED = "not_installed"
+    DIFFERS_FROM_PIN = "differs_from_pin"
+
+
+@dataclass(frozen=True)
+class EngineRow:
+    """One row of the engine table: a build, the bundled engine, a user install, or a missing one.
+
+    ``download_bytes`` is set only for a missing engine that has a pack for this computer.
+    ``size_bytes`` is the size on disk of a build, None when it cannot be read.
+    ``roles`` names the roles that use the engine now.
+    ``outside_store`` is True for a build whose folder links out of the engines folder;
+    remove refuses such a build, and it has no size.
+    """
+
+    engine: str
+    state: EngineState
+    version: str = ""
+    backend: str = ""
+    download_bytes: int | None = None
+    roles: tuple[str, ...] = ()
+    size_bytes: int | None = None
+    outside_store: bool = False
+
+
+def _build_row(
+    store: EngineStore, build: BuildView, state: EngineState, users: tuple[str, ...] = ()
+) -> EngineRow:
+    """The row of one build on disk, with its size and whether remove can reach it."""
+    return EngineRow(
+        build.engine,
+        state,
+        build.version,
+        build.backend,
+        roles=users,
+        size_bytes=store.build_size(build.engine, build.version, build.backend),
+        outside_store=not store.holds(build.engine, build.version, build.backend),
+    )
+
+
+def engine_rows(config: Config = cfg) -> list[EngineRow]:
+    """The engine list as table rows: one row per build, then each missing engine.
+
+    An engine counts as installed or missing by the rule of ``engine_list``, so a user
+    install is an installed one. A missing engine is followed by a row for each of its
+    builds on disk, as ``lilbee engine list`` names them, so the user can remove them.
+    """
+    used: dict[str, list[str]] = {}
+    for view in roles(config):
+        if view.engine and view.model.strip():
+            used.setdefault(view.engine, []).append(view.role.value)
+    listed = engine_list(config)
+    missing = set(listed.not_installed)
+    present = offered_engines()
+    store = EngineStore(listed.folder)
+    rows: list[EngineRow] = []
+    for name, adapter in choice.ADAPTERS.items():
+        key = str(name)
+        mine = [b for b in listed.builds if b.engine == key]
+        if key in missing or name not in present:
+            if key in missing:
+                option = _missing_option(name, adapter)
+                rows.append(
+                    EngineRow(
+                        key,
+                        EngineState.NOT_INSTALLED,
+                        backend=option.backend,
+                        download_bytes=option.download_bytes,
+                    )
+                )
+            rows.extend(_build_row(store, b, EngineState.DIFFERS_FROM_PIN) for b in mine)
+            continue
+        users = tuple(used.get(key, ()))
+        rows.extend(_build_row(store, b, EngineState.INSTALLED, users) for b in mine)
+        if adapter.bundled:
+            rows.append(
+                EngineRow(key, EngineState.BUNDLED, backend=_bundled_backend(name), roles=users)
+            )
+        elif not mine:
+            rows.append(EngineRow(key, EngineState.USER_INSTALLED, roles=users))
+    return rows
 
 
 def prefer(name: str, confirmed: bool = False) -> str:
@@ -418,6 +690,21 @@ def install(
     the licence and the files of the wheel and writes the record.
     """
     adapter = _installable(name)
+    try:
+        return _install_adapter(adapter, name, wheel, on_update, on_retry, cancel)
+    except EngineRefusedError as exc:
+        raise EngineInstallRefusedError(str(exc)) from exc
+
+
+def _install_adapter(
+    adapter: EngineAdapter,
+    name: str,
+    wheel: Path | None,
+    on_update: Callable[[DownloadProgress], None] | None,
+    on_retry: Callable[[str], None] | None,
+    cancel: CancelSignal | None,
+) -> InstalledBuild:
+    """Install the build of *adapter*; every refusal is an ``EngineRefusedError``."""
     if adapter.bundled:
         if not _pack_installable():
             raise EngineRefusedError(
@@ -462,9 +749,29 @@ def install(
         raise EngineRefusedError(str(exc)) from exc
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
+    _install_router(name, on_update, on_retry, cancel)
     return InstalledBuild(
         lock.engine, lock.version, lock.backend, gate.reason, not_run_on(lock.engine)
     )
+
+
+def _install_router(
+    name: str,
+    on_update: Callable[[DownloadProgress], None] | None,
+    on_retry: Callable[[str], None] | None,
+    cancel: CancelSignal | None,
+) -> None:
+    """Install the router that starts every engine; a router already installed is kept."""
+    try:
+        install_router(
+            on_progress=make_download_callback(on_update) if on_update is not None else None,
+            on_retry=_retry_reporter(on_retry),
+            cancel=cancel,
+        )
+    except ROUTER_REFUSALS as exc:
+        raise EngineRefusedError(
+            f"Engine {name} is installed, but the router that starts it is not. {exc}"
+        ) from exc
 
 
 def _pack_installable() -> bool:
@@ -524,6 +831,7 @@ def use_for_role(
     role: WorkerRole, model: str, name: str, config: Config = cfg, confirmed: bool = False
 ) -> str:
     """Store the engine for the model of *role*; refuses a model that is not the role's model."""
+    model = canonical_ref(model)
     current = str(getattr(config, ROLE_REGISTRY[role].config_field))
     if not current.strip():
         raise EngineRefusedError(
@@ -534,14 +842,20 @@ def use_for_role(
             f"The {role} model is {current}, not {model}. Choose the engine for {current}."
         )
     if name != AUTO:
-        _require_serves(_engine_name(name), role)
+        _require_serves(_engine_name(name), role, model)
     return use(model, name, confirmed)
 
 
-def _require_serves(name: EngineName, role: WorkerRole) -> None:
+def _require_serves(name: EngineName, role: WorkerRole, model: str) -> None:
     adapter = choice.ADAPTERS.get(name)
     if adapter is not None and role not in adapter.served_roles:
         raise EngineRefusedError(unserved_role_message(name, role, adapter.served_roles))
+    fmt = model_format(model)
+    if choice.refuses_format_for_role(name, role, fmt):
+        raise EngineRefusedError(
+            f"Engine {name} cannot load the {fmt} format of {model} for {role}. "
+            f"Choose an engine that loads {fmt} for {role}."
+        )
 
 
 def use(model: str, name: str, confirmed: bool = False) -> str:

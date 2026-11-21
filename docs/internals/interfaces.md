@@ -10,6 +10,7 @@ The CLI, TUI, REST API, MCP server and Python library, and the auth model. For t
 - `lilbee search "query"`: vector search, no LLM generation
 - `lilbee sync` / `lilbee add` / `lilbee remove`: document management
 - `lilbee model pull <name>` / `model list` / `model rm`: native GGUF model management
+- `lilbee model use <chat|rerank|vision> <ref>`: set a role's model with the checks the `PUT /api/models` routes apply (the embedding model has `lilbee use-embedder`)
 - `lilbee wiki build` / `wiki list` / `wiki read` / `wiki citations` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune` / `wiki wipe`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
@@ -121,7 +122,9 @@ bee = Lilbee("./docs")
 bee.sync()
 results = bee.search("authentication")
 page = bee.documents(limit=50, offset=0)  # one page of indexed documents
+report = bee.search_report("authentication")  # report.rows, report.degraded
 ```
+`bee.search()` returns the rows. `bee.search_report()` returns the same rows and `degraded`, the warnings for each search step that failed (for example `rerank_failed`). REST, MCP and the CLI show the same warnings.
 `bee.status()` returns the real `document_count` and the newest 10 source names. `bee.documents()` pages the listing that `GET /api/documents` pages, with the same default and bounds (limit 1 to 1000, default 50).
 
 `Lilbee` composes the same `Store`, `Embedder`, `Searcher`, `Reranker`, and `ConceptGraph` the CLI and server use.

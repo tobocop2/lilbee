@@ -7,7 +7,7 @@ from typing import cast
 
 from lilbee.catalog import CatalogModel, find_pick
 from lilbee.catalog.query import reclassify_by_name
-from lilbee.catalog.refs import is_bare_hf_repo
+from lilbee.catalog.refs import canonical_ref, is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.modelhub.install_state import InstallState, install_state
@@ -123,6 +123,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     """
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
+    ref = canonical_ref(ref)
     want = ModelTask(MODEL_FIELD_TO_TASK[field_name])
     # The manifest is consulted first because it answers without touching the
     # network. This runs on the TUI main thread from /model and the model-bar

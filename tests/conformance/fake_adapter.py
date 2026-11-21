@@ -8,11 +8,12 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from lilbee.catalog.hf_client import HfToken
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile
+from lilbee.providers.fleet.engines.base import LaunchRequest, RequestProfile, ServerProcess
 from lilbee.providers.fleet.engines.host_gate import HostGate, gate_on
 from lilbee.providers.fleet.host_caps import Feature, HostCaps
 from lilbee.providers.fleet.launch import InstanceLaunch
@@ -52,7 +53,9 @@ class FakeAdapter:
     served_roles = frozenset({WorkerRole.CHAT, WorkerRole.EMBED})
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
+    concatenates_pooling = False
     bundled = False
+    server_process = ServerProcess(name="fake-engine-server")
     backend: str | None = "cpu"
 
     def supports_architecture(self, architecture: str) -> bool:
@@ -130,7 +133,7 @@ class FakeAdapter:
     def model_meta(self, path: Path) -> dict[str, str] | None:
         return None
 
-    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: HfToken) -> None:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:

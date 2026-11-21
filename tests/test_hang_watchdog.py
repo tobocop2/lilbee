@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import child_pythonpath
+
 _TESTS_DIR = Path(__file__).parent
 _TEST_TIMEOUT_S = 4
 _BACKSTOP_S = 90
@@ -137,7 +139,7 @@ def _child_run(
         "LILBEE_TEST_HANG_DUMP_S": str(backstop_s),
         "LILBEE_TEST_HANG_DUMP_DIR": str(dump_dir),
         **({} if teardown_s is None else {"LILBEE_TEST_HANG_TEARDOWN_S": str(teardown_s)}),
-        "PYTHONPATH": str(_TESTS_DIR),
+        "PYTHONPATH": child_pythonpath(_TESTS_DIR),
         "ENTERED": str(tmp_path / "entered"),
         "RELEASE": str(tmp_path / "release"),
     }

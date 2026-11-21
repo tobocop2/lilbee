@@ -16,6 +16,7 @@ import pytest
 from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import host_caps, swap_config
@@ -34,8 +35,10 @@ from lilbee.providers.fleet.engines.choice import (
 )
 from lilbee.providers.fleet.engines.mlx import MACOS_FLOOR, MLX
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import CHAT_RUNTIME_BYTES
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._published import publish
+from tests._safetensors import safetensors_bytes
 
 CONTEXT = 40960
 PROMPT_TOKENS = 60008
@@ -117,6 +120,68 @@ def test_the_argv_names_the_model_folder_and_leaves_the_port_to_the_swap(tmp_pat
     assert "--prompt-cache-bytes" in argv
 
 
+def test_an_answer_may_run_to_the_window_not_to_the_server_default(tmp_path: Path) -> None:
+    """mlx-lm stops an answer at 512 tokens unless a request or the launch says more.
+
+    A chat sends no max_tokens unless the user sets one, so the launch states the window.
+    """
+    spec = MLX.role_spec(WorkerRole.CHAT, None, None)
+    argv = MLX.launch_argv(spec, request(tmp_path, ctx_per_slot=40960))
+    assert argv[argv.index("--max-tokens") + 1] == "40960"
+    assert argv.count("--max-tokens") == 1
+
+
+def _launch_with_generation_config(tmp_path: Path, config: object) -> list[str]:
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "generation_config.json").write_text(json.dumps(config), encoding="utf-8")
+    return MLX.launch_argv(MLX.role_spec(WorkerRole.CHAT, None, None), request(tmp_path))
+
+
+def _flag(argv: list[str], flag: str) -> str | None:
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+
+def _sampling(argv: list[str]) -> tuple[str | None, ...]:
+    return tuple(_flag(argv, flag) for flag in ("--temp", "--top-p", "--top-k", "--min-p"))
+
+
+_LLAMA_SERVER_DEFAULTS = ("0.8", "0.95", "40", "0.05")
+
+
+def test_the_launch_samples_as_the_model_folder_says(tmp_path: Path) -> None:
+    """mlx-lm samples greedily by default, which loops a thinking model; the folder says how."""
+    config = {"do_sample": True, "temperature": 0.6, "top_p": 0.95, "top_k": 20}
+    argv = _launch_with_generation_config(tmp_path, config)
+    assert _sampling(argv) == ("0.6", "0.95", "20", "0.05")
+    assert argv.count("--temp") == 1
+
+
+@pytest.mark.parametrize(
+    "config",
+    [{"temperature": True, "top_p": "0.9"}, ["not", "an", "object"], {}],
+    ids=["not-numbers", "not-an-object", "empty"],
+)
+def test_a_folder_that_names_no_sampling_gets_the_llama_server_defaults(
+    tmp_path: Path, config: object
+) -> None:
+    """A request that names no sampling samples alike on MLX and llama.cpp."""
+    argv = _launch_with_generation_config(tmp_path, config)
+    assert _sampling(argv) == _LLAMA_SERVER_DEFAULTS
+
+
+def test_a_folder_without_generation_config_gets_the_llama_server_defaults(
+    tmp_path: Path,
+) -> None:
+    argv = MLX.launch_argv(MLX.role_spec(WorkerRole.CHAT, None, None), request(tmp_path))
+    assert _sampling(argv) == _LLAMA_SERVER_DEFAULTS
+
+
+def test_a_folder_that_turns_sampling_off_keeps_greedy_decoding(tmp_path: Path) -> None:
+    argv = _launch_with_generation_config(tmp_path, {"do_sample": False, "temperature": 0.6})
+    assert _sampling(argv) == (None, None, None, None)
+
+
 def test_the_swap_names_the_default_model_for_every_request() -> None:
     assert MLX.swap_extras(MagicMock()) == {"useModelName": "default_model"}
 
@@ -185,17 +250,36 @@ def test_model_meta_gives_nothing_for_a_missing_or_broken_file(tmp_path: Path) -
     assert MLX.model_meta(folder) is None
 
 
-def test_the_memory_estimate_is_a_fixed_reserve_of_the_weights(tmp_path: Path) -> None:
-    folder = tmp_path / "model"
-    folder.mkdir()
-    (folder / "model.safetensors").write_bytes(b"x" * 1000)
-    estimate = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, cfg.kv_cache_type))
-    assert MLX.memory_kind is MemoryKind.FIXED_RESERVE
-    assert (estimate.kind, estimate.device_bytes, estimate.shared_bytes) == (
-        MemoryKind.FIXED_RESERVE,
-        1000,
-        1000,
+def test_the_memory_estimate_is_the_weights_plus_the_cache_at_each_slot(tmp_path: Path) -> None:
+    folder = model_dir(
+        tmp_path,
+        {
+            "num_hidden_layers": 2,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 4,
+        },
     )
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1000))
+    one = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, cfg.kv_cache_type))
+    two = MLX.estimate_memory(MemoryRequest(folder, 4096, 2, 99, True, cfg.kv_cache_type))
+    cache_per_slot = 32 * 4096
+    assert MLX.memory_kind is MemoryKind.FIXED_RESERVE
+    assert one.kind is MemoryKind.FIXED_RESERVE
+    assert one.device_bytes == 1000 + cache_per_slot + CHAT_RUNTIME_BYTES
+    assert two.device_bytes - one.device_bytes == cache_per_slot
+    assert one.shared_bytes == one.device_bytes
+
+
+def test_the_memory_estimate_ignores_the_cache_type_setting(tmp_path: Path) -> None:
+    folder = model_dir(
+        tmp_path,
+        {"num_hidden_layers": 2, "num_attention_heads": 2, "head_dim": 4},
+    )
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1000))
+    q8 = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, KvCacheType.Q8_0))
+    f16 = MLX.estimate_memory(MemoryRequest(folder, 4096, 1, 99, True, KvCacheType.F16))
+    assert q8 == f16
 
 
 def test_the_probes_answer_without_running_the_binary(tmp_path: Path) -> None:
@@ -263,12 +347,16 @@ def test_install_on_macos_13_is_refused_by_the_gate(
         engine_service.install("mlx")
 
 
-def test_binary_of_an_engine_with_no_install_names_the_install_command(
+def test_binary_of_an_engine_with_no_published_pack_says_there_is_nothing_to_install(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setattr(runnable, "session_host", lambda: host("Darwin", "arm64", "15.2"))
-    with pytest.raises(ProviderError, match=r"lilbee engine install mlx"):
+    with pytest.raises(
+        ProviderError,
+        match=r"The mlx engine is not installed\. No pack of mlx is published yet, so there is "
+        r"nothing to install\.",
+    ):
         MLX.binary()
 
 
@@ -284,7 +372,7 @@ def test_the_engine_list_names_mlx_only_on_apple_silicon_with_macos_14(
         ("Windows", "AMD64", "", False),
     ]:
         caps = host(system, machine, version)
-        monkeypatch.setattr(engine_service, "session_host", lambda caps=caps: caps)
+        monkeypatch.setattr(runnable, "session_host", lambda caps=caps: caps)
         assert ("mlx" in engine_service.not_installed()) is named, (system, machine, version)
 
 
@@ -346,11 +434,11 @@ def test_a_planner_launch_for_mlx_gives_a_provider_that_refuses_an_oversize_prom
     from tests.test_fleet_provider import _FakeSwap
 
     folder = model_dir(tmp_path, {"max_position_embeddings": CONTEXT})
-    (folder / "model.safetensors").write_bytes(b"\0" * 1024)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1024))
     monkeypatch.setattr(cfg, "chat_n_ctx_target", CONTEXT)
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "placement", "")
-    monkeypatch.setattr(MLX, "binary", lambda: tmp_path / "mlx-lm-server")
+    monkeypatch.setattr(type(MLX), "binary", lambda _self: tmp_path / "mlx-lm-server")
     launch = planning.build_single_role_launch(WorkerRole.CHAT, folder, engine=MLX)
     assert launch.ctx == CONTEXT
 
@@ -388,6 +476,15 @@ def test_mlx_profile_structured_output_false() -> None:
     assert MISTRAL.request_profile(WorkerRole.CHAT).structured_output is True
 
 
+def test_only_mlx_works_on_a_request_after_its_client_goes() -> None:
+    from lilbee.providers.fleet.engines import LLAMA
+    from lilbee.providers.fleet.engines.mistral import MISTRAL
+
+    assert MLX.request_profile(WorkerRole.CHAT).works_on_after_disconnect is True
+    assert LLAMA.request_profile(WorkerRole.CHAT).works_on_after_disconnect is False
+    assert MISTRAL.request_profile(WorkerRole.CHAT).works_on_after_disconnect is False
+
+
 @pytest.mark.parametrize(
     ("window", "target", "want"), [(CONTEXT, 262144, CONTEXT), (262144, CONTEXT, CONTEXT)]
 )
@@ -397,11 +494,11 @@ def test_mlx_launch_ctx_is_the_smaller_of_the_window_and_the_target(
     from lilbee.providers.fleet import planning
 
     folder = model_dir(tmp_path, {"max_position_embeddings": window})
-    (folder / "model.safetensors").write_bytes(b"\0" * 1024)
+    (folder / "model.safetensors").write_bytes(safetensors_bytes(1024))
     monkeypatch.setattr(cfg, "chat_n_ctx_target", target)
     monkeypatch.setattr(cfg, "num_ctx_max", None)
     monkeypatch.setattr(cfg, "placement", "")
-    monkeypatch.setattr(MLX, "binary", lambda: tmp_path / "mlx-lm-server")
+    monkeypatch.setattr(type(MLX), "binary", lambda _self: tmp_path / "mlx-lm-server")
     launch = planning.build_single_role_launch(WorkerRole.CHAT, folder, engine=MLX)
     assert launch.ctx == want
     assert launch.ctx > 0

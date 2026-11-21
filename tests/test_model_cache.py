@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import platform
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -14,12 +13,10 @@ from lilbee.core import system as system_mod
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.gpu_backends.nvidia import CardTotal
 from lilbee.providers.model_cache import (
-    _BUFFER_OVERHEAD_FRACTION,
     _DYNAMIC_CTX_FLOOR,
     _KV_BYTES_PER_CTX_TOKEN,
     _try_nvidia_memory,
     compute_dynamic_ctx,
-    estimate_model_memory,
     free_system_memory,
     get_available_memory,
     has_nvidia_gpu,
@@ -88,22 +85,6 @@ class TestKvBytesPerToken:
         }
         # 32 layers * 8 heads * (128 * 18/32 + 128 * 2)
         assert kv_bytes_per_token(meta, 18 / 32, 2.0) == 83968
-
-
-class TestEstimateModelMemory:
-    def test_zero_bytes_when_path_missing(self, tmp_path: Path) -> None:
-        # Missing file: estimate is just the KV cache (no weight, no overhead).
-        absent = tmp_path / "nope.gguf"
-        bytes_ = estimate_model_memory(absent, n_ctx=128, kv_bytes_per_tok=4)
-        assert bytes_ == 128 * 4
-
-    def test_includes_file_weights_kv_and_overhead(self, tmp_path: Path) -> None:
-        model = tmp_path / "m.gguf"
-        weight = 10_000
-        model.write_bytes(b"x" * weight)
-        bytes_ = estimate_model_memory(model, n_ctx=100, kv_bytes_per_tok=8)
-        expected = weight + (100 * 8) + int(weight * _BUFFER_OVERHEAD_FRACTION)
-        assert bytes_ == expected
 
 
 class TestComputeDynamicCtx:

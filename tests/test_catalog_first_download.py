@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from unittest.mock import patch
 
 from textual.app import ComposeResult
@@ -10,7 +11,7 @@ from textual.widgets import Static
 
 from lilbee.app.settings import SettingsUpdateResult
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.types import ModelCompat, ModelFormat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.core.config import cfg
@@ -80,6 +81,30 @@ async def test_first_chat_download_becomes_active_and_toasts() -> None:
             assert any(
                 msg.CHAT_READY_TOAST in str(c.args[0]) for c in notify.call_args_list if c.args
             )
+    finally:
+        cfg.chat_model = original or ""
+
+
+async def test_first_download_of_another_format_adopts_the_pull_reference() -> None:
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    original = cfg.chat_model
+    cfg.chat_model = ""
+    try:
+        async with _App().run_test(size=(120, 40)) as pilot:
+            screen = CatalogScreen()
+            await pilot.app.push_screen(screen)
+            await pilot.pause()
+            model = replace(_chat_model(), format=ModelFormat.SAFETENSORS)
+            on_success = await _enqueue_and_capture(pilot, screen, model)
+            assert on_success is not None
+
+            with patch.object(LilbeeApp, "set_active_model") as set_active:
+                await asyncio.to_thread(on_success)
+                await pilot.pause()
+            # The bare repo would resolve to the GGUF file the user did not download.
+            assert model.ref == "acme/llama-GGUF"
+            set_active.assert_called_once_with("chat_model", "acme/llama-GGUF#safetensors")
     finally:
         cfg.chat_model = original or ""
 

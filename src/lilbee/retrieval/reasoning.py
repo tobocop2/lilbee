@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import THINK_CLOSE_TAG, THINK_OPEN_TAG, ClosableIterator
 
 if TYPE_CHECKING:
@@ -78,9 +79,10 @@ class CapNotice:
 
 @dataclass
 class RetrievalNotice:
-    """Emitted once before the first token when retrieval ran on a rewrite of the question."""
+    """Emitted once before the first token: the retrieval rewrite and any failed search steps."""
 
-    query: str
+    query: str | None = None
+    degraded: tuple[HealthWarning, ...] = ()
 
 
 @dataclass

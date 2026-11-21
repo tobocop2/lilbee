@@ -164,6 +164,10 @@ class LocalCatalogRow:
     fit: FitChip | None = None
     compat: ModelCompat = ModelCompat.UNKNOWN
     safety_stripped: bool = False
+    # The model picker sets these two. ``engine`` is None when the row shows no engine, and ""
+    # when no engine can load the model. ``engine_auto`` says lilbee chose the engine.
+    engine: str | None = None
+    engine_auto: bool = False
     kind: Literal[CatalogRowKind.LOCAL] = CatalogRowKind.LOCAL
 
 

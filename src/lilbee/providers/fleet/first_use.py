@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
+from lilbee.catalog import runnable
 from lilbee.catalog.download import RetryCallback
 from lilbee.catalog.download_progress import ProgressCallback
-from lilbee.catalog.runnable import session_host
 from lilbee.core.config import cfg
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, cell_key, host_cell
 from lilbee.providers.fleet.engine_store import (
     ChecksumError,
     EngineConflictError,
     EngineDiskError,
+    EngineInUseError,
     EngineStore,
     LicenceRefusedError,
     MissingPackError,
-    PackageInstallError,
     PackUrlError,
     PinLock,
     UnsafeWheelError,
@@ -27,9 +29,14 @@ from lilbee.providers.fleet.engine_store import (
     fetch_frozen,
 )
 from lilbee.providers.fleet.engines.choice import pin_lock
-from lilbee.providers.fleet.engines.llama import LLAMA, pack_backend
-from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
+from lilbee.providers.fleet.engines.llama import (
+    LLAMA,
+    cuda_pack_gap,
+    pack_backend,
+    rocm_needs_libnuma,
+)
 from lilbee.providers.fleet.gpu_select import PCIVendorID
+from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.gguf_meta import forget_unanswered_reads
 from lilbee.runtime.cancellation import CancelSignal
 
@@ -38,6 +45,11 @@ log = logging.getLogger(__name__)
 _FIRST_USE_LOCK_S = 1800.0
 _UNSERVED_GPU_VENDORS = {PCIVendorID.AMD: "AMD", PCIVendorID.INTEL: "Intel"}
 _TOOL_SUFFIXES = ("", ".exe")
+_VULKAN_LOADER_ADVICE = {
+    HostOS.LINUX: "install the Vulkan loader (libvulkan1 or vulkan-loader)",
+    HostOS.WINDOWS: "install or update the GPU driver, which provides the Vulkan loader",
+}
+_ROCM_LIBRARY_ADVICE = "install the NUMA library (libnuma1 or numactl-libs)"
 
 
 class PackNotPublishedError(Exception):
@@ -49,10 +61,10 @@ INSTALL_REFUSALS = (
     ChecksumError,
     EngineConflictError,
     EngineDiskError,
+    EngineInUseError,
     FileLockUnavailableError,
     LicenceRefusedError,
     MissingPackError,
-    PackageInstallError,
     PackUrlError,
     UnsafeWheelError,
     UnsupportedOsError,
@@ -62,7 +74,7 @@ INSTALL_REFUSALS = (
 """The errors that stop a pack install for a reason the user can act on."""
 
 
-class _RefusedInstalls:
+class RefusedInstalls:
     """The refusal of each first-use install this process made, so a lookup does not retry it."""
 
     def __init__(self) -> None:
@@ -79,7 +91,32 @@ class _RefusedInstalls:
             raise self._by_pack[key]
 
 
-_refusals = _RefusedInstalls()
+_refusals = RefusedInstalls()
+
+
+class _InstallWarnings:
+    """The warning of the latest install, held until a search reports it to its user."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: HealthWarning | None = None
+
+    def set(self, warning: HealthWarning | None) -> None:
+        with self._lock:
+            self._held = warning
+
+    def take(self) -> list[HealthWarning]:
+        with self._lock:
+            held, self._held = self._held, None
+        return [] if held is None else [held]
+
+
+_install_warnings = _InstallWarnings()
+
+
+def take_install_warnings() -> list[HealthWarning]:
+    """The warnings the pack install raised since the last call; each is returned once."""
+    return _install_warnings.take()
 
 
 def _store() -> EngineStore:
@@ -93,12 +130,12 @@ def pack_lock() -> tuple[PinLock, str]:
     """
     pin = LLAMA.pack_pin()
     if not pin["platforms"]:
-        cell = cell_key(session_host(), pin["backend"]) or "this computer"
+        cell = cell_key(runnable.session_host(), pin["backend"]) or "this computer"
         raise PackNotPublishedError(
             f"The llama.cpp pack {pin['version']} for {cell} is not published yet."
         )
     lock = pin_lock(pin)
-    cell = host_cell(lock, session_host())
+    cell = host_cell(lock, runnable.session_host())
     return lock.for_cell(cell), cell
 
 
@@ -116,20 +153,50 @@ def installed_tool(tool: str) -> Path | None:
     return None
 
 
-def warn_if_gpu_unserved() -> None:
-    """Warn when the CPU pack installs on a computer with an AMD or Intel GPU."""
-    if pack_backend(session_host()) != "cpu":
-        return
-    present = installed_gpu_vendor_ids()
+def _unserved_gpu_warning() -> HealthWarning | None:
+    """The warning for a GPU the CPU pack cannot use, or ``None`` when there is none."""
+    host = runnable.session_host()
+    if pack_backend(host) != "cpu":
+        return None
+    if gap := cuda_pack_gap(host):
+        return HealthWarning(code=WarningCode.GPU_NOT_SERVED, message=gap)
     for vendor, name in _UNSERVED_GPU_VENDORS.items():
-        if vendor in present:
-            log.warning(
-                "This computer has an %s GPU, and no llama.cpp pack uses it. "
-                "lilbee installs the CPU build. For a GPU build, use a bundled build "
-                "or set LILBEE_LLAMA_SERVER_PATH to your own llama-server.",
-                name,
+        if vendor in host.display_vendors:
+            return HealthWarning(
+                code=WarningCode.GPU_NOT_SERVED,
+                message=(
+                    f"This computer has an {name} GPU, and no llama.cpp pack can use it here. "
+                    "lilbee installs the CPU build."
+                ),
+                remedy=(
+                    f"{_pack_advice(host)}To use your own build, set "
+                    "LILBEE_LLAMA_SERVER_PATH to your llama-server."
+                ),
             )
-            return
+    return None
+
+
+def warn_if_gpu_unserved() -> None:
+    """Log and hold a warning when the CPU pack installs on a computer with a GPU it cannot use.
+
+    An NVIDIA card or driver below the CUDA pack gets its own warning; otherwise an AMD or
+    Intel GPU does. The next search reports the held warning to its user. An install that
+    leaves no GPU unserved clears a warning an earlier install held.
+    """
+    warning = _unserved_gpu_warning()
+    if warning is not None:
+        log.warning("%s", warning.line)
+    _install_warnings.set(warning)
+
+
+def _pack_advice(host: HostCaps) -> str:
+    """The sentences that tell *host* how to get a GPU pack; empty when none exists."""
+    advice = ""
+    if rocm_needs_libnuma(host):
+        advice = f"For the ROCm build, {_ROCM_LIBRARY_ADVICE}. "
+    if host.arch == HostArch.X86_64 and host.os in _VULKAN_LOADER_ADVICE:
+        advice += f"For the Vulkan build, {_VULKAN_LOADER_ADVICE[host.os]}. "
+    return advice
 
 
 def install_pack(
@@ -142,8 +209,9 @@ def install_pack(
     """Install the llama.cpp pack once; a second caller waits and finds it installed.
 
     The download runs under one lock per engine, so two first uses fetch the wheel once.
-    A pack copied into the packs folder by hand is used with no download. The warning for
-    an AMD or Intel GPU comes only with a download. *on_progress*
+    A pack copied into the packs folder by hand is used with no download. The warning for a
+    GPU the CPU pack cannot use (NVIDIA below the CUDA pack, AMD or Intel) comes only with a
+    download. *on_progress*
     hears the bytes, *on_retry* each failed attempt, and a set *cancel* ends the download.
     """
     lock, cell = pack_lock()

@@ -37,6 +37,9 @@ class InstanceLaunch:
     # served window is smaller: the same planner aiming at least as high
     # already achieved this window, so a rebuild cannot beat it.
     built_ctx_target: int = 0
+    # The context length the model's header says it was trained for; 0 for non-chat
+    # roles and when the header gives none. Plan-time only: not written to state.
+    trained_ctx: int = 0
     # The vision slot ceiling the builder fitted against (vision_ocr_concurrency);
     # 0 for other roles and pre-field records.
     built_slots_target: int = 0
@@ -71,6 +74,13 @@ class InstanceLaunch:
     """
     swap_extras: Mapping[str, Any] = field(default_factory=dict)
     """Keys the engine adds to its llama-swap model entry; empty for llama.cpp."""
+    server_binary: str = ""
+    """The server executable the launch runs; argv may start with a wrapper such as env.
+
+    Empty in a record written before the field existed.
+    """
+    swap_class: str = ""
+    """The residency class this launch stays loaded with; empty means a class of its own."""
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -94,6 +104,8 @@ class InstanceLaunch:
             "est_host_bytes": self.est_host_bytes,
             "settings": self.settings,
             "swap_extras": dict(self.swap_extras),
+            "server_binary": self.server_binary,
+            "swap_class": self.swap_class,
         }
 
     @classmethod
@@ -121,6 +133,8 @@ class InstanceLaunch:
             rerank_mode=RerankMode(raw_mode) if raw_mode else None,
             settings=str(payload.get("settings") or ""),
             swap_extras=dict(payload.get("swap_extras") or {}),
+            server_binary=str(payload.get("server_binary") or ""),
+            swap_class=str(payload.get("swap_class") or ""),
         )
 
     @property

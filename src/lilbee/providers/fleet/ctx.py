@@ -53,6 +53,7 @@ def fit_single_ctx(
     flash_attn: bool,
     kv_cache_type: KvCacheType,
     unified: bool,
+    on_cpu: bool,
     ctx_ceiling: int,
     expert_offload: tuple[str, ...],
 ) -> int:
@@ -83,9 +84,10 @@ def fit_single_ctx(
                 flash_attn=flash_attn,
                 kv_cache_type=kv_cache_type,
                 expert_offload=expert_offload,
+                on_cpu=on_cpu,
             )
         )
-        return est.footprint(unified=unified) <= available_bytes
+        return est.resident_footprint(unified=unified) <= available_bytes
 
     return _largest_fitting_ctx(upper, _fits)
 

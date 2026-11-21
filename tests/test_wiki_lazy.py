@@ -435,6 +435,7 @@ class TestGeneratingOnRequestEndToEnd:
         ]
         # The chunker of the written page reads the embed cap from the services.
         page_services.provider.embed_token_cap.return_value = None
+        page_services.provider.count_tokens.side_effect = lambda text: len(text.split())
         with (
             services_scope(page_services),
             patch("lilbee.wiki.lazy.get_services", return_value=services),

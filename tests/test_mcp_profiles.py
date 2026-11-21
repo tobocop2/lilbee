@@ -152,6 +152,21 @@ async def test_apply_with_reindex_reports_a_refused_rebuild_after_the_apply(monk
     assert (result["rebuild"], result["rebuild_error"]) == (None, "The library is locked.")
 
 
+async def test_apply_with_reindex_reports_an_embedder_failure_after_the_apply(monkeypatch):
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    failure = ProviderError("The embedder is not running.", kind=ProviderErrorKind.CONNECTION)
+
+    async def _failed(**_kwargs: Any) -> SyncResult:
+        raise failure
+
+    _write(_global_dir(), "court-filings", CREDITED)
+    monkeypatch.setattr("lilbee.data.ingest.sync", _failed)
+    result = await profile_apply("Court filings", reindex=True)
+    assert _stored()["profile"]["name"] == "Court filings"
+    assert (result["rebuild"], result["rebuild_error"]) == (None, str(failure))
+
+
 async def test_apply_with_reindex_of_a_missing_profile_rebuilds_nothing(monkeypatch):
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr("lilbee.data.ingest.sync", _recording_sync(calls))

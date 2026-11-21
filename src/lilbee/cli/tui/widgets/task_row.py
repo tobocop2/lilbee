@@ -47,6 +47,7 @@ _STATUS_CLASSES: tuple[str, ...] = tuple(_STATUS_CLASS.values())
 # analyze uses its own green (reads only).
 _TASK_TYPE_BG: dict[str, str] = {
     TaskType.DOWNLOAD.value: "$accent",
+    TaskType.ENGINE.value: "$accent",
     TaskType.SYNC.value: "$secondary",
     TaskType.ADD.value: "$secondary",
     TaskType.REMOVE.value: "$secondary",

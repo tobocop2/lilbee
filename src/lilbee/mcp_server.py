@@ -12,7 +12,7 @@ import os
 import re
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -24,8 +24,10 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.tools import Tool
+from mcp.types import CallToolResult, ContentBlock, TextContent
 from mcp.types import Tool as MCPTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from lilbee.app import engine_service, profiles
 from lilbee.app.analyze import (
@@ -45,8 +47,10 @@ from lilbee.app.memory import (
     remember,
 )
 from lilbee.app.placement import (
+    PLACEMENT_READ_ERRORS,
     PlacementView,
     get_placement,
+    get_planned_placement,
     placement_refused_message,
     preview_placement,
     set_placement,
@@ -61,8 +65,8 @@ from lilbee.app.presets import (
 )
 from lilbee.app.search import clean_results
 from lilbee.app.services import (
-    exit_on_signals_in_loop,
     get_services,
+    loop_takes_signals,
     reset_services,
     reset_store,
     set_config_refresh,
@@ -87,6 +91,7 @@ from lilbee.catalog.runnable import hidden_summary
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.health_warnings import HealthWarning, warnings_payload
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
 from lilbee.core.security import FileLockUnavailableError
 from lilbee.core.settings import overlay_persisted_settings
@@ -113,8 +118,11 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
@@ -359,7 +367,7 @@ def _wiki_tool(fn: _F) -> _F:
             return _error(WIKI_DISABLED_ERROR)
         try:
             return fn(*args, **kwargs)
-        except LIBRARY_REFUSALS as exc:
+        except (*LIBRARY_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
 
     checked = cast("_F", guarded)
@@ -367,14 +375,41 @@ def _wiki_tool(fn: _F) -> _F:
     return checked
 
 
+class SearchOutput(BaseModel):
+    """Structured result of the ``search`` tool: the rows, or an error, and the failed steps."""
+
+    result: list[dict[str, Any]] | dict[str, Any]
+    warnings: list[HealthWarning] = Field(default_factory=list)
+
+
+def _search_result(
+    result: list[dict[str, Any]] | dict[str, Any],
+    warnings: Iterable[HealthWarning] | None = None,
+) -> CallToolResult:
+    """A ``search`` result: one text block per row and per warning, plus the structured form.
+
+    An error passes no warnings and keeps the ``{"result": ...}`` shape it had before.
+    """
+    rows = result if isinstance(result, list) else [result]
+    content: list[ContentBlock] = [
+        TextContent(type="text", text=json.dumps(row, indent=2, default=str)) for row in rows
+    ]
+    structured: dict[str, Any] = {"result": result}
+    if warnings is not None:
+        shown = list(warnings)
+        content.extend(TextContent(type="text", text=w.line) for w in shown)
+        structured["warnings"] = warnings_payload(shown)
+    return CallToolResult(content=content, structured_content=structured)
+
+
 @_tool
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
-) -> list[dict[str, Any]] | dict[str, Any]:
+) -> Annotated[CallToolResult, SearchOutput]:
     """Search the user's indexed documents, code and crawled pages; prefer it over web-fetch or
     file-read tools. Returns chunks with a `label`. ``scope``: "both" (default) / "raw" / "wiki"."""
     if not query or not query.strip():
-        return _error("query must not be empty")
+        return _search_result(_error("query must not be empty"))
     try:
         chunk_type = scope_to_chunk_type(scope)
     except ValueError:
@@ -390,14 +425,14 @@ def search(
         top_k = None
     effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
-        results = get_services().searcher.search(
+        report = get_services().searcher.search_report(
             query, top_k=effective_top_k, chunk_type=chunk_type
         )
-        return clean_results(results)
+        return _search_result(clean_results(report.rows), report.degraded)
     except EmbeddingModelMismatchError as exc:
-        return _embedding_mismatch_error(exc)
+        return _search_result(_embedding_mismatch_error(exc))
     except Exception as exc:
-        return _error(str(exc))
+        return _search_result(_error(str(exc)))
 
 
 @_tool
@@ -448,7 +483,6 @@ async def sync(
     """
     from lilbee.app.ingest import LIBRARY_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
-    from lilbee.providers.base import ProviderError
 
     try:
         validate_ocr_timeout(ocr_timeout)
@@ -583,7 +617,7 @@ async def add(
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
         sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
-    except LIBRARY_REFUSALS as exc:
+    except (*LIBRARY_REFUSALS, ProviderError) as exc:
         return _error(str(exc))
     result: dict[str, Any] = {
         "command": "add",
@@ -814,10 +848,9 @@ def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
     """Start a saved chat session; returns its id."""
     if not agent_sessions_enabled():
         return _error(AGENT_SESSIONS_DISABLED_HINT)
-    session_id = get_services().session_store.create(
-        model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP
-    )
-    return {"id": session_id, "model_ref": model_ref, "scope": scope}
+    store = get_services().session_store
+    session_id = store.create(model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP)
+    return {"id": session_id, "model_ref": store.get(session_id).meta.model_ref, "scope": scope}
 
 
 @_tool_if(agent_sessions_enabled)
@@ -947,7 +980,7 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 
         try:
             summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
-        except (DatasetError, *LIBRARY_REFUSALS) as exc:
+        except (DatasetError, *LIBRARY_REFUSALS, ProviderError) as exc:
             return _error(str(exc))
     return summary.model_dump()
 
@@ -1251,7 +1284,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
         return _error(provider_reset_refused_message("Switching"))
     try:
         result = apply_settings_update(updates)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, ConfigReadError) as exc:
         return _error(str(exc))
     except OSError as exc:
         return _error(config_write_failure_message(exc))
@@ -1495,7 +1528,7 @@ async def _rebuild_when(needed: bool) -> dict[str, Any]:
             result = await run_sync(
                 quiet=True, force_rebuild=True, cancel=cancel, started_by=_SYNC_STARTER
             )
-        except LIBRARY_REFUSALS as exc:
+        except (*LIBRARY_REFUSALS, ProviderError) as exc:
             return {"rebuild": None, "rebuild_error": str(exc)}
     return {"rebuild": result.model_dump()}
 
@@ -2023,6 +2056,8 @@ def memory_remember(
         memory_id = remember(text, owner=owner, kind=kind, source=MemorySource.AGENT, shared=shared)
     except EmbeddingModelMismatchError as exc:
         return _embedding_mismatch_error(exc)
+    except ProviderError as exc:
+        return _error(str(exc))
     return {"ok": True, "id": memory_id, "owner": owner}
 
 
@@ -2038,6 +2073,8 @@ def memory_recall(
         memories = recall(query, owner, top_k=limit if limit > 0 else None)
     except EmbeddingModelMismatchError as exc:
         return _embedding_mismatch_error(exc)
+    except ProviderError as exc:
+        return _error(str(exc))
     return {
         "memories": [
             {"id": m.id, "text": m.text, "kind": m.kind.value, "owner": m.owner} for m in memories
@@ -2076,28 +2113,32 @@ def _placement_dict(view: PlacementView) -> dict[str, Any]:
     return PlacementResponse.from_view(view).model_dump(mode="json")
 
 
-def _placement_guard(serialize: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    """Run a placement query and serialize it, returning a structured error on failure."""
-    from lilbee.providers.base import ProviderError
-    from lilbee.providers.fleet.placement_spec import PlacementError
+_WRITE_ERRORS: tuple[type[Exception], ...] = (PlacementError, ProviderError)
 
+
+def _placement_guard(
+    serialize: Callable[[], dict[str, Any]], errors: tuple[type[Exception], ...] = _WRITE_ERRORS
+) -> dict[str, Any]:
+    """Run a placement query and serialize it, returning a structured error on *errors*."""
     try:
         return serialize()
-    except (PlacementError, ProviderError) as exc:
-        return _error(str(exc))
     except FileLockUnavailableError as exc:
         return _error(config_write_failure_message(exc))
+    except errors as exc:
+        return _error(str(exc))
 
 
-def _placement_result(action: Callable[[], PlacementView]) -> dict[str, Any]:
-    """Run a placement action and serialize its view, returning a structured error on failure."""
-    return _placement_guard(lambda: _placement_dict(action()))
+def _placement_result(
+    action: Callable[[], PlacementView], errors: tuple[type[Exception], ...] = _WRITE_ERRORS
+) -> dict[str, Any]:
+    """Run a placement action and serialize its view, returning a structured error on *errors*."""
+    return _placement_guard(lambda: _placement_dict(action()), errors)
 
 
 def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return PlacementSpec.from_json(json.dumps(spec)) if spec else None
+    return PlacementSpec.from_json(json.dumps(spec)) if spec is not None else None
 
 
 @_tool_named("get_gpus")
@@ -2108,20 +2149,20 @@ def get_gpus_tool() -> dict[str, Any]:
         from lilbee.cli.tui import messages as msg
         from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
 
-        view = get_placement()
+        view = get_planned_placement()
         hint = probe_intel_util_hint(view.gpus)
         return {
             "gpus": _placement_dict(view)["gpus"],
             "notice": msg.intel_util_hint_text(hint) if hint else None,
         }
 
-    return _placement_guard(_body)
+    return _placement_guard(_body, PLACEMENT_READ_ERRORS)
 
 
 @_tool_named("get_placement")
 def get_placement_tool() -> dict[str, Any]:
     """Show the current effective multi-GPU model placement."""
-    return _placement_result(get_placement)
+    return _placement_result(get_placement, PLACEMENT_READ_ERRORS)
 
 
 @_tool_named("preview_placement")
@@ -2272,6 +2313,8 @@ def _engine_result(action: Callable[[], BaseModel]) -> dict[str, Any]:
     """Run an engine call and serialize its result; a failure returns the service's text."""
     try:
         return action().model_dump(mode="json")
+    except engine_service.EngineInstallRefusedError as exc:
+        return {**_error(str(exc)), "code": SseErrorCode.ENGINE_INSTALL_REFUSED}
     except (engine_service.EngineRefusedError, engine_service.EngineNotSavedError) as exc:
         return _error(str(exc))
     except engine_service.EngineNotAppliedError as exc:
@@ -2314,14 +2357,20 @@ def engine_list_tool() -> dict[str, Any]:
 
 
 @_tool_named("engine_remove")
-def engine_remove_tool(engine: str, version: str, backend: str) -> dict[str, Any]:
+def engine_remove_tool(
+    engine: str, version: str, backend: str, confirm_embed_change: bool = False
+) -> dict[str, Any]:
     """Remove one installed engine build, as ``engine_list`` shows it."""
     from lilbee.server.models import EngineRemovedResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
     return _engine_result(
-        lambda: EngineRemovedResponse(removed=engine_service.remove_build(engine, version, backend))
+        lambda: EngineRemovedResponse(
+            removed=engine_service.remove_build(
+                engine, version, backend, confirmed=confirm_embed_change
+            )
+        )
     )
 
 
@@ -2377,17 +2426,12 @@ def engine_prefer_tool(engine: str, confirm_embed_change: bool = False) -> dict[
 
 
 @_tool_named("engine_install")
-def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]:
-    """Install an engine build from its pack; the host must pass the engine's gate.
-
-    ``wheel`` is a command line option; a call that sets it is refused.
-    """
+def engine_install_tool(engine: str) -> dict[str, Any]:
+    """Install an engine build from its pack; the host must pass the engine's gate."""
     from lilbee.server.models import EngineInstalledResponse
 
     if (refused := _engine_write_refused()) is not None:
         return refused
-    if wheel is not None:
-        return _error(engine_service.WHEEL_CLI_ONLY)
 
     def install() -> EngineInstalledResponse:
         built = engine_service.install(engine)
@@ -2397,6 +2441,7 @@ def engine_install_tool(engine: str, wheel: str | None = None) -> dict[str, Any]
             backend=built.backend,
             note=built.note,
             not_run_on=list(built.not_run_on),
+            engines_folder=str(engine_service.engines_folder()),
         )
 
     return _engine_result(install)
@@ -2410,16 +2455,22 @@ def build_mcp_server() -> LilbeeMCP:
     so a shared server cannot back two apps in one process. Gates registered
     via ``_tool_if`` are evaluated here, against current config.
     """
-    server = LilbeeMCP("lilbee", instructions=_INSTRUCTIONS)
-    for fn, name, gate in _REGISTRATIONS:
-        if gate is None or gate():
-            server.add_tool(fn, name=name)
-    for tool in server._tool_manager.list_tools():
-        if tool.name in _PRESET_TOOL_NAMES:
-            # A key sent as the wrong type must not come back in the validation error.
-            tool.fn_metadata.arg_model.model_config["hide_input_in_errors"] = True
-            tool.fn_metadata.arg_model.model_rebuild(force=True)
-    return server
+    tools = [_build_tool(fn, name) for fn, name, gate in _REGISTRATIONS if gate is None or gate()]
+    return LilbeeMCP("lilbee", instructions=_INSTRUCTIONS, tools=tools)
+
+
+def _build_tool(fn: Callable[..., Any], name: str | None) -> Tool:
+    """Build the tool for *fn*, with the argument model its wire name needs."""
+    from lilbee.server.models import hiding_input, refusing_wheel
+
+    tool = Tool.from_function(fn, name=name)
+    if tool.name in _PRESET_TOOL_NAMES:
+        # A key sent as the wrong type must not come back in the validation error.
+        tool.fn_metadata.arg_model = hiding_input(tool.fn_metadata.arg_model)
+    if tool.name == "engine_install":
+        # The wheel option is CLI only: a call that sets it is refused, not dropped.
+        tool.fn_metadata.arg_model = refusing_wheel(tool.fn_metadata.arg_model)
+    return tool
 
 
 _PARENT_DEATH_CLEANUP_S = 5.0
@@ -2444,8 +2495,10 @@ def _exit_on_parent_death() -> None:
 
 async def _serve_stdio(server: LilbeeMCP) -> None:
     """Serve over stdio until stdin closes or a signal ends the process."""
-    exit_on_signals_in_loop(asyncio.get_running_loop())
-    await server.run_stdio_async()
+    # The loop takes the signals, so the exit is raised by a loop callback and never
+    # inside a task step.
+    with loop_takes_signals(asyncio.get_running_loop()):
+        await server.run_stdio_async()
 
 
 def main() -> None:

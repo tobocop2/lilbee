@@ -66,7 +66,7 @@ def _not_held(count: int) -> dict[str, pa.Array]:
     """The held-out columns of *count* source rows that no sync holds out."""
     return {
         name: pa.array([None] * count, pa.utf8())
-        for name in ("held_out", "held_hash", "held_reason")
+        for name in ("held_out", "held_hash", "held_reason", "held_inputs")
     }
 
 
@@ -274,6 +274,7 @@ class TestSourceSummary:
                     "held_out": pa.array([row[4] for row in rows], pa.utf8()),
                     "held_hash": pa.array([None] * len(rows), pa.utf8()),
                     "held_reason": pa.array([None] * len(rows), pa.utf8()),
+                    "held_inputs": pa.array([None] * len(rows), pa.utf8()),
                 },
                 schema=table.schema,
             )

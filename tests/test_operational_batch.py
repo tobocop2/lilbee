@@ -72,7 +72,9 @@ class TestANumCtxPinIsClampedToTheModel:
         monkeypatch.setattr(cfg, "num_ctx", 200_000)
         monkeypatch.setattr(cfg, "num_ctx_max", None)
         meta = {"architecture": "qwen3", "context_length": "8192"}
-        assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, model, meta) == 8192
+        assert (
+            planning_mod._placement_estimate_ctx(WorkerRole.CHAT, model, meta, engine=LLAMA) == 8192
+        )
 
 
 class TestANotAvailableUtilKeepsTheMemoryReading:

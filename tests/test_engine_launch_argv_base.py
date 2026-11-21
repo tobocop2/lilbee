@@ -15,6 +15,10 @@ from tests._engine_launch_argv import launch_argvs
 # `serve` for mistral.rs: the `text` word in chat and the `vision` word in vision.
 # Updated again after commits 37f0ca6eb and 1e7fbaf0e: the mistral.rs vision
 # subcommand is `multimodal`, and the TEI roles carry `--max-batch-tokens`.
+# The mistral.rs vision argv carries no context flag, as its multimodal loader refuses one.
+# The mlx chat argv carries `--max-tokens` at the window, because mlx-lm otherwise stops
+# every answer at 512 tokens. It also carries llama-server's sampling defaults, because
+# mlx-lm otherwise decodes greedily and a thinking model repeats itself without end.
 # No other line changed.
 BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 

@@ -210,7 +210,7 @@ _PROBE_BUDGET_S = 120.0
 def test_the_default_path_takes_a_write_made_before_the_product_started(
     tmp_path, monkeypatch, mode, data_env
 ):
-    from tests.conftest import clean_env
+    from tests.conftest import child_pythonpath, clean_env
 
     home = tmp_path / "home"
     home.mkdir()
@@ -237,7 +237,7 @@ def test_the_default_path_takes_a_write_made_before_the_product_started(
         "HF_HUB_OFFLINE": "1",
         "LILBEE_ENGINE_DIR": str(home / "engine-slot"),
         # The child runs in another directory; it must import the lilbee under test.
-        "PYTHONPATH": str(Path(lilbee.__file__).resolve().parents[1]),
+        "PYTHONPATH": child_pythonpath(Path(lilbee.__file__).resolve().parents[1]),
     }
     if data_env is not None:
         env["LILBEE_DATA"] = data_env

@@ -48,23 +48,31 @@ class SourceType(StrEnum):
 
 
 class HeldOut(StrEnum):
-    """Why a ``_sources`` row holds its path out of later syncs.
+    """Why a ``_sources`` row records that its path is not indexed at its content.
 
     ``REMOVED``: the user removed it; the row also keeps the path a citation names.
     ``FAILED``: ingestion produced nothing at that content; a row that holds a
     document keeps it listed.
+    ``RETRY``: the model engine or the index write failed on it; the next sync
+    tries it again, and a row that holds a document keeps it listed.
     """
 
     FAILED = "failed"
     REMOVED = "removed"
+    RETRY = "retry"
+
+
+# The records whose row keeps the document it holds, and that count as a failed ingest.
+INGEST_FAILURES = frozenset({HeldOut.FAILED, HeldOut.RETRY})
 
 
 class HeldRecord(NamedTuple):
-    """Why a sync holds a path out, and the content hash it holds it out at."""
+    """Why a sync holds a path out, the content hash and the settings it holds it out at."""
 
     kind: HeldOut
     file_hash: str
     reason: str
+    inputs: str = ""
 
 
 # The reason a removal records, shown with the held-out file.
@@ -126,14 +134,6 @@ class ChunkType(StrEnum):
 # 4: the meta row holds canary vectors (see lilbee.data.store.canary).
 KEYED_SCHEMA_VERSION = 3
 META_SCHEMA_VERSION = 4
-
-# Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
-# Lance's ``Table.delete`` requires a SQL where clause; this matches every row without
-# coupling the deletion to any specific column's value domain.
-META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
-
-# Same, for the single-row ``_entity_schema`` table.
-ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
 
 
 class EntitySchemaState(TypedDict):

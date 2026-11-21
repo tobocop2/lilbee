@@ -7,6 +7,8 @@ scoping, and store access live in one place. All operate on the human's
 
 from __future__ import annotations
 
+import asyncio
+
 from litestar.exceptions import NotFoundException
 
 from lilbee.app.memory import (
@@ -36,35 +38,28 @@ def _require_memory() -> None:
 async def remember_memory(text: str, kind: MemoryKind, shared: bool) -> RememberResponse:
     """Store a memory and return its id and kind."""
     _require_memory()
-    memory_id = remember(text, kind=kind, shared=shared)
+    memory_id = await asyncio.to_thread(remember, text, kind=kind, shared=shared)
     return RememberResponse(id=memory_id, kind=kind)
 
 
 async def list_local_memories() -> MemoryListResponse:
     """Return the human's stored memories, newest first."""
     _require_memory()
+    rows = await asyncio.to_thread(list_memories)
     return MemoryListResponse(
-        memories=[
-            MemoryItem(
-                id=m.id,
-                kind=m.kind,
-                shared=m.shared,
-                text=m.text,
-            )
-            for m in list_memories()
-        ]
+        memories=[MemoryItem(id=m.id, kind=m.kind, shared=m.shared, text=m.text) for m in rows]
     )
 
 
 async def update_memory_shared(memory_id: str, shared: bool) -> MemoryFlagsResponse:
     """Set a memory's shared-with-agents flag."""
     _require_memory()
-    updated = set_memory_shared(memory_id, shared=shared)
+    updated = await asyncio.to_thread(set_memory_shared, memory_id, shared=shared)
     return MemoryFlagsResponse(id=memory_id, updated=updated)
 
 
 async def remove_memory(memory_id: str) -> MemoryRemoveResponse:
     """Delete a memory by id; ``deleted`` is False when the id was unknown."""
     _require_memory()
-    deleted = forget(memory_id)
+    deleted = await asyncio.to_thread(forget, memory_id)
     return MemoryRemoveResponse(id=memory_id, deleted=deleted)

@@ -6,7 +6,7 @@ import platform
 from collections.abc import Mapping
 from typing import Any, TypeVar
 
-from lilbee.providers.fleet.engine_digests import MANIFESTS
+from lilbee.providers.fleet.engine_record import Manifests, load_manifests
 from lilbee.providers.fleet.engine_store import (
     PinLock,
     PlatformAsset,
@@ -23,6 +23,8 @@ _FLOOR_LABELS = {
 _OWN_ENGINE_HINT = ", or set LILBEE_LLAMA_SERVER_PATH to an engine you built"
 
 _T = TypeVar("_T")
+
+MANIFESTS: Manifests = load_manifests()
 
 
 class UnsupportedOsError(Exception):
@@ -105,6 +107,20 @@ def host_os_version(host_os: HostOS) -> str:
     return platform.version()
 
 
+def unread_host_refusal(engine: str, host: HostCaps) -> str:
+    """The refusal of *engine* on a host whose OS or CPU is unread, naming the unread part."""
+    unread = [
+        part
+        for part, value in (("operating system", host.os), ("processor", host.arch))
+        if value is None
+    ]
+    return (
+        f"Engine {engine} cannot be installed: lilbee could not read the "
+        f"{' and the '.join(unread)} of this computer. "
+        "Run lilbee on Windows, macOS or Linux with an x86-64 or ARM64 processor."
+    )
+
+
 def host_cell(lock: PinLock, host: HostCaps) -> str:
     """The cell key of *lock* for *host*; empty for a pin with no cells.
 
@@ -113,9 +129,7 @@ def host_cell(lock: PinLock, host: HostCaps) -> str:
     if not lock.platforms:
         return ""
     if host.os is None or host.arch is None:
-        raise UnsupportedPlatformError(
-            f"Engine {lock.engine} has no {lock.backend} build for this computer."
-        )
+        raise UnsupportedPlatformError(unread_host_refusal(lock.engine, host))
     asset = find_cell(lock.engine, lock.platforms, host.os, host.arch, lock.backend)
     require_floor(lock.engine, lock.version, lock.backend, asset, host.os, host_os_version(host.os))
     return _join(host.os, host.arch, lock.backend)

@@ -13,27 +13,35 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping, Sequence
 from types import MappingProxyType
+from typing import Protocol, TypeVar
 
 from lilbee.runtime.shard_process import shard_process
 
 log = logging.getLogger(__name__)
 
+CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
+ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
+HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
+# ROCm's third numeric visibility variable, filtering exactly as the other two do.
+GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
+VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
+ONEAPI_SELECTOR_VAR = "ONEAPI_DEVICE_SELECTOR"
 # Backend env vars set from ``cfg.gpu_devices``. Vulkan, CUDA, and ROCm each read
 # their own; a user-set ``cfg.gpu_devices`` is applied to all four because the
 # user is specifying their own indexes and opting in to all wheel flavors.
 _GPU_VISIBLE_ENV_VARS = (
-    "GGML_VK_VISIBLE_DEVICES",
-    "CUDA_VISIBLE_DEVICES",
-    "HIP_VISIBLE_DEVICES",
-    "ROCR_VISIBLE_DEVICES",
+    VK_VISIBLE_VAR,
+    CUDA_VISIBLE_VAR,
+    HIP_VISIBLE_VAR,
+    ROCR_VISIBLE_VAR,
 )
 # The AMD pair is deliberately absent: ROCr filters before HIP re-indexes within
 # the survivors, so a pin may only ever be written to one of them. Which one is
 # devices.amd_visible_var's decision.
-_NON_AMD_VISIBLE_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
-_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
+_NON_AMD_VISIBLE_ENV_VARS = (VK_VISIBLE_VAR, CUDA_VISIBLE_VAR)
+_UUID_PREFIX = "GPU-"
 # What the NVIDIA container runtime sets to say which GPUs it gave this
 # container. Its own words for "none" are below.
 _NVIDIA_RUNTIME_VISIBLE_VAR = "NVIDIA_VISIBLE_DEVICES"
@@ -51,8 +59,8 @@ ENGINE_TRACE_EXPORT_VARS: tuple[str, ...] = ("OTLP_ENDPOINT",)
 
 # Every engine lilbee starts opts out of telemetry. huggingface_hub (mlx-lm, TEI's
 # Python backend) reads the first two; DO_NOT_TRACK is the cross-tool convention.
-# llama.cpp, ik_llama.cpp, mistral.rs and the Rust hf-hub crate carry no telemetry
-# and read none of these; the values cost nothing there.
+# The native engines and the Rust hf-hub crate carry no telemetry and read none of
+# these; the values cost nothing there.
 ENGINE_TELEMETRY_OPT_OUT: Mapping[str, str] = MappingProxyType(
     {"HF_HUB_DISABLE_TELEMETRY": "1", "DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"}
 )
@@ -169,12 +177,12 @@ def _clear_empty_visible_device_vars(env: MutableMapping[str, str]) -> None:
     """
     if not _container_runtime_exposes_a_gpu(env):
         return
-    if _CUDA_VISIBLE_VAR in env and not env[_CUDA_VISIBLE_VAR].strip():
-        del env[_CUDA_VISIBLE_VAR]
+    if CUDA_VISIBLE_VAR in env and not env[CUDA_VISIBLE_VAR].strip():
+        del env[CUDA_VISIBLE_VAR]
         log.debug(
             "%s was empty while %s exposes a GPU; clearing the empty mask so the engine "
             "can see the card the container runtime provided.",
-            _CUDA_VISIBLE_VAR,
+            CUDA_VISIBLE_VAR,
             _NVIDIA_RUNTIME_VISIBLE_VAR,
         )
 
@@ -210,6 +218,53 @@ def gpu_environ() -> dict[str, str]:
     _clear_empty_visible_device_vars(env)
     _apply_gpu_devices_pin(env)
     return env
+
+
+class _CudaCard(Protocol):
+    """A card with the printed index and uuid that ``nvidia-smi`` shows."""
+
+    @property
+    def index(self) -> int: ...
+
+    @property
+    def uuid(self) -> str: ...
+
+
+_C = TypeVar("_C", bound=_CudaCard)
+
+
+def cuda_visible_cards(cards: Sequence[_C]) -> list[_C]:
+    """The subset of *cards* ``CUDA_VISIBLE_DEVICES`` keeps, in the order the mask names them.
+
+    The one reader of the mask. An entry is a decimal index as ``nvidia-smi`` prints it
+    (zero-padded accepted) or a ``GPU-`` UUID prefix that names one card. Enumeration
+    stops at the first entry that names no card, as the CUDA runtime does (see the CUDA
+    programming guide, environment variables). An unset mask keeps every card and an empty
+    one keeps none. NVIDIA documents no rule for a repeated card, and the runtime reports
+    no device for ``1,1``, so a mask that names one card twice keeps none.
+    """
+    raw = gpu_environ().get(CUDA_VISIBLE_VAR)
+    if raw is None:
+        return list(cards)
+    visible: list[_C] = []
+    for entry in (part.strip() for part in raw.split(",")):
+        named = _named_card(entry, cards)
+        if named is None:
+            break
+        if any(card.index == named.index for card in visible):
+            return []
+        visible.append(named)
+    return visible
+
+
+def _named_card(entry: str, cards: Sequence[_C]) -> _C | None:
+    """The one card a mask entry names, ``None`` when it names none or several."""
+    if entry.isascii() and entry.isdigit():
+        return next((card for card in cards if card.index == int(entry)), None)
+    if entry.startswith(_UUID_PREFIX) and len(entry) > len(_UUID_PREFIX):
+        named = [card for card in cards if card.uuid.startswith(entry)]
+        return named[0] if len(named) == 1 else None
+    return None
 
 
 def engine_environ() -> dict[str, str]:

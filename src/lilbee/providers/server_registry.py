@@ -9,7 +9,7 @@ import re
 import socket
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, assert_never
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
@@ -41,11 +41,25 @@ _UNPARSED_STORE = (
 )
 
 
+class ConfigReadError(Exception):
+    """config.toml cannot be read; the text is for the user. Not a ValueError: no ref is refused."""
+
+
 class RerankWire(StrEnum):
     """The request shape a preset's rerank endpoint reads."""
 
-    V1 = "v1"  # POST /v1/rerank with documents: Jina, Cohere, llama-server, Lemonade
-    TEI = "tei"  # POST /rerank with texts: Hugging Face text-embeddings-inference
+    V1 = "v1"  # documents: Jina, Cohere, llama-server, Lemonade
+    TEI = "tei"  # texts: Hugging Face text-embeddings-inference
+
+    @property
+    def route(self) -> str:
+        """The route a rerank request of this wire posts to."""
+        match self:
+            case RerankWire.V1:
+                return "/v1/rerank"
+            case RerankWire.TEI:
+                return "/rerank"
+        assert_never(self)  # pragma: no cover
 
 
 def checked_key(api_key: str) -> SecretStr:
@@ -130,6 +144,17 @@ def stored_entries() -> list[Entry]:
     return decode_entries(settings.load(cfg.data_root).get(PRESETS_KEY))
 
 
+def _readable_entries() -> list[Entry]:
+    """The stored entries; a config.toml that cannot be read raises ConfigReadError."""
+    try:
+        return stored_entries()
+    except OSError as exc:
+        # Deferred: lilbee.app.settings imports the config, which imports this module.
+        from lilbee.app.settings import config_read_failure_message
+
+        raise ConfigReadError(config_read_failure_message(exc)) from exc
+
+
 def is_loopback_url(url: str) -> bool:
     """Whether *url* names this host: localhost, a loopback or the any address; LAN is remote."""
     try:
@@ -162,9 +187,10 @@ def loopback_reserve_bytes() -> int:
     """Bytes of RAM the loopback presets reserve for their servers; 0 when none is set.
 
     A store that does not parse reserves nothing; the read has logged the fault.
+    A config.toml that cannot be read raises ConfigReadError with the text for the user.
     """
     try:
-        entries = stored_entries()
+        entries = _readable_entries()
     except ValueError:
         return 0
     gib = sum(
@@ -191,11 +217,12 @@ def route_for(prefix: str) -> ServerRoute | None:
 
     The store is read on each call, so a preset another process changes is seen at once.
     A store that does not parse routes nothing; the read has logged the fault.
+    A config.toml that cannot be read raises ConfigReadError with the text for the user.
     """
     if prefix in RESERVED_NAMES:
         return None
     try:
-        entries = stored_entries()
+        entries = _readable_entries()
     except ValueError:
         return None
     for entry in entries:

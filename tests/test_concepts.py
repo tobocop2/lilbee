@@ -1009,17 +1009,23 @@ class TestRebuildClusters:
         mock_svc.store.open_table.side_effect = side
         mock_leiden.return_value = ({"a": 0}, {"a": 1})
 
-        cg.rebuild_clusters()
+        with patch("lilbee.retrieval.concepts.graph.data_store.prune_old_versions") as prune:
+            cg.rebuild_clusters()
         # compact_tables opens each concept table by name; chunk_concepts resolves to
-        # its mock (the others to fresh mocks) -> optimize fires once on it.
-        assert cc_tbl.optimize.call_count == 1
+        # its mock (the others to fresh mocks) -> the prune fires once on it.
+        tables = [call.args[0] for call in prune.call_args_list]
+        assert tables.count(cc_tbl) == 1
+        assert prune.call_count == 3
 
     def test_compact_tables_survives_optimize_failure(self, cg, mock_svc):
         mock_table = MagicMock()
-        mock_table.optimize.side_effect = RuntimeError("compaction failed")
         mock_svc.store.open_table.return_value = mock_table
-        cg.compact_tables()
-        assert mock_table.optimize.call_count == 3
+        with patch(
+            "lilbee.retrieval.concepts.graph.data_store.prune_old_versions",
+            side_effect=RuntimeError("compaction failed"),
+        ) as prune:
+            cg.compact_tables()
+        assert prune.call_count == 3
 
     def test_compact_tables_skips_missing_tables(self, cg, mock_svc):
         mock_svc.store.open_table.return_value = None

@@ -112,7 +112,7 @@ wire_opencode() { # wire_opencode <proj-index>: launcher-equivalent config, per-
 import json
 import os
 
-from lilbee.cli.agent_configs.opencode import opencode_config
+from lilbee.app.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.server import client_chat_ctx
 
 port = int(os.environ["LILBEE_PORT"])

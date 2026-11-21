@@ -99,7 +99,7 @@ class _LifetimeSpawner:
     The death signal binds to the thread that forks the child, so a single thread
     forks them all and serves requests from a queue until the process ends. The
     thread keeps serving through atexit handlers. A spawn made once interpreter
-    teardown has begun raises ``RuntimeError``.
+    teardown has begun raises ``RuntimeError``. A forked child starts its own thread.
     """
 
     def __init__(self) -> None:
@@ -130,6 +130,12 @@ class _LifetimeSpawner:
             except BaseException as exc:
                 done.set_exception(exc)
 
+    def _reset_in_forked_child(self) -> None:
+        """Drop the parent's worker, which a fork does not copy, so the next spawn starts one."""
+        self._requests = queue.SimpleQueue()
+        self._thread = None
+        self._lock = threading.Lock()
+
     def close(self) -> None:
         """Stop the spawner thread after it serves every queued spawn. Test-only."""
         with self._lock:
@@ -140,6 +146,20 @@ class _LifetimeSpawner:
 
 
 _spawner = _LifetimeSpawner()
+
+
+def _close_death_pipes_in_forked_child() -> None:
+    """Close the parent's death-pipe write ends in a forked child."""
+    held = list(_death_pipe_write_fds.values())
+    _death_pipe_write_fds.clear()
+    for write_fd in held:
+        with contextlib.suppress(OSError):
+            os.close(write_fd)
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no cover - absent on Windows
+    os.register_at_fork(after_in_child=_spawner._reset_in_forked_child)
+    os.register_at_fork(after_in_child=_close_death_pipes_in_forked_child)
 
 
 def _assign_to_kill_on_close_job(pid: int) -> None:  # pragma: no cover - Windows only
@@ -204,8 +224,7 @@ def _watch_via_death_pipe(pid: int) -> None:
     Portable stand-in for prctl/job objects: we hold the pipe's write end until the
     child stops or we die, and the watcher (reading the read end as its stdin)
     signals *pid* at EOF. The write end is O_CLOEXEC, so exec'd children never
-    inherit it; a fork-without-exec child would keep the pipe open past our death,
-    so a bound child's owner must not fork workers (serve is single-process).
+    inherit it, and a forked child closes its copy at the fork.
 
     The read end is passed as the watcher's stdin rather than redirected with
     ``<&N``: dash mis-dups a multi-digit fd there, silently binding the wrong one.

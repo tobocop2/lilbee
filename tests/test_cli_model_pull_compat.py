@@ -58,3 +58,33 @@ def test_pull_json_mode_emits_structured_error_on_unsupported() -> None:
         assert '"arch":"kimi_k2"' in out
     finally:
         cfg.json_mode = original_json_mode
+
+
+def test_pull_of_a_safetensors_repo_names_the_working_command(monkeypatch) -> None:
+    """A bare pull of a repo with no GGUF exits 1 and prints the ref that pulls its folder."""
+    from types import SimpleNamespace
+
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoSibling
+
+    from lilbee.catalog import build_adhoc_entry, resolve_filename
+    from lilbee.providers.fleet.engines import LLAMA
+
+    names = ["config.json", "model.safetensors", "tokenizer.json"]
+    monkeypatch.setattr(
+        HfApi,
+        "model_info",
+        lambda self, repo_id, **_kw: SimpleNamespace(
+            siblings=[RepoSibling(rfilename=name) for name in names], tags=["safetensors"]
+        ),
+    )
+
+    def _pull(ref, src, *, on_update, allow_unsupported):
+        resolve_filename(build_adhoc_entry(ref), LLAMA)
+
+    with patch("lilbee.cli.model.pull_model_data", side_effect=_pull):
+        result = CliRunner().invoke(model_app, ["pull", "Qwen/Qwen3-Embedding-0.6B"])
+    assert result.exit_code == 1
+    assert "lilbee model pull Qwen/Qwen3-Embedding-0.6B#safetensors" in result.stdout.replace(
+        "\n", ""
+    )

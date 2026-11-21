@@ -25,6 +25,15 @@ CatalogDetailDrawer.-collapsed {
     margin-bottom: 1;
 }
 
+.catalog-detail-engine {
+    margin-bottom: 1;
+}
+
+.catalog-detail-formats {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
 .catalog-detail-license {
     color: $text-muted;
     margin-bottom: 1;

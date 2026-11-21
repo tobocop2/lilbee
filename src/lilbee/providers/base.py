@@ -197,6 +197,15 @@ class ProviderError(Exception):
         self.kind = kind
         super().__init__(message)
 
+    @property
+    def repeats_on_retry(self) -> bool:
+        """Whether the same input fails the same way again, so a retry cannot help."""
+        return self.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+
+
+class EmbeddingOverflowError(ProviderError):
+    """A context overflow raised by the embedding call."""
+
 
 # The 400 message of a server that refuses a prompt longer than its window.
 _PROMPT_LENGTH_OVERFLOW = re.compile(r"Prompt sequence length is greater than \d+")
@@ -363,6 +372,14 @@ class LLMProvider(Protocol):
         estimate.
         """
         ...
+
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Tokens in *text* under the chat model's tokenizer, or None with no tokenize route.
+
+        Retrieval budgets the prompt with this count. None sends it back to
+        the character rule.
+        """
+        return None
 
     def count_chat_prompt_tokens(
         self,

@@ -16,7 +16,11 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import engines as engines_package
-from lilbee.providers.fleet.engine_manifest import UnsupportedOsError, host_cell
+from lilbee.providers.fleet.engine_manifest import (
+    UnsupportedOsError,
+    host_cell,
+    unread_host_refusal,
+)
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
     EngineStore,
@@ -25,7 +29,12 @@ from lilbee.providers.fleet.engine_store import (
     UnsupportedPlatformError,
     engines_root,
 )
-from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
+from lilbee.providers.fleet.engines.base import (
+    EngineAdapter,
+    EngineName,
+    RoleFormatChecked,
+    UserInstalled,
+)
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.proof import is_proven
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
@@ -100,10 +109,23 @@ def _adapter(name: str) -> EngineAdapter | None:
     return next((a for n, a in ADAPTERS.items() if n == name), None)
 
 
+def refuses_format_for_role(name: str, role: WorkerRole, fmt: str) -> bool:
+    """True when a shipped adapter serves *role* but cannot load *fmt* for it."""
+    adapter = _adapter(name)
+    return isinstance(adapter, RoleFormatChecked) and fmt in adapter.refused_role_formats.get(
+        role, ()
+    )
+
+
 def _serves(name: str, role: WorkerRole | None) -> bool:
     """False only for a shipped adapter that does not serve *role*."""
     adapter = _adapter(name)
     return role is None or adapter is None or role in adapter.served_roles
+
+
+def _accepts(name: str, role: WorkerRole | None, fmt: str) -> bool:
+    """``_serves``, and no refusal of *fmt* for *role* by the adapter."""
+    return _serves(name, role) and (role is None or not refuses_format_for_role(name, role, fmt))
 
 
 def host_answer(name: str, host: HostSource) -> HostGate:
@@ -123,9 +145,7 @@ def install_answer(adapter: EngineAdapter, host: HostCaps) -> HostGate:
         return gate
     pin = adapter.pin_record()
     if pin["platforms"] or pin["sha256"] is None:
-        return HostGate(
-            False, f"Engine {adapter.name} has no {pin['backend']} build for this computer.", False
-        )
+        return HostGate(False, unread_host_refusal(adapter.name, host), False)
     return gate
 
 
@@ -175,10 +195,27 @@ def engines_loading(fmt: str, installed: InstalledEngines) -> list[EngineName]:
     return [name for name, formats in installed.items() if fmt in formats]
 
 
-def loadable_refs(refs: Iterable[str]) -> list[str]:
-    """The refs in *refs* whose format an installed engine loads, in order."""
+def loadable_refs(refs: Iterable[str], role: WorkerRole | None = None) -> list[str]:
+    """The refs in *refs* whose format an installed engine loads for *role*, in order.
+
+    With no *role*, an engine that loads the format counts whatever it serves.
+    """
     installed = installed_engines()
-    return [ref for ref in refs if engines_loading(model_format(ref), installed)]
+
+    def loadable(ref: str) -> bool:
+        fmt = model_format(ref)
+        return any(_accepts(name, role, fmt) for name in engines_loading(fmt, installed))
+
+    return [ref for ref in refs if loadable(ref)]
+
+
+def serving_engines(fmt: str, role: WorkerRole) -> list[EngineName]:
+    """The shipped engines whose adapter loads *fmt* and serves *role*, installed or not."""
+    return [
+        name
+        for name, adapter in ADAPTERS.items()
+        if fmt in adapter.formats and _accepts(name, role, fmt)
+    ]
 
 
 def _candidates(
@@ -188,12 +225,36 @@ def _candidates(
     return [
         name
         for name in engines_loading(fmt, installed)
-        if _serves(name, role) and host_answer(name, host).ok
+        if _accepts(name, role, fmt) and host_answer(name, host).ok
     ]
 
 
-def _choose_hint(names: list[EngineName]) -> str:
-    return f"Choose {' or '.join(names)} with lilbee engine use or lilbee engine prefer."
+def _choose_hint(names: list[EngineName], role: WorkerRole | None) -> str:
+    """The commands that fix the choice; ``use`` works only once a role holds the model."""
+    which = " or ".join(names)
+    if role is None:
+        return (
+            f"Choose {which} with lilbee engine prefer. "
+            "It applies to every model without its own choice."
+        )
+    return (
+        f"Choose {which} with lilbee engine use for this model, "
+        "or with lilbee engine prefer for every model without its own choice."
+    )
+
+
+def _servers_to_install(
+    fmt: ModelFormat, installed: InstalledEngines, role: WorkerRole
+) -> list[EngineName]:
+    """The shipped engines to install so that *role* has one for *fmt*.
+
+    Empty when no installed engine loads *fmt* (the message then says no engine loads it),
+    and empty when an installed engine already serves *role* (the host refuses it, not the role).
+    """
+    if not engines_loading(fmt, installed):
+        return []
+    servers = serving_engines(fmt, role)
+    return [] if any(name in installed for name in servers) else servers
 
 
 def _by_default(
@@ -210,7 +271,12 @@ def _by_default(
     candidates = _candidates(fmt, installed, role, host)
     if candidates:
         text = f"No engine is chosen by default for the {fmt} format{of_model}. "
-        text += _choose_hint(candidates)
+        text += _choose_hint(candidates, role)
+    elif role is not None and (missing := _servers_to_install(fmt, installed, role)):
+        text = (
+            f"No installed engine serves the {fmt} format{of_model} for {role.value}. "
+            f"{' or '.join(missing)} serves it. {install_advice(ADAPTERS[missing[0]])}"
+        )
     else:
         text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
     return EngineChoice(None, NoticeKind.NONE, f"For {role.value}: {text}" if role else text)
@@ -239,7 +305,7 @@ def choose_engine(
         return _by_default(fmt, host, installed, role, of_model)
     name, kind = request
     loads = name in engines_loading(fmt, installed)
-    serves = _serves(name, role)
+    serves = _accepts(name, role, fmt)
     answer = host_answer(name, host) if loads and serves else PASS
     if loads and serves and answer.ok:
         return EngineChoice(EngineName(name), None, None)
@@ -253,6 +319,9 @@ def choose_engine(
         reason = f"{subject} cannot load the {fmt} format{of_model}."
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
+    elif role is not None and refuses_format_for_role(name, role, fmt):
+        reason = f"{subject} cannot load the {fmt} format{of_model}."
+        left = f"loads the {fmt} format for {role}"
     elif not serves:
         reason = f"{subject} does not serve this role."
         left = "serves this role"
@@ -263,7 +332,7 @@ def choose_engine(
     if default is None:
         candidates = _candidates(fmt, installed, role, host)
         tail = (
-            f"No engine is chosen by default. {_choose_hint(candidates)}"
+            f"No engine is chosen by default. {_choose_hint(candidates, role)}"
             if candidates
             else f"No installed engine {left}."
         )
@@ -320,6 +389,34 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
+
+
+def install_advice(adapter: EngineAdapter) -> str:
+    """The advice to get *adapter*: the install command, or the reason install refuses."""
+    try:
+        pin_lock(adapter.pin_record())
+    except NoPublishedPackError:
+        return f"No pack of {adapter.name} is published yet, so there is nothing to install."
+    except PinError as exc:
+        return f"Engine {adapter.name} cannot be installed: {exc}."
+    return f"Run lilbee engine install {adapter.name}."
+
+
+def install_any_advice(host: HostCaps) -> str:
+    """The install command of every shipped engine that serves *host* and has a pack to install.
+
+    Falls back to the list command when no engine qualifies.
+    """
+    commands = []
+    for name, adapter in ADAPTERS.items():
+        if not install_answer(adapter, host).ok:
+            continue
+        try:
+            pin_lock(adapter.pin_record())
+        except PinError:
+            continue
+        commands.append(f"lilbee engine install {name}")
+    return f"Run {' or '.join(commands)}." if commands else LIST_HINT
 
 
 BUILD_UNREADABLE = (

@@ -110,7 +110,8 @@ class TestTheEstimateIsKeyedToTheEngineThatPricesIt:
         def _fake_parser(argv, _path):
             runs.append("run")
             return (
-                '{"estimate": {"items": [{"ram": {"uma": 0, "nonuma": 0},'
+                '{"metadata": {"fileSize": 0},'
+                ' "estimate": {"items": [{"ram": {"uma": 0, "nonuma": 0},'
                 ' "vrams": [{"uma": 1, "nonuma": 1}]}]}}'
             )
 

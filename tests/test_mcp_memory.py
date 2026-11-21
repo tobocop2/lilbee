@@ -137,6 +137,25 @@ class TestMemoryEngineChange:
         assert "memories" not in result
 
 
+class TestMemoryProviderFailure:
+    def _failure(self):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        return ProviderError("The embedder is not running.", kind=ProviderErrorKind.CONNECTION)
+
+    def test_remember_returns_the_failure_as_a_tool_error(self, monkeypatch):
+        failure = self._failure()
+        monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
+        monkeypatch.setattr(mcp_server, "remember", MagicMock(side_effect=failure))
+        assert mcp_server.memory_remember("x", agent_id="opencode") == {"error": str(failure)}
+
+    def test_recall_returns_the_failure_as_a_tool_error(self, monkeypatch):
+        failure = self._failure()
+        monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
+        monkeypatch.setattr(mcp_server, "recall", MagicMock(side_effect=failure))
+        assert mcp_server.memory_recall("q", agent_id="opencode") == {"error": str(failure)}
+
+
 class TestMemoryListTool:
     def test_returns_serialized_with_shared(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)

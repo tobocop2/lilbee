@@ -35,6 +35,15 @@ BUNDLED_REFUSAL = "inside the executable"
 MISSING_REFUSAL = "Engine fx 9 (cpu) is not installed."
 
 
+def _folder() -> str:
+    """The engines folder as a user sees it: beside the models folder."""
+    return str(cfg.models_dir.parent / "engines")
+
+
+def _folder_line() -> str:
+    return engine_service.FOLDER_LINE.format(folder=_folder())
+
+
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     snapshot = cfg.model_copy()
@@ -98,9 +107,21 @@ def test_every_surface_lists_the_same_builds() -> None:
     code, listed = _cli("list")
     assert (code, listed["command"], listed["builds"]) == (0, "engine list", [BUILD])
     absent = engine_service.not_installed()
-    assert _rest("GET", "/api/engines") == (200, {"builds": [BUILD], "not_installed": absent})
-    assert mcp_server.engine_list_tool() == {"builds": [BUILD], "not_installed": absent}
-    assert run_engine_command("list").text == "fx 1 (cpu)"
+    full = {"builds": [BUILD], "not_installed": absent, "engines_folder": _folder()}
+    assert _rest("GET", "/api/engines") == (200, full)
+    assert mcp_server.engine_list_tool() == full
+    assert listed["engines_folder"] == _folder()
+    assert run_engine_command("list").text == f"fx 1 (cpu)\n{_folder_line()}"
+
+
+def test_the_slash_list_and_roles_commands_report_success() -> None:
+    install(cfg.models_dir)
+    listed = run_engine_command("list")
+    assert (listed.ok, listed.changed) == (True, None)
+    assert listed.text.startswith("fx 1 (cpu)")
+    roles = run_engine_command("roles")
+    assert (roles.ok, roles.changed) == (True, None)
+    assert roles.text
 
 
 def test_cli_rest_and_mcp_return_the_same_list_fields() -> None:
@@ -113,7 +134,7 @@ def test_cli_rest_and_mcp_return_the_same_list_fields() -> None:
     rest_body = _rest("GET", "/api/engines")[1]
     mcp_body = mcp_server.engine_list_tool()
     assert cli_body == rest_body == mcp_body
-    assert set(cli_body) == {"builds", "not_installed"}
+    assert set(cli_body) == {"builds", "not_installed", "engines_folder"}
     assert cli_body["not_installed"] == absent
 
 
@@ -121,9 +142,10 @@ def test_every_surface_lists_nothing_the_same_way() -> None:
     assert engine_service.builds() == []
     assert _cli("list")[1]["builds"] == []
     absent = engine_service.not_installed()
-    assert _rest("GET", "/api/engines") == (200, {"builds": [], "not_installed": absent})
-    assert mcp_server.engine_list_tool() == {"builds": [], "not_installed": absent}
-    assert run_engine_command("list").text == "No engine builds are installed."
+    empty = {"builds": [], "not_installed": absent, "engines_folder": _folder()}
+    assert _rest("GET", "/api/engines") == (200, empty)
+    assert mcp_server.engine_list_tool() == empty
+    assert run_engine_command("list").text == f"No engine builds are installed.\n{_folder_line()}"
 
 
 def test_every_surface_removes_a_build_and_names_it_the_same_way() -> None:
@@ -201,6 +223,36 @@ def test_a_build_in_use_is_refused_and_kept_on_every_surface(
     assert len(_installed()) == 1
 
 
+def test_a_build_is_in_use_only_while_a_launch_runs_its_binary(tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    install(cfg.models_dir)
+    slot = tmp_path / "slot"
+    slot.mkdir()
+    launch = {
+        "role": "chat",
+        "argv": ["/usr/bin/env", "X=1", "srv"],
+        "model": "m",
+        "server_binary": str(tmp_path / "elsewhere" / "srv"),
+    }
+    state = {"pid": 1, "launches": [launch], "swap_binary": str(tmp_path / "elsewhere" / "swap")}
+    record = slot / "llama-swap.state.chat.1.json"
+    record.write_text(json.dumps(state), encoding="utf-8")
+    hold = hold_user_lock(slot)
+    try:
+        launch["server_binary"] = str(engines_root(cfg.models_dir) / "fx" / "1-cpu" / "srv")
+        record.write_text(json.dumps(state), encoding="utf-8")
+        with pytest.raises(engine_service.EngineRefusedError, match="is in use"):
+            engine_service.remove_build("fx", "1", "cpu")
+        assert len(_installed()) == 1
+        launch["server_binary"] = str(tmp_path / "elsewhere" / "srv")
+        record.write_text(json.dumps(state), encoding="utf-8")
+        assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
+    finally:
+        hold.release_and_check_last()
+    assert _installed() == []
+
+
 def test_a_name_that_leaves_the_engines_folder_is_refused_and_removes_nothing() -> None:
     install(cfg.models_dir)
     with pytest.raises(engine_service.EngineRefusedError, match="cannot name an engine build"):
@@ -224,7 +276,11 @@ def test_rest_list_stays_open_while_the_flag_is_off() -> None:
     cfg.allow_http_engines = False
     assert _rest("GET", "/api/engines") == (
         200,
-        {"builds": [BUILD], "not_installed": engine_service.not_installed()},
+        {
+            "builds": [BUILD],
+            "not_installed": engine_service.not_installed(),
+            "engines_folder": _folder(),
+        },
     )
 
 
@@ -238,6 +294,7 @@ def test_mcp_remove_on_the_http_mount_is_refused_while_the_flag_is_off() -> None
     assert mcp_server.engine_list_tool() == {
         "builds": [BUILD],
         "not_installed": engine_service.not_installed(),
+        "engines_folder": _folder(),
     }
     assert len(_installed()) == 1
 
@@ -269,7 +326,7 @@ def test_a_rest_remove_does_not_block_the_event_loop(monkeypatch: pytest.MonkeyP
     released = threading.Event()
     waited: list[bool] = []
 
-    def blocking_remove(*_args: str) -> str:
+    def blocking_remove(*_args: str, **_kwargs: bool) -> str:
         waited.append(released.wait(timeout=3))
         return "fx 1 (cpu)"
 

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
 )
+from lilbee.server.provider_status import retry_after_headers
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ class ClassifiedError:
     http_status: int
     code: CompletionsErrorCode
     message: str
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 # UNKNOWN stays unmapped on purpose: an unclassified failure keeps the callers'
@@ -112,12 +115,16 @@ def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
         return ClassifiedError(404, CompletionsErrorCode.MODEL_NOT_FOUND, str(exc))
     if isinstance(exc, ModelDoesNotSupportToolsError):
         return ClassifiedError(400, CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS, str(exc))
+    if isinstance(exc, ConfigReadError):
+        return ClassifiedError(503, CompletionsErrorCode.INTERNAL_ERROR, str(exc))
     if isinstance(exc, ProviderError):
         mapped = _PROVIDER_KIND_CLASSIFICATIONS.get(exc.kind)
         if mapped is not None:
             status, code = mapped
             if exc.kind in _INFRASTRUCTURE_KINDS:
                 log.warning("Chat backend failure (%s)", exc.kind, exc_info=exc)
-                return ClassifiedError(status, code, _BACKEND_FAILURE_MESSAGE)
-            return ClassifiedError(status, code, str(exc))
+                message = _BACKEND_FAILURE_MESSAGE
+            else:
+                message = str(exc)
+            return ClassifiedError(status, code, message, retry_after_headers(exc.kind))
     return None

@@ -38,9 +38,10 @@ from lilbee.core.security import PathTraversalError
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError, CrawlerBrowserError
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
-from lilbee.data.store import SearchChunk, SourceSummary
+from lilbee.data.store import IndexMismatch, SearchChunk, SourceSummary
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
@@ -54,6 +55,7 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
+from tests._cli_text import plain_cli_text
 from tests._crafted_titles import (
     CONTROL_TITLES,
     CRAFTED_SOURCE,
@@ -76,10 +78,32 @@ from tests.conftest import (
 )
 
 runner = CliRunner()
+
+
+def _assert_signal_token(token: object) -> None:
+    """Assert *token* is the lock-free flag a Ctrl-C handler sets, and not a threading.Event."""
+    from lilbee.runtime.cancellation import SignalFlag
+
+    assert not isinstance(token, threading.Event)
+    assert isinstance(token, SignalFlag)
+    token.set()
+    assert token.is_set()
+
+
 # How long a held reset lasts when a test hangs; no test waits for it.
 _HANG_LIMIT_S = 30.0
 
 _SYNC_NOOP = SyncResult()
+_SYNC_OVER_OTHER_EMBEDDER = SyncResult(
+    index_mismatch=IndexMismatch(
+        persisted_model="orgA/repoA/built.gguf",
+        persisted_dim=768,
+        current_model="orgB/repoB/configured.gguf",
+        current_dim=384,
+        adoptable=False,
+        message="This index needs a rebuild under 'orgB/repoB/configured.gguf'.",
+    )
+)
 # A terminal reads these as commands: C0 and C1 controls other than tab and newline, and DEL.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _LINK_CODE_RE = re.compile("\x1b\\]8;[^\x1b]*\x1b\\\\")
@@ -122,7 +146,7 @@ def mock_svc():
 
     searcher = MagicMock()
     searcher.search_unavailable.return_value = False
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     searcher.ask_stream.return_value = _mock_stream("")
     store = MagicMock()
     store.search.return_value = []
@@ -214,7 +238,7 @@ class TestStatus:
         cfg.vision_model = vision_model
         cfg.ocr_language = ["eng"]
         result = runner.invoke(app, ["status"])
-        output = _plain_help_text(result.output)
+        output = plain_cli_text(result.output)
         assert line in output
         assert output.count("Scanned pages:") == 1
         assert "Tesseract OCR:" not in output
@@ -290,6 +314,28 @@ class TestSync:
         result = runner.invoke(app, ["--json", "sync"])
         assert result.exit_code == 1
         assert json.loads(result.output)["failed"] == ["bad.txt"]
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=_SYNC_OVER_OTHER_EMBEDDER,
+    )
+    def test_sync_over_an_index_of_another_embedder_exits_1_and_names_the_fix(self, mock_sync):
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "Index mismatch" in result.output
+        assert "needs a rebuild" in result.output
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=_SYNC_OVER_OTHER_EMBEDDER,
+    )
+    def test_json_sync_over_an_index_of_another_embedder_exits_1_with_json(self, mock_sync):
+        result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["index_mismatch"]["persisted_model"] == "orgA/repoA/built.gguf"
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value="not a result")
     def test_sync_rejects_a_result_that_is_not_a_sync_result(self, mock_sync):
@@ -1030,9 +1076,9 @@ class TestDiagnosticsRouting:
             logging.getLogger("lilbee.data.ingest.pipeline").warning(
                 "Sync reconciliation: 1 document file(s) on disk are absent from the index"
             )
-            return []
+            return SearchReport([])
 
-        mock_svc.searcher.search.side_effect = _noisy_search
+        mock_svc.searcher.search_report.side_effect = _noisy_search
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 0
         assert "No results found." in result.stdout
@@ -1079,20 +1125,20 @@ class TestEmbeddingMismatchCli:
         assert "use-embedder orgA/repoA/built.gguf" in result.output
 
     def test_search_mismatch_adoptable_hint(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _mismatch_error()
+        mock_svc.searcher.search_report.side_effect = _mismatch_error()
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 1
         assert "use-embedder orgA/repoA/built.gguf" in result.output
 
     def test_search_mismatch_dim_incompatible_points_to_rebuild(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _mismatch_error(dims_match=False)
+        mock_svc.searcher.search_report.side_effect = _mismatch_error(dims_match=False)
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 1
         assert "rebuild" in result.output.lower()
         assert "use-embedder" not in result.output
 
     def test_search_mismatch_json_carries_persisted_model(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _mismatch_error()
+        mock_svc.searcher.search_report.side_effect = _mismatch_error()
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 1
         payload = json.loads(result.output)
@@ -1111,14 +1157,14 @@ class TestEngineChangedCli:
     """An engine change names the rebuild and the earlier engine, and no adopt command."""
 
     def test_search_prints_the_stop_message(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        mock_svc.searcher.search_report.side_effect = _engine_changed_error()
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 1
         assert "lilbee rebuild" in result.output
         assert "use-embedder" not in result.output
 
     def test_search_json_carries_the_message_only(self, mock_svc):
-        mock_svc.searcher.search.side_effect = _engine_changed_error()
+        mock_svc.searcher.search_report.side_effect = _engine_changed_error()
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 1
         payload = json.loads(result.output)
@@ -2432,7 +2478,7 @@ _MOCK_SEARCH_RESULTS = [
 
 class TestSearch:
     def test_search_json_with_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
+        mock_svc.searcher.search_report.return_value = SearchReport(_MOCK_SEARCH_RESULTS)
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -2443,30 +2489,30 @@ class TestSearch:
         assert "distance" in data["results"][0]
 
     def test_search_json_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["--json", "search", "nothing"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["results"] == []
 
     def test_search_caps_top_k(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "q", "--top-k", "500"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == 100
 
     def test_search_omitted_top_k_uses_configured_value(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         cfg.top_k = 7
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 7
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == 7
 
     def test_search_rejects_non_positive_top_k(self, mock_svc):
         for bad in ("0", "-3"):
             result = runner.invoke(app, ["search", "q", "--top-k", bad])
             assert result.exit_code != 0
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_search_rejects_empty_query(self, mock_svc):
         result = runner.invoke(app, ["search", "   "])
@@ -2480,45 +2526,45 @@ class TestSearch:
         supported = _MOCK_SEARCH_RESULTS[0].model_copy(
             update={"source": "far-but-lexical.pdf", "distance": 1.4, "bm25_score": 12.0}
         )
-        mock_svc.searcher.search.return_value = [supported]
+        mock_svc.searcher.search_report.return_value = SearchReport([supported])
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 0
         sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
         assert sources == ["far-but-lexical.pdf"]
 
     def test_search_human_output(self, mock_svc):
-        mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
+        mock_svc.searcher.search_report.return_value = SearchReport(_MOCK_SEARCH_RESULTS)
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "manual.pdf" in result.output
 
     def test_search_human_truncates_long_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "x" * 100})]
+        )
         result = runner.invoke(app, ["search", "test"])
         assert result.exit_code == 0
         assert result.output.count("x") < 100
 
     def test_search_human_no_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "nothing"])
         assert result.exit_code == 0
         assert "No results found" in result.output
 
     def test_search_human_hybrid_shows_score(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0
         assert "Score" in result.output
         assert "0.85" in result.output
 
     def test_search_json_hybrid_has_relevance_score(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"relevance_score": 0.85, "distance": None})]
+        )
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -2530,34 +2576,34 @@ class TestSearch:
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
         assert "error" in data
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_search_scope_wiki_passes_wiki_chunk_type(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "--scope", "wiki", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "wiki"
+        assert mock_svc.searcher.search_report.call_args.kwargs.get("chunk_type") == "wiki"
 
     def test_search_scope_raw_passes_raw_chunk_type(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "--scope", "raw", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") == "raw"
+        assert mock_svc.searcher.search_report.call_args.kwargs.get("chunk_type") == "raw"
 
     def test_search_default_scope_is_mixed_pool(self, mock_svc):
         """Omitting --scope means chunk_type=None (both)."""
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         result = runner.invoke(app, ["search", "q"])
         assert result.exit_code == 0
-        assert mock_svc.searcher.search.call_args.kwargs.get("chunk_type") is None
+        assert mock_svc.searcher.search_report.call_args.kwargs.get("chunk_type") is None
 
     def test_search_invalid_scope_exits_nonzero(self, mock_svc):
         result = runner.invoke(app, ["search", "--scope", "bogus", "q"])
         assert result.exit_code != 0
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_search_json_provider_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("provider down")
+        mock_svc.searcher.search_report.side_effect = RuntimeError("provider down")
         result = runner.invoke(app, ["--json", "search", "test"])
         assert result.exit_code == 1
         data = json.loads(result.output.strip())
@@ -2569,7 +2615,7 @@ class TestSearch:
         assert "empty" in result.output.lower()
 
     def test_search_human_provider_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("connection refused")
+        mock_svc.searcher.search_report.side_effect = RuntimeError("connection refused")
         result = runner.invoke(app, ["search", "test"])
         assert result.exit_code == 1
         assert "connection refused" in result.output
@@ -4078,7 +4124,7 @@ class TestEnsureChatModelWiring:
                 "lilbee.modelhub.model_manager.validation.discover_api_models", return_value={}
             ),
             mock.patch("lilbee.app.settings._pin_legacy_store_meta") as mock_pin,
-            mock.patch("lilbee.app.settings._embedder_dim_from_gguf", return_value=1024),
+            mock.patch("lilbee.app.settings._embedder_dim", return_value=1024),
             mock.patch("lilbee.app.settings.apply_settings_update") as mock_apply,
         ):
             result = runner.invoke(app, ["ask", "test"])
@@ -4196,6 +4242,85 @@ class TestAskJsonModelPicker:
         assert "Choice [" in result.stderr
 
 
+class TestAskPickerReadsTheDataDirDisk:
+    """The picked model must fit on the disk that holds the data directory."""
+
+    def test_a_pick_larger_than_the_data_dir_disk_is_refused(self, mock_svc):
+        from lilbee.modelhub import models as models_mod
+
+        asked: list[Path] = []
+
+        def nearly_full_disk(path):
+            asked.append(Path(path))
+            return mock.Mock(total=10 * 1024**3, used=10 * 1024**3, free=0)
+
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch("typer.testing._NamedTextIOWrapper.isatty", return_value=True),
+            mock.patch("builtins.input", return_value="1"),
+            mock.patch.object(models_mod.shutil, "disk_usage", nearly_full_disk),
+            mock.patch.object(models_mod, "pull_with_progress") as mock_pull,
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 1
+        assert "Not enough disk space to download" in result.output
+        assert "have 0.0 GB free" in result.output
+        mock_pull.assert_not_called()
+        assert asked
+        assert all(cfg.data_dir.is_relative_to(path) for path in asked)
+
+
+class TestAskNamesTheMissingEngine:
+    """A chat model is installed but no engine loads it: ask says which engine is missing."""
+
+    @staticmethod
+    def _install_engines(monkeypatch, engines) -> None:
+        def installed():
+            return dict(engines)
+
+        monkeypatch.setattr("lilbee.providers.fleet.engines.choice.installed_engines", installed)
+        monkeypatch.setattr("lilbee.modelhub.models.installed_engines", installed)
+
+    @staticmethod
+    def _ask():
+        from tests.conftest import install_fake_model
+
+        ref = install_fake_model("tiny/Tiny-1B-GGUF", "tiny-1b-Q4_K_M.gguf", "chat")
+        with (
+            mock.patch("lilbee.modelhub.models.ensure_chat_model", _real_ensure_chat_model),
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["ask", "test"])
+        return ref, result
+
+    def test_names_the_preferred_engine_that_is_not_installed(self, monkeypatch, mock_svc):
+        from lilbee.providers.fleet.engines.base import EngineName
+
+        self._install_engines(monkeypatch, {})
+        monkeypatch.setattr(cfg, "preferred_engine", EngineName.LLAMA.value)
+        _, result = self._ask()
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert (
+            f"Engine {EngineName.LLAMA} is not installed. "
+            "No installed engine loads the gguf format." in flat
+        )
+
+    def test_an_engine_of_another_format_does_not_load_the_model(self, monkeypatch, mock_svc):
+        from lilbee.catalog.types import ModelFormat
+        from lilbee.providers.fleet.engines.base import EngineName
+
+        self._install_engines(monkeypatch, {EngineName.MLX: frozenset({ModelFormat.MLX})})
+        ref, result = self._ask()
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert f"No installed engine loads the gguf format of {ref}." in flat
+        assert "Run lilbee engine list to see the installed engines." in flat
+
+
 class TestAskWithoutEmbedder:
     """Ask that cannot ground an answer exits non-zero with the guidance text."""
 
@@ -4221,17 +4346,6 @@ class TestAskWithoutEmbedder:
 # ---------------------------------------------------------------------------
 # --ocr flag tests
 # ---------------------------------------------------------------------------
-
-
-def _plain_help_text(output: str) -> str:
-    """Flatten captured --help output to one space-joined line of plain text.
-
-    Rich's own decoder strips the ANSI styling. The box-drawing border and
-    every line wrap then collapse to a single space, so a phrase rich wraps
-    across lines still matches as one substring at any terminal width.
-    """
-    plain = Text.from_ansi(output).plain
-    return " ".join(plain.replace("│", " ").split())
 
 
 class TestOcrFlags:
@@ -4318,12 +4432,12 @@ class TestOcrFlags:
     def test_a_bad_ocr_flag_value_is_refused(self, flag, refusal):
         result = runner.invoke(app, ["sync", flag])
         assert result.exit_code == 2
-        assert refusal in _plain_help_text(result.output)
+        assert refusal in plain_cli_text(result.output)
 
     def test_ocr_help_names_every_mode(self):
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
-        normalized = _plain_help_text(result.output)
+        normalized = plain_cli_text(result.output)
         assert (
             "auto reads each page without usable text and keeps the text of every other"
             " page; all reads every page of every file; off skips them"
@@ -4369,7 +4483,6 @@ class TestLogLevel:
 
 
 class TestIngestShutdownError:
-    @pytest.mark.usefixtures("joined_ingest_pool")
     def test_process_one_converts_shutdown_error(self):
         """RuntimeError from executor shutdown is converted to CancelledError."""
         import asyncio
@@ -6057,17 +6170,91 @@ class TestSigintCancel:
             signal.raise_signal(signal.SIGINT)
             assert token.is_set(), "SIGINT did not reach the cancel token"
 
-    def test_a_second_sigint_is_left_to_the_default_handler(self) -> None:
-        """A pass that ignores the token must still be interruptible."""
+    def test_the_token_is_a_plain_flag_not_an_event(self) -> None:
+        import threading as _threading
 
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel() as token:
+            assert not isinstance(token, _threading.Event)
+
+    def test_the_handler_records_without_an_event_or_a_lock(self, monkeypatch) -> None:
+        import threading as _threading
+
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        def _forbidden(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the SIGINT handler took a lock")
+
+        with sigint_cancel() as token:
+            handler = signal.getsignal(signal.SIGINT)
+            monkeypatch.setattr(_threading.Event, "set", _forbidden)
+            monkeypatch.setattr(_threading.Condition, "__enter__", _forbidden)
+            monkeypatch.setattr(_threading, "Lock", _forbidden)
+            monkeypatch.setattr(_threading, "RLock", _forbidden)
+            handler(signal.SIGINT, None)
+            monkeypatch.undo()
+            assert token.is_set()
+
+    def test_the_handler_stays_installed_after_the_first_sigint(self) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel():
+            scoped = signal.getsignal(signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
+            assert signal.getsignal(signal.SIGINT) is scoped
+
+    def test_the_handler_never_changes_signal_handlers(self, monkeypatch) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel() as token:
+            handler = signal.getsignal(signal.SIGINT)
+
+            def _forbidden(*_args: object, **_kwargs: object) -> None:
+                raise AssertionError("the SIGINT handler called signal.signal")
+
+            monkeypatch.setattr(signal, "signal", _forbidden)
+            handler(signal.SIGINT, None)
+            with pytest.raises(KeyboardInterrupt):
+                handler(signal.SIGINT, None)
+            monkeypatch.undo()
+            assert token.is_set()
+
+    def test_a_second_sigint_reaches_the_scoped_handler_and_interrupts(self) -> None:
+        """A pass that ignores the token must still be interruptible."""
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        outer_calls: list[int] = []
+
+        def outer(signum: int, _frame: object) -> None:
+            outer_calls.append(signum)
+
+        original = signal.signal(signal.SIGINT, outer)
+        try:
+            with sigint_cancel() as token:
+                signal.raise_signal(signal.SIGINT)
+                assert token.is_set()
+                with pytest.raises(KeyboardInterrupt):
+                    signal.raise_signal(signal.SIGINT)
+            assert outer_calls == []
+        finally:
+            signal.signal(signal.SIGINT, original)
+
+    def test_the_previous_handler_is_restored_after_a_fired_scope(self) -> None:
         from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
         with sigint_cancel():
             signal.raise_signal(signal.SIGINT)
-            assert signal.getsignal(signal.SIGINT) is previous, (
-                "the handler stayed installed, so a second Ctrl-C would be swallowed"
-            )
+        assert signal.getsignal(signal.SIGINT) is previous
+
+    def test_the_previous_handler_is_restored_when_the_body_raises(self) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        previous = signal.getsignal(signal.SIGINT)
+        with pytest.raises(RuntimeError, match="boom"), sigint_cancel():
+            raise RuntimeError("boom")
+        assert signal.getsignal(signal.SIGINT) is previous
 
     def test_off_the_main_thread_it_installs_no_handler(self) -> None:
         """signal.signal raises off the main thread (xdist workers run there),
@@ -8947,7 +9134,7 @@ class TestSyncCancelledExit:
             "error": "Add cancelled. test.txt was not added.",
             "not_added": ["test.txt"],
         }
-        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        _assert_signal_token(fake_sync.call_args.kwargs["cancel"])
         assert cfg.linked_roots == {}
 
     _STAGES_BEFORE_THE_SYNC = ("crawl", "nothing_registered")
@@ -9224,7 +9411,7 @@ class TestSyncCancelledExit:
             result = runner.invoke(app, ["ask", "q"])
         assert result.exit_code == 130, result.output
         assert "Sync cancelled." in result.output
-        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        _assert_signal_token(fake_sync.call_args.kwargs["cancel"])
         mock_svc.searcher.ask_stream.assert_not_called()
 
     def test_a_cancelled_sync_before_json_ask_reports_json_and_exits_130(self, mock_svc):
@@ -9236,7 +9423,7 @@ class TestSyncCancelledExit:
             result = runner.invoke(app, ["--json", "ask", "q"])
         assert result.exit_code == 130, result.output
         assert json.loads(result.output) == {"error": "Sync cancelled."}
-        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        _assert_signal_token(fake_sync.call_args.kwargs["cancel"])
         mock_svc.searcher.ask_raw.assert_not_called()
 
 
@@ -9247,18 +9434,18 @@ class TestTerminalSafeSourceNames:
     def test_the_search_table_writes_no_control_character_of_a_source(self, mock_svc, name):
         from tests._crafted_titles import TERMINAL_CONTROL_RE
 
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0, result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
 
     @pytest.mark.parametrize("name", CONTROL_TITLES)
     def test_search_json_keeps_the_source_as_stored(self, mock_svc, name):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"source": name})]
+        )
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert json.loads(result.output.strip())["results"][0]["source"] == name
 
@@ -9341,18 +9528,18 @@ class TestTerminalSafeStoredText:
     def test_the_search_table_writes_no_control_character_of_a_preview(self, mock_svc, text):
         from tests._crafted_titles import TERMINAL_CONTROL_RE
 
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0, result.output
         assert TERMINAL_CONTROL_RE.search(result.output) is None
 
     @pytest.mark.parametrize("text", CONTROL_TITLES)
     def test_search_json_keeps_the_chunk_as_stored(self, mock_svc, text):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": text})]
+        )
         result = runner.invoke(app, ["--json", "search", "engine oil"])
         assert json.loads(result.output.strip())["results"][0]["chunk"] == text
 
@@ -9424,9 +9611,9 @@ class TestTerminalSafeStoredText:
         assert result.output == body + "\n"
 
     def test_the_search_table_keeps_the_lines_of_a_preview(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            _MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "alpha\nbeta\x1b[31m"})
-        ]
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [_MOCK_SEARCH_RESULTS[0].model_copy(update={"chunk": "alpha\nbeta\x1b[31m"})]
+        )
         result = runner.invoke(app, ["search", "engine oil"])
         assert result.exit_code == 0, result.output
         assert "alpha" in result.output and "beta" in result.output

@@ -27,11 +27,8 @@ from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.serving import (
     ServingEngine,
-    is_native_rerank_ref,
     log_name,
-    role_engine,
     role_serving,
-    served_by,
 )
 from lilbee.runtime.cancellation import CancelSignal
 
@@ -59,6 +56,7 @@ class RoutingProvider(LLMProvider):
         config_refresh: Callable[[], None] | None = None,
     ) -> None:
         self._noticed: dict[WorkerRole, str] = {}
+        self._unread: dict[WorkerRole, str] = {}
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
         # Carried until the local fleet is lazily built, so a provider created for
@@ -102,12 +100,22 @@ class RoutingProvider(LLMProvider):
     def _log_served(self, role: WorkerRole, model: str, served: ServingEngine) -> None:
         """Name the engine that serves this request."""
         log.info(
-            "served by engine=%s version=%s role=%s model=%s",
+            "served by engine=%s version=%s build=%s role=%s model=%s",
             served.engine,
             served.version,
+            served.build,
             role.value,
             log_name(model),
         )
+        if not served.unread:
+            self._unread.pop(role, None)
+        elif self._unread.get(role) != served.unread:
+            self._unread[role] = served.unread
+            log.warning(
+                "Cannot read the pin of engine %s, reporting it unknown: %s",
+                served.engine,
+                served.unread,
+            )
 
     def _warn_once(self, role: WorkerRole) -> None:
         """Log why *role* did not get the engine asked for, once for each notice text."""
@@ -131,6 +139,11 @@ class RoutingProvider(LLMProvider):
     def count_tokens(self, text: str) -> int:
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
         return self._pick_backend(ref).count_tokens(text)
+
+    def count_chat_text_tokens(self, text: str) -> int | None:
+        """Count on the backend the chat ref routes to; a remote backend has no tokenizer."""
+        ref = parse_model_ref(require_role_ref(cfg.chat_model, WorkerRole.CHAT))
+        return self._pick_backend(ref).count_chat_text_tokens(text)
 
     def count_chat_prompt_tokens(
         self,
@@ -291,18 +304,17 @@ class RoutingProvider(LLMProvider):
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Dispatch rerank to the backend that owns ``cfg.reranker_model``.
 
-        Native GGUF refs go to the local engine; hosted refs go through the SDK
-        provider. Raises ``ProviderError`` when ``cfg.reranker_model`` is
-        empty or the selected backend does not support reranking.
+        The ref routes by the rule embed uses: a local ref goes to the local
+        engine, which raises when no engine serves rerank; a remote ref goes
+        through the SDK provider. Raises ``ProviderError`` when
+        ``cfg.reranker_model`` is empty or the selected backend does not
+        support reranking.
         """
         if not cfg.reranker_model:
             raise ProviderError("No reranker configured. Set cfg.reranker_model first.")
-        model = cfg.reranker_model
-        engine = role_engine(WorkerRole.RERANK)
-        native = is_native_rerank_ref(model, engine)
-        self._warn_once(WorkerRole.RERANK)
-        self._log_served(WorkerRole.RERANK, model, served_by(model, engine, native=native))
-        if native:
+        ref = parse_model_ref(cfg.reranker_model)
+        self._announce(WorkerRole.RERANK, ref)
+        if not ref.is_remote:
             return self._get_local().rerank(query, candidates)
         sdk = self._get_sdk_provider()
         if not sdk.supports_rerank():
@@ -326,7 +338,7 @@ class RoutingProvider(LLMProvider):
         model = cfg.reranker_model
         if not model:
             return True
-        if is_native_rerank_ref(model, role_engine(WorkerRole.RERANK)):
+        if not parse_model_ref(model).is_remote:
             return self._get_local().supports_rerank()
         return self._get_sdk_provider().supports_rerank()
 

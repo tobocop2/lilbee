@@ -62,6 +62,8 @@ from lilbee.wiki.stats import BuildStats
 from lilbee.wiki.synthesis import generate_synthesis_page, group_entities_by_primary_source
 from tests.conftest import make_citation
 
+pytestmark = pytest.mark.usefixtures("counting_provider")
+
 
 @pytest.fixture(autouse=True)
 def isolated_env(wiki_isolated_env: Path):

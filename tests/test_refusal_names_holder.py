@@ -254,7 +254,7 @@ class TestWhoHoldsTheRoom:
                 InstancePlan(WorkerRole.RERANK, (1,)),
             ),
             unplaceable_roles=(),
-            co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            swap_classes=(frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.VISION})),
         )
         charged = dict.fromkeys(WorkerRole, GIB)
         refs = {role: role.value for role in WorkerRole}
@@ -267,7 +267,7 @@ class TestWhoHoldsTheRoom:
         placement = Placement(
             instances=(chat, InstancePlan(WorkerRole.VISION, (0,))),
             unplaceable_roles=(),
-            co_tenants=frozenset({WorkerRole.EMBED, WorkerRole.VISION}),
+            swap_classes=(frozenset({WorkerRole.EMBED, WorkerRole.VISION}),),
         )
         charged = dict.fromkeys(WorkerRole, GIB)
         refs = {role: role.value for role in WorkerRole}

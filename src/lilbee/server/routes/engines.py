@@ -10,10 +10,11 @@ from litestar import delete, get, post, put
 from litestar.connection import ASGIConnection
 from litestar.exceptions import HTTPException
 from litestar.handlers.base import BaseRouteHandler
-from litestar.params import FromPath
+from litestar.params import FromPath, FromQuery
 
 import lilbee.app.engine_service as service
 from lilbee.core.config import cfg
+from lilbee.runtime.progress import SseErrorCode
 from lilbee.server.models import (
     EngineBuildsResponse,
     EngineChosenResponse,
@@ -37,6 +38,12 @@ async def _call(action: Callable[[], _T]) -> _T:
     """Run a service call off the loop; a refusal is a 422, a failed save or apply a 503."""
     try:
         return await asyncio.to_thread(action)
+    except service.EngineInstallRefusedError as exc:
+        raise HTTPException(
+            status_code=_HTTP_UNPROCESSABLE,
+            detail=str(exc),
+            extra={"code": SseErrorCode.ENGINE_INSTALL_REFUSED},
+        ) from exc
     except service.EngineRefusedError as exc:
         raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
     except service.EmbedConfirmRequiredError as exc:
@@ -78,10 +85,18 @@ async def engine_builds_route() -> EngineBuildsResponse:
     guards=[_require_engines_enabled],
 )
 async def engine_remove_route(
-    engine: FromPath[str], version: FromPath[str], backend: FromPath[str]
+    engine: FromPath[str],
+    version: FromPath[str],
+    backend: FromPath[str],
+    confirm_embed_change: FromQuery[bool] = False,
 ) -> EngineRemovedResponse:
-    """Remove one installed engine build. Refused unless allow_http_engines is enabled."""
-    removed = await _call(lambda: service.remove_build(engine, version, backend))
+    """Remove one installed engine build. Refused unless allow_http_engines is enabled.
+
+    A build that the embedder runs on answers 409 until confirm_embed_change is true.
+    """
+    removed = await _call(
+        lambda: service.remove_build(engine, version, backend, confirmed=confirm_embed_change)
+    )
     return EngineRemovedResponse(removed=removed)
 
 
@@ -117,8 +132,6 @@ async def engine_use_route(role: FromPath[str], data: EngineUseBody) -> EngineCh
 @post("/api/engines/install", status_code=200, guards=[_require_engines_enabled])
 async def engine_install_route(data: EngineInstallBody) -> EngineInstalledResponse:
     """Install an engine build from its pack. Refused unless allow_http_engines is enabled."""
-    if data.wheel is not None:
-        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=service.WHEEL_CLI_ONLY)
     built = await _call(lambda: service.install(data.engine))
     return EngineInstalledResponse(
         engine=built.engine,
@@ -126,6 +139,7 @@ async def engine_install_route(data: EngineInstallBody) -> EngineInstalledRespon
         backend=built.backend,
         note=built.note,
         not_run_on=list(built.not_run_on),
+        engines_folder=str(service.engines_folder()),
     )
 
 

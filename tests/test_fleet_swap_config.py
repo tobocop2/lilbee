@@ -12,13 +12,23 @@ from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import WorkerRole
 
 
+@pytest.fixture(autouse=True)
+def _pin_ingest_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the config tests off the fleet probe that the real ingest pool size runs."""
+    monkeypatch.setattr(swap_config_mod, "max_workers", lambda: 8)
+
+
 def _mid(role: WorkerRole, replica: int = 0) -> str:
     """The llama-swap model id for a role's replica (matches InstanceLaunch.model_id)."""
     return f"{role.value}-{replica}"
 
 
 def _launch(
-    role: WorkerRole, argv: list[str], env: dict[str, str] | None = None, replica: int = 0
+    role: WorkerRole,
+    argv: list[str],
+    env: dict[str, str] | None = None,
+    replica: int = 0,
+    swap_class: str = "",
 ) -> InstanceLaunch:
     return InstanceLaunch(
         role=role,
@@ -26,6 +36,7 @@ def _launch(
         argv=argv,
         env_overrides=env or {},
         model=f"{role.value}-model",
+        swap_class=swap_class,
     )
 
 
@@ -92,8 +103,8 @@ class TestBuildSwapConfig:
             _mid(WorkerRole.RERANK),
         }
 
-    def test_co_tenant_group_evicts_between_its_members(self) -> None:
-        # swap=True is what makes llama-swap unload chat to load vision, and back.
+    def test_launches_without_a_class_each_evict_the_others(self) -> None:
+        # Exclusive groups make llama-swap unload chat to load vision, and back.
         cfg = json.loads(
             build_swap_config(
                 [
@@ -104,8 +115,39 @@ class TestBuildSwapConfig:
                 swap=True,
             )
         )
+        assert {name: group["members"] for name, group in cfg["groups"].items()} == {
+            f"lilbee-{_mid(WorkerRole.CHAT)}": [_mid(WorkerRole.CHAT)],
+            f"lilbee-{_mid(WorkerRole.VISION)}": [_mid(WorkerRole.VISION)],
+        }
+        for group in cfg["groups"].values():
+            assert (group["swap"], group["exclusive"], group["persistent"]) == (False, True, False)
+
+    def test_launches_of_one_class_stay_in_one_group(self) -> None:
+        cfg = json.loads(
+            build_swap_config(
+                [
+                    _launch(WorkerRole.CHAT, ["/bin/llama-server"], swap_class="0"),
+                    _launch(WorkerRole.RERANK, ["/bin/llama-server"], swap_class="0"),
+                    _launch(WorkerRole.VISION, ["/bin/llama-server"], swap_class="1"),
+                ],
+                {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.RERANK): 2, _mid(WorkerRole.VISION): 3},
+                swap=True,
+            )
+        )
+        assert {name: group["members"] for name, group in cfg["groups"].items()} == {
+            "lilbee-0": [_mid(WorkerRole.CHAT), _mid(WorkerRole.RERANK)],
+            "lilbee-1": [_mid(WorkerRole.VISION)],
+        }
+        assert all(group["exclusive"] is True for group in cfg["groups"].values())
+
+    def test_a_class_does_not_split_the_group_of_a_process_without_swap(self) -> None:
+        launches = [
+            _launch(WorkerRole.CHAT, ["/bin/llama-server"], swap_class="0"),
+            _launch(WorkerRole.VISION, ["/bin/llama-server"], swap_class="1"),
+        ]
+        ports = {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2}
+        cfg = json.loads(build_swap_config(launches, ports))
         (group,) = cfg["groups"].values()
-        assert group["swap"] is True
         assert set(group["members"]) == {_mid(WorkerRole.CHAT), _mid(WorkerRole.VISION)}
 
     def test_command_carries_explicit_port_and_role_argv(self) -> None:

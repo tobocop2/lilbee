@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
 import pytest
 
+from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import engine_params
-from lilbee.providers.fleet import model_memory, planning
+from lilbee.providers.fleet import host_caps, model_memory, planning
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
@@ -29,6 +32,8 @@ from lilbee.providers.fleet.placement_spec import (
     TargetRefusedError,
 )
 from lilbee.providers.roles import RoleTarget, WorkerRole
+from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
+from tests._safetensors import safetensors_header
 from tests._stated_sizes import state_size
 
 GIB = 1024**3
@@ -37,6 +42,27 @@ _REF = "org/repo/model"
 
 
 pytestmark = pytest.mark.usefixtures("stated_sizes")
+
+# Heads that divide over two cards and no layer count, so a split has no per-card breakdown.
+_HEADS_CONFIG = '{"num_attention_heads": 32, "num_key_value_heads": 8}'
+
+
+@pytest.fixture(autouse=True)
+def _two_cuda_cards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host whose mistral.rs build can split over two cards, whatever runs the tests."""
+    nvidia = {
+        "driver": "570.0",
+        "cuda_driver": 12080,
+        "gpus": [{"name": "NVIDIA L4", "cc": [8, 9]}] * 2,
+    }
+    host = host_caps.collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvidia=nvidia,
+    )
+    pick_cuda_on_gpu_hosts(monkeypatch)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
 
 
 def _sparse(path: Path, size: int) -> None:
@@ -49,7 +75,7 @@ def _folder(root: Path, *shards: int) -> Path:
     folder.mkdir()
     for index, size in enumerate(shards):
         _sparse(folder / f"model-{index:05d}.safetensors", size)
-    (folder / "config.json").write_text("{}", encoding="utf-8")
+    (folder / "config.json").write_text(_HEADS_CONFIG, encoding="utf-8")
     (folder / "tokenizer.json").write_text("{}", encoding="utf-8")
     return folder
 
@@ -58,10 +84,31 @@ def _snapshot(root: Path, size: int) -> Path:
     """A Hugging Face snapshot: the folder holds symlinks to a blob elsewhere."""
     blob = root / "blobs" / "abc"
     _sparse(blob, size)
+    blob.write_bytes(safetensors_header(size))
     folder = root / "snapshots" / "rev"
     folder.mkdir(parents=True)
     (folder / "model.safetensors").symlink_to(blob)
     return folder
+
+
+_CACHE_BYTES_PER_TOKEN = 2 * 2 * 1 * 4 * 2
+"""Two layers, one key-value head of width 4, a key and a value, 2 bytes each."""
+
+
+def _write_cache_config(folder: Path) -> None:
+    """A config.json whose cache is 32 bytes per token."""
+    config = {
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "head_dim": 4,
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+def _charged(weights: int) -> int:
+    """What one slot of `_request` costs: weights, its cache, and the runtime allowance."""
+    return weights + _CACHE_BYTES_PER_TOKEN * 4096 + model_memory.CHAT_RUNTIME_BYTES
 
 
 def _request(path: Path) -> MemoryRequest:
@@ -100,19 +147,22 @@ def _pin(engine, role: WorkerRole, path: Path, devices: tuple[int, ...], monkeyp
 class TestTheFolderTotal:
     def test_the_adapter_sums_the_shards_of_a_folder(self, tmp_path: Path) -> None:
         folder = _folder(tmp_path, 4 * GIB, 3 * GIB)
+        _write_cache_config(folder)
         estimate = MISTRAL.estimate_memory(_request(folder))
-        assert estimate.device_bytes == 7 * GIB
-        assert estimate.shared_bytes == 7 * GIB
+        assert estimate.device_bytes == _charged(7 * GIB)
+        assert estimate.shared_bytes == _charged(7 * GIB)
         assert estimate.host_bytes == 0
+        assert estimate.size_known is True
 
     def test_the_adapter_follows_the_symlinks_of_a_snapshot(self, tmp_path: Path) -> None:
-        assert MISTRAL.estimate_memory(_request(_snapshot(tmp_path, 3 * GIB))).device_bytes == (
-            3 * GIB
-        )
+        snapshot = _snapshot(tmp_path, 3 * GIB)
+        _write_cache_config(snapshot)
+        assert MISTRAL.estimate_memory(_request(snapshot)).device_bytes == _charged(3 * GIB)
 
     def test_an_empty_folder_is_charged_the_reserve(self, tmp_path: Path) -> None:
         estimate = MISTRAL.estimate_memory(_request(_folder(tmp_path)))
         assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert estimate.size_known is False
 
     def test_a_single_file_is_charged_its_size(self, tmp_path: Path) -> None:
         model = tmp_path / "m.gguf"
@@ -122,6 +172,7 @@ class TestTheFolderTotal:
     def test_a_missing_file_is_charged_the_reserve(self, tmp_path: Path) -> None:
         estimate = MISTRAL.estimate_memory(_request(tmp_path / "gone.gguf"))
         assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert estimate.size_known is False
 
 
 class TestTheFolderWeights:
@@ -149,6 +200,7 @@ class TestTheFolderWeights:
 class TestThePeakEstimator:
     def _peak(self, tmp_path: Path, monkeypatch, estimate: MemoryEstimate, ratio: tuple[int, ...]):
         monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: tmp_path)
+        (tmp_path / "config.json").write_text(_HEADS_CONFIG, encoding="utf-8")
         role = WorkerRole.CHAT
         peak = planning._peak_estimator({role: "ref"}, {role: _StatedEngine(estimate)})
         return peak(role, ratio)
@@ -257,8 +309,9 @@ def test_a_folder_larger_than_the_hardware_is_not_placeable(tmp_path, monkeypatc
 def test_the_adapter_sums_a_folder_named_like_a_shard(tmp_path: Path) -> None:
     folder = tmp_path / "m-00001-of-00002.gguf"
     _sparse(folder / "model.safetensors", GIB)
+    _write_cache_config(folder)
     estimate = MISTRAL.estimate_memory(_request(folder))
-    assert (estimate.device_bytes, estimate.shared_bytes) == (GIB, GIB)
+    assert (estimate.device_bytes, estimate.shared_bytes) == (_charged(GIB), _charged(GIB))
 
 
 class TestOversizeModelOnSeveralCards:
@@ -341,3 +394,194 @@ class TestACpuRoleWindow:
 
         monkeypatch.setattr(planning, "total_system_memory", unreadable)
         assert planning._cpu_sizing_budget() == 0
+
+
+class TestAnUnknownSizeInThePlan:
+    def _estimate(self, folder: Path, monkeypatch) -> ModelPlacementInput:
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref: folder)
+        return planning._estimate_role(WorkerRole.CHAT, _REF, engine=MISTRAL, slots=1)
+
+    def test_the_plan_charges_the_reserve_and_leaves_the_log_to_the_notice(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger=planning.log.name):
+            placed = self._estimate(_folder(tmp_path), monkeypatch)
+        assert placed.est_vram_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
+        assert "is unknown" not in caplog.text
+
+    def test_the_input_records_that_the_size_is_unknown(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._estimate(_folder(tmp_path), monkeypatch).size_known is False
+
+    def test_the_input_records_a_known_size(self, tmp_path: Path, monkeypatch) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        assert self._estimate(folder, monkeypatch).size_known is True
+
+    def _resolved(self, folder: Path, monkeypatch):
+        from lilbee.providers.fleet.devices import FleetDevice
+        from lilbee.providers.roles import EngineBackend
+
+        card = FleetDevice(
+            backend="CUDA", index=0, name="card", total_bytes=24 * GIB, free_bytes=24 * GIB
+        )
+        reading = planning.DeviceReading(devices=[card], backend=EngineBackend.CUDA)
+        monkeypatch.setattr(cfg, "chat_model", _REF)
+        monkeypatch.setattr(engine_params, "resolve_model_path", lambda _ref, registry=None: folder)
+        monkeypatch.setattr(planning._read_device_cache, "get", lambda _binary, _engine: reading)
+        monkeypatch.setattr(type(MISTRAL), "binary", lambda _self: Path("/nonexistent/mistralrs"))
+        return planning.resolve_placement_plan(None, engines={WorkerRole.CHAT: MISTRAL})
+
+    def _unknown_chat_model(self, folder: Path, monkeypatch) -> None:
+        """Plan the real placement of one installed chat model whose size is unknown."""
+        from lilbee.app import placement as app_placement
+        from lilbee.app.engine_choice import BookReading
+
+        monkeypatch.setattr(
+            app_placement,
+            "_planning_engines",
+            lambda: BookReading(adapters={WorkerRole.CHAT: MISTRAL}, notices={}),
+        )
+        monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+        self._resolved(folder, monkeypatch)
+
+    def _announce_cold_asks(self, asks: int = 2):
+        """Cold asks that announce the embed then the chat engine; the printed lines of each."""
+        from unittest import mock
+
+        from lilbee.app.services import set_services
+        from lilbee.cli import helpers
+
+        services = mock.MagicMock()
+        services.provider.warm_progress.return_value = None
+        set_services(services)
+        printed: list[list[str]] = []
+        for _ask in range(asks):
+            err = mock.MagicMock()
+            helpers.announce_ready(err, WorkerRole.EMBED)
+            helpers.announce_ready(err, WorkerRole.CHAT)
+            printed.append(
+                [c.args[0] for c in err.print.call_args_list if "is unknown" in c.args[0]]
+            )
+        return printed
+
+    @staticmethod
+    def _unknown_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if "is unknown" in r.getMessage()]
+
+    def test_each_cold_ask_logs_the_unknown_size_once_and_a_warm_ask_logs_nothing(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.cli import helpers
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        counts = []
+        with caplog.at_level(logging.DEBUG):
+            for _ask in range(2):
+                caplog.clear()
+                self._announce_cold_asks(asks=1)
+                counts.append(self._unknown_records(caplog))
+            caplog.clear()
+            helpers.announce_ready(None, WorkerRole.EMBED)
+            helpers.announce_ready(None, WorkerRole.CHAT)
+            warm = self._unknown_records(caplog)
+        assert [len(records) for records in counts] == [1, 1]
+        assert [r.levelno for r in counts[0]] == [logging.WARNING]
+        assert "the chat model" in counts[0][0].getMessage()
+        assert warm == []
+
+    def test_a_cold_ask_prints_the_unknown_size_once_when_the_log_is_not_on_the_terminal(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            printed = self._announce_cold_asks()
+        assert [len(lines) for lines in printed] == [1, 1]
+
+    def test_a_cold_ask_shows_the_unknown_size_once_when_the_log_prints_on_stderr(
+        self, tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import sys
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(logging.WARNING)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            printed = self._announce_cold_asks()
+        finally:
+            root.removeHandler(handler)
+        logged = [line for line in capsys.readouterr().err.splitlines() if "is unknown" in line]
+        assert [len(lines) for lines in printed] == [0, 0]
+        assert len(logged) == 2
+
+    def test_reading_the_placement_view_logs_the_unknown_size_once_per_read(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.app import placement as app_placement
+
+        self._unknown_chat_model(_folder(tmp_path), monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            view = app_placement.get_placement()
+            first = self._unknown_records(caplog)
+            app_placement.get_placement()
+            both = self._unknown_records(caplog)
+        assert [u.role for u in view.size_unknown] == [WorkerRole.CHAT]
+        assert (len(first), len(both)) == (1, 2)
+
+    def test_a_known_size_logs_nothing_on_a_view_read(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.app import placement as app_placement
+
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        self._unknown_chat_model(folder, monkeypatch)
+        with caplog.at_level(logging.DEBUG):
+            view = app_placement.get_placement()
+        assert view.size_unknown == ()
+        assert self._unknown_records(caplog) == []
+
+    def test_the_launch_plan_logs_the_unknown_size_once(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from lilbee.providers.fleet.devices import FleetDevice
+
+        folder = _folder(tmp_path)
+        self._resolved(folder, monkeypatch)
+        card = FleetDevice(
+            backend="CUDA", index=0, name="card", total_bytes=24 * GIB, free_bytes=24 * GIB
+        )
+        with caplog.at_level(logging.DEBUG):
+            planning.plan_launches(None, {0: card}, [card], engines={WorkerRole.CHAT: MISTRAL})
+        records = self._unknown_records(caplog)
+        assert [r.levelno for r in records] == [logging.WARNING]
+        assert "the chat model" in records[0].getMessage()
+
+    def test_the_resolved_placement_lists_the_role_of_unknown_size(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        resolved = self._resolved(_folder(tmp_path), monkeypatch)
+        assert resolved.size_unknown_roles == (WorkerRole.CHAT,)
+
+    def test_the_resolved_placement_records_the_charge_the_planner_made(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        resolved = self._resolved(_folder(tmp_path), monkeypatch)
+        assert resolved.charged_bytes == {WorkerRole.CHAT: model_memory.UNKNOWN_SIZE_RESERVE_BYTES}
+
+    def test_the_resolved_placement_lists_no_role_of_known_size(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        assert self._resolved(folder, monkeypatch).size_unknown_roles == ()
+
+    def test_a_known_size_adds_no_warning(
+        self, tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        folder = _folder(tmp_path, 4 * GIB)
+        _write_cache_config(folder)
+        with caplog.at_level(logging.WARNING, logger=planning.log.name):
+            self._estimate(folder, monkeypatch)
+        assert "is unknown" not in caplog.text

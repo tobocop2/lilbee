@@ -19,13 +19,16 @@ from typing import NamedTuple, cast
 
 from lilbee.catalog.header_probe import GGUF_ARCH_KEY
 from lilbee.providers.base import ProviderError
+from lilbee.providers.folder_embed_width import read_folder_config
 
 log = logging.getLogger(__name__)
 
 _HF_BLOBS_DIR_NAME = "blobs"
 _HF_SHARD_LEN = 2
 _HF_SNAPSHOTS_DIR_NAME = "snapshots"
+_HF_REPO_DIR_PREFIX = "models--"
 _CLIP_PROJECTOR_TYPE_KEY = "clip.projector_type"
+_VISION_CONFIG_KEY = "vision_config"
 _DEFAULT_ARCH = "llama"
 _CHAT_TEMPLATE_KEY = "tokenizer.chat_template"
 _FILE_TYPE_KEY = "general.file_type"
@@ -317,26 +320,66 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None | _U
     return result or None
 
 
-def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
-    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree.
+def _hf_cache_dir_of(model_dir: Path) -> Path | None:
+    """The HF-cache repo dir above a ``blobs/`` dir, or None when *model_dir* is not one.
 
     The blob sits in ``blobs/`` directly, or in a two-character shard dir under
     it (``blobs/a0/``) with newer huggingface_hub releases.
     """
     if model_dir.name == _HF_BLOBS_DIR_NAME:
-        cache_dir = model_dir.parent
-    elif model_dir.parent.name == _HF_BLOBS_DIR_NAME and len(model_dir.name) == _HF_SHARD_LEN:
-        cache_dir = model_dir.parent.parent
-    else:
+        return model_dir.parent
+    if model_dir.parent.name == _HF_BLOBS_DIR_NAME and len(model_dir.name) == _HF_SHARD_LEN:
+        return model_dir.parent.parent
+    return None
+
+
+def is_hf_cache_blob(model_path: Path) -> bool:
+    """True when *model_path* is an existing file in the ``blobs/`` dir of an HF-cache repo.
+
+    A repo dir is named ``models--<org>--<repo>``. A loose file in some other dir
+    that happens to be called ``blobs`` is not a cache blob.
+    """
+    repo_dir = _hf_cache_dir_of(model_path.parent)
+    return (
+        repo_dir is not None
+        and repo_dir.name.startswith(_HF_REPO_DIR_PREFIX)
+        and model_path.is_file()
+    )
+
+
+def _hf_snapshots_dir_of(model_dir: Path) -> Path | None:
+    """Walk an HF-cache ``blobs/`` dir up to its sibling ``snapshots/`` tree."""
+    cache_dir = _hf_cache_dir_of(model_dir)
+    if cache_dir is None:
         return None
     snapshots_dir = cache_dir / _HF_SNAPSHOTS_DIR_NAME
-    if not snapshots_dir.is_dir():
+    return snapshots_dir if snapshots_dir.is_dir() else None
+
+
+def _find_mmproj_in_hf_snapshots(model_dir: Path) -> Path | None:
+    """The projector file in the ``snapshots/`` tree beside an HF-cache ``blobs/`` dir."""
+    snapshots_dir = _hf_snapshots_dir_of(model_dir)
+    if snapshots_dir is None:
         return None
     for snapshot in snapshots_dir.iterdir():
         candidates = sorted(snapshot.glob("*mmproj*.gguf"))
         if candidates:
             return candidates[0]
     return None
+
+
+def snapshot_entry_of_blob(model_path: Path) -> Path:
+    """The snapshot file named after the cached blob *model_path*; any other path as is."""
+    snapshots_dir = _hf_snapshots_dir_of(model_path.parent)
+    if snapshots_dir is None:
+        return model_path
+    for snapshot in sorted(snapshots_dir.iterdir()):
+        for entry in sorted(snapshot.rglob("*.gguf")):
+            # The blob name is its content hash; the link chain may end in a shared store
+            # beside the repo folders, so the folder cannot be compared.
+            if entry.resolve().name == model_path.name:
+                return entry
+    return model_path
 
 
 def _find_mmproj_in_flat_dir(model_dir: Path) -> Path | None:
@@ -370,6 +413,11 @@ def find_mmproj_for_model(model_path: Path) -> Path:
 def needs_sidecar_projector(model_path: Path) -> bool:
     """False for a model folder, which holds its own vision weights; True for a GGUF."""
     return not model_path.is_dir()
+
+
+def declares_vision_config(model_dir: Path) -> bool:
+    """True when the ``config.json`` of the model folder *model_dir* has a ``vision_config``."""
+    return isinstance(read_folder_config(model_dir).get(_VISION_CONFIG_KEY), dict)
 
 
 def read_mmproj_projector_type(mmproj_path: Path) -> str | None:

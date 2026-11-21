@@ -13,8 +13,10 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import psutil
 import pytest
 from typer.testing import CliRunner
 
@@ -38,13 +40,39 @@ from tests.test_engine_real_fleet import _GIB, _MESSAGES, GGUF_CHAT, GGUF_EMBED,
 _REPO = Path(__file__).resolve().parents[1]
 _WAIT_S = 10.0
 _ENGINE_SCRIPT = """\
+import os
 import sys
+import threading
+
 sys.path.insert(0, sys.argv[1])
 from tests.conformance import fake_engine
 
+
+def _exit_with_parent() -> None:
+    sys.stdin.read()
+    os._exit(0)
+
+
+threading.Thread(target=_exit_with_parent, daemon=True).start()
 server = fake_engine._Server(fake_engine.Behaviour())
 print(server.server_address[1], flush=True)
 server.serve_forever()
+"""
+_PARENT_SCRIPT = """\
+import os
+import subprocess
+import sys
+
+child = subprocess.Popen(
+    [sys.executable, "-B", sys.argv[1], sys.argv[2]],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+)
+port = child.stdout.readline().strip()
+print(child.pid, port, flush=True)
+os._exit(0)
 """
 
 
@@ -83,14 +111,15 @@ class _ProcessSwap:
             raise type(self).start_failure
         self.process = subprocess.Popen(
             [sys.executable, "-B", str(self.script), str(_REPO)],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
             encoding="utf-8",
         )
+        type(self).started.append(self)
         assert self.process.stdout is not None
         self.port = int(self.process.stdout.readline())
         type(self).live[self.group] = self
-        type(self).started.append(self)
 
     def endpoint(self) -> str:
         return f"http://127.0.0.1:{self.port}"
@@ -126,7 +155,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     planning.clear_read_device_cache()
     for module in (planning, planning.model_cache):
         monkeypatch.setattr(module, "total_system_memory", lambda: 64 * _GIB)
-        monkeypatch.setattr(module, "free_system_memory", lambda: 64 * _GIB)
+        monkeypatch.setattr(planning.model_cache, "free_system_memory", lambda: 64 * _GIB)
     settings: dict[str, Any] = {
         "system_memory_reserve_gb": 0,
         "gpu_memory_fraction": 1.0,
@@ -159,17 +188,26 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Services]
     monkeypatch.setattr(fleet_provider, "SwapManager", _ProcessSwap)
     services = build_services(cfg)
     monkeypatch.setattr(services_mod._state, "singleton", services)
-    assert services.provider.embed(["hi"])
-    assert services.provider.chat(_MESSAGES)
-    assert len(_ProcessSwap.live) > 0
-    _ProcessSwap.starting.clear()
-    yield services
-    services.provider.shutdown()
-    for swap in _ProcessSwap.started:
-        if swap.process is not None and swap.process.poll() is None:
-            swap.process.kill()
-            swap.process.wait(_WAIT_S)
-    services.store.close()
+    try:
+        assert services.provider.embed(["hi"])
+        assert services.provider.chat(_MESSAGES)
+        assert len(_ProcessSwap.live) > 0
+        _ProcessSwap.starting.clear()
+        yield services
+    finally:
+        _stop_every_engine(services)
+
+
+def _stop_every_engine(services: Services) -> None:
+    """Stop each engine process the fixture started, even when the provider's own stop fails."""
+    try:
+        services.provider.shutdown()
+    finally:
+        for swap in _ProcessSwap.started:
+            if swap.process is not None and swap.process.poll() is None:
+                swap.process.kill()
+                swap.process.wait(_WAIT_S)
+        services.store.close()
 
 
 def _local(services: Services) -> FleetProvider:
@@ -183,6 +221,95 @@ def _wait_for(condition: Any) -> None:
     while not condition() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert condition()
+
+
+def _running(pid: int) -> bool:
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def test_an_engine_process_exits_when_its_parent_exits_without_stopping_it(
+    tmp_path: Path,
+) -> None:
+    engine = tmp_path / "engine.py"
+    engine.write_text(_ENGINE_SCRIPT, encoding="utf-8")
+    parent = tmp_path / "parent.py"
+    parent.write_text(_PARENT_SCRIPT, encoding="utf-8")
+    ran = subprocess.run(
+        [sys.executable, "-B", str(parent), str(engine), str(_REPO)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=_WAIT_S * 3,
+        check=True,
+    )
+    pid, port = (int(field) for field in ran.stdout.split())
+    assert port > 0
+    try:
+        _wait_for(lambda: not _running(pid))
+    finally:
+        if _running(pid):
+            psutil.Process(pid).kill()
+
+
+def _swap_with_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str) -> _ProcessSwap:
+    script = tmp_path / "engine.py"
+    script.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(_ProcessSwap, "script", script, raising=False)
+    monkeypatch.setattr(_ProcessSwap, "live", {})
+    monkeypatch.setattr(_ProcessSwap, "started", [])
+    monkeypatch.setattr(_ProcessSwap, "start_failure", None)
+    monkeypatch.setattr(_ProcessSwap, "start_gate", None)
+    monkeypatch.setattr(_ProcessSwap, "starting", threading.Event())
+    return _ProcessSwap(tmp_path, "group")
+
+
+def test_an_engine_process_exits_when_its_swap_closes_the_pipe_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    swap = _swap_with_script(tmp_path, monkeypatch, _ENGINE_SCRIPT)
+    swap.start([])
+    assert swap.process is not None
+    assert swap.process.stdin is not None
+    try:
+        swap.process.stdin.close()
+        assert swap.process.wait(_WAIT_S) == 0
+    finally:
+        swap.shutdown()
+
+
+def test_an_engine_that_prints_no_port_is_still_listed_as_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    swap = _swap_with_script(tmp_path, monkeypatch, "raise SystemExit(0)\n")
+    with pytest.raises(ValueError, match="invalid literal"):
+        swap.start([])
+    assert _ProcessSwap.started == [swap]
+
+
+def test_a_failing_provider_shutdown_still_stops_every_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    swap = _swap_with_script(tmp_path, monkeypatch, _ENGINE_SCRIPT)
+    swap.start([])
+    assert swap.process is not None
+    closed: list[bool] = []
+
+    class _Provider:
+        def shutdown(self) -> None:
+            raise RuntimeError("provider shutdown failed")
+
+    class _Store:
+        def close(self) -> None:
+            closed.append(True)
+
+    services: Any = SimpleNamespace(provider=_Provider(), store=_Store())
+    with pytest.raises(RuntimeError, match="provider shutdown failed"):
+        _stop_every_engine(services)
+    assert swap.process.poll() is not None
+    assert closed == [True]
 
 
 def test_a_write_that_cannot_find_the_engine_binary_is_not_reported_as_applied(

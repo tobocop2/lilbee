@@ -95,7 +95,10 @@ from lilbee.server.models import (
 
 if TYPE_CHECKING:
     from lilbee.app.placement import GpuInfo, PlacementView
+    from lilbee.core.health_warnings import HealthWarning
+    from lilbee.data.store import Store
     from lilbee.providers.base import LLMProvider
+    from lilbee.runtime.progress import LibraryUpgradeEvent
 
 log = logging.getLogger(__name__)
 
@@ -128,12 +131,18 @@ def _chat_status(
     return "not_started", None
 
 
+def _store_health(store: Store) -> tuple[list[HealthWarning], LibraryUpgradeEvent | None]:
+    """The store's health warnings and upgrade progress, read together."""
+    return store.health_warnings(), store.upgrade_progress()
+
+
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
     services = get_services()
     provider = services.provider
     chat_status, chat_error = _chat_status(provider)
     prefill = provider.chat_prefill_progress()
+    store_warnings, upgrade = await asyncio.to_thread(_store_health, services.store)
     return HealthResponse(
         status="ok",
         version=get_version(),
@@ -146,8 +155,8 @@ async def health() -> HealthResponse:
         chat_prefill_processed=prefill[0] if prefill else None,
         chat_prefill_total=prefill[1] if prefill else None,
         embed_token_cap=provider.embed_token_cap(),
-        warnings=[*services.store.health_warnings(), *provider.health_warnings()],
-        upgrade=services.store.upgrade_progress(),
+        warnings=[*store_warnings, *provider.health_warnings()],
+        upgrade=upgrade,
     )
 
 
@@ -207,11 +216,12 @@ async def gpu_stats_stream(
     open while visible; ``max_ticks`` bounds it for tests. A heartbeat is emitted
     every ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
 
-    The per-vendor probe runs on a worker thread, not here. It is not light: every
-    backend shells out to an SMI tool with a five-second timeout, and the Intel
-    paths sleep and scan /proc on top of that. Driven inline it held the event
-    loop for the whole subprocess on every tick, once per connected client, which
-    stalls chat, search and embedding requests along with it.
+    The per-vendor probe and the Intel util hint run on a worker thread, not
+    here. They are not light: every backend shells out to an SMI tool with a
+    five-second timeout, and the Intel paths sleep and scan /proc on top of
+    that. Driven inline it held the event loop for the whole subprocess on
+    every tick, once per connected client, which stalls chat, search and
+    embedding requests along with it.
     """
     from lilbee.cli.tui import messages as msg
     from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats_shared
@@ -221,7 +231,7 @@ async def gpu_stats_stream(
     while max_ticks is None or tick < max_ticks:
         stats = await asyncio.to_thread(probe_gpu_stats_shared, devices)
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
-        hint = intel_util_hint(devices, stats)
+        hint = await asyncio.to_thread(intel_util_hint, devices, stats)
         if hint:
             payload["notice"] = msg.intel_util_hint_text(hint)
         yield sse_event(SseEvent.GPU_STATS, payload)
@@ -237,7 +247,7 @@ async def gpu_stats_stream(
 
 async def status() -> StatusResponse:
     """Return config, sources, and chunk counts."""
-    raw = gather_status()
+    raw = await asyncio.to_thread(gather_status)
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
@@ -300,10 +310,10 @@ def _intel_notice_text(devices: Sequence[GpuInfo]) -> str | None:
 
 async def gpus() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
-    from lilbee.app.placement import get_placement
+    from lilbee.app.placement import get_planned_placement
 
     def _body() -> GpusResponse:
-        view = get_placement()
+        view = get_planned_placement()
         return GpusResponse(
             gpus=PlacementResponse.from_view(view).gpus,
             notice=_intel_notice_text(view.gpus),

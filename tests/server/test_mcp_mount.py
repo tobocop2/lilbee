@@ -15,6 +15,7 @@ from mcp.server.mcpserver import MCPServer
 
 from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import set_services
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.server import auth as auth_mod
 from lilbee.server import mcp_mount
 from lilbee.server.auth import AuthMiddleware
@@ -445,7 +446,7 @@ async def test_search_tool_uses_the_shared_services_singleton(
     from tests.conftest import make_mock_services
 
     services = make_mock_services()
-    services.searcher.search = MagicMock(return_value=[])
+    services.searcher.search_report = MagicMock(return_value=SearchReport([]))
     set_services(services)
     try:
         async with _client(mcp_app) as client:
@@ -463,5 +464,5 @@ async def test_search_tool_uses_the_shared_services_singleton(
             )
     finally:
         set_services(None)
-    services.searcher.search.assert_called_once()
-    assert services.searcher.search.call_args.args[0] == "hello"
+    services.searcher.search_report.assert_called_once()
+    assert services.searcher.search_report.call_args.args[0] == "hello"

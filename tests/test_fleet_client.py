@@ -9,7 +9,8 @@ import dataclasses
 import json
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 
 import httpx
@@ -36,6 +37,7 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
 )
 from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines.base import RerankShape
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.reasoning import ThinkInliner
@@ -615,6 +617,70 @@ def test_the_idle_callback_runs_when_the_last_request_ends_with_the_count_lock_f
     assert seen == [(0, False), (0, False)]
 
 
+def test_wait_idle_returns_when_the_last_request_ends_and_not_before() -> None:
+    client = _client()
+    assert client.wait_idle(0.0) is True
+    client.reserve()
+    client.reserve()
+    client.release()
+    assert client.wait_idle(0.05) is False
+    ender = threading.Timer(0.05, client.release)
+    ender.start()
+    assert client.wait_idle(10.0) is True
+    ender.join()
+    assert client.in_flight == 0
+
+
+_WAKE_TIMEOUT_S = 30.0
+
+
+def test_wait_idle_returns_on_the_wake_not_on_the_timeout() -> None:
+    """A timeout return also reports True once the count is zero, so time the wake."""
+    client = _client()
+    client.reserve()
+    released_at: list[float] = []
+    waiting = threading.Event()
+    real_wait = client._idle.wait
+
+    def _signal_then_wait(timeout: float | None = None) -> bool:
+        waiting.set()  # the count lock is held, so release() blocks until the wait starts
+        return real_wait(timeout)
+
+    client._idle.wait = _signal_then_wait  # type: ignore[method-assign]
+
+    def _end_request() -> None:
+        assert waiting.wait(_WAKE_TIMEOUT_S)
+        released_at.append(time.monotonic())
+        client.release()
+
+    ender = threading.Thread(target=_end_request)
+    ender.start()
+    assert client.wait_idle(_WAKE_TIMEOUT_S) is True
+    returned_at = time.monotonic()
+    ender.join()
+    assert released_at, "the request never ended"
+    assert returned_at - released_at[0] < _WAKE_TIMEOUT_S / 3
+
+
+def test_wait_idle_waits_out_the_timeout_when_no_wake_comes() -> None:
+    """The count reaches zero with no notify, so only the timeout re-checks it."""
+    client = _client()
+    client.reserve()
+
+    def _zero_without_notify() -> None:
+        with client._in_flight_lock:
+            client.in_flight = 0
+
+    flipper = threading.Timer(0.05, _zero_without_notify)
+    timeout_s = 0.3
+    started_at = time.monotonic()
+    flipper.start()
+    assert client.wait_idle(timeout_s) is True
+    elapsed_s = time.monotonic() - started_at
+    flipper.join()
+    assert elapsed_s >= timeout_s * 0.9
+
+
 def test_chat_stream_yields_deltas() -> None:
     chunks = list(_client().chat([{"role": "user", "content": "hi"}], stream=True))
     assert chunks == ["He", "llo"]
@@ -1100,6 +1166,42 @@ def test_raise_for_status_tags_recorded_prompt_length_400_as_overflow() -> None:
 
 
 @pytest.mark.parametrize(
+    ("status", "body", "kind"),
+    [
+        pytest.param(
+            400,
+            '{"error":{"code":400,"message":"request (9000 tokens) exceeds the available context '
+            'size (4096 tokens), try increasing it","type":"exceed_context_size_error",'
+            '"n_prompt_tokens":9000,"n_ctx":4096}}',
+            "context_overflow",
+            id="400-exceed-context-size",
+        ),
+        pytest.param(
+            500,
+            '{"error":{"code":500,"message":"input (136 tokens) is too large to process. '
+            'increase the physical batch size","type":"server_error"}}',
+            "context_overflow",
+            id="500-too-large-to-process",
+        ),
+        pytest.param(502, "Bad Gateway", "server", id="502-gateway"),
+        pytest.param(503, "Service Unavailable", "server", id="503-gateway"),
+        pytest.param(504, "Gateway Timeout", "server", id="504-gateway"),
+    ],
+)
+def test_an_engine_error_body_says_whether_a_retry_can_help(
+    status: int, body: str, kind: str
+) -> None:
+    """An overflow repeats on every retry; a gateway error is transient and is retried."""
+    from lilbee.providers.base import ProviderErrorKind
+
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(status, text=body))
+
+    assert excinfo.value.kind is ProviderErrorKind(kind)
+    assert excinfo.value.repeats_on_retry is (kind == "context_overflow")
+
+
+@pytest.mark.parametrize(
     "body",
     [
         '{"error":{"message":"Unknown field `foo`","type":"invalid_request_error"}}',
@@ -1391,6 +1493,7 @@ _CLIENT_REQUESTS = {
     "rerank_rank_pooling": ({}, lambda c: c.rerank("q", ["a"])),
     "rerank_llm": ({"rerank_mode": RerankMode.LLM}, lambda c: c.rerank("q", ["a"])),
     "count_tokens": ({}, lambda c: c.count_tokens("a")),
+    "count_text_tokens": ({}, lambda c: c.count_text_tokens("a")),
     "count_chat_prompt_tokens": ({}, lambda c: c.count_chat_prompt_tokens(_CHAT_MESSAGES)),
     "embed_truncation_detokenize": ({"token_cap": 1}, lambda c: c.embed([_LONG_TEXT])),
 }
@@ -2392,6 +2495,48 @@ def test_tokenize_and_detokenize_use_upstream_route() -> None:
     assert "/upstream/test-model/detokenize" in seen
 
 
+def test_detokenize_retries_transient_gateway_error_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    bodies: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if len(bodies) < 3:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json={"content": "hi"})
+
+    assert _client(handler)._detokenize([1, 2, 3]) == "hi"
+    assert bodies == [{"tokens": [1, 2, 3]}] * 3
+
+
+def test_detokenize_without_route_names_the_missing_route() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request may be sent without a route")
+
+    with pytest.raises(NotImplementedError, match="no detokenize route"):
+        _no_route_client(handler)._detokenize([1])
+
+
+def test_embed_truncation_survives_a_gateway_error_on_detokenize(monkeypatch) -> None:
+    """The capped embed path re-detokenizes the cut tokens; a 503 there is retried."""
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    detokenize_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(12))})
+        if request.url.path.endswith("/detokenize"):
+            detokenize_calls["n"] += 1
+            if detokenize_calls["n"] == 1:
+                return httpx.Response(503, text="Service Unavailable")
+            return httpx.Response(200, json={"content": "cut"})
+        return httpx.Response(200, json=_embed_body([[0.5] for _ in body["input"]]))
+
+    assert _as_lists(_capped_client(handler, cap=10).embed([_LONG_TEXT])) == [[0.5]]
+    assert detokenize_calls["n"] == 2
+
+
 def test_count_tokens_returns_tokenize_length() -> None:
     """count_tokens is the length of the server's /tokenize result."""
 
@@ -2402,6 +2547,32 @@ def test_count_tokens_returns_tokenize_length() -> None:
 
     client = _client(handler)
     assert client.count_tokens("hello world") == 4
+
+
+def test_count_text_tokens_is_the_tokenize_length_of_the_text_sent() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+        return httpx.Response(404)
+
+    assert _client(handler).count_text_tokens("hello world") == 3
+    assert [body["content"] for body in sent] == ["hello world"]
+
+
+def test_count_tokens_is_the_server_count_of_the_text_sent_not_the_estimate() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"tokens": list(range(40))})
+        return httpx.Response(404)
+
+    assert _client(handler).count_tokens("hello world") == 40
+    assert [body["content"] for body in sent] == ["hello world"]
 
 
 def test_count_tokens_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
@@ -3549,18 +3720,117 @@ def test_embed_without_tokenize_route_keeps_input_within_cap() -> None:
     assert sent == ["x" * 12]
 
 
-def test_embed_without_tokenize_route_truncates_again_on_context_overflow() -> None:
-    calls: list[list[str]] = []
-
+def _overflowing_handler(calls: list[list[str]]):
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(json.loads(request.content)["input"])
-        if len(calls) == 1:
+        return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
+
+    return handler
+
+
+def test_embed_without_tokenize_route_raises_the_overflow_without_a_resend() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    calls: list[list[str]] = []
+    with pytest.raises(ProviderError) as excinfo:
+        _no_route_client(_overflowing_handler(calls), cap=4).embed(["x" * 12])
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert calls == [["x" * 12]]
+
+
+def test_rerank_without_tokenize_route_raises_the_overflow_without_a_resend() -> None:
+    from lilbee.providers.base import ProviderErrorKind
+
+    calls: list[list[str]] = []
+    with pytest.raises(ProviderError) as excinfo:
+        _no_route_client(_overflowing_handler(calls), cap=100).rerank("q", ["alpha"])
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
+    assert calls == [[f"q{_RERANK_PAIR_SEPARATOR}alpha"]]
+
+
+def test_tokenize_without_tokenize_route_names_the_missing_route() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    with pytest.raises(NotImplementedError, match="no tokenize route"):
+        _no_route_client(handler)._tokenize("hello")
+
+
+def test_embed_with_tokenize_but_no_detokenize_route_names_the_missing_route() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    profile = dataclasses.replace(LLAMA.request_profile(WorkerRole.EMBED), detokenize_path=None)
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient("http://gpu0", "m", http=http, token_cap=4, profile=profile)
+    with pytest.raises(NotImplementedError, match="no detokenize route"):
+        client.embed(["x" * 100])
+    assert paths == ["/upstream/m/tokenize"]
+
+
+def test_embed_redo_after_overflow_sends_the_input_truncated_by_the_server_tokenizer() -> None:
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/detokenize"):
+            assert json.loads(request.content)["tokens"] == list(range(10))
+            return httpx.Response(200, json={"content": "cut"})
+        if path.endswith("/tokenize"):
+            assert json.loads(request.content)["content"] == "dense"
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        sent.append(json.loads(request.content)["input"])
+        if len(sent) == 1:
             return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
         return httpx.Response(200, json=_embed_body([[0.5]]))
 
-    out = _no_route_client(handler, cap=4).embed(["x" * 12])
+    out = _capped_client(handler, 10).embed(["dense"])
     assert _as_lists(out) == [[0.5]]
-    assert calls == [["x" * 12], ["x" * 12]]
+    assert sent == [["dense"], ["cut"]]
+
+
+def test_rerank_redo_after_overflow_sends_the_pair_truncated_by_the_server_tokenizer() -> None:
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/detokenize"):
+            assert json.loads(request.content)["tokens"] == list(range(10))
+            return httpx.Response(200, json={"content": "cut"})
+        if path.endswith("/tokenize"):
+            assert json.loads(request.content)["content"] == f"q{_RERANK_PAIR_SEPARATOR}dense"
+            return httpx.Response(200, json={"tokens": list(range(20))})
+        sent.append(json.loads(request.content)["input"])
+        if len(sent) == 1:
+            return httpx.Response(400, json={"error": {"message": "exceed_context_size"}})
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    assert _capped_client(handler, 10).rerank("q", ["dense"]) == [0.5]
+    assert sent == [[f"q{_RERANK_PAIR_SEPARATOR}dense"], ["cut"]]
+
+
+def test_rerank_does_not_redo_an_error_that_is_not_an_overflow() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(500, text="boom")
+
+    with pytest.raises(ProviderError, match="500"):
+        _capped_client(handler, 10).rerank("q", ["dense"])
+    assert calls == ["/v1/embeddings"]
+
+
+def test_count_text_tokens_without_tokenize_route_is_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request expected, got {request.url.path}")
+
+    assert _no_route_client(handler).count_text_tokens("x" * 10) is None
 
 
 def test_count_tokens_without_tokenize_route_estimates_by_characters() -> None:
@@ -3569,6 +3839,46 @@ def test_count_tokens_without_tokenize_route_estimates_by_characters() -> None:
 
     client = _no_route_client(handler)
     assert client.count_tokens("x" * 10) == 4
+
+
+def _tei_client(handler) -> LlamaServerClient:
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://cpu0")
+    return LlamaServerClient(
+        "http://cpu0", "m", http=http, profile=TEI.request_profile(WorkerRole.EMBED)
+    )
+
+
+def test_tei_count_is_the_length_of_the_batch_route_token_list() -> None:
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"path": request.url.path, "body": json.loads(request.content)})
+        return httpx.Response(200, json=[[{"id": i} for i in range(7)]])
+
+    assert _tei_client(handler).count_tokens("hello world") == 7
+    assert sent == [{"path": "/upstream/m/tokenize", "body": {"inputs": ["hello world"]}}]
+
+
+def test_tei_count_retries_a_gateway_error(monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json=[[{"id": 1}, {"id": 2}]])
+
+    assert _tei_client(handler).count_text_tokens("hi") == 2
+    assert calls["n"] == 2
+
+
+def test_tei_count_refuses_an_unexpected_body() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"tokens": [1]})
+
+    with pytest.raises(ValueError, match="not a list of token lists"):
+        _tei_client(handler).count_text_tokens("hi")
 
 
 def test_count_chat_prompt_tokens_without_tokenize_route_asks_for_an_estimate() -> None:
@@ -3589,6 +3899,64 @@ def test_rerank_with_route_posts_query_and_texts_and_orders_scores_by_index() ->
     scores = _no_route_client(handler, rerank_path="/rerank").rerank("q", ["alpha", "beta"])
     assert scores == [0.1, 0.9]
     assert seen == [("/upstream/m/rerank", {"query": "q", "texts": ["alpha", "beta"]})]
+
+
+def test_rerank_in_the_documents_shape_posts_cohere_fields_and_reads_relevance_scores() -> None:
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 1, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 0.1},
+                ]
+            },
+        )
+
+    scores = _no_route_client(
+        handler,
+        rerank_path="/v3/rerank",
+        rerank_shape=RerankShape.DOCUMENTS,
+        rerank_model="default_model",
+    ).rerank("q", ["alpha", "beta"])
+    assert scores == [0.1, 0.9]
+    assert seen == [
+        (
+            "/upstream/m/v3/rerank",
+            {
+                "model": "default_model",
+                "query": "q",
+                "documents": ["alpha", "beta"],
+                "top_n": 2,
+            },
+        )
+    ]
+
+
+def test_rerank_in_the_documents_shape_without_a_model_name_sends_none() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.5}]})
+
+    _no_route_client(handler, rerank_path="/v3/rerank", rerank_shape=RerankShape.DOCUMENTS).rerank(
+        "q", ["alpha"]
+    )
+    assert "model" not in seen[0]
+
+
+def test_rerank_in_the_documents_shape_refuses_an_answer_missing_a_candidate() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.5}]})
+
+    with pytest.raises(ProviderError, match="one score for each of the 2 candidates"):
+        _no_route_client(
+            handler, rerank_path="/v3/rerank", rerank_shape=RerankShape.DOCUMENTS
+        ).rerank("q", ["alpha", "beta"])
 
 
 def test_rerank_with_route_splits_candidates_at_the_batch_limit() -> None:
@@ -3866,8 +4234,10 @@ def test_json_schema_refused_on_mlx() -> None:
             [{"role": "user", "content": "hi"}], options={"response_format": _SCHEMA_FORMAT}
         )
     assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
-    assert "mlx-lm" in str(refused.value)
-    assert "llama.cpp" in str(refused.value)
+    assert str(refused.value) == (
+        "mlx-lm does not enforce a JSON schema. Use a llama.cpp model for structured output."
+    )
+    assert refused.value.provider == "mlx-lm"
     assert sent == []
 
 
@@ -3883,6 +4253,37 @@ def test_json_object_dropped_on_mlx() -> None:
     llama.chat_result([{"role": "user", "content": "hi"}], options=dict(options))
     assert llama_sent[0]["response_format"] == {"type": "json_object"}
     assert options["response_format"] == {"type": "json_object"}
+
+
+def test_text_response_format_reaches_the_mlx_server_as_sent() -> None:
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    messages = [{"role": "user", "content": "hi"}]
+    mlx, mlx_sent = _recording_client(MLX)
+    mlx.chat_result(messages, options={"response_format": {"type": "text"}})
+    assert mlx_sent[0]["response_format"] == {"type": "text"}
+
+
+@pytest.mark.parametrize("reply_format", [{"type": "xml"}, {}, "json"])
+def test_unsupported_response_format_refused_on_mlx_and_sent_on_llama(
+    reply_format: object,
+) -> None:
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.engines.mlx import MLX
+
+    messages = [{"role": "user", "content": "hi"}]
+    mlx, mlx_sent = _recording_client(MLX)
+    with pytest.raises(ProviderError) as refused:
+        mlx.chat_result(messages, options={"response_format": reply_format})
+    assert str(refused.value) == (
+        f"mlx-lm does not support response_format {reply_format!r}. Use type text."
+    )
+    assert refused.value.provider == "mlx-lm"
+    assert refused.value.kind is ProviderErrorKind.BAD_REQUEST
+    assert mlx_sent == []
+    llama, llama_sent = _recording_client(LLAMA)
+    llama.chat_result(messages, options={"response_format": reply_format})
+    assert llama_sent[0]["response_format"] == reply_format
 
 
 def test_json_schema_passes_through_on_llama() -> None:
@@ -3917,3 +4318,86 @@ def test_every_chat_entry_point_keeps_a_schema_off_the_mlx_wire(how: str) -> Non
     with pytest.raises(ProviderError, match="does not enforce a JSON schema"):
         _call_chat(client, how, {"response_format": _SCHEMA_FORMAT})
     assert sent == []
+
+
+class _RecordedRequests:
+    """The request paths a local engine server received, and its answer delay."""
+
+    def __init__(self, delay_s: float) -> None:
+        self.paths: list[str] = []
+        self.release = threading.Event()
+        self.delay_s = delay_s
+
+
+@contextlib.contextmanager
+def _local_engine(delay_s: float = 0.0) -> Iterator[tuple[str, _RecordedRequests]]:
+    """A real loopback server that answers chat requests; yields its base URL and what it saw."""
+    seen = _RecordedRequests(delay_s)
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            # requestline keeps the target as sent; the server's own path drops a leading "//".
+            seen.paths.append(self.requestline.split()[1])
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.release.wait(seen.delay_s)
+            if body.get("stream"):
+                payload, kind = _STREAM_BODY.encode(), "text/event-stream"
+            else:
+                payload = json.dumps({"choices": [{"message": {"content": "Hello"}}]}).encode()
+                kind = "application/json"
+            with contextlib.suppress(OSError):
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", seen
+    finally:
+        seen.release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def _wire_client(base_url: str, **kwargs: float) -> LlamaServerClient:
+    """A client that owns its HTTP clients and talks to *base_url* over a socket."""
+    client = LlamaServerClient(
+        base_url, "m", profile=LLAMA.request_profile(WorkerRole.CHAT), **kwargs
+    )
+    client._needs_alternation = False
+    return client
+
+
+_WIRE_CALLS = {
+    "chat": lambda client: client.chat([{"role": "user", "content": "hi"}]),
+    "chat_abortable": lambda client: client.chat_abortable([{"role": "user", "content": "hi"}]),
+}
+
+
+@pytest.mark.parametrize("how", sorted(_WIRE_CALLS))
+@pytest.mark.parametrize("slashes", ["//", "///"])
+def test_a_base_url_with_trailing_slashes_reaches_the_server_as_one_route(
+    how: str, slashes: str
+) -> None:
+    """The server receives the chat route with no doubled slash, on both HTTP clients."""
+    with _local_engine() as (url, seen):
+        assert _WIRE_CALLS[how](_wire_client(url + slashes)) == "Hello"
+    assert seen.paths == ["/v1/chat/completions"]
+
+
+@pytest.mark.parametrize("how", sorted(_WIRE_CALLS))
+def test_the_client_timeout_ends_a_request_the_server_answers_late(how: str) -> None:
+    """A server that answers after the client timeout makes the request fail, on both clients."""
+    with _local_engine(delay_s=1.5) as (url, seen):
+        client = _wire_client(url, timeout=0.2)
+        with pytest.raises(httpx.ReadTimeout):
+            _WIRE_CALLS[how](client)
+    assert seen.paths == ["/v1/chat/completions"]

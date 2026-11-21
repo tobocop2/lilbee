@@ -25,6 +25,7 @@ from lilbee.core.config.resolve import builtin_value, read_layers, resolve
 from lilbee.crawler.models import CrawlLogin
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.crawler.url_filter import UNPARSED_ADDRESS
+from lilbee.data.extract.backends.tokenizer import TokenCountError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
 from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, SearchChunk, Store
@@ -63,6 +64,8 @@ from lilbee.mcp_server import (
     wiki_update,
     wiki_wipe,
 )
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.retrieval.query.searcher import SearchReport
 from lilbee.runtime.progress import (
     CrawlPageFailedEvent,
     EmbedEvent,
@@ -102,7 +105,7 @@ def mock_svc():
     from tests.conftest import make_mock_services
 
     searcher = MagicMock()
-    searcher.search.return_value = []
+    searcher.search_report.return_value = SearchReport([])
     services = make_mock_services(searcher=searcher)
     svc_mod.set_services(services)
     yield services
@@ -123,62 +126,71 @@ _SYNC_NOOP = SyncResult()
 _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 
 
+def _rows(result):
+    """The rows (or error) in a search result's structured content."""
+    return result.structured_content["result"]
+
+
 class TestSearch:
     def test_returns_cleaned_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="doc.pdf",
-                content_type="pdf",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="content",
-                chunk_index=0,
-                vector=[0.1] * 768,
-                distance=0.3,
-            ),
-        ]
-        results = search("test query", top_k=3)
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="doc.pdf",
+                    content_type="pdf",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="content",
+                    chunk_index=0,
+                    vector=[0.1] * 768,
+                    distance=0.3,
+                ),
+            ]
+        )
+        results = _rows(search("test query", top_k=3))
         assert len(results) == 1
         assert "vector" not in results[0]
         assert results[0]["distance"] == 0.3
-        mock_svc.searcher.search.assert_called_once_with("test query", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with(
+            "test query", top_k=3, chunk_type=None
+        )
 
     def test_empty_results(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
-        assert search("nothing") == []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
+        assert _rows(search("nothing")) == []
 
     def test_empty_query_returns_error(self, mock_svc):
-        result = search("", top_k=3)
+        result = _rows(search("", top_k=3))
         assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_whitespace_query_returns_error(self, mock_svc):
-        result = search("   ", top_k=3)
+        result = _rows(search("   ", top_k=3))
         assert result == {"error": "query must not be empty"}
-        mock_svc.searcher.search.assert_not_called()
+        mock_svc.searcher.search_report.assert_not_called()
 
     def test_embedding_failure_returns_error(self, mock_svc):
-        mock_svc.searcher.search.side_effect = RuntimeError("embed failed")
-        result = search("test", top_k=3)
+        mock_svc.searcher.search_report.side_effect = RuntimeError("embed failed")
+        result = _rows(search("test", top_k=3))
         assert "error" in result
         assert "embed failed" in result["error"]
 
     def test_scope_wiki_filters_to_wiki_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="wiki")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="wiki")
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type="wiki")
 
     def test_scope_raw_filters_to_raw_chunks(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="raw")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type="raw")
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type="raw")
 
     def test_scope_both_means_no_filter(self, mock_svc):
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("q", top_k=3, scope="both")
-        mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("q", top_k=3, chunk_type=None)
 
     def test_invalid_scope_falls_back_to_both(self, mock_svc, caplog):
         """Smaller models echo prose like 'indexed docs' back as scope; we
@@ -187,13 +199,13 @@ class TestSearch:
         """
         import logging
 
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
-            result = search("q", top_k=3, scope="bogus")
+            result = _rows(search("q", top_k=3, scope="bogus"))
         assert result == []
-        mock_svc.searcher.search.assert_called_once()
+        mock_svc.searcher.search_report.assert_called_once()
         # chunk_type=None means "both" -> no filter at the data layer.
-        call_kwargs = mock_svc.searcher.search.call_args.kwargs
+        call_kwargs = mock_svc.searcher.search_report.call_args.kwargs
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
 
@@ -203,33 +215,35 @@ class TestSearch:
         of a negative limit reaching the store."""
         import logging
 
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
-            result = search("q", top_k=-3)
+            result = _rows(search("q", top_k=-3))
         assert result == []
-        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == cfg.top_k
+        assert mock_svc.searcher.search_report.call_args.kwargs["top_k"] == cfg.top_k
         assert any("not positive" in record.message for record in caplog.records)
 
     def test_returns_searcher_results_unfiltered(self, mock_svc):
         """The relevance cutoff lives in Searcher.search (with the
         lexical-support exemption); MCP must not re-filter on bare distance,
         which dropped both-arm rows the fusion layer deliberately keeps."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="far-but-lexical.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="PX4471 spotted",
-                chunk_index=0,
-                vector=[0.1],
-                distance=1.4,
-                bm25_score=12.0,
-            ),
-        ]
-        results = search("PX4471")
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="far-but-lexical.md",
+                    content_type="text",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="PX4471 spotted",
+                    chunk_index=0,
+                    vector=[0.1],
+                    distance=1.4,
+                    bm25_score=12.0,
+                ),
+            ]
+        )
+        results = _rows(search("PX4471"))
         assert [r["source"] for r in results] == ["far-but-lexical.md"]
 
     def test_results_carry_a_label_and_no_number(self, mock_svc):
@@ -246,8 +260,8 @@ class TestSearch:
             chunk_index=0,
             vector=[0.1],
         )
-        mock_svc.searcher.search.return_value = [chunk]
-        [result] = search("guide")
+        mock_svc.searcher.search_report.return_value = SearchReport([chunk])
+        [result] = _rows(search("guide"))
         assert result["label"] == "example.com · The Guide"
         assert "citation_number" not in result
 
@@ -256,13 +270,13 @@ class TestSearch:
         carries, not just prose it would have to parse."""
         from lilbee.data.store import EmbeddingModelMismatchError
 
-        mock_svc.searcher.search.side_effect = EmbeddingModelMismatchError(
+        mock_svc.searcher.search_report.side_effect = EmbeddingModelMismatchError(
             persisted_model="orgA/repoA/modelA.gguf",
             persisted_dim=768,
             current_model="orgB/repoB/modelB.gguf",
             current_dim=768,
         )
-        result = search("q")
+        result = _rows(search("q"))
         assert result["code"] == "INDEX_EMBEDDER_MISMATCH"
         assert result["persisted_model"] == "orgA/repoA/modelA.gguf"
         assert result["persisted_dim"] == 768
@@ -272,10 +286,10 @@ class TestSearch:
     def test_engine_change_carries_the_shared_code(self, mock_svc):
         from lilbee.data.store import EmbeddingEngineChangedError
 
-        mock_svc.searcher.search.side_effect = EmbeddingEngineChangedError(
+        mock_svc.searcher.search_report.side_effect = EmbeddingEngineChangedError(
             model="m", dim=8, distance=0.2, verified=True
         )
-        result = search("q")
+        result = _rows(search("q"))
         assert result["code"] == "embedding_mismatch"
         assert "lilbee rebuild" in result["error"]
         assert "adoptable" not in result
@@ -283,27 +297,29 @@ class TestSearch:
     def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
         """settings_set top_k must govern search calls that omit the arg."""
         cfg.top_k = 15
-        mock_svc.searcher.search.return_value = []
+        mock_svc.searcher.search_report.return_value = SearchReport([])
         search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=15, chunk_type=None)
+        mock_svc.searcher.search_report.assert_called_once_with("test", top_k=15, chunk_type=None)
 
     def test_keeps_hybrid_results_without_distance(self, mock_svc):
         """Hybrid/RRF results with distance=None are not filtered."""
-        mock_svc.searcher.search.return_value = [
-            SearchChunk(
-                source="hybrid.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="hybrid result",
-                chunk_index=0,
-                vector=[0.1],
-                distance=None,
-            ),
-        ]
-        results = search("test")
+        mock_svc.searcher.search_report.return_value = SearchReport(
+            [
+                SearchChunk(
+                    source="hybrid.md",
+                    content_type="text",
+                    page_start=0,
+                    page_end=0,
+                    line_start=0,
+                    line_end=0,
+                    chunk="hybrid result",
+                    chunk_index=0,
+                    vector=[0.1],
+                    distance=None,
+                ),
+            ]
+        )
+        results = _rows(search("test"))
         assert len(results) == 1
         assert results[0]["source"] == "hybrid.md"
 
@@ -1012,6 +1028,25 @@ class TestAdd:
         assert "real.txt" in result["copied"]
         assert result["warning"] == "some files could not be processed"
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ProviderError("The embedder is not available.", kind=ProviderErrorKind.NOT_FOUND),
+            TokenCountError(),
+        ],
+        ids=["provider-error", "token-count-error"],
+    )
+    async def test_a_failed_sync_after_the_add_returns_the_failure_as_a_tool_error(
+        self, tmp_path, failure
+    ):
+        good = tmp_path / "real.txt"
+        good.write_text("hello", encoding="utf-8")
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=failure):
+            result = await add([str(good)])
+
+        assert result == {"error": str(failure)}
+
     @staticmethod
     async def _stop_add_mid_sync(src, *, agent_cancels: bool) -> None:
         """Call add through a real client; stop it mid-sync by an agent cancel or a drop.
@@ -1303,21 +1338,49 @@ class TestMain:
         main()
         mock_build.return_value.run_stdio_async.assert_awaited_once()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGTERM handler to keep")
     @mock.patch("lilbee.mcp_server.build_mcp_server")
-    @mock.patch("lilbee.mcp_server.exit_on_signals_in_loop")
-    def test_main_routes_signals_through_the_running_loop(self, mock_route, mock_build):
-        """The signal hook is given the loop that serves stdio, not a loop made later."""
-        seen: list[asyncio.AbstractEventLoop] = []
-        mock_route.side_effect = seen.append
-        loops: list[asyncio.AbstractEventLoop] = []
+    def test_main_gives_the_terminate_handler_back_when_the_loop_ends(self, mock_build):
+        """The loop takes SIGTERM while it serves, and its close returns the handler it found."""
+        previous = signal.getsignal(signal.SIGTERM)
+
+        def handler(signum: int, frame: object) -> None:
+            raise AssertionError("never delivered")
+
+        seen: list[object] = []
 
         async def serve() -> None:
-            loops.append(asyncio.get_running_loop())
+            seen.append(signal.getsignal(signal.SIGTERM))
+
+        signal.signal(signal.SIGTERM, handler)
+        try:
+            mock_build.return_value.run_stdio_async = serve
+            main()
+            after = signal.getsignal(signal.SIGTERM)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        assert seen != [handler]
+        assert after is handler
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The proactor loop sets its own wakeup fd")
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    def test_the_stdio_loop_holds_the_signal_wakeup_fd_while_it_serves(self, mock_build):
+        """The idle loop holds the signal wakeup fd while it serves and gives it back after."""
+        before = signal.set_wakeup_fd(-1)
+        signal.set_wakeup_fd(before)
+        seen: list[int] = []
+
+        async def serve() -> None:
+            held = signal.set_wakeup_fd(-1)
+            signal.set_wakeup_fd(held)
+            seen.append(held)
 
         mock_build.return_value.run_stdio_async = serve
         main()
-        assert len(seen) == 1
-        assert seen == loops
+
+        assert seen[0] not in (-1, before)
+        after = signal.set_wakeup_fd(before)
+        assert after == before
 
 
 _STOP_TIMEOUT_S = 60.0
@@ -2025,6 +2088,19 @@ class TestWikiBuildTool:
         assert result["count"] == 1
         assert result["entities"][0]["slug"] == "ford"
         assert result["note"]
+
+
+class TestWikiProviderFailure:
+    def test_a_provider_failure_in_a_build_returns_a_tool_error(self, mock_svc, monkeypatch):
+        cfg.wiki = True
+        failure = ProviderError("The chat model is not running.", kind=ProviderErrorKind.CONNECTION)
+
+        def _fail(*a, **kw):
+            raise failure
+
+        monkeypatch.setattr("lilbee.wiki.run_full_build", _fail)
+
+        assert wiki_build() == {"error": str(failure)}
 
 
 class TestWikiUpdateTool:
@@ -2741,12 +2817,6 @@ class TestSettingsMcp:
         assert cfg.max_tokens is None  # the built-in, as a fresh Config() gives
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" not in persisted
-
-    def test_settings_set_invalidates_model_arch_cache(self, isolated_env):
-        cfg.data_root = isolated_env
-        with mock.patch("lilbee.modelhub.model_info.invalidate_cache") as mock_invalidate:
-            settings_set({"chat_model": _CHAT_REF})
-        mock_invalidate.assert_called_once()
 
     def test_settings_reset_restores_default(self, isolated_env):
         cfg.data_root = isolated_env
@@ -3542,6 +3612,18 @@ class _ProgressStubEmbedder:
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
 
+class _RaisingEmbedder:
+    """Embedder whose every batch fails with the given error."""
+
+    truncated_total = 0
+
+    def __init__(self, failure: Exception) -> None:
+        self._failure = failure
+
+    def embed_batch(self, texts, **_kwargs):
+        raise self._failure
+
+
 class TestImportDataset:
     async def test_round_trip(self, dataset_store, tmp_path):
         out = tmp_path / "pages.jsonl"
@@ -3609,9 +3691,39 @@ class TestImportDataset:
         result = await import_dataset(str(out))
         assert "error" not in result
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ProviderError("The embedder is not available.", kind=ProviderErrorKind.NOT_FOUND),
+            TokenCountError(),
+        ],
+        ids=["provider-error", "token-count-error"],
+    )
+    async def test_a_failed_re_embed_returns_the_failure_as_a_tool_error(
+        self, dataset_store, tmp_path, failure
+    ):
+        from tests.conftest import make_mock_services
+
+        out = tmp_path / "pages.jsonl"
+        assert "error" not in export_dataset(str(out))
+        svc_mod.set_services(
+            make_mock_services(store=dataset_store, embedder=_RaisingEmbedder(failure))
+        )
+
+        result = await import_dataset(str(out))
+
+        assert result == {"error": str(failure)}
+
 
 class TestMcpCommandExit:
     """A signal ends the server through SystemExit; the command finishes the exit."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_sigint(self):
+        """The command routes Ctrl-C to the stop; later tests get the old handler back."""
+        previous = signal.getsignal(signal.SIGINT)
+        yield
+        signal.signal(signal.SIGINT, previous)
 
     def test_the_signal_status_goes_to_the_exit_after_teardown(self, tmp_path):
         from typer.testing import CliRunner
@@ -3626,6 +3738,21 @@ class TestMcpCommandExit:
         mock_exit.assert_called_once_with(143)
         assert result.exit_code == 143
 
+    def test_ctrl_c_reaches_the_stop_before_the_loop_starts(self, tmp_path):
+        """The Ctrl-C handler is the stop path's before the loop starts, so asyncio leaves it."""
+        from typer.testing import CliRunner
+
+        from lilbee.app import services as services_mod
+        from lilbee.cli import app
+
+        seen: list[object] = []
+        with mock.patch(
+            "lilbee.mcp_server.main",
+            side_effect=lambda: seen.append(signal.getsignal(signal.SIGINT)),
+        ):
+            CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert seen == [services_mod._lifecycle._on_interrupt]
+
     def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
         from typer.testing import CliRunner
 
@@ -3637,6 +3764,35 @@ class TestMcpCommandExit:
         ):
             CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
         mock_exit.assert_called_once_with(1)
+
+    def test_a_clean_exit_stops_the_engine_before_it_returns(self, tmp_path):
+        """stdin closing runs the teardown in the command, where a signal can set the status."""
+        from typer.testing import CliRunner
+
+        from lilbee.app import services as services_mod
+        from lilbee.cli import app
+
+        container = MagicMock()
+        with mock.patch(
+            "lilbee.mcp_server.main", side_effect=lambda: services_mod.set_services(container)
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+
+        assert result.exit_code == 0
+        container.provider.shutdown.assert_called_once_with()
+        assert services_mod.peek_services() is None
+
+    def test_a_signal_during_the_clean_exit_stop_sets_the_status(self, tmp_path):
+        from typer.testing import CliRunner
+
+        from lilbee.cli import app
+
+        with (
+            mock.patch("lilbee.mcp_server.main"),
+            mock.patch("lilbee.cli.commands.servers.exit_status_after_stop", return_value=143),
+        ):
+            result = CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
+        assert result.exit_code == 143
 
 
 class TestPlacementGuardConfigLock:

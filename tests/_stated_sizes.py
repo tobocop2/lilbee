@@ -14,6 +14,8 @@ from typing import Any
 
 import pytest
 
+from tests._safetensors import safetensors_header
+
 _sizes: dict[str, int] | None = None
 
 
@@ -33,11 +35,17 @@ class _StatedStat:
 
 
 def state_size(path: Path, size: int) -> None:
-    """Create *path* empty, and make ``Path.stat`` report *size* bytes for it."""
+    """Create *path* empty, and make ``Path.stat`` report *size* bytes for it.
+
+    A ``.safetensors`` path holds the header of a whole file of that size, not its data.
+    """
     if _sizes is None:
         raise RuntimeError("Request the stated_sizes fixture before stating a size.")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
+    if path.suffix == ".safetensors":
+        path.write_bytes(safetensors_header(size))
+    else:
+        path.touch()
     _sizes[_key(path)] = size
 
 

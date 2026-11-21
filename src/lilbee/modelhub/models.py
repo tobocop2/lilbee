@@ -12,10 +12,17 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.catalog.query import reclassify_by_name
+from lilbee.catalog.refs import model_format
+from lilbee.catalog.runnable import session_host
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.fleet.engines.choice import loadable_refs
+from lilbee.providers.fleet.engines.choice import (
+    choose_engine,
+    installed_engines,
+    loadable_refs,
+)
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
@@ -220,13 +227,14 @@ def validate_disk_and_pull(
 
 def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> None:
     """Pull a model via model_manager with a progress bar, then check its vision projector."""
-    from lilbee.app.models import ensure_vision_projector
+    from lilbee.app.models import ensure_vision_projector, join_warnings
     from lilbee.app.services import get_services
     from lilbee.catalog.types import ModelSource
 
     if console is None:
         console = PlainConsole(file=sys.__stderr__ or sys.stderr)
     manager = get_services().model_manager
+    notices: list[str] = []
     with Progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
@@ -243,8 +251,8 @@ def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> No
             if total > 0:
                 progress.update(ptask, total=total, completed=downloaded)
 
-        manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
-    warning = ensure_vision_projector(model, warn_unreadable=True)
+        manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes, on_notice=notices.append)
+    warning = join_warnings(*notices, ensure_vision_projector(model, warn_unreadable=True))
     if warning is not None:
         console.print(f"Warning: {warning}", soft_wrap=True)
     console.print(f"Model '{model}' ready.", soft_wrap=True)
@@ -266,6 +274,7 @@ def ensure_chat_model() -> str | None:
     if list_installed_models():
         return None
 
+    _refuse_a_model_with_no_engine()
     if not sys.stdin.isatty():
         raise RuntimeError(NO_CHAT_MODEL_GUIDANCE)
 
@@ -304,11 +313,32 @@ def list_installed_models() -> list[str]:
     tree never reads as "no chat model is installed". An unusable remote
     server only drops its own names.
     """
-    registry = ModelRegistry(cfg.models_dir)
-    names = loadable_refs(
-        manifest.ref
-        for manifest in registry.list_installed()
-        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT
-    )
+    names = loadable_refs(_registry_chat_refs(), WorkerRole.CHAT)
     names.extend(_remote_chat_model_names())
     return sorted(set(names))
+
+
+def _registry_chat_refs() -> list[str]:
+    """Chat-task refs in the native registry, whether or not an engine loads them."""
+    return [
+        manifest.ref
+        for manifest in ModelRegistry(cfg.models_dir).list_installed()
+        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT
+    ]
+
+
+def _refuse_a_model_with_no_engine() -> None:
+    """Raise the engine notice when a chat model is installed but no engine loads it."""
+    refs = _registry_chat_refs()
+    if not refs:
+        return
+    choice = choose_engine(
+        fmt=model_format(refs[0]),
+        host=session_host,
+        installed=installed_engines(),
+        preferred=str(cfg.preferred_engine),
+        override=None,
+        model=refs[0],
+    )
+    if choice.name is None:
+        raise RuntimeError(choice.notice)

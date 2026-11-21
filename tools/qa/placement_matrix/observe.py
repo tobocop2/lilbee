@@ -291,6 +291,8 @@ def _sustains_full_window(ctx: int) -> tuple[bool, int, int]:
 
 def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
     """Plan, launch and measure one cell, or record why it was skipped."""
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR
+
     base = Observation(
         cell_id=cell.id,
         model_key=cell.model.key,
@@ -306,7 +308,7 @@ def run_cell(cell: Cell, *, workdir: Path, available_cards: int) -> Observation:
 
     env = {
         **os.environ,
-        "CUDA_VISIBLE_DEVICES": ",".join(str(i) for i in range(cell.cards)),
+        CUDA_VISIBLE_VAR: ",".join(str(i) for i in range(cell.cards)),
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
     }
     decision = _plan(cell, env)

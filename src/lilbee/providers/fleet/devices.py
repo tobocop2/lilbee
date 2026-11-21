@@ -9,7 +9,6 @@ fallback when the binary can't enumerate. See docs/internals/engine.md.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import re
 import signal
@@ -54,14 +53,8 @@ _TOPO_MIN_GPUS = 2
 MIB = 1024 * 1024
 # Per-backend visible-devices env vars (the probe inherits them; the children
 # re-emit them, composed through any parent restriction).
-_CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
 _CUDA_ORDER_VAR = "CUDA_DEVICE_ORDER"
 _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
-_ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
-_HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
-# ROCm's third numeric visibility variable, filtering exactly as the other two do.
-_GPU_DEVICE_ORDINAL_VAR = "GPU_DEVICE_ORDINAL"
-_VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
@@ -123,6 +116,9 @@ class FleetDevice:
     # different space from the one the engine names its devices in, so it can be
     # sized against but never pinned by.
     from_loader: bool = False
+    # The card's UUID where the reader has one (the driver query does; the
+    # engine's listing does not). Empty when unknown.
+    uuid: str = ""
 
 
 @dataclass(frozen=True)
@@ -145,6 +141,9 @@ class DeviceProbe:
     # Which backend the engine selected. Defaults to UNKNOWN so a probe that never
     # ran reports no claim rather than CPU.
     backend: EngineBackend = EngineBackend.UNKNOWN
+    # False when the engine has no device listing to ask. Its empty result is then
+    # not a probe that failed, so planning does not warn about it.
+    has_listing: bool = True
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
@@ -255,7 +254,8 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     indices are unambiguous when a build exposes several backends. A probe that
     does not respond within *timeout_s* raises a ``ProviderError`` naming the
     stuck probe: that is a wedged GPU driver, not a GPU-less host, and treating
-    it as "no devices" would silently plan a CPU fleet on a GPU box.
+    it as "no devices" would silently plan a CPU fleet on a GPU box. A probe
+    stopped by a signal before it listed anything raises the same way.
     """
     try:
         output, returncode = _run_list_devices(binary, timeout_s)
@@ -292,6 +292,18 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             provider=_PROVIDER,
             kind=ProviderErrorKind.CPU_UNSUPPORTED,
         )
+    if returncode < 0 and not answered:
+        raise ProviderError(
+            f"The GPU device probe ({binary.name} --list-devices) {_exit_phrase(returncode)} "
+            "before it listed any device, so "
+            "the engine cannot start. Something ended the probe: a GPU driver fault, "
+            "the out-of-memory killer or a service manager. lilbee does not guess a GPU "
+            "from the host's Vulkan loader here, because the engine would then fail the "
+            "same way.\n"
+            f"The probe reported: {_probe_tail(output)}",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        )
     spoke = returncode == 0 and answered
     if not spoke and answered:
         # It knew the flag and started answering, then died. Blaming the flag
@@ -304,15 +316,6 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             binary.name,
             returncode,
             _probe_tail(output),
-        )
-    elif returncode < 0:
-        # A negative status is a signal that stopped the probe, which says
-        # nothing about whether the engine knows the flag.
-        log.warning(
-            "%s --list-devices was stopped by signal %d before it printed its device "
-            "header, so the device list is unknown.",
-            binary.name,
-            -returncode,
         )
     elif not spoke:
         log.warning(
@@ -330,6 +333,35 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
         refused_all=bool(offered) and not selected,
         backend=_selected_backend(selected, spoke=spoke),
     )
+
+
+def require_clean_probe_exit(binary: Path, returncode: int, output: str) -> None:
+    """Raise a ``ProviderError`` naming the exit status or signal of a probe that did not exit 0."""
+    if returncode == 0:
+        return
+    raise ProviderError(
+        f"The device probe ({binary.name} --list-devices) {_exit_phrase(returncode)}, "
+        "so its device list may be incomplete and the engine cannot be planned from it. "
+        "A GPU driver fault, the out-of-memory killer or a service manager can end the probe.\n"
+        f"The probe reported: {_probe_tail(output)}",
+        provider=_PROVIDER,
+        kind=ProviderErrorKind.SERVER,
+    )
+
+
+def _exit_phrase(returncode: int) -> str:
+    """How a probe ended: the signal that stopped it, or its exit status."""
+    if returncode < 0:
+        return f"was stopped by signal {-returncode} ({_signal_name(-returncode)})"
+    return f"exited with status {returncode}"
+
+
+def _signal_name(number: int) -> str:
+    """The name of POSIX signal *number*, or ``unknown signal``."""
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return "unknown signal"
 
 
 def _selected_backend(selected: list[FleetDevice], *, spoke: bool) -> EngineBackend:
@@ -643,19 +675,18 @@ def visible_nvidia_cards() -> list[FleetDevice]:
     """
     # circular: nvidia -> devices via MIB
     from lilbee.providers.fleet.gpu_backends.nvidia import cards as read_cards
-    from lilbee.providers.fleet.gpu_env import gpu_environ
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, cuda_visible_cards, gpu_environ
 
     cards = read_cards()
-    mask = gpu_environ().get(_CUDA_VISIBLE_VAR)
-    if mask is not None:
-        named = {str(i): card for i, card in enumerate(cards)} | {c.uuid: c for c in cards}
-        wanted = [token.strip() for token in mask.split(",")]
-        cards = [named[token] for token in itertools.takewhile(named.__contains__, wanted)]
-        if len({card.index for card in cards}) != len(cards):
-            return []
+    if gpu_environ().get(CUDA_VISIBLE_VAR) is None:
+        return [
+            FleetDevice("CUDA", c.index, c.name, c.total_bytes, c.free_bytes, uuid=c.uuid)
+            for c in cards
+        ]
+    # Under a mask the child's index is the card's place in the mask list.
     return [
-        FleetDevice("CUDA", index, card.name, card.total_bytes, card.free_bytes)
-        for index, card in enumerate(cards)
+        FleetDevice("CUDA", place, card.name, card.total_bytes, card.free_bytes, uuid=card.uuid)
+        for place, card in enumerate(cuda_visible_cards(cards))
     ]
 
 
@@ -668,14 +699,14 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     """
     if not devices:
         return {}
-    from lilbee.providers.fleet.gpu_env import gpu_environ
+    from lilbee.providers.fleet.gpu_env import CUDA_VISIBLE_VAR, gpu_environ
 
     env = gpu_environ()
     backend = devices[0].backend
     indices = [d.index for d in devices]
     if backend == "CUDA":
         return {
-            _CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(_CUDA_VISIBLE_VAR)),
+            CUDA_VISIBLE_VAR: _compose_visible(indices, env.get(CUDA_VISIBLE_VAR)),
             _CUDA_ORDER_VAR: _bus_order(env),
         }
     if backend in ("ROCm", "HIP"):
@@ -714,10 +745,16 @@ def amd_visible_var(env: Mapping[str, str]) -> str:
     variable in use", so it does not claim precedence. Every caller writing an AMD
     pin asks here; two callers each picking their own would put the pair back.
     """
-    for name in (_HIP_VISIBLE_VAR, _GPU_DEVICE_ORDINAL_VAR, _ROCR_VISIBLE_VAR):
+    from lilbee.providers.fleet.gpu_env import (
+        GPU_DEVICE_ORDINAL_VAR,
+        HIP_VISIBLE_VAR,
+        ROCR_VISIBLE_VAR,
+    )
+
+    for name in (HIP_VISIBLE_VAR, GPU_DEVICE_ORDINAL_VAR, ROCR_VISIBLE_VAR):
         if env.get(name, "").strip():
             return name
-    return _HIP_VISIBLE_VAR
+    return HIP_VISIBLE_VAR
 
 
 def _amd_visible_env(indices: list[int], env: Mapping[str, str]) -> dict[str, str]:

@@ -9,6 +9,7 @@ error that named neither the disk nor the file.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -202,7 +203,8 @@ def test_a_partial_that_will_not_delete_is_reported(
 
     blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
     blobs.mkdir(parents=True)
-    (blobs / "abc123.4f2a91cc.incomplete").write_bytes(b"x" * 16)
+    partial = blobs / "abc123.4f2a91cc.incomplete"
+    partial.write_bytes(b"x" * 16)
 
     def _refuse(self: Path, missing_ok: bool = False) -> None:
         raise PermissionError("the file is open in another process")
@@ -212,4 +214,56 @@ def test_a_partial_that_will_not_delete_is_reported(
     with caplog.at_level(logging.WARNING):
         dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
 
-    assert "Left a partial download behind" in caplog.text
+    assert caplog.messages == [f"Left a partial download behind: {partial}"]
+
+
+def test_an_unreadable_cache_folder_is_named_in_a_plain_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_glob = Path.glob
+
+    def _refuse(self: Path, pattern: str, **kwargs: Any) -> Any:
+        if not self.is_relative_to(tmp_path):
+            return real_glob(self, pattern, **kwargs)
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "glob", _refuse)
+
+    with pytest.raises(RuntimeError, match=r"Cannot read the model cache folder .*acme--big-GGUF"):
+        dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+
+def test_a_cache_plain_error_covers_a_listing_that_fails_while_iterating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path.glob is lazy, so a real read error surfaces on iteration, not on the call."""
+
+    real_glob = Path.glob
+
+    def _fail_midway(self: Path, pattern: str, **kwargs: Any) -> Iterator[Path]:
+        if not self.is_relative_to(tmp_path):
+            yield from real_glob(self, pattern, **kwargs)
+            return
+        yield self
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "glob", _fail_midway)
+
+    with pytest.raises(RuntimeError, match=r"acme--big-GGUF: Permission denied\. Check that"):
+        dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+
+def test_a_cache_plain_error_falls_back_to_the_error_text_without_a_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_glob = Path.glob
+
+    def _refuse(self: Path, pattern: str, **kwargs: Any) -> Any:
+        if not self.is_relative_to(tmp_path):
+            return real_glob(self, pattern, **kwargs)
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(Path, "glob", _refuse)
+
+    with pytest.raises(RuntimeError, match=r"acme--big-GGUF: disk went away\. Check that"):
+        dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])

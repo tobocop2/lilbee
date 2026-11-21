@@ -163,11 +163,20 @@ class _ListingServer:
 
     def __init__(self) -> None:
         self.requests: list[str] = []
+        self.status = 200
+        self.error_code: str | None = None
         owner = self
 
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
                 owner.requests.append(self.path)
+                if owner.status != 200:
+                    self.send_response(owner.status)
+                    if owner.error_code:
+                        self.send_header("X-Error-Code", owner.error_code)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 body = json.dumps(
                     {
                         "id": _REPO,
@@ -213,9 +222,78 @@ class TestListingRead:
         self, listing_server: _ListingServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", True)
-        with pytest.raises(RuntimeError, match="offline mode is enabled"):
+        with pytest.raises(dl.ListingOfflineError, match="offline mode is enabled") as caught:
             dl._repo_sibling_files(_REPO)
         assert listing_server.requests == []
+        text = str(caught.value)
+        assert text.startswith(f"Cannot reach HuggingFace to list the files of {_REPO}. Connect")
+        assert ".." not in text
+
+    def test_an_unreachable_hub_is_offline_and_tells_the_user_to_connect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+        monkeypatch.setattr(hf_constants, "ENDPOINT", f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", False)
+        with pytest.raises(dl.ListingOfflineError, match="Connect to the network"):
+            dl._repo_sibling_files(_REPO)
+
+    def test_a_hub_http_failure_is_a_failed_fetch_not_offline(
+        self, listing_server: _ListingServer
+    ) -> None:
+        listing_server.status = 503
+        with pytest.raises(dl.ListingFailedError, match="Cannot query files for acme") as caught:
+            dl._repo_sibling_files(_REPO)
+        assert not isinstance(caught.value, dl.ListingOfflineError)
+        assert "503" in str(caught.value)
+
+    def test_the_tag_read_types_its_failures_the_same_way(
+        self, listing_server: _ListingServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        listing_server.status = 500
+        with pytest.raises(dl.ListingFailedError):
+            dl._repo_tags(_REPO)
+        monkeypatch.setattr(hf_constants, "HF_HUB_OFFLINE", True)
+        with pytest.raises(dl.ListingOfflineError):
+            dl._repo_tags(_REPO)
+
+    def test_a_gated_repo_stays_a_permission_error(self, listing_server: _ListingServer) -> None:
+        listing_server.status = 401
+        listing_server.error_code = "GatedRepo"
+        with pytest.raises(PermissionError, match="requires HuggingFace authentication"):
+            dl._repo_sibling_files(_REPO)
+
+    def test_a_private_or_missing_repo_is_not_called_gated(
+        self, listing_server: _ListingServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dl, "hf_token", lambda: None)
+        listing_server.status = 401
+        listing_server.error_code = "RepoNotFound"
+        with pytest.raises(dl.ListingFailedError, match="missing, private or gated") as caught:
+            dl._repo_sibling_files(_REPO)
+        assert "Set HF_TOKEN" in str(caught.value)
+        assert "\n" not in str(caught.value)
+
+    def test_an_unmarked_401_from_a_plain_http_hub_is_a_failed_listing(
+        self, listing_server: _ListingServer
+    ) -> None:
+        """The hub client reads an unmarked 401 as a missing repo only on an https hub url."""
+        listing_server.status = 401
+        with pytest.raises(dl.ListingFailedError, match="Cannot query files for acme"):
+            dl._repo_sibling_files(_REPO)
+
+    def test_an_unexpected_listing_fault_is_a_failed_fetch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _broken(self: object, *_a: object, **_k: object) -> object:
+            raise ValueError("bad payload")
+
+        monkeypatch.setattr("huggingface_hub.HfApi.model_info", _broken)
+        with pytest.raises(dl.ListingFailedError, match="bad payload"):
+            dl._repo_sibling_files(_REPO)
 
     def test_offline_repull_of_an_installed_model_fetches_nothing_and_asks_nothing(
         self,

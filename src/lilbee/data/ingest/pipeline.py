@@ -67,7 +67,7 @@ from lilbee.data.ingest.discovery import (
     resolve_source_path,
     resolve_source_root,
 )
-from lilbee.data.ingest.errors import error_reason
+from lilbee.data.ingest.errors import OVERFLOW_REASON, error_reason, log_reason
 from lilbee.data.ingest.fanout import (
     WORKER_LOG_NAME,
     ShardDone,
@@ -119,6 +119,7 @@ from lilbee.data.types import (
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.truncation import one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1007,6 +1008,12 @@ def detect_pending() -> int:
 _EXCLUDED_LOG_SAMPLE = 5
 # The reason held out with a failed file whose failure named none.
 _NO_REASON = "ingestion produced nothing"
+# The cause a retried file keeps when its write to the index failed.
+_NOT_WRITTEN = "the write to the index failed"
+# The cause a retried file keeps when the engine's error had no message.
+_ENGINE_SILENT = "the model engine failed without a message"
+# The longest cause a retried file keeps.
+_RETRY_REASON_LIMIT = 200
 # The text a rebuild embeds once to prove the embedder answers before it drops an index.
 _REBUILD_PROBE = "lilbee"
 
@@ -1032,9 +1039,27 @@ def _describe_failures(store: Store, names: Iterable[str]) -> list[SkippedSource
     ]
 
 
+def _overflow_inputs() -> str:
+    """The settings that decide whether a piece of a file fits the embedding window."""
+    c = active_config()
+    return (
+        f"chunk_size={c.chunk_size};max_embed_chars={c.max_embed_chars};"
+        f"embedding_model={c.embedding_model};num_ctx={c.num_ctx}"
+    )
+
+
 def _held_hashes(store: Store) -> dict[str, str]:
-    """The content hash each held-out path is held out at, by path."""
-    return {path: record.file_hash for path, record in store.held_records().items()}
+    """The content hash each held-out path is still held out at, by path.
+
+    A retry holds nothing out. A hold written under the overflow settings is dropped
+    once any of them changes, so the next sync plans that file again.
+    """
+    inputs = _overflow_inputs()
+    return {
+        path: record.file_hash
+        for path, record in store.held_records().items()
+        if record.kind is not HeldOut.RETRY and (not record.inputs or record.inputs == inputs)
+    }
 
 
 async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bool) -> Path:
@@ -1049,23 +1074,56 @@ async def _corpus_root(store: Store, shard: ShardId | None, *, retry_skipped: bo
     return active_config().data_root
 
 
-def _persist_failures(
-    store: Store, pending_hashes: dict[str, str], reasons: dict[str, str], failed: Iterable[str]
-) -> None:
-    """Hold each of *failed* out of later syncs at the hash this sync planned it at.
+def _retry_reason(reason: str) -> str:
+    """The cause a retried file keeps: its first line of text, no exception type, bounded."""
+    kind, separator, message = reason.partition(": ")
+    if separator and kind.isidentifier():
+        reason = message
+    line = next((text.strip() for text in reason.splitlines() if text.strip(" .")), "")
+    return line.rstrip(".")[:_RETRY_REASON_LIMIT] or _ENGINE_SILENT
 
-    A file that ingests cleanly needs no step: its new source row holds nothing out.
-    A write that cannot take the lock is logged, and those files are tried again next sync.
+
+def _failure_record(digest: str, reason: str, inputs: str) -> HeldRecord:
+    """The hold of a failed file; an embedding overflow keeps the settings it overflowed under."""
+    return HeldRecord(HeldOut.FAILED, digest, reason, inputs if reason == OVERFLOW_REASON else "")
+
+
+def _persist_failures(
+    store: Store,
+    pending_hashes: dict[str, str],
+    reasons: dict[str, str],
+    failed: Iterable[str],
+    retry: Mapping[str, str],
+    shard: ShardId | None,
+) -> None:
+    """Hold each of *failed* out of later syncs, and mark each of *retry* to try again.
+
+    Each record is at the hash this sync planned the file at. A file that ingests
+    cleanly needs no step: its new source row records nothing. Every other retry
+    record of the *shard*'s paths (all paths with no shard) is released, so no
+    record outlives a moved or deleted file. A write that cannot take the lock is
+    logged, and those files are tried again next sync.
     """
+    owns = shard.owns if shard is not None else None
+    inputs = _overflow_inputs()
     held = {
-        name: HeldRecord(HeldOut.FAILED, fhash, reasons.get(name, _NO_REASON))
+        name: _failure_record(fhash, reasons.get(name, _NO_REASON), inputs)
         for name in failed
+        if (fhash := pending_hashes.get(name))
+    }
+    held |= {
+        name: HeldRecord(HeldOut.RETRY, fhash, _retry_reason(cause))
+        for name, cause in retry.items()
         if (fhash := pending_hashes.get(name))
     }
     try:
         _retry_after_lock_timeout(lambda: store.hold_failed(held))
     except LockTimeoutError as error:
         log.error("Could not hold %d failed file(s) out of the next sync: %s", len(held), error)
+    try:
+        _retry_after_lock_timeout(lambda: store.release_retries(retry.keys(), owns))
+    except LockTimeoutError as error:
+        log.error("Could not release the retry records this sync did not renew: %s", error)
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1087,16 +1145,34 @@ def _prepare_forced_rebuild(store: Any) -> bool:
 
     A store with chunks and no embedder mismatch (name or engine), with or without a stamp,
     is rebuilt in place and a file that fails keeps its chunks. An empty store, or one built
-    by another embedder or engine, is dropped after its memories are re-embedded, or after
-    one probe request when it holds none. Nothing is dropped when the embedder cannot embed
-    the memories. Run off the event loop.
+    by another embedder or engine, is dropped after its memories are re-embedded. Nothing is
+    dropped when the embedder cannot embed the memories. One embed call first measures the
+    width the embedder serves and sets ``embedding_dim`` to it, so a rebuild after a width
+    change is judged and written at that width, and a silent embedder stops the rebuild
+    before it changes the index. Run off the event loop.
     """
+    config = active_config()
+    width_before = config.embedding_dim
+    try:
+        return _forced_rebuild_at_served_width(store)
+    except Exception:
+        config.embedding_dim = width_before
+        raise
+
+
+def _forced_rebuild_at_served_width(store: Any) -> bool:
+    """Adopt the width the embedder serves, then drop or keep the index (see the caller)."""
+    embedder = get_services().embedder
+    if embedder.embedding_available():
+        try:
+            embedder.adopt_served_width(_REBUILD_PROBE)
+        except Exception as error:
+            raise _rebuild_stopped(error) from error
     in_place = store.embedding_mismatch() is None and (
         store.get_meta() is not None or store.count_chunks() > 0
     )
     if not in_place:
         _require_embedding_model()
-    embedder = get_services().embedder
 
     def embed(texts: list[str]) -> list[Vector]:
         if not embedder.embedding_available():
@@ -1107,19 +1183,19 @@ def _prepare_forced_rebuild(store: Any) -> bool:
         return embedder.embed_batch(texts)
 
     try:
-        refreshed = 0
         if not in_place or embedder.embedding_available():
-            refreshed = store.rebuild_memory_embeddings(embed)
-        if not (in_place or refreshed):
-            embedder.embed_batch([_REBUILD_PROBE])
+            store.rebuild_memory_embeddings(embed)
     except Exception as error:
-        raise RuntimeError(
-            "Rebuild stopped and the index is unchanged: "
-            f"the embedding model did not answer ({error})."
-        ) from error
+        raise _rebuild_stopped(error) from error
     if not in_place:
         store.drop_all()
     return in_place
+
+
+def _rebuild_stopped(error: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"Rebuild stopped and the index is unchanged: the embedding model did not answer ({error})."
+    )
 
 
 def _reconcile_missing(
@@ -1503,6 +1579,7 @@ def _sync_turn_for(
 
 @_marks_sync_running
 @owns_ingest_pool
+@one_truncation_warning
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -1566,7 +1643,8 @@ async def sync(
     skipped: dict[str, OcrReport | None] = dict.fromkeys(scan.excluded)
     # filename → why it was skipped/failed (for reporting)
     reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
-    retry_next: set[str] = set()
+    # filename → the cause of the engine or write failure the next sync retries
+    retry_next: dict[str, str] = {}
     _log_excluded(scan.excluded)
 
     # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
@@ -1637,7 +1715,9 @@ async def sync(
 
     # A flush or engine failure is not a verdict on the file: it is planned again next sync.
     held = [name for name in (*failed, *skipped) if name not in retry_next]
-    await to_ingest_thread(_persist_failures, _store, pending_hashes, reasons, held)
+    await to_ingest_thread(
+        _persist_failures, _store, pending_hashes, reasons, held, retry_next, shard
+    )
 
     vanished = (
         await to_ingest_thread(_finish_in_place_rebuild, _store, rules, bool(failed))
@@ -1896,7 +1976,7 @@ async def ingest_stream(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
 ) -> None:
     """Ingest a stream of planned file batches, optionally showing a Rich progress bar.
@@ -2161,7 +2241,7 @@ async def _collect_results(
     on_progress: DetailedProgressCallback = noop_callback,
     progress: Progress | None = None,
     ptask: Any = None,
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
     reasons: dict[str, str] | None = None,
     cancel: CancelSignal | None = None,
 ) -> None:
@@ -2204,9 +2284,13 @@ async def _collect_results(
                     continue
                 completed_count += 1
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
-                if retry_next is not None and isinstance(result.error, ProviderError):
+                if (
+                    retry_next is not None
+                    and isinstance(result.error, ProviderError)
+                    and not result.error.repeats_on_retry
+                ):
                     # The model engine failed, not the file: a later sync tries it again.
-                    retry_next.add(result.name)
+                    retry_next[result.name] = error_reason(result.error)
                 if status is BatchStatus.INGESTED:
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result,
@@ -2273,7 +2357,7 @@ async def _buffer_and_maybe_flush(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None,
+    retry_next: dict[str, str] | None,
     cancel: CancelSignal | None = None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
@@ -2292,7 +2376,7 @@ async def _flush_to_end(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None,
+    retry_next: dict[str, str] | None,
     cancel: CancelSignal | None = None,
 ) -> None:
     """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
@@ -2376,7 +2460,7 @@ def _classify_result(
         return BatchStatus.SKIPPED
     if result.error is not None:
         # A traceback here would bleed into the TUI chat pane; the full trace stays at DEBUG.
-        log.warning("Failed to ingest %s: %s", result.name, result.error)
+        log.warning("Failed to ingest %s: %s", result.name, log_reason(result.error))
         log.debug("Traceback for failed ingest of %s", result.name, exc_info=result.error)
         added.pop(result.name, None)
         updated.pop(result.name, None)
@@ -2563,16 +2647,16 @@ def _flush_writes(
     updated: dict[str, None],
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
-    retry_next: set[str] | None = None,
+    retry_next: dict[str, str] | None = None,
 ) -> Exception | None:
     """Flush the buffered documents to the store; track and return a write failure.
 
     Each buffered file's page texts, chunks, cleanup delete, and source upsert
     are written by :func:`_flush_batch`. If that fails, every file in the batch
     is moved to ``failed`` since its source row did not land, and recorded in
-    *retry_next* so the caller replans them next sync instead of holding out
-    them; the exception never escapes, so the caller's sibling-cancel and
-    held-out path always runs. The buffer is cleared either way.
+    *retry_next* with the write as its cause, so the caller replans them next
+    sync instead of holding them out; the exception never escapes, so the
+    caller's sibling-cancel and held-out path always runs. The buffer is cleared either way.
     """
     if not buffer:
         return None
@@ -2588,7 +2672,7 @@ def _flush_writes(
             skipped.pop(r.name, None)
             failed[r.name] = None
             if retry_next is not None:
-                retry_next.add(r.name)
+                retry_next[r.name] = _NOT_WRITTEN
         return exc
     finally:
         buffer.clear()

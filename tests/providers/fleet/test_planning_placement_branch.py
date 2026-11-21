@@ -65,7 +65,7 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,
@@ -90,8 +90,17 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     captured = {}
 
     def fake_from_spec(
-        spec, active_roles, device_capacity, *, estimate_peak, plan_auto, model_refs, absent_hint
+        spec,
+        active_roles,
+        device_capacity,
+        *,
+        estimate_peak,
+        plan_auto,
+        model_refs,
+        lost_card,
+        equal_split_roles,
     ):
+        captured["equal_split_roles"] = equal_split_roles
         captured["spec"] = spec
         captured["roles"] = active_roles
         captured["capacity"] = device_capacity
@@ -121,6 +130,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     )
 
     assert captured["spec"] is spec
+    assert captured["equal_split_roles"] == frozenset()
     assert captured["roles"] == (WorkerRole.CHAT,)
     assert captured["capacity"] == {0: 80 * GIB}  # total, not the 10 GiB free
     assert placement.instances[0].role is WorkerRole.CHAT
@@ -236,7 +246,7 @@ def test_interactive_resolve_still_raises(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,
@@ -268,7 +278,7 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+        lambda roles, *, engines, **_k: (
             [],
             {},
             0,
@@ -334,3 +344,40 @@ def test_a_tight_role_reaches_the_placement_view(monkeypatch, tmp_path) -> None:
     )
     view = _view(resolved, engines_for_all_roles(LLAMA), manual=False, spec_json=None)
     assert [(t.role, t.shortfall_bytes) for t in view.tight] == [(WorkerRole.CHAT, 3 * 1024**3)]
+
+
+def test_the_tight_sentence_scales_by_a_binary_gib_and_never_shows_zero():
+    from lilbee.providers.fleet.model_memory import tight_memory_text
+
+    assert "estimated to need 1000.0 GiB more GPU memory" in tight_memory_text(
+        "the chat model", 1000 * 1024**3
+    )
+    assert "estimated to need 0.1 GiB more GPU memory" in tight_memory_text("the chat model", 1)
+
+
+def test_memory_size_text_uses_mib_below_one_gib_and_gib_from_one() -> None:
+    from lilbee.providers.fleet.model_memory import memory_size_text
+
+    assert memory_size_text(40 * 1024**2) == "40 MiB"
+    assert memory_size_text(1024**3 - 1) == "1024 MiB"
+    assert memory_size_text(1024**3) == "1.0 GiB"
+    assert memory_size_text(int(7.25 * 1024**3)) == "7.2 GiB"
+
+
+def test_the_planner_logs_the_tight_sentence_and_the_co_tenant_line_as_written(caplog):
+    from lilbee.providers.fleet.model_memory import tight_memory_text
+
+    placement = Placement(
+        instances=(),
+        unplaceable_roles=(),
+        swap_classes=(frozenset({WorkerRole.EMBED, WorkerRole.CHAT}),),
+        tight_roles={WorkerRole.CHAT: 2 * 1024**3},
+    )
+
+    with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.planning"):
+        planning._log_placement_findings(placement, {WorkerRole.CHAT: "org/chat.gguf"})
+
+    assert [r.getMessage() for r in caplog.records] == [
+        tight_memory_text("the chat model org/chat.gguf", 2 * 1024**3),
+        "chat + embed: share memory, one group loaded at a time",
+    ]

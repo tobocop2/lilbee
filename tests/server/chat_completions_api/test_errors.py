@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.server_registry import ConfigReadError
 from lilbee.server.chat_completions_api.errors import (
     COMPLETIONS_ERROR_TYPES,
     CompletionsErrorCode,
@@ -81,6 +82,32 @@ class TestClassifyProviderError:
         assert result is not None
         assert result.http_status == 400
         assert result.code == CompletionsErrorCode.MODEL_DOES_NOT_SUPPORT_TOOLS
+        assert result.message == (
+            "Model 'foo' does not support tool calls. Pick a chat model "
+            "with a tool-aware chat template, or remove tools from the request."
+        )
+
+    def test_an_unreadable_config_maps_to_503_internal_error_with_its_text(self) -> None:
+        text = "Could not read config.toml: Permission denied"
+        result = classify_provider_error(ConfigReadError(text))
+        assert result is not None
+        assert result.http_status == 503
+        assert result.code == CompletionsErrorCode.INTERNAL_ERROR
+        assert result.message == text
+        body = completions_error_body(result.code, result.message)
+        assert body["error"]["code"] == "internal_error"
+
+    def test_a_backend_failure_logs_one_warning_with_its_kind(self, caplog) -> None:
+        error = ProviderError("upstream body", kind=ProviderErrorKind.CONNECTION)
+        with caplog.at_level("WARNING"):
+            classify_provider_error(error)
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.name == "lilbee.server.chat_completions_api.errors"
+        assert record.levelname == "WARNING"
+        assert record.getMessage() == "Chat backend failure (connection)"
+        assert record.exc_info is not None
+        assert record.exc_info[1] is error
 
     def test_context_overflow_maps_to_400(self) -> None:
         result = classify_provider_error(

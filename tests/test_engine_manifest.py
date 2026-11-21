@@ -9,8 +9,9 @@ from typing import Any
 import pytest
 
 from lilbee.catalog import runnable
-from lilbee.providers.fleet import engine_manifest, engine_store, first_use, host_caps
-from lilbee.providers.fleet.engine_digests import MANIFESTS, PACKAGES_URL
+from lilbee.providers.fleet import engine_manifest, engine_store, host_caps
+from lilbee.providers.fleet.engine_manifest import MANIFESTS
+from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.engines import ik_llama, mistral, tei
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import ADAPTERS, NoPublishedPackError, pin_lock
@@ -50,6 +51,64 @@ def test_every_row_of_the_shipped_table_states_a_wheel() -> None:
                 assert row["url"].startswith("https://")
                 assert row["size"] > 0
                 assert row["min_os"] is None or re.fullmatch(r"\d+\.\d+", row["min_os"])
+
+
+def _recorded_digest(engine: str, cell: str) -> str:
+    """The sha256 that the committed pack record gives the *cell* of *engine*."""
+    versions = MANIFESTS[engine]
+    assert len(versions) == 1
+    return str(next(iter(versions.values()))[cell]["sha256"])
+
+
+_SUMS_FIXTURE = Path(__file__).parent / "fixtures" / "engine_pack_sums" / "SHA256SUMS"
+
+
+def _release_sums() -> dict[tuple[str, str], str]:
+    """The kept SHA256SUMS of each pack release, by (release tag, file name)."""
+    sums: dict[tuple[str, str], str] = {}
+    release = ""
+    for line in _SUMS_FIXTURE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("# release "):
+            release = line.removeprefix("# release ")
+        elif not line.startswith("#"):
+            digest, name = line.split(maxsplit=1)
+            sums[(release, name)] = digest
+    return sums
+
+
+def _shipped_rows() -> list[Any]:
+    return [row for v in MANIFESTS.values() for cells in v.values() for row in cells.values()]
+
+
+def _disagreements(rows: list[Any], sums: dict[tuple[str, str], str]) -> list[str]:
+    """The files whose row digest is not the SHA256SUMS line of the release the url names."""
+    found = []
+    for row in rows:
+        release, name = row["url"].split("/")[-2:]
+        if sums.get((release, name)) != row["sha256"]:
+            found.append(name)
+    return found
+
+
+def test_every_shipped_digest_is_the_line_of_its_release_sums() -> None:
+    rows = _shipped_rows()
+    assert rows
+    assert len(_release_sums()) >= len(rows)
+    assert _disagreements(rows, _release_sums()) == []
+
+
+def test_a_changed_shipped_digest_is_named_against_the_release_sums() -> None:
+    rows = _shipped_rows()
+    changed = [{**rows[0], "sha256": "0" * 64}, *rows[1:]]
+    name = rows[0]["url"].rsplit("/", 1)[-1]
+    assert _disagreements(changed, _release_sums()) == [name]
+
+
+def test_a_row_whose_release_has_no_sums_line_is_named() -> None:
+    rows = _shipped_rows()
+    moved = [{**rows[0], "url": rows[0]["url"].replace("/engine-packs-", "/other-")}, *rows[1:]]
+    name = rows[0]["url"].rsplit("/", 1)[-1]
+    assert _disagreements(moved, _release_sums()) == [name]
 
 
 def test_every_shipped_row_lives_under_the_pack_index_and_matches_its_adapter(
@@ -110,6 +169,61 @@ def test_tei_digest_follows_the_host_cell(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert _pin(monkeypatch, EngineName.TEI, "Linux", "x86_64")["sha256"] == LINUX
     assert _pin(monkeypatch, EngineName.TEI, "Windows", "AMD64")["sha256"] is None
+
+
+_TEI_RELEASE = PACKAGES_URL + "engine-packs-20261118/"
+_TEI_CELLS = {
+    "cpu": "linux-x86_64-cpu",
+    "metal": "macos-arm64-metal",
+    "sm75": "linux-x86_64-cuda-sm75",
+    "sm80": "linux-x86_64-cuda-sm80",
+    "sm86": "linux-x86_64-cuda-sm86",
+    "sm89": "linux-x86_64-cuda-sm89",
+    "sm90": "linux-x86_64-cuda-sm90",
+    "sm100": "linux-x86_64-cuda-sm100",
+    "sm120": "linux-x86_64-cuda-sm120",
+}
+_TEI_HOSTS = {
+    "cpu": ("Linux", "x86_64", None),
+    "metal": ("Darwin", "arm64", None),
+    "sm75": ("Linux", "x86_64", [7, 5]),
+    "sm80": ("Linux", "x86_64", [8, 0]),
+    "sm86": ("Linux", "x86_64", [8, 6]),
+    "sm89": ("Linux", "x86_64", [8, 9]),
+    "sm90": ("Linux", "x86_64", [9, 0]),
+    "sm100": ("Linux", "x86_64", [10, 0]),
+    "sm120": ("Linux", "x86_64", [12, 0]),
+}
+
+
+@pytest.mark.parametrize("build", _TEI_CELLS)
+def test_each_host_resolves_its_own_tei_pack_from_the_shipped_table(
+    build: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cell = _TEI_CELLS[build]
+    digest = _recorded_digest("tei", cell)
+    system, machine, compute = _TEI_HOSTS[build]
+    facts = (
+        {"driver": "570.00", "cuda_driver": 12080, "gpus": [{"name": "gpu", "cc": compute}]}
+        if compute
+        else None
+    )
+    host = host_caps.collect(
+        system=system,
+        machine=machine,
+        cpu_info={"flags": ["avx2"], "brand_raw": "Test CPU"},
+        nvidia=facts,
+    )
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
+    pin = tei.TeiAdapter().pin_record()
+    backend = cell.split("-", 2)[2]
+    assert pin["backend"] == backend
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    url = pin["platforms"][cell]["url"]
+    assert url.startswith(_TEI_RELEASE)
+    assert f"-1.{backend.replace('-', '_')}-py3-none-" in url
 
 
 def test_a_cell_with_no_digest_keeps_the_no_pack_refusal(
@@ -175,22 +289,55 @@ def test_ik_llama_version_is_a_pep_440_version() -> None:
 def test_ik_llama_pin_record_holds_its_own_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     pin = _pin(monkeypatch, EngineName.IK_LLAMA, "Linux", "x86_64")
     assert pin["launch"][0] == "{binary}"
-    assert pin["licenses"] == ["MIT"]
+    assert pin["licenses"] == ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
     assert pin["memory"]["rule"] is None
     shipped = engine_manifest.MANIFESTS["ik_llama.cpp"][ik_llama.VERSION]
-    assert pin["platforms"] == shipped
+    assert pin["platforms"] == {"linux-x86_64-cpu": shipped["linux-x86_64-cpu"]}
     assert pin["sha256"] == shipped["linux-x86_64-cpu"]["sha256"]
+
+
+_IK_L4 = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "NVIDIA L4", "cc": [8, 9]}]}
+SHIPPED_IK = {
+    "cpu": (
+        None,
+        "linux-x86_64-cpu",
+        "96d7a448b522bde5c970767094cb4d8c0e6add596e9ed5f9bb681dfde97e734c",
+        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-3.cpu-py3-none-manylinux_2_34_x86_64.whl",
+    ),
+    "cuda": (
+        _IK_L4,
+        "linux-x86_64-cuda",
+        "4407cb7986ceb42ce2c1c2c743be5f074317af37ab88f0f33ab17ab589142d1d",
+        "lilbee_engine_ik_llama_cpp-0+git13cffc006b82-2.cuda-py3-none-manylinux_2_34_x86_64.whl",
+    ),
+}
+
+
+@pytest.mark.parametrize("build", SHIPPED_IK)
+def test_each_linux_host_resolves_its_own_ik_pack_from_the_shipped_table(
+    build: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nvidia, cell, digest, file = SHIPPED_IK[build]
+    cpu_info = {"flags": ["avx2"], "brand_raw": "Test CPU"}
+    host = host_caps.collect(system="Linux", machine="x86_64", cpu_info=cpu_info, nvidia=nvidia)
+    monkeypatch.setattr(runnable, "session_host", lambda: host)
+    pin = ADAPTERS[EngineName.IK_LLAMA].pin_record()
+    assert pin["backend"] == build
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    assert pin["platforms"][cell]["url"] == f"{PACKAGES_URL}engine-packs-20261119-ik2/{file}"
 
 
 def test_ik_llama_pin_record_does_not_read_the_llama_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(LLAMA, "pin_record", lambda: {"llama-only-field": True})
+    monkeypatch.setattr(type(LLAMA), "pin_record", lambda _self: {"llama-only-field": True})
     pin = _pin(monkeypatch, EngineName.IK_LLAMA, "Linux", "x86_64")
     assert "llama-only-field" not in pin
     assert set(pin) == {
         "engine",
         "version",
+        "upstream_ref",
         "backend",
         "sha256",
         "tool",
@@ -209,15 +356,21 @@ def test_no_adapter_keeps_a_single_pack_digest() -> None:
 SHIPPED_LLAMA = {
     ("Darwin", "arm64"): (
         "macos-arm64-metal",
-        "ddec445038beea9c83ff50a540ddf0e88a3b70c06edec301ef458cd1a46580ff",
+        "ae859d55e57d58a1f59de4084adbf41a9d5e84a7cb993562abd838ec2d17c5ab",
+        "engine-packs-20261119-llama",
+        2,
     ),
     ("Linux", "x86_64"): (
         "linux-x86_64-cpu",
-        "b306bfa9ede1eaef1ce762fe1c772905ec2e10cfc315ea02b58138e77688899b",
+        "cfa58ff9f48b238d187b8bf06c6914cec4ff30378a047cf4aa7707e222194d06",
+        "engine-packs-20261119-llama",
+        2,
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cpu",
-        "91e9670756cf84252d8382050c74901ef4fc5f07fa7af803fef8bda5438c938d",
+        "14a0039d4348f19017aaa23549b7fac2c4b1515071214e9ec98b225e5fdae18d",
+        "engine-packs-20261119-llama",
+        3,
     ),
 }
 
@@ -226,25 +379,28 @@ SHIPPED_LLAMA = {
 def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_LLAMA[(system, machine)]
+    cell, digest, release, build = SHIPPED_LLAMA[(system, machine)]
     host = _host(system, machine)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
-    assert f"-1.{cell.rsplit('-', 1)[1]}-py3-none-" in pin["platforms"][cell]["url"]
+    url = pin["platforms"][cell]["url"]
+    assert f"/{release}/" in url
+    assert f"-{build}.{cell.rsplit('-', 1)[1]}-py3-none-" in url
 
 
 SHIPPED_LLAMA_CUDA = {
     ("Linux", "x86_64"): (
         "linux-x86_64-cuda",
-        "6cdd44291d036a352fd496b2a2c146f0a5aaf35cd38f73e8f795ca5a2d87edd4",
+        "4ff9e1a52a6d50762458a497307f7b0e775a9346a6b5a5eb8e9ff88c39ff6bcd",
+        "engine-packs-20261119-llama",
     ),
     ("Windows", "AMD64"): (
         "windows-x86_64-cuda",
-        "975be314c81ab5c518c40be68fd72edb080b4e4d3f3ba4adbbb3380985cd117c",
+        "aa34661441f26d8e964d33ddf9c1f68c69c45d314dc8f42fa3f7d3fb69679107",
+        "engine-packs-20261119-llama",
     ),
 }
 
@@ -253,18 +409,43 @@ SHIPPED_LLAMA_CUDA = {
 def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cell, digest = SHIPPED_LLAMA_CUDA[(system, machine)]
+    cell, digest, release = SHIPPED_LLAMA_CUDA[(system, machine)]
     facts = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
     host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvidia=facts)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(first_use, "session_host", lambda: host)
     monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["backend"] == "cuda"
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
     assert pin["platforms"][cell]["url"].startswith(
-        "https://github.com/tobocop2/lilbee/releases/download/engine-packs-20261105-cuda/"
+        f"https://github.com/tobocop2/lilbee-engine-packs/releases/download/{release}/"
+    )
+
+
+SHIPPED_MISTRAL = {
+    ("Darwin", "arm64"): (
+        "macos-arm64-metal",
+        "08c30b536f6b6795587902fbe050ae2e53b27cc6873da6ceff55faca21179c2a",
+    ),
+    ("Linux", "x86_64"): (
+        "linux-x86_64-cpu",
+        "b55ace7732b20c64a0f91e46325d68370388620b02e5deeee4317d7e2e9fef4d",
+    ),
+}
+
+
+@pytest.mark.parametrize(("system", "machine"), SHIPPED_MISTRAL)
+def test_each_host_resolves_its_own_mistral_pack_from_the_shipped_table(
+    system: str, machine: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cell, digest = SHIPPED_MISTRAL[(system, machine)]
+    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
+    pin = _pin(monkeypatch, EngineName.MISTRAL, system, machine)
+    assert pin["sha256"] == digest
+    assert list(pin["platforms"]) == [cell]
+    assert pin["platforms"][cell]["url"].startswith(
+        "https://github.com/tobocop2/lilbee-engine-packs/releases/download/engine-packs-20261118/"
     )
 
 
@@ -290,19 +471,20 @@ def _fetch(monkeypatch: pytest.MonkeyPatch, url: str, tmp_path: Path) -> None:
     engine_store.fetch_frozen(lock, "linux-x86_64-cpu", dest=tmp_path)
 
 
-def test_the_shipped_pack_base_is_the_release_downloads_of_lilbee() -> None:
-    assert PACKAGES_URL == "https://github.com/tobocop2/lilbee/releases/download/"
+def test_the_shipped_pack_base_is_the_release_downloads_of_the_packs_repository() -> None:
+    assert PACKAGES_URL == "https://github.com/tobocop2/lilbee-engine-packs/releases/download/"
 
 
 @pytest.mark.parametrize(
     "url",
     [
         "https://github.com/other/repo/releases/download/x/y.whl",
-        "https://github.com/tobocop2/lilbee/archive/y.whl",
-        "https://raw.githubusercontent.com/tobocop2/lilbee/main/y.whl",
+        "https://github.com/tobocop2/lilbee/releases/download/x/y.whl",
+        "https://github.com/tobocop2/lilbee-engine-packs/archive/y.whl",
+        "https://raw.githubusercontent.com/tobocop2/lilbee-engine-packs/main/y.whl",
     ],
 )
-def test_the_shipped_pack_base_refuses_a_url_outside_the_lilbee_releases(
+def test_the_shipped_pack_base_refuses_a_url_outside_the_packs_releases(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str
 ) -> None:
     with pytest.raises(engine_store.PackUrlError, match="not on the pack index"):

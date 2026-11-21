@@ -1,4 +1,4 @@
-"""`lilbee model` sub-app: list/show/pull/rm/browse for installed models.
+"""`lilbee model` sub-app: list/show/pull/rm/browse/use for installed models.
 
 Thin Typer wrapper around the surface-agnostic use-cases in
 :mod:`lilbee.app.models`. Bare result models live in ``app.models``;
@@ -7,6 +7,7 @@ the Rich renderers below adapt them for human-readable terminal output.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,6 +29,7 @@ from lilbee.app.models import (
     remove_model_data,
     show_model_data,
 )
+from lilbee.app.settings import config_write_failure_message, role_command, task_command
 from lilbee.cli import theme
 from lilbee.cli.app import (
     apply_overrides,
@@ -35,8 +37,10 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
+from lilbee.cli.commands._shared import emit, run_or_fail
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
@@ -45,6 +49,7 @@ if TYPE_CHECKING:
 
     from lilbee.catalog import DownloadProgress
     from lilbee.catalog.types import ModelSource, ModelTask
+    from lilbee.server.models import SetModelResponse
 
 
 def _render_list(data: ListModelsResult) -> Table:
@@ -277,7 +282,10 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
 
 @model_app.command("pull")
 def pull_cmd(
-    ref: str = typer.Argument(..., help="Model ref to download (e.g. 'Qwen/Qwen3-0.6B-GGUF')."),
+    ref: str = typer.Argument(
+        ...,
+        help="Model ref to download: 'Qwen/Qwen3-0.6B-GGUF', or 'org/repo#safetensors'.",
+    ),
     source: str = typer.Option(
         "native",
         "--source",
@@ -341,6 +349,56 @@ def rm_cmd(
         raise typer.Exit(1)
     suffix = f" ({data.freed_gb:.2f} GB freed)" if data.freed_gb else ""
     console.print(Text.assemble("Removed ", (ref, theme.ACCENT), suffix, "."), soft_wrap=True)
+
+
+_EMBED_REFUSAL = f"embed is refused: use '{role_command(WorkerRole.EMBED)}'"
+_role_argument = typer.Argument(..., help=f"Role to set: chat, rerank or vision; {_EMBED_REFUSAL}.")
+_use_ref_argument = typer.Argument(
+    ..., help="Installed model ref. An empty ref clears rerank or vision."
+)
+
+
+@model_app.command("use")
+def use_cmd(
+    role: WorkerRole = _role_argument,
+    ref: str = _use_ref_argument,
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Set the model for a role, with the checks the HTTP routes apply."""
+    from lilbee.modelhub.role_validator import TaskMismatchError
+    from lilbee.server import handlers
+
+    setters = {
+        WorkerRole.CHAT: handlers.set_chat_model,
+        WorkerRole.RERANK: handlers.set_reranker_model,
+        WorkerRole.VISION: handlers.set_vision_model,
+    }
+    setter = setters.get(role)
+    if setter is None:
+        raise typer.BadParameter(f"{_EMBED_REFUSAL}.", param_hint="ROLE")
+    _apply_catalog_overrides(data_dir=data_dir, use_global=use_global)
+
+    def _set() -> SetModelResponse:
+        try:
+            return asyncio.run(setter(ref))
+        except TaskMismatchError as exc:
+            raise ValueError(
+                f"{exc} Set it with '{task_command(exc.entry_task)}' instead."
+            ) from exc
+
+    result = run_or_fail(_set, config_write_failure_message)
+
+    def _render() -> None:
+        shown = result.model or "off"
+        console.print(
+            Text.assemble(f"{role.value} model is now ", (shown, theme.ACCENT), "."),
+            soft_wrap=True,
+        )
+        for warning in result.warnings:
+            console.print(Text(warning, style=theme.WARNING), soft_wrap=True)
+
+    emit(result, _render)
 
 
 def _is_interactive_terminal() -> bool:

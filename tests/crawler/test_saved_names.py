@@ -345,8 +345,10 @@ def _illegal_parts(segment: str) -> list[str]:
 
 
 _PROPERTY_SETTINGS = settings(max_examples=1000, deadline=None, derandomize=True, database=None)
+_PROPERTY_TIMEOUT = pytest.mark.timeout(300)
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(one=_addresses, data=st.data())
 def test_two_addresses_never_share_a_saved_path(one: _Address, data: st.DataObject):
@@ -359,6 +361,7 @@ def test_two_addresses_never_share_a_saved_path(one: _Address, data: st.DataObje
     )
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(address=_addresses, data=st.data())
 def test_two_spellings_of_one_address_share_a_saved_path(address: _Address, data: st.DataObject):
@@ -366,6 +369,7 @@ def test_two_spellings_of_one_address_share_a_saved_path(address: _Address, data
     assert url_to_filename(one_url) == url_to_filename(other_url), (one_url, other_url)
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(address=_addresses, data=st.data())
 def test_every_segment_is_a_legal_windows_name_that_prints(address: _Address, data: st.DataObject):
@@ -375,6 +379,7 @@ def test_every_segment_is_a_legal_windows_name_that_prints(address: _Address, da
     assert len(saved.encode("utf-8")) <= _MAX_PATH_BYTES, url
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(address=_label_addresses, data=st.data())
 def test_a_label_shows_no_escape_the_address_did_not_hold(address: _Address, data: st.DataObject):
@@ -383,6 +388,7 @@ def test_a_label_shows_no_escape_the_address_did_not_hold(address: _Address, dat
     assert not _ESCAPE.search(label), (url, label)
 
 
+@_PROPERTY_TIMEOUT
 @_PROPERTY_SETTINGS
 @given(
     word=st.text(st.characters(categories=("Ll", "Lu", "Lo", "Nd")), min_size=1, max_size=20).map(
@@ -395,6 +401,7 @@ def test_a_letter_and_digit_segment_reads_as_written(word: str):
     assert word in saved, (word, saved)
 
 
+@_PROPERTY_TIMEOUT
 @settings(max_examples=200, deadline=None, derandomize=True, database=None)
 @given(address=_label_addresses)
 def test_every_label_address_meets_the_label_precondition_by_construction(address: _Address):

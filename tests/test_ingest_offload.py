@@ -15,6 +15,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data import offload
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import replicas
 
 
@@ -24,15 +25,12 @@ def _pin_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     ``max_workers`` floors its CPU-derived result at ``ingest_max_inflight``, or at the
     probed embed-replica count when that is zero, so leaving either ambient makes these
-    assertions depend on what ran earlier. The cache is cleared around each test so the
-    pinned inputs are what the cached value reflects.
+    assertions depend on what ran earlier.
     """
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
     monkeypatch.setattr(cfg, "ingest_max_inflight", 0)
     monkeypatch.setattr(replicas, "resolve_replica_count", lambda *_a, **_k: 1)
-    offload.max_workers.cache_clear()
     yield
-    offload.max_workers.cache_clear()
 
 
 def test_default_caps_at_32_on_a_big_box(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,29 +70,60 @@ def test_the_ceiling_matches_the_pool_that_actually_exists(
     is already running. Re-reading the env per call would report a ceiling the
     live pool does not have -- promising threads that are not there."""
     monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
-    offload._ingest_executor.cache_clear()
-    try:
-        pool = offload._ingest_executor()
-        monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
-        assert offload.max_workers() == pool._max_workers
-    finally:
-        pool.shutdown(wait=False)
-        offload._ingest_executor.cache_clear()
+    pool = offload._ingest_executor()
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
+    assert offload.max_workers() == pool._max_workers
 
 
-def test_embed_inflight_target_is_zero_when_the_fleet_cannot_be_probed(
+def test_embed_inflight_target_is_zero_when_the_device_probe_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The fleet may not be resolvable yet (probe raises); admission sizing must
-    # fall back to the CPU-bound quota rather than crash the ingest run.
     probed = False
 
-    def _raise(*_args: object, **_kwargs: object) -> int:
+    def _wedged(*_args: object, **_kwargs: object) -> int:
         nonlocal probed
         probed = True
-        raise RuntimeError("fleet not resolvable yet")
+        raise ProviderError("The device probe did not respond within 30 s")
 
-    monkeypatch.setattr(replicas, "resolve_replica_count", _raise)
+    monkeypatch.setattr(replicas, "resolve_replica_count", _wedged)
     assert offload.embed_inflight_target() == 0
     # A single-replica stub also returns 0, so pin that the raising probe ran.
     assert probed
+
+
+def test_embed_inflight_target_raises_an_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _bug(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("replica knob is not a number")
+
+    monkeypatch.setattr(replicas, "resolve_replica_count", _bug)
+    with pytest.raises(RuntimeError, match="replica knob is not a number"):
+        offload.embed_inflight_target()
+
+
+def test_the_pool_ceiling_raises_when_the_fleet_probe_has_a_bug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _bug(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("replica knob is not a number")
+
+    monkeypatch.setattr(replicas, "resolve_replica_count", _bug)
+    with pytest.raises(RuntimeError, match="replica knob is not a number"):
+        offload.max_workers()
+
+
+async def test_a_fleet_probe_bug_reaches_the_user_as_a_sync_error_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lilbee.server import handlers
+
+    def _bug(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("replica knob is not a number")
+
+    monkeypatch.setattr(replicas, "resolve_replica_count", _bug)
+    events = [event async for event in handlers.sync_stream()]
+    errors = [event for event in events if event.startswith("event: error")]
+    assert len(errors) == 1
+    assert "replica knob is not a number" in errors[0]
+    assert not [event for event in events if event.startswith("event: done")]

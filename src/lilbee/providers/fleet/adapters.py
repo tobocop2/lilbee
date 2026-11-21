@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cpu import engine_thread_count
@@ -110,6 +111,7 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 LLM_RERANK_CONCURRENCY = 8
 
 _FLAG_THREADS = "--threads"
+_FLAG_POOLING = "--pooling"
 
 
 def resolve_rerank_mode(reranker_type: RerankerType, arch: str | None) -> RerankMode:
@@ -266,7 +268,7 @@ _OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
     "--jinja": _OptionalFlag(0, "the model's chat template is not applied"),
     "--reasoning-format": _OptionalFlag(1, "reasoning text stays in the answer"),
     "--no-prefill-assistant": _OptionalFlag(0, "a trailing assistant message is continued"),
-    "--pooling": _OptionalFlag(1, "the model's own pooling applies"),
+    _FLAG_POOLING: _OptionalFlag(1, "the model's own pooling applies"),
     FLAG_KV_UNIFIED: _OptionalFlag(0, "the slots keep separate KV caches"),
 }
 
@@ -299,6 +301,28 @@ def _drop_unlisted_flags(binary: Path, args: list[str]) -> list[str]:
         skip = optional.values
         _warn_once(f"{binary} does not list {arg}; launching without it, so {optional.effect}")
     return kept
+
+
+class RankPoolingMissingError(ProviderError):
+    """A rank-pooled reranker was asked of a build whose help lists no ``--pooling``."""
+
+
+def _require_rank_pooling(binary: Path, spec: RoleServerSpec) -> None:
+    """Refuse a rank-pooled reranker on a build whose ``--help`` lists no ``--pooling``.
+
+    Without rank pooling the engine returns no real relevance scores. A build that
+    prints no help is not judged.
+    """
+    if spec.role is not WorkerRole.RERANK or _FLAG_POOLING not in spec.extra_args:
+        return
+    help_text = engine_help(binary)
+    if help_text.strip() and not help_lists_option(help_text, _FLAG_POOLING):
+        raise RankPoolingMissingError(
+            f"The engine build {binary} does not list {_FLAG_POOLING}, so it cannot score "
+            f"rerank results. Install an engine build that lists {_FLAG_POOLING}, "
+            "or use the LLM reranker type.",
+            kind=ProviderErrorKind.BAD_REQUEST,
+        )
 
 
 def build_server_argv(
@@ -386,4 +410,5 @@ def build_server_argv(
 
         optional += [MEMORY_FLAG]
     optional += list(spec.extra_args)
+    _require_rank_pooling(binary, spec)
     return argv + _drop_unlisted_flags(binary, optional)

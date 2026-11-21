@@ -1,7 +1,7 @@
-.PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration test-presets imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 	# docs/settings.md is generated from the Config fields; a new setting must
 	# land in the reference with the code that adds it.
@@ -32,24 +32,29 @@ test-shell:  ## Run the bats and Pester tests for the release scripts
 	else echo "test-shell: pwsh is not installed, skipping Pester"; fi
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
 	# The GPU QA tools read lilbee's own types, so they rot silently when one
 	# changes: multi_gpu_smoke crashed on its first check from #540 until this
 	# was added. The rest of tools/qa/ is not clean yet and is not listed.
-	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
+	uv run mypy tools/qa/placement_matrix/ tools/qa/engine_demo/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
-	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_digests.py tools/build_wheel_indexes.py hatch_build.py
+	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
 
 # A replaced worker deadlocks --dist loadgroup (pytest-dev/pytest-xdist#1378),
 # so a worker that dies fails the run instead.
 XDIST := -n logical --dist loadgroup --max-worker-restart=0
+
+# The pack workflow tests read the build workflow of the engine-packs repository.
+# A sibling checkout named lilbee-engine-packs next to this one supplies it.
+ENGINE_PACKS_WORKFLOW ?= $(abspath $(wildcard ../lilbee-engine-packs/.github/workflows/build-packs.yml))
+export ENGINE_PACKS_WORKFLOW
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
@@ -78,12 +83,17 @@ imports-check:
 # Every test that needs the library lives in tests/integration/ and imports it plainly,
 # so a job without the extra fails here and the plain test job never collects them.
 test-integration:
-	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py -v
+	uv run pytest tests/integration/ tests/providers/test_hosted_request_key.py tests/test_estimator_real_binary.py tests/test_gguf_meta.py -v
+
+# The preset replay needs the client library, so the plain test job cannot collect it.
+# It is offline and takes about a minute, so the local gate runs it by name.
+test-presets:
+	uv run pytest tests/integration/test_preset_fixtures.py -v $(XDIST)
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke
 
-check: lint license-check format-check typecheck test test-shell  ## Run all checks (same as CI)
+check: lint license-check format-check typecheck test test-presets test-shell  ## Run all checks (same as CI)
 
 install:
 	uv tool install ".[crawler]" --force --reinstall --compile-bytecode

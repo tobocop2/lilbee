@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from lilbee.catalog.refs import (
 )
 from lilbee.catalog.types import ModelFormat
 from lilbee.data.store.lance_helpers import refs_compatible
+from lilbee.modelhub import registry as registry_mod
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry, parse_hf_ref
 from lilbee.providers.model_ref import (
     parse_model_ref as parse_provider_ref,
@@ -191,13 +193,55 @@ class TestManifestFormat:
 
         assert saved["format"] == "mlx"
 
-    def test_a_manifest_with_an_unknown_format_reads_as_corrupt(self, tmp_path: Path) -> None:
+    def test_a_manifest_with_an_unknown_format_logs_a_newer_format(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         registry = ModelRegistry(tmp_path)
         path = registry._manifest_path("org/repo", "m.gguf")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({**_OLD, "format": "nosuch"}), encoding="utf-8")
 
-        assert registry._load_manifest_file(path) is None
+        with caplog.at_level(logging.WARNING, logger=registry_mod.__name__):
+            assert registry._load_manifest_file(path) is None
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("newer format" in m and str(path) in m for m in messages)
+        assert not any("Corrupt manifest" in m for m in messages)
+
+    def test_the_listing_skips_an_unknown_format_and_keeps_the_file(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        path = registry._manifest_path("org/repo", "m.gguf")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps({**_OLD, "format": "nosuch"})
+        path.write_text(text, encoding="utf-8")
+
+        assert registry.list_installed() == []
+        assert path.read_text(encoding="utf-8") == text
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b"{not json",
+            b'{"hf_repo": "org/repo", "name": "\xff\xfe"}',
+            b"[1, 2]",
+            json.dumps({**_OLD, "format": 5}).encode(),
+            json.dumps({**_OLD, "surplus": 1}).encode(),
+        ],
+    )
+    def test_unreadable_manifest_bytes_still_log_corrupt(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, raw: bytes
+    ) -> None:
+        registry = ModelRegistry(tmp_path)
+        path = registry._manifest_path("org/repo", "m.gguf")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+        with caplog.at_level(logging.WARNING, logger=registry_mod.__name__):
+            assert registry._load_manifest_file(path) is None
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Corrupt manifest" in m for m in messages)
+        assert not any("newer format" in m for m in messages)
 
     def test_parse_hf_ref_refuses_a_format_qualified_ref(self) -> None:
         with pytest.raises(ValueError, match="not a HuggingFace ref"):

@@ -79,7 +79,7 @@ def mac(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     adapter = _CellEngine()
     adapter.cell_sha = sha
     monkeypatch.setitem(ADAPTERS, EngineName.MISTRAL, adapter)  # type: ignore[arg-type]
-    monkeypatch.setattr(MISTRAL, "pin_record", adapter.pin_record)
+    monkeypatch.setattr(type(MISTRAL), "pin_record", lambda _self: adapter.pin_record())
     lock = pin_lock(_pin(sha)).for_cell(CELL)
     EngineStore(engines_root(models_dir)).install_from_wheel(lock, wheel)
     return models_dir
