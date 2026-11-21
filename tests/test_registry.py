@@ -188,9 +188,7 @@ class TestSharedBlobStore:
         assert manifest.blob == hashlib.sha256(b"GGUF one").hexdigest()
         assert manifest.shard_blobs == [hashlib.sha256(b"GGUF two").hexdigest()]
 
-    def test_a_repo_subfolder_named_blobs_still_reaches_the_repo_blob(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_repo_subfolder_named_blobs_still_reaches_the_repo_blob(self, tmp_path: Path) -> None:
         from lilbee.modelhub.registry import repo_blob_entry
         from lilbee.providers.gguf_meta import find_mmproj_for_model
 
