@@ -9,6 +9,7 @@ import pytest
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError
+from lilbee.providers.engine_params import N_GPU_LAYERS_AUTO
 from lilbee.providers.fleet import vram as vram_mod
 from lilbee.providers.fleet.vram import (
     GgufVramEstimate,
@@ -105,6 +106,26 @@ class TestEstimateInstanceFootprint:
         )
         assert est.mapped_weights_bytes == 4096
         assert est.unified_bytes == 100 + 700
+
+    def test_auto_offload_sends_all_layers_to_parser(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+        _patch_parser(
+            monkeypatch,
+            stdout=_sample_json(ram_uma=1, ram_nonuma=1, vrams=[(1, 1)]),
+            recorder=calls,
+        )
+        estimate_instance_footprint(
+            model_file,
+            ctx=8192,
+            slots=1,
+            gpu_layers=N_GPU_LAYERS_AUTO,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.Q8_0,
+        )
+        argv = calls[0]
+        assert argv[argv.index("--gpu-layers") + 1] == "-2"
 
     def test_a_report_without_a_file_size_sizes_as_before(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
