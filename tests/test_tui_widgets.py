@@ -1991,7 +1991,9 @@ class TestModelPickerModal:
             def _capture(value: str | None) -> None:
                 results.append(value)
 
-            app.push_screen(ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick), _capture)
+            app.push_screen(
+                ModelPickerModal(scope="chat", options=opts, pick_later=_no_late_pick), _capture
+            )
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
@@ -2150,9 +2152,11 @@ class TestModelPickerModal:
         app = _App()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            app.push_screen(ModelPickerModal(
+            app.push_screen(
+                ModelPickerModal(
                     scope="embed", options=[ModelOption("X", "x")], pick_later=_no_late_pick
-                ))
+                )
+            )
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, ModelPickerModal)
