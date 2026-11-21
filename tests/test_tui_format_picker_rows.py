@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from textual.app import ComposeResult
+from textual.content import Content
 from textual.widgets import OptionList, Static
 
 from lilbee.app.engine_service import EngineOption
@@ -353,3 +355,96 @@ async def test_a_format_whose_engine_is_installed_downloads_at_once(
         await pilot.press("down", "enter")
         assert await wait_until(pilot, lambda: bool(started))
         assert installs == []
+
+
+def test_the_hub_size_request_carries_the_hub_token(
+    engines: Callable[[dict[str, list[EngineOption]]], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engines({"gguf": _LLAMA_NOW, "safetensors": _LLAMA_NOW})
+    seen: list[object] = []
+
+    def fit(_repo: str, _engine: object, **kw: object) -> PullFit:
+        seen.append(kw.get("token"))
+        return PullFit(device_bytes=_GIB, ctx=4096, size_known=True, upper_bound=False)
+
+    monkeypatch.setattr("lilbee.catalog.hf_client.hf_token", lambda: "tok")
+    monkeypatch.setattr("lilbee.catalog.pull_fit.chat_pull_fit", fit)
+    format_rows(_model(), 16 * _GIB)
+    assert seen == ["tok"]
+
+
+def test_a_catalog_size_of_zero_is_an_unknown_size(
+    engines: Callable[[dict[str, list[EngineOption]]], None], hub_fit: list[tuple[str, str]]
+) -> None:
+    engines({"gguf": _LLAMA_NOW, "safetensors": _LLAMA_NOW})
+    row = format_rows(replace(_model(), size_gb=0.0), 16 * _GIB)[0]
+    assert (row.size_bytes, row.fit) == (None, None)
+
+
+def test_a_catalog_size_under_one_gigabyte_is_kept(
+    engines: Callable[[dict[str, list[EngineOption]]], None], hub_fit: list[tuple[str, str]]
+) -> None:
+    engines({"gguf": _LLAMA_NOW, "safetensors": _LLAMA_NOW})
+    row = format_rows(replace(_model(), size_gb=0.5), 16 * _GIB)[0]
+    assert row.size_bytes == int(0.5 * _GIB)
+
+
+def _span_styles(content: Content, text: str) -> list[str]:
+    plain = str(content)
+    return [str(s.style) for s in content.spans if plain[s.start : s.end] == text]
+
+
+def test_the_default_marker_is_muted() -> None:
+    row = FormatRow(ModelFormat.GGUF, True, "llama.cpp", None, None)
+    assert _span_styles(format_prompt(row), msg.FORMAT_ROW_DEFAULT) == ["$text-muted"]
+
+
+@pytest.mark.parametrize(
+    ("level", "text", "color"),
+    [
+        (FitLevel.FITS, msg.FORMAT_FIT_FITS, "$success"),
+        (FitLevel.TIGHT, msg.FORMAT_FIT_TIGHT, "$warning"),
+        (FitLevel.WONT_RUN, msg.FORMAT_FIT_WONT_RUN, "$error"),
+    ],
+)
+def test_the_fit_word_takes_its_colour(level: FitLevel, text: str, color: str) -> None:
+    row = FormatRow(ModelFormat.GGUF, False, "llama.cpp", _GIB, level)
+    assert _span_styles(format_prompt(row), text) == [color]
+
+
+async def test_the_fit_is_worked_out_from_the_memory_the_screen_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        "lilbee.cli.tui.screens.catalog.format_rows",
+        lambda model, available: asked.append((model, available)) or [],
+    )
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.call_from_thread", lambda *_a, **_kw: None)
+    async with _App().run_test(size=(140, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        screen._available_memory_bytes = 12345
+        model = _model()
+        screen._offer_formats(model)
+    assert asked == [(model, 12345)]
+
+
+async def test_the_engine_install_gets_the_running_app(
+    monkeypatch: pytest.MonkeyPatch,
+    engines: Callable[[dict[str, list[EngineOption]]], None],
+    hub_fit: list[tuple[str, str]],
+) -> None:
+    engines({"gguf": _LLAMA_NOW, "safetensors": _MLX_MISSING})
+    async with _App().run_test(size=(140, 40)) as pilot:
+        screen, _started, _installs = await _open_picker(pilot, monkeypatch, _model())
+        apps: list[object] = []
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.install_then",
+            lambda app, _name, _then: apps.append(app),
+        )
+        await pilot.press("down", "enter")
+        assert await wait_until(pilot, lambda: bool(apps))
+        assert apps == [screen.app]
+        assert apps[0] is pilot.app
