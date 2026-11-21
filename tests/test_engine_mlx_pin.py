@@ -101,7 +101,7 @@ def _stub(folder: Path, name: str, body: str) -> None:
 
 
 def _build(top: Path, tmp_path: Path, host: tuple[str, str]) -> subprocess.CompletedProcess[str]:
-    """Run the script with ``uname`` answering *host*; a stub uv records that the run got that far."""
+    """Run the script with ``uname`` answering *host*; a stub uv records each call."""
     stubs = tmp_path / "stubs"
     _stub(stubs, "uname", f'[ "$1" = -s ] && echo {host[0]} || echo {host[1]}')
     _stub(stubs, "uv", f'echo "$@" >> {tmp_path / "uv-calls"}; echo "uv 0.0.0"')
@@ -183,7 +183,11 @@ def test_the_python_install_writes_nothing_outside_the_scratch_directory(tmp_pat
         encoding="utf-8",
         timeout=60,
         check=False,
-        env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(scratch)},
+        env={
+            **os.environ,
+            "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+            "TMPDIR": str(scratch),
+        },
     )
     assert done.returncode == 1
     line = calls.read_text(encoding="utf-8").strip()
@@ -229,7 +233,11 @@ def test_the_script_stops_when_numpy_bundles_libraries_again(tmp_path: Path) -> 
         encoding="utf-8",
         timeout=60,
         check=False,
-        env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(scratch)},
+        env={
+            **os.environ,
+            "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+            "TMPDIR": str(scratch),
+        },
     )
     assert done.returncode == 1
     assert "numpy bundles libraries in numpy/.dylibs" in done.stderr

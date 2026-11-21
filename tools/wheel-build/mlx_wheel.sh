@@ -56,9 +56,10 @@ grep -Eq "^mlx @ .*/mlx-${MLX_VERSION}-${cp_tag}-${cp_tag}-${platform}\.whl \\\\
   die "${MLX_REQUIREMENTS} pins no mlx ${MLX_VERSION} file mlx-${MLX_VERSION}-${cp_tag}-${cp_tag}-${platform}.whl, the file of macOS ${MLX_FLOOR}."
 grep -Eq "^mlx-metal @ .*/mlx_metal-${MLX_VERSION}-py3-none-${platform}\.whl \\\\\$" "${requirements}" ||
   die "${MLX_REQUIREMENTS} pins no mlx-metal ${MLX_VERSION} file mlx_metal-${MLX_VERSION}-py3-none-${platform}.whl, the file of macOS ${MLX_FLOOR}."
-case "$(uv --version)" in
+uv_version="$(uv --version)"
+case "${uv_version}" in
   "uv ${MLX_UV_VERSION}" | "uv ${MLX_UV_VERSION} "*) ;;
-  *) die "uv ${MLX_UV_VERSION} is pinned in engines/mlx.env. The PATH has $(uv --version)." ;;
+  *) die "uv ${MLX_UV_VERSION} is pinned in engines/mlx.env. The PATH has ${uv_version}." ;;
 esac
 delocate-wheel --version 2>&1 | grep -qF "${MLX_DELOCATE_VERSION}" ||
   die "delocate ${MLX_DELOCATE_VERSION} is pinned in engines/mlx.env. The PATH has another version."
