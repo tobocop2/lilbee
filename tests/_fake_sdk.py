@@ -122,7 +122,7 @@ def finish_member(wire: str) -> FinishReason:
 
 
 class ReasoningEffort(_Enum):
-    """Mirrors ``liter_llm.ReasoningEffort`` 2.4.1."""
+    """Mirrors ``liter_llm.ReasoningEffort`` 2.5.0."""
 
     LOW: ReasoningEffort
     MEDIUM: ReasoningEffort
