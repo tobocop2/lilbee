@@ -1015,7 +1015,7 @@ class TestAddIngestMutex:
         assert cfg.linked_roots == {"free.txt": str(free.resolve())}
 
     async def test_a_close_at_already_ingesting_keeps_the_free_upload(self, isolated_env):
-        """An uploaded file exists only in the request, so a close at the first event must not lose it."""
+        """A close at the first event must not lose an upload, which exists only in the request."""
         from lilbee.app.services import get_services
         from lilbee.core.config import cfg
         from lilbee.runtime.ingest_lock import IngestLockRegistry
