@@ -18,6 +18,7 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -34,8 +35,10 @@ from lilbee.app.placement import (
 )
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import ENGINE_SETTING_KEYS, chips_text
+from lilbee.cli.tui.engine_install_flow import choose_for_model
+from lilbee.cli.tui.engine_mark import engine_dot, engine_mark
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+from lilbee.cli.tui.widgets.gpu_fleet_panel import Badge, GpuFleetPanel
 from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import REPLICATED_ROLES, RoleTarget, WorkerRole
@@ -78,8 +81,12 @@ _FLEET_PANEL_ID = "#gpu-fleet-panel"
 # Only the replicated roles show a replica stepper; the others always serve one.
 _REPLICA_ROLES = REPLICATED_ROLES
 _HINT = (
-    "Toggle a GPU for each role; -/+ sets replicas.  ctrl+r preview · ctrl+s apply · ctrl+x auto"
+    "Toggle a GPU for each role; -/+ sets replicas.  "
+    "ctrl+r preview · ctrl+s apply · ctrl+x auto · e engine"
 )
+_ENGINE_PILL_PREFIX = "eng-"
+# The role named by the id of a pill in a role row, such as dev-chat-0 or eng-chat.
+_ROW_PILL_RE = re.compile(r"^(?:dev|tgt|rep|eng)-([a-z]+)")
 _CMD_PREVIEW = "cmd-preview"
 _CMD_APPLY = "cmd-apply"
 _CMD_AUTO = "cmd-auto"
@@ -159,6 +166,17 @@ class _RoleEdit:
     # card for it: pinning it to its card would drop the group, so the saved spec
     # leaves the role to the planner.
     planned: bool = False
+    # The engine that runs the model of the role, for the Engine column; None when unknown.
+    engine: str | None = None
+
+
+def _engine_cell(edit: _RoleEdit) -> Content:
+    """The Engine column of one role row: the color mark and the name, or why there is none."""
+    if not edit.model.strip():
+        return Content.styled(msg.FLEET_ENGINE_UNSET, "$text-muted")
+    if not edit.engine:
+        return Content.styled(msg.FLEET_ENGINE_NONE, "$warning")
+    return engine_mark(edit.engine)
 
 
 def _edits_from_view(view: PlacementView) -> dict[WorkerRole, _RoleEdit]:
@@ -180,12 +198,19 @@ def _edits_from_view(view: PlacementView) -> dict[WorkerRole, _RoleEdit]:
                 r.replicas,
                 r.tensor_split,
                 planned=r.role in view.co_tenants,
+                engine=r.engine,
             )
         elif view.rejected_spec_json:
             edits[r.role] = _edit_from_entry(r.role, r.model, entry)
         else:
             edits[r.role] = _RoleEdit(
-                r.role, r.model, set(r.devices), r.replicas, r.tensor_split, entry.target
+                r.role,
+                r.model,
+                set(r.devices),
+                r.replicas,
+                r.tensor_split,
+                entry.target,
+                engine=r.engine,
             )
     if view.rejected_spec_json and view.refusal != SAVED_PLACEMENT_WAITS_FOR_ENGINE:
         for role, entry in named.items():
@@ -205,6 +230,10 @@ class FleetBody(Widget):
 
     app: LilbeeApp  # type: ignore[assignment]
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("e", "pick_engine", "Engine", show=True),
+    ]
 
     applying: reactive[bool] = reactive(False)
 
@@ -288,6 +317,47 @@ class FleetBody(Widget):
         self.query_one("#placement-engines", Static).update(
             "\n".join([chips_text(views), *notices])
         )
+        self._refresh_engine_cells(views)
+
+    def _refresh_engine_cells(self, views: list[engine_service.RoleView]) -> None:
+        """Repaint the Engine column from the engine each role runs on now."""
+        live = {view.role: view.engine for view in views}
+        for role, edit in self._edits.items():
+            if role in live:
+                edit.engine = live[role]
+            with contextlib.suppress(NoMatches):
+                self.query_one(f"#{_ENGINE_PILL_PREFIX}{role.value}", FleetPill).update(
+                    _engine_cell(edit)
+                )
+
+    def action_pick_engine(self) -> None:
+        """Open the engine picker for the role row that holds the focus."""
+        focused = self.app.focused
+        found = _ROW_PILL_RE.match(focused.id or "") if focused is not None else None
+        if found is not None:
+            self.pick_engine(WorkerRole(found.group(1)))
+
+    def pick_engine(self, role: WorkerRole) -> None:
+        """Open the engine picker for *role*; the choice is saved for the model of the role."""
+        from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+
+        view = next(v for v in engine_service.roles() if v.role is role)
+        if not view.model.strip():
+            self.notify(msg.ENGINE_NO_MODEL.format(role=role), severity="warning")
+            return
+        modal = EnginePickerModal(
+            msg.ENGINE_PICKER_TITLE.format(role=role),
+            msg.ENGINE_PICKER_SUBTITLE.format(model=view.model, format=view.format),
+            view.engine,
+            engine_service.engine_options(view.model),
+        )
+        self.app.push_screen(modal, lambda option: self._on_engine_picked(view, option))
+
+    def _on_engine_picked(
+        self, view: engine_service.RoleView, option: engine_service.EngineOption | None
+    ) -> None:
+        if option is not None:
+            choose_for_model(self.app, view.model, option, role=view.role)
 
     @work(thread=True, exit_on_error=False)
     def _load_worker(self) -> None:
@@ -378,7 +448,14 @@ class FleetBody(Widget):
         widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
             kind = _role_kind(role)
-            children: list[FleetPill | Label] = [Label(f"{role.value:<7}", classes="role-name")]
+            children: list[FleetPill | Label] = [
+                Label(f"{role.value:<7}", classes="role-name"),
+                FleetPill(
+                    _engine_cell(edit),
+                    id=f"{_ENGINE_PILL_PREFIX}{role.value}",
+                    classes="engine-pill",
+                ),
+            ]
             for idx in devices:
                 on = " on" if idx in edit.devices else ""
                 children.append(
@@ -412,7 +489,10 @@ class FleetBody(Widget):
 
     def _gpu_header_row(self, devices: tuple[int, ...]) -> Horizontal:
         """A header labelling the visible GPU columns."""
-        cells: list[Label] = [Label("GPU", classes="role-name gpu-hdr-lead")]
+        cells: list[Label] = [
+            Label("GPU", classes="role-name gpu-hdr-lead"),
+            Label(msg.FLEET_ENGINE_HEADER, classes="engine-hdr"),
+        ]
         cells += [Label(str(idx), classes="gpu-hdr") for idx in devices]
         return Horizontal(*cells, classes="gpu-header-row")
 
@@ -446,10 +526,15 @@ class FleetBody(Widget):
         except NoMatches:
             return
         labels = {g.index: g.label for g in view.gpus}
-        roles: dict[int, str] = {}
+        roles: dict[int, Badge] = {}
         for r in view.roles:
             short_model = _clean_model_name(r.model) if r.model else ""
-            badge = f"{r.role.value} - {short_model}" if short_model else r.role.value
+            text = f"{r.role.value} - {short_model}" if short_model else r.role.value
+            badge: Badge = (
+                Content.assemble(engine_dot(r.engine), " ", (text, "$secondary"))
+                if r.engine
+                else text
+            )
             for idx in r.devices:
                 roles[idx] = badge
         panel.set_devices(view.gpus, labels=labels, roles=roles)
@@ -534,6 +619,9 @@ class FleetBody(Widget):
         command = self._command_actions.get(bid)
         if command is not None:
             command()
+            return
+        if bid.startswith(_ENGINE_PILL_PREFIX):
+            self.pick_engine(WorkerRole(bid.removeprefix(_ENGINE_PILL_PREFIX)))
             return
         if bid in ("pg-prev", "pg-next"):
             step = -1 if bid == "pg-prev" else 1
