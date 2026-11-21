@@ -131,13 +131,62 @@ async def test_the_chips_show_the_engine_of_each_role_that_has_a_model(
         assert app.query_one("#model-bar-engine-chips").region.width <= size[0]
 
 
+async def test_the_engine_line_takes_no_row_while_auto_put_every_role_on_one_engine() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert not app.query_one("#model-bar-engine-chips").display
+        assert app.query_one("#model-bar-engine-chips").region.height == 0
+
+
 async def test_the_chips_follow_the_stored_choice_without_a_restart() -> None:
     app = _BarApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         cfg.engine_choices = json.dumps({GGUF_REF: "openvino"})
         app.query_one(ModelBar).refresh_engines()
+        await pilot.pause()
         assert _text(app, "#model-bar-engine-chips") == "engine: chat ■ openvino  embed ■ llama.cpp"
+        assert app.query_one("#model-bar-engine-chips").region.height == 1
+
+
+async def test_the_engine_line_shows_when_the_user_prefers_an_engine() -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        cfg.preferred_engine = EngineSetting.LLAMA
+        app.query_one(ModelBar).refresh_engines()
+        await pilot.pause()
+        assert app.query_one("#model-bar-engine-chips").region.height == 1
+
+
+def _role_views(chat: str | None, embed: str | None, notice: str | None = None):
+    return [
+        engine_service.RoleView(WorkerRole.CHAT, GGUF_REF, "gguf", chat, notice),
+        engine_service.RoleView(WorkerRole.EMBED, EMBED_REF, "gguf", embed, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("views", "shown"),
+    [
+        (_role_views("llama.cpp", "llama.cpp"), False),
+        (_role_views("llama.cpp", "openvino"), True),
+        (_role_views("llama.cpp", None), True),
+        (_role_views("llama.cpp", "llama.cpp", notice="llama.cpp runs it on the CPU."), True),
+    ],
+    ids=["same engine", "different engines", "no engine", "notice"],
+)
+async def test_the_engine_line_shows_only_when_it_tells_the_user_something(
+    views: list[engine_service.RoleView], shown: bool
+) -> None:
+    app = _BarApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        with mock.patch.object(engine_service, "roles", return_value=views):
+            app.query_one(ModelBar).refresh_engines()
+        await pilot.pause()
+        assert (app.query_one("#model-bar-engine-chips").region.height == 1) is shown
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])

@@ -110,9 +110,14 @@ ModelBar .cloud-warning.-visible {
 }
 
 ModelBar .engine-chips {
+    display: none;
     height: 1;
     color: $text-muted;
     text-overflow: ellipsis;
+}
+
+ModelBar .engine-chips.-visible {
+    display: block;
 }
 
 ModelBar .engine-notice {
