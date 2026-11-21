@@ -1115,6 +1115,30 @@ class TestGetCatalog:
         result = get_catalog(featured=False)
         assert result.total is None
 
+    def test_a_pick_the_host_cannot_run_is_not_served(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The runnable filter runs over the picks themselves: an unrunnable pick is only hidden."""
+        mlx_pick = replace(
+            make_test_catalog_model(name="MlxPick", featured=True),
+            formats=frozenset({ModelFormat.MLX}),
+        )
+        gguf_pick = make_test_catalog_model(name="GgufPick", featured=True)
+        monkeypatch.setattr(_query, "get_picks", lambda: [mlx_pick, gguf_pick])
+        result = get_catalog(task=ModelTask.CHAT, featured=True)
+        assert [m.hf_repo for m in result.models] == ["test/GgufPick"]
+        assert [h.hf_repo for h in result.hidden] == ["test/MlxPick"]
+        assert result.total == 1
+
+    def test_featured_false_leaves_the_picks_out_of_the_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """featured=False reaches the row filter: the featured picks are not served with it."""
+        stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model(name="Hf0")]})
+        result = get_catalog(task=ModelTask.CHAT, featured=False)
+        assert [m.hf_repo for m in result.models] == ["test/Hf0"]
+        assert all(m.featured is False for m in result.models)
+
     def test_sort_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(sort=CatalogSort.FEATURED)
