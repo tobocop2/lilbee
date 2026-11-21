@@ -16,7 +16,8 @@
       "--device",
       "CUDA0,CUDA1",
       "--tensor-split",
-      "1,1"
+      "1,1",
+      "--no-context-shift"
     ],
     "embed": [
       "/engines/bin/server",
@@ -35,7 +36,8 @@
       "CUDA0,CUDA1",
       "--tensor-split",
       "1,1",
-      "--embeddings"
+      "--embeddings",
+      "--no-context-shift"
     ]
   },
   "llama.cpp": {

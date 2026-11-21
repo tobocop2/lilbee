@@ -19,6 +19,8 @@ from tests._engine_launch_argv import launch_argvs
 # The mlx chat argv carries `--max-tokens` at the window, because mlx-lm otherwise stops
 # every answer at 512 tokens. It also carries llama-server's sampling defaults, because
 # mlx-lm otherwise decodes greedily and a thinking model repeats itself without end.
+# Each ik_llama.cpp argv ends with `--no-context-shift`, because with context shift on
+# ik_llama.cpp cuts an oversize prompt and then aborts instead of refusing it.
 # No other line changed.
 BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 
