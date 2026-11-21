@@ -54,8 +54,9 @@ _QUESTION = [{"role": "user", "content": "hi"}]
 _START_REFUSED = "The engine did not start."
 _NOTES_CHUNK_SIZE = 384
 _NOTES_CHUNK_OVERLAP = 64
-_EMBED_WINDOW_AT_512 = 2048
-_EMBED_WINDOW_AT_384 = 1544
+# A chunk of tokens plus the 128-token input headroom and the 8-token margin.
+_EMBED_WINDOW_AT_512 = 648
+_EMBED_WINDOW_AT_384 = 520
 
 
 @pytest.fixture

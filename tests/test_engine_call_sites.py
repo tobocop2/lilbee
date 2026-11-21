@@ -525,7 +525,11 @@ class TestMemoryEstimates:
         assert shares == spy.estimate_memory(spy.sized[-1]).per_device
         assert spy.sized[-1].expert_offload  # the engine's metadata names experts
 
-    def test_peak_estimator_sizes_the_window_from_the_engine_metadata(self, spy: SpyEngine) -> None:
+    def test_peak_estimator_sizes_the_window_from_the_engine_metadata(
+        self, spy: SpyEngine, monkeypatch
+    ) -> None:
+        # A chunk window above the fallback context, so the header's context decides it.
+        monkeypatch.setattr(cfg, "chunk_size", 3000)
         planning._peak_estimator({WorkerRole.EMBED: "embed-ref"}, engines_for_all_roles(spy))(
             WorkerRole.EMBED, (1, 1)
         )
@@ -557,8 +561,10 @@ class TestModelMeta:
         assert planning._ref_is_moe("any-ref", engine=spy) is True
 
     def test_embed_token_cap_follows_the_engine_window(
-        self, spy: SpyEngine, model_file: Path
+        self, spy: SpyEngine, model_file: Path, monkeypatch
     ) -> None:
+        # A chunk window above the fallback context, so the header's context decides it.
+        monkeypatch.setattr(cfg, "chunk_size", 3000)
         cap = planning.planned_embed_token_cap("embed-ref", engine=spy)
         unread = engine_params.embed_token_cap(
             planning.apply_ctx_downshift(

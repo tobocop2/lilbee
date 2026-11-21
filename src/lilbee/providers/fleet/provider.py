@@ -35,7 +35,6 @@ from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.settings import read_persisted
 from lilbee.core.vectors import Vector
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers import engine_params
 from lilbee.providers.base import (
     GENERATION_RESERVE_TOKENS,
     SERVER_STOPPING_MESSAGE,
@@ -1966,8 +1965,6 @@ class FleetProvider:
                 # Every serving process passes through adoption (fresh launch,
                 # reload, guest bind), so the warning fires in each of them.
                 planning.warn_when_chat_downsized(role_launches[0])
-            if role is WorkerRole.EMBED:
-                planning.warn_when_embed_window_below_chunk(role_launches[0])
             self._retire_clients(old_clients)
         self._reload_done.notify_all()
 
@@ -2353,13 +2350,8 @@ class FleetProvider:
         return None
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Serving degradations: the embed window and any placement divergences."""
+        """Serving degradations: any placement divergences."""
         warnings: list[HealthWarning] = []
-        cap = self.embed_token_cap()
-        if cap is not None:
-            warning = engine_params.embed_window_warning(cap)
-            if warning is not None:
-                warnings.append(warning)
         with self._lock:
             swaps = list(self._swaps.values())
         for swap in swaps:
