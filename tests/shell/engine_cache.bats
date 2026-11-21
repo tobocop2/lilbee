@@ -39,7 +39,7 @@ hashed_files() {
   grep -o "hashFiles('engine-versions.env', [^)]*)" "$1" | grep -o "'[^']*'" | tr -d "'"
 }
 
-@test "both llama.cpp engine keys hash the OpenVINO pin with the engine pins" {
+@test "both llama.cpp engine keys hash the same files and not the OpenVINO pin" {
   ACTION="${REPO_ROOT}/.github/actions/bundle-llama-server/action.yml"
   run hashed_files "${BUILD}"
   [ "$status" -eq 0 ]
@@ -47,10 +47,11 @@ hashed_files() {
   run hashed_files "${ACTION}"
   [ "$status" -eq 0 ]
   [ "$output" = "${build_list}" ]
-  echo "${build_list}" | grep -qxF 'engines/openvino.env'
+  echo "${build_list}" | grep -qxF 'engine-versions.env'
+  ! echo "${build_list}" | grep -qxF 'engines/openvino.env'
 }
 
-@test "an OpenVINO pin bump starts the engine cache run" {
-  run grep -cxF "      - 'engines/openvino.env'" "${WARM}"
-  [ "$output" = "1" ]
+@test "an OpenVINO pin bump does not start the engine cache run" {
+  run grep -cF 'engines/openvino.env' "${WARM}"
+  [ "$output" = "0" ]
 }

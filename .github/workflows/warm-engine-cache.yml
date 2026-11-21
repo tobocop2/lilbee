@@ -14,7 +14,6 @@ on:
   pull_request:
     paths: &engine-paths
       - 'engine-versions.env'
-      - 'engines/openvino.env'
       - 'tools/wheel-build/build_llama_server.sh'
       - 'tools/wheel-build/bundle_rocm_runtime.sh'
       - 'tools/wheel-build/bundle_windows_runtime.sh'
