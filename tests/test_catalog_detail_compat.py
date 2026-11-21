@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
+from lilbee.cli.tui.widgets import catalog_detail
 from lilbee.cli.tui.widgets.catalog_detail import _compat_sentence
 
 
@@ -44,17 +47,17 @@ def _row(compat: ModelCompat, *, arch: str = "") -> LocalCatalogRow:
     )
 
 
-def test_supported_sentence() -> None:
-    assert _compat_sentence(_row(ModelCompat.SUPPORTED, arch="llama")) == (
-        msg.COMPAT_DETAIL_SENTENCE_SUPPORTED
-    )
+def test_supported_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(catalog_detail, "_engine_name", lambda _fmt: "llama.cpp")
+    out = _compat_sentence(_row(ModelCompat.SUPPORTED, arch="llama"))
+    assert out.plain == "Supported by your ■ llama.cpp build."
 
 
 def test_unsupported_sentence_includes_arch() -> None:
     out = _compat_sentence(_row(ModelCompat.UNSUPPORTED, arch="kimi_k2"))
-    assert "kimi_k2" in out
+    assert "kimi_k2" in out.plain
 
 
 def test_unknown_sentence_uses_unknown_label_when_no_arch() -> None:
     out = _compat_sentence(_row(ModelCompat.UNKNOWN))
-    assert out == msg.COMPAT_DETAIL_SENTENCE_UNKNOWN
+    assert out.plain == msg.COMPAT_DETAIL_SENTENCE_UNKNOWN
