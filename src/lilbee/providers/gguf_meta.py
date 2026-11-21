@@ -323,8 +323,9 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None | _U
 def _hf_cache_dir_of(model_dir: Path) -> Path | None:
     """The HF-cache repo dir above a ``blobs/`` dir, or None when *model_dir* is not one.
 
-    The blob sits in ``blobs/`` directly, or in a two-character shard dir under
-    it (``blobs/a0/``) with newer huggingface_hub releases.
+    The blob sits in ``blobs/`` directly. A two-character dir under it
+    (``blobs/a0/``) holds the copy an earlier lilbee install made of a blob in
+    the shared store, so a model installed that way keeps its projector.
     """
     if model_dir.name == _HF_BLOBS_DIR_NAME:
         return model_dir.parent
@@ -375,9 +376,9 @@ def snapshot_entry_of_blob(model_path: Path) -> Path:
         return model_path
     for snapshot in sorted(snapshots_dir.iterdir()):
         for entry in sorted(snapshot.rglob("*.gguf")):
-            # The blob name is its content hash; the link chain may end in a shared store
-            # beside the repo folders, so the folder cannot be compared.
-            if entry.resolve().name == model_path.name:
+            # Both link chains may end in the shared store beside the repo folders,
+            # and a copied blob keeps the store name, so the names at the ends compare.
+            if entry.resolve().name == model_path.resolve().name:
                 return entry
     return model_path
 

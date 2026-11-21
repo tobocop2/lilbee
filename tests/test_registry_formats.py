@@ -153,6 +153,34 @@ class TestTwoFormatsOfOneRepo:
 
 
 @pytest.fixture
+def shared_repo(tmp_path: Path) -> Path:
+    """The repo cache huggingface_hub 2.x writes: repo blobs link into the shared store."""
+    cache = tmp_path / "models--org--repo"
+    (cache / "blobs").mkdir(parents=True)
+    for name, content in _FILES.items():
+        xet_hash = hashlib.sha256(b"xet" + content).hexdigest()
+        store = tmp_path / "blobs" / xet_hash[:2] / xet_hash
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_bytes(content)
+        (cache / "blobs" / _digest(name)).symlink_to(
+            Path("..") / ".." / "blobs" / xet_hash[:2] / xet_hash
+        )
+        link = cache / "snapshots" / _REV / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(Path("..") / ".." / "blobs" / _digest(name))
+    return tmp_path
+
+
+class TestRemoveFromTheSharedStore:
+    def test_the_removed_models_links_go_and_the_siblings_stay(self, shared_repo: Path) -> None:
+        _install(shared_repo, ModelFormat.GGUF)
+        _install(shared_repo, ModelFormat.MLX)
+        assert ModelRegistry(shared_repo).remove("org/repo#mlx") is True
+        assert _snapshot_names(shared_repo) == {_GGUF}
+        assert _blob_names(shared_repo) == {_digest(_GGUF)}
+
+
+@pytest.fixture
 def copy_repo(tmp_path: Path) -> Path:
     """The repo cache of a host with no symlinks: snapshot entries are real files."""
     cache = tmp_path / "models--org--repo"

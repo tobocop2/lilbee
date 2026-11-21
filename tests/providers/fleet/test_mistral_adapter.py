@@ -316,6 +316,25 @@ def test_a_snapshot_that_links_into_the_shared_blob_store_still_names_its_blob(
     assert argv[-4:] == ["-m", str(snapshot), "-f", "Qwen3-4B-Q4_K_M.gguf"]
 
 
+def test_a_repo_blob_that_links_into_the_shared_blob_store_names_its_snapshot_file(
+    tmp_path: Path,
+) -> None:
+    models = tmp_path / "models"
+    shared = models / "blobs" / "93" / "9375c1fd"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"gguf")
+    repo = models / "models--Qwen--Qwen3-4B-GGUF"
+    entry = repo / "blobs" / "7485fe6f"
+    entry.parent.mkdir(parents=True)
+    entry.symlink_to(Path("..") / ".." / "blobs" / "93" / "9375c1fd")
+    snapshot = repo / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+    (snapshot / "Qwen3-4B-Q4_K_M.gguf").symlink_to(Path("..") / ".." / "blobs" / "7485fe6f")
+    spec = MISTRAL.role_spec(WorkerRole.CHAT, None, None)
+    argv = MISTRAL.launch_argv(spec, request(tmp_path, model_path=entry))
+    assert argv[-4:] == ["-m", str(snapshot), "-f", "Qwen3-4B-Q4_K_M.gguf"]
+
+
 def test_a_gguf_in_a_snapshot_subfolder_goes_by_that_folder_and_file_name(tmp_path: Path) -> None:
     repo = tmp_path / "models" / "models--Qwen--Qwen3-4B-GGUF"
     blob = repo / "blobs" / "93" / "9375c1fd"
