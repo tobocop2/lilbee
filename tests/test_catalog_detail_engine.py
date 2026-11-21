@@ -17,6 +17,7 @@ from lilbee.catalog.refs import model_format
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark
+from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow, SizeVariant
 from lilbee.cli.tui.widgets import catalog_detail
 from lilbee.cli.tui.widgets.catalog_detail import (
@@ -25,6 +26,7 @@ from lilbee.cli.tui.widgets.catalog_detail import (
     _engine_line,
     _formats_block,
 )
+from lilbee.cli.tui.widgets.model_grid import ModelGrid
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.host_caps import collect
@@ -341,3 +343,36 @@ async def test_the_drawer_shows_and_clears_the_formats_section(
         assert await wait_until(pilot, lambda: "Formats" in str(formats.render()))
         drawer.update_for_row(None)
         assert await wait_until(pilot, lambda: str(formats.render()).strip() == "")
+
+
+class _MlxEngine(BundledFakeAdapter):
+    name = "mlx"
+    formats = frozenset({"mlx"})
+    served_roles = frozenset(WorkerRole)
+
+
+class _Catalog(LilbeeAppHost):
+    def compose(self) -> ComposeResult:
+        yield CatalogScreen()
+
+
+async def test_the_catalog_panel_shows_the_choice_stored_for_the_installed_file(
+    real_lookup: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MLX, _MlxEngine())  # type: ignore[arg-type]
+    engine_service.use(_FILE_REF, "openvino")
+    engine_service.use("acme/foo#mlx", "mlx")
+    async with _Catalog().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        grid = ModelGrid()
+        grid._rows = [replace(_row(), installed=True)]
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._installed_names = {"acme/foo", _FILE_REF}
+        screen._update_drawer_for_grid(grid, 0)
+        engine = screen.query_one("#catalog-detail-engine", Static)
+        formats = screen.query_one("#catalog-detail-formats", Static)
+        assert str(engine.render()) == "Engine: ■ openvino (chosen for this file)"
+        assert str(formats.render()).splitlines()[1:] == [
+            "  gguf  4.6 GB  ✓  ■ openvino",
+            "  mlx  ■ mlx",
+        ]
