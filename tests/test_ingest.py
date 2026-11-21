@@ -5563,6 +5563,63 @@ class TestTableChunks:
         assert all(r["vector"] for r in table_records)
         assert all(r["content_type"] == "pdf" for r in table_records)
 
+    async def test_a_semantic_chunk_over_chunk_size_tokens_is_cut_and_keeps_its_page(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """The semantic chunker sizes by characters, so each chunk is counted in the
+        embedder's tokens and an oversize one is cut; every piece keeps its page."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract import xberg as xberg_mod
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 64)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_svc.provider.embed_token_cap.return_value = None
+        mock_svc.provider.count_tokens.side_effect = len
+        text = "".join(f"line {i:02d}\n" for i in range(24))
+        document = _make_xberg_result(text=text, num_chunks=2, has_pages=True)
+        real_extract = xberg_mod.aextract_document
+
+        async def _extract(data, *args, **kwargs):
+            # Only the file is faked: the cut of each chunk runs through the real xberg.
+            if data == b"fake":
+                return document
+            return await real_extract(data, *args, **kwargs)
+
+        monkeypatch.setattr(xberg_mod, "aextract_document", _extract)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+
+        assert len(records) > 2
+        assert max(len(r["chunk"]) for r in records) <= 64
+        assert [r["chunk_index"] for r in records] == list(range(len(records)))
+        pages = [r["page_start"] for r in records]
+        assert pages == sorted(pages)
+        assert set(pages) == {1, 2}
+        assert all(r["page_end"] == r["page_start"] for r in records)
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_chunks_are_not_counted_without_semantic_chunking(
+        self, mock_kf, isolated_env, monkeypatch, mock_svc
+    ):
+        """The other chunkers already cut by the embedder's tokens, so nothing recounts them."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        mock_kf.return_value = _make_xberg_result(num_chunks=2)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+
+        assert len(records) == 2
+        counted = [c.args[0] for c in mock_svc.provider.count_tokens.call_args_list]
+        assert not {r["chunk"] for r in records} & set(counted)
+
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_spanning_cell_markdown_passes_through_verbatim(
         self, mock_kf, isolated_env, monkeypatch

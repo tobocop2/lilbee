@@ -44,7 +44,14 @@ from lilbee.runtime.progress import (
 
 from .backends.vision_ocr import backend_options_for, ocr_request
 from .batch import active_extract_batcher
-from .chunk import ChunkLimitError, build_chunking_config, chunk_text, enforce_chunk_limit
+from .chunk import (
+    ChunkLimitError,
+    build_chunking_config,
+    chunk_text,
+    enforce_chunk_limit,
+    fit_token_budget,
+    token_budget,
+)
 from .trace import ExtractionTrace, trace_extraction, trace_log
 
 if TYPE_CHECKING:
@@ -411,6 +418,20 @@ async def extract_batching() -> AsyncGenerator[None]:
     finally:
         await batcher.close()
         reset_active_batcher(token)
+
+
+def _chunk_pieces(contents: Sequence[str]) -> list[tuple[int, str]]:
+    """``(chunk position, text)`` for each piece; a semantic chunk over the token budget
+    gives several pieces, so each piece can keep the pages of the chunk it was cut from.
+    """
+    if not active_config().semantic_chunking:
+        return list(enumerate(contents))
+    budget = token_budget()
+    return [
+        (i, piece)
+        for i, content in enumerate(contents)
+        for piece in fit_token_budget(content, budget)
+    ]
 
 
 def _chunk_pages(page_texts: Sequence[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -811,7 +832,9 @@ async def _records_from_document(
 
     if ocr_backend is OcrBackendUsed.NONE:
         _warn_skipped_scanned_pages(doc, source_name)
-    enforce_chunk_limit(len(doc.chunks or []) + len(tables))
+    chunks = doc.chunks or []
+    pieces = await to_ingest_thread(_chunk_pieces, [chunk.content for chunk in chunks])
+    enforce_chunk_limit(len(pieces) + len(tables))
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
@@ -825,7 +848,7 @@ async def _records_from_document(
 
     # Content chunks and table serializations share one embed batch; the vector
     # list is split back apart below by position.
-    texts = [chunk.content for chunk in doc.chunks or []]
+    texts = [text for _, text in pieces]
     table_texts = [table.markdown for table in tables]
     embed_texts = await to_ingest_thread(
         _enrich_texts, texts + table_texts, texts[0] if texts else "", source_name
@@ -841,15 +864,15 @@ async def _records_from_document(
             source=source_name,
             content_type=content_type,
             chunk_type=ChunkType.RAW,
-            page_start=chunk.metadata.first_page or 0,
-            page_end=chunk.metadata.last_page or 0,
+            page_start=chunks[pos].metadata.first_page or 0,
+            page_end=chunks[pos].metadata.last_page or 0,
             line_start=0,
             line_end=0,
             chunk=text,
-            chunk_index=chunk.metadata.chunk_index,
+            chunk_index=i,
             vector=vec,
         )
-        for chunk, text, vec in zip(doc.chunks or [], texts, vectors[: len(texts)], strict=True)
+        for i, ((pos, text), vec) in enumerate(zip(pieces, vectors[: len(texts)], strict=True))
     ]
     # Table chunk indices continue after the content chunks so a source's
     # (source, chunk_index) pairs stay unique.

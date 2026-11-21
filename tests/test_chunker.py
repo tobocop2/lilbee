@@ -473,6 +473,71 @@ class TestChunksFitTheEmbedderTokenLimit:
         assert len(chunks) > 1
         assert max(_wordpiece_like(c) for c in chunks) <= 512
 
+    @pytest.fixture
+    def one_semantic_chunk(self, monkeypatch):
+        """xberg's semantic chunker as one chunk of the whole text; other chunkers run for real."""
+        from lilbee.data.extract import xberg as xberg_mod
+
+        real = xberg_mod.extract_document
+
+        def extract(data, mime_type, *, config):
+            if config.chunking.chunker_type == "semantic":
+                return SimpleNamespace(chunks=[SimpleNamespace(content=data.decode("utf-8"))])
+            return real(data, mime_type, config=config)
+
+        monkeypatch.setattr(xberg_mod, "extract_document", extract)
+
+    def test_a_semantic_chunk_of_more_tokens_than_characters_is_cut_to_chunk_size(
+        self, monkeypatch, mock_services, one_semantic_chunk
+    ):
+        """A byte-level tokenizer makes more than one token from a character, so a chunk
+        within the character budget can still pass chunk_size tokens."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = lambda text: 3 * len(text)
+        text = "\n".join(f"line {i:03d}" for i in range(40))
+
+        chunks = chunk_text(text)
+
+        assert len(text) < 128 * 4
+        assert len(chunks) > 1
+        assert max(3 * len(c) for c in chunks) <= 128
+        assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+    def test_a_semantic_chunk_within_chunk_size_tokens_is_kept_whole(
+        self, monkeypatch, mock_services, one_semantic_chunk
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        mock_services.provider.embed_token_cap.return_value = None
+        mock_services.provider.count_tokens.side_effect = len
+        text = "A short topic that fits."
+
+        assert chunk_text(text) == [text]
+
+    def test_a_semantic_chunk_is_cut_to_the_embed_cap_below_chunk_size(
+        self, monkeypatch, mock_services, one_semantic_chunk
+    ):
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.embed_token_cap.return_value = 64
+        mock_services.provider.count_tokens.side_effect = len
+        text = "\n".join(f"line {i:03d}" for i in range(100))
+
+        chunks = chunk_text(text)
+
+        assert len(chunks) > 1
+        assert max(len(c) for c in chunks) <= 64
+
     def test_breadcrumb_counts_inside_the_budget(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
 
