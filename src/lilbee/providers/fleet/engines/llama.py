@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from lilbee._generated.engine_archs import ENGINE_LLAMA_CPP_REF, SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import GGUF_MAGIC
@@ -134,7 +134,7 @@ class LlamaCppAdapter:
             return None
         return read_gguf_metadata(path)
 
-    def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
         assert_engine_can_load(repo, filename, token)
 
     def runtime_env(self) -> Mapping[str, str]:

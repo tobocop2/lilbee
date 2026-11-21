@@ -8,6 +8,7 @@ from typing import Union, get_args, get_origin
 from pydantic.fields import FieldInfo
 
 from lilbee.core.config import Config
+from lilbee.core.config.model import SERVICE_ONLY_FIELDS as SERVICE_ONLY_FIELDS
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
 

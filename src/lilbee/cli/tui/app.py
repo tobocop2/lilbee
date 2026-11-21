@@ -58,6 +58,7 @@ from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg, load_warnings
 from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
+from lilbee.core.security import FileLockUnavailableError
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -643,6 +644,9 @@ class LilbeeApp(App[None]):
             return None
         try:
             result = apply_settings_update({key: value})
+        except FileLockUnavailableError as exc:
+            self.notify(config_write_failure_message(exc), severity="error")
+            return None
         except (ValueError, OSError, RuntimeError) as exc:  # RuntimeError: a store error
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return None
@@ -659,9 +663,10 @@ class LilbeeApp(App[None]):
         """Apply a writable / model-role setting through the boundary, then fan out to the UI.
 
         Returns whether the value was saved. A failed config write (a read-only file, a full
-        disk) toasts here, once, with the text the CLI, HTTP and MCP surfaces show, and
-        returns False so the caller does not record the value as saved. With *ask_rebuild*
-        False the caller asks about a rebuild itself; the wiki wipe question still comes.
+        disk, a config lock that cannot be taken) toasts here, once, with the text the CLI,
+        HTTP and MCP surfaces show, and returns False so the caller does not record the value
+        as saved. With *ask_rebuild* False the caller asks about a rebuild itself; the wiki
+        wipe question still comes.
 
         Raises ``ValueError`` for keys outside ``WRITABLE_CONFIG_FIELDS | MODEL_ROLE_FIELDS``
         or values rejected by pydantic validation. Callers either catch and toast or let it

@@ -692,3 +692,9 @@ class TestOpenerKeepsTheScreenResponsive:
                 lambda: any("not a document" in n.message for n in app._notifications),
                 timeout=5,
             )
+
+
+def test_a_test_cannot_open_a_real_browser():
+    import webbrowser
+
+    assert isinstance(webbrowser.open, mock.MagicMock)

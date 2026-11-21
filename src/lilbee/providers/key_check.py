@@ -13,6 +13,7 @@ import httpx
 from cachetools import TTLCache, cached
 
 from lilbee.catalog.types import KeyStatus
+from lilbee.providers.base import is_header_safe
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_ENV, get_provider_api_key
 
 log = logging.getLogger(__name__)
@@ -90,11 +91,6 @@ def _http_get(url: str, *, headers: dict[str, str]) -> httpx.Response:
     return httpx.get(url, headers=headers, timeout=KEY_CHECK_TIMEOUT_S)
 
 
-def _sendable(api_key: str) -> bool:
-    """True when the key can travel in an HTTP header: printable ASCII only."""
-    return api_key.isascii() and api_key.isprintable()
-
-
 def _probe_status(provider: str, api_key: str) -> KeyStatus:
     """Send one probe and read the verdict from its status."""
     probe = _PROBES[provider]
@@ -113,7 +109,7 @@ def _probe_status(provider: str, api_key: str) -> KeyStatus:
 )
 def _checked_key_status(provider: str, api_key: str) -> KeyStatus:
     """INVALID_KEY for a key that cannot be sent or is refused; an unanswered check stays READY."""
-    if not _sendable(api_key):
+    if not is_header_safe(api_key):
         return KeyStatus.INVALID_KEY
     try:
         return _probe_status(provider, api_key)

@@ -59,6 +59,9 @@ for CLI options. These tools also exist, and each description says what it does:
   `lilbee_profile_manage`, `lilbee_analyze` and `lilbee_analyze_dismiss` read and change
   the project's profile. They appear only when `mcp_profiles_enabled` is on. Open the
   settings reference before you use them.
+- **Server presets.** `lilbee_preset_list`, `lilbee_preset_add`, `lilbee_preset_edit` and
+  `lilbee_preset_remove` store OpenAI-compatible servers. They appear only when
+  `mcp_presets_enabled` is on. Open the settings reference before you use them.
 
 `lilbee_analyze` reads the indexed documents, or an absolute `directory` on the server. It
 can take a while on a large corpus. Treat it as a long operation.

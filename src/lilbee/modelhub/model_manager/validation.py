@@ -31,7 +31,7 @@ from lilbee.providers import availability
 from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
-from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS, local_server_for_key
+from lilbee.providers.local_servers.registry import local_server_for_key
 from lilbee.providers.model_ref import ProviderModelRef, format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 
@@ -94,10 +94,8 @@ def _classify_local_server_ref(spec: LocalServerSpec) -> tuple[ValidationResult,
 def _classify_uninstalled_ref(parsed: ProviderModelRef) -> tuple[ValidationResult, str | None]:
     """Classify a parsed ref that is not installed locally, by provider kind."""
     provider = (parsed.provider or "").lower()
-    if provider in LOCAL_SERVER_KEYS:
-        spec = local_server_for_key(provider)
-        if spec is None:  # pragma: no cover - LOCAL_SERVER_KEYS guarantees a match
-            return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
+    spec = local_server_for_key(provider)
+    if spec is not None:
         return _classify_local_server_ref(spec)
     if provider in PROVIDER_API_KEY_FIELD:
         status, reason = _KEY_STATUS_VALIDATION[provider_key_status(provider)]

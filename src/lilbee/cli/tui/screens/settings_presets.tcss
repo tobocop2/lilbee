@@ -1,0 +1,44 @@
+PresetDialog {
+    align: center middle;
+}
+
+PresetDialog > VerticalScroll {
+    width: 64;
+    height: auto;
+    max-height: 90%;
+    border: $rail-heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+PresetDialog #preset-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+PresetDialog Input,
+PresetDialog Select {
+    width: 100%;
+}
+
+PresetDialog #preset-error {
+    color: $error;
+    margin-top: 1;
+}
+
+PresetDialog Center {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+}
+
+PresetDialog #preset-buttons {
+    width: auto;
+    height: auto;
+}
+
+PresetDialog Button {
+    margin: 0 1;
+}

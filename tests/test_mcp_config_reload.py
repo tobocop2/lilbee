@@ -120,13 +120,13 @@ async def test_no_config_file_takes_no_lock_and_creates_no_file(tmp_path, monkey
     cfg.data_root = tmp_path / "never-made"
     cfg.data_dir = cfg.data_root / "data"
     locks: list[Any] = []
-    real_lock = persistent_settings._config_write_lock
+    real_lock = persistent_settings._config_read_lock
 
     def spy(root: Any) -> Any:
         locks.append(root)
         return real_lock(root)
 
-    monkeypatch.setattr(persistent_settings, "_config_write_lock", spy)
+    monkeypatch.setattr(persistent_settings, "_config_read_lock", spy)
     server = _stdio_server()
     start = cfg.top_k
     assert await _top_k_seen_by_the_tool(server) == start

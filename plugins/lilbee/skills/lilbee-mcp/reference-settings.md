@@ -7,8 +7,8 @@ The full list of settings, with defaults and which surfaces can set each one, is
 
 ## A setting that changes the tool list needs a reconnect
 
-`wiki`, `memory_enabled`, `mcp_sessions_enabled` and `mcp_profiles_enabled` decide which
-tools register. The
+`wiki`, `memory_enabled`, `mcp_sessions_enabled`, `mcp_profiles_enabled` and
+`mcp_presets_enabled` decide which tools register. The
 server decides once, at start. `lilbee_settings_set({"wiki": true})` succeeds and persists,
 and the other `lilbee_wiki_*` tools are still absent. Ask the user to restart the lilbee MCP
 server. Do not report the feature as broken. `lilbee_wiki_status` and `lilbee_wiki_wipe`
@@ -94,3 +94,18 @@ model not installed). Show the error to the user verbatim.
 Preview first, then set, and only when the user asks. On the shared HTTP daemon, set and
 clear are refused unless the host enables `allow_http_placement`. The CLI equivalent is
 `lilbee placement`.
+
+## Server presets
+
+These tools register only when the user turns on `mcp_presets_enabled` (off by default).
+
+| Tool | Use |
+|---|---|
+| `lilbee_preset_list()` | The stored server presets: name, URL, roles, rerank wire, memory reserve, a `reserve_note` when a remote preset has a reserve, and `has_key`. A key is never returned. |
+| `lilbee_preset_add(name, url, roles, api_key, rerank_wire, memory_reserve_gb)` | Add a preset for the roles `embed`, `rerank`, `chat` or `vision`. `rerank_wire` is `v1` or `tei`. |
+| `lilbee_preset_edit(name, url, roles, api_key, rerank_wire, memory_reserve_gb, clear_reserve, clear_key)` | Change a preset. Give only what changes. `clear_reserve` unsets the memory reserve. `clear_key` removes the stored key and stands alone. |
+| `lilbee_preset_remove(name)` | Remove a preset. |
+
+On the shared HTTP daemon, add, edit and remove are refused unless the host enables
+`allow_http_engines` (a preset sets where requests and API keys go). List always works.
+Change presets only when the user asks.

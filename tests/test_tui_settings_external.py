@@ -162,6 +162,7 @@ def test_a_write_in_progress_reverts_nothing(monkeypatch):
     path = cfg.data_root / "config.toml"
     whole = path.read_text(encoding="utf-8").replace("31", "32")
     write_lock = persistent_settings._config_write_lock
+    read_lock = persistent_settings._config_read_lock
     half_written = threading.Event()
     reader_waits = threading.Event()
 
@@ -176,10 +177,10 @@ def test_a_write_in_progress_reverts_nothing(monkeypatch):
     @contextmanager
     def signalling_lock(root):
         reader_waits.set()
-        with write_lock(root):
+        with read_lock(root):
             yield
 
-    monkeypatch.setattr(persistent_settings, "_config_write_lock", signalling_lock)
+    monkeypatch.setattr(persistent_settings, "_config_read_lock", signalling_lock)
     thread = threading.Thread(target=writer)
     thread.start()
     half_written.wait()

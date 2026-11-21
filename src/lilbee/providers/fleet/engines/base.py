@@ -7,7 +7,7 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -184,7 +184,7 @@ class EngineAdapter(Protocol, Hashable):
         """Header metadata of the model file at *path*, or ``None`` when it has none."""
         ...
 
-    def assert_loadable(self, repo: str, filename: str, token: str | None) -> None:
+    def assert_loadable(self, repo: str, filename: str, token: str | Literal[False] | None) -> None:
         """Raise ``UnsupportedQuantError`` when the engine cannot load the remote file."""
         ...
 
