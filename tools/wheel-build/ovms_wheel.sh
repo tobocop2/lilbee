@@ -70,7 +70,7 @@ done
 sh "${here}/ovms_licences.sh" "${server}" "${project}"
 cp "${tbb}/../tbb-"*".dist-info/LICENSE.txt" "${project}/LICENSE-tbb" 2> /dev/null || true
 
-expression="Apache-2.0 AND GPL-2.0-only WITH GCC-exception-2.0"
+expression="Apache-2.0 AND BSD-3-Clause AND GPL-2.0-only WITH GCC-exception-2.0"
 echo "License-Expression: ${expression}"
 printf '%s\n' "${expression}" > "${out}/license-expression.txt"
 

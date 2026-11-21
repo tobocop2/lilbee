@@ -32,8 +32,10 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 _VERSION = "2026.4.1"
 _BACKEND = "openvino"
 _TOOL = "ovms"
-_LICENCES = ["Apache-2.0", "GPL-2.0-only WITH GCC-exception-2.0"]
-"""The server is Apache-2.0. It links libgit2, which is GPL-2.0 with a linking exception."""
+_LICENCES = ["Apache-2.0", "BSD-3-Clause", "GPL-2.0-only WITH GCC-exception-2.0"]
+"""The server is Apache-2.0. It links libgit2, which is GPL-2.0 with a linking exception.
+
+The wheel takes ittnotify under its BSD-3-Clause option."""
 _HOST = "127.0.0.1"
 _INTEL_PCI_VENDOR = 0x8086
 _SERVED_NAME = "default_model"
