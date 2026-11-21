@@ -53,18 +53,18 @@ BROWSE_CATALOG_REF = "__browse_catalog__"
 _MIN_ENGINES_TO_ASK = 2
 
 
-def _pick_if_role_unchanged(
-    app: LilbeeApp, key: str, held: str | None, ref: str, pick_later: Callable[[str], object]
+def _pick_if_newest(
+    app: LilbeeApp, key: str, number: int, ref: str, pick_later: Callable[[str], object]
 ) -> None:
-    """Give *ref* to *pick_later* only while the role *key* still holds *held*.
+    """Give *ref* to *pick_later* only while the pick *number* is the newest of the role *key*.
 
-    The role can get another model while the engine of *ref* installs. That newer pick
-    wins, and a toast names the model that is not used.
+    The user can pick again for the role while the engine of *ref* installs. The newest
+    pick wins, and a toast names the model that is not used. A newer pick of the same
+    model needs no toast.
     """
-    current = getattr(cfg, key)
-    if current == held:
+    if app.model_picks.is_newest(key, number):
         pick_later(ref)
-    elif current != ref:
+    elif app.model_picks.newest_ref(key) != ref:
         app.notify(msg.MODEL_PICKER_LATE_PICK_SKIPPED.format(model=ref), severity="warning")
 
 
@@ -197,8 +197,9 @@ class ModelPickerModal(ModalScreen[str | None]):
 
     A pick that changes the engine of the model returns None at once, and the role keeps
     its old model. *pick_later* gets the ref once the new engine is saved, which can wait
-    on a download, and only while the role still holds the model it had at the pick. The
-    picker has closed by then, so it owns no action that ends late.
+    on a download, and only while no newer pick was made for the role. Every pick takes
+    a number from the app for that. The picker has closed by then, so it owns no action
+    that ends late.
     """
 
     CSS_PATH: ClassVar[str] = "model_picker.tcss"
@@ -287,6 +288,12 @@ class ModelPickerModal(ModalScreen[str | None]):
             ref, lambda option: self._use_with_engine(ref, option)
         ):
             return
+        self._pick_now(ref)
+
+    def _pick_now(self, ref: str) -> None:
+        """Return the model *ref* at once; a pick that is still to end late loses to it."""
+        if ref != BROWSE_CATALOG_REF:
+            self.app.model_picks.take(config_key_for_scope(self._scope), ref)
         self.dismiss(ref)
 
     def _open_engine_picker(
@@ -325,10 +332,10 @@ class ModelPickerModal(ModalScreen[str | None]):
         the engine is saved. A refused download or a failed install leaves the role as it was.
         """
         if option.name == (_saved_engine(ref) or AUTO):
-            self.dismiss(ref)
+            self._pick_now(ref)
             return
         app, pick_later, key = self.app, self._pick_later, config_key_for_scope(self._scope)
-        held = getattr(cfg, key)
+        number = app.model_picks.take(key, ref)
         self.dismiss(None)
         # The app runs the save: a dialog pushed from the closed picker would send its answer
         # to the picker, which no longer reads its messages.
@@ -337,7 +344,7 @@ class ModelPickerModal(ModalScreen[str | None]):
             app,
             ref,
             option,
-            lambda: _pick_if_role_unchanged(app, key, held, ref, pick_later),
+            lambda: _pick_if_newest(app, key, number, ref, pick_later),
         )
 
     def action_change_engine(self) -> None:

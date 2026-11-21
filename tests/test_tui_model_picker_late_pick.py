@@ -13,6 +13,7 @@ from textual.widgets import OptionList
 from lilbee.app import engine_service
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import EngineCommandResult
+from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens import model_picker
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
 from lilbee.cli.tui.screens.model_picker import ModelPickerModal
@@ -229,16 +230,131 @@ async def test_a_refused_engine_save_keeps_the_old_model() -> None:
             assert cfg.engine_choices is None
 
 
-def test_the_late_pick_runs_while_the_role_holds_the_model_of_the_pick() -> None:
-    app, later = mock.Mock(), mock.Mock()
-    model_picker._pick_if_role_unchanged(app, "chat_model", GGUF_REF, OTHER_REF, later)
+async def _confirm_the_download(app: LilbeeAppHost, pilot) -> None:
+    assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+    await pilot.press("y")
+
+
+CALLERS = [
+    pytest.param(
+        _BarApp,
+        "lilbee.cli.tui.widgets.model_bar.apply_model_pick",
+        _open_bar_picker,
+        id="model-bar",
+    ),
+    pytest.param(
+        _SettingsApp,
+        "lilbee.cli.tui.screens.settings.apply_model_pick",
+        _open_settings_picker,
+        id="settings",
+    ),
+]
+
+
+@pytest.mark.parametrize(("app_type", "model_write", "open_picker"), CALLERS)
+async def test_a_late_pick_loses_when_the_role_is_set_back_to_its_old_model(
+    monkeypatch: pytest.MonkeyPatch, app_type: Any, model_write: str, open_picker: Any
+) -> None:
+    release = _hold_the_install(monkeypatch)
+    seen: list[str | None] = []
+    app = app_type()
+    with mock.patch(model_write, _recorder(seen)):
+        async with app.run_test(size=(140, 50)) as pilot:
+            await open_picker(app, pilot)
+            await _pick_with_openvino(app, pilot, "oth")
+            await _confirm_the_download(app, pilot)
+            assert await wait_until(pilot, lambda: len(_engine_tasks(app)) == 1)
+            await open_picker(app, pilot)
+            await _pick_with_the_saved_engine(app, pilot, "thi")
+            assert await wait_until(pilot, lambda: cfg.chat_model == THIRD_REF)
+            await open_picker(app, pilot)
+            await _pick_with_the_saved_engine(app, pilot, "fil")
+            assert await wait_until(pilot, lambda: cfg.chat_model == GGUF_REF)
+            release.set()
+            assert await wait_until(pilot, lambda: SKIPPED in _toasts(app))
+            assert _stored() == {OTHER_REF: "openvino"}
+            assert seen == [None, THIRD_REF, GGUF_REF]
+            assert cfg.chat_model == GGUF_REF
+
+
+@pytest.mark.parametrize(("app_type", "model_write", "open_picker"), CALLERS)
+async def test_a_late_pick_loses_to_a_pick_of_the_model_the_role_holds(
+    monkeypatch: pytest.MonkeyPatch, app_type: Any, model_write: str, open_picker: Any
+) -> None:
+    release = _hold_the_install(monkeypatch)
+    seen: list[str | None] = []
+    app = app_type()
+    with mock.patch(model_write, _recorder(seen)):
+        async with app.run_test(size=(140, 50)) as pilot:
+            await open_picker(app, pilot)
+            await _pick_with_openvino(app, pilot, "oth")
+            await _confirm_the_download(app, pilot)
+            assert await wait_until(pilot, lambda: len(_engine_tasks(app)) == 1)
+            await open_picker(app, pilot)
+            await _pick_with_the_saved_engine(app, pilot, "fil")
+            assert await wait_until(pilot, lambda: _no_picker(app))
+            release.set()
+            assert await wait_until(pilot, lambda: SKIPPED in _toasts(app))
+            assert _stored() == {OTHER_REF: "openvino"}
+            assert OTHER_REF not in seen
+            assert cfg.chat_model == GGUF_REF
+
+
+@pytest.mark.parametrize(("app_type", "model_write", "open_picker"), CALLERS)
+async def test_the_newer_of_two_late_picks_wins(
+    monkeypatch: pytest.MonkeyPatch, app_type: Any, model_write: str, open_picker: Any
+) -> None:
+    _offer_openvino_for_download(monkeypatch)
+    first, second = threading.Event(), threading.Event()
+    installs: list[threading.Event] = []
+
+    def install(_name: str, **_kw: Any) -> None:
+        gate = second if installs else first
+        installs.append(gate)
+        assert gate.wait(30)
+
+    monkeypatch.setattr(engine_service, "install", install)
+    seen: list[str | None] = []
+    app = app_type()
+    with mock.patch(model_write, _recorder(seen)):
+        async with app.run_test(size=(140, 50)) as pilot:
+            await open_picker(app, pilot)
+            await _pick_with_openvino(app, pilot, "oth")
+            await _confirm_the_download(app, pilot)
+            assert await wait_until(pilot, lambda: len(_engine_tasks(app)) == 1)
+            await open_picker(app, pilot)
+            await _pick_with_openvino(app, pilot, "thi")
+            await _confirm_the_download(app, pilot)
+            assert await wait_until(pilot, lambda: _no_picker(app))
+            first.set()
+            assert await wait_until(pilot, lambda: SKIPPED in _toasts(app))
+            assert cfg.chat_model == GGUF_REF
+            second.set()
+            assert await wait_until(pilot, lambda: cfg.chat_model == THIRD_REF)
+            assert _stored() == {OTHER_REF: "openvino", THIRD_REF: "openvino"}
+            assert seen == [None, None, THIRD_REF]
+            assert msg.MODEL_PICKER_LATE_PICK_SKIPPED.format(model=THIRD_REF) not in _toasts(app)
+
+
+def _app_with_picks() -> tuple[mock.Mock, PickOrder]:
+    app = mock.Mock()
+    app.model_picks = PickOrder()
+    return app, app.model_picks
+
+
+def test_the_late_pick_runs_while_it_is_the_newest_pick_of_the_role() -> None:
+    (app, picks), later = _app_with_picks(), mock.Mock()
+    number = picks.take("chat_model", OTHER_REF)
+    picks.take("embedding_model", THIRD_REF)
+    model_picker._pick_if_newest(app, "chat_model", number, OTHER_REF, later)
     later.assert_called_once_with(OTHER_REF)
     app.notify.assert_not_called()
 
 
-def test_the_late_pick_says_nothing_when_the_role_already_holds_the_pick() -> None:
-    cfg.chat_model = OTHER_REF
-    app, later = mock.Mock(), mock.Mock()
-    model_picker._pick_if_role_unchanged(app, "chat_model", GGUF_REF, OTHER_REF, later)
+def test_the_late_pick_says_nothing_when_the_newer_pick_is_the_same_model() -> None:
+    (app, picks), later = _app_with_picks(), mock.Mock()
+    number = picks.take("chat_model", OTHER_REF)
+    picks.take("chat_model", OTHER_REF)
+    model_picker._pick_if_newest(app, "chat_model", number, OTHER_REF, later)
     later.assert_not_called()
     app.notify.assert_not_called()

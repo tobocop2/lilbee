@@ -983,7 +983,7 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
 MODEL_PICKER_TURN_OFF = "Turn off this model"
 MODEL_PICKER_HINT = "Enter use model · e or ctrl+l engine · Esc close · / search"
 MODEL_PICKER_LATE_PICK_SKIPPED = (
-    "The engine is saved. {model} is not used: the role has another model now."
+    "The engine is saved. {model} is not used: you picked another model after it."
 )
 MODEL_PICKER_ENGINE_LABEL = "engine:"
 MODEL_PICKER_ENGINE_AUTO = "(auto)"
