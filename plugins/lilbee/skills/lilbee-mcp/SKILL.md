@@ -62,6 +62,10 @@ for CLI options. These tools also exist, and each description says what it does:
 - **Server presets.** `lilbee_preset_list`, `lilbee_preset_add`, `lilbee_preset_edit` and
   `lilbee_preset_remove` store OpenAI-compatible servers. They appear only when
   `mcp_presets_enabled` is on. Open the settings reference before you use them.
+- **Engines.** `lilbee_engine_list`, `lilbee_engine_remove`, `lilbee_engine_roles`,
+  `lilbee_engine_use` and `lilbee_engine_prefer` read and set the engine of each role.
+  They appear only when `mcp_engines_enabled` is on. Open the settings reference before
+  you use them.
 
 `lilbee_analyze` reads the indexed documents, or an absolute `directory` on the server. It
 can take a while on a large corpus. Treat it as a long operation.

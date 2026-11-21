@@ -45,7 +45,7 @@ class TestTheSelfCheckAsksThePlanner:
         captured: dict[str, object] = {}
 
         class _Swap:
-            def start(self, launches):
+            def start(self, launches, **_kw):
                 captured["launch"] = launches[0]
                 raise RuntimeError("stop here")
 

@@ -238,4 +238,10 @@ FleetBody {
         height: auto;
         color: $text-muted;
     }
+
+    #placement-engines {
+        height: auto;
+        color: $text-muted;
+        padding: 1 0 0 0;
+    }
 }

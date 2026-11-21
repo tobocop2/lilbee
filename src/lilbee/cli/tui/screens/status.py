@@ -24,7 +24,7 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
 from lilbee.app.settings import SCANNED_PAGES_LABEL, scanned_pages_state
-from lilbee.app.status import held_out_sources
+from lilbee.app.status import held_out_sources, serving_roles
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
@@ -121,6 +121,12 @@ def _build_config_content() -> Content:
         _kv_line("Vision model", cfg.vision_model or "(disabled)", _model_pill(cfg.vision_model)),
         _kv_line("Reranker", cfg.reranker_model or "(disabled)", _model_pill(cfg.reranker_model)),
         _kv_line(SCANNED_PAGES_LABEL, scanned_pages_state()),
+        *(
+            _kv_line(
+                f"{served.role.value.capitalize()} engine", f"{served.engine} {served.version}"
+            )
+            for served in serving_roles()
+        ),
     ]
     return Content("\n").join(lines)
 

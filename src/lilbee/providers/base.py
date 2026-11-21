@@ -561,6 +561,10 @@ class LLMProvider(Protocol):
         """
         return
 
+    def reload_notice(self) -> str | None:
+        """What is true of the engines while a reload runs or after one failed; None here."""
+        return None
+
     def replan_fleet(self, *, wait: bool = False) -> None:
         """Re-plan the fleet from current cfg, restarting only moved roles.
 

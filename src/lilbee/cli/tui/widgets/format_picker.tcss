@@ -1,0 +1,32 @@
+FormatPicker {
+    align: center middle;
+}
+
+FormatPicker #format-root {
+    width: 50;
+    max-width: 90%;
+    height: auto;
+    border: $rail-heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+FormatPicker #format-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+}
+
+FormatPicker #format-list {
+    width: 100%;
+    height: auto;
+    max-height: 10;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+FormatPicker #format-list > .option-list--option-highlighted {
+    background: $primary 25%;
+}

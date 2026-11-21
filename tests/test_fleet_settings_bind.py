@@ -29,6 +29,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import RerankMode, WorkerRole
+from tests._fleet_engines import engines_for_all_roles
 from tests.test_fleet_provider import _connection_error, _fake_client, _FakeSwap
 from tests.test_fleet_reload_plan import (
     _CHAT_REF,
@@ -69,7 +70,7 @@ def _owner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[FleetProvid
             super().start(launches, **kwargs)
             _record(states, self._group, launches)
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group, _engine: _RecordingSwap(group))
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, group: _RecordingSwap(group))
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     provider = FleetProvider()
@@ -77,7 +78,7 @@ def _owner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[FleetProvid
     monkeypatch.setattr(provider, "_reload_dir", lambda: tmp_path)
     with provider._lock:
         for group, launches in _launches_by_group(
-            planning_mod.plan_all_launches(engine=LLAMA)
+            planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
         ).items():
             provider._adopt_group(group, _FakeSwap(), list(launches))
             provider._group_dirs[group] = tmp_path
@@ -100,14 +101,14 @@ def _new_process_ladder(
             self.bound = True
             return True
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group, _engine: _BindingSwap())
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _BindingSwap())
     peer = FleetProvider()
     monkeypatch.setattr(peer, "_hold_membership", lambda _dir: None)
     monkeypatch.setattr(peer, "_plan_and_spawn", lambda _dir: pytest.fail("built a second fleet"))
     result = peer._acquire_in_dir(
         tmp_path,
         engine_pin(),
-        prov_mod._placeable_demand(LLAMA),
+        prov_mod._placeable_demand(LLAMA, engines_for_all_roles(LLAMA)),
         overflow_dir=tmp_path / "private",
         wait_until=time.monotonic() + prov_mod._OWNER_CATCH_UP_WAIT_S,
     )
@@ -390,7 +391,9 @@ def _peer_mid_call_over_an_owner_restart(
     result, peer = _new_process_ladder(monkeypatch, tmp_path, states)
     assert result is True
     monkeypatch.setattr(cfg, "flash_attention", flash_attention)
-    for group, launches in _launches_by_group(planning_mod.plan_all_launches(engine=LLAMA)).items():
+    for group, launches in _launches_by_group(
+        planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA))
+    ).items():
         _record(states, group, list(launches))
     monkeypatch.setattr(cfg, "flash_attention", True)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)

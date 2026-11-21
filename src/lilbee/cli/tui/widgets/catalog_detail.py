@@ -147,7 +147,12 @@ def _compat_sentence(row: LocalCatalogRow) -> str:
         ModelCompat.UNSUPPORTED: msg.COMPAT_DETAIL_SENTENCE_UNSUPPORTED,
         ModelCompat.UNKNOWN: msg.COMPAT_DETAIL_SENTENCE_UNKNOWN,
     }[row.compat]
-    return template.format(arch=arch_label) if "{arch}" in template else template
+    sentence = template.format(arch=arch_label) if "{arch}" in template else template
+    formats = row.catalog_model.formats if row.catalog_model is not None else frozenset()
+    if len(formats) > 1:
+        choice = msg.CATALOG_FORMAT_CHOICE.format(formats=", ".join(sorted(formats)))
+        return f"{sentence}\n{choice}"
+    return sentence
 
 
 def _description_text(row: LocalCatalogRow) -> str:

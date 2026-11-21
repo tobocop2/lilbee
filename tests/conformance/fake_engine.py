@@ -36,6 +36,7 @@ class Behaviour:
     embed_normalized: bool = True
     rerank: str = "v1"
     vision: str = "ok"
+    json_mode: str = "ok"
     overflow: str = "400-ctx"
     deterministic: bool = True
     order_ok: bool = True
@@ -194,8 +195,8 @@ class _Handler(BaseHTTPRequestHandler):
         self, req: dict[str, Any], message: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
         name = req["tools"][0]["function"]["name"]
-        arguments = json.dumps({"city": "Paris"})
-        if self.cfg.tools == "native":
+        arguments = "{}" if self.cfg.tools == "emptyargs" else json.dumps({"city": "Paris"})
+        if self.cfg.tools in ("native", "emptyargs"):
             call = {
                 "id": "c1",
                 "type": "function",
@@ -205,6 +206,11 @@ class _Handler(BaseHTTPRequestHandler):
         if self.cfg.tools == "bare":
             message["content"] = json.dumps({"name": name, "arguments": {"city": "Paris"}})
         return message, "stop"
+
+    def _with_response_format(self, req: dict[str, Any], message: dict[str, Any]) -> None:
+        if req.get("response_format"):
+            honoured = self.cfg.json_mode == "ok"
+            message["content"] = '{"city": "Paris", "pop": 2100000}' if honoured else "Paris."
 
     def _with_reasoning(self, message: dict[str, Any]) -> None:
         field_name = self.cfg.reasoning
@@ -259,13 +265,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": {"message": "images are not supported"}})
             return
         if images:
-            seen = (
-                image_colour(images[0]["image_url"]["url"])
-                if self.cfg.vision == "ok"
-                else "nothing"
-            )
+            seen = {
+                "ok": lambda: image_colour(images[0]["image_url"]["url"]),
+                "const": lambda: "red",
+            }.get(self.cfg.vision, lambda: "nothing")()
             message["content"] = f"I see {seen}"
         finish = "stop"
+        self._with_response_format(req, message)
         if req.get("tools"):
             message, finish = self._tool_message(req, message)
         self._with_reasoning(message)

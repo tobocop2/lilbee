@@ -108,6 +108,11 @@ class HostCaps:
     npus: tuple[Npu, ...]
 
 
+def nvidia_feature(host: HostCaps) -> Feature:
+    """The NVIDIA GPU as a feature; unknown when the driver answers could not be read."""
+    return Feature(bool(host.gpus), host.nvidia_reason or "no NVIDIA GPU", known=host.nvidia_known)
+
+
 def _decoded(value: str | bytes) -> str:
     """NVML bindings return ``str`` on recent versions and ``bytes`` on older ones."""
     return value.decode() if isinstance(value, bytes) else value

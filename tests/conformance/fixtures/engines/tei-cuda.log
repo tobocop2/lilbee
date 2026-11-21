@@ -1,0 +1,25 @@
+engine: tei-cuda
+version: 1.9.4 BAAI/bge-small-en-v1.5,BAAI/bge-reranker-base cuda-source-1.9.4
+host: Linux-6.8.0-138-generic-x86_64-with-glibc2.39
+backend: cuda
+models: embed=BAAI/bge-small-en-v1.5,rerank=BAAI/bge-reranker-base
+front: llama-swap v267, one TEI process per model, request bodies pass through unchanged
+STEP tei-cuda embed ok=True dims=[384]
+STEP tei-cuda rerank ok=True best=1
+STEP tei-cuda named ok=True log=['served by engine=tei-cuda version=preset role=embed model=tei-cuda/BAAI/bge-small-en-v1.5'] status={<WorkerRole.EMBED: 'embed'>: 'tei-cuda', <WorkerRole.RERANK: 'rerank'>: 'tei-cuda'}
+gpu: NVIDIA GeForce RTX 3090, 24576 MiB, 595.91.07
+gpu-peak: busy_percent=4 memory_mib=886 samples=12
+gpu-processes:       6        1 [Nodata]       5 text-embeddings-router 
+server-output (lines that name the cuda device):
+  2026-10-31T13:23:13.720478Z  INFO download_artifacts: text_embeddings_core::download: core/src/download.rs:42: Starting download
+  2026-10-31T13:23:13.742829Z  INFO text_embeddings_core::tokenization: core/src/tokenization.rs:38: Starting 31 tokenization workers
+  2026-10-31T13:23:13.743093Z  INFO text_embeddings_router: router/src/lib.rs:284: Starting model backend
+  2026-10-31T13:23:14.261696Z  INFO text_embeddings_backend_candle: backends/candle/src/lib.rs:395: Starting FlashBert model on Cuda(CudaDevice(DeviceId(1)))
+  2026-10-31T13:23:14.657541Z  INFO text_embeddings_router::http::server: router/src/http/server.rs:1878: Starting HTTP server: 0.0.0.0:5801
+  2026-10-31T13:23:15.279718Z  INFO download_artifacts: text_embeddings_core::download: core/src/download.rs:42: Starting download
+  2026-10-31T13:23:17.347370Z  INFO text_embeddings_core::tokenization: core/src/tokenization.rs:38: Starting 31 tokenization workers
+  2026-10-31T13:23:17.347717Z  INFO text_embeddings_router: router/src/lib.rs:284: Starting model backend
+  2026-10-31T13:23:18.036296Z  INFO text_embeddings_backend_candle: backends/candle/src/lib.rs:424: Starting FlashBert model on Cuda(CudaDevice(DeviceId(1)))
+  2026-10-31T13:23:18.780083Z  INFO text_embeddings_router::http::server: router/src/http/server.rs:1878: Starting HTTP server: 0.0.0.0:5800
+  2026-10-31T13:23:20.044840Z  INFO download_artifacts: text_embeddings_core::download: core/src/download.rs:42: Starting download
+  2026-10-31T13:23:20.066886Z  INFO text_embeddings_core::tokenization: core/src/tokenization.rs:38: Starting 31 tokenization workers
