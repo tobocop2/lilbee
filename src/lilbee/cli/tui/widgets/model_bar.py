@@ -30,6 +30,7 @@ from lilbee.cli.tui.engine_commands import (
     EngineCommandResult,
     announce,
     engine_line,
+    engine_line_tells_something,
 )
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import model_field_to_picker_scope
@@ -794,7 +795,9 @@ class ModelBar(Widget, can_focus=False):
         chips = engine_line(views)
         notices = list(dict.fromkeys(v.notice for v in views if v.notice))
         with contextlib.suppress(NoMatches):
-            self.query_one(f"#{_ENGINE_CHIPS_ID}", EngineLine).update(chips)
+            line = self.query_one(f"#{_ENGINE_CHIPS_ID}", EngineLine)
+            line.update(chips)
+            line.set_class(engine_line_tells_something(views), "-visible")
             notice = self.query_one(f"#{_ENGINE_NOTICE_ID}", Static)
             notice.update("\n".join(notices))
             notice.set_class(bool(notices), "-visible")

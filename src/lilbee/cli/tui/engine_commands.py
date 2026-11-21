@@ -16,6 +16,7 @@ from lilbee.catalog.refs import canonical_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 if TYPE_CHECKING:
@@ -128,6 +129,22 @@ def chips_text(views: list[engine_service.RoleView]) -> str:
         for v in views
         if v.model.strip()
     )
+
+
+def engine_line_tells_something(views: list[engine_service.RoleView]) -> bool:
+    """Whether the engine line adds anything to the bar.
+
+    The line stays hidden while every role runs on the engine that auto chose and no
+    notice applies. It shows when the roles run on different engines, a role has no
+    engine, a notice applies, or the user chose an engine.
+    """
+    if any(view.notice or not view.engine for view in views):
+        return True
+    if len({view.engine for view in views}) > 1:
+        return True
+    if cfg.preferred_engine is not EngineSetting.AUTO:
+        return True
+    return any(engine_service.saved_engine(view.model) for view in views)
 
 
 def engine_line(views: list[engine_service.RoleView]) -> Content:
