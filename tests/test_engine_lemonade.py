@@ -332,6 +332,19 @@ def test_g3_a_missing_install_says_where_to_get_lemonade(
     assert "lilbee engine install" not in text
 
 
+def test_g3_the_hint_sends_a_windows_user_to_the_archive() -> None:
+    """Stand-in for the upstream Windows installer, which installs no ``lemond.exe``.
+
+    The MSI installs ``LemonadeServer.exe``, a tray app that embeds the server
+    (src/cpp/installer/Product.wxs.in, lines 155-161, at v2026.44.1). Only the
+    lemonade-embeddable zip holds ``lemond.exe`` (docs/embeddable/README.md, lines 26-35).
+    """
+    hint = LEMONADE.install_hint
+    assert "the Windows installer has no lemond" in hint
+    assert hint.index("lemonade-embeddable") < hint.index(INSTALL_GUIDE)
+    assert "On Linux" in hint
+
+
 def test_g3_a_lemond_on_path_counts_as_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lemonade.shutil, "which", lambda name: str(USER_LEMOND))
     assert EngineName.LEMONADE in choice.installed_engines()

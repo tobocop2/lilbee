@@ -629,15 +629,21 @@ wheel runs. The llama.cpp pack stays unused. To run the pack, remove the wheel
 with `pip uninstall lilbee-engine-llama-cpp`, then run
 `lilbee engine install`.
 
-Lemonade has no pack, so you install it yourself. Follow the
-[Lemonade install guide](https://lemonade-server.ai/docs/guide/install/), or unpack the
-`lemonade-embeddable` archive from the Lemonade releases. Then put the folder with `lemond`
-on `PATH`. lilbee finds `lemond` there, and `lilbee engine list` no longer lists lemonade
-as not installed.
+Lemonade has no pack, so you install it yourself. Unpack the `lemonade-embeddable` archive
+from the Lemonade releases, then put the folder with `lemond` on `PATH`. On Linux, the
+packages from the [Lemonade install guide](https://lemonade-server.ai/docs/guide/install/)
+also install `lemond`. On Windows, use the archive: the Windows installer has no `lemond`.
+lilbee finds `lemond` on `PATH`, and `lilbee engine list` no longer lists lemonade as not
+installed.
 
 Lemonade serves chat and embed models on an AMD XDNA2 NPU, through its `flm` recipe. It does
 not serve rerank, and it does not run GGUF models. On Windows lilbee cannot read the NPU, so
 Lemonade runs only when you choose it. lilbee has no recorded run of Lemonade on an NPU.
+
+On the first model load, Lemonade downloads FastFlowLM for the `flm` recipe. The NPU kernels
+of FastFlowLM are not open source and have their own
+[terms](https://github.com/ROCm/FastFlowLM/blob/v1.0.7/TERMS.md). This is why lilbee
+does not ship Lemonade.
 
 OpenVINO serves chat on the CPU, an Intel GPU or an Intel NPU. lilbee offers it only on a
 computer with an Intel GPU or an Intel NPU. On the NPU, a role runs with one slot and a
