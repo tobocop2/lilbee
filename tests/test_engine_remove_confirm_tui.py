@@ -8,6 +8,8 @@ import pytest
 from textual.widgets import Static
 
 from lilbee.app import engine_service
+from lilbee.cli.tui.engine_commands import EngineCommandResult
+from lilbee.cli.tui.screens import settings_engines
 from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
 from tests._async_wait import wait_until
 from tests.test_tui_settings_engines import (  # noqa: F401
@@ -68,3 +70,21 @@ async def test_declining_the_embed_question_keeps_the_build(
         assert await wait_until(pilot, lambda: "The engine is unchanged." in _toasts(app))
         assert remove.call_count == 1
         assert table.row_count == 4
+
+
+async def test_declining_the_embed_question_reports_a_failed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(engine_service, "remove_build", mock.Mock(side_effect=_asks_then_removes))
+    shown: list[EngineCommandResult] = []
+    monkeypatch.setattr(settings_engines, "announce", lambda _app, result: shown.append(result))
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot)
+        await _select_row(pilot, table, "tei")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+        await pilot.press("y")
+        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+        await pilot.press("n")
+        assert await wait_until(pilot, lambda: bool(shown))
+    assert [(r.ok, r.text) for r in shown] == [(False, "The engine is unchanged.")]

@@ -114,6 +114,16 @@ def test_every_surface_lists_the_same_builds() -> None:
     assert run_engine_command("list").text == f"fx 1 (cpu)\n{_folder_line()}"
 
 
+def test_the_slash_list_and_roles_commands_report_success() -> None:
+    install(cfg.models_dir)
+    listed = run_engine_command("list")
+    assert (listed.ok, listed.changed) == (True, None)
+    assert listed.text.startswith("fx 1 (cpu)")
+    roles = run_engine_command("roles")
+    assert (roles.ok, roles.changed) == (True, None)
+    assert roles.text
+
+
 def test_cli_rest_and_mcp_return_the_same_list_fields() -> None:
     install(cfg.models_dir)
     absent = engine_service.not_installed()

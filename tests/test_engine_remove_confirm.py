@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from lilbee.cli.tui.engine_commands import run_engine_command
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.store import Store
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.fleet.engine_store import engines_root
 from lilbee.retrieval import canary_probe
 from tests.cli.test_engine_builds import install
@@ -155,6 +157,36 @@ def test_the_standalone_cli_refuses_without_a_terminal_and_names_the_flag(
     code, body = _cli("remove", "fx", "1", "cpu", "--yes")
     assert (code, body["removed"]) == (0, "fx 1 (cpu)")
     assert _installed() == []
+
+
+def _trigger_only_for(monkeypatch: pytest.MonkeyPatch, accepts: Callable[[object], bool]) -> None:
+    """The embedder trigger names the fx build only when it is read through the right registry."""
+    binary = engines_root(cfg.models_dir) / "fx" / "1-cpu" / "bin" / "server"
+
+    def trigger(_config: object, registry: object) -> str | None:
+        return f"pack:{binary}@1" if accepts(registry) else None
+
+    monkeypatch.setattr(engine_service, "embedder_trigger", trigger)
+
+
+def test_the_running_services_registry_reads_the_embedder_trigger(
+    library: SimpleNamespace,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(cfg.models_dir)
+    _trigger_only_for(monkeypatch, lambda registry: registry is library.registry)
+    with pytest.raises(engine_service.EmbedConfirmRequiredError):
+        engine_service.remove_build("fx", "1", "cpu")
+    assert len(_installed()) == 1
+
+
+def test_with_no_server_a_registry_of_the_saved_models_folder_reads_the_embedder_trigger(
+    standalone_library: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _trigger_only_for(monkeypatch, lambda registry: isinstance(registry, ModelRegistry))
+    with pytest.raises(engine_service.EmbedConfirmRequiredError):
+        engine_service.remove_build("fx", "1", "cpu")
+    assert len(_installed()) == 1
 
 
 def test_a_build_whose_folder_name_starts_with_another_is_not_the_embedder_build(
