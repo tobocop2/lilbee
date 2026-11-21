@@ -322,6 +322,9 @@ _T_ROWS = {
         frozenset({E}),
         group=frozenset({C, V}),
     ),
+    # Sizes that print differently under 1024**3 and 1025**3 with one decimal.
+    "T22": Row((96,), (Role(C, 100), Role(E, 2)), {(E, 0): (0,)}, frozenset({C})),
+    "T23": Row((96,), (Role(C, 60), Role(E, 60)), {(E, 0): (0,)}, frozenset({C})),
 }
 
 
