@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
-from lilbee.cli.tui.widgets import catalog_detail
 from lilbee.cli.tui.widgets.catalog_detail import _compat_sentence
 
 
@@ -47,10 +44,9 @@ def _row(compat: ModelCompat, *, arch: str = "") -> LocalCatalogRow:
     )
 
 
-def test_supported_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(catalog_detail, "_engine_name", lambda _fmt: "llama.cpp")
+def test_supported_sentence() -> None:
     out = _compat_sentence(_row(ModelCompat.SUPPORTED, arch="llama"))
-    assert out.plain == "Supported by your ■ llama.cpp build."
+    assert out.plain == msg.COMPAT_DETAIL_SENTENCE_SUPPORTED
 
 
 def test_unsupported_sentence_includes_arch() -> None:
