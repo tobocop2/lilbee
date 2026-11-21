@@ -57,7 +57,7 @@ def test_a_browse_with_no_engine_lists_the_rows_as_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([_hf_row("llama")]))
-    monkeypatch.setattr("lilbee.app.engine_choice.installed_engines", frozenset)
+    monkeypatch.setattr("lilbee.app.engine_choice.installed_engines", dict)
     models = HfClient(cfg).fetch_models().models
     assert [m.compat for m in models] == [ModelCompat.UNKNOWN]
 

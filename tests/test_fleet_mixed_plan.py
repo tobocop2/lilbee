@@ -410,7 +410,7 @@ class TestMixedPlanAcrossCards:
         busy = [replace(card, free_bytes=4 * _GIB) for card in cards_of((8,))]
         chat = CardEngine("engine-a", tmp_path / "a", roles, busy)
         embed = CardEngine("engine-b", tmp_path / "b", roles, busy)
-        planning.capture_plan_probe(engine=chat)
+        planning.capture_plan_probe({WorkerRole.CHAT: chat})
         with caplog.at_level(logging.WARNING, logger=_PLANNING_LOG):
             planning.plan_all_launches(engines={C: chat, E: embed})
         model = f"chat model org/repo/{model_file(C)} (engine-a)"
@@ -753,7 +753,7 @@ class TestGeneratedPlansAgainstBruteForce:
 
 
 class TestEngineIdentityIsItsName:
-    def test_two_adapter_instances_of_one_engine_launch_one_binary(
+    def test_two_adapter_instances_of_one_engine_each_launch_their_own_binary(
         self, monkeypatch, tmp_path
     ) -> None:
         prepare_host(monkeypatch, tmp_path, _PAIR, 64 * _GIB)
@@ -761,8 +761,10 @@ class TestEngineIdentityIsItsName:
         chat = CardEngine("engine-a", tmp_path / "first", _PAIR, busy)
         twin = CardEngine("engine-a", tmp_path / "second", _PAIR, cards_of((8, 8)))
         plan = planning.plan_all_launches(engines={C: chat, E: twin})
-        assert sorted(launch.role for launch in plan.launches) == sorted([C, E])
-        assert {launch.argv[0] for launch in plan.launches} == {str(twin.binary())}
+        assert {launch.role: launch.argv[0] for launch in plan.launches} == {
+            C: str(chat.binary()),
+            E: str(twin.binary()),
+        }
 
     def test_two_adapter_instances_of_one_engine_keep_the_one_engine_rule(
         self, monkeypatch, tmp_path, caplog

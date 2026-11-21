@@ -20,6 +20,8 @@ class DaemonCall(Generic[T]):
         self._fn = fn
         self._value: T | None = None
         self._error: BaseException | None = None
+        self._finished = False
+        self._woken = threading.Event()
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
 
@@ -28,11 +30,23 @@ class DaemonCall(Generic[T]):
             self._value = self._fn()
         except BaseException as exc:  # re-raised to the waiting caller by result()
             self._error = exc
+        finally:
+            self._finished = True
+            self._woken.set()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Block until the call finishes or *timeout* passes; return whether it finished."""
         self._thread.join(timeout)
         return not self._thread.is_alive()
+
+    def wake(self) -> None:
+        """Return every ``wait_unless_woken`` now; ``wait`` and ``result`` still wait."""
+        self._woken.set()
+
+    def wait_unless_woken(self, timeout: float | None = None) -> bool:
+        """Block until the call finishes, ``wake`` or *timeout*; return whether it finished."""
+        self._woken.wait(timeout)
+        return self._finished
 
     def result(self) -> T:
         """Wait for the call, then return its value or re-raise its exception."""

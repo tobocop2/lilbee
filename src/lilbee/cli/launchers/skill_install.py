@@ -53,13 +53,13 @@ _KNOWN_SKILL_FILES: Mapping[str, frozenset[str]] = MappingProxyType(
                 "a58cd4cab79874535b5983b1d5bedc05f7be66d632260d84e767dd4266bd6d04",  # v0.6.90b691
                 "92bddb8e9d3b92c18c71747ba323d15d35a072ea3f04ef557b2b9a24cbe646a7",  # v0.6.90b692
                 "eceed74a30d320e55506464fc8d800a1189647d336b4de0e5f99aa289646c5eb",  # v0.6.90b693
-                "f5aed102ecaec361af50ff925690d3434d6503a708cafe15e26941052ddd583b",  # bundled
+                "726a7f64240e0c72965a6892fd4bec76a59f7a43b39f837e7df5133c1ad8f950",  # bundled
             }
         ),
         "reference-settings.md": frozenset(
             {
                 "9aa05001c478c43da0189b89da456784b3fb1eebb3b6896a771835896281305c",  # v0.6.90b693
-                "7eaab8c3e30bbeaa6985f16c86c9bf4e834df7e606199940784b9c94fb77d2f8",  # bundled
+                "cb953c3bc1f59dac4ffba8de04fc9d0d6ac0b3fbcc202bcf9b64baee97b6e1e2",  # bundled
             }
         ),
         "reference-tuning.md": frozenset(

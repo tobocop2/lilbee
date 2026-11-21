@@ -43,6 +43,8 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 _PROFILE = RequestProfile(
     embed_fields={"embd_normalize": -1},
     stream_fields={"return_progress": True},
+    takes_cache_prompt=True,
+    takes_seed=True,
     tokenize_path="/tokenize",
     detokenize_path="/detokenize",
     apply_template_path="/apply-template",
@@ -74,6 +76,7 @@ class LlamaCppAdapter:
     served_roles = frozenset(role for role, spec in ROLE_SPECS.items() if spec.server_capable)
     memory_kind = MemoryKind.SIZED
     takes_device_names = True
+    bundled = True
 
     def supports_architecture(self, architecture: str) -> bool:
         return architecture in self.architectures
@@ -164,3 +167,4 @@ class LlamaCppAdapter:
 
 
 LLAMA = LlamaCppAdapter()
+ADAPTER = LLAMA

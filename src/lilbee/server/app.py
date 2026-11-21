@@ -24,6 +24,7 @@ from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import (
     get_services,
     peek_services,
+    reset_services,
     set_config_refresh,
     wait_for_opens,
 )
@@ -31,6 +32,7 @@ from lilbee.app.settings import config_write_failure_message
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.runtime.progress import LibraryUpgradeEvent
 from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
@@ -340,21 +342,25 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         _server_loop.set(None)
         session_manager.cleanup()
         # Terminate the provider's worker/fleet subprocesses so they don't
-        # outlive the server (e.g. on parent-death shutdown in managed mode).
-        # The open wait runs beside it, so its bound counts from the same start.
-        svc = peek_services()
-        stops = [_wait_for_the_opens()]
-        if svc is not None:
-            stops.append(asyncio.to_thread(svc.provider.shutdown))
-        # A failed shutdown must not leave the open wait unawaited.
-        for outcome in await asyncio.gather(*stops, return_exceptions=True):
-            if isinstance(outcome, BaseException):
-                log.warning("A server shutdown step failed", exc_info=outcome)
+        # outlive the server (e.g. on parent-death shutdown in managed mode). The reset
+        # clears the container, so the teardown at interpreter exit does not repeat this
+        # and a stuck engine start is waited for once. The open wait starts first and runs
+        # on its own thread beside it, so its bound counts from the same start. The reset
+        # runs on this thread, so a second Ctrl-C ends a stuck teardown.
+        opens = asyncio.get_running_loop().run_in_executor(
+            None, wait_for_opens, _OPEN_EXIT_WAIT_SECONDS
+        )
+        try:
+            reset_services()
+        except Exception:
+            # A failed shutdown must not leave the open wait unawaited.
+            log.warning("A server shutdown step failed", exc_info=True)
+        await _report_the_opens(opens)
 
 
-async def _wait_for_the_opens() -> None:
+async def _report_the_opens(opens: asyncio.Future[bool]) -> None:
     """Wait, within one bound, for every open; an open in LanceDB at exit aborts 3.12 on Linux."""
-    if not await asyncio.to_thread(wait_for_opens, _OPEN_EXIT_WAIT_SECONDS):
+    if not await opens:
         log.warning(
             "The library is still opening after %.0f s; the server exits anyway.",
             _OPEN_EXIT_WAIT_SECONDS,
@@ -399,6 +405,14 @@ def _unhandled_error_response(request: Request, exc: Exception) -> Response:
     return _json_error_response(request, exc)
 
 
+def _provider_error_response(request: Request, exc: ProviderError) -> Response:
+    """Answer engines that are still starting as a 503 with their text; the rest stay a 500."""
+    if exc.kind is ProviderErrorKind.STARTING:
+        unavailable = HTTPException(status_code=HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+        return _json_error_response(request, unavailable)
+    return _unhandled_error_response(request, exc)
+
+
 def _config_locked_response(request: Request, exc: FileLockUnavailableError) -> Response:
     """Answer a config write that could not take its lock as a 503 with a plain message."""
     unavailable = HTTPException(
@@ -426,6 +440,7 @@ def create_app() -> Litestar:
             HTTPException: _json_error_response,
             ValidationException: _validation_error_response,
             FileLockUnavailableError: _config_locked_response,
+            ProviderError: _provider_error_response,
             Exception: _unhandled_error_response,
         },
         route_handlers=[
@@ -493,6 +508,7 @@ def create_app() -> Litestar:
             engine_routes.engine_roles_route,
             engine_routes.engine_use_route,
             engine_routes.engine_prefer_route,
+            engine_routes.engine_install_route,
             preset_routes.presets_list_route,
             preset_routes.presets_add_route,
             preset_routes.presets_edit_route,

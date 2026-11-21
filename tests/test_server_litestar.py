@@ -1206,9 +1206,9 @@ class TestModelsPullByFormat:
         from lilbee.providers.fleet.engines import choice
         from lilbee.providers.fleet.engines.base import EngineName
         from lilbee.providers.fleet.engines.choice import HostFacts
-        from tests.conformance.fake_adapter import FakeAdapter
+        from tests.conformance.fake_adapter import BundledFakeAdapter
 
-        class _MlxEngine(FakeAdapter):
+        class _MlxEngine(BundledFakeAdapter):
             name = "mlx"
             formats = frozenset({"mlx"})
 
@@ -2556,17 +2556,21 @@ class TestLifespan:
         assert "Embedding model validated" not in caplog.text
         assert "embedding" in caplog.text.lower()
 
-    @mock.patch("lilbee.server.app.peek_services")
-    @mock.patch("lilbee.server.app.get_services")
-    async def test_shuts_down_worker_pool_on_exit(self, mock_get_svc, mock_peek):
-        mock_get_svc.return_value = mock.MagicMock()
-        svc = mock.MagicMock()
-        mock_peek.return_value = svc
+    async def test_clears_the_container_and_shuts_down_once_on_exit(self):
+        from lilbee.app.services import peek_services, reset_services_on_exit, set_services
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            svc.provider.shutdown.assert_not_called()
-        svc.provider.shutdown.assert_called_once()
+        svc = mock.MagicMock()
+        set_services(svc)
+        try:
+            async with _lifespan(mock.MagicMock()):
+                svc.provider.shutdown.assert_not_called()
+            assert peek_services() is None
+            reset_services_on_exit()
+            svc.provider.shutdown.assert_called_once_with()
+            svc.store.close.assert_called_once_with()
+        finally:
+            set_services(None)
 
 
 class _HeldOpenStore:
@@ -2720,15 +2724,12 @@ class TestLifespanWaitsForTheOpen:
                 pass
         waited.assert_called_once_with(5.0)
 
-    @mock.patch("lilbee.server.app.peek_services")
     @mock.patch("lilbee.server.app.get_services")
-    async def test_the_open_wait_runs_beside_the_provider_shutdown(self, mock_get_svc, mock_peek):
+    async def test_the_open_wait_runs_beside_the_services_teardown(self, mock_get_svc):
         """Each side waits on a barrier the other must reach, so a run in sequence breaks it."""
         from lilbee.server.app import _lifespan
 
         mock_get_svc.return_value = mock.MagicMock()
-        svc = mock.MagicMock()
-        mock_peek.return_value = svc
         both = threading.Barrier(2, timeout=10)
         met: list[str] = []
 
@@ -2741,24 +2742,20 @@ class TestLifespanWaitsForTheOpen:
             met.append("open wait")
             return True
 
-        svc.provider.shutdown.side_effect = shutdown
-        with mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait):
+        with (
+            mock.patch("lilbee.server.app.reset_services", side_effect=shutdown),
+            mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait),
+        ):
             async with _lifespan(mock.MagicMock()):
                 pass
         assert sorted(met) == ["open wait", "shutdown"]
 
-    @mock.patch("lilbee.server.app.peek_services")
     @mock.patch("lilbee.server.app.get_services")
-    async def test_a_failed_provider_shutdown_still_awaits_the_open_wait(
-        self, mock_get_svc, mock_peek, caplog
-    ):
-        """The shutdown error is logged, and the open wait finishes before the server exits."""
+    async def test_a_failed_teardown_still_awaits_the_open_wait(self, mock_get_svc, caplog):
+        """The teardown error is logged, and the open wait finishes before the server exits."""
         from lilbee.server.app import _lifespan
 
         mock_get_svc.return_value = mock.MagicMock()
-        svc = mock.MagicMock()
-        mock_peek.return_value = svc
-        svc.provider.shutdown.side_effect = RuntimeError("the fleet stop failed")
         waited: list[float] = []
 
         def wait(timeout: float) -> bool:
@@ -2767,6 +2764,10 @@ class TestLifespanWaitsForTheOpen:
             return True
 
         with (
+            mock.patch(
+                "lilbee.server.app.reset_services",
+                side_effect=RuntimeError("the fleet stop failed"),
+            ),
             mock.patch("lilbee.server.app.wait_for_opens", side_effect=wait),
             caplog.at_level("WARNING"),
         ):
