@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -705,3 +706,72 @@ def test_listing_narrows_a_wide_sessions_dir_left_by_an_older_release(
 def test_listing_without_a_sessions_dir_does_not_create_it(store: SessionStore, tmp_path) -> None:
     assert store.list() == []
     assert not (tmp_path / "data" / SESSIONS_DIRNAME).exists()
+
+
+def _replays_during(store: SessionStore) -> int:
+    """How many session files one ``list`` folds again."""
+    with patch.object(
+        SessionStore, "_replay", autospec=True, side_effect=SessionStore._replay
+    ) as replay:
+        store.list()
+    return replay.call_count
+
+
+def test_a_second_listing_of_unchanged_sessions_folds_no_file_again(store: SessionStore) -> None:
+    store.create(model_ref="m", scope="both")
+    store.create(model_ref="m", scope="both")
+    assert _replays_during(store) == 2
+    assert _replays_during(store) == 0
+
+
+def test_listing_folds_again_only_the_session_that_grew(store: SessionStore) -> None:
+    grown = store.create(model_ref="m", scope="both")
+    store.create(model_ref="m", scope="both")
+    store.list()
+    store.add_message(grown, _msg("a new question"))
+    assert _replays_during(store) == 1
+    assert {meta.id: meta.message_count for meta in store.list()}[grown] == 1
+
+
+def test_a_session_whose_file_changed_with_the_same_size_is_folded_again(
+    store: SessionStore, tmp_path
+) -> None:
+    sid = store.create(model_ref="m", scope="aaaa")
+    assert [meta.scope for meta in store.list()] == ["aaaa"]
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl"
+    before = path.stat()
+    path.write_text(path.read_text(encoding="utf-8").replace("aaaa", "bbbb"), encoding="utf-8")
+    os.utime(path, (before.st_atime, before.st_mtime + 10))
+    assert path.stat().st_size == before.st_size
+    assert [meta.scope for meta in store.list()] == ["bbbb"]
+
+
+def test_a_session_whose_file_kept_its_stat_is_served_from_the_last_fold(
+    store: SessionStore, tmp_path
+) -> None:
+    sid = store.create(model_ref="m", scope="aaaa")
+    store.list()
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl"
+    before = path.stat()
+    path.write_text(path.read_text(encoding="utf-8").replace("aaaa", "bbbb"), encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert [meta.scope for meta in store.list()] == ["aaaa"]
+
+
+def test_a_deleted_session_is_not_folded_again_when_listing_the_rest(
+    store: SessionStore,
+) -> None:
+    gone = store.create(model_ref="m", scope="both")
+    kept = store.create(model_ref="m", scope="both")
+    store.list()
+    store.delete(gone)
+    assert _replays_during(store) == 0
+    assert [meta.id for meta in store.list()] == [kept]
+
+
+def test_the_default_clock_stamps_a_new_session_in_utc(tmp_path) -> None:
+    cfg.data_dir = tmp_path / "data"
+    store = SessionStore()
+    meta = store.get(store.create(model_ref="m", scope="both")).meta
+    for stamp in (meta.created_at, meta.updated_at):
+        assert datetime.fromisoformat(stamp).utcoffset() == timedelta(0)
