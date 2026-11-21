@@ -223,5 +223,32 @@ def test_the_adapter_publishes_the_list_of_its_pinned_build() -> None:
     assert [m.hf_repo for m in LEMONADE.parse_models(PINNED)] == _refs(PINNED)
 
 
+def _require_one_embedding_model(payload: Any) -> None:
+    """Fail when the list holds more than one embedding model.
+
+    Lemonade starts ``flm serve --embed 1`` with no model tag, so ``flm`` serves its own
+    embedder whatever model a request names.
+    """
+    refs = [m.hf_repo for m in parse_models(payload) if m.task is ModelTask.EMBEDDING]
+    assert len(refs) <= 1, (
+        f"The list holds {len(refs)} embedding models ({', '.join(refs)}). The embed role "
+        "would serve the wrong model: Lemonade starts flm with no model tag. The adapter "
+        "must pass a model tag first."
+    )
+
+
+def test_the_pinned_list_holds_at_most_one_embedding_model() -> None:
+    _require_one_embedding_model(PINNED)
+
+
+def test_the_guard_turns_red_for_a_list_with_two_embedding_models() -> None:
+    two = _payload(
+        ("embed-gemma:300m", _entry(name="embed-gemma-NPU2", label=["embeddings"])),
+        ("embed-other:100m", _entry(name="embed-other-NPU2", label=["embeddings"])),
+    )
+    with pytest.raises(AssertionError, match="embed role would serve the wrong model"):
+        _require_one_embedding_model(two)
+
+
 def test_an_engine_without_its_own_list_is_not_a_source() -> None:
     assert not isinstance(LLAMA, ListsModels)

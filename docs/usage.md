@@ -641,9 +641,12 @@ not serve rerank, and it does not run GGUF models. On Windows lilbee cannot read
 Lemonade runs only when you choose it. lilbee has no recorded run of Lemonade on an NPU.
 
 On the first model load, Lemonade downloads FastFlowLM for the `flm` recipe. The NPU kernels
-of FastFlowLM are not open source and have their own
-[terms](https://github.com/ROCm/FastFlowLM/blob/v1.0.7/TERMS.md). This is why lilbee
-does not ship Lemonade.
+of FastFlowLM are not open source. They are free only for non-commercial use and for companies
+below a revenue limit. See the
+[terms](https://github.com/ROCm/FastFlowLM/blob/v1.0.7/TERMS.md). lilbee does not ship
+Lemonade or FastFlowLM, so you accept these terms yourself. The AMD `ryzenai-server` has an
+end user licence agreement (EULA) that bars distribution of the software (section 3).
+lilbee does not ship it for that reason.
 
 OpenVINO serves chat on the CPU, an Intel GPU or an Intel NPU. lilbee offers it only on a
 computer with an Intel GPU or an Intel NPU. On the NPU, a role runs with one slot and a
