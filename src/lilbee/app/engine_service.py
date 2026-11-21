@@ -444,18 +444,23 @@ def engine_options(model: str) -> list[EngineOption]:
 
 
 class EngineState(StrEnum):
-    """Whether an engine row is a build on disk, the bundled engine, or a download to offer."""
+    """Whether an engine row is a build on disk, the bundled engine, a user install, or a download.
+
+    ``USER_INSTALLED`` is an engine the user installed outside lilbee, such as a binary on PATH.
+    """
 
     INSTALLED = "installed"
     BUNDLED = "bundled"
+    USER_INSTALLED = "user_installed"
     NOT_INSTALLED = "not_installed"
 
 
 @dataclass(frozen=True)
 class EngineRow:
-    """One row of the engine table: an installed build, the bundled engine, or a missing engine.
+    """One row of the engine table: a build, the bundled engine, a user install, or a missing one.
 
     ``download_bytes`` is set only for a missing engine that has a pack for this computer.
+    ``size_bytes`` is the size on disk of an installed build, None when it cannot be read.
     ``roles`` names the roles that use the engine now.
     """
 
@@ -465,28 +470,27 @@ class EngineRow:
     backend: str = ""
     download_bytes: int | None = None
     roles: tuple[str, ...] = ()
+    size_bytes: int | None = None
 
 
 def engine_rows(config: Config = cfg) -> list[EngineRow]:
-    """Every engine the host can run, one row per build, plus a row for each missing engine."""
+    """The engine list as table rows: one row per build, then each missing engine.
+
+    An engine counts as installed or missing by the rule of ``engine_list``, so a build
+    that differs from the pin is a missing engine and a user install is an installed one.
+    """
     used: dict[str, list[str]] = {}
     for view in roles(config):
         if view.engine and view.model.strip():
             used.setdefault(view.engine, []).append(view.role.value)
-    installed = builds(config)
+    listed = engine_list(config)
+    missing = set(listed.not_installed)
+    present = offered_engines()
+    store = EngineStore(listed.folder)
     rows: list[EngineRow] = []
     for name, adapter in choice.ADAPTERS.items():
         key = str(name)
-        users = tuple(used.get(key, ()))
-        mine = [b for b in installed if b.engine == key]
-        rows.extend(
-            EngineRow(key, EngineState.INSTALLED, b.version, b.backend, roles=users) for b in mine
-        )
-        if adapter.bundled and llama_server_ready():
-            rows.append(
-                EngineRow(key, EngineState.BUNDLED, backend=_bundled_backend(name), roles=users)
-            )
-        elif not mine and _install_gate(name).ok:
+        if key in missing:
             option = _missing_option(name, adapter)
             rows.append(
                 EngineRow(
@@ -496,6 +500,28 @@ def engine_rows(config: Config = cfg) -> list[EngineRow]:
                     download_bytes=option.download_bytes,
                 )
             )
+            continue
+        if name not in present:
+            continue
+        users = tuple(used.get(key, ()))
+        mine = [b for b in listed.builds if b.engine == key]
+        rows.extend(
+            EngineRow(
+                key,
+                EngineState.INSTALLED,
+                b.version,
+                b.backend,
+                roles=users,
+                size_bytes=store.build_size(key, b.version, b.backend),
+            )
+            for b in mine
+        )
+        if adapter.bundled:
+            rows.append(
+                EngineRow(key, EngineState.BUNDLED, backend=_bundled_backend(name), roles=users)
+            )
+        elif not mine:
+            rows.append(EngineRow(key, EngineState.USER_INSTALLED, roles=users))
     return rows
 
 

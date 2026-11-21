@@ -41,11 +41,13 @@ _COLUMNS = (
 _STATE_TEXT = {
     EngineState.BUNDLED: msg.ENGINE_STATE_BUNDLED,
     EngineState.INSTALLED: msg.ENGINE_STATE_INSTALLED,
+    EngineState.USER_INSTALLED: msg.ENGINE_STATE_INSTALLED,
     EngineState.NOT_INSTALLED: msg.ENGINE_STATE_NOT_INSTALLED,
 }
 _ACTION_TEXT = {
     EngineState.BUNDLED: "",
     EngineState.INSTALLED: msg.ENGINES_ACTION_REMOVE,
+    EngineState.USER_INSTALLED: "",
     EngineState.NOT_INSTALLED: msg.ENGINES_ACTION_INSTALL,
 }
 
@@ -55,11 +57,12 @@ def _row_key(row: EngineRow) -> str:
 
 
 def _size_text(row: EngineRow) -> str:
-    """The size of a row: the word bundled, the download size of a missing engine, or a dash."""
+    """The size of a row: the word bundled, the size on disk or of the download, or a dash."""
     if row.state is EngineState.BUNDLED:
         return msg.ENGINE_STATE_BUNDLED
-    if row.download_bytes is not None:
-        return format_size(row.download_bytes)
+    size = row.size_bytes if row.state is EngineState.INSTALLED else row.download_bytes
+    if size is not None:
+        return format_size(size)
     return msg.ENGINES_NO_VALUE
 
 
@@ -97,6 +100,7 @@ class EnginesPane(VerticalScroll):
         """Read the engine rows off the event loop, then show them."""
         try:
             rows = engine_service.engine_rows()
+            offered = [str(name) for name in engine_service.offered_engines()]
         except OSError as exc:
             call_from_thread(
                 self.app,
@@ -105,15 +109,15 @@ class EnginesPane(VerticalScroll):
                 severity="error",
             )
             return
-        call_from_thread(self, self._show, rows)
+        call_from_thread(self, self._show, rows, offered)
 
-    def _show(self, rows: list[EngineRow]) -> None:
+    def _show(self, rows: list[EngineRow], offered: list[str]) -> None:
         self._rows = {_row_key(row): row for row in rows}
         table = self.query_one(f"#{TABLE_ID}", DataTable)
         table.clear()
         for row in rows:
             table.add_row(*self._cells(row), key=_row_key(row))
-        self._show_preferred(rows)
+        self._show_preferred(offered)
 
     def _cells(self, row: EngineRow) -> list[Text]:
         used = msg.ENGINES_USED_BY.format(roles=", ".join(row.roles)) if row.roles else ""
@@ -134,14 +138,10 @@ class EnginesPane(VerticalScroll):
             text.append(part, style.rich_style)
         return text
 
-    def _show_preferred(self, rows: list[EngineRow]) -> None:
-        """Offer ``auto`` and each engine that has a build."""
+    def _show_preferred(self, offered: list[str]) -> None:
+        """Offer ``auto`` and each engine the service offers, as the preference check does."""
         current = cfg.preferred_engine.value
-        names = [EngineSetting.AUTO.value]
-        for row in rows:
-            has_build = row.state is not EngineState.NOT_INSTALLED
-            if has_build and row.engine not in names:
-                names.append(row.engine)
+        names = [EngineSetting.AUTO.value, *offered]
         if current not in names:
             names.append(current)
         select = self.query_one(f"#{PREFERRED_ID}", Select)

@@ -27,8 +27,10 @@ from lilbee.cli.tui.task_queue import TaskStatus
 from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
+from lilbee.providers.fleet.engine_store import EngineStore
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.engines.host_gate import PASS
 from lilbee.providers.roles import WorkerRole
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
@@ -37,7 +39,16 @@ from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 _DOWNLOAD_BYTES = 180_000_000
 
 _LLAMA = EngineRow("llama.cpp", EngineState.BUNDLED, backend="metal", roles=("embed",))
-_IK = EngineRow("ik_llama.cpp", EngineState.INSTALLED, "1.2.3", "cuda", roles=("chat", "rerank"))
+_BUILD_BYTES = 412_000_000
+_IK = EngineRow(
+    "ik_llama.cpp",
+    EngineState.INSTALLED,
+    "1.2.3",
+    "cuda",
+    roles=("chat", "rerank"),
+    size_bytes=_BUILD_BYTES,
+)
+# A build whose size on disk cannot be read.
 _TEI = EngineRow("tei", EngineState.INSTALLED, "0.9", "cpu")
 _OPENVINO = EngineRow(
     "openvino", EngineState.NOT_INSTALLED, backend="cpu", download_bytes=_DOWNLOAD_BYTES
@@ -74,6 +85,8 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def service(monkeypatch: pytest.MonkeyPatch) -> _Rows:
     rows = _Rows([_LLAMA, _IK, _TEI, _OPENVINO])
     monkeypatch.setattr(engine_service, "engine_rows", rows)
+    offered = {name: frozenset({"gguf"}) for name in ("llama.cpp", "ik_llama.cpp", "tei")}
+    monkeypatch.setattr(engine_service, "offered_engines", lambda: dict(offered))
     return rows
 
 
@@ -101,6 +114,16 @@ async def _select_row(pilot, table: DataTable[Text], engine: str) -> None:
     table.move_cursor(row=index)
     await pilot.pause()
     await pilot.press("enter")
+
+
+async def _dialog_message(app: LilbeeAppHost, pilot, kind: type[ConfirmDialog]) -> str:
+    """The text of the dialog once it is the screen and its message widget is built."""
+    assert await wait_until(
+        pilot,
+        lambda: isinstance(app.screen, kind) and bool(app.screen.query("#confirm-message")),
+        timeout=10,
+    )
+    return str(app.screen.query_one("#confirm-message", Static).render())
 
 
 # --- the tab
@@ -143,7 +166,7 @@ async def test_the_table_is_named_engines_and_shows_one_row_per_engine(service: 
                 "■ ik_llama.cpp",
                 "1.2.3",
                 "cuda",
-                "-",
+                "412 MB",
                 "installed",
                 "used by chat, rerank",
                 "Remove",
@@ -181,6 +204,27 @@ async def test_a_missing_engine_with_no_known_size_shows_a_dash(
         ]
 
 
+async def test_an_engine_the_user_installed_shows_installed_with_its_roles_and_no_action(
+    service: _Rows,
+) -> None:
+    service.rows = [EngineRow("lemonade", EngineState.USER_INSTALLED, roles=("chat",))]
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        table = await _open_engines(app, pilot, rows=1)
+        assert [_plain(c) for c in table.get_row_at(0)] == [
+            "■ lemonade",
+            "-",
+            "-",
+            "-",
+            "installed",
+            "used by chat",
+            "",
+        ]
+        await _select_row(pilot, table, "lemonade")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+
+
 async def test_an_unreadable_engine_list_shows_a_toast(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a: object, **_k: object) -> list[EngineRow]:
         raise OSError("disk gone")
@@ -205,15 +249,19 @@ def _options(select: Select[str]) -> list[str]:
     return [str(value) for _prompt, value in select._options]
 
 
-async def test_the_preferred_engine_offers_auto_and_each_engine_that_has_a_build(
-    service: _Rows,
+async def test_the_preferred_engine_offers_auto_and_each_engine_the_service_offers(
+    service: _Rows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The service offers lemonade (a user install) and not tei, whatever the rows hold.
+    offered = {name: frozenset({"gguf"}) for name in ("llama.cpp", "lemonade")}
+    monkeypatch.setattr(engine_service, "offered_engines", lambda: dict(offered))
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_engines(app, pilot)
         select = _preferred(app)
-        # openvino has no build, so it is not offered
-        assert _options(select) == ["auto", "llama.cpp", "ik_llama.cpp", "tei"]
+        assert await wait_until(
+            pilot, lambda: _options(select) == ["auto", "llama.cpp", "lemonade"]
+        )
         assert select.value == "auto"
 
 
@@ -277,10 +325,8 @@ async def test_a_preference_that_can_orphan_the_vectors_asks_and_stores_on_yes(
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_engines(app, pilot)
         _preferred(app).value = "ik_llama.cpp"
-        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
-        assert "Library lib holds 7 documents." in str(
-            app.screen.query_one("#confirm-message", Static).render()
-        )
+        text = await _dialog_message(app, pilot, CancelFirstConfirmDialog)
+        assert "Library lib holds 7 documents." in text
         await pilot.press("y")
         assert await wait_until(pilot, lambda: prefer.call_count == 2)
         assert prefer.call_args_list[1] == mock.call("ik_llama.cpp", True)
@@ -315,8 +361,7 @@ async def test_removing_an_engine_in_use_names_the_roles_and_removes_on_yes(
         table = await _open_engines(app, pilot)
         service.rows = [_LLAMA, _TEI, _OPENVINO]
         await _select_row(pilot, table, "ik_llama.cpp")
-        assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
-        text = str(app.screen.query_one("#confirm-message", Static).render())
+        text = await _dialog_message(app, pilot, CancelFirstConfirmDialog)
         assert text == "ik_llama.cpp 1.2.3 (cuda) is used by chat, rerank. Remove it anyway?"
         remove.assert_not_called()
         await pilot.press("y")
@@ -354,11 +399,9 @@ async def test_removing_an_unused_engine_asks_without_naming_roles(
     async with app.run_test(size=(140, 40)) as pilot:
         table = await _open_engines(app, pilot)
         await _select_row(pilot, table, "tei")
-        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+        text = await _dialog_message(app, pilot, ConfirmDialog)
         assert not isinstance(app.screen, CancelFirstConfirmDialog)
-        assert str(app.screen.query_one("#confirm-message", Static).render()) == (
-            "Remove tei 0.9 (cpu) from this computer?"
-        )
+        assert text == "Remove tei 0.9 (cpu) from this computer?"
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)
         remove.assert_called_once_with("tei", "0.9", "cpu")
@@ -405,10 +448,8 @@ async def test_install_asks_to_download_then_runs_a_task_and_refreshes_the_table
     async with app.run_test(size=(140, 40)) as pilot:
         table = await _open_engines(app, pilot)
         await _select_row(pilot, table, "openvino")
-        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
-        assert str(app.screen.query_one("#confirm-message", Static).render()) == (
-            "Download openvino (180 MB)?"
-        )
+        text = await _dialog_message(app, pilot, ConfirmDialog)
+        assert text == "Download openvino (180 MB)?"
         assert installed == []
         await pilot.press("y")
         assert await wait_until(pilot, lambda: bool(_engine_tasks(app)))
@@ -474,8 +515,22 @@ class _Missing(FakeAdapter):
     name = "openvino"
 
 
+_BUILD_FILES = {"bin/llama-server": 300, "lib/libggml.so": 100, "ENGINE-RECORD.json": 12}
+
+
+def _write_build(engine: str, version: str, backend: str) -> Path:
+    """Write a build folder of known size in the engines folder of the config."""
+    folder = engine_service.engines_folder() / engine / f"{version}-{backend}"
+    for name, size in _BUILD_FILES.items():
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(b"x" * size)
+    return folder
+
+
 @pytest.fixture
-def fleet(monkeypatch: pytest.MonkeyPatch) -> None:
+def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg.models_dir = tmp_path / "models"
+    _write_build("ik_llama.cpp", "1.2.3", "cuda")
     # A new dict, so the undo leaves the real adapters in their own order.
     adapters = {
         EngineName.LLAMA: _Bundled(),
@@ -495,6 +550,14 @@ def fleet(monkeypatch: pytest.MonkeyPatch) -> None:
         "builds",
         lambda *_a, **_k: [engine_service.BuildView("ik_llama.cpp", "1.2.3", "cuda")],
     )
+    # The rule of the engine list: the bundled engine and the build that matches the pin.
+    monkeypatch.setattr(
+        engine_service,
+        "installed_engines",
+        lambda: {EngineName.LLAMA: frozenset({"gguf"}), EngineName.IK_LLAMA: frozenset({"gguf"})},
+    )
+    # The fake engines need an NVIDIA GPU; this host runs every engine whatever the test machine.
+    monkeypatch.setattr(choice, "host_answer", lambda *_a: PASS)
     monkeypatch.setattr(engine_service, "llama_server_ready", lambda: True)
     monkeypatch.setattr(engine_service, "_bundled_backend", lambda _name: "metal")
     monkeypatch.setattr(engine_service, "_install_gate", lambda _name: SimpleNamespace(ok=True))
@@ -512,7 +575,14 @@ def test_engine_rows_list_each_build_the_bundled_engine_and_each_missing_engine(
 ) -> None:
     assert engine_service.engine_rows() == [
         EngineRow("llama.cpp", EngineState.BUNDLED, backend="metal", roles=("embed",)),
-        EngineRow("ik_llama.cpp", EngineState.INSTALLED, "1.2.3", "cuda", roles=("chat", "rerank")),
+        EngineRow(
+            "ik_llama.cpp",
+            EngineState.INSTALLED,
+            "1.2.3",
+            "cuda",
+            roles=("chat", "rerank"),
+            size_bytes=sum(_BUILD_FILES.values()),
+        ),
         EngineRow(
             "openvino",
             EngineState.NOT_INSTALLED,
@@ -541,3 +611,49 @@ def test_engine_rows_leave_out_an_engine_the_host_cannot_install(
         lambda name: SimpleNamespace(ok=name != EngineName.OPENVINO),
     )
     assert [row.engine for row in engine_service.engine_rows()] == ["llama.cpp", "ik_llama.cpp"]
+
+
+def _states(rows: list[EngineRow]) -> dict[str, list[EngineState]]:
+    found: dict[str, list[EngineState]] = {}
+    for row in rows:
+        found.setdefault(row.engine, []).append(row.state)
+    return found
+
+
+def test_engine_rows_count_a_build_that_differs_from_the_pin_as_missing_as_the_list_does(
+    fleet: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The store holds ik_llama.cpp 1.2.3, but the pin names another build.
+    monkeypatch.setattr(
+        engine_service, "installed_engines", lambda: {EngineName.LLAMA: frozenset({"gguf"})}
+    )
+    rows = engine_service.engine_rows()
+    missing = {r.engine for r in rows if r.state is EngineState.NOT_INSTALLED}
+    assert missing == set(engine_service.engine_list().not_installed)
+    assert _states(rows)["ik_llama.cpp"] == [EngineState.NOT_INSTALLED]
+    assert "ik_llama.cpp" not in engine_service.offered_engines()
+
+
+def test_engine_rows_count_an_engine_the_user_installed_as_installed_as_the_list_does(
+    fleet: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A user binary on PATH: the engine is installed, and the store holds no build of it.
+    monkeypatch.setattr(engine_service, "builds", lambda *_a, **_k: [])
+    rows = engine_service.engine_rows()
+    missing = {r.engine for r in rows if r.state is EngineState.NOT_INSTALLED}
+    assert missing == set(engine_service.engine_list().not_installed) == {"openvino"}
+    assert EngineRow("ik_llama.cpp", EngineState.USER_INSTALLED, roles=("chat", "rerank")) in rows
+    assert "ik_llama.cpp" in engine_service.offered_engines()
+
+
+# --- the size on disk of a build
+
+
+def test_the_store_reads_the_size_on_disk_of_a_build(fleet: None) -> None:
+    store = EngineStore(engine_service.engines_folder())
+    assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") == sum(_BUILD_FILES.values())
+
+
+def test_a_build_whose_folder_cannot_be_read_has_no_size(fleet: None) -> None:
+    store = EngineStore(engine_service.engines_folder())
+    assert store.build_size("ik_llama.cpp", "9.9.9", "cuda") is None
