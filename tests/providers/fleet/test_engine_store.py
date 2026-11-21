@@ -546,6 +546,34 @@ def test_the_mpl_source_pointer_names_the_crate_download_and_its_checksum(
     assert bool(engine_store._verified_notices([("SOURCE-MPL-2.0", text)])) is ok
 
 
+_SDIST_URL = "https://files.pythonhosted.org/packages/source/t/tqdm/tqdm-4.70.1.tar.gz"
+_SDIST_CHECKSUM = "cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4"
+
+
+@pytest.mark.parametrize(
+    ("text", "ok"),
+    [
+        (f"{_SDIST_URL} {_SDIST_CHECKSUM}\n", True),
+        # a Python tree and a Rust tree in one pack
+        (f"{_SDIST_URL} {_SDIST_CHECKSUM}\n{_CRATE_URL}\t{_CHECKSUM}\n", True),
+        (f"{_SDIST_URL} {'0' * 64}\n", False),
+        (f"{_SDIST_URL} {_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('4.70.1', '4.70.2')} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('/t/tqdm/', '/q/tqdm/')} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('/t/tqdm/tqdm-', '/t/tqdm/other-')} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('.tar.gz', '.zip')} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('https', 'http')} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('files.pythonhosted.org', 'evil.example')} {_SDIST_CHECKSUM}\n", False),
+        (f"see {_SDIST_URL} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL} {_SDIST_CHECKSUM}\nMozilla Public License text\n", False),
+    ],
+)
+def test_the_mpl_source_pointer_names_a_pypi_source_archive_and_its_checksum(
+    text: str, ok: bool
+) -> None:
+    assert bool(engine_store._verified_notices([("SOURCE-MPL-2.0", text)])) is ok
+
+
 @pytest.mark.parametrize(
     ("name", "text", "ok"),
     [
