@@ -48,6 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run the strict steps and the named step; every engine recording sets it.",
     )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=0,
+        help="Window the engine serves, for a server that has no overflow check of its own.",
+    )
     parser.add_argument("--backend", default="cpu", help="Backend of the run: cpu, cuda, metal.")
     parser.add_argument("--front", default="", help="Proxy in front of the server, if any.")
     parser.add_argument("--out", required=True, type=Path)
@@ -57,7 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
 def setup_from(args: argparse.Namespace) -> Setup:
     models = dict(pair.split("=", 1) for pair in args.models.split(","))
     return Setup(
-        tuple(args.roles.split(",")), models, args.wire, args.embed_dim, args.strict, args.server
+        tuple(args.roles.split(",")),
+        models,
+        args.wire,
+        args.embed_dim,
+        args.strict,
+        args.server,
+        args.window,
     )
 
 

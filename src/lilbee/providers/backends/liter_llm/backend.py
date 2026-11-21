@@ -22,6 +22,8 @@ from lilbee.providers.backends.liter_llm.errors import (
     _EMBED_FAILED,
     _PROVIDER_NAME,
     _RERANK_FAILED,
+    PresetCall,
+    _preset_call,
     _provider_error,
 )
 from lilbee.providers.backends.liter_llm.events import (
@@ -41,6 +43,7 @@ from lilbee.providers.local_servers import (
     openai_models_url,
 )
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
+from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
     CompletionRequest,
     CompletionResult,
@@ -95,20 +98,24 @@ class LiterLlmBackend:
         """Run a single-shot completion through ``liter_llm.chat``."""
         liter_llm = _require_sdk()
         model = request.ref.for_display()
+        preset = _preset_call(request.ref, request.api_base, request.role)
         try:
             fields = _chat_fields(request, stream=False)
             client = _client(
-                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+                fields["model"],
+                _wire_base_url(fields["model"], request.api_base),
+                request.api_key,
+                request.ref.is_preset,
             )
             response = asyncio_loop.run(
                 liter_llm.chat(client, liter_llm.ChatCompletionRequest(**fields))
             )
         except Exception as exc:
-            raise _provider_error(_CHAT_FAILED, exc, model) from exc
+            raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
         choice = response.choices[0] if response.choices else None
         message = choice.message if choice is not None else None
         content = _text(message.content) if message is not None else ""
-        if message is not None and request.inline_reasoning:
+        if message is not None and request.role is WorkerRole.CHAT:
             content = inline_reasoning(_reasoning(message), content)
         return CompletionResult(
             content=content,
@@ -128,19 +135,25 @@ class LiterLlmBackend:
         """
         liter_llm = _require_sdk()
         model = request.ref.for_display()
+        preset = _preset_call(request.ref, request.api_base, request.role)
         try:
             fields = _chat_fields(request, stream=True)
             client = _client(
-                fields["model"], _wire_base_url(fields["model"], request.api_base), request.api_key
+                fields["model"],
+                _wire_base_url(fields["model"], request.api_base),
+                request.api_key,
+                request.ref.is_preset,
             )
             stream = liter_llm.chat_stream(client, liter_llm.ChatCompletionRequest(**fields))
             first = asyncio_loop.run(_next_chunk(stream))
         except Exception as exc:
-            raise _provider_error(_CHAT_FAILED, exc, model) from exc
-        return self._stream_chunks(stream, first, model, request.inline_reasoning)
+            raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
+        return self._stream_chunks(stream, first, model, preset, request.role is WorkerRole.CHAT)
 
     @staticmethod
-    def _stream_chunks(stream: Any, first: Any, model: str, inline: bool) -> Iterator[StreamChunk]:
+    def _stream_chunks(
+        stream: Any, first: Any, model: str, preset: PresetCall | None, inline: bool
+    ) -> Iterator[StreamChunk]:
         """Yield ``StreamChunk`` values from a liter-llm chunk stream.
 
         Exceptions raised mid-iteration are classified into ``ProviderError``
@@ -174,21 +187,29 @@ class LiterLlmBackend:
             if tail := inliner.finish():
                 yield StreamChunk(content=tail)
         except Exception as exc:
-            raise _provider_error(_CHAT_FAILED, exc, model) from exc
+            raise _provider_error(_CHAT_FAILED, exc, model, preset=preset) from exc
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
         """Embed inputs through ``liter_llm.embed``."""
         liter_llm = _require_sdk()
         model = _route_model(request.ref, request.api_base)
+        preset = _preset_call(request.ref, request.api_base, WorkerRole.EMBED)
         try:
-            client = _client(model, _wire_base_url(model, request.api_base), request.api_key)
+            client = _client(
+                model,
+                _wire_base_url(model, request.api_base),
+                request.api_key,
+                request.ref.is_preset,
+            )
             response = asyncio_loop.run(
                 liter_llm.embed(
                     client, liter_llm.EmbeddingRequest(model=model, input=request.inputs)
                 )
             )
         except Exception as exc:
-            raise _provider_error(_EMBED_FAILED, exc, request.ref.for_display()) from exc
+            raise _provider_error(
+                _EMBED_FAILED, exc, request.ref.for_display(), preset=preset
+            ) from exc
         # Order by the response's ``index`` rather than arrival order: a proxy or
         # gateway may return the batch out of order, and the consumer zips vectors
         # to inputs positionally, so a reorder would silently mis-pair every chunk
@@ -223,8 +244,9 @@ class LiterLlmBackend:
             return RerankResult(scores=[])
         liter_llm = _require_sdk()
         model, base_url = rerank_route(request.ref, request.api_base, request.rerank_wire)
+        preset = _preset_call(request.ref, request.api_base, WorkerRole.RERANK)
         try:
-            client = _client(model, base_url, request.api_key)
+            client = _client(model, base_url, request.api_key, request.ref.is_preset)
             response = asyncio_loop.run(
                 liter_llm.rerank(
                     client,
@@ -234,7 +256,9 @@ class LiterLlmBackend:
                 )
             )
         except Exception as exc:
-            raise _provider_error(_RERANK_FAILED, exc, request.ref.for_display()) from exc
+            raise _provider_error(
+                _RERANK_FAILED, exc, request.ref.for_display(), preset=preset
+            ) from exc
         scores = [0.0] * len(request.candidates)
         for item in response.results:
             scores[item.index] = float(item.relevance_score)

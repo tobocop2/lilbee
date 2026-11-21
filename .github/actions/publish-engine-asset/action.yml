@@ -11,7 +11,7 @@ inputs:
   engine-dir:
     description: "Directory holding the built engine binaries."
     required: false
-    default: packaging/engine-wheel/lilbee_engine/bin
+    default: packaging/engine-wheel/lilbee_engine_llama_cpp/bin
   release-tag:
     description: "Release holding the mirror."
     required: false

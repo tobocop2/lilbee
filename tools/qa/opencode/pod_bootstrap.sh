@@ -10,8 +10,8 @@
 #     only /workspace (the network volume) survives. So the expensive artifacts
 #     (repo, models, HF cache, the built engine) live on /workspace; the cheap
 #     toolchain (apt pkgs, Go, uv, opencode) is reinstalled on each fresh boot.
-#   - A source checkout ships `packaging/engine-wheel/lilbee_engine/bin/` EMPTY
-#     (a `pip install` would pull the prebuilt per-platform lilbee-engine wheel).
+#   - A source checkout ships `packaging/engine-wheel/lilbee_engine_llama_cpp/bin/` EMPTY
+#     (a `pip install` would pull the prebuilt per-platform lilbee-engine-llama-cpp wheel).
 #     So the engine is built here via tools/wheel-build and the built binaries are
 #     cached on /workspace, so a resume copies them in instead of recompiling ~20min.
 #   - The venv on the /workspace network FS hits "Stale file handle" + can't
@@ -76,7 +76,7 @@ log "uv sync -> $UV_PROJECT_ENVIRONMENT"
 uv sync
 
 # 6. Engine: build once, cache on /workspace, copy into the venv on every boot.
-VENV_ENGINE_BIN="$("$VENV_PY" -c 'import lilbee_engine,os;print(os.path.dirname(lilbee_engine.__file__))')/bin"
+VENV_ENGINE_BIN="$("$VENV_PY" -c 'import lilbee_engine_llama_cpp,os;print(os.path.dirname(lilbee_engine_llama_cpp.__file__))')/bin"
 # The CUDA toolkit provides BOTH nvcc (for the build) and the runtime libs
 # (libcudart/libcublas) that llama-server links at RUNTIME. A fresh container has
 # neither, and a cached engine skips the build below -- so this must run on every
@@ -104,7 +104,7 @@ if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
   log "building engine (BACKEND=$BACKEND) -- one-time ~20min, then cached"
   BACKEND="$BACKEND" bash tools/wheel-build/build_llama_server.sh
   mkdir -p "$ENGINE_CACHE"
-  cp -a packaging/engine-wheel/lilbee_engine/bin/. "$ENGINE_CACHE/"
+  cp -a packaging/engine-wheel/lilbee_engine_llama_cpp/bin/. "$ENGINE_CACHE/"
 fi
 log "installing cached engine into venv"
 mkdir -p "$VENV_ENGINE_BIN"

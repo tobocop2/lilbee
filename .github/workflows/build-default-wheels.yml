@@ -1,10 +1,11 @@
 name: Build default wheels
 
 # The lilbee wheel is pure Python: the inference engine ships separately as the
-# per-platform `lilbee-engine` wheel (build-multigpu.yml), pulled as a
-# dependency. So there is one platform-independent wheel + an sdist, with no
-# per-OS / per-CPython axis. Reusable; the caller (release-candidate.yml) keeps
-# the artifacts.
+# per-platform `lilbee-engine-llama-cpp` wheel (build-multigpu.yml). lilbee
+# downloads that wheel as an engine pack the first time a model needs it, so the
+# lilbee wheel does not depend on it. So there is one platform-independent wheel
+# + an sdist, with no per-OS / per-CPython axis. Reusable; the caller
+# (release-candidate.yml) keeps the artifacts.
 
 on:
   workflow_dispatch:

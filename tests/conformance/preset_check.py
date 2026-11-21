@@ -25,6 +25,7 @@ from lilbee.providers.base import ChatResult, ProviderError
 from lilbee.providers.factory import create_sdk_provider
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
+from lilbee.retrieval.reasoning import split_reasoning
 from tests.conformance.harness import (
     BLUE,
     NEAR_COPY_COSINE,
@@ -38,11 +39,21 @@ from tests.conformance.harness import (
 PRESET = "check"
 FIXTURES = Path(__file__).with_name("fixtures") / "presets"
 ENGINE_FIXTURES = Path(__file__).with_name("fixtures") / "engines"
+
+
+def harness_recordings() -> list[Path]:
+    """The engine recordings made by the harness; a hand run has exchanges but no results."""
+    found = sorted(ENGINE_FIXTURES.glob("**/*.json"))
+    return [p for p in found if "results" in json.loads(p.read_text(encoding="utf-8"))]
+
+
 _TIMEOUT_S = 600.0
 _EMBED_PATH = "/v1/embeddings"
 _IMAGE_PART = b'"image_url"'
 _NOT_NAME = re.compile(r"[^a-z0-9_-]")
 _OVERSIZE = "w " * 60000
+_OVERFLOW_CAP_S = 30.0
+"""The most seconds the overflow step waits; an engine that hangs fails here, not at 600 s."""
 _CONVERSATION = [
     {"role": "system", "content": "You answer in one short sentence."},
     {"role": "user", "content": "What is the capital of France?"},
@@ -105,6 +116,13 @@ class Setup:
     embed_dim: int = 0
     strict: bool = False
     server: str = ""
+    window: int = 0
+    """The window the engine serves, or 0 when the server reports an overflow itself.
+
+    A positive window sends the overflow step through the fleet provider's prompt fit,
+    which refuses an oversize prompt before any request (the path of an engine whose
+    server has no overflow check, such as mlx-lm).
+    """
 
     @property
     def preset(self) -> str:
@@ -114,10 +132,11 @@ class Setup:
 
 @contextmanager
 def configured(url: str, setup: Setup, data_root: Path) -> Iterator[None]:
-    """Store the preset in *data_root* and point the model settings at it."""
+    """Store the preset in *data_root*, clear every role's model, and let each step set its own."""
     snapshot = cfg.model_copy()
     cfg.data_root = data_root
     cfg.server_presets = None
+    cfg.chat_model = cfg.embedding_model = cfg.reranker_model = cfg.vision_model = ""
     presets.add_preset(setup.preset, url, roles=setup.roles, rerank_wire=setup.rerank_wire)
     try:
         yield
@@ -135,7 +154,8 @@ def _template(setup: Setup) -> Outcome:
         _CONVERSATION, model=_ref(setup, "chat"), options={"max_tokens": 1024}
     )
     assert isinstance(result, ChatResult)
-    return Outcome("rome" in result.text.lower(), f"finish={result.finish_reason}")
+    answer = split_reasoning(result.text).answer
+    return Outcome("rome" in answer.lower(), f"finish={result.finish_reason}")
 
 
 def _tool(setup: Setup) -> Outcome:
@@ -178,16 +198,29 @@ def _rerank(setup: Setup) -> Outcome:
     return Outcome(len(scores) == len(_RERANK_DOCS) and best == 1, f"best={best}")
 
 
-def _overflow(setup: Setup) -> Outcome:
+def _send_oversize(setup: Setup) -> Outcome:
+    messages = [{"role": "user", "content": _OVERSIZE}]
+    options = {"max_tokens": 16}
     try:
-        create_sdk_provider().chat(
-            [{"role": "user", "content": _OVERSIZE}],
-            model=_ref(setup, "chat"),
-            options={"max_tokens": 16},
-        )
+        if setup.window:
+            from lilbee.providers.fleet.provider import FleetProvider
+
+            provider = FleetProvider()
+            provider._chat_ctx = setup.window
+            provider._fit_chat_context(messages, None, options, _ref(setup, "chat"))
+        create_sdk_provider().chat(messages, model=_ref(setup, "chat"), options=options)
     except ProviderError as exc:
         return Outcome(exc.kind == "context_overflow", f"kind={exc.kind}")
     return Outcome(False, "the oversize prompt was accepted")
+
+
+def _overflow(setup: Setup) -> Outcome:
+    """Send an oversize prompt and expect a context overflow within the cap."""
+    box: list[Outcome] = []
+    worker = threading.Thread(target=lambda: box.append(_send_oversize(setup)), daemon=True)
+    worker.start()
+    worker.join(_OVERFLOW_CAP_S)
+    return box[0] if box else Outcome(False, "no answer within the cap")
 
 
 def _colour(setup: Setup, rgb: tuple[int, int, int]) -> str:
@@ -310,6 +343,12 @@ def steps_for(setup: Setup) -> list[str]:
     return [*steps, "named"] if setup.strict else steps
 
 
+# The recording proxy and the replay server listen on a random local port; a failure text that
+# names it reads the same in every run.
+_HARNESS_ADDRESS = re.compile(r"http://127\.0\.0\.1:\d+")
+HARNESS_ADDRESS_NAME = "http://harness"
+
+
 def run_steps(setup: Setup) -> dict[str, Outcome]:
     """Run every step of the documented roles. A raised error is a failed step."""
     results: dict[str, Outcome] = {}
@@ -317,7 +356,8 @@ def run_steps(setup: Setup) -> dict[str, Outcome]:
         try:
             results[step] = _STEP_FUNCTIONS[step](setup)
         except Exception as exc:  # a failed step is a result, not a crash
-            results[step] = Outcome(False, f"{type(exc).__name__}: {str(exc)[:200]}")
+            text = _HARNESS_ADDRESS.sub(HARNESS_ADDRESS_NAME, str(exc))
+            results[step] = Outcome(False, f"{type(exc).__name__}: {text[:200]}")
     return results
 
 
@@ -460,6 +500,11 @@ def _queue_key(method: str, path: str, request: Any) -> tuple[str, str, str]:
     return method, path, json.dumps(request, sort_keys=True)
 
 
+def error_answers(exchanges: list[Exchange]) -> list[list[Any]]:
+    """The status and body of each error answer, in order; a fixture pins them next to the steps."""
+    return [[exchange.status, exchange.body] for exchange in exchanges if exchange.status >= 400]
+
+
 def _replay_handler(
     queues: dict[tuple[str, str, str], deque[Exchange]],
 ) -> type[BaseHTTPRequestHandler]:
@@ -517,7 +562,9 @@ def fixture_json(
         "rerank_wire": setup.rerank_wire,
         "embed_dim": setup.embed_dim,
         "strict": setup.strict,
+        **({"window": setup.window} if setup.window else {}),
         "results": {step: outcome.as_json() for step, outcome in results.items()},
+        "error_answers": error_answers(tape.exchanges),
         "exchanges": [exchange.as_json() for exchange in tape.exchanges],
     }
 
@@ -531,6 +578,7 @@ def load_fixture(path: Path) -> tuple[Setup, dict[str, Outcome], list[Exchange],
         doc["embed_dim"],
         doc.get("strict", False),
         doc["server"],
+        doc.get("window", 0),
     )
     results = {step: Outcome(**value) for step, value in doc["results"].items()}
     return setup, results, [Exchange(**e) for e in doc["exchanges"]], doc

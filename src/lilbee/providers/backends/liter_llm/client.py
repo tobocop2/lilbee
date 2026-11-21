@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
+from lilbee.core.blocked_networks import CONNECT_BLOCKED_NETWORKS
 from lilbee.providers.availability import PROVIDER_SDK_MISSING_MESSAGE
 from lilbee.providers.backends.liter_llm.errors import _PROVIDER_NAME
 from lilbee.providers.base import ProviderError
@@ -35,8 +36,12 @@ def _max_retries(model: str) -> int:
 
 
 @functools.lru_cache(maxsize=32)
-def _client(model: str, base_url: str | None, api_key: str | None) -> Any:
-    """Return the liter-llm client for one model, endpoint and key (cached)."""
+def _client(model: str, base_url: str | None, api_key: str | None, preset: bool) -> Any:
+    """Return the liter-llm client for one model, endpoint, key and kind of ref (cached).
+
+    A *preset* client refuses to connect to a blocked network, so it never shares a client
+    with a local server at the same address.
+    """
     liter_llm = _require_sdk()
     options = liter_llm.ClientOptions(
         api_key=api_key or "",
@@ -44,5 +49,6 @@ def _client(model: str, base_url: str | None, api_key: str | None) -> Any:
         timeout_secs=_REQUEST_TIMEOUT_S,
         max_retries=_max_retries(model),
         model_hint=model,
+        blocked_networks=[str(n) for n in CONNECT_BLOCKED_NETWORKS] if preset else None,
     )
     return liter_llm.create_client_with_options(options)

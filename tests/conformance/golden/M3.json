@@ -5,7 +5,9 @@
     16,
     25,
     37,
-    41
+    41,
+    57,
+    80
   ],
   "request": null,
   "assert": "The sizing command prints bytes, or the pin declares a rule (fallback)."

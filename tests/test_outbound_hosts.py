@@ -42,6 +42,9 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         # the reader gets the install command for their hardware. A string in a
         # message; nothing fetches it.
         "lilbee.sh",
+        # Lemonade install guide, named in the message that says the engine is missing.
+        # A string in a message; nothing fetches it.
+        "lemonade-server.ai",
         # Agent-client documentation links cited from agent_configs/ module docstrings.
         "docs.litellm.ai",
         "opencode.ai",

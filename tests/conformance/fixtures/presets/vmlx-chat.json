@@ -1,0 +1,161 @@
+{
+ "server": "vmlx-chat",
+ "version": "vmlx 1.6.83 metal",
+ "roles": [
+  "chat"
+ ],
+ "models": {
+  "chat": "mlx-community/Qwen3-0.6B-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "template": {
+   "ok": true,
+   "detail": "finish=stop"
+  },
+  "tool": {
+   "ok": true,
+   "detail": "tool_calls=['get_weather']"
+  },
+  "overflow": {
+   "ok": false,
+   "detail": "kind=server"
+  }
+ },
+ "error_answers": [
+  [
+   504,
+   "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  ],
+  [
+   504,
+   "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  ],
+  [
+   504,
+   "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "You answer in one short sentence.",
+      "role": "system"
+     },
+     {
+      "content": "What is the capital of France?",
+      "role": "user"
+     },
+     {
+      "content": "Paris.",
+      "role": "assistant"
+     },
+     {
+      "content": "And of Italy?",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"chatcmpl-71184d40\",\"object\":\"chat.completion\",\"created\":1793714562,\"model\":\"mlx-community/Qwen3-0.6B-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"The capital of France is Paris, and the capital of Italy is Rome.\",\"tool_calls\":null,\"reasoning_content\":\"Okay, the user is asking for the capitals of France and Italy. I need to provide both answers in one short sentence. Let me start with France. I know that Paris is the capital of France. Then for Italy, I remember that Rome is the capital. So putting them together, maybe something like \\\"The capital of France is Paris, and the capital of Italy is Rome.\\\" That should work. Let me check if there's any other capital I'm missing. No, France has Paris and Italy has Rome. Yep, that's all.\"},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":43,\"completion_tokens\":130,\"total_tokens\":173,\"prompt_tokens_details\":null,\"completion_tokens_details\":{\"reasoning_tokens\":111}},\"reasoning_closed_by_eos\":null,\"warnings\":null,\"context_exhaustion\":null}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "What is the weather in Paris? Use the tool.",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false,
+    "tool_choice": "auto",
+    "tools": [
+     {
+      "function": {
+       "description": "Get the weather for a city.",
+       "name": "get_weather",
+       "parameters": {
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ],
+        "type": "object"
+       }
+      },
+      "type": "function"
+     }
+    ]
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"chatcmpl-0d1d1cb7\",\"object\":\"chat.completion\",\"created\":1793714565,\"model\":\"mlx-community/Qwen3-0.6B-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_4e035f91\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}],\"reasoning_content\":\"Okay, the user is asking for the weather in Paris. I need to use the get_weather function. The function requires a city parameter, and the user specified Paris. So I should call get_weather with the city set to Paris. Let me make sure I format the tool_call correctly. The name of the function is get_weather, and the arguments should be {\\\"city\\\": \\\"Paris\\\"}. That should get the weather data for Paris.\",\"content\":null},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":157,\"completion_tokens\":112,\"total_tokens\":269,\"completion_tokens_details\":{\"reasoning_tokens\":89}}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  },
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": "w w w w w w w w w w w w w w w w w w w w ...[120000 chars]",
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-0.6B-4bit",
+    "stream": false
+   },
+   "status": 504,
+   "content_type": "application/json",
+   "body": "{\"error\": {\"message\": \"the server gave no answer within 120 s\", \"type\": \"timeout\"}}"
+  }
+ ]
+}

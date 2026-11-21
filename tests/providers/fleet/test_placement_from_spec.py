@@ -39,7 +39,13 @@ def test_builds_plans_from_spec():
 
 def test_errors_when_active_role_missing_from_spec():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
-    with pytest.raises(PlacementError, match="embed has a model but no placement entry"):
+    with pytest.raises(
+        PlacementError,
+        match=(
+            r"embed has a model but the placement has no entry for it\. "
+            r"Add an entry for embed with devices or a target, or clear the placement\."
+        ),
+    ):
         placement_from_spec(
             spec,
             (WorkerRole.CHAT, WorkerRole.EMBED),
@@ -50,7 +56,9 @@ def test_errors_when_active_role_missing_from_spec():
 
 def test_errors_on_nonexistent_device():
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(5,))})
-    with pytest.raises(PlacementError, match="chat pinned to device 5 but only 1 GPU"):
+    with pytest.raises(
+        PlacementError, match=r"chat is pinned to device 5, but this machine lists only device 0\."
+    ):
         placement_from_spec(
             spec, (WorkerRole.CHAT,), {0: 80 * GIB}, estimate_peak=_peak({WorkerRole.CHAT: [4]})
         )

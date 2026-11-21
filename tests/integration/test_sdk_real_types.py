@@ -9,6 +9,7 @@ native route is covered by the integration suite.
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -22,7 +23,7 @@ from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import CompletionRequest, EmbeddingRequest, RerankRequest
 from tests import _fake_sdk as fakes
 
-liter_llm = pytest.importorskip(sdk_library().module)
+liter_llm = importlib.import_module(sdk_library().module)
 
 _BASE = "http://localhost:11434"
 _CHAT_BODY: dict[str, Any] = {

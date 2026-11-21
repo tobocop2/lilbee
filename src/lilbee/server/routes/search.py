@@ -5,6 +5,7 @@ Every route needs the token: these return the user's own documents.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from typing import Annotated, NoReturn
@@ -15,9 +16,10 @@ from litestar.exceptions import HTTPException, ValidationException
 from litestar.params import FromQuery, QueryParameter
 from litestar.response import Stream
 
+from lilbee.app.services import server_is_stopping
 from lilbee.core.results import DocumentResult
 from lilbee.data.store import EmbeddingEngineChangedError, EmbeddingModelMismatchError
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import SERVER_STOPPING_MESSAGE, ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.runtime.progress import SseErrorCode
 from lilbee.server import handlers
@@ -122,11 +124,16 @@ async def _gated_stream(
     never enters this body, so the route also releases *guard* from the
     response's after-send hook. A failure inside the generator becomes an
     SSE error event; raising after the 201 headers would drop the connection
-    with no body for the client to read.
+    with no body for the client to read. When a stopping server cancels the
+    response, the stream ends with the stop error event before the cut.
     """
     try:
         async for chunk in generator:
             yield chunk
+    except asyncio.CancelledError:
+        if server_is_stopping():
+            yield sse_error(SERVER_STOPPING_MESSAGE)
+        raise
     except Exception as exc:
         log.exception("streaming chat handler failed")
         # Same mapper as the non-streaming sibling: without a code the stream

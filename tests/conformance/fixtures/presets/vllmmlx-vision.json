@@ -1,0 +1,50 @@
+{
+ "server": "vllmmlx-vision",
+ "version": "vllm-mlx 0.4.1 metal",
+ "roles": [
+  "vision"
+ ],
+ "models": {
+  "vision": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "vision": {
+   "ok": true,
+   "detail": "colour_named=True"
+  }
+ },
+ "error_answers": [],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": [
+       {
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "What colour is this image? Answer in one word.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
+    "stream": false
+   },
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"id\":\"chatcmpl-861dcdbb\",\"object\":\"chat.completion\",\"created\":1793712553,\"model\":\"mlx-community/Qwen2.5-VL-3B-Instruct-4bit\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Red\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":36,\"completion_tokens\":2,\"total_tokens\":38},\"generation_metadata\":null}"
+  }
+ ]
+}

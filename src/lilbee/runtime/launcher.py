@@ -35,6 +35,24 @@ def _force_utf8_stdio() -> None:
                 stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
+def _warn_missing_vc_runtime() -> None:
+    """Warn when a pip install on Windows has no Visual C++ runtime for its wheels."""
+    if sys.platform != "win32" or "__compiled__" in globals():
+        return
+    if sys.stderr is None:
+        return
+    import ctypes
+
+    try:
+        ctypes.WinDLL("msvcp140.dll")
+    except OSError:
+        sys.stderr.write(
+            "Warning: the Microsoft Visual C++ runtime may be missing, so some "
+            "libraries can fail to load with 'DLL load failed'. Install it from "
+            "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.\n"
+        )
+
+
 def _run_cli(app: Callable[[], object]) -> None:
     """Run the CLI *app*; a config write that cannot take its lock exits 1 with a plain message."""
     from lilbee.core.security import FileLockUnavailableError
@@ -51,6 +69,7 @@ def _run_cli(app: Callable[[], object]) -> None:
 def main() -> None:
     """Entry point for the ``lilbee`` console script."""
     _force_utf8_stdio()
+    _warn_missing_vc_runtime()
     args = sys.argv[1:]
     # Help exits before the TUI, so it must not print through the animation.
     wants_help = any(arg in ("--help", "-h") for arg in args)

@@ -65,7 +65,12 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
     monkeypatch.setattr(
         planning,
@@ -84,7 +89,9 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     devices = [FleetDevice("CUDA", 0, "A", 80 * GIB, 10 * GIB)]
     captured = {}
 
-    def fake_from_spec(spec, active_roles, device_capacity, *, estimate_peak):
+    def fake_from_spec(
+        spec, active_roles, device_capacity, *, estimate_peak, plan_auto, model_refs, absent_hint
+    ):
         captured["spec"] = spec
         captured["roles"] = active_roles
         captured["capacity"] = device_capacity
@@ -109,6 +116,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
         {WorkerRole.CHAT: "ref"},
         devices,
         unified_budget=None,
+        host_cards=planning.HostCards(devices),
         engines=engines_for_all_roles(LLAMA),
     )
 
@@ -130,7 +138,13 @@ def test_auto_planner_charged_against_total_capacity(monkeypatch):
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
-        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        None,
+        [],
+        {},
+        devices,
+        unified_budget=None,
+        host_cards=planning.HostCards(devices),
+        engines=engines_for_all_roles(LLAMA),
     )
     assert captured["devs"] == [(0, 80 * GIB)]  # total, not the 5 GiB free
 
@@ -145,7 +159,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
     def refuse(spec, *_a, **_kw):
         if spec is None:
             return auto
-        raise PlacementError("embed pinned to device 1 but only 1 GPU(s) detected")
+        raise PlacementError("embed is pinned to device 1, but this machine lists only device 0.")
 
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
@@ -157,6 +171,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
             {WorkerRole.EMBED: "ref"},
             devices,
             unified_budget=None,
+            host_cards=planning.HostCards(devices),
             engines=engines_for_all_roles(LLAMA),
         )
 
@@ -180,6 +195,7 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
         {WorkerRole.CHAT: "ref"},
         devices,
         unified_budget=None,
+        host_cards=planning.HostCards(devices),
         engines=engines_for_all_roles(LLAMA),
     )
 
@@ -194,7 +210,13 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", lambda *_a, **_kw: auto)
 
     placement, spec_applied = planning._placement_or_auto(
-        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        None,
+        [],
+        {},
+        devices,
+        unified_budget=None,
+        host_cards=planning.HostCards(devices),
+        engines=engines_for_all_roles(LLAMA),
     )
 
     assert placement is auto
@@ -214,11 +236,16 @@ def test_interactive_resolve_still_raises(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
 
     def refuse(*_a, **_kw):
-        raise PlacementError("embed pinned to device 0 but only 0 GPU(s) detected")
+        raise PlacementError("embed is pinned to device 0, but this machine lists no devices.")
 
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
@@ -241,13 +268,18 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None, total_vram=0, engines: ([], {}, 0, {}),
+        lambda roles, *, unified_budget=None, total_vram=0, engines, cpu_roles=frozenset(): (
+            [],
+            {},
+            0,
+            {},
+        ),
     )
 
     def refuse(spec, *_a, **_kw):
         if spec is None:
             return Placement(instances=(), unplaceable_roles=())
-        raise PlacementError("embed pinned to device 0 but only 0 GPU(s) detected")
+        raise PlacementError("embed is pinned to device 0, but this machine lists no devices.")
 
     monkeypatch.setattr(planning, "_resolve_placement", refuse)
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
@@ -270,7 +302,13 @@ def test_no_spec_uses_auto_planner(monkeypatch):
 
     monkeypatch.setattr(planning, "plan_placement", fake_plan)
     planning._resolve_placement(
-        None, [], {}, devices, unified_budget=None, engines=engines_for_all_roles(LLAMA)
+        None,
+        [],
+        {},
+        devices,
+        unified_budget=None,
+        host_cards=planning.HostCards(devices),
+        engines=engines_for_all_roles(LLAMA),
     )
     assert called.get("auto") is True
 

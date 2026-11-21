@@ -19,8 +19,6 @@ _CAPPED_CELLS = [
     ("vulkan", "Windows"),
     *[(f"cu12{n}", os) for n in range(1, 6) for os in ("Linux", "Windows")],
     ("rocm", "Linux"),
-    ("sycl", "Linux"),
-    ("sycl", "Windows"),
 ]
 _ARM_CELLS = [("cpu", "macOS", "arm64"), ("metal", "macOS", "arm64")]
 
@@ -70,6 +68,28 @@ def test_deferred_gpu_cells_keep_the_avx_cap(backend: str, runner_os: str) -> No
     assert "-DGGML_AVX=ON" in flags
     assert "-DGGML_AVX2=OFF" in flags
     assert "-DGGML_CPU_ALL_VARIANTS=ON" not in flags
+
+
+@pytest.mark.parametrize(
+    ("runner_os", "target_arch"),
+    [(o, a) for o in ("Linux", "Windows", "macOS") for a in ("x86_64", "arm64")],
+)
+def test_sycl_is_an_unknown_backend(runner_os: str, target_arch: str) -> None:
+    result = subprocess.run(
+        ["bash", str(_SCRIPT), "--print"],
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            "BACKEND": "sycl",
+            "RUNNER_OS": runner_os,
+            "TARGET_ARCH": target_arch,
+            "PATH": "/usr/bin:/bin",
+        },
+        check=False,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "unknown backend 'sycl'" in result.stderr
 
 
 @pytest.mark.parametrize(

@@ -279,9 +279,9 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
     if captured:
         planning_mod.capture_plan_probe({WorkerRole.CHAT: LLAMA})
 
-    reason = planning_mod.plan_all_launches(
-        engines=engines_for_all_roles(LLAMA)
-    ).skipped_unusable_ctx[WorkerRole.CHAT]
+    reason = planning_mod.plan_all_launches(engines=engines_for_all_roles(LLAMA)).refused_roles[
+        WorkerRole.CHAT
+    ]
 
     assert ("Other processes hold" in reason) is names_other_processes
     if names_other_processes:

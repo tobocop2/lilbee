@@ -107,7 +107,7 @@ def launch_opencode_in_tmux(workspace: Path, session: str) -> None:
     # environment we forward via -e, so everything the cell's `uv run` needs must
     # be forwarded explicitly: PATH (the opencode + uv binaries), the models dir
     # (or the launcher serves no models) and the uv project env (or `uv run`
-    # syncs a FRESH venv whose lilbee-engine wheel is the empty placeholder,
+    # syncs a FRESH venv whose lilbee-engine-llama-cpp wheel is the empty placeholder,
     # leaving the serve with no llama-server).
     for env_var in (
         "PATH",

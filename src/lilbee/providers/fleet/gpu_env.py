@@ -13,7 +13,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
+from types import MappingProxyType
 
 from lilbee.runtime.shard_process import shard_process
 
@@ -39,6 +40,22 @@ _NVIDIA_RUNTIME_VISIBLE_VAR = "NVIDIA_VISIBLE_DEVICES"
 _NVIDIA_RUNTIME_NO_GPU_VALUES = frozenset({"void", "none"})
 
 _VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
+
+# Host variables that start trace export inside an engine. TEI reads OTLP_ENDPOINT
+# through clap (router/src/main.rs:186-187, v1.9.4) and builds its OTLP exporter only
+# when it is set (router/src/logging.rs:98-106; Python backend utils/tracing.py:59).
+# Both build the exporter with that explicit endpoint, so OTEL_EXPORTER_OTLP_* starts
+# nothing alone. No other pinned engine reads a trace endpoint. A user sets the
+# variable for another tool, so the engine environment drops it.
+ENGINE_TRACE_EXPORT_VARS: tuple[str, ...] = ("OTLP_ENDPOINT",)
+
+# Every engine lilbee starts opts out of telemetry. huggingface_hub (mlx-lm, TEI's
+# Python backend) reads the first two; DO_NOT_TRACK is the cross-tool convention.
+# llama.cpp, ik_llama.cpp, mistral.rs and the Rust hf-hub crate carry no telemetry
+# and read none of these; the values cost nothing there.
+ENGINE_TELEMETRY_OPT_OUT: Mapping[str, str] = MappingProxyType(
+    {"HF_HUB_DISABLE_TELEMETRY": "1", "DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1"}
+)
 
 # Layers with documented crashes against multi-VkDevice apps:
 #   https://github.com/ggml-org/llama.cpp/issues/18109 (RTSS / OBS / HudSight)
@@ -205,4 +222,7 @@ def engine_environ() -> dict[str, str]:
     """
     env = gpu_environ()
     _apply_vulkan_loader_safety(env)
+    env.update(ENGINE_TELEMETRY_OPT_OUT)
+    for var in ENGINE_TRACE_EXPORT_VARS:
+        env.pop(var, None)
     return env

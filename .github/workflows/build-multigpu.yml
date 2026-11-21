@@ -1,6 +1,6 @@
 name: Build multi-GPU server wheels and executables
 
-# Opt-in lilbee[multi-gpu] artifacts: the per-backend lilbee-engine wheel
+# Opt-in lilbee[multi-gpu] artifacts: the per-backend lilbee-engine-llama-cpp wheel
 # (bundles the compiled llama.cpp llama-server). Built across the multi-GPU
 # backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.
 #
@@ -99,7 +99,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_ref }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/bundle_rocm_runtime.sh', 'tools/wheel-build/bundle_windows_runtime.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}" >> "$GITHUB_OUTPUT"
 
       # The mirror first, same as the executable builds. This job publishes to it
       # but used to never read it, so every warm run rebuilt engines the mirror
@@ -110,7 +110,7 @@ jobs:
         run: |
           set -uo pipefail
           if bash tools/wheel-build/ci_mirror.sh fetch \
-            "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine/bin; then
+            "${{ steps.engine-key.outputs.key }}" packaging/engine-wheel/lilbee_engine_llama_cpp/bin; then
             echo "restored=true" >> "$GITHUB_OUTPUT"
           else
             echo "restored=false" >> "$GITHUB_OUTPUT"
@@ -121,7 +121,7 @@ jobs:
         if: steps.engine-mirror.outputs.restored != 'true'
         uses: actions/cache/restore@v6
         with:
-          path: packaging/engine-wheel/lilbee_engine/bin
+          path: packaging/engine-wheel/lilbee_engine_llama_cpp/bin
           key: ${{ steps.engine-key.outputs.key }}
 
       - name: Decide whether the engine still needs building
@@ -209,7 +209,7 @@ jobs:
       - name: The ROCm bundle resolves on a machine with no ROCm
         if: matrix.backend == 'rocm'
         shell: bash
-        run: bash tools/qa/assert_rocm_bundle_loads.sh "${PKG_DIR}/lilbee_engine/bin"
+        run: bash tools/qa/assert_rocm_bundle_loads.sh "${PKG_DIR}/lilbee_engine_llama_cpp/bin"
 
       # The mirror is the only place a built engine is stored. Writing it to the
       # Actions cache as well cost ~2.5 GiB of a 10 GiB cap to duplicate what the
@@ -235,7 +235,7 @@ jobs:
           path.write_text(text)
           PY
 
-      - name: Build the lilbee-engine wheel
+      - name: Build the lilbee-engine-llama-cpp wheel
         shell: bash
         working-directory: ${{ env.PKG_DIR }}
         run: |
@@ -248,7 +248,7 @@ jobs:
       # `python`, not `python3`: setup-python leaves no python3 on PATH on Windows.
       - name: The wheel carries the backend it claims
         shell: bash
-        run: python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" "${PKG_DIR}"/dist/*.whl
+        run: python tools/qa/assert_engine_bundle.py --backend "${{ matrix.backend }}" --tool llama-server --library ggml-base "${PKG_DIR}"/dist/*.whl
 
       # Hard gate: a lib-less bundle fails at exec with a loader error. This
       # step swallowing failures (continue-on-error) is how a broken metal
@@ -257,11 +257,11 @@ jobs:
       # runner; their closure is identical to the CPU/Vulkan/Metal cells that
       # do run this gate.
       - name: Smoke test the bundled binary
-        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' && matrix.backend != 'sycl' }}
+        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' }}
         shell: bash
         run: |
           set -x
-          bin_dir="${PKG_DIR}/lilbee_engine/bin"
+          bin_dir="${PKG_DIR}/lilbee_engine_llama_cpp/bin"
           # Exact names only: llama-server* also matches the Windows engine's
           # llama-server-impl.dll, which is not executable.
           exe=$(find "${bin_dir}" -maxdepth 1 -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)

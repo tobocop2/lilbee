@@ -104,6 +104,16 @@ jobs:
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
+      # The sandbox below runs this executable, so check that it carries the
+      # vulkan engine it links before the upload.
+      - name: The executable bundles the engine it links
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir=$(bash tools/qa/find_engine_bin.sh dist)
+          uv run --no-sync python tools/qa/assert_engine_bundle.py \
+            --backend vulkan --platform "${RUNNER_OS}" "${bin_dir}"
+
       - uses: actions/upload-artifact@v7
         with:
           name: lilbee-linux-x86_64

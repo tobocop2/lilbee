@@ -1,0 +1,55 @@
+{
+ "server": "mlxlm-vision",
+ "version": "mlx-lm 0.32.2 metal",
+ "roles": [
+  "vision"
+ ],
+ "models": {
+  "vision": "mlx-community/Qwen3-VL-2B-Instruct-4bit"
+ },
+ "rerank_wire": "v1",
+ "embed_dim": 0,
+ "strict": false,
+ "results": {
+  "vision": {
+   "ok": false,
+   "detail": "ProviderError: The server for mlxlm-vision/mlx-community/Qwen3-VL-2B-Instruct-4bit answered 404 to the vision request at http://harness. Check the base URL and the route prefix of the server. Check that the server h"
+  }
+ },
+ "error_answers": [
+  [
+   404,
+   "{\"error\": \"Only 'text' content type is supported.\"}"
+  ]
+ ],
+ "exchanges": [
+  {
+   "method": "POST",
+   "path": "/v1/chat/completions",
+   "request": {
+    "messages": [
+     {
+      "content": [
+       {
+        "image_url": {
+         "url": "data:image/png;base64,iVBORw0K..."
+        },
+        "type": "image_url"
+       },
+       {
+        "text": "What colour is this image? Answer in one word.",
+        "type": "text"
+       }
+      ],
+      "role": "user"
+     }
+    ],
+    "model": "mlx-community/Qwen3-VL-2B-Instruct-4bit",
+    "stream": false
+   },
+   "status": 404,
+   "content_type": "application/json",
+   "body": "{\"error\": \"Only 'text' content type is supported.\"}"
+  }
+ ]
+}

@@ -27,6 +27,7 @@ from lilbee.providers.fleet.engine_store import (
     UnsafeWheelError,
     licence_permitted,
 )
+from lilbee.providers.fleet.engines.choice import PinError, pin_lock
 
 
 def make_wheel(path: Path, licence: str | None = "MIT") -> str:
@@ -44,8 +45,13 @@ def make_wheel(path: Path, licence: str | None = "MIT") -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def pin(sha: str, version: str = "1", licences: tuple[str, ...] = ("MIT",)) -> PinLock:
-    return PinLock("fx", version, "cpu", {}, licences, sha)
+def pin(
+    sha: str,
+    version: str = "1",
+    licences: tuple[str, ...] = ("MIT",),
+    libraries: tuple[str, ...] = (),
+) -> PinLock:
+    return PinLock("fx", version, "cpu", {}, licences, sha, "server", libraries)
 
 
 @pytest.fixture
@@ -91,7 +97,7 @@ def test_builds_of_one_engine_list_side_by_side(
     path, sha = wheel
     store.install_from_wheel(pin(sha, "1"), path)
     store.install_from_wheel(pin(sha, "2"), path)
-    other = PinLock("fx", "1", "cu125", {}, ("MIT",), sha)
+    other = PinLock("fx", "1", "cu125", {}, ("MIT",), sha, "server")
     store.install_from_wheel(other, path)
     assert [(e.version, e.backend) for e in store.installed()] == [
         ("1", "cpu"),
@@ -147,7 +153,7 @@ _CHILD = textwrap.dedent(
     es._unpack, es._check_wheel = unpack, check
     while time.time() < float(start):
         time.sleep(0.01)
-    pin = es.PinLock("fx", "1", "cpu", {}, ("MIT",), sha)
+    pin = es.PinLock("fx", "1", "cpu", {}, ("MIT",), sha, "server")
     es.EngineStore(Path(root)).install_from_wheel(pin, Path(wheel))
     """
 )
@@ -233,11 +239,16 @@ def test_gate_refuses_and_leaves_nothing(
     assert not store.root.exists()
 
 
-def test_checksum_error_names_engine_and_version(
+def test_checksum_error_names_engine_version_and_backend_and_the_next_step(
     store: EngineStore, wheel: tuple[Path, str]
 ) -> None:
-    with pytest.raises(ChecksumError, match="engine fx 1 does not match"):
+    want = (
+        "The file for engine fx 1 (cpu) does not match its pin, so lilbee did not install it. "
+        "Run the install again. If this happens again, report it."
+    )
+    with pytest.raises(ChecksumError) as caught:
         store.install_from_wheel(pin("0" * 64), wheel[0])
+    assert str(caught.value) == want
 
 
 def test_lock_licence_outside_the_list_is_refused_before_the_wheel_is_read(
@@ -267,6 +278,11 @@ def test_wheel_without_metadata_is_refused(store: EngineStore, tmp_path: Path) -
         ("MIT", True),
         (" MIT ", True),
         ("MIT AND Apache-2.0", True),
+        ("MIT AND PSF-2.0", True),
+        ("PSF-2.0", True),
+        ("GPL-3.0-only", False),
+        ("PSF-2.0 AND GPL-3.0-only", False),
+        ("PSF-2.0 OR GPL-3.0-only", False),
         ("", False),
         ("MIT OR GPL", False),
     ],
@@ -275,12 +291,172 @@ def test_licence_permitted(expression: str, ok: bool) -> None:
     assert licence_permitted(expression) is ok
 
 
+_CUDA_EXPRESSION = "MIT AND LicenseRef-NVIDIA-CUDA-EULA AND BSD-3-Clause"
+
+
+@pytest.mark.parametrize(
+    ("expression", "has_notice", "ok"),
+    [
+        ("LicenseRef-NVIDIA-CUDA-EULA", True, True),
+        (_CUDA_EXPRESSION, True, True),
+        ("LicenseRef-NVIDIA-CUDA-EULA", False, False),
+        (_CUDA_EXPRESSION, False, False),
+        ("LicenseRef-NVIDIA-Other", True, False),
+        ("LicenseRef-NVIDIA-CUDA-EULA-2", True, False),
+        ("GPL-3.0-only AND LicenseRef-NVIDIA-CUDA-EULA", True, False),
+        ("MIT", False, True),
+    ],
+)
+def test_the_nvidia_cuda_term_passes_only_with_its_notice(
+    expression: str, has_notice: bool, ok: bool
+) -> None:
+    assert licence_permitted(expression, has_notice) is ok
+
+
+def _cuda_wheel(
+    path: Path,
+    *,
+    notice: bool,
+    licence: str = _CUDA_EXPRESSION,
+    tool: str = "server",
+    notice_path: str = "p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA",
+    notice_text: str = "notice",
+) -> str:
+    with zipfile.ZipFile(path, "w") as archive:
+        server = zipfile.ZipInfo(f"p/bin/{tool}")
+        server.external_attr = (stat.S_IFREG | 0o755) << 16
+        archive.writestr(server, "#!/bin/sh\n")
+        archive.writestr("p-1.dist-info/METADATA", f"Name: p\nLicense-Expression: {licence}\n")
+        if notice:
+            archive.writestr(notice_path, notice_text)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_cuda_wheel_with_its_notice_installs(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True)
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
+def test_a_cuda_wheel_without_its_notice_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=False)
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_wheel_with_an_unknown_licence_is_refused_even_with_the_notice(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, licence="MIT AND LicenseRef-Mystery")
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-Mystery"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_cuda_wheel_with_a_nested_notice_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(
+        path, notice=True, notice_path="p/vendor/p-1.dist-info/licenses/NOTICE-NVIDIA-CUDA"
+    )
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_a_cuda_wheel_with_an_empty_notice_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "c.whl"
+    sha = _cuda_wheel(path, notice=True, notice_text="")
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        store.install_from_wheel(pin(sha), path)
+
+
+def test_the_mistral_cuda_pin_record_installs_a_cuda_wheel(
+    store: EngineStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet.engines import mistral
+
+    monkeypatch.setattr(runnable, "session_host", lambda: object())
+    monkeypatch.setattr(
+        mistral.MistralAdapter,
+        "pick_build",
+        lambda self, host: mistral.BuildPick("cuda128-sm89", ""),
+    )
+    monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
+    monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
+    record = mistral.MistralAdapter().pin_record()
+    assert record["licenses"] == [_CUDA_EXPRESSION]
+    path = tmp_path / "m.whl"
+    sha = _cuda_wheel(path, notice=True, tool=str(record["tool"]))
+    lock = pin_lock({**record, "sha256": sha})
+    store.install_from_wheel(lock, path)
+    assert len(store.installed()) == 1
+
+
+def test_the_mistral_cpu_pin_record_states_only_mit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lilbee.catalog import runnable
+    from lilbee.providers.fleet.engines import mistral
+
+    monkeypatch.setattr(runnable, "session_host", lambda: object())
+    monkeypatch.setattr(
+        mistral.MistralAdapter, "pick_build", lambda self, host: mistral.BuildPick("cpu", "")
+    )
+    monkeypatch.setattr(mistral, "pack_platforms", lambda *args: {})
+    monkeypatch.setattr(mistral, "pack_digest", lambda *args: None)
+    assert mistral.MistralAdapter().pin_record()["licenses"] == ["MIT"]
+
+
+def test_a_pin_may_state_the_nvidia_term_without_a_notice() -> None:
+    engine_store._check_licences(pin("0" * 64, licences=(_CUDA_EXPRESSION,)))
+
+
+def test_a_pin_with_another_nvidia_term_is_refused() -> None:
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-Other"):
+        engine_store._check_licences(pin("0" * 64, licences=("MIT AND LicenseRef-NVIDIA-Other",)))
+
+
+def _staged_cuda_tree(stage: Path, *, notice: bool) -> None:
+    (stage / "p" / "bin").mkdir(parents=True)
+    server = stage / "p" / "bin" / "server"
+    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    server.chmod(0o755)
+    (stage / "p-1.dist-info" / "licenses").mkdir(parents=True)
+    (stage / "p-1.dist-info" / "METADATA").write_text(
+        f"Name: p\nLicense-Expression: {_CUDA_EXPRESSION}\n", encoding="utf-8"
+    )
+    if notice:
+        (stage / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
+            "notice", encoding="utf-8"
+        )
+
+
+def test_a_staged_cuda_tree_with_its_notice_passes_the_check(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    assert engine_store._check_staged_tree(pin("0" * 64), tmp_path) == "p/bin/server"
+
+
+def test_a_staged_cuda_tree_with_an_empty_notice_is_refused(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=True)
+    (tmp_path / "p-1.dist-info" / "licenses" / "NOTICE-NVIDIA-CUDA").write_text(
+        "", encoding="utf-8"
+    )
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
+def test_a_staged_cuda_tree_without_its_notice_is_refused(tmp_path: Path) -> None:
+    _staged_cuda_tree(tmp_path, notice=False)
+    with pytest.raises(LicenceRefusedError, match="LicenseRef-NVIDIA-CUDA-EULA"):
+        engine_store._check_staged_tree(pin("0" * 64), tmp_path)
+
+
 @pytest.mark.parametrize("bad", ["../x", "a/b", ".hidden", "", "a b"])
 def test_pin_names_cannot_leave_the_engine_directory(bad: str) -> None:
     with pytest.raises(ValueError, match="cannot name an engine directory"):
-        PinLock(bad, "1", "cpu", {}, ("MIT",), "a")
+        PinLock(bad, "1", "cpu", {}, ("MIT",), "a", "server")
     with pytest.raises(ValueError, match="cannot name an engine directory"):
-        PinLock("fx", bad, "cpu", {}, ("MIT",), "a")
+        PinLock("fx", bad, "cpu", {}, ("MIT",), "a", "server")
 
 
 # Crash steps. A raise runs the cleanup; a kill does not, so each step is tested both ways.
@@ -469,14 +645,15 @@ def test_build_whose_binary_is_gone_is_not_installed_and_is_replaced(
     assert len(store.installed()) == 1
 
 
-def test_wheel_without_a_bin_tool_records_no_binary(store: EngineStore, tmp_path: Path) -> None:
+def test_wheel_without_a_bin_tool_is_refused(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "lib.whl"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("p/data.txt", "x")
         archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    store.install_from_wheel(pin(sha), path)
-    assert store.installed()[0].binary is None
+    with pytest.raises(UnsafeWheelError, match="has no server in its bin directory"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
 
 
 def test_second_wheel_with_another_sha_is_refused_and_keeps_the_build(
@@ -520,7 +697,7 @@ def test_recorded_binary_outside_the_build_is_not_installed(
 def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "link.whl"
     with zipfile.ZipFile(path, "w") as archive:
-        info = zipfile.ZipInfo("p/bin/tool")
+        info = zipfile.ZipInfo("p/bin/server")
         info.external_attr = (stat.S_IFLNK | 0o755) << 16
         archive.writestr(info, "/bin/sh")
         archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
@@ -984,3 +1161,409 @@ def test_prune_also_clears_a_damaged_build(store: EngineStore, tmp_path: Path) -
 
 def test_prune_with_no_root_removes_nothing(store: EngineStore) -> None:
     assert store.prune(keep={("fx", "1", "cpu")}, in_use=lambda *_: False) == []
+
+
+def helper_wheel(path: Path, members: dict[str, int]) -> str:
+    """A wheel holding each name of *members* under ``p/bin/`` with that file mode."""
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, kind in members.items():
+            info = zipfile.ZipInfo(f"p/bin/{name}")
+            info.external_attr = (kind | 0o755) << 16
+            archive.writestr(info, "#!/bin/sh\n")
+        archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_the_record_names_the_server_when_a_helper_sorts_first(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
+    store.install_from_wheel(pin(sha), path)
+    [found] = store.installed()
+    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
+
+
+def test_a_wheel_without_the_server_is_refused_beside_a_helper(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server.txt": stat.S_IFREG})
+    with pytest.raises(UnsafeWheelError, match="has no server in its bin directory"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
+
+
+def test_a_linked_server_is_refused_beside_a_regular_helper(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFLNK})
+    with pytest.raises(UnsafeWheelError, match="as a symbolic link"):
+        store.install_from_wheel(pin(sha), path)
+    assert not store.root.exists()
+
+
+def test_package_route_records_the_server_when_a_helper_sorts_first(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "h.whl"
+    sha = helper_wheel(path, {"gguf-parser": stat.S_IFREG, "server": stat.S_IFREG})
+    run, _ = extract_into_target(path)
+    store.install_via_package(pin(sha), run=run)
+    [found] = store.installed()
+    assert found.binary == store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
+
+
+def test_a_pin_with_no_tool_is_refused_when_read() -> None:
+    record = {
+        "engine": "fx",
+        "version": "1",
+        "backend": "cpu",
+        "platforms": {},
+        "licenses": ["MIT"],
+        "sha256": "a" * 64,
+    }
+    with pytest.raises(PinError, match="tool"):
+        pin_lock(record)
+
+
+def test_a_pin_lock_cannot_be_built_without_a_tool() -> None:
+    with pytest.raises(TypeError, match="tool"):
+        PinLock("fx", "1", "cpu", {}, ("MIT",), "a" * 64)  # type: ignore[call-arg]
+
+
+def _ggml_wheel(path: Path, *, mode: int = 0o755, files: tuple[str, ...] = ()) -> str:
+    """A wheel whose server has *mode*; *files* sit in bin, or in the folder they name."""
+    with zipfile.ZipFile(path, "w") as archive:
+        server = zipfile.ZipInfo("p/bin/server")
+        server.external_attr = (stat.S_IFREG | mode) << 16
+        archive.writestr(server, "#!/bin/sh\n")
+        for name in files:
+            archive.writestr(f"p/{name}" if "/" in name else f"p/bin/{name}", "x")
+        archive.writestr("p-1.dist-info/METADATA", "Name: p\nLicense-Expression: MIT\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_wheel_with_a_runnable_server_and_its_pinned_library_installs(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, files=("libcore.so.0.9.5", "libextra.so"))
+    store.install_from_wheel(pin(sha, libraries=("core",)), path)
+    assert [found.binary for found in store.installed()] == [
+        store.root / "fx" / "1-cpu" / "p" / "bin" / "server"
+    ]
+
+
+def test_a_server_without_the_execute_bit_is_refused(store: EngineStore, tmp_path: Path) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, mode=0o644, files=("libggml-base.so.0",))
+    with pytest.raises(UnsafeWheelError, match="without the execute bit"):
+        store.install_from_wheel(pin(sha), path)
+    assert store.installed() == []
+
+
+def test_a_wheel_without_a_pinned_library_is_refused_by_name(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, files=("libextra.so", "libcore-extra.so"))
+    with pytest.raises(UnsafeWheelError, match="no library file for 'core' in its p folder"):
+        store.install_from_wheel(pin(sha, libraries=("core",)), path)
+    assert store.installed() == []
+
+
+def test_a_library_outside_bin_counts_for_the_pinned_library(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path, files=("lib/libcore.so.1",))
+    store.install_from_wheel(pin(sha, libraries=("core",)), path)
+    assert len(store.installed()) == 1
+
+
+def test_a_wheel_with_no_pinned_libraries_installs_without_any(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "g.whl"
+    sha = _ggml_wheel(path)
+    store.install_from_wheel(pin(sha), path)
+    assert len(store.installed()) == 1
+
+
+# --- the tool is a regular file directly under bin/ ---------------------------------------
+
+
+def make_pack_wheel(path: Path) -> str:
+    """A wheel with bin/lib/libx.so.1 beside bin/server, as a cuda pack lays it out."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("lilbee_engine_fx/bin/lib/libx.so.1", "lib")
+        info = zipfile.ZipInfo("lilbee_engine_fx/bin/server")
+        info.external_attr = (stat.S_IFREG | 0o755) << 16
+        archive.writestr(info, "#!/bin/sh\n")
+        archive.writestr("lilbee_engine_fx-1.dist-info/METADATA", "License-Expression: MIT\n")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_zip_route_records_bin_server_beside_a_bin_lib_folder(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "pack.whl"
+    sha = make_pack_wheel(path)
+    build = store.install_from_wheel(pin(sha), path)
+    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
+
+
+def test_package_route_records_bin_server_beside_a_bin_lib_folder(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "pack.whl"
+    sha = make_pack_wheel(path)
+    run, _ = extract_into_target(path)
+    build = store.install_via_package(pin(sha), run=run)
+    assert [b.binary for b in store.installed()] == [build / "lilbee_engine_fx" / "bin" / "server"]
+
+
+def test_package_route_does_not_take_a_folder_named_like_the_tool(
+    store: EngineStore, wheel: tuple[Path, str]
+) -> None:
+    path, sha = wheel
+    inner, _ = extract_into_target(path)
+
+    def run(argv: list[str], requirements: str) -> None:
+        inner(argv, requirements)
+        tool = Path(argv[argv.index("--target") + 1]) / "lilbee_engine_fx" / "bin" / "server"
+        tool.unlink()
+        tool.mkdir()
+
+    store.install_via_package(pin(sha), run=run)
+    assert [b.binary for b in store.installed()] == [None]
+
+
+class _PinnedAdapter:
+    """A stand-in adapter that is not bundled and pins one build."""
+
+    bundled = False
+
+    def __init__(self, version: str, backend: object) -> None:
+        self._pin = {"engine": "fx", "version": version, "backend": backend}
+
+    def pin_record(self) -> dict[str, object]:
+        return self._pin
+
+
+def _pruned_models(tmp_path: Path, monkeypatch, adapter: object, versions: tuple[str, ...]) -> Path:
+    """A models folder with an engines folder beside it holding fx builds of *versions*."""
+    from lilbee.providers.fleet.engines import choice
+    from lilbee.providers.fleet.engines.base import EngineName
+
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, adapter)
+    monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    for var in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.setenv(var, str(tmp_path / "xdg"))
+    installed_store(EngineStore(tmp_path / "engines"), tmp_path, versions)
+    return tmp_path / "models"
+
+
+def _versions(tmp_path: Path) -> list[str]:
+    return [b.version for b in EngineStore(tmp_path / "engines").installed()]
+
+
+def test_prune_engines_removes_a_build_no_release_pins(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    gone = engine_store.prune_engines(models)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert _versions(tmp_path) == ["3"]
+
+
+def test_prune_engines_keeps_a_build_a_live_process_uses(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    hold = hold_user_lock(tmp_path / "slot")
+    try:
+        assert engine_store.prune_engines(models) == []
+    finally:
+        hold.release_and_check_last()
+    assert _versions(tmp_path) == ["1", "3"]
+
+
+def test_prune_engines_keeps_every_build_of_an_engine_whose_pin_names_no_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", None), ("1", "3"))
+    assert engine_store.prune_engines(models) == []
+    assert _versions(tmp_path) == ["1", "3"]
+
+
+def test_prune_engines_removes_nothing_when_no_adapter_needs_a_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.providers.fleet.engines import choice
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    monkeypatch.setattr(choice, "ADAPTERS", {})
+    assert engine_store.prune_engines(models) == []
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_ignores_a_relative_models_dir(tmp_path: Path, monkeypatch) -> None:
+    _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    monkeypatch.chdir(tmp_path)
+    assert engine_store.prune_engines(Path("models")) == []
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_reads_no_pin_with_nothing_installed(tmp_path: Path, monkeypatch) -> None:
+    from lilbee.providers.fleet.engines import choice
+
+    probe = mock.Mock(side_effect=AssertionError("pin read"))
+    monkeypatch.setattr(choice, "ADAPTERS", {"x": mock.Mock(bundled=False, pin_record=probe)})
+    assert engine_store.prune_engines(tmp_path / "models") == []
+    probe.assert_not_called()
+
+
+def test_prune_keeps_a_build_an_installer_holds_locked(store: EngineStore, tmp_path: Path) -> None:
+    from lilbee.core.security import FileLockUnavailableError
+
+    installed_store(store, tmp_path, ("1",))
+    with mock.patch.object(engine_store, "file_lock", side_effect=FileLockUnavailableError("held")):
+        assert store.prune(keep={("fx", "9", "cpu")}, in_use=lambda *_: False) == []
+    assert [b.version for b in store.installed()] == ["1"]
+
+
+def test_prune_engines_sweeps_nothing_itself(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("1", "cpu"), ("1",))
+    (tmp_path / "engines" / "fx" / ".stage-x").mkdir()
+    assert engine_store.prune_engines(models) == []
+    assert (tmp_path / "engines" / "fx" / ".stage-x").is_dir()
+
+
+def test_every_shipped_pin_names_a_build_or_no_backend() -> None:
+    from lilbee.providers.fleet.engines.choice import ADAPTERS
+
+    pinned = [a.pin_record() for a in ADAPTERS.values() if not a.bundled]
+    assert pinned
+    for record in pinned:
+        assert isinstance(record["engine"], str) and record["engine"]
+        assert isinstance(record["version"], str) and record["version"]
+        assert record["backend"] is None or isinstance(record["backend"], str)
+
+
+def test_the_startup_hook_sweeps_a_stage_and_prunes_a_stale_build(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from lilbee.cli.app import app
+    from lilbee.core.config import cfg
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    (tmp_path / "engines" / "fx" / ".stage-x").mkdir()
+    monkeypatch.setattr(cfg, "models_dir", models)
+    CliRunner().invoke(app, ["version"])
+    assert not (tmp_path / "engines" / "fx" / ".stage-x").exists()
+    assert _versions(tmp_path) == ["3"]
+
+
+def test_prune_engines_keeps_every_installed_backend_of_the_current_pin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1", "3"))
+    store = EngineStore(tmp_path / "engines")
+    wheel_path = tmp_path / "fx.whl"
+    sha = make_wheel(wheel_path)
+    store.install_from_wheel(PinLock("fx", "3", "cuda", {}, ("MIT",), sha, "server"), wheel_path)
+    gone = engine_store.prune_engines(models)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert sorted(p.name for p in (tmp_path / "engines" / "fx").iterdir()) == ["3-cpu", "3-cuda"]
+
+
+def test_prune_does_not_wait_for_an_install_lock(store: EngineStore, tmp_path: Path) -> None:
+    installed_store(store, tmp_path, ("1",))
+    seen: list[float] = []
+    real = engine_store.file_lock
+
+    def spy(path, timeout):
+        seen.append(timeout)
+        return real(path, timeout)
+
+    with mock.patch.object(engine_store, "file_lock", spy):
+        store.prune(keep={("fx", "9", "cpu")}, in_use=lambda *_: False)
+    assert seen == [0.0]
+
+
+def test_prune_engines_survives_an_unreadable_engines_root(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    with mock.patch.object(EngineStore, "build_dirs", side_effect=PermissionError("denied")):
+        assert engine_store.prune_engines(models) == []
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_leaves_a_folder_named_bundled_alone(store: EngineStore, tmp_path: Path) -> None:
+    (store.root / "fx" / "1-bundled").mkdir(parents=True)
+    assert store.prune({("fx", "9", "cpu")}, in_use=lambda *_: False) == []
+    assert (store.root / "fx" / "1-bundled").is_dir()
+
+
+def test_prune_engines_never_prunes_a_build_of_a_bundled_adapter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lilbee.providers.fleet.engines import choice
+    from lilbee.providers.fleet.engines.base import EngineName
+
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    shipped = mock.Mock(bundled=True)
+    shipped.name = "fx"
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.MISTRAL, shipped)
+    other = _PinnedAdapter("9", "cpu")
+    other._pin["engine"] = "other"
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, other)
+    (tmp_path / "engines" / "other" / "1-cpu").mkdir(parents=True)
+    gone = engine_store.prune_engines(models)
+    assert [p.parent.name for p in gone] == ["other"]
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_removes_a_store_holding_only_an_old_pin(tmp_path: Path, monkeypatch) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    gone = engine_store.prune_engines(models)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert _versions(tmp_path) == []
+
+
+def test_prune_engines_lets_a_probe_error_reach_the_caller(tmp_path: Path, monkeypatch) -> None:
+    class Probing(_PinnedAdapter):
+        def pin_record(self) -> dict[str, object]:
+            raise OSError("host probe failed")
+
+    models = _pruned_models(tmp_path, monkeypatch, Probing("3", "cpu"), ("1",))
+    with pytest.raises(OSError, match="host probe failed"):
+        engine_store.prune_engines(models)
+    assert _versions(tmp_path) == ["1"]
+
+
+def test_prune_engines_lets_an_error_other_than_oserror_reach_the_caller(
+    tmp_path: Path, monkeypatch
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    with (
+        mock.patch.object(EngineStore, "prune", side_effect=RuntimeError("bug")),
+        pytest.raises(RuntimeError, match="bug"),
+    ):
+        engine_store.prune_engines(models)
+
+
+def test_prune_engines_survives_an_oserror_while_pruning(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    models = _pruned_models(tmp_path, monkeypatch, _PinnedAdapter("3", "cpu"), ("1",))
+    with (
+        mock.patch.object(EngineStore, "prune", side_effect=PermissionError("denied")),
+        caplog.at_level("WARNING"),
+    ):
+        assert engine_store.prune_engines(models) == []
+    assert str(tmp_path / "engines") in caplog.text
+    assert _versions(tmp_path) == ["1"]

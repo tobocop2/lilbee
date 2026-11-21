@@ -10,8 +10,10 @@ binding problem never fails a launch.
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
+import threading
 from unittest import mock
 
 import pytest
@@ -32,7 +34,7 @@ def _pin_libc(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _close_module_spawner():
-    """Stop any executor the module singleton lazily started, so no worker lingers."""
+    """Stop any thread the module singleton lazily started, so no worker lingers."""
     yield
     child_guard._spawner.close()
 
@@ -235,18 +237,132 @@ class TestTheLifetimeSpawner:
     def test_the_worker_is_created_once_and_reused(self, spawner):
         with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
             spawner.spawn(["/x"])
-            first = spawner._executor
+            first = spawner._thread
             spawner.spawn(["/x"])
 
-        assert first is spawner._executor and first is not None
+        assert first is spawner._thread and first is not None
+
+    def test_the_worker_is_a_daemon_thread(self, spawner):
+        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
+            spawner.spawn(["/x"])
+
+        assert spawner._thread is not None
+        assert spawner._thread.daemon is True
+        assert spawner._thread.name == "fleet-spawner"
 
     def test_close_stops_the_worker_and_is_safe_when_never_started(self, spawner):
         spawner.close()  # never started: no-op
         with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
             spawner.spawn(["/x"])
-        assert spawner._executor is not None
+        assert spawner._thread is not None
         spawner.close()
-        assert spawner._executor is None
+        assert spawner._thread is None
+
+    def test_a_spawn_during_interpreter_teardown_raises_without_queueing(self, spawner):
+        with (
+            mock.patch.object(child_guard.sys, "is_finalizing", return_value=True),
+            mock.patch.object(child_guard.subprocess, "Popen") as popen,
+            pytest.raises(RuntimeError, match="interpreter shutdown"),
+        ):
+            spawner.spawn(["/x"])
+
+        popen.assert_not_called()
+        assert spawner._thread is None
+        assert spawner._requests.empty()
+
+    def test_close_does_not_strand_a_spawn_in_progress(self, spawner):
+        results: list[object] = []
+        closers: list[threading.Thread] = []
+
+        class _CloseBeginsAsTheRequestIsQueued(queue.SimpleQueue):
+            def put(self, item, *args, **kwargs):
+                if not closers and item is not None:
+                    closers.append(threading.Thread(target=spawner.close))
+                    closers[0].start()
+                    closers[0].join(timeout=0.3)
+                super().put(item, *args, **kwargs)
+
+        spawner._requests = _CloseBeginsAsTheRequestIsQueued()
+        with mock.patch.object(child_guard.subprocess, "Popen", return_value="proc"):
+            caller = threading.Thread(
+                target=lambda: results.append(spawner.spawn(["/x"])), daemon=True
+            )
+            caller.start()
+            caller.join(timeout=5)
+            closers[0].join(timeout=5)
+
+        assert not caller.is_alive() and not closers[0].is_alive()
+        assert results == ["proc"]
+
+
+_SPAWNS_AT_EXIT = """
+import atexit, subprocess, sys
+from lilbee.providers.fleet import child_guard
+
+child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+
+def _late():
+    argv = [sys.executable, "-c", "print('spoke')"]
+    proc = child_guard._spawner.spawn(argv, stdout=subprocess.PIPE)
+    print("atexit", proc.communicate()[0].decode().strip())
+
+atexit.register(_late)
+"""
+
+_SPAWNS_DURING_TEARDOWN = """
+import sys
+from lilbee.providers.fleet import child_guard
+
+class _Late:
+    def __del__(self):
+        try:
+            child_guard._spawner.spawn([sys.executable, "-c", "pass"])
+        except RuntimeError as exc:
+            print("refused", exc)
+
+child_guard._spawner.spawn([sys.executable, "-c", "pass"]).wait()
+_late = _Late()
+"""
+
+_LIVE_PROBE_AT_RETURN = """
+import subprocess, sys, threading
+from lilbee.providers.fleet import child_guard
+
+def _probe():
+    proc = child_guard.spawn_bound_child(
+        [sys.executable, "-c", "import time; time.sleep(1.5); print('spoke')"],
+        stdout=subprocess.PIPE,
+    )
+    print("probe", proc.communicate()[0].decode().strip(), proc.returncode)
+
+threading.Thread(target=_probe).start()
+"""
+
+
+def _run_in_fresh_interpreter(code: str, timeout: int = 60) -> str:
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+        check=True,
+    )
+    return out.stdout
+
+
+class TestTheSpawnerAcrossInterpreterShutdown:
+    def test_an_atexit_handler_can_still_spawn(self):
+        assert "atexit spoke" in _run_in_fresh_interpreter(_SPAWNS_AT_EXIT)
+
+    def test_a_spawn_during_teardown_is_refused_and_the_process_exits(self):
+        assert "refused" in _run_in_fresh_interpreter(_SPAWNS_DURING_TEARDOWN, timeout=15)
+
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG is Linux-only"
+    )
+    def test_a_probe_a_non_daemon_thread_awaits_is_not_signalled_at_return(self):
+        assert "probe spoke 0" in _run_in_fresh_interpreter(_LIVE_PROBE_AT_RETURN)
 
 
 _POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="spawns a real /bin/sh watcher")
