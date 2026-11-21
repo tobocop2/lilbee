@@ -323,6 +323,21 @@ async def test_e_opens_the_engine_step_and_saves_without_picking_the_model() -> 
         assert modal.query_one("#picker-list", ModelList).highlighted == 0
 
 
+async def test_the_arrow_keys_move_the_highlight_and_hand_focus_to_the_list() -> None:
+    app = _PickerApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        modal = await _open(app, pilot)
+        ml = modal.query_one("#picker-list", ModelList)
+        await pilot.press("down")
+        assert ml.highlighted == 1
+        assert app.focused is ml
+        await pilot.press("slash")
+        assert app.focused is modal.query_one("#picker-search", Input)
+        await pilot.press("up")
+        assert ml.highlighted == 0
+        assert app.focused is ml
+
+
 async def test_e_keeps_the_highlight_on_the_row_it_changed() -> None:
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
