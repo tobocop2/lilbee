@@ -3539,21 +3539,7 @@ class FleetProvider:
                 if busy:
                     continue
                 self._log_dropped_groups(changed, old, new)
-                # Stop phase: free the changed groups' VRAM before their replacements
-                # (or another group's grown plan) spawn against it. The clients have
-                # drained already, and a request still running on one ends with the
-                # error of its restart when its server stops.
-                for group in sorted(changed, key=lambda g: g.value):
-                    with self._lock:
-                        for role in [r for r, g in self._role_group.items() if g is group]:
-                            message = _cut_message(
-                                role, stuck=role in stuck, replanned=group in replanned
-                            )
-                            for client in drained.pop(role, []):
-                                client.restart_message = message
-                        swap = self._drop_group(group)
-                    if swap is not None:
-                        swap.shutdown()
+                self._stop_groups(changed, replanned, stuck, drained)
                 # Start phase: spawn the changed groups present in the new plan.
                 to_start = sorted(changed & set(new), key=lambda g: g.value)
                 for index, group in enumerate(to_start):
@@ -3585,6 +3571,29 @@ class FleetProvider:
                     restarted.extend(_by_role(group_launches))
                 self._restamp_kept(running - changed, origin)
                 return restarted
+
+    def _stop_groups(
+        self,
+        changed: set[SwapGroup],
+        replanned: set[SwapGroup],
+        stuck: frozenset[WorkerRole],
+        drained: dict[WorkerRole, list[LlamaServerClient]],
+    ) -> None:
+        """Stop the *changed* groups, so their VRAM is free before a replacement spawns.
+
+        The clients in *drained* have drained already. Each leaves *drained* with the
+        error line of its restart, so a request still running on one ends with that
+        line when its server stops.
+        """
+        for group in sorted(changed, key=lambda g: g.value):
+            with self._lock:
+                for role in [r for r, g in self._role_group.items() if g is group]:
+                    message = _cut_message(role, stuck=role in stuck, replanned=group in replanned)
+                    for client in drained.pop(role, []):
+                        client.restart_message = message
+                swap = self._drop_group(group)
+            if swap is not None:
+                swap.shutdown()
 
     def _record_failed_starts(
         self,
