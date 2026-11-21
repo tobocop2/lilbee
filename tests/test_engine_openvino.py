@@ -272,8 +272,14 @@ def test_s12_a_pack_for_the_engine_is_not_published_yet() -> None:
 
 
 _OPENVINO_CELL = "linux-x86_64-openvino"
-# The OpenVINO runtime licence, as the archive names it (docs/licensing/readme.txt).
+# The Intel term of the RHEL 8 archive. The PyPI wheel the pack ships is Apache-2.0.
 _INTEL_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
+# The terms of the files the pack ships: llama.cpp and its vendored files (MIT, ISC, MIT-0,
+# Unlicense, BSD-3-Clause, BSD-2-Clause), OpenVINO, oneTBB and oneDNN (Apache-2.0), hwloc
+# (BSD-3-Clause) and the OpenCL loader (BSD-2-Clause).
+_PACK_EXPRESSION = (
+    "MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT-0 AND Unlicense"
+)
 
 
 def _publish_llama_cells(monkeypatch: pytest.MonkeyPatch, cells: dict[str, str]) -> None:
@@ -310,18 +316,19 @@ def test_pack_a_vulkan_or_cpu_llama_cpp_pack_is_not_the_openvino_pack(
     assert (pin["platforms"], pin["sha256"]) == ({}, None)
 
 
-def test_licence_the_pack_names_the_intel_runtime_licence() -> None:
+def test_licence_the_pack_declares_the_terms_of_the_files_it_ships() -> None:
     (expression,) = OPENVINO.pin_record()["licenses"]
-    assert _INTEL_RUNTIME_TERM in expression.split(" AND ")
+    assert expression == _PACK_EXPRESSION
+    assert _INTEL_RUNTIME_TERM not in expression
 
 
-def test_licence_a_published_pack_is_refused_until_the_runtime_licence_is_ruled(
+def test_licence_a_published_pack_passes_the_licence_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _publish_llama_cells(monkeypatch, {_OPENVINO_CELL: "a" * 64})
     lock = choice.pin_lock(OPENVINO.pin_record())
-    with pytest.raises(engine_store.LicenceRefusedError, match=_INTEL_RUNTIME_TERM):
-        engine_store._check_licences(lock)
+    engine_store._check_licences(lock)
+    assert engine_store.licence_permitted(_PACK_EXPRESSION) is True
 
 
 def test_the_adapter_ships_in_the_choice_table() -> None:

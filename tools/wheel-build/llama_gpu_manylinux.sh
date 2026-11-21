@@ -9,9 +9,8 @@
 #   BIN_DIR                       the wheel bin/ directory (bind mounted)
 #   OWNER                         uid:gid that owns the files left behind
 #   LICENSE_DIR                   rocm and openvino: where the runtime licence texts go
-#   OPENVINO_LICENCE_RULING       openvino only: "accepted" once the owner accepts the runtime licence
 # Writes BIN_DIR/* and, for rocm, LICENSE_DIR/LICENSE-ROCm-*; for openvino,
-# LICENSE_DIR/LICENSE-OpenVINO-*, LICENSE-oneTBB, LICENSE-ocl-icd and THIRD-PARTY/openvino/.
+# LICENSE_DIR/LICENSE-OpenVINO-Apache-2.0, LICENSE-oneTBB, LICENSE-ocl-icd and THIRD-PARTY/openvino/.
 #
 # Every build uses GGML_BACKEND_DL and CPU_ALL_VARIANTS with OpenMP off, as the CPU pack does.
 # The Vulkan loader and the six ROCm host libraries (see assert_rocm_host_libs.sh) stay with
@@ -26,15 +25,6 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${script_dir}/../../engine-versions.env"
 jobs="$(nproc)"
-
-# The OpenVINO runtime libraries are under the Intel OpenVINO Distribution License, and the oneTBB
-# notice names GPL-3.0 code with the GCC Runtime Library Exception (engines/openvino.env). The
-# check runs before any install or download.
-if [ "${BACKEND}" = openvino ] && [ "${OPENVINO_LICENCE_RULING:-}" != accepted ]; then
-  echo "The OpenVINO pack ships the OpenVINO runtime under the Intel OpenVINO Distribution License." >&2
-  echo "Set OPENVINO_LICENCE_RULING=accepted after the owner accepts that licence." >&2
-  exit 3
-fi
 
 df -h / | tail -1
 dnf install -y gcc-toolset-13-gcc-c++ xz
@@ -94,14 +84,26 @@ REPO
     dnf install -y dnf-plugins-core
     dnf config-manager --set-enabled crb
     dnf install -y opencl-headers ocl-icd-devel
-    ov_archive=/tmp/openvino.tgz
-    curl -fsSL --retry 3 -o "${ov_archive}" "${OPENVINO_ARCHIVE_URL}"
-    echo "${OPENVINO_ARCHIVE_SHA256}  ${ov_archive}" | sha256sum -c -
-    ov_root=/opt/openvino
-    mkdir -p "${ov_root}"
-    tar -xzf "${ov_archive}" -C "${ov_root}" --strip-components=1
-    export OpenVINO_DIR="${ov_root}/runtime/cmake"
-    export TBB_DIR="${ov_root}/runtime/3rdparty/tbb/lib/cmake/TBB"
+    # The PyPI wheel holds the libraries and cache.json in openvino/libs, the cmake configs of
+    # OpenVINO and oneTBB in openvino/cmake, and its licence texts in the dist-info.
+    fetch_checked() { # <url> <sha256> <file>
+      curl -fsSL --retry 3 -o "$3" "$1"
+      echo "$2  $3" | sha256sum -c -
+    }
+    ov_wheel=/tmp/openvino.whl
+    fetch_checked "${OPENVINO_WHEEL_URL}" "${OPENVINO_WHEEL_SHA256}" "${ov_wheel}"
+    ov_unpack=/opt/openvino-wheel
+    mkdir -p "${ov_unpack}"
+    python -m zipfile -e "${ov_wheel}" "${ov_unpack}"
+    ov_root="${ov_unpack}/openvino"
+    ov_dist="${ov_unpack}/openvino-${OPENVINO_VERSION}.dist-info/licenses"
+    # The notice and licence of oneTBB come from its own source tree, not from the OpenVINO copy.
+    ov_tbb_notice=/tmp/onetbb-third-party-programs.txt
+    ov_tbb_licence=/tmp/onetbb-LICENSE.txt
+    fetch_checked "${ONETBB_NOTICE_URL}" "${ONETBB_NOTICE_SHA256}" "${ov_tbb_notice}"
+    fetch_checked "${ONETBB_LICENSE_URL}" "${ONETBB_LICENSE_SHA256}" "${ov_tbb_licence}"
+    export OpenVINO_DIR="${ov_root}/cmake"
+    export TBB_DIR="${ov_root}/cmake"
     backend_args=(-DGGML_OPENVINO=ON -DGGML_VULKAN=OFF -DGGML_HIP=OFF)
     ;;
   cpu)
@@ -160,11 +162,11 @@ case "${BACKEND}" in
     # builds its graph in memory and links neither. The Intel GPU compute runtime and the NPU
     # driver stay with the host.
     while IFS= read -r -d '' lib; do copy_one "${lib}"; done < <(
-      find "${ov_root}/runtime/lib/intel64" "${ov_root}/runtime/3rdparty/tbb/lib" -maxdepth 1 -type f -name 'lib*.so*' \
+      find "${ov_root}/libs" -maxdepth 1 -type f -name 'lib*.so*' \
         ! -name 'libopenvino_onnx_frontend*' ! -name 'libopenvino_paddle_frontend*' \
         ! -name 'libopenvino_tensorflow*' ! -name 'libopenvino_pytorch_frontend*' \
         ! -name 'libopenvino_jax_frontend*' ! -name 'libopenvino_c.so*' ! -name 'libtbbmalloc_proxy*' -print0)
-    cp "${ov_root}/runtime/lib/intel64/cache.json" "${BIN_DIR}/cache.json"
+    cp "${ov_root}/libs/cache.json" "${BIN_DIR}/cache.json"
     copy_one "$(ldconfig -p | awk '$1 == "libOpenCL.so.1" { print $NF; exit }')"
     for f in "${BIN_DIR}"/libopenvino* "${BIN_DIR}"/libtbb* "${BIN_DIR}"/libhwloc* "${BIN_DIR}"/libOpenCL*; do
       # shellcheck disable=SC2016  # $ORIGIN is a literal for the dynamic loader
@@ -173,16 +175,16 @@ case "${BACKEND}" in
     for plugin in intel_cpu intel_gpu intel_npu auto hetero; do
       test -f "${BIN_DIR}/libopenvino_${plugin}_plugin.so"
     done
-    lic="${ov_root}/docs/licensing"
-    cp "${lic}/EULA.txt" "${LICENSE_DIR}/LICENSE-OpenVINO-EULA"
-    cp "${lic}/Apache_license.txt" "${LICENSE_DIR}/LICENSE-OpenVINO-Apache-2.0"
-    cp "${ov_root}/runtime/3rdparty/tbb/TBB-LICENSE" "${LICENSE_DIR}/LICENSE-oneTBB"
+    lic="${ov_dist}/licensing"
+    cp "${ov_dist}/LICENSE" "${LICENSE_DIR}/LICENSE-OpenVINO-Apache-2.0"
+    cp "${ov_tbb_licence}" "${LICENSE_DIR}/LICENSE-oneTBB"
     cp /usr/share/licenses/ocl-icd/COPYING "${LICENSE_DIR}/LICENSE-ocl-icd"
     rpm -q --qf 'ocl-icd: %{LICENSE}\n' ocl-icd
     mkdir -p "${LICENSE_DIR}/THIRD-PARTY/openvino"
-    for f in readme.txt redist.txt runtime-third-party-programs.txt onetbb_third-party-programs.txt onednn_third-party-programs.txt; do
+    for f in runtime-third-party-programs.txt onednn_third-party-programs.txt; do
       cp "${lic}/${f}" "${LICENSE_DIR}/THIRD-PARTY/openvino/${f}"
     done
+    cp "${ov_tbb_notice}" "${LICENSE_DIR}/THIRD-PARTY/openvino/onetbb_third-party-programs.txt"
     chown -R "${OWNER}" "${LICENSE_DIR}"/LICENSE-OpenVINO-* "${LICENSE_DIR}/LICENSE-oneTBB" \
       "${LICENSE_DIR}/LICENSE-ocl-icd" "${LICENSE_DIR}/THIRD-PARTY/openvino"
     ;;

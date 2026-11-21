@@ -643,8 +643,9 @@ OpenVINO serves chat on the CPU, an Intel GPU or an Intel NPU. lilbee offers it 
 computer with an Intel GPU or an Intel NPU. On the NPU, a role runs with one slot and a
 context of at most 512 tokens. The OpenVINO pack carries the OpenVINO runtime, but not the
 Intel GPU compute runtime or the Intel NPU driver. Install those from your distribution or from
-Intel. The OpenVINO runtime is under the Intel OpenVINO Distribution License, which is not on
-the permissive list of lilbee, so an install refuses the pack until that licence is accepted.
+Intel. The OpenVINO runtime in the pack is under Apache-2.0, so no licence step is needed.
+lilbee does not publish the OpenVINO pack yet, so `lilbee engine install openvino` reports that
+no pack is published.
 
 **Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 

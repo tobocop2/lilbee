@@ -36,15 +36,10 @@ _VERSION = _LLAMA_PACK_VERSION
 _PACK_ENGINE = EngineName.LLAMA.value
 _BACKEND = "openvino"
 _TOOL = "llama-server"
-# The License-Expression of the pack: the llama.cpp terms of the Linux packs, the OpenVINO runtime
-# under its Intel distribution licence, oneTBB and oneDNN (Apache-2.0), hwloc (BSD-3-Clause) and
-# the OpenCL loader (BSD-2-Clause). The Intel term is not on the permissive list, so an install
-# refuses the pack until that licence is ruled on.
-_RUNTIME_TERM = "LicenseRef-Intel-OpenVINO-Distribution-License"
-_LICENCES = [
-    f"MIT AND {_RUNTIME_TERM} AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause "
-    "AND ISC AND MIT-0 AND Unlicense"
-]
+# The License-Expression of the pack: the terms of the llama.cpp Linux packs, which cover the
+# OpenVINO runtime, oneTBB and oneDNN (Apache-2.0), hwloc (BSD-3-Clause) and the OpenCL loader
+# (BSD-2-Clause). The OpenVINO runtime comes from the Apache-2.0 PyPI wheel.
+_LICENCES = ["MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT-0 AND Unlicense"]
 _DEVICE_VAR = "GGML_OPENVINO_DEVICE"
 _CPU_DEVICE = "CPU"
 _GPU_DEVICE = "GPU"
