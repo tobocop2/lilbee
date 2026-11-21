@@ -531,6 +531,7 @@ async def test_picker_enter_selects_first_row_and_arrows_reach_the_list() -> Non
                 ModelOption(label="model-a", ref="hf:org/a"),
                 ModelOption(label="model-b", ref="hf:org/b"),
             ],
+            pick_later=picked.append,
         )
         app.push_screen(modal, picked.append)
         await pilot.pause()

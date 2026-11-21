@@ -388,11 +388,15 @@ class ModelPickerButton(Static, can_focus=True):
         # modal (ref "" disables it) so disabling isn't only a pill click.
         if self._is_nullable() and getattr(cfg, self._key):
             options.append(ModelOption(label=msg.MODEL_PICKER_TURN_OFF, ref=""))
-        modal = ModelPickerModal(scope=self._scope, options=options)
+        modal = ModelPickerModal(scope=self._scope, options=options, pick_later=self._apply_pick)
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
         self._focus_chat_prompt()
+        self._apply_pick(ref)
+
+    def _apply_pick(self, ref: str | None) -> None:
+        """Put the picked model in the role; a late pick leaves the focus where the user is."""
         if ref is not None and ref == getattr(cfg, self._key):
             return
         # Chat swaps reset services in _commit_after_change -> apply_model_change,

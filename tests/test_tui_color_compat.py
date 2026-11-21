@@ -364,6 +364,7 @@ def _screen_kwargs(cls_name: str) -> dict:
         "ModelPickerModal": {
             "scope": "chat",
             "options": [ModelOption("Qwen3 0.6B", "Qwen/Qwen3-0.6B-GGUF")],
+            "pick_later": lambda _ref: None,
         },
     }.get(cls_name, {})
 

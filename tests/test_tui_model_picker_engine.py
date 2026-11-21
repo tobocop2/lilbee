@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import threading
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -25,6 +25,8 @@ from lilbee.cli.tui.screens.settings_engines import (
     ENGINES_PANE_ID,
     TABLE_ID,
 )
+from lilbee.cli.tui.task_queue import TaskStatus
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList
 from lilbee.core.config import cfg
@@ -70,10 +72,14 @@ class _PickerApp(LilbeeAppHost):
     def __init__(self) -> None:
         super().__init__()
         self.results: list[str | None] = []
+        self.later: list[str] = []
 
     def on_mount(self) -> None:
         self.push_screen(
-            ModelPickerModal(scope="chat", options=list(self.options)), self.results.append
+            ModelPickerModal(
+                scope="chat", options=list(self.options), pick_later=self.later.append
+            ),
+            self.results.append,
         )
 
 
@@ -251,7 +257,7 @@ async def test_enter_enter_with_no_saved_engine_saves_nothing() -> None:
         assert cfg.engine_choices is None
 
 
-async def test_picking_another_engine_saves_it_and_returns_the_model() -> None:
+async def test_another_engine_closes_the_picker_and_the_model_follows_the_save() -> None:
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await _open(app, pilot)
@@ -259,8 +265,11 @@ async def test_picking_another_engine_saves_it_and_returns_the_model() -> None:
         step = await _engine_step(app, pilot)
         step.query_one(OptionList).highlighted = OPENVINO_ROW
         await pilot.press("enter")
-        assert await wait_until(pilot, lambda: app.results == [GGUF_REF])
+        assert await wait_until(pilot, lambda: app.results == [None])
+        assert not isinstance(app.screen, ModelPickerModal | EnginePickerModal)
+        assert await wait_until(pilot, lambda: app.later == [GGUF_REF])
         assert _stored() == {GGUF_REF: "openvino"}
+        assert app.results == [None]
 
 
 async def test_escape_in_the_engine_step_returns_to_the_model_list_and_changes_nothing() -> None:
@@ -353,13 +362,61 @@ async def test_e_keeps_the_highlight_on_the_row_it_changed() -> None:
         assert modal.query_one("#picker-list", ModelList).highlighted == 1
 
 
-async def test_ctrl_e_opens_the_engine_step_from_the_search_field() -> None:
+async def test_ctrl_l_opens_the_engine_step_from_the_search_field() -> None:
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
         modal = await _open(app, pilot)
         assert app.focused is modal.query_one("#picker-search", Input)
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+l")
         await _engine_step(app, pilot)
+
+
+async def test_ctrl_l_opens_the_engine_step_for_the_match_after_a_search() -> None:
+    app = _PickerApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        modal = await _open(app, pilot)
+        await pilot.press("o", "t", "h")
+        assert await wait_until(pilot, lambda: len(_rows(modal)) == 2)
+        await pilot.press("ctrl+l")
+        step = await _engine_step(app, pilot)
+        assert step._subtitle == "Other"
+
+
+async def test_ctrl_e_in_the_search_field_moves_the_cursor_to_the_end() -> None:
+    app = _PickerApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        modal = await _open(app, pilot)
+        search = modal.query_one("#picker-search", Input)
+        await pilot.press("g", "e", "m", "home")
+        assert search.cursor_position == 0
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert search.cursor_position == len("gem")
+        assert isinstance(app.screen, ModelPickerModal)
+
+
+async def test_a_letter_typed_on_the_list_goes_on_into_the_search() -> None:
+    app = _PickerApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        modal = await _open(app, pilot)
+        search = modal.query_one("#picker-search", Input)
+        await pilot.press("g", "down")
+        assert app.focused is modal.query_one("#picker-list", ModelList)
+        await pilot.press("m")
+        assert search.value == "gm"
+        assert app.focused is search
+        await pilot.press("a")
+        assert search.value == "gma"
+
+
+async def test_e_on_the_list_is_a_letter_of_the_search_after_the_user_started_typing() -> None:
+    app = _PickerApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        modal = await _open(app, pilot)
+        await pilot.press("g", "down", "e")
+        await pilot.pause()
+        assert modal.query_one("#picker-search", Input).value == "ge"
+        assert isinstance(app.screen, ModelPickerModal)
 
 
 async def test_e_with_the_saved_engine_picked_again_writes_nothing() -> None:
@@ -367,7 +424,7 @@ async def test_e_with_the_saved_engine_picked_again_writes_nothing() -> None:
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await _open(app, pilot)
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+l")
         await _engine_step(app, pilot)
         with mock.patch("lilbee.cli.tui.screens.model_picker.choose_for_model") as save:
             await pilot.press("enter")
@@ -382,44 +439,109 @@ async def test_e_says_so_when_one_engine_loads_the_model_or_no_model_is_highligh
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
         modal = await _open(app, pilot)
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+l")
         assert await wait_until(pilot, lambda: msg.MODEL_INFO_NO_ENGINE_CHOICE in _toasts(app))
         assert isinstance(app.screen, ModelPickerModal)
         modal.query_one("#picker-list", ModelList).highlighted = None
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+l")
         assert not isinstance(app.screen, EnginePickerModal)
 
 
-async def test_a_download_that_ends_after_the_picker_closed_does_nothing() -> None:
+async def test_a_repaint_after_the_picker_closed_does_nothing() -> None:
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
         modal = await _open(app, pilot)
         await pilot.press("escape")
         assert await wait_until(pilot, lambda: app.results == [None])
-        modal._finish(GGUF_REF)
         modal._repaint()
         await pilot.pause()
         assert app.results == [None]
+        assert app.later == []
 
 
-async def test_an_engine_that_needs_a_download_returns_the_model_only_after_the_install() -> None:
+def _offer_openvino_for_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The engine step offers openvino as an engine that needs a download."""
+    monkeypatch.setattr(
+        engine_service,
+        "engine_options",
+        lambda _model: [
+            engine_service.EngineOption("auto", auto_now="llama.cpp"),
+            engine_service.EngineOption("llama.cpp", bundled=True, backend="metal"),
+            engine_service.EngineOption(
+                "openvino", installed=False, backend="cpu", download_bytes=180_000_000
+            ),
+        ],
+    )
+
+
+async def _pick_openvino_and_confirm_the_download(app: _PickerApp, pilot) -> None:
+    await _open(app, pilot)
+    await pilot.press("enter")
+    step = await _engine_step(app, pilot)
+    step.query_one(OptionList).highlighted = OPENVINO_ROW
+    await pilot.press("enter")
+    assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+    await pilot.press("y")
+
+
+def _engine_tasks(app: LilbeeAppHost) -> list[Any]:
+    queue = app.task_bar.queue
+    return [t for t in [*queue.active_tasks, *queue.history] if t.task_type == "engine"]
+
+
+async def test_an_engine_download_closes_the_picker_and_the_model_follows_the_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_openvino_for_download(monkeypatch)
+    release = threading.Event()
+
+    def install(_name: str, **_kw: Any) -> None:
+        assert release.wait(30)
+
+    monkeypatch.setattr(engine_service, "install", install)
     app = _PickerApp()
-    after: list[Callable[[], object]] = []
-
-    def fake_choose(_app: Any, _ref: str, _option: Any, then: Callable[[], object]) -> None:
-        after.append(then)
-
     async with app.run_test(size=(120, 40)) as pilot:
-        await _open(app, pilot)
-        with mock.patch("lilbee.cli.tui.screens.model_picker.choose_for_model", fake_choose):
-            await pilot.press("enter")
-            step = await _engine_step(app, pilot)
-            step.query_one(OptionList).highlighted = OPENVINO_ROW
-            await pilot.press("enter")
-            assert await wait_until(pilot, lambda: len(after) == 1)
-        assert app.results == []
-        after[0]()
-        assert await wait_until(pilot, lambda: app.results == [GGUF_REF])
+        await _pick_openvino_and_confirm_the_download(app, pilot)
+        assert await wait_until(pilot, lambda: len(_engine_tasks(app)) == 1)
+        assert app.results == [None]
+        assert not any(isinstance(s, ModelPickerModal) for s in app.screen_stack)
+        assert app.later == []
+        assert cfg.engine_choices is None
+        # The user opens the picker again while the install runs: the late finish leaves it.
+        reopened = ModelPickerModal(
+            scope="chat", options=list(_PickerApp.options), pick_later=app.later.append
+        )
+        app.push_screen(reopened)
+        assert await wait_until(pilot, lambda: app.screen is reopened)
+        stack = list(app.screen_stack)
+        release.set()
+        assert await wait_until(pilot, lambda: app.later == [GGUF_REF])
+        assert _stored() == {GGUF_REF: "openvino"}
+        await pilot.pause()
+        assert list(app.screen_stack) == stack
+        assert app.results == [None]
+
+
+async def test_a_failed_engine_install_leaves_the_role_and_fails_the_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _offer_openvino_for_download(monkeypatch)
+
+    def install(_name: str, **_kw: Any) -> None:
+        raise engine_service.EngineInstallRefusedError("No pack of openvino is published yet.")
+
+    monkeypatch.setattr(engine_service, "install", install)
+    app = _PickerApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _pick_openvino_and_confirm_the_download(app, pilot)
+        assert await wait_until(
+            pilot, lambda: any(t.status is TaskStatus.FAILED for t in _engine_tasks(app))
+        )
+        assert _engine_tasks(app)[0].detail == "No pack of openvino is published yet."
+        await pilot.pause()
+        assert app.results == [None]
+        assert app.later == []
+        assert cfg.engine_choices is None
 
 
 async def _open_engines(app: _SettingsApp, pilot) -> Checkbox:

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -177,16 +177,22 @@ def _matches(option: ModelOption, search: str) -> bool:
 
 
 class ModelPickerModal(ModalScreen[str | None]):
-    """Searchable model list. Returns the selected ref or None on cancel."""
+    """Searchable model list. Returns the selected ref, or None on cancel.
+
+    A pick that changes the engine of the model returns None at once, and the role keeps
+    its old model. *pick_later* gets the ref once the new engine is saved, which can wait
+    on a download. The picker has closed by then, so it owns no action that ends late.
+    """
 
     CSS_PATH: ClassVar[str] = "model_picker.tcss"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss(None)", "Cancel", show=True),
         Binding("slash", "focus_search", "Search", show=True),
-        # The search field takes the plain letter, so ctrl+e reaches the engine step from there.
         Binding("e", "change_engine", "Engine", show=True),
-        Binding("ctrl+e", "change_engine", "Engine", show=False, priority=True),
+        # The search field takes the plain letter and keeps ctrl+e for the end of the line,
+        # so ctrl+l reaches the engine step from there and after a search.
+        Binding("ctrl+l", "change_engine", "Engine", show=False, priority=True),
         # Arrow keys reach the list even while the search input has focus, so
         # open -> arrows -> Enter works without knowing about Tab. When the
         # list itself is focused its own cursor bindings win.
@@ -203,16 +209,23 @@ class ModelPickerModal(ModalScreen[str | None]):
         *,
         scope: PickerScope,
         options: list[ModelOption],
+        pick_later: Callable[[str], object],
     ) -> None:
         super().__init__()
         self._scope: PickerScope = scope
+        self._pick_later = pick_later
         self._options = _PickerOptions(options=options)
         self._search_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-root"):
             yield Label(_picker_title(self._scope), id="picker-title")
-            yield Input(placeholder=msg.MODEL_PICKER_SEARCH_PLACEHOLDER, id="picker-search")
+            # No select-all on focus: a letter typed on the list goes on after the search text.
+            yield Input(
+                placeholder=msg.MODEL_PICKER_SEARCH_PLACEHOLDER,
+                id="picker-search",
+                select_on_focus=False,
+            )
             yield ModelList(id="picker-list")
             yield Static(msg.MODEL_PICKER_HINT, id="picker-hint")
 
@@ -288,16 +301,18 @@ class ModelPickerModal(ModalScreen[str | None]):
         return True
 
     def _use_with_engine(self, ref: str, option: engine_service.EngineOption) -> None:
-        """Save the engine, then return the model; keeping the saved engine writes nothing."""
-        if option.name == (_saved_engine(ref) or AUTO):
-            self._finish(ref)
-            return
-        choose_for_model(self.app, ref, option, lambda: self._finish(ref))
+        """Return the model; a new engine is saved first, outside the picker.
 
-    def _finish(self, ref: str) -> None:
-        """Return the model, unless the picker closed while an engine download ran."""
-        if self.is_attached:
+        Keeping the saved engine writes nothing and returns the model at once. A new
+        engine closes the picker with no model, and the model goes to *pick_later* once
+        the engine is saved. A refused download or a failed install leaves the role as it was.
+        """
+        if option.name == (_saved_engine(ref) or AUTO):
             self.dismiss(ref)
+            return
+        app, pick_later = self.app, self._pick_later
+        self.dismiss(None)
+        choose_for_model(app, ref, option, lambda: pick_later(ref))
 
     def action_change_engine(self) -> None:
         """Open the engine picker for the highlighted model; the model stays unchanged."""
@@ -319,6 +334,23 @@ class ModelPickerModal(ModalScreen[str | None]):
         self._options.refresh_engines()
         self._refresh_list(self.query_one("#picker-search", Input).value.strip())
         ml.highlighted = highlighted
+
+    def on_key(self, event: events.Key) -> None:
+        """A character typed on the list goes on into the search field.
+
+        `/` keeps its binding. `e` opens the engine step only while the search field is
+        empty; after the user starts to type, it is a letter of the search.
+        """
+        search = self.query_one("#picker-search", Input)
+        if not event.is_printable or event.key == "slash" or self.app.focused is search:
+            return
+        if event.key == "e" and not search.value:
+            return
+        event.stop()
+        event.prevent_default()
+        search.focus()
+        search.cursor_position = len(search.value)
+        search.insert_text_at_cursor(event.character or "")
 
     def action_focus_search(self) -> None:
         self.query_one("#picker-search", Input).focus()
