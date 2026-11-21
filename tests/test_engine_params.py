@@ -324,48 +324,18 @@ class TestEmbedTokenCap:
     def test_cap_never_drops_below_one(self) -> None:
         assert ep.embed_token_cap(1) == 1
 
-    def test_no_warning_when_the_cap_covers_the_chunk_budget(self, monkeypatch) -> None:
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
+class TestResolveEmbedCtx:
+    @pytest.mark.parametrize("semantic", [False, True])
+    def test_the_window_is_a_chunk_of_tokens_plus_the_headroom(self, monkeypatch, semantic) -> None:
+        """No chunker emits more than chunk_size tokens, so no character count sizes the window."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
+        meta = {"context_length": "8192"}
+        ctx = ep.resolve_embed_ctx(meta, Path("/m/e.gguf"))
+        assert ctx == 512 + ep.INPUT_HEADROOM_TOKENS + ep._EMBED_CTX_MARGIN
+        assert ep.embed_token_cap(ctx) == 512 + ep.INPUT_HEADROOM_TOKENS
 
-    def test_no_warning_when_plain_chunking_sizes_to_the_cap(self, monkeypatch) -> None:
-        """A cap below the chunk budget makes the chunker size to the cap, so there is
-        nothing left to warn about."""
+    def test_a_trained_context_below_the_window_caps_it(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        assert ep.embed_window_warning(2040) is None
-        assert ep.embed_window_warning(504) is None
-
-    def test_no_warning_right_at_the_chunk_budget_boundary(self, monkeypatch) -> None:
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
-
-    def test_semantic_chunking_warns_when_the_window_binds(self, monkeypatch) -> None:
-        """The semantic chunker sizes by characters, so a bound cap loses text there
-        even though the plain path sizes by tokens."""
-        from lilbee.core.health_warnings import WarningCode
-
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        warning = ep.embed_window_warning(2040)
-        assert warning is not None
-        assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
-        assert "2040 tokens per input" in warning.message
-        assert "2048 characters" in warning.message
-        assert "semantic" in warning.message.lower()
-        assert "loses text" in warning.message
-        assert warning.remedy == "Turn off semantic_chunking or lower chunk_size."
-
-    def test_no_warning_when_semantic_chunking_cap_covers_the_char_budget(
-        self, monkeypatch
-    ) -> None:
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
+        assert ep.resolve_embed_ctx({"context_length": "512"}, Path("/m/e.gguf")) == 512

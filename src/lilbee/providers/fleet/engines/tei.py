@@ -11,6 +11,7 @@ from typing import Any
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
+from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
@@ -43,8 +44,6 @@ _CUDA_CELLS = (75, 80, 86, 89, 90, 100, 120)
 """The compute capabilities (major * 10 + minor) a CUDA build exists for."""
 _BATCH_LIMIT = 64
 """The inputs per request: the launch argv sets it on the server, the client splits at it."""
-_RERANK_QUERY_TOKENS = 128
-"""The floor of the batch-token figure for a rerank query; lilbee sets no query limit."""
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
@@ -105,14 +104,14 @@ def _gpu_pick(host: HostCaps) -> BuildPick:
 
 
 def _longest_input_tokens() -> int:
-    """The token ceiling of the longest input lilbee sends: a chunk, plus a rerank query.
+    """The token ceiling of the longest input lilbee sends: a chunk, plus its headroom.
 
     The chunker counts tokens with this server's tokenizer, so a chunk has about ``chunk_size``
-    tokens, and up to 2 more when the sizing leaves out the special tokens. The rerank margin
-    absorbs the difference. The router warms up with one batch of this length, so it must not
-    grow with the context.
+    tokens, and up to 2 more when the sizing leaves out the special tokens. The headroom for a
+    rerank query absorbs the difference. The router warms up with one batch of this length, so
+    it must not grow with the context.
     """
-    return cfg.chunk_size + _RERANK_QUERY_TOKENS
+    return cfg.chunk_size + INPUT_HEADROOM_TOKENS
 
 
 class TeiAdapter:

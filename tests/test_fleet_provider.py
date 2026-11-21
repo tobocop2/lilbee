@@ -1048,22 +1048,6 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
     assert captured["profile"] is sentinel
 
 
-def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
-    """Every serving process passes through adoption, so the window check fires there."""
-    launch = _fake_launch(WorkerRole.EMBED)
-    launch.rerank_mode = None
-    launch.model_id = launch.role
-    seen: list[object] = []
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
-    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda *_a, **_kw: _fake_client())
-    monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
-    )
-    monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
-    FleetProvider()._ensure_fleet()
-    assert seen == [launch]
-
-
 def test_embed_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
@@ -5074,37 +5058,20 @@ class TestEmbedTokenCap:
         assert FleetProvider().embed_token_cap() == 8184
         assert seen == ["org/repo/e.gguf"]
 
-    def test_health_is_clean_when_plain_chunking_sizes_to_the_cap(self, monkeypatch) -> None:
-        """Plain chunking sizes chunks by the model's tokens up to this cap,
-        so health has nothing actionable to report."""
+    @pytest.mark.parametrize("semantic", [False, True])
+    def test_health_names_no_embed_window_below_the_chunk_size(self, monkeypatch, semantic) -> None:
+        """Every chunker cuts its chunks to the served cap in the model's tokens, so a cap
+        below chunk_size loses no text and health has nothing to report."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "semantic_chunking", semantic)
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 504)
-        assert FleetProvider().health_warnings() == []
-
-    def test_health_warns_when_semantic_chunking_will_lose_text(self, monkeypatch) -> None:
-        from lilbee.core.health_warnings import WarningCode
-
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 504)
-        codes = [w.code for w in FleetProvider().health_warnings()]
-        assert codes == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
-
-    def test_health_is_clean_when_the_cap_covers_the_chunk_budget(self, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 2048)
-        assert FleetProvider().health_warnings() == []
-
-    def test_health_is_clean_with_no_resolvable_embedder(self, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: None)
         assert FleetProvider().health_warnings() == []
 
 
 class TestRoutingProviderEmbedCap:
     @staticmethod
     def _routing_over_a_capped_engine(monkeypatch, embedding_model: str):
-        """A RoutingProvider whose local engine would report a cap and a warning."""
+        """A RoutingProvider whose local engine would report a cap and a placement warning."""
         from lilbee.core.health_warnings import HealthWarning, WarningCode
         from lilbee.providers.routing_provider import RoutingProvider
 
@@ -5114,7 +5081,7 @@ class TestRoutingProviderEmbedCap:
         local.embed_token_cap.return_value = 504
         local.reload_notice.return_value = None
         local.health_warnings.return_value = [
-            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
+            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
         ]
         routing._local = local
         return routing
@@ -5124,34 +5091,29 @@ class TestRoutingProviderEmbedCap:
 
         routing = self._routing_over_a_capped_engine(monkeypatch, "org/repo/e.gguf")
         assert routing.embed_token_cap() == 504
-        assert [w.code for w in routing.health_warnings()] == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
 
-    def test_reports_nothing_for_a_remote_embedder(self, monkeypatch) -> None:
-        """The local engine's cap is not the remote embedder's, so it is not reported."""
-        routing = self._routing_over_a_capped_engine(monkeypatch, "openai/text-embedding-3-small")
+    @pytest.mark.parametrize("embedding_model", ["openai/text-embedding-3-small", ""])
+    def test_reports_no_cap_without_a_local_embedder(self, monkeypatch, embedding_model) -> None:
+        """The local engine's cap is not a remote embedder's, so it is not reported."""
+        routing = self._routing_over_a_capped_engine(monkeypatch, embedding_model)
         assert routing.embed_token_cap() is None
-        assert routing.health_warnings() == []
 
-    def test_reports_nothing_with_no_embedder_configured(self, monkeypatch) -> None:
-        routing = self._routing_over_a_capped_engine(monkeypatch, "")
-        assert routing.embed_token_cap() is None
-        assert routing.health_warnings() == []
-
-    def test_keeps_placement_warnings_for_a_remote_embedder(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("embedding_model", ["openai/text-embedding-3-small", ""])
+    def test_keeps_placement_warnings_without_a_local_embedder(
+        self, monkeypatch, embedding_model
+    ) -> None:
         """Placement covers every local role, so it is not gated on the embedder."""
-        from lilbee.core.health_warnings import HealthWarning, WarningCode
+        from lilbee.core.health_warnings import WarningCode
+
+        routing = self._routing_over_a_capped_engine(monkeypatch, embedding_model)
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
+
+    def test_reports_no_warnings_before_a_local_engine_exists(self, monkeypatch) -> None:
         from lilbee.providers.routing_provider import RoutingProvider
 
-        monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
-        routing = RoutingProvider()
-        local = MagicMock()
-        local.reload_notice.return_value = None
-        local.health_warnings.return_value = [
-            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
-            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan"),
-        ]
-        routing._local = local
-        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
+        monkeypatch.setattr(cfg, "embedding_model", "")
+        assert RoutingProvider().health_warnings() == []
 
 
 class _FakeReplica:

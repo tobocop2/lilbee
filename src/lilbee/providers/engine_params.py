@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.engines import EngineAdapter
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
-from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.base import (
     CONTEXT_WINDOW_MARGIN_TOKENS,
     GENERATION_RESERVE_TOKENS,
@@ -43,48 +42,25 @@ EMBED_FALLBACK_CTX = 2048
 _EMBED_CTX_MARGIN = 8
 
 
+INPUT_HEADROOM_TOKENS = 128
+"""Tokens an embed or rerank input carries beyond its chunk: a rerank query, or the title,
+the situating sentence and the prefix of an embed input."""
+
+
 def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
-    """Embed/rerank context: worst-case chunk tokenization, capped by trained context.
+    """Embed/rerank context: a full chunk plus its headroom, capped by trained context.
 
-    The semantic chunker sizes by characters (``chunk_size * CHARS_PER_TOKEN``), and a
-    BPE token is at least one character, so that budget is the token ceiling of any
-    chunk it emits. The window follows it so semantic chunks are never cut at embed
-    time. A trained context below that budget caps the window, and the other chunkers
-    then size chunks at the served cap (see :func:`embed_token_cap`)."""
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
+    Every chunker cuts its chunks to ``chunk_size`` tokens of the embedder's own tokenizer,
+    so that count, not a character count, bounds the input. A trained context below it
+    caps the window, and the chunkers then size chunks at the served cap (see
+    :func:`embed_token_cap`)."""
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
-    return min(train_ctx, cfg.chunk_size * CHARS_PER_TOKEN + _EMBED_CTX_MARGIN)
+    return min(train_ctx, cfg.chunk_size + INPUT_HEADROOM_TOKENS + _EMBED_CTX_MARGIN)
 
 
 def embed_token_cap(ctx: int) -> int:
     """Tokens an embed server truncates one input to, given its per-slot context."""
     return max(1, ctx - _EMBED_CTX_MARGIN)
-
-
-def embed_window_warning(cap: int) -> HealthWarning | None:
-    """The embed-window warning for a real, actionable gap, else None.
-
-    Plain chunking sizes by tokens and stops at *cap*, so it loses no text and needs
-    no warning. Semantic chunking is character-sized, so a bound *cap* loses text there.
-    """
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-
-    if cfg.semantic_chunking:
-        chars = cfg.chunk_size * CHARS_PER_TOKEN
-        if cap >= chars:
-            return None
-        return HealthWarning(
-            code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
-            message=(
-                f"The embedding model accepts {cap} tokens per input, below the {chars} "
-                f"characters that chunk_size {cfg.chunk_size} allows. Semantic chunking "
-                f"sizes chunks by characters, not by the model's tokens, so a chunk over "
-                f"{cap} tokens loses text at embedding time."
-            ),
-            remedy="Turn off semantic_chunking or lower chunk_size.",
-        )
-    return None
 
 
 _LLM_RERANK_HEADROOM = 512

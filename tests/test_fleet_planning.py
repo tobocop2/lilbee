@@ -150,17 +150,16 @@ def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
 
 
 def test_role_ctx_embed_covers_chunk_size_plus_margin(monkeypatch) -> None:
-    # A 32K-trained embedder (and a plain non-LLM reranker) is sized to the chunker's
-    # character budget plus the truncation margin (chunk_size * CHARS_PER_TOKEN + margin
-    # -- the provable token ceiling for a full chunk), not its full context, so its
-    # placement estimate doesn't balloon (200GB+) and starve the role alongside a giant.
+    # A 32K-trained embedder (and a plain non-LLM reranker) is sized to a chunk of
+    # tokens plus the input headroom and the truncation margin, not its full context,
+    # so its placement estimate doesn't balloon (200GB+) and starve the role alongside a giant.
     monkeypatch.setattr(
         "lilbee.providers.engine_params.train_ctx_from_meta",
         lambda _meta, *, fallback, model_path: 32768,
     )
     monkeypatch.setattr(cfg, "chunk_size", 512)
-    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}, engine=LLAMA) == 2056
-    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}, engine=LLAMA) == 2056
+    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}, engine=LLAMA) == 648
+    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}, engine=LLAMA) == 648
 
 
 def test_embed_ctx_token_cap_fits_full_chunk(monkeypatch) -> None:
@@ -5266,40 +5265,6 @@ class TestWarnWhenChatDownsized:
             ctx=ctx,
             built_ctx_target=target,
         )
-
-    def test_stays_quiet_when_plain_chunking_sizes_to_the_cap(self, caplog, monkeypatch) -> None:
-        """Plain chunking sizes chunks by the model's tokens up to this cap,
-        so there is nothing left for the adoption log to flag."""
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", False)
-        launch = self._launch(slots=1, ctx=512, target=0)
-        launch.token_cap = 504
-        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
-            planning_mod.warn_when_embed_window_below_chunk(launch)
-        assert caplog.records == []
-
-    def test_warns_when_semantic_chunking_will_lose_text(self, caplog, monkeypatch) -> None:
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        launch = self._launch(slots=1, ctx=512, target=0)
-        launch.token_cap = 504
-        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
-            planning_mod.warn_when_embed_window_below_chunk(launch)
-        assert len(caplog.records) == 1
-        assert "504 tokens" in caplog.records[0].message
-        assert "loses text" in caplog.records[0].message
-        assert "Turn off semantic_chunking" in caplog.records[0].message
-
-    def test_stays_quiet_when_the_embed_window_covers_the_chunk_budget(
-        self, caplog, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(cfg, "chunk_size", 512)
-        launch = self._launch(slots=1, ctx=2056, target=0)
-        launch.token_cap = 2048
-        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
-            planning_mod.warn_when_embed_window_below_chunk(launch)
-            planning_mod.warn_when_embed_window_below_chunk(self._launch(slots=1, ctx=1, target=0))
-        assert caplog.records == []
 
     def test_warns_when_window_is_below_target(self, caplog) -> None:
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):

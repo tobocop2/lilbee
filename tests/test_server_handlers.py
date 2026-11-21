@@ -169,8 +169,8 @@ class TestHealth:
         assert (await handlers.health()).warnings == []
 
     async def test_health_carries_the_embed_cap_and_the_engine_warnings(self, mock_svc):
-        """A small-window embedder is a serving degradation, so health reports the
-        cap the chunker bounds to and the engine's warning beside the store's."""
+        """Health reports the cap the chunker bounds to and the engine's warnings
+        beside the store's."""
         from lilbee.core.health_warnings import HealthWarning, WarningCode
 
         mock_svc.store.health_warnings.return_value = [
@@ -178,13 +178,13 @@ class TestHealth:
         ]
         mock_svc.provider.embed_token_cap.return_value = 504
         mock_svc.provider.health_warnings.return_value = [
-            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
+            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan")
         ]
         result = await handlers.health()
         assert result.embed_token_cap == 504
         assert [w.code for w in result.warnings] == [
             WarningCode.FTS_UNAVAILABLE,
-            WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+            WarningCode.PLACEMENT_DIVERGED,
         ]
 
     async def test_chat_status_is_not_started_when_a_finished_warm_is_stale(self, mock_svc):
