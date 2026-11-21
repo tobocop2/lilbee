@@ -11,11 +11,12 @@ import pytest
 from lilbee.app import placement as app_placement
 from lilbee.app.engine_choice import BookReading
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import gpu_hardware, planning
 from lilbee.providers.fleet.placement import unseen_card_reason
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.roles import WorkerRole
-from tests._fleet_engines import CardEngine, Role, cards_of, prepare_host
+from tests._fleet_engines import CardEngine, Role, cards_of, engines_for_all_roles, prepare_host
 
 ROLES = (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1))
 CHAT_ON_CARD_ZERO = '"chat": {"devices": [0], "target": "gpu"}'
@@ -256,3 +257,20 @@ def test_a_plan_with_no_snapshot_has_no_engine_read_to_refuse_against(
     plan = planning.plan_launches(None, {d.index: d for d in devices}, devices, engines=engines)
     assert {launch.role for launch in plan.launches} == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert plan.refused_roles == {}
+
+
+class _BrokenLaunchEngine(CardEngine):
+    """An engine whose launch build fails where a plain provider error is not a refusal."""
+
+    def launch_argv(self, spec, request) -> list[str]:
+        raise ProviderError("the launch cannot build its command line")
+
+
+def test_a_plain_provider_error_inside_the_launch_is_not_swallowed_as_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the card and rank-pool refusals are caught; any other launch error escapes the plan."""
+    _host(tmp_path, monkeypatch, EMBED_ON_CARD_ZERO)
+    engine = _BrokenLaunchEngine("wide", tmp_path / "wide-server", ROLES, cards_of((4, 4)))
+    with pytest.raises(ProviderError, match="the launch cannot build its command line"):
+        planning.plan_all_launches(engines=engines_for_all_roles(engine))
