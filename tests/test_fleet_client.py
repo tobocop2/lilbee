@@ -1917,6 +1917,33 @@ def test_close_leaves_injected_client_open() -> None:
     assert not http.is_closed
 
 
+def test_a_trailing_slash_in_the_base_url_is_dropped() -> None:
+    c = LlamaServerClient("http://gpu0/", "m", profile=LLAMA.request_profile(WorkerRole.CHAT))
+    try:
+        assert c._base == "http://gpu0"
+        assert c.sent(httpx.Request("POST", "http://gpu0/v1/chat/completions"))
+    finally:
+        c.close()
+
+
+def test_the_owned_client_carries_the_timeout_it_was_given() -> None:
+    c = LlamaServerClient(
+        "http://gpu0", "m", timeout=9.5, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
+    try:
+        assert c._timeout == 9.5
+        assert c._http.timeout.connect == 9.5
+        assert c._http.timeout.read == 9.5
+    finally:
+        c.close()
+
+
+def test_the_unhealthy_stamp_starts_at_zero() -> None:
+    c = _client()
+    assert c._unhealthy_since == 0.0
+    assert c.healthy is True
+
+
 class TestParseSseDeltas:
     def test_non_data_line_is_empty(self) -> None:
         assert _parse_sse_deltas(
