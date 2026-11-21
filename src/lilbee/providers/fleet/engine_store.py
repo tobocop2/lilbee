@@ -29,7 +29,7 @@ from lilbee.catalog.download import (
 )
 from lilbee.catalog.download_progress import ProgressCallback
 from lilbee.core.security import FileLockUnavailableError, file_lock
-from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS
+from lilbee.providers.fleet.engine_crates import MPL_CRATE_CHECKSUMS, MPL_PYPI_CHECKSUMS
 from lilbee.providers.fleet.engine_record import PACKAGES_URL
 from lilbee.providers.fleet.wheel_server import server_entry, server_problems
 from lilbee.runtime.cancellation import CancelSignal
@@ -86,15 +86,31 @@ _CRATE_LINE = re.compile(
 )
 
 
+_PYPI_HOST = "files.pythonhosted.org"
+"""The host of the PyPI source archive URL in a pack notice. Nothing fetches it."""
+_PYPI_LINE = re.compile(
+    rf"https://{re.escape(_PYPI_HOST)}/packages/source/(?P<initial>\w)/(?P<package>[\w.-]+)/"
+    r"(?P=package)-(?P<version>\d[\w.+-]*)\.tar\.gz[ \t]+(?P<sha256>[0-9a-f]{64})"
+)
+
+
+def _listed_source(line: str) -> bool:
+    """True for a crates.io or PyPI source URL with the sha256 that the list holds for it."""
+    if crate := _CRATE_LINE.fullmatch(line):
+        return MPL_CRATE_CHECKSUMS.get((crate["crate"], crate["version"])) == crate["sha256"]
+    if package := _PYPI_LINE.fullmatch(line):
+        return (
+            package["initial"] == package["package"][0]
+            and MPL_PYPI_CHECKSUMS.get((package["package"], package["version"]))
+            == package["sha256"]
+        )
+    return False
+
+
 def _mpl_pointer(text: str) -> bool:
-    """True when every line is a crates.io download URL and the sha256 that the list holds."""
+    """True when every line is a listed crates.io or PyPI source URL and its sha256."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    matches = [_CRATE_LINE.fullmatch(line) for line in lines]
-    return bool(lines) and all(
-        match is not None
-        and MPL_CRATE_CHECKSUMS.get((match["crate"], match["version"])) == match["sha256"]
-        for match in matches
-    )
+    return bool(lines) and all(_listed_source(line) for line in lines)
 
 
 # The pin of an engine carries no archive, so the pin check only screens the licence terms. The
@@ -112,7 +128,8 @@ NOTICE_RULES: Mapping[str, NoticeRule] = {
         ),
     ),
     "OpenSSL": NoticeRule("NOTICE-OpenSSL", _holds(r"(?s)(?=.*OpenSSL Project)(?=.*Eric Young)")),
-    # One line per crate: the crates.io download URL of the crate, then its sha256.
+    # One line per crate or Python package: the crates.io download URL of the crate or the PyPI
+    # URL of the source archive, then its sha256.
     "MPL-2.0": NoticeRule("SOURCE-MPL-2.0", _mpl_pointer),
 }
 
