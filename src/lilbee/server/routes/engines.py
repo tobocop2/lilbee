@@ -10,7 +10,7 @@ from litestar import delete, get, post, put
 from litestar.connection import ASGIConnection
 from litestar.exceptions import HTTPException
 from litestar.handlers.base import BaseRouteHandler
-from litestar.params import FromPath
+from litestar.params import FromPath, FromQuery
 
 import lilbee.app.engine_service as service
 from lilbee.core.config import cfg
@@ -85,10 +85,18 @@ async def engine_builds_route() -> EngineBuildsResponse:
     guards=[_require_engines_enabled],
 )
 async def engine_remove_route(
-    engine: FromPath[str], version: FromPath[str], backend: FromPath[str]
+    engine: FromPath[str],
+    version: FromPath[str],
+    backend: FromPath[str],
+    confirm_embed_change: FromQuery[bool] = False,
 ) -> EngineRemovedResponse:
-    """Remove one installed engine build. Refused unless allow_http_engines is enabled."""
-    removed = await _call(lambda: service.remove_build(engine, version, backend))
+    """Remove one installed engine build. Refused unless allow_http_engines is enabled.
+
+    A build that the embedder runs on answers 409 until confirm_embed_change is true.
+    """
+    removed = await _call(
+        lambda: service.remove_build(engine, version, backend, confirmed=confirm_embed_change)
+    )
     return EngineRemovedResponse(removed=removed)
 
 

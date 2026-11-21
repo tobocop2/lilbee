@@ -926,6 +926,10 @@ ENGINE_REMOVE_OUTSIDE_STORE = (
     "The folder of {build} is a link to a place outside the engines folder {folder}. "
     "lilbee does not remove it. Delete the link yourself."
 )
+ENGINE_REMOVE_EMBED_MESSAGE = (
+    "Library {library} holds {documents} documents. {build} runs the embedding model. "
+    "Without it the vectors can become unusable by the index. Continue?"
+)
 SETTINGS_ENGINES_TAB = "Engines"
 ENGINES_TABLE_TITLE = "Engines"
 ENGINES_PREFERRED_LABEL = "Preferred engine"

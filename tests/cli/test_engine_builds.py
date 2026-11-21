@@ -27,7 +27,7 @@ def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "models"
 
 
-def install(models_dir: Path) -> None:
+def install(models_dir: Path, version: str = "1") -> None:
     wheel = models_dir.parent / "fx.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         tool = zipfile.ZipInfo("lilbee_engine_fx/bin/server")
@@ -36,7 +36,7 @@ def install(models_dir: Path) -> None:
         archive.writestr("lilbee_engine_fx-1.dist-info/METADATA", "License-Expression: MIT\n")
     sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
     EngineStore(engines_root(models_dir)).install_from_wheel(
-        PinLock("fx", "1", "cpu", {}, ("MIT",), sha, "server"), wheel
+        PinLock("fx", version, "cpu", {}, ("MIT",), sha, "server"), wheel
     )
 
 

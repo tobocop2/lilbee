@@ -316,7 +316,7 @@ def test_a_rest_remove_does_not_block_the_event_loop(monkeypatch: pytest.MonkeyP
     released = threading.Event()
     waited: list[bool] = []
 
-    def blocking_remove(*_args: str) -> str:
+    def blocking_remove(*_args: str, **_kwargs: bool) -> str:
         waited.append(released.wait(timeout=3))
         return "fx 1 (cpu)"
 

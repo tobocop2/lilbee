@@ -463,6 +463,12 @@ one Enter keeps the engine. The REST routes and the MCP tools take
 `embed_engine_confirm_required`, the library name and the document count. Send
 the request again with `confirm_embed_change` set to `true` to write the change.
 
+Removing the engine build that the embedder runs on asks the same question,
+because the next start runs the canary check on the index. `engine remove`,
+`/engine remove`, the Engines tab in Settings, the `engine_remove` tool and
+`DELETE /api/engines/{engine}/{version}/{backend}` take the same answer. The
+REST route reads `confirm_embed_change` from the query.
+
 #### See the installed engines
 
 Run `lilbee engine list` to see the engine builds installed beside the models.

@@ -238,11 +238,34 @@ class EnginesPane(VerticalScroll):
             text = msg.ENGINE_REMOVE_MESSAGE.format(build=build)
             self.app.push_screen(ConfirmDialog(title, text), answered)
 
+    def _confirm_remove(
+        self, row: EngineRow, asked: engine_service.EmbedConfirmRequiredError
+    ) -> None:
+        dialog = CancelFirstConfirmDialog(
+            msg.ENGINE_EMBED_CONFIRM_TITLE,
+            msg.ENGINE_REMOVE_EMBED_MESSAGE.format(
+                build=_build_label(row), library=asked.library, documents=asked.documents
+            ),
+        )
+
+        def answered(yes: bool | None) -> None:
+            if yes:
+                self._remove(row, True)
+            else:
+                self._finish(EngineCommandResult(False, msg.ENGINE_EMBED_CANCELLED))
+
+        self.app.push_screen(dialog, answered)
+
     @work(thread=True, group="engines-remove")
-    def _remove(self, row: EngineRow) -> None:
-        """Remove the build off the UI thread; a refusal shows as a toast."""
+    def _remove(self, row: EngineRow, confirmed: bool = False) -> None:
+        """Remove the build off the UI thread; ask first when it changes the embedding engine."""
         try:
-            label = engine_service.remove_build(row.engine, row.version, row.backend)
+            label = engine_service.remove_build(
+                row.engine, row.version, row.backend, confirmed=confirmed
+            )
+        except engine_service.EmbedConfirmRequiredError as exc:
+            call_from_thread(self, self._confirm_remove, row, exc)
+            return
         except engine_service.EngineRefusedError as exc:
             call_from_thread(self.app, self.app.notify, str(exc), severity="error")
             return

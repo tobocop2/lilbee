@@ -372,7 +372,7 @@ async def test_removing_an_engine_in_use_names_the_roles_and_removes_on_yes(
         remove.assert_not_called()
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)
-        remove.assert_called_once_with("ik_llama.cpp", "1.2.3", "cuda")
+        remove.assert_called_once_with("ik_llama.cpp", "1.2.3", "cuda", confirmed=False)
         assert await wait_until(
             pilot, lambda: "Removed engine ik_llama.cpp 1.2.3 (cuda)." in _toasts(app)
         )
@@ -410,7 +410,7 @@ async def test_removing_an_unused_engine_asks_without_naming_roles(
         assert text == "Remove tei 0.9 (cpu) from this computer?"
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)
-        remove.assert_called_once_with("tei", "0.9", "cpu")
+        remove.assert_called_once_with("tei", "0.9", "cpu", confirmed=False)
 
 
 async def test_a_refused_remove_shows_the_refusal_as_a_toast(
