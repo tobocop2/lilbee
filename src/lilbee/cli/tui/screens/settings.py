@@ -769,7 +769,11 @@ class SettingsScreen(Screen[None]):
                 *options,
             ]
         self.app.push_screen(
-            ModelPickerModal(scope=scope, options=options),
+            ModelPickerModal(
+                scope=scope,
+                options=options,
+                pick_later=lambda ref: self._on_model_picker_dismissed(key, ref),
+            ),
             lambda ref: self._on_model_picker_dismissed(key, ref),
         )
 

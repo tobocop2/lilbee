@@ -531,9 +531,16 @@ the model is highlighted, or `auto` when none is saved, so Enter and Enter
 again keep the choice. Press Esc to return to the model list. If only one
 engine can load the model file, the picker does not open.
 
-Press `e` on a model, or `ctrl+e` in the search field, to change the engine
-without picking the model. The `choose_engine_on_pick` setting, on the Engines
-tab, turns the engine step on Enter off. It is on by default.
+If the engine you pick is not installed, the picker closes and asks to
+download it. The role keeps its old model while the engine installs, and the
+switch happens when the install ends. If the install fails, the role keeps its
+old model and the task center shows the error.
+
+Press `e` on a model, or `ctrl+l` anywhere in the picker, to change the engine
+without picking the model. After you start to type a search, `e` is a letter
+of the search: a letter typed on the list goes on into the search field. The
+`choose_engine_on_pick` setting, on the Engines tab, turns the engine step on
+Enter off. It is on by default.
 
 #### Manage engines in Settings
 
