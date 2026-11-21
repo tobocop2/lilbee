@@ -8,6 +8,8 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
+import functools
+import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -16,6 +18,8 @@ from lilbee.core.config.enums import RerankerType
 from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cpu import engine_thread_count
+
+log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
@@ -233,6 +237,65 @@ def _no_mmap_args(binary: Path) -> list[str]:
     return []
 
 
+@dataclass(frozen=True)
+class _OptionalFlag:
+    """An optional flag: how many values follow it, and what its absence changes."""
+
+    values: int
+    effect: str
+
+
+# Every optional flag the argv builder and the role specs write, by flag. The flags
+# placement asks for (--device, --tensor-split), the embeddings flag and the planner
+# gated flags (--memory, --fit-target, --kv-unified-per-slot) are written by other rules.
+_OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
+    "--flash-attn": _OptionalFlag(1, "flash attention stays at the engine default"),
+    "--cache-type-k": _OptionalFlag(1, "the K cache keeps the engine default type"),
+    "--cache-type-v": _OptionalFlag(1, "the V cache keeps the engine default type"),
+    FLAG_BATCH_SIZE: _OptionalFlag(1, "the batch size stays at the engine default"),
+    FLAG_UBATCH_SIZE: _OptionalFlag(1, "the micro-batch size stays at the engine default"),
+    "--mmproj": _OptionalFlag(1, "images are not read"),
+    "--n-cpu-moe": _OptionalFlag(1, "expert layers stay on the GPU"),
+    "--cpu-moe": _OptionalFlag(0, "expert layers stay on the GPU"),
+    _FLAG_THREADS: _OptionalFlag(1, "the engine picks its own thread count"),
+    "--jinja": _OptionalFlag(0, "the model's chat template is not applied"),
+    "--reasoning-format": _OptionalFlag(1, "reasoning text stays in the answer"),
+    "--no-prefill-assistant": _OptionalFlag(0, "a trailing assistant message is continued"),
+    "--pooling": _OptionalFlag(1, "the model's own pooling applies"),
+    FLAG_KV_UNIFIED: _OptionalFlag(0, "the slots keep separate KV caches"),
+}
+
+
+@functools.lru_cache(maxsize=256)
+def _warn_once(message: str) -> None:
+    log.warning("%s", message)
+
+
+def _drop_unlisted_flags(binary: Path, args: list[str]) -> list[str]:
+    """*args* without the optional flags *binary*'s ``--help`` does not list, with their values.
+
+    A build that prints no help is not judged: its flags stay, since no evidence
+    says they are missing. Each dropped flag is logged once for each binary.
+    """
+    help_text = engine_help(binary)
+    if not help_text.strip():
+        _warn_once(f"{binary} printed no --help text; its optional flags are sent unchecked")
+        return args
+    kept: list[str] = []
+    skip = 0
+    for arg in args:
+        if skip:
+            skip -= 1
+            continue
+        optional = _OPTIONAL_FLAGS.get(arg)
+        if optional is None or help_lists_option(help_text, arg):
+            kept.append(arg)
+            continue
+        skip = optional.values
+        _warn_once(f"{binary} does not list {arg}; launching without it, so {optional.effect}")
+    return kept
+
+
 def build_server_argv(
     *,
     binary: Path,
@@ -283,19 +346,20 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
-    argv += _thread_args()
-    argv += _attention_args(flash_attn, cache_type)
+    optional: list[str] = []
+    optional += _thread_args()
+    optional += _attention_args(flash_attn, cache_type)
     if batch_size is not None:
-        argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
+        optional += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
-        argv += ["--mmproj", str(mmproj)]
+        optional += ["--mmproj", str(mmproj)]
     if device_names:
         # Names as --list-devices prints them, which is the space they were parsed
         # from. The Vulkan visible-devices variable takes RAW loader indices
         # instead, so re-emitting parsed ordinals into it silently changes index
         # space, and setting it also turns off ggml's own type filter, support
         # check and same-UUID dedup. This keeps all of that active.
-        argv += ["--device", ",".join(device_names)]
+        optional += ["--device", ",".join(device_names)]
     if len(devices) > 1 and tensor_split:
         # Only a ratio the planner actually chose. Inventing an even one for a
         # group that did not choose disables the engine's own fit: it aborts the
@@ -304,17 +368,17 @@ def build_server_argv(
         # the tight placement, whose whole promise is that the engine keeps what
         # fits and spills the rest, so an invented split turns that promise into
         # a load-time out-of-memory.
-        argv += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
+        optional += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
     if no_mmap:
-        argv += _no_mmap_args(binary)
+        optional += _no_mmap_args(binary)
     if n_cpu_moe is not None:
-        argv += ["--n-cpu-moe", str(n_cpu_moe)]
+        optional += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
-        argv += ["--cpu-moe"]
-    argv += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
+        optional += ["--cpu-moe"]
+    optional += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
     if memory_endpoint:
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 
-        argv += [MEMORY_FLAG]
-    argv += list(spec.extra_args)
-    return argv
+        optional += [MEMORY_FLAG]
+    optional += list(spec.extra_args)
+    return argv + _drop_unlisted_flags(binary, optional)

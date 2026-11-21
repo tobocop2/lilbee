@@ -1,0 +1,8 @@
+{
+  "id": "M6",
+  "rows": [
+    8
+  ],
+  "request": null,
+  "assert": "SIGTERM ends the engine within 4 seconds, also with a request in flight."
+}

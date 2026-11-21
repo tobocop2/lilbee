@@ -32,6 +32,7 @@ from lilbee.providers.base import (
     TokenUsage,
     ToolCallDelta,
 )
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.swap_manager import _pick_free_ports
 from lilbee.providers.local_servers import OLLAMA
 from lilbee.providers.local_servers.spec import LocalServerSpec
@@ -213,7 +214,7 @@ class TestSdkFactory:
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "remote"
-        provider = create_provider(cfg)
+        provider = create_provider(cfg, engine=LLAMA)
 
         assert isinstance(provider, SdkLLMProvider)
 

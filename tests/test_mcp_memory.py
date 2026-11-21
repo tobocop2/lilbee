@@ -116,6 +116,27 @@ class TestMemoryRecallTool:
         }
 
 
+class TestMemoryEngineChange:
+    def _stopped(self):
+        from lilbee.data.store import EmbeddingEngineChangedError
+
+        return EmbeddingEngineChangedError(model="m", dim=8, distance=0.2, verified=True)
+
+    def test_remember_carries_the_shared_code(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
+        monkeypatch.setattr(mcp_server, "remember", MagicMock(side_effect=self._stopped()))
+        result = mcp_server.memory_remember("x", agent_id="opencode")
+        assert result["code"] == "embedding_mismatch"
+        assert "ok" not in result
+
+    def test_recall_carries_the_shared_code(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
+        monkeypatch.setattr(mcp_server, "recall", MagicMock(side_effect=self._stopped()))
+        result = mcp_server.memory_recall("q", agent_id="opencode")
+        assert result["code"] == "embedding_mismatch"
+        assert "memories" not in result
+
+
 class TestMemoryListTool:
     def test_returns_serialized_with_shared(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)

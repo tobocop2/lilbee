@@ -8,11 +8,12 @@ from lilbee.catalog import compat
 from lilbee.catalog.compat import resolve_arch_for_pull
 from lilbee.catalog.header_probe import GgufHeader
 from lilbee.catalog.hf_client import HfClient
+from lilbee.providers.fleet.engines import LLAMA
 
 
 @pytest.fixture
 def client() -> HfClient:
-    return HfClient()
+    return HfClient(engine=LLAMA)
 
 
 def test_resolve_hits_arch_cache(client: HfClient) -> None:

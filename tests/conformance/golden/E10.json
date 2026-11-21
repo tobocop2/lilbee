@@ -1,0 +1,8 @@
+{
+  "id": "E10",
+  "rows": [],
+  "request": {
+    "prompt": "What colour is this image? One word."
+  },
+  "assert": "A PNG data URL in an image_url part gets 200; with quality the answer names red."
+}

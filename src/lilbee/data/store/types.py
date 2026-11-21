@@ -123,7 +123,9 @@ class ChunkType(StrEnum):
 # 2: nomic-embed document prefixes are stamped at ingest (see
 # lilbee.retrieval.embedding_profiles doc_prefix_since).
 # 3: every table keys a source by ``source_id``; ``_sources`` alone holds its path.
-META_SCHEMA_VERSION = 3
+# 4: the meta row holds canary vectors (see lilbee.data.store.canary).
+KEYED_SCHEMA_VERSION = 3
+META_SCHEMA_VERSION = 4
 
 # Always-true predicate used to clear the single-row ``_meta`` table before re-insert.
 # Lance's ``Table.delete`` requires a SQL where clause; this matches every row without
@@ -535,6 +537,35 @@ class EmbeddingModelMismatchError(RuntimeError):
             f"'{self.current_model}' (dim {self.current_dim}). The dimensions differ, "
             f"so rebuild the index under '{self.current_model}' to use it."
         )
+
+
+class EmbeddingEngineChangedError(EmbeddingModelMismatchError):
+    """Raised when the configured embedder gives vectors that differ from the stored ones."""
+
+    def __init__(self, *, model: str, dim: int, distance: float, verified: bool) -> None:
+        self.distance = distance
+        self.verified = verified
+        super().__init__(
+            persisted_model=model, persisted_dim=dim, current_model=model, current_dim=dim
+        )
+
+    @property
+    def dims_match(self) -> bool:
+        """An engine change is never fixed by switching the embedder name."""
+        return False
+
+    def _build_message(self) -> str:
+        message = (
+            "The embedding engine now gives different vectors than the ones stored in this "
+            f"index (distance {self.distance:.3f}), so search and ingest stop. Rebuild the "
+            "index with `lilbee rebuild`, or switch back to the earlier engine."
+        )
+        if not self.verified:
+            message += (
+                " This index has no verified baseline: it was made before this check "
+                "existed, so the engine that made it is not known."
+            )
+        return message
 
 
 @dataclass

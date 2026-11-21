@@ -11,6 +11,7 @@ import logging
 
 import pytest
 
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
@@ -111,7 +112,12 @@ class TestTheHostBoundReachesAdmission:
         monkeypatch.setattr(planning, "_host_memory_refuses", lambda *_a: True)
         assert (
             planning._admit_estimate(
-                _estimate(), WorkerRole.CHAT, _REF, total_vram=64 * _GB, ram_bytes=40 * _GB
+                _estimate(),
+                WorkerRole.CHAT,
+                _REF,
+                total_vram=64 * _GB,
+                ram_bytes=40 * _GB,
+                engine=LLAMA,
             )
             is None
         )
@@ -125,7 +131,12 @@ class TestTheHostBoundReachesAdmission:
         estimate = _estimate()
         assert (
             planning._admit_estimate(
-                estimate, WorkerRole.CHAT, _REF, total_vram=64 * _GB, ram_bytes=40 * _GB
+                estimate,
+                WorkerRole.CHAT,
+                _REF,
+                total_vram=64 * _GB,
+                ram_bytes=40 * _GB,
+                engine=LLAMA,
             )
             is estimate
         )
@@ -142,6 +153,7 @@ def test_the_estimators_own_host_figure_is_what_gets_judged(monkeypatch, tmp_pat
     # admission reads, or the whole bound is decorative.
     from lilbee.providers import engine_params, gguf_meta
     from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet.engines import llama as llama_mod
     from lilbee.providers.fleet.vram import GgufVramEstimate
 
     seen: list[int] = []
@@ -155,14 +167,21 @@ def test_the_estimators_own_host_figure_is_what_gets_judged(monkeypatch, tmp_pat
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda *_a, **_k: model)
     monkeypatch.setattr(gguf_meta, "read_gguf_metadata", lambda *_a, **_k: {})
     monkeypatch.setattr(
-        planning,
+        llama_mod,
         "estimate_instance_footprint",
         lambda *_a, **_k: GgufVramEstimate(
             vram_bytes=4 * _GB, unified_bytes=4 * _GB, ram_bytes=7 * _GB
         ),
     )
-    estimate = planning._estimate_role(WorkerRole.EMBED, _REF, slots=1, device_count=1)
+    estimate = planning._estimate_role(
+        WorkerRole.EMBED, _REF, slots=1, device_count=1, engine=LLAMA
+    )
     planning._admit_estimate(
-        estimate, WorkerRole.EMBED, _REF, total_vram=64 * _GB, ram_bytes=estimate.est_ram_bytes
+        estimate,
+        WorkerRole.EMBED,
+        _REF,
+        total_vram=64 * _GB,
+        ram_bytes=estimate.est_ram_bytes,
+        engine=LLAMA,
     )
     assert seen == [7 * _GB]

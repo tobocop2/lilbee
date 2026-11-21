@@ -62,7 +62,7 @@ Tests live under `tests/`, mirroring the source layout, with `tests/integration/
 
 ```bash
 make format        # auto-format (ruff)
-make check         # lint + format-check + typecheck + tests (same as CI)
+make check         # lint + license-check + format-check + typecheck + tests (same as CI)
 ```
 
 `make check` is the gate CI runs. Run it locally and make sure it's green before opening a PR.
@@ -76,6 +76,7 @@ Useful individual targets:
 ```bash
 make test          # tests with coverage
 make lint          # ruff + style-rule check
+make license-check # fail on a GPL or AGPL package in uv.lock (needs the network and Python 3.12)
 make typecheck     # mypy (strict)
 make format-check  # verify formatting without changing files
 ```

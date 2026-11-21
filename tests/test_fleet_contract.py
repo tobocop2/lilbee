@@ -203,3 +203,15 @@ def test_est_host_bytes_round_trips_through_the_state_file() -> None:
     legacy = launch.to_state()
     del legacy["est_host_bytes"]
     assert InstanceLaunch.from_state(legacy).est_host_bytes == 0
+
+
+def test_swap_extras_and_settings_round_trip_through_the_state_file() -> None:
+    launch = _launch(WorkerRole.CHAT, "m-chat", slots=1)
+    launch.swap_extras = {"ttl": 30}
+    launch.settings = "--flash-attn on"
+    restored = InstanceLaunch.from_state(launch.to_state())
+    assert dict(restored.swap_extras) == {"ttl": 30}
+    assert restored.settings == "--flash-attn on"
+    legacy = launch.to_state()
+    del legacy["swap_extras"]
+    assert dict(InstanceLaunch.from_state(legacy).swap_extras) == {}

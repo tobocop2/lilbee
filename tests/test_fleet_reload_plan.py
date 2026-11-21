@@ -14,10 +14,12 @@ import pytest
 
 from lilbee.app.settings import _reload_changed_roles
 from lilbee.core.config import cfg
-from lilbee.providers import engine_params, gguf_meta
+from lilbee.providers import engine_params
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
+from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.roles import WorkerRole
 from tests.test_fleet_provider import _fake_client, _FakeSwap
@@ -47,13 +49,13 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
         files[_CHAT_REF]: {"general.architecture": "qwen3", "qwen3.context_length": "32768"},
     }
     device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/no/llama-server"))
+    monkeypatch.setattr(llama_mod, "resolve_llama_server", lambda: Path("/no/llama-server"))
     monkeypatch.setattr(engine_params, "resolve_model_path", lambda ref: files[ref])
     monkeypatch.setattr(
-        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda path: meta[Path(path)]
+        "lilbee.providers.fleet.engines.llama.read_gguf_metadata", lambda path: meta[Path(path)]
     )
     monkeypatch.setattr(
-        planning_mod,
+        llama_mod,
         "probe_devices",
         lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
     )
@@ -66,7 +68,7 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     monkeypatch.setattr(cfg, "chunk_overlap", 100)
     planning_mod.clear_plan_probe()
     planning_mod.clear_read_device_cache()
-    planning_mod.capture_plan_probe()
+    planning_mod.capture_plan_probe(LLAMA)
     yield
     planning_mod.clear_plan_probe()
     planning_mod.clear_read_device_cache()
@@ -74,13 +76,15 @@ def real_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
 
 def _running_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FleetProvider:
     """A provider serving the current real plan, with fake servers and fake clients."""
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group, _engine: _FakeSwap())
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _dir, **_kw: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     provider = FleetProvider()
     monkeypatch.setattr(provider, "_preload_roles", lambda roles=None: None)
     with provider._lock:
-        for group, launches in _launches_by_group(planning_mod.plan_all_launches()).items():
+        for group, launches in _launches_by_group(
+            planning_mod.plan_all_launches(engine=LLAMA)
+        ).items():
             provider._adopt_group(group, _FakeSwap(), list(launches))
             provider._group_dirs[group] = tmp_path
     return provider
@@ -103,9 +107,9 @@ def _apply_settings_write(monkeypatch, provider: FleetProvider, keys: set[str]) 
 
 
 def test_an_ocr_change_with_no_vision_model_leaves_every_launch_identical(real_planner) -> None:
-    before = planning_mod.plan_all_launches().launches
+    before = planning_mod.plan_all_launches(engine=LLAMA).launches
     cfg.ocr = "off"
-    assert planning_mod.plan_all_launches().launches == before
+    assert planning_mod.plan_all_launches(engine=LLAMA).launches == before
 
 
 def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
@@ -116,9 +120,13 @@ def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
     monkeypatch.setattr(planning_mod, "vision_mmproj", lambda _ref: projector)
     monkeypatch.setattr(cfg, "vision_model", _CHAT_REF)
     cfg.ocr = "all"
-    before = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
+    before = {
+        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+    }
     cfg.ocr = "off"
-    after = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
+    after = {
+        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+    }
     assert WorkerRole.VISION in before
     assert WorkerRole.VISION not in after
     assert before[WorkerRole.EMBED] == after[WorkerRole.EMBED]
@@ -126,9 +134,13 @@ def test_an_ocr_change_with_a_vision_model_drops_only_the_vision_launch(
 
 
 def test_a_chunk_size_change_moves_only_the_embed_window(real_planner) -> None:
-    before = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
+    before = {
+        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+    }
     cfg.chunk_size = _NOTES_CHUNK_SIZE
-    after = {launch.role: launch for launch in planning_mod.plan_all_launches().launches}
+    after = {
+        launch.role: launch for launch in planning_mod.plan_all_launches(engine=LLAMA).launches
+    }
     assert before[WorkerRole.CHAT] == after[WorkerRole.CHAT]
     assert before[WorkerRole.EMBED].ctx == _EMBED_WINDOW_AT_512
     assert after[WorkerRole.EMBED].ctx == _EMBED_WINDOW_AT_384
@@ -191,7 +203,7 @@ def test_a_request_during_a_real_embed_restart_gets_the_new_server(
             assert release.wait(_JOIN_S)
             super().start(*args, **kwargs)
 
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group: _HeldSwap())
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _dir, _group, _engine: _HeldSwap())
     cfg.chunk_size = _NOTES_CHUNK_SIZE
     provider.reload_role(WorkerRole.VISION)
     assert starting.wait(_JOIN_S)
@@ -246,23 +258,23 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
     monkeypatch.setattr(
         engine_params, "resolve_model_path", lambda ref: chat if ref == _CHAT_REF else resolve(ref)
     )
-    read = gguf_meta.read_gguf_metadata
+    read = llama_mod.read_gguf_metadata
     chat_meta = {"general.architecture": "qwen3", "qwen3.context_length": "32768"}
     monkeypatch.setattr(
-        gguf_meta, "read_gguf_metadata", lambda p: chat_meta if Path(p) == chat else read(p)
+        llama_mod, "read_gguf_metadata", lambda p: chat_meta if Path(p) == chat else read(p)
     )
     device = FleetDevice("CUDA", 0, "gpu", 8 * _GB, free_gb * _GB)
     monkeypatch.setattr(
-        planning_mod,
+        llama_mod,
         "probe_devices",
         lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
     )
     planning_mod.clear_plan_probe()
     planning_mod.clear_read_device_cache()
     if captured:
-        planning_mod.capture_plan_probe()
+        planning_mod.capture_plan_probe(LLAMA)
 
-    reason = planning_mod.plan_all_launches().skipped_unusable_ctx[WorkerRole.CHAT]
+    reason = planning_mod.plan_all_launches(engine=LLAMA).skipped_unusable_ctx[WorkerRole.CHAT]
 
     assert ("Other processes hold" in reason) is names_other_processes
     if names_other_processes:
