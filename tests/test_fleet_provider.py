@@ -62,6 +62,7 @@ def reaper_ensures(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 def _fake_client(in_flight: int = 0) -> MagicMock:
     client = MagicMock()
     client.in_flight = in_flight
+    client.restart_message = None
     return client
 
 
