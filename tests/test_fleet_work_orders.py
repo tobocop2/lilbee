@@ -284,6 +284,21 @@ def test_a_dead_group_rebuild_runs_as_a_step(fleet: Any, passes: list[int]) -> N
     assert _work_threads() == 0
 
 
+def test_a_dead_group_rebuild_that_fails_before_a_start_raises_its_own_error(
+    fleet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = _local(fleet)
+    role = next(iter(local._role_group))
+
+    def _fail(force: frozenset[WorkerRole]) -> None:
+        raise _FAILED
+
+    monkeypatch.setattr(local, "_reload_pass", _fail)
+    with pytest.raises(ProviderError) as heard:
+        local._rebuild_role(role)
+    assert heard.value is _FAILED
+
+
 def test_a_rebuild_after_the_latch_starts_nothing(fleet: Any) -> None:
     local = _local(fleet)
     role = next(iter(local._role_group))
