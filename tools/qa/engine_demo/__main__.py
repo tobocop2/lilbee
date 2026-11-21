@@ -46,7 +46,11 @@ ENGINE_MODELS: dict[str, dict[WorkerRole, str]] = {
         WorkerRole.EMBED: "Qwen/Qwen3-Embedding-0.6B#safetensors",
         WorkerRole.VISION: "HuggingFaceTB/SmolVLM-256M-Instruct#safetensors",
     },
-    EngineName.MLX: {WorkerRole.CHAT: "mlx-community/Qwen3-0.6B-4bit#mlx"},
+    EngineName.MLX: {
+        WorkerRole.CHAT: "mlx-community/Qwen3-0.6B-4bit#mlx",
+        WorkerRole.EMBED: "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx",
+        WorkerRole.RERANK: "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx",
+    },
     EngineName.OVMS: {
         WorkerRole.CHAT: "OpenVINO/Qwen3-0.6B-int4-ov#openvino",
         WorkerRole.EMBED: "OpenVINO/bge-base-en-v1.5-int8-ov#openvino",

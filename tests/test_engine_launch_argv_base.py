@@ -21,6 +21,7 @@ from tests._engine_launch_argv import BINARY, MODEL, launch_argvs
 # mlx-lm otherwise decodes greedily and a thinking model repeats itself without end.
 # Each ik_llama.cpp argv ends with `--no-context-shift`, because with context shift on
 # ik_llama.cpp cuts an oversize prompt and then aborts instead of refusing it.
+# The mlx embed and rerank rows are new: they run lilbee's own server of the mlx pack.
 # No other line changed.
 BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 

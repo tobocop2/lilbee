@@ -17,7 +17,8 @@
 #      licence texts and terms of the interpreter's libraries from the python-build-standalone full
 #      archive (pinned by sha256) into THIRD-PARTY/mlx/python. mpl_pypi_notice.py writes
 #      SOURCE-MPL-2.0 from the MPL-2.0 packages and the committed list of source archives.
-#   5. `wheel pack` writes the wheel: the launcher bin/mlx-lm-server, python/, and the dist-info.
+#   5. `wheel pack` writes the wheel: the launchers bin/mlx-lm-server (chat) and
+#      bin/mlx-embed-server (lilbee's embed and rerank server), python/, and the dist-info.
 #   6. `delocate-wheel --require-target-macos-version` measures the floor of every Mach-O. Nothing
 #      may be grafted.
 #
@@ -75,7 +76,7 @@ dist="${root}/lilbee_engine_mlx-${MLX_LM_VERSION}.dist-info"
 site="${pkg}/python/lib/python${MLX_PYTHON}/site-packages"
 mkdir -p "${root}" "${dist}/licenses/THIRD-PARTY" "${outdir}"
 cp -R "${project}/lilbee_engine_mlx" "${pkg}"
-chmod 755 "${pkg}/bin/mlx-lm-server"
+chmod 755 "${pkg}/bin/mlx-lm-server" "${pkg}/bin/mlx-embed-server"
 
 # uv also links each Python it installs into a bin folder, ~/.local/bin by default, so that
 # folder moves into the scratch directory as well.
@@ -109,6 +110,11 @@ for pip_left in "${site}/pip" "${site}"/pip-*.dist-info; do
   ! test -e "${pip_left}" ||
     die "pip is in the interpreter tree (${pip_left#"${pkg}"/}). Its vendored packages carry licences that the build does not list."
 done
+# The embed server is lilbee's own on mlx-lm and mlx. mlx-embeddings is GPL-3.0 and never ships.
+for gpl_left in "${site}/mlx_embeddings" "${site}"/mlx_embeddings-*.dist-info; do
+  ! test -e "${gpl_left}" ||
+    die "mlx-embeddings is in the interpreter tree (${gpl_left#"${pkg}"/}). Its licence is GPL-3.0, so the pack cannot hold it."
+done
 # The bundled interpreter runs the collector, so the Python on PATH may be older than 3.10.
 "${pkg}/python/bin/python3" -I "${here}/collect_python_licences.py" --mpl "${outdir}/mpl.txt" "${site}" \
   "${dist}/licenses/THIRD-PARTY/mlx" "${outdir}/terms.txt" "${project}/supplied-licences.txt" ||
@@ -137,6 +143,8 @@ zstd -dc "${pbs}/full.tar.zst" | tar -x -C "${pbs}" python/PYTHON.json python/li
 cp "${site}/mlx_lm-${MLX_LM_VERSION}.dist-info/licenses/LICENSE" "${dist}/licenses/LICENSE-mlx-lm"
 cp "${site}/mlx-${MLX_VERSION}.dist-info/licenses/LICENSE" "${dist}/licenses/LICENSE-mlx"
 cp "${pkg}/python/lib/python${MLX_PYTHON}/LICENSE.txt" "${dist}/licenses/LICENSE-Python"
+# The launchers and the embed server are lilbee's own code, under lilbee's licence.
+cp "${top}/LICENSE" "${dist}/licenses/LICENSE-lilbee"
 # The engine store installs an MPL-2.0 tree only with this file: one PyPI source archive URL and its
 # sha256 for each MPL-2.0 package of the tree, as engine_crates.MPL_PYPI_CHECKSUMS lists them. The
 # build writes it from the packages that the collector found, and stops on a package that

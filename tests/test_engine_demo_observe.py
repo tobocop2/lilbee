@@ -725,7 +725,7 @@ def test_each_default_model_is_a_format_its_engine_loads(
     ("engine", "claimed"),
     [
         ("tei", (WorkerRole.EMBED, WorkerRole.RERANK)),
-        ("mlx", (WorkerRole.CHAT,)),
+        ("mlx", (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)),
         ("lemonade", (WorkerRole.CHAT, WorkerRole.EMBED)),
         ("ik_llama.cpp", (WorkerRole.CHAT, WorkerRole.EMBED)),
     ],
