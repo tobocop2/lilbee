@@ -686,20 +686,7 @@ _REAL_MISSING_OPTION = engine_service._missing_option
 _LLAMA_PACK_BYTES = 9_876_543
 
 
-_NOT_READY_DEFECT = (
-    "The llama.cpp pin record names no backend and no digest, so the missing-engine read "
-    "rejects it and the Install row of llama.cpp has no backend and no size."
-)
-
-
-@pytest.mark.parametrize(
-    "ready",
-    [
-        True,
-        pytest.param(False, marks=pytest.mark.xfail(strict=True, reason=_NOT_READY_DEFECT)),
-    ],
-    ids=["ready", "not-ready"],
-)
+@pytest.mark.parametrize("ready", [True, False], ids=["ready", "not-ready"])
 def test_the_llama_rows_name_the_pack_backend_of_the_host_with_the_real_reads(
     fleet: None, monkeypatch: pytest.MonkeyPatch, ready: bool
 ) -> None:
@@ -931,11 +918,11 @@ def test_a_build_folder_that_is_a_link_out_of_the_store_has_no_size(
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.engine_store"):
         assert store.build_size("ik_llama.cpp", "1.2.3", "cuda") is None
     assert not store.holds("ik_llama.cpp", "1.2.3", "cuda")
-    prefix = "The size of engine ik_llama.cpp 1.2.3 (cuda) is unknown: "
     messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(messages) == 1
-    assert messages[0].startswith(prefix)
-    assert len(messages[0]) > len(prefix)
+    assert messages == [
+        "The size of engine ik_llama.cpp 1.2.3 (cuda) is unknown: "
+        f"'1.2.3-cuda' is not inside the engines folder {root}."
+    ]
 
 
 def test_a_build_in_an_engine_folder_that_is_a_link_has_no_size(tmp_path: Path) -> None:

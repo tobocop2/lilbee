@@ -419,7 +419,10 @@ def _auto_now(model: str) -> str | None:
 
 
 def _missing_option(name: EngineName, adapter: EngineAdapter) -> EngineOption:
-    """The row of an engine with no installed build: how to get it, its backend, its pack size."""
+    """The row of an engine with no installed build: how to get it, its backend, its pack size.
+
+    llama.cpp reads the pin of its pack, as its install does: its own record names no backend.
+    """
     if isinstance(adapter, UserInstalled):
         return EngineOption(
             str(name),
@@ -428,17 +431,17 @@ def _missing_option(name: EngineName, adapter: EngineAdapter) -> EngineOption:
             docs_url=adapter.install_docs_url,
         )
     host = runnable.session_host()
+    pin = LLAMA.pack_pin() if name is EngineName.LLAMA else adapter.pin_record()
     try:
-        lock = choice.pin_lock(adapter.pin_record())
+        lock = choice.pin_lock(pin)
     except choice.NoPublishedPackError:
         return EngineOption(str(name), installed=False, route=InstallRoute.NO_PACK)
     except (choice.PinError, OSError):
         return EngineOption(str(name), installed=False)
-    backend = lock.backend or _bundled_backend(name)
-    key = cell_key(host, backend)
+    key = cell_key(host, lock.backend)
     asset = lock.platforms.get(key) if key else None
     size = asset.size if asset is not None else None
-    return EngineOption(str(name), installed=False, backend=backend, download_bytes=size)
+    return EngineOption(str(name), installed=False, backend=lock.backend, download_bytes=size)
 
 
 def _bundled_backend(name: EngineName) -> str:
