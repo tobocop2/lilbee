@@ -208,10 +208,11 @@ def repo_blob_entry(path: Path) -> Path:
     itself link on into the shared store at the cache root
     (``<cache>/blobs/<2 hex>/<xet hash>``), which is outside every repo folder,
     so the link chain stops at the first file directly in a ``blobs/`` folder.
-    A path that is no link is returned as is.
+    The first link is always followed: *path* is a snapshot file, and a repo
+    subfolder can itself be named ``blobs``. A path that is no link is returned as is.
     """
-    for _ in range(_MAX_LINK_HOPS):
-        if not path.is_symlink() or path.parent.name == "blobs":
+    for hop in range(_MAX_LINK_HOPS):
+        if not path.is_symlink() or (hop and path.parent.name == "blobs"):
             return path
         path = Path(os.path.normpath(path.parent / os.readlink(path)))
     return path
