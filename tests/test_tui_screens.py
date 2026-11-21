@@ -16566,9 +16566,10 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         screen = app.screen
         with patch_model_write() as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
-            # The persist + role reload now runs in a thread worker; await it.
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            # The persist + role reload runs in a thread worker. The write publishes,
+            # which starts other screen workers that may cancel each other, so wait
+            # for the write itself, not for every worker.
+            assert await pump_until(pilot, lambda: mock_apply.called)
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
         # Label was repainted via model_picker_label; the chat_model field
@@ -16604,7 +16605,9 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
-            await app.workers.wait_for_complete()
+            # The write publishes, and the screen's own workers may cancel each
+            # other then, so wait for the reload, not for every worker.
+            assert await pump_until(pilot, lambda: services_mock.reload_role.called)
             await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
@@ -16753,8 +16756,11 @@ async def test_settings_model_picker_dismissed_reload_success_notifies_the_brack
             patch.object(app, "notify", lambda msg, **_k: notes.append(msg)),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision[q4].gguf")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            # The write publishes, and the screen's own workers may cancel each
+            # other then, so wait for the toast, not for every worker.
+            assert await pump_until(
+                pilot, lambda: any("Now using fake/vision[q4].gguf" in n for n in notes)
+            )
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
     assert any("Now using fake/vision[q4].gguf" in n for n in notes)
