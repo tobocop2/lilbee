@@ -123,6 +123,9 @@ def test_the_build_ships_the_onetbb_notice_of_onetbb_and_not_the_one_of_openvino
     assert f'"${{LICENSE_DIR}}/THIRD-PARTY/openvino/{_NOTICE}"' in script
     assert "for f in runtime-third-party-programs.txt onednn_third-party-programs.txt; do" in script
     assert f"{_NOTICE} onednn" not in script
+    # The source of each copy: the oneTBB tag's files, never the wheel's GPL-titled notice.
+    assert f'cp "${{ov_tbb_notice}}" "${{LICENSE_DIR}}/THIRD-PARTY/openvino/{_NOTICE}"' in script
+    assert 'cp "${ov_tbb_licence}" "${LICENSE_DIR}/LICENSE-oneTBB"' in script
 
 
 def test_the_build_names_no_eula_and_asks_for_no_ruling() -> None:
