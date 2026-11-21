@@ -4579,10 +4579,9 @@ def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypat
 
 
 def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
-    # An unexpected error warming one chain role (a listener blowing up) must
-    # not rob the roles behind it of their warm; it surfaces after the chain.
+    # An unexpected error warming one chain role must not rob the roles behind it
+    # of their warm; it surfaces after the chain.
     chat, embed = _fake_client(), _fake_client()
-    embed.embed.return_value = [[0.1]]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
         SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
@@ -4590,14 +4589,20 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     }
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
 
-    def _blowing_listener(role: WorkerRole) -> None:
-        if role is WorkerRole.EMBED:
-            raise RuntimeError("listener broke")
+    real_warm = p._warm_role_clients
 
-    p.add_spawn_listener(on_spawning=_blowing_listener)
-    with pytest.raises(RuntimeError, match="listener broke"):
+    def _broken_warm(role: WorkerRole, clients: list) -> bool:
+        if role is WorkerRole.EMBED:
+            raise RuntimeError("warm broke")
+        return real_warm(role, clients)
+
+    monkeypatch.setattr(p, "_warm_role_clients", _broken_warm)
+    spawned: list[WorkerRole] = []
+    p.add_spawn_listener(on_spawned=spawned.append)
+    with pytest.raises(RuntimeError, match="warm broke"):
         p._preload_roles()
     chat.chat.assert_called_once()  # chat still warmed behind the failed embed
+    assert spawned == [WorkerRole.CHAT]  # a role whose warm failed is not reported loaded
 
 
 _HUNG_WARM_PROBE = """
@@ -4950,6 +4955,28 @@ class TestLifecycleMethods:
         assert second_spawning == [WorkerRole.EMBED]
         assert second_spawned == [WorkerRole.EMBED]
         assert third_spawned == [WorkerRole.EMBED]
+
+    def test_a_listener_that_raises_mutes_no_other_listener_and_no_warm(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        embed = _fake_client()
+        embed.embed.return_value = [[0.1]]
+        p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+        second_spawning: list[WorkerRole] = []
+        second_spawned: list[WorkerRole] = []
+
+        def broken(role: WorkerRole) -> None:
+            raise RuntimeError("listener broke")
+
+        p.add_spawn_listener(on_spawning=broken, on_spawned=broken)
+        p.add_spawn_listener(on_spawning=second_spawning.append, on_spawned=second_spawned.append)
+        with caplog.at_level(logging.WARNING, logger=prov_mod.log.name):
+            p._preload_roles()
+
+        assert second_spawning == [WorkerRole.EMBED]
+        embed.embed.assert_called_once()
+        assert second_spawned == [WorkerRole.EMBED]
+        assert caplog.text.count("A spawn listener failed for the embed role") == 2
 
 
 class TestChatWithTools:
