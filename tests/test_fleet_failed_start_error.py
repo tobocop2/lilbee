@@ -1,4 +1,4 @@
-"""The errors a request hears when its role has no server: the exact text, the provider and the kind."""
+"""The errors a request hears when its role has no server: text, provider and kind."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from tests.test_fleet_reload_gap import _provider
 from tests.test_fleet_reload_plan import (
     _DRAIN_LIMIT_S,
     _START_REFUSED,
-    _EngineSwap,
     _ask,
+    _EngineSwap,
     _fail_first_starts,
     _join_fleet_threads,
     _time_out_a_chat,
