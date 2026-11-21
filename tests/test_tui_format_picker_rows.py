@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from textual.app import ComposeResult
 from textual.widgets import OptionList, Static
 
 from lilbee.app.engine_service import EngineOption
+from lilbee.catalog import runnable
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.pull_fit import PullFit
 from lilbee.catalog.types import ModelFormat, ModelTask
@@ -17,10 +19,16 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.format_rows import FormatRow, format_prompt, format_rows
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.widgets.format_picker import FormatPicker
+from lilbee.core.config import cfg
+from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet.engines import choice
+from lilbee.providers.fleet.engines.base import EngineName
+from lilbee.providers.fleet.host_caps import collect
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel
 from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests.conformance.fake_adapter import BundledFakeAdapter
 
 _GIB = 1024**3
 _ENGINE_MB = 180_000_000
@@ -226,6 +234,43 @@ def test_a_format_no_engine_loads_says_no_engine(
     assert (row.engine, row.missing, row.size_bytes) == (None, None, None)
     assert msg.FORMAT_NO_ENGINE in str(format_prompt(row))
     assert hub_fit == []
+
+
+class _Llama(BundledFakeAdapter):
+    name = "llama.cpp"
+    formats = frozenset({"gguf"})
+    served_roles = frozenset(WorkerRole)
+
+
+class _Openvino(BundledFakeAdapter):
+    name = "openvino"
+    formats = frozenset({"gguf"})
+    served_roles = frozenset(WorkerRole)
+
+
+@pytest.fixture
+def two_installed_engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Two installed engines that load GGUF. The engine lookup under test is the real one."""
+    mac = collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None)
+    monkeypatch.setattr(runnable, "session_host", lambda: mac)
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.LLAMA, _Llama())  # type: ignore[arg-type]
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.OPENVINO, _Openvino())  # type: ignore[arg-type]
+
+
+def test_an_installed_default_engine_is_the_engine_of_the_row_through_the_real_lookup(
+    two_installed_engines: None,
+) -> None:
+    row = format_rows(_model(formats=frozenset({ModelFormat.GGUF})), 16 * _GIB)[0]
+    assert (row.engine, row.missing) == ("llama.cpp", None)
+
+
+def test_the_row_names_the_engine_auto_picks_not_the_first_installed_engine(
+    two_installed_engines: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "preferred_engine", EngineSetting.OPENVINO)
+    row = format_rows(_model(formats=frozenset({ModelFormat.GGUF})), 16 * _GIB)[0]
+    assert (row.engine, row.missing) == ("openvino", None)
 
 
 def _record_downloads(app: LilbeeAppHost) -> list[CatalogModel]:
