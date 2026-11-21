@@ -47,6 +47,10 @@ _CPU_LICENCES = ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
+# ik_llama.cpp turns context shift on by default, and llama.cpp turns it off. With it on, the
+# server cuts a prompt longer than the context and then aborts in its sampler. With it off, the
+# server refuses that prompt with HTTP 400 exceed_context_size_error, as llama.cpp does.
+_NO_CONTEXT_SHIFT = "--no-context-shift"
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
     label="ik_llama.cpp server",
@@ -74,7 +78,7 @@ def _version(pair: tuple[int, int]) -> str:
 
 
 class IkLlamaAdapter:
-    """ik_llama.cpp behind the engine contract; everything but the build comes from llama.cpp."""
+    """ik_llama.cpp behind the engine contract; llama.cpp's but the build and context shift."""
 
     name = EngineName.IK_LLAMA
     formats = frozenset({ModelFormat.GGUF})
@@ -163,7 +167,7 @@ class IkLlamaAdapter:
         return LLAMA.role_spec(role, rerank_mode, meta)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        return LLAMA.launch_argv(spec, request)
+        return [*LLAMA.launch_argv(spec, request), _NO_CONTEXT_SHIFT]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         """An empty probe: this engine's server has no device listing to run."""

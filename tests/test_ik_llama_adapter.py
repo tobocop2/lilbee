@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import hashlib
 import json
@@ -419,15 +420,29 @@ def test_placement_flags_are_dropped_when_the_help_omits_them(
     assert full[full.index("--tensor-split") + 1] == "1,1"
 
 
-def test_the_argv_equals_the_llama_cpp_argv_for_every_role(
+def test_the_argv_is_the_llama_cpp_argv_with_context_shift_off_for_every_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(fleet_adapters, "engine_help", lambda _b: _HELP_BOTH)
     for role in IK_LLAMA.served_roles:
         spec = IK_LLAMA.role_spec(role, None, None)
-        assert IK_LLAMA.launch_argv(spec, _request()) == LLAMA.launch_argv(
-            LLAMA.role_spec(role, None, None), _request()
-        )
+        assert IK_LLAMA.launch_argv(spec, _request()) == [
+            *LLAMA.launch_argv(LLAMA.role_spec(role, None, None), _request()),
+            "--no-context-shift",
+        ]
+
+
+@pytest.mark.parametrize("target", [RoleTarget.GPU, RoleTarget.CPU], ids=["gpu", "cpu"])
+def test_the_chat_server_starts_with_context_shift_off_on_every_target(
+    target: RoleTarget, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With context shift on, ik_llama.cpp cuts an oversize prompt and aborts in its sampler."""
+    monkeypatch.setattr(fleet_adapters, "engine_help", lambda _b: _HELP_BOTH)
+    spec = IK_LLAMA.role_spec(WorkerRole.CHAT, None, None)
+    request = dataclasses.replace(_request(), target=target)
+    argv = IK_LLAMA.launch_argv(spec, request)
+    assert argv.count("--no-context-shift") == 1
+    assert "--context-shift" not in argv
 
 
 def test_the_request_profile_differs_from_llama_cpp_in_its_wording_only() -> None:
