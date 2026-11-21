@@ -553,7 +553,7 @@ class TestGroupRowsForGrid:
         assert len(experimental.rows) == 1
 
 
-def _make_eager_settings_screen():
+def _make_eager_settings_screen(*, eager: bool = True):
     """SettingsScreen subclass that populates every pane on mount.
 
     Production lazy-mounts non-active panes on activation; the test
@@ -562,6 +562,10 @@ def _make_eager_settings_screen():
     and populate every body before tests query. CSS_PATH is pinned
     to the original module's directory because Textual otherwise
     resolves it next to the test file.
+
+    With ``eager=False`` the subclass keeps the production lazy mount. Building
+    every pane styles hundreds of widgets, which takes seconds alone and over a
+    minute under gate load, so a test that needs no pane it did not name uses it.
     """
     import importlib
     from pathlib import Path
@@ -576,7 +580,8 @@ def _make_eager_settings_screen():
 
         def on_mount(self) -> None:
             super().on_mount()
-            self.populate_all_panes()
+            if eager:
+                self.populate_all_panes()
 
     return _EagerSettingsScreen
 
@@ -591,6 +596,20 @@ class SettingsTestApp(LilbeeAppHost):
 
     def on_mount(self) -> None:
         self.push_screen(_make_eager_settings_screen()())
+
+
+class LazySettingsTestApp(SettingsTestApp):
+    """Test fixture that mounts the Settings screen the way production does: panes build on demand."""
+
+    def on_mount(self) -> None:
+        self.push_screen(_make_eager_settings_screen(eager=False)())
+
+
+def populate_pane_of(screen, key: str) -> None:
+    """Build only the pane that holds the editor of setting *key*."""
+    for pane_id, group in screen._pane_groups.items():
+        if any(name == key for name, _defn in group.items):
+            screen._populate_pane(pane_id)
 
 
 async def test_settings_screen_mounts_grouped_sections():
@@ -1315,10 +1334,14 @@ async def test_settings_list_editor_refused_pattern_blocks_save():
 
     refused = r"\Z"
     stub = StubCrawlberg(refuse=refusing_patterns(refused))
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     with stub.installed():
         async with app.run_test(size=(120, 40)) as pilot:
             cfg.crawl_exclude_patterns = ["keep"]
+            populate_pane_of(app.screen, "crawl_exclude_patterns")
+            assert await wait_until(
+                pilot, lambda: bool(app.screen.query("#ed-crawl_exclude_patterns"))
+            )
             ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
             ta.focus()
             assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
@@ -2403,10 +2426,13 @@ async def test_reset_all_removes_every_user_key(tmp_path):
     persistent_settings.update_values(tmp_path, {"top_k": 99, "show_reasoning": True})
     cfg.top_k = 99
     cfg.show_reasoning = True
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
+        # Build only the pane that holds the checkbox this test watches settle.
+        populate_pane_of(screen, "show_reasoning")
+        assert await wait_until(pilot, lambda: bool(screen.query("#ed-show_reasoning")))
         screen._on_reset_all_confirmed(True)
         for _ in range(5):
             await pilot.pause()
@@ -2505,7 +2531,7 @@ async def test_reset_theme_applies_the_resolved_theme(tmp_path):
     other = next(name for name in ("gruvbox", "nord", "dracula") if name != default)
     persistent_settings.update_values(tmp_path, {"theme": other})
     cfg.theme = other
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.theme = other
         app.reset_and_publish(["theme"])
@@ -2539,7 +2565,7 @@ async def test_reset_all_cancel_does_nothing():
     """Dismissing the confirm dialog with False leaves cfg untouched."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2568,7 +2594,7 @@ async def test_reset_all_confirm_deletes_in_one_batch():
     readonly_keys = {k for k, d in SETTINGS_MAP.items() if not d.writable}
     assert readonly_keys, "test invariant: SETTINGS_MAP must contain a readonly field"
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2589,7 +2615,7 @@ async def test_reset_all_suppresses_per_field_toasts():
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2610,7 +2636,7 @@ async def test_reset_all_actually_mutates_cfg():
     cfg.top_k = 999
     assert cfg.top_k == 999
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2626,7 +2652,7 @@ async def test_reset_all_leaves_cfg_on_disk_write_failure():
     cfg.top_k = 999
     cfg.wiki_clusterer_k = 77
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2680,7 +2706,7 @@ async def test_reset_all_action_opens_confirm_dialog():
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
