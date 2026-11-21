@@ -550,8 +550,13 @@ def card_refusal(
     *,
     fix: bool,
     holders: Sequence[RoomHolder] = (),
+    cards: int = 1,
 ) -> str | None:
-    """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit."""
+    """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit.
+
+    *cards* is the count of cards the host lists; the remedy offers another card
+    only when the host has one.
+    """
     if needed <= room:
         return None
     figures = (
@@ -564,9 +569,10 @@ def card_refusal(
         return f"{figures}. {held}" if held else figures
     if held and needed <= capacity * usable_vram_fraction():
         roles = " or ".join(h.role.value for h in holders)
+        move = "cpu or another card" if cards > 1 else "cpu"
         return (
             f"{figures}. {held} Use a smaller {roles} model, or set the target of one of "
-            "these models to cpu or another card."
+            f"these models to {move}."
         )
     return f"{figures}. Use a smaller model, or set its target to cpu. {held}".rstrip()
 
@@ -1317,6 +1323,7 @@ def _charge_devices(
             device_capacity[idx],
             fix=refuse_alone,
             holders=held.get(idx, ()),
+            cards=len(device_capacity),
         )
         if reason is not None:
             raise refusal(reason)
