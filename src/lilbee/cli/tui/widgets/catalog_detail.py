@@ -71,15 +71,19 @@ class CatalogDetailDrawer(Vertical):
             markup=False,
         )
 
-    def update_for_row(self, row: CatalogRow | None) -> None:
-        """Render the drawer for *row*; clearing back to the empty hint when None."""
+    def update_for_row(self, row: CatalogRow | None, installed_ref: str | None = None) -> None:
+        """Render the drawer for *row*; clearing back to the empty hint when None.
+
+        *installed_ref* is the installed file name of an installed row. A run of that file
+        looks up its engine choice under that name, so the panel does the same.
+        """
         if row is None:
             self._clear()
             return
         if row.kind == CatalogRowKind.FRONTIER:
             self._render_frontier(row)
             return
-        self._render_local(row)
+        self._render_local(row, installed_ref)
 
     def _clear(self) -> None:
         self.query_one("#catalog-detail-name", Static).update(_EMPTY_HINT)
@@ -94,7 +98,7 @@ class CatalogDetailDrawer(Vertical):
         ):
             self.query_one(selector, Static).update("")
 
-    def _render_local(self, row: LocalCatalogRow) -> None:
+    def _render_local(self, row: LocalCatalogRow, installed_ref: str | None = None) -> None:
         self.query_one("#catalog-detail-name", Static).update(row.name)
         fit_widget = self.query_one("#catalog-detail-fit", Static)
         if row.fit is not None:
@@ -107,8 +111,8 @@ class CatalogDetailDrawer(Vertical):
         license_widget.update(_license_text(row))
         compat_widget = self.query_one("#catalog-detail-compat", Static)
         compat_widget.update(_compat_sentence(row))
-        self.query_one("#catalog-detail-engine", Static).update(_engine_line(row))
-        self.query_one("#catalog-detail-formats", Static).update(_formats_block(row))
+        self.query_one("#catalog-detail-engine", Static).update(_engine_line(row, installed_ref))
+        self.query_one("#catalog-detail-formats", Static).update(_formats_block(row, installed_ref))
         description = self.query_one("#catalog-detail-description", Static)
         description.update(_description_text(row))
 
@@ -165,16 +169,18 @@ def _engine_name(ref: str) -> str | None:
         return None
 
 
-def _row_ref(row: LocalCatalogRow) -> str:
-    """The reference a run of the row's model uses."""
+def _row_ref(row: LocalCatalogRow, installed_ref: str | None = None) -> str:
+    """The reference a run of the row's model uses: the installed file, else the catalog ref."""
+    if installed_ref:
+        return installed_ref
     return row.catalog_model.pull_ref if row.catalog_model is not None else row.ref
 
 
-def _engine_line(row: LocalCatalogRow) -> Content:
+def _engine_line(row: LocalCatalogRow, installed_ref: str | None = None) -> Content:
     """The labelled engine line: the engine that loads the file, or that none is installed."""
     from lilbee.cli.tui import messages as msg
 
-    engine = _engine_name(_row_ref(row))
+    engine = _engine_name(_row_ref(row, installed_ref))
     if engine is None:
         return Content(msg.CATALOG_DETAIL_ENGINE_LABEL + msg.CATALOG_DETAIL_ENGINE_NOT_INSTALLED)
     return Content.assemble(
@@ -196,11 +202,13 @@ def _compat_sentence(row: LocalCatalogRow) -> Content:
     return Content(template.format(arch=arch or "unknown") if "{arch}" in template else template)
 
 
-def _format_engine(model: CatalogModel, fmt: ModelFormat) -> Content:
+def _format_engine(
+    model: CatalogModel, fmt: ModelFormat, installed_ref: str | None = None
+) -> Content:
     """The engine of one format: the installed engine, or the one to download with its size."""
     from lilbee.cli.tui import messages as msg
 
-    name = _engine_name(replace(model, format=fmt).pull_ref)
+    name = _engine_name(installed_ref or replace(model, format=fmt).pull_ref)
     if name is not None:
         return engine_mark(name)
     options = engine_service.engine_options(replace(model, format=fmt).pull_ref)
@@ -214,7 +222,7 @@ def _format_engine(model: CatalogModel, fmt: ModelFormat) -> Content:
     return Content.assemble(engine_mark(option.name), " ", (f"({size})", "$text-muted"))
 
 
-def _formats_block(row: LocalCatalogRow) -> Content:
+def _formats_block(row: LocalCatalogRow, installed_ref: str | None = None) -> Content:
     """One line for each format of the model: size and fit where known, and the engine.
 
     Only the format the row would pull has a size and a fit: the catalog fetch reads one size
@@ -232,7 +240,7 @@ def _formats_block(row: LocalCatalogRow) -> Content:
             parts.append(f"{model.size_gb:.1f} GB  ")
             if row.fit is not None:
                 parts.append(f"{_fit_glyph(row.fit)}  ")
-        parts.append(_format_engine(model, fmt))
+        parts.append(_format_engine(model, fmt, installed_ref if fmt == model.format else None))
         lines.append(Content.assemble(*parts))
     return Content("\n").join(lines)
 
