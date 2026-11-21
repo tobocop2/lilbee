@@ -198,36 +198,43 @@ def _sha256_file(path: Path) -> str:
 
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
-_BLOB_SHARD_LEN = 2
+_MAX_LINK_HOPS = 40
+
+
+def repo_blob_entry(path: Path) -> Path:
+    """The ``blobs/<sha256>`` entry of its own repo folder that *path* links to.
+
+    huggingface_hub links a snapshot file to that entry. From 2.x the entry can
+    itself link on into the shared store at the cache root
+    (``<cache>/blobs/<2 hex>/<xet hash>``), which is outside every repo folder,
+    so the link chain stops at the first file directly in a ``blobs/`` folder.
+    A path that is no link is returned as is.
+    """
+    for _ in range(_MAX_LINK_HOPS):
+        if not path.is_symlink() or path.parent.name == "blobs":
+            return path
+        path = Path(os.path.normpath(path.parent / os.readlink(path)))
+    return path
 
 
 def _blob_digest(source_path: Path) -> str:
     """Digest for *source_path*, reusing the HF-cache blob name when possible.
 
-    huggingface_hub names cache blobs by their sha256, so a snapshot path that
-    resolves into a ``blobs/`` dir already carries its digest. Re-hashing a
-    multi-GB GGUF only to recompute that name is slow and, on network volumes,
+    huggingface_hub names a repo's cache blobs by their sha256, so a snapshot
+    path that links into a ``blobs/`` dir already carries its digest. Re-hashing
+    a multi-GB GGUF only to recompute that name is slow and, on network volumes,
     I/O-fragile enough to fail registration outright. Plain files still hash.
     """
-    real = source_path.resolve()
-    name = _cache_blob_name(real)
-    if name is not None and _SHA256_HEX.fullmatch(real.name):
+    entry = repo_blob_entry(source_path)
+    name = _cache_blob_name(entry)
+    if name is not None and _SHA256_HEX.fullmatch(name):
         return name
     return _sha256_file(source_path)
 
 
-def _cache_blob_name(real: Path) -> str | None:
-    """Name of *real* relative to its cache ``blobs/`` dir, or None outside one.
-
-    huggingface_hub writes flat blobs (``blobs/<sha>``), and its shared blob
-    store shards them under a two-character prefix (``blobs/a0/<sha>``). The name
-    keeps that prefix, so ``cache_path / "blobs" / name`` finds the file in both.
-    """
-    if real.parent.name == "blobs":
-        return real.name
-    if real.parent.parent.name == "blobs" and len(real.parent.name) == _BLOB_SHARD_LEN:
-        return f"{real.parent.name}/{real.name}"
-    return None
+def _cache_blob_name(entry: Path) -> str | None:
+    """Name of the repo blob *entry* in its ``blobs/`` dir, or None outside one."""
+    return entry.name if entry.parent.name == "blobs" else None
 
 
 def _reraise_walk_error(error: OSError) -> None:
@@ -395,11 +402,11 @@ class ModelRegistry:
         if first_shard is None:
             raise KeyError(f"Model {ref} not installed")
         if self._read_manifest(hf_repo, shards[0]) is None:
-            # Same cache recovery as the single-file path; resolve the symlink so
+            # Same cache recovery as the single-file path; follow the link so
             # the manifest records the content-hashed blob, not the link, and pass
             # the snapshot path so the shard accounting is recovered too.
             self._reregister_from_cache(
-                hf_repo, shards[0], first_shard.resolve(), snapshot_path=first_shard
+                hf_repo, shards[0], repo_blob_entry(first_shard), snapshot_path=first_shard
             )
         return first_shard
 
@@ -484,11 +491,12 @@ class ModelRegistry:
     def _find_cached_gguf(self, hf_repo: str, gguf_filename: str) -> Path | None:
         """Return the cached blob path for ``hf_repo``/``gguf_filename``, or None.
 
-        Locates the snapshot symlink (subdir-aware) and resolves it to its blob,
-        bounded to the cache directory.
+        Locates the snapshot symlink (subdir-aware) and follows it to the blob
+        in the repo folder, bounded to the cache directory. The repo folder holds
+        the ``snapshots/`` tree, where the engine looks for the vision projector.
         """
         symlink = self._snapshot_gguf_path(hf_repo, gguf_filename)
-        return symlink.resolve() if symlink is not None else None
+        return repo_blob_entry(symlink) if symlink is not None else None
 
     def _split_shards_present(self, hf_repo: str, gguf_filename: str) -> bool:
         """True unless *gguf_filename* is a split GGUF missing one of its shards.
@@ -700,7 +708,7 @@ class ModelRegistry:
         if not snapshots.is_dir():
             return
         for link in snapshots.rglob("*"):
-            if link.is_symlink() and link.resolve().name in freed:
+            if link.is_symlink() and repo_blob_entry(link).name in freed:
                 link.unlink()
 
     def _unlink_freed_snapshot_files(
