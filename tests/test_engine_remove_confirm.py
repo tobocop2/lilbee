@@ -105,6 +105,27 @@ def test_a_library_with_no_documents_asks_nothing(
     assert engine_service.remove_build("fx", "1", "cpu") == "fx 1 (cpu)"
 
 
+def test_the_running_store_is_asked_for_zero_newest_and_its_count_reaches_the_check(
+    embeds_on_the_build: None,
+    library: SimpleNamespace,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real store takes an integer newest-count and fails on None, so the argument is checked."""
+    asked: list[object] = []
+
+    def source_summary(newest: object) -> SimpleNamespace:
+        asked.append(newest)
+        if type(newest) is not int:
+            raise TypeError("an integer is required")
+        return SimpleNamespace(document_count=7)
+
+    monkeypatch.setattr(library.store, "source_summary", source_summary)
+    with pytest.raises(engine_service.EmbedConfirmRequiredError) as caught:
+        engine_service.remove_build("fx", "1", "cpu")
+    assert asked == [0]
+    assert caught.value.documents == 7
+
+
 def test_no_server_and_no_saved_library_asks_nothing(
     embeds_on_the_build: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
