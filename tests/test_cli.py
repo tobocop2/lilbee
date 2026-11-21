@@ -1990,16 +1990,20 @@ class TestEveryCommandBuiltToRefuseKeepsItsHelp:
                 pending.extend(([*path, name], sub) for name, sub in command.commands.items())
         return paths
 
-    def test_help_and_version_work_for_every_command(self, tmp_path):
-        paths = self._command_paths()
-        assert len(paths) > 60
+    def test_the_command_tree_is_walked_whole(self):
+        assert len(self._command_paths()) > 60
+
+    # One test per command: each help render gets its own pytest timeout, so a loaded
+    # host slows every test a little instead of pushing one loop past the limit.
+    @pytest.mark.parametrize("path", [path for path, _command in _command_paths()], ids=" ".join)
+    def test_help_works_for_every_command(self, path, tmp_path):
         env = {"LILBEE_TOP_K": "many", "LILBEE_DATA": str(tmp_path)}
-        failed = {}
-        for path, _command in paths:
-            result = runner.invoke(app, [*path, "--help"], env=env)
-            if result.exit_code != 0 or "Usage" not in result.output:
-                failed[" ".join(path)] = (result.exit_code, result.output[-200:])
-        assert failed == {}
+        result = runner.invoke(app, [*path, "--help"], env=env)
+        assert result.exit_code == 0, result.output[-200:]
+        assert "Usage" in result.output
+
+    def test_version_works_under_a_refused_variable(self, tmp_path):
+        env = {"LILBEE_TOP_K": "many", "LILBEE_DATA": str(tmp_path)}
         assert runner.invoke(app, ["--version"], env=env).exit_code == 0
 
     def test_every_command_is_built_as_the_refusing_class(self):
