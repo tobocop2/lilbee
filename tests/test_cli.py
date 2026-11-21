@@ -22,6 +22,7 @@ import pytest
 from filelock import ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 from rich.progress import Progress
+from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
@@ -54,6 +55,7 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
+from tests._cli_text import plain_cli_text
 from tests._crafted_titles import (
     CONTROL_TITLES,
     CRAFTED_SOURCE,
@@ -62,7 +64,6 @@ from tests._crafted_titles import (
     crafted_label,
     linked_label,
 )
-from tests._cli_text import plain_cli_text
 from tests._crawlberg_stub import StubCrawlberg, complete
 from tests._crawlberg_stub import error as crawlberg_error
 from tests._gguf_fixture import GGUF_MAGIC
