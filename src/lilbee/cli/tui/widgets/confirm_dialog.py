@@ -51,14 +51,17 @@ class ConfirmPill(Static, can_focus=True):
 
 
 class ConfirmDialog(ModalScreen[bool]):
-    """Modal yes/no dialog that returns True (confirmed) or False (cancelled)."""
+    """Modal yes/no dialog that returns True (confirmed) or False (cancelled).
+
+    The dialog opens on No, so a bare Enter keeps the current state, as a bare Enter
+    answers no in the CLI prompts. Yes takes a press of y or a move to its pill.
+    """
 
     CSS_PATH = "confirm_dialog.tcss"
+    AUTO_FOCUS = "#confirm-no"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("y", "confirm", "Yes", show=True),
-        # Fallback for when no pill holds focus; a focused pill takes enter itself.
-        Binding("enter", "confirm", "Confirm", show=False),
         Binding("n", "cancel", "No", show=True),
         Binding("escape", "cancel", "Cancel", show=False),
         # `app.` because the focus actions live on the App, as Screen's own
@@ -67,15 +70,10 @@ class ConfirmDialog(ModalScreen[bool]):
         Binding("right", "app.focus_next", "Next", show=False),
     ]
 
-    def __init__(self, title: str, message: str, *, focus_no: bool = False) -> None:
+    def __init__(self, title: str, message: str) -> None:
         super().__init__()
         self._title = title
         self._message = message
-        self._focus_no = focus_no
-
-    def on_mount(self) -> None:
-        if self._focus_no:
-            self.query_one("#confirm-no", ConfirmPill).focus()
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -97,9 +95,3 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
-
-
-class CancelFirstConfirmDialog(ConfirmDialog):
-    """A confirm dialog that opens on No, so one Enter keeps the current state."""
-
-    AUTO_FOCUS = "#confirm-no"

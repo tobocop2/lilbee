@@ -18,7 +18,7 @@ from lilbee.cli.tui.engine_commands import EngineCommandResult, announce
 from lilbee.cli.tui.engine_install_flow import confirm_and_install
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog, ConfirmDialog
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 
@@ -206,7 +206,7 @@ class EnginesPane(VerticalScroll):
         self.reload()
 
     def _confirm_prefer(self, name: str, asked: engine_service.EmbedConfirmRequiredError) -> None:
-        dialog = CancelFirstConfirmDialog(
+        dialog = ConfirmDialog(
             msg.ENGINE_EMBED_CONFIRM_TITLE,
             msg.ENGINE_EMBED_CONFIRM_MESSAGE.format(
                 library=asked.library, documents=asked.documents
@@ -252,15 +252,14 @@ class EnginesPane(VerticalScroll):
 
         if row.roles:
             text = msg.ENGINE_REMOVE_IN_USE_MESSAGE.format(build=build, roles=", ".join(row.roles))
-            self.app.push_screen(CancelFirstConfirmDialog(title, text), answered)
         else:
             text = msg.ENGINE_REMOVE_MESSAGE.format(build=build)
-            self.app.push_screen(ConfirmDialog(title, text), answered)
+        self.app.push_screen(ConfirmDialog(title, text), answered)
 
     def _confirm_remove(
         self, row: EngineRow, asked: engine_service.EmbedConfirmRequiredError
     ) -> None:
-        dialog = CancelFirstConfirmDialog(
+        dialog = ConfirmDialog(
             msg.ENGINE_EMBED_CONFIRM_TITLE,
             msg.ENGINE_REMOVE_EMBED_MESSAGE.format(
                 build=_build_label(row), library=asked.library, documents=asked.documents

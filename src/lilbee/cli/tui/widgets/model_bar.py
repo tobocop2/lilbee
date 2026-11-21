@@ -355,9 +355,9 @@ class ModelPickerButton(Static, can_focus=True):
         self, role: WorkerRole, name: str, asked: engine_service.EmbedConfirmRequiredError
     ) -> None:
         """Ask before a change that can make the index vectors unusable."""
-        from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog
+        from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
-        dialog = CancelFirstConfirmDialog(
+        dialog = ConfirmDialog(
             msg.ENGINE_EMBED_CONFIRM_TITLE,
             msg.ENGINE_EMBED_CONFIRM_MESSAGE.format(
                 library=asked.library, documents=asked.documents

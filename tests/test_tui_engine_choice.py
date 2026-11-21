@@ -1164,13 +1164,11 @@ def _confirming_use(calls: list[bool]):
 
 
 async def _pick_openvino_in_model_info(app: LilbeeAppHost, pilot) -> None:
-    from lilbee.cli.tui.widgets.confirm_dialog import CancelFirstConfirmDialog
-
     await _open_info(app, pilot)
     await pilot.press("e")
     assert await wait_until(pilot, lambda: isinstance(app.screen, EnginePickerModal))
     await pilot.press("down", "down", "enter")
-    assert await wait_until(pilot, lambda: isinstance(app.screen, CancelFirstConfirmDialog))
+    assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
 
 
 async def test_a_change_that_can_orphan_the_index_vectors_is_saved_only_after_a_yes() -> None:
