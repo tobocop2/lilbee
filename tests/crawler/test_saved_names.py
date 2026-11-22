@@ -475,7 +475,7 @@ def test_two_spellings_of_one_page_share_a_saved_path(one: str, other: str):
 
 
 class _FixedBytes:
-    """A stand-in for ``data`` that hands back chosen bytes and records the strategy it was given."""
+    """A stand-in for ``data`` that hands back chosen bytes and records each draw."""
 
     def __init__(self, value: bytes) -> None:
         self.value = value
