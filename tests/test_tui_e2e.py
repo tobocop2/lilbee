@@ -3153,6 +3153,9 @@ class TestCatalogGridFocus:
                 grid = await wait_for_widget(
                     pilot, app, "#discover-grid-for-you", ModelGrid, timeout=30.0
                 )
+                # The screen activates its Chat tab and then takes its first focus. A rail
+                # focused before that lands has its tab switch ignored, so it is never filled.
+                assert await wait_until(pilot, lambda: app.screen.focused is not None, timeout=30.0)
                 # Focus opens the Discover tab, and the tab fills its rails a message later:
                 # G on the rail before then has no card to move to.
                 app.screen.set_focus(grid)
