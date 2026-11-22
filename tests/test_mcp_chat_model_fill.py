@@ -297,7 +297,6 @@ def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
     [record] = [r for r in caplog.records if "could not be filled" in r.getMessage()]
     assert record.levelno == logging.WARNING
     assert record.getMessage() == (
-        "The chat model could not be filled at start (registry); "
-        "tools use the chat model as set."
+        "The chat model could not be filled at start (registry); tools use the chat model as set."
     )
     assert record.exc_info is not None
