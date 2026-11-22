@@ -63,16 +63,40 @@ def test_invalid_env_override_is_ignored(monkeypatch: pytest.MonkeyPatch, bad: s
     assert offload.max_workers() == 12
 
 
-def test_the_ceiling_matches_the_pool_that_actually_exists(
+async def test_the_ceiling_matches_the_pool_that_actually_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The controller sizes its permit ceiling from max_workers() while the pool
+    """The controller sizes its permit ceiling from max_workers() while the run's pool
     is already running. Re-reading the env per call would report a ceiling the
     live pool does not have -- promising threads that are not there."""
     monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
-    pool = offload._ingest_executor()
-    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
-    assert offload.max_workers() == pool._max_workers
+
+    @offload.owns_ingest_pool
+    async def run() -> tuple[int, int]:
+        pool = offload._run_pool.get()
+        assert pool is not None
+        monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "200")
+        return offload.max_workers(), pool._max_workers
+
+    ceiling, pool_size = await run()
+    assert ceiling == pool_size == 12
+
+
+def test_the_shared_pool_is_sized_without_probing_the_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared pool is built on the event loop, so its size must not wait on a probe."""
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
+    probes: list[str] = []
+    monkeypatch.setattr(offload, "embed_inflight_target", lambda: probes.append("probe") or 64)
+    assert offload._ingest_executor()._max_workers == 12
+    assert probes == []
+
+
+def test_the_shared_pool_keeps_the_worker_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "5")
+    assert offload._ingest_executor()._max_workers == 5
 
 
 def test_embed_inflight_target_is_zero_when_the_device_probe_fails(

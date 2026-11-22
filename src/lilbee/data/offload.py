@@ -66,7 +66,7 @@ def max_workers() -> int:
 
     The adaptive-concurrency controller uses this as the upper bound on in-flight
     documents, since each one needs a pool thread to run its blocking extraction.
-    Resolved once and cached: the pool is built with this same value on first use,
+    Resolved once and cached: each ingest run's pool is built with this same value,
     so re-reading ``LILBEE_INGEST_MAX_WORKERS`` per call would let the reported
     ceiling drift away from the pool that actually exists.
 
@@ -80,21 +80,12 @@ def max_workers() -> int:
     override lifts the ceiling for genuinely CPU-bound work (e.g. bulk text
     extraction) that can use more threads; non-positive or unparseable values warn
     and fall back to the default.
+
+    It probes the embed fleet's devices, so call it off the event loop.
     """
-    override = os.environ.get(_MAX_WORKERS_ENV)
+    override = _worker_override()
     if override is not None:
-        try:
-            value = int(override)
-            if value > 0:
-                return value
-        except ValueError:
-            pass  # bad override falls through to the warning + default below
-        log.warning(
-            "Ignoring %s=%r: must be a positive integer; using default.",
-            _MAX_WORKERS_ENV,
-            override,
-        )
-    default = min(32, (os.cpu_count() or 4) + 4)
+        return override
     # The pool (and thus the adaptive controller's permit_max, which is this
     # value) must be able to feed the admission ceiling, or in adaptive mode the
     # gate clamps back to 32 and a multi-GPU fleet stays starved. Size it to the
@@ -103,13 +94,42 @@ def max_workers() -> int:
     from lilbee.core.config import active_config
 
     inflight = active_config().ingest_max_inflight or embed_inflight_target()
-    return max(default, inflight)
+    return max(_default_workers(), inflight)
+
+
+def _default_workers() -> int:
+    """The CPU-bound worker count: ``min(32, cpu_count + 4)``."""
+    return min(32, (os.cpu_count() or 4) + 4)
+
+
+def _worker_override() -> int | None:
+    """The ``LILBEE_INGEST_MAX_WORKERS`` count, or ``None`` when unset or not a positive int."""
+    override = os.environ.get(_MAX_WORKERS_ENV)
+    if override is None:
+        return None
+    try:
+        value = int(override)
+        if value > 0:
+            return value
+    except ValueError:
+        pass  # bad override falls through to the warning + default below
+    log.warning(
+        "Ignoring %s=%r: must be a positive integer; using default.",
+        _MAX_WORKERS_ENV,
+        override,
+    )
+    return None
 
 
 @functools.cache
 def _ingest_executor() -> ThreadPoolExecutor:
-    """The shared ingest pool for work outside an ingest run, created on first use."""
-    return ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix=_POOL_THREAD_PREFIX)
+    """The shared ingest pool for work outside an ingest run, created on first use.
+
+    It is built on the event loop, so its size never probes the devices: no ingest run
+    admits work onto it, so it needs no room for the embed fleet's admission ceiling.
+    """
+    workers = _worker_override() or _default_workers()
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix=_POOL_THREAD_PREFIX)
 
 
 _run_pool: contextvars.ContextVar[ThreadPoolExecutor | None] = contextvars.ContextVar(
@@ -124,7 +144,8 @@ def owns_ingest_pool(
 
     @functools.wraps(run)
     async def _with_pool(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        pool = ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix=_POOL_THREAD_PREFIX)
+        workers = await asyncio.to_thread(max_workers)
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=_POOL_THREAD_PREFIX)
         token = _run_pool.set(pool)
         try:
             return await run(*args, **kwargs)

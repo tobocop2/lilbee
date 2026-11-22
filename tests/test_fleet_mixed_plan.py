@@ -613,7 +613,9 @@ class TestMixedPlanPins:
         real_get = planning._read_device_cache.get
 
         def reading(binary, engine):
-            if engine is embed:
+            # Fails only once the pass has chosen its snapshot engine: the refusal under
+            # test is the pin check, not the choice of snapshot engine.
+            if engine is embed and planning._plan_pass.get() is not None:
                 raise OSError("probe failed")
             return real_get(binary, engine)
 

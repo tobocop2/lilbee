@@ -1735,6 +1735,26 @@ class TestSyncCancellation:
         with pytest.raises(asyncio.CancelledError):
             await ingest_stream(one_plan_batch(files), added, {}, {}, {}, quiet=True, cancel=cancel)
 
+    async def test_the_admission_is_sized_off_the_event_loop(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """Sizing probes the GPUs, so ingest_stream asks for it on a worker thread."""
+        import threading
+
+        from lilbee.data.ingest import ingest_stream, pipeline
+        from tests.conftest import one_plan_batch
+
+        sized_on: list[threading.Thread] = []
+
+        def sizing() -> tuple[int, list[object]]:
+            sized_on.append(threading.current_thread())
+            return 1, []
+
+        monkeypatch.setattr(pipeline, "_admission_sizing", sizing)
+        await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
+        assert sized_on
+        assert sized_on[0] is not threading.main_thread()
+
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
         not drop that file: it is buffered and flushed before the cancel propagates

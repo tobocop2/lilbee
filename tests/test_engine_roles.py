@@ -251,7 +251,7 @@ def test_adaptive_admission_enumerates_devices_of_the_embed_engine(
         "enumerate_fleet_devices",
         lambda engine: seen.append(_tag(engine)) or [],
     )
-    ingest_pipeline._build_admission(1, [0])
+    ingest_pipeline._admission_sizing()
     assert seen == [_expected(WorkerRole.EMBED, mlx_role)]
 
 

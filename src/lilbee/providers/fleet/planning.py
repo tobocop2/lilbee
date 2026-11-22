@@ -35,6 +35,8 @@ from lilbee.providers.fleet.binary import (
 from lilbee.providers.fleet.devices import (
     MIB,
     VULKAN_BACKEND,
+    EngineDllMissingError,
+    EngineIllegalInstructionError,
     FleetDevice,
     host_lacks_nvlink,
     visible_env,
@@ -2405,8 +2407,8 @@ def build_single_role_launch(
 
 
 def resolve_devices(binary: Path, engine: EngineAdapter) -> list[FleetDevice]:
-    """Enumerate devices in the binary's index space, or the Vulkan VRAM probe."""
-    return _read_devices(binary, engine).devices
+    """Enumerate devices in the binary's index space (or Vulkan VRAM), through the read cache."""
+    return _read_device_cache.get(binary, engine).devices
 
 
 # The visibility variable each vendor's runtime reads, named in the warning so
@@ -2620,15 +2622,20 @@ class _ReadDeviceCache:
             if fresh and self._failure is not None:
                 raise self._failure
             if self._reading is None or not fresh:
-                self._at = time.monotonic()
                 self._engine = identity
+                self._at = None
                 try:
                     self._reading = _read_devices(binary, engine)
+                except (EngineDllMissingError, EngineIllegalInstructionError):
+                    # Fixed without a new binary (the runtime is installed), so never remembered.
+                    raise
                 except ProviderError as exc:
                     self._reading = None
                     self._failure = exc
+                    self._at = time.monotonic()
                     raise
                 self._failure = None
+                self._at = time.monotonic()
             return self._reading
 
     def clear(self) -> None:
