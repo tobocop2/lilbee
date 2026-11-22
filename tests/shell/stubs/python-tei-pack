@@ -1,39 +1,40 @@
 #!/usr/bin/env bash
-# Stand-in for the Python 3.12 of a text-embeddings-inference pack build. A venv holds this stub again, pip unpacks
-# a wheel beside the venv and installs nothing else. Every other call runs the real python3.
+# The Python 3.12 of a text-embeddings-inference pack build, with a log of its calls. It runs a real Python: a venv is
+# real and its pip is the one that the Python bundles. One call is a stand-in: the install of the pack's own wheel
+# unpacks it, because pip refuses the wheel of another platform.
 #
 # Reads:
-#   REAL_PYTHON     the interpreter for the other calls (required)
+#   REAL_PYTHON     the Python that makes the venvs (required)
+#   VENV_TEMPLATE   a venv to copy; empty to make each venv
 #   PYTHON_LOG      a file that receives one line per venv or pip call (required)
 #   PYTHON_CALLS    a file that receives the path of this stub and the first line of the arguments, per call (required)
 #   PYTHON_VERSION  the version the stub reports (default: 3.12)
 
 set -euo pipefail
 
-site="$(dirname "$0")/../site"
+real="${REAL_PYTHON:?}"
+if [ -x "$(dirname "$0")/python.real" ]; then real="$(dirname "$0")/python.real"; fi
 call="$0 $*"
 echo "${call%%$'\n'*}" >> "${PYTHON_CALLS:?}"
 case "${1-} ${2-} ${3-}" in
   "-c "*version_info*)
-    echo "${PYTHON_VERSION:-3.12}" ;;
-  "-c import lilbee_engine_tei"*)
-    PYTHONPATH="${site}" exec "${REAL_PYTHON:?}" "$@" ;;
+    echo "${PYTHON_VERSION:-3.12}"
+    exit ;;
   "-m venv "*)
-    mkdir -p "$3/bin"
+    echo "$*" >> "${PYTHON_LOG:?}"
+    if [ -n "${VENV_TEMPLATE-}" ]; then cp -R "${VENV_TEMPLATE}" "$3"; else "${real}" -m venv "$3"; fi
+    mv "$3/bin/python" "$3/bin/python.real"
     cp "$0" "$3/bin/python"
-    echo "$*" >> "${PYTHON_LOG:?}" ;;
+    exit ;;
   "-m pip "*)
-    echo "$* | constraint=${PIP_CONSTRAINT-unset} cwd=${PWD##*/}" >> "${PYTHON_LOG:?}"
-    for file in ${PIP_CONSTRAINT-}; do
-      [ -s "${file}" ] || { echo "stub python: no file ${file}" >&2; exit 1; }
-    done
-    case "${!#}" in
-      *.whl) "${REAL_PYTHON:?}" -c '
-import os, sys, zipfile
+    echo "$* | constraint=${PIP_CONSTRAINT-unset} flags=${RUSTFLAGS-unset} cwd=${PWD##*/}" >> "${PYTHON_LOG:?}" ;;
+esac
+case "$*" in
+  "-m pip install -q "*.whl)
+    exec "${real}" -c '
+import os, sys, sysconfig, zipfile
 with zipfile.ZipFile(sys.argv[1]) as wheel:
     for info in wheel.infolist():
-        os.chmod(wheel.extract(info, sys.argv[2]), info.external_attr >> 16)' "${!#}" "${site}" ;;
-    esac ;;
-  *)
-    exec "${REAL_PYTHON:?}" "$@" ;;
+        os.chmod(wheel.extract(info, sysconfig.get_path("purelib")), info.external_attr >> 16)' "${!#}" ;;
 esac
+exec "${real}" "$@"
