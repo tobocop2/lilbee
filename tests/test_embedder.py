@@ -23,7 +23,10 @@ def _pin_embedding_model():
 
 @pytest.fixture()
 def mock_provider():
-    return MagicMock()
+    """A provider with no token cap, like a remote embedder: the character cut guards it."""
+    provider = MagicMock()
+    provider.embed_token_cap.return_value = None
+    return provider
 
 
 @pytest.fixture()
@@ -44,6 +47,42 @@ class TestTruncate:
     def test_exact_limit_unchanged(self, embedder):
         text = "a" * embedder.embed_char_budget
         assert embedder.truncate(text) == text
+
+
+class TestTokenBoundedProvider:
+    """A provider with a token cap bounds its own inputs, so no character count cuts a chunk."""
+
+    @pytest.fixture()
+    def capped(self, mock_provider):
+        mock_provider.embed_token_cap.return_value = 640
+        mock_provider.embed.side_effect = lambda texts: [[0.0] * 768 for _ in texts]
+        return mock_provider
+
+    def test_a_chunk_of_long_tokens_reaches_the_provider_whole(self, embedder, capped):
+        # 512 tokens of 8 characters each: 4096 characters, past 4 characters a token.
+        chunk = " ".join(f"identifier_{n:03d}"[:8] + str(n % 7) for n in range(512))
+        assert len(chunk) > cfg.chunk_size * CHARS_PER_TOKEN
+        embedder.embed_batch([chunk])
+        [sent] = capped.embed.call_args[0][0]
+        assert sent == "search_document: " + chunk
+
+    def test_a_query_of_long_tokens_reaches_the_provider_whole(self, embedder, capped):
+        query = "https://example.org/" + "segment/" * 600
+        embedder.embed_query(query)
+        [sent] = capped.embed.call_args[0][0]
+        assert sent.endswith(query)
+
+    def test_nothing_is_counted_as_cut(self, embedder, capped):
+        before = embedder.truncated_total
+        embedder.embed_batch(["x" * (embedder.embed_char_budget + 500)])
+        assert embedder.truncated_total == before
+
+    def test_the_character_cut_still_guards_a_provider_with_no_cap(self, embedder, mock_provider):
+        mock_provider.embed_token_cap.return_value = None
+        mock_provider.embed.side_effect = lambda texts: [[0.0] * 768 for _ in texts]
+        embedder.embed_batch(["x" * (embedder.embed_char_budget + 500)])
+        [sent] = mock_provider.embed.call_args[0][0]
+        assert len(sent) == embedder.embed_char_budget
 
 
 class TestEmbedOverflow:

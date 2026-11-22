@@ -311,7 +311,10 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(
         default=2000,
         ge=1,
-        description="Maximum characters sent to the embedding model per chunk. Longer text is cut",
+        description=(
+            "Maximum characters sent to a remote embedding model per input. Longer text is cut. "
+            "A local embedder cuts by its own token limit instead"
+        ),
     )
     top_k: int = ConfigField(default=12, ge=1, writable=True, profile=ProfileScope.RETRIEVAL)
     max_distance: float = ConfigField(
