@@ -456,6 +456,58 @@ class TestTokenSizing:
         assert captured["chunker_type"] == "markdown"
 
 
+def _markdown_table(rows: int, header: str = "| id | city | note |") -> str:
+    lines = [header, "|---|---|---|"]
+    lines.extend(f"| {i:03d} | Lisbon | row {i:03d} |" for i in range(rows))
+    return "\n".join(lines)
+
+
+class TestTablesFitTheEmbedderTokenLimit:
+    """A table chunk is cut to the token budget at its rows."""
+
+    def test_a_table_within_the_budget_is_kept_whole(self, mock_services):
+        from lilbee.data.extract.chunk import fit_table_budget
+
+        mock_services.provider.count_tokens.side_effect = len
+        table = _markdown_table(2)
+
+        assert fit_table_budget(table, 512) == [table]
+
+    def test_a_table_over_the_budget_is_cut_with_its_header_in_each_piece(
+        self, monkeypatch, mock_services
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import fit_table_budget
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.count_tokens.side_effect = len
+        table = _markdown_table(30)
+
+        pieces = fit_table_budget(table, 128)
+
+        assert len(pieces) > 1
+        assert max(len(p) for p in pieces) <= 128
+        assert all(p.startswith("| id | city | note |\n|---|---|---|") for p in pieces)
+        rows = table.splitlines()[2:]
+        kept = [line for p in pieces for line in p.splitlines()[2:]]
+        assert kept == rows
+
+    def test_a_header_over_half_the_budget_is_not_repeated(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import fit_table_budget
+
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_services.provider.count_tokens.side_effect = len
+        header = "| " + " | ".join(f"column {c:02d}" for c in range(3)) + " |"
+        table = _markdown_table(30, header=header)
+
+        pieces = fit_table_budget(table, 64)
+
+        assert len(pieces) > 1
+        assert max(len(p) for p in pieces) <= 64
+        assert sum(p.count(header) for p in pieces) <= 1
+
+
 class TestChunksFitTheEmbedderTokenLimit:
     """Chunks are sized by the embedder's own token count under the default config."""
 

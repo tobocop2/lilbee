@@ -5601,6 +5601,47 @@ class TestTableChunks:
         assert set(pages) == {1, 2}
         assert all(r["page_end"] == r["page_start"] for r in records)
 
+    async def test_a_table_over_the_token_budget_is_embedded_whole_in_pieces(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """A table past the budget is cut at its rows, each piece with the header, so
+        no row is lost to the embedder's cut; every piece keeps the table's page."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract import xberg as xberg_mod
+        from lilbee.data.store import ChunkType
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        monkeypatch.setattr(cfg, "chunk_size", 128)
+        monkeypatch.setattr(cfg, "chunk_overlap", 0)
+        mock_svc.provider.embed_token_cap.return_value = None
+        mock_svc.provider.count_tokens.side_effect = len
+        header = "| id | city |\n|---|---|"
+        rows = [f"| {i:03d} | Lisbon |" for i in range(40)]
+        table = _make_table(markdown="\n".join([header, *rows]), page_number=3)
+        document = _make_xberg_result(tables=[table])
+        real_extract = xberg_mod.aextract_document
+
+        async def _extract(data, *args, **kwargs):
+            # Only the file is faked: the cut of the table runs through the real xberg.
+            if data == b"fake":
+                return document
+            return await real_extract(data, *args, **kwargs)
+
+        monkeypatch.setattr(xberg_mod, "aextract_document", _extract)
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+
+        pieces = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
+        assert len(pieces) > 1
+        assert max(len(r["chunk"]) for r in pieces) <= 128
+        assert all(r["chunk"].startswith(header) for r in pieces)
+        assert [line for r in pieces for line in r["chunk"].splitlines()[2:]] == rows
+        assert {(r["page_start"], r["page_end"]) for r in pieces} == {(3, 3)}
+        assert [r["chunk_index"] for r in records] == list(range(len(records)))
+
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_chunks_are_not_counted_without_semantic_chunking(
         self, mock_kf, isolated_env, monkeypatch, mock_svc
