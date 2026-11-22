@@ -136,9 +136,7 @@ def test_the_build_names_no_eula_and_asks_for_no_ruling() -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="the script needs bash")
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="llama_gpu_manylinux.sh runs only on Linux"
-)
+@pytest.mark.skipif(sys.platform == "win32", reason="llama_gpu_manylinux.sh runs only on Linux")
 def test_the_build_is_not_refused_before_any_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
