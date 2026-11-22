@@ -352,24 +352,24 @@ def test_the_rocm_gfx_set_is_the_target_list_of_the_pack_build_less_gfx906() -> 
             "x86_64",
             ("gfx1100",),
             "linux-x86_64-rocm",
-            "6616907f7c5c49065767ecd59a1912a8b7df454d6e459593faff08e0f59bd674",
-            507199053,
+            "db9cffd80df56eb2d3f6c245844e99271c0103881d092d687aae3ed071106e03",
+            507364803,
         ),
         (
             "Linux",
             "x86_64",
             (),
             "linux-x86_64-vulkan",
-            "03b16d8054726674c63a61b924f470c4d9ffe0cf86b4d4c23c34f2cbf7f1e094",
-            56088704,
+            "4291bf88c0bf58918c4e66ac7eae0f5b2b79497a44076f04bbe87da1198a6f8f",
+            56254453,
         ),
         (
             "Windows",
             "AMD64",
             (),
             "windows-x86_64-vulkan",
-            "a01a032c23e41f51d696d0ce6bb80bfeb87994cb5d56afc2819f30bca4296ce9",
-            64798338,
+            "6285fad074767caebc53dd5ed42ca522d28ddabbef3240f3d53968927b74a987",
+            64952399,
         ),
     ],
 )
@@ -395,10 +395,10 @@ def test_the_shipped_table_pins_the_published_wheel_of_each_gpu_cell(
     row = engine_manifest.MANIFESTS["llama.cpp"][VERSION][cell]
     assert row["url"].startswith(
         "https://github.com/tobocop2/lilbee-engine-packs/releases/download/"
-        "engine-packs-20261119-llama/"
+        "engine-packs-20261121-llama/"
     )
     filename = row["url"].rsplit("/", 1)[1]
-    build = "3" if system == "Windows" else "2"
+    build = "4" if system == "Windows" else "3"
     assert filename.startswith(
         f"lilbee_engine_llama_cpp-{VERSION}-{build}.{cell.rsplit('-', 1)[1]}-"
     )
