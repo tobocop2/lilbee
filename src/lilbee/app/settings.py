@@ -887,8 +887,8 @@ def use_installed_models_for_this_run(
     per swap, for the caller to show.
 
     With *fill_empty_chat_only* (the server), the only swap is a usable chat model
-    (cloud first, then installed) for an empty chat ref. A chat ref that is set stays as set, even when it is not
-    reachable yet, and the embedding ref is never swapped.
+    (cloud first, then installed) for an empty chat ref. A chat ref that is set stays as
+    set, even when it is not reachable yet, and the embedding ref is never swapped.
     """
     from lilbee.modelhub.model_manager import (
         ValidationResult,
