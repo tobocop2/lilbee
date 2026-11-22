@@ -279,7 +279,7 @@ def terminal(monkeypatch):
 
 
 def _rejected_view(**fields):
-    """A view with only the fields the renderer reads; the clear step comes from the real property."""
+    """A view with only the fields the renderer reads; the clear step is the real property."""
     view = SimpleNamespace(**fields)
     view.clear_instruction = app_placement.PlacementView.clear_instruction.fget(view)
     return view
