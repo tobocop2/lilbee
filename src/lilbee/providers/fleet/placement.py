@@ -24,6 +24,7 @@ from types import MappingProxyType
 
 from lilbee.providers.fleet.groups import class_roles, residency_classes
 from lilbee.providers.fleet.memory_types import MemoryKind
+from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.placement_spec import (
     PlacementError,
     PlacementSpec,
@@ -533,7 +534,8 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
 def _holders_sentence(holders: Sequence[RoomHolder]) -> str:
     """The sentence that names each role charged to a card ahead of the refused one."""
     named = [
-        f"the {h.role.value} model {h.model} ({h.charged_bytes / 1024**3:.1f} GiB)" for h in holders
+        f"the {h.role.value} model {h.model} ({memory_size_text(h.charged_bytes)})"
+        for h in holders
     ]
     verb = "holds" if len(named) == 1 else "hold"
     joined = " and ".join(named)
@@ -554,8 +556,8 @@ def card_refusal(
     if needed <= room:
         return None
     figures = (
-        f"{subject} needs {needed / 1024**3:.1f} GiB but device {device} has "
-        f"{room / 1024**3:.1f} GiB usable ({capacity / 1024**3:.1f} GiB total, "
+        f"{subject} needs {memory_size_text(needed)} but device {device} has "
+        f"{memory_size_text(room)} usable ({memory_size_text(capacity)} total, "
         f"{usable_vram_fraction():.0%} headroom)"
     )
     held = _holders_sentence(holders) if holders else ""
