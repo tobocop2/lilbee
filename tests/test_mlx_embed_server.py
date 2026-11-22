@@ -230,6 +230,72 @@ def test_a_dense_chunk_the_estimate_undercounts_is_cut_exactly_and_embeds() -> N
     ]
 
 
+class OneAtATimeBackend(FakeBackend):
+    """A fast tokenizer's contract: a second thread inside any call is an error."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._busy = False
+
+    def _enter(self) -> None:
+        if self._busy:
+            raise RuntimeError("Already borrowed")
+        self._busy = True
+        time.sleep(0.05)
+        self._busy = False
+
+    def encode(self, text: str, special: bool) -> list[int]:
+        self._enter()
+        return super().encode(text, special)
+
+    def decode(self, ids: Sequence[int]) -> str:
+        self._enter()
+        return super().decode(ids)
+
+    def token_id(self, token: str) -> int:
+        self._enter()
+        return super().token_id(token)
+
+    def last_hidden(self, batch: Sequence[Sequence[int]]) -> np.ndarray:
+        self._enter()
+        return super().last_hidden(batch)
+
+    def last_logits(self, batch: Sequence[Sequence[int]], picks: Sequence[int]) -> np.ndarray:
+        self._enter()
+        return super().last_logits(batch, picks)
+
+
+@pytest.mark.parametrize(
+    ("task", "path", "body"),
+    [
+        (srv.TASK_EMBED, "/v1/embeddings", {"input": ["ab"]}),
+        (srv.TASK_RERANK, "/v1/rerank", {"query": "q", "documents": ["a", "b"]}),
+        (srv.TASK_EMBED, "/tokenize", {"content": "ab"}),
+        (srv.TASK_EMBED, "/detokenize", {"tokens": [97]}),
+    ],
+)
+def test_two_requests_at_once_never_share_the_tokenizer_or_the_model(
+    task: str, path: str, body: dict[str, Any]
+) -> None:
+    served = service(task, backend=OneAtATimeBackend())
+    start = threading.Barrier(2)
+    failures: list[Exception] = []
+
+    def request() -> None:
+        start.wait()
+        try:
+            served.answer(path, body)
+        except Exception as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=request) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert failures == []
+
+
 def _prompt(query: str, document: str) -> list[int]:
     text = (
         f"{srv.RERANK_PREFIX}<Instruct>: {srv.RERANK_INSTRUCTION}\n<Query>: {query}\n"

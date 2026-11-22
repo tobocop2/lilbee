@@ -138,7 +138,12 @@ def _texts(value: Any, field: str) -> list[str]:
 
 
 class Service:
-    """The work of one task over a backend; one lock keeps the model calls in order."""
+    """The work of one task over a backend.
+
+    One lock keeps every call of the backend in order, the tokenizer calls as well as the model
+    calls. A fast tokenizer is not safe for two threads at once. Tokenizing
+    is small next to a model call, so one shared lock costs little and needs no second tokenizer.
+    """
 
     def __init__(self, backend: Backend, task: str, max_length: int) -> None:
         self.backend = backend
@@ -160,8 +165,8 @@ class Service:
         encoding = body.get("encoding_format", "float")
         if encoding not in ("float", "base64"):
             raise RequestError(400, "encoding_format must be float or base64")
-        batch = [self._embed_ids(text) for text in texts]
         with self._lock:
+            batch = [self._embed_ids(text) for text in texts]
             states = self.backend.last_hidden(batch)
         norms = np.linalg.norm(states, axis=1, keepdims=True)
         vectors = (states / np.maximum(norms, 1e-12)).astype("<f4")
@@ -203,9 +208,9 @@ class Service:
         if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n < 1:
             raise RequestError(400, "top_n must be a positive whole number")
         instruction = body.get("instruction", RERANK_INSTRUCTION)
-        batch = [self._rerank_ids(query, doc, instruction) for doc in documents]
-        picks = [self.backend.token_id(_NO), self.backend.token_id(_YES)]
         with self._lock:
+            batch = [self._rerank_ids(query, doc, instruction) for doc in documents]
+            picks = [self.backend.token_id(_NO), self.backend.token_id(_YES)]
             logits = self.backend.last_logits(batch, picks).astype(np.float64)
         shifted = np.exp(logits - logits.max(axis=1, keepdims=True))
         scores = shifted[:, 1] / shifted.sum(axis=1)
@@ -223,7 +228,8 @@ class Service:
         special = body.get("add_special", False)
         if not isinstance(special, bool):
             raise RequestError(400, "add_special must be true or false")
-        return {"tokens": self.backend.encode(content, special=special)}
+        with self._lock:
+            return {"tokens": self.backend.encode(content, special=special)}
 
     def detokenize(self, body: dict[str, Any]) -> dict[str, Any]:
         """The text of the token ids in ``tokens``."""
@@ -232,7 +238,8 @@ class Service:
             isinstance(t, int) and not isinstance(t, bool) for t in tokens
         ):
             raise RequestError(400, "tokens must be a list of whole numbers")
-        return {"content": self.backend.decode(tokens)}
+        with self._lock:
+            return {"content": self.backend.decode(tokens)}
 
     def answer(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         if path == TOKENIZE:
