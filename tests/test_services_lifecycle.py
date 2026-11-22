@@ -154,7 +154,11 @@ def test_a_serving_loop_takes_the_hard_exit_and_its_status(sig):
 
 
 def test_the_first_ctrl_c_stops_the_server_and_the_second_forces_the_exit(monkeypatch):
-    """One press takes the hard-exit path; the next press ends the process with status 130."""
+    """One press takes the hard-exit path; the next press ends the process with status 130.
+
+    The lifecycle starts with no stop thread, so the stop runs only if the routing starts one.
+    """
+    _without_a_stop_thread(monkeypatch)
     provider = _install_stub_services()
     statuses: list[int] = []
     exits: list[int] = []

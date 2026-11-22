@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import json
+import logging
 import re
 import stat
 import threading
@@ -1489,6 +1491,153 @@ def test_embeds_of_different_texts_each_count_their_own(monkeypatch, hung_side_r
     )
     assert cuts == [1, 0]
     assert sum(path.endswith("/tokenize") for path in paths) == 2
+
+
+_HOLD_S = 5.0
+"""The longest a fake route waits for the threads a test arranges; it bounds a red run only."""
+
+
+class _ProbeWatch(dict[tuple[Any, ...], Any]):
+    """The client's table of requests in flight; it notes each thread that finds the probe sent.
+
+    ``waiting`` is set once ``waiters`` threads wait on the first count of the route.
+    """
+
+    def __init__(self, waiters: int) -> None:
+        super().__init__()
+        self.waiters = waiters
+        self.waiting = threading.Event()
+        self.found: list[tuple[int, Any]] = []
+
+    def get(self, key: tuple[Any, ...], default: Any = None) -> Any:
+        flight = super().get(key, default)
+        if flight is not None and key[0] == "first-probe":
+            self.found.append((threading.get_ident(), flight))
+            if len(self.found) == self.waiters:
+                self.waiting.set()
+        return flight
+
+
+class _HeldCountRoute(_Embedder):
+    """A router whose count route answers each request in order as the test sets.
+
+    The first count request waits for ``hold``. ``failing`` maps a request's place, from 0,
+    to the answer it gets; any other request is counted. With ``paired`` each request after
+    the first waits until another one has arrived.
+    """
+
+    def __init__(
+        self,
+        hold: threading.Event | None = None,
+        failing: dict[int, httpx.Response] | None = None,
+        paired: bool = False,
+    ) -> None:
+        super().__init__()
+        self.hold = hold
+        self.failing = failing or {}
+        self.pair = threading.Barrier(2) if paired else None
+        self.counted = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        if not req.url.path.endswith("/tokenize"):
+            return super().__call__(req)
+        with self._lock:
+            place = self.counted
+            self.counted += 1
+        if place == 0 and self.hold is not None:
+            self.hold.wait(_HOLD_S)
+        elif place > 0 and self.pair is not None:
+            with contextlib.suppress(threading.BrokenBarrierError):
+                self.pair.wait(_HOLD_S)
+        if place in self.failing:
+            return self.failing[place]
+        return super().__call__(req)
+
+
+def _skip_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "check skipped" in r.getMessage()]
+
+
+def test_a_thread_waiting_on_a_failed_probe_finds_the_pause_set_when_it_wakes(
+    monkeypatch,
+) -> None:
+    watch = _ProbeWatch(waiters=1)
+    router = _HeldCountRoute(hold=watch.waiting, failing={0: httpx.Response(503, text="busy")})
+    client = _tei_client(router, WorkerRole.EMBED)
+    client._flights = watch
+    noted = threading.Event()
+    paused_at_note: dict[int, bool] = {}
+    pause = client._pause_truncation_check
+
+    def pause_once_a_woken_waiter_noted(exc: Exception, route: str | None) -> None:
+        # A waiter that can wake before the pause is set gets to note its embed first.
+        if any(flight.done() for _, flight in watch.found):
+            noted.wait(_HOLD_S)
+        pause(exc, route)
+
+    def note(*_args: Any) -> None:
+        ident = threading.get_ident()
+        paused_at_note[ident] = time.monotonic() < client._check_resume_at
+        if ident in {waiter for waiter, _ in watch.found}:
+            noted.set()
+
+    monkeypatch.setattr(client, "_pause_truncation_check", pause_once_a_woken_waiter_noted)
+    monkeypatch.setattr(fleet_client, "note_truncated", note)
+    _run_together([lambda: client.embed([_words(30)])] * 2)
+
+    assert len(watch.found) == 1
+    assert list(paused_at_note.values()) == [True, True]
+    assert router.counted == 1
+
+
+@pytest.mark.parametrize("words", [30, 31], ids=["same-texts", "other-texts"])
+def test_a_count_that_fails_after_the_route_answered_pauses_the_check(words, caplog) -> None:
+    router = _HeldCountRoute(failing={1: httpx.Response(500, text="boom")})
+    client = _tei_client(router, WorkerRole.EMBED)
+    client.embed([_words(30)])
+    with caplog.at_level("WARNING"):
+        client.embed([_words(words)])
+        client.embed([_words(words)])
+    assert router.counted == 2
+    [record] = _skip_warnings(caplog)
+    assert record.levelname == "WARNING"
+
+
+def test_a_failed_count_of_other_texts_than_a_waited_probe_pauses_the_check(caplog) -> None:
+    watch = _ProbeWatch(waiters=1)
+    router = _HeldCountRoute(hold=watch.waiting, failing={1: httpx.Response(500, text="boom")})
+    client = _tei_client(router, WorkerRole.EMBED)
+    client._flights = watch
+    with caplog.at_level("WARNING"):
+        _run_together([lambda: client.embed([_words(30)]), lambda: client.embed([_words(31)])])
+        client.embed([_words(32)])
+    assert len(watch.found) == 1
+    assert router.counted == 2
+    [record] = _skip_warnings(caplog)
+    assert record.levelname == "WARNING"
+
+
+def test_threads_with_other_texts_than_a_waited_probe_each_get_their_own_count(
+    monkeypatch,
+) -> None:
+    watch = _ProbeWatch(waiters=2)
+    router = _HeldCountRoute(hold=watch.waiting, paired=True)
+    client = _tei_client(router, WorkerRole.EMBED)
+    client._flights = watch
+    cuts: dict[int, int] = {}
+    monkeypatch.setattr(
+        fleet_client, "note_truncated", lambda cut, *_: cuts.__setitem__(threading.get_ident(), cut)
+    )
+
+    def cut_of(texts: list[str]) -> int:
+        client.embed(texts)
+        return cuts[threading.get_ident()]
+
+    batches = [[_words(30)], [_words(31), _words(32)], [_words(33), _words(34), _words(35)]]
+    assert _run_together([lambda b=b: cut_of(b) for b in batches]) == [1, 2, 3]
+    assert len(watch.found) == 2
+    assert router.counted == 3
 
 
 class _SingleFlightProbe:
