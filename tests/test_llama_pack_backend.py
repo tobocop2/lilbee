@@ -30,6 +30,7 @@ from tests._pack_workflow import (
     Cell,
     cells_below_the_record,
     pack_cells,
+    pack_pins,
     pack_workflow,
 )
 from tests._published import render_table, wheel_name
@@ -269,6 +270,7 @@ def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
 
 _ROOT = Path(__file__).resolve().parents[1]
 _PACK_LINUX_CUDA_BUILD = _ROOT / "tools/wheel-build/llama_cuda_manylinux.sh"
+_PACK_RECIPE = _ROOT / "tools/wheel-build/pack_llama.sh"
 _PACK_CUDA_VERSION = re.compile(r"cuda(?:-|_dash=)(\d+)[.-](\d+)")
 # At this tag, ggml-cuda's CMakeLists.txt defaults CUDA 12 without GGML_NATIVE to 50-virtual up.
 _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR = "b12032"
@@ -299,15 +301,16 @@ def test_the_driver_floor_is_the_cuda_version_the_pack_is_built_with() -> None:
 
 
 def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032() -> None:
-    cells = _pack_workflow_yaml()
     assets = [cell["asset"] for cell in _pack_matrix() if "asset" in cell]
     linux_build = _uncommented(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
+    recipe = _uncommented(_PACK_RECIPE.read_text(encoding="utf-8"))
     workflow = _uncommented(pack_workflow().read_text(encoding="utf-8"))
-    assert cells["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR
+    built = linux_build + recipe + workflow
+    assert pack_pins("llama")["UPSTREAM_TAG"] == _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR
     assert assets
     assert all(f"llama-{_UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR}-" in asset for asset in assets)
     assert "-DGGML_NATIVE=OFF" in linux_build
-    assert [o for o in _CUDA_ARCHITECTURE_OVERRIDES if o in linux_build + workflow] == []
+    assert [o for o in _CUDA_ARCHITECTURE_OVERRIDES if o in built] == []
     assert _CUDA_MIN_COMPUTE == (5, 0)
 
 
@@ -316,12 +319,12 @@ def test_the_pinned_wheel_version_is_derived_from_the_upstream_tag() -> None:
     assert _WHEEL_VERSION == "1.12032.1"
 
 
-def test_the_pinned_upstream_tag_is_the_tag_the_pack_workflow_builds() -> None:
-    assert _pack_workflow_yaml()["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG
+def test_the_pinned_upstream_tag_is_the_tag_the_llama_cells_build() -> None:
+    assert pack_pins("llama")["UPSTREAM_TAG"] == _UPSTREAM_TAG
 
 
-def test_the_pinned_wheel_version_is_the_version_the_pack_workflow_builds() -> None:
-    assert _pack_workflow_yaml()["env"]["WHEEL_VERSION"] == _WHEEL_VERSION
+def test_the_pinned_wheel_version_is_the_version_the_llama_cells_build() -> None:
+    assert pack_pins("llama")["WHEEL_VERSION"] == _WHEEL_VERSION
 
 
 def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_cells() -> None:
@@ -361,17 +364,27 @@ def test_no_llama_cell_builds_a_number_below_a_published_wheel_of_its_name() -> 
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
     steps = _pack_workflow_yaml()["jobs"]["cell"]["steps"]
-    noticed = [s for s in steps if _NOTICE_NAME in s.get("run", "")]
-    assert len(noticed) == 2
     assert not _pack_workflow_yaml()["jobs"]["cell"].get("continue-on-error")
-    for step in noticed:
+    # tests/shell/pack_llama.bats tests that a failure of the recipe stops the pack.
+    (check,) = (s for s in steps if s.get("name") == "Start llama-server from the installed wheel")
+    _assert_step_stops_on_failure(check)
+    checked = [
+        step
+        for step in steps
+        if "pack.sh" in step.get("run", "") or _NOTICE_NAME in step.get("run", "")
+    ]
+    # The loop is not vacuous: the build step and the check step are the two that it reads.
+    assert [step["name"] for step in checked] == [
+        "Build the pack",
+        "Start llama-server from the installed wheel",
+    ]
+    for step in checked:
         _assert_step_stops_on_failure(step)
-    workflow = _uncommented("\n".join(step.get("run", "") for step in steps))
-    notice = "NOTICE-MICROSOFT-VC-RUNTIME"
-    bundle = [line for line in workflow.splitlines() if "bundle_windows_runtime.sh" in line]
+    recipe = _uncommented(_PACK_RECIPE.read_text(encoding="utf-8"))
+    bundle = [line for line in recipe.splitlines() if "bundle_windows_runtime.sh" in line]
     assert len(bundle) == 1
-    assert f"packaging/engine-wheel/{notice} vs-licence.docx" in bundle[0]
-    assert f'dist-info/licenses/{notice}$" wheel-listing.txt' in workflow
+    assert f'"${{WHEEL_TREE}}/{_NOTICE_NAME}" vs-licence.docx' in bundle[0]
+    assert f'dist-info/licenses/{_NOTICE_NAME}$" wheel-listing.txt' in _uncommented(check["run"])
 
 
 _NOTICE_NAME = "NOTICE-MICROSOFT-VC-RUNTIME"

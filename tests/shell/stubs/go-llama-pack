@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Stand-in for go when pack_llama.sh builds a cell.
+#
+# Reads:
+#   PACK_LOG    a file that receives one line per call, with the name of the folder for a build or a run (required)
+#   GO_VERSION  the version that `go env GOVERSION` prints (required)
+#   GO_FAIL     a piece of the arguments of the call that fails with status 6
+
+set -euo pipefail
+
+call="$*"
+echo "go ${call} | toolchain=${GOTOOLCHAIN-unset} cwd=${PWD##*/}" >> "${PACK_LOG:?}"
+if [ -n "${GO_FAIL-}" ] && [[ "${call}" == *"${GO_FAIL}"* ]]; then
+  # A command that fails can print a part of its result first.
+  echo part
+  exit 6
+fi
+case "${call}" in
+  "env GOVERSION") echo "${GO_VERSION:?}" ;;
+  "env GOROOT")
+    mkdir -p "${PACK_LOG%/*}/goroot"
+    echo "Go licence" > "${PACK_LOG%/*}/goroot/LICENSE"
+    echo "${PACK_LOG%/*}/goroot" ;;
+  "list std") printf '%s\n' fmt net/http ;;
+  "build "*)
+    while [ "$#" -gt 0 ]; do
+      [ "$1" != -o ] || { echo "built in ${PWD##*/}" > "$2"; }
+      shift
+    done ;;
+  "run "*" check "*) ;;
+  "run "*" save "*)
+    mkdir -p "${!#}/module"
+    echo "module licence" > "${!#}/module/LICENSE" ;;
+  "run "*" report "*)
+    if [ "${PWD##*/}" = llama-swap ]; then printf '%s\n' MIT Apache-2.0; else printf '%s\n' BSD-2-Clause MIT; fi ;;
+  *) echo "stub go: unexpected command '${call}'" >&2; exit 2 ;;
+esac

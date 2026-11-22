@@ -1,0 +1,4 @@
+# The Python package that cccl_source.py needs for the Windows CUDA llama.cpp pack. The digest is the wheel for Python
+# 3.12 on Windows x86_64.
+pyyaml==6.0.3 \
+    --hash=sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b

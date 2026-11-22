@@ -16,6 +16,12 @@
 set -euo pipefail
 
 : "${UPSTREAM_REPO:?}" "${UPSTREAM_TAG:?}" "${BIN_DIR:?}" "${OWNER:?}" "${SHA_FILE:?}" "${DEPS_DIR:?}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/wheel-build/pack_common.sh
+. "${script_dir}/pack_common.sh"
+# The Python of the image holds other packages, so the build tools go into a new venv.
+venv=/tmp/build-venv
+[ ! -e "${venv}" ] || { echo "llama_cuda_manylinux: an earlier build used this container (${venv} exists). Use a new one." >&2; exit 2; }
 cuda_dash=12-4
 cuda_dir=/usr/local/cuda-12.4
 jobs="$(nproc)"
@@ -26,8 +32,9 @@ curl -fsSL -o /etc/yum.repos.d/cuda-rhel9.repo \
 dnf install -y "cuda-nvcc-${cuda_dash}" "cuda-cudart-devel-${cuda_dash}" "libcublas-devel-${cuda_dash}" \
   "cuda-driver-devel-${cuda_dash}" \
   gcc-toolset-13-gcc-c++
-/opt/python/cp312-cp312/bin/python -m pip install -q cmake ninja
-export PATH="/opt/python/cp312-cp312/bin:${cuda_dir}/bin:${PATH}"
+/opt/python/cp312-cp312/bin/python -m venv "${venv}"
+install_build_tools "${venv}/bin/python" "${script_dir}/llama-tools-linux.constraints"
+export PATH="${venv}/bin:${cuda_dir}/bin:${PATH}"
 gcc13=/opt/rh/gcc-toolset-13/root/usr/bin
 "${gcc13}/g++" --version | head -1
 nvcc --version | tail -2

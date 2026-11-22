@@ -1068,10 +1068,13 @@ def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
     workflow = pack_workflow().read_text(encoding="utf-8")
     name = engine_store.NOTICE_RULES["LicenseRef-Microsoft-VC-Runtime"].file
     tools = Path(__file__).parents[3] / "tools" / "wheel-build"
-    # The llama.cpp job writes the notice and checks it. For mistral.rs one script does each.
+    # pack_llama.sh writes the notice and the llama.cpp job checks it.
+    # For mistral.rs one script does each.
     llama = yaml.safe_load(workflow)["jobs"]["cell"]["steps"]
+    (check,) = (s for s in llama if s.get("name") == "Start llama-server from the installed wheel")
     texts = {
-        "llama.cpp job": ("\n".join(step.get("run", "") for step in llama), 2),
+        "pack_llama.sh": ((tools / "pack_llama.sh").read_text(encoding="utf-8"), 1),
+        "llama.cpp job": (check["run"], 1),
         "pack_mistralrs.sh": ((tools / "pack_mistralrs.sh").read_text(encoding="utf-8"), 1),
         "check_mistralrs_wheel.sh": (
             (tools / "check_mistralrs_wheel.sh").read_text(encoding="utf-8"),
