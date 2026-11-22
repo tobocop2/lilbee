@@ -65,8 +65,12 @@ def _is_helper_call(value: ast.expr) -> bool:
 def pythonpath_writes(source: str) -> list[tuple[int, bool]]:
     """Each write to PYTHONPATH in *source* as ``(line, sealed)``.
 
-    Every write holds the name as text, so a source without it is not parsed: the test files
-    hold over 15 MB, and a parse of all of them takes over a minute under gate load.
+    A source without the text ``PYTHONPATH`` is not parsed: the test files hold over 15 MB, and
+    a parse of all of them takes over a minute under gate load. The guard has gaps. It does not
+    see a name that comes from a constant in another module, or one built with ``+``. It also
+    does not see a name that Python joins or decodes before the parse, such as the adjacent
+    literals ``"PYTHON" "PATH"`` or the escape ``"PYTHON\\x50ATH"``: the name is then not in the
+    text, so the file is skipped.
     """
     if _NAME not in source:
         return []
