@@ -873,13 +873,19 @@ def apply_ephemeral_model_swap(field: str, ref: str) -> None:
     setattr(cfg, field, ref)
 
 
-def use_installed_models_for_this_run(*, chat_overridden: bool) -> list[str]:
+def use_installed_models_for_this_run(
+    *, chat_overridden: bool, fill_empty_chat_only: bool = False
+) -> list[str]:
     """Swap an empty or stale chat/embedding ref to an installed model for this process.
 
     Every process that answers a question runs this before it builds its services,
     so the CLI and the server resolve the same model. The config file is never
     rewritten. An explicit --model override is kept as given. Returns one notice
     per swap, for the caller to show.
+
+    With *fill_empty_chat_only* (the server), the only swap is an installed chat model
+    for an empty chat ref. A chat ref that is set stays as set, even when it is not
+    reachable yet, and the embedding ref is never swapped.
     """
     from lilbee.modelhub.model_manager import (
         ValidationResult,
@@ -887,9 +893,11 @@ def use_installed_models_for_this_run(*, chat_overridden: bool) -> list[str]:
         canonicalize_embedding_model,
     )
 
-    checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
-    if not chat_overridden:
-        checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
+    checks = []
+    if not chat_overridden and not (fill_empty_chat_only and cfg.chat_model):
+        checks.append((canonicalize_chat_model(), "chat_model", "Chat"))
+    if not fill_empty_chat_only:
+        checks.append((canonicalize_embedding_model(), "embedding_model", "Embedding"))
     notices: list[str] = []
     for canon, field, label in checks:
         if canon.status == ValidationResult.OK or canon.effective == canon.original:
