@@ -659,6 +659,133 @@ async def test_pressing_the_sync_key_at_the_gate_starts_no_sync(monkeypatch, tmp
         assert gate._typed == ["a", "S", "b"]
 
 
+@pytest.mark.parametrize(
+    ("key", "typed"),
+    [("left_square_bracket", ["]", "["]), ("c", ["]", "c"]), ("escape", ["]"])],
+)
+async def test_no_view_opens_before_chat_is_installed(monkeypatch, tmp_path, key, typed):
+    """The view keys reach no view while chat loads: the way back from one is chat.
+
+    The gate keeps them as typed text, as it keeps the sync key.
+    """
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(LilbeeApp, "_load_chat_screen", lambda self, gate: None)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        for pressed in ("right_square_bracket", key):
+            await pilot.press(pressed)
+            await pilot.pause()
+        assert isinstance(app.screen, StartupGate)
+        assert app.screen._typed == typed
+        app.switch_view("Chat")
+        await pilot.pause()
+        assert isinstance(app.screen, StartupGate)
+
+
+async def test_a_host_with_no_gate_opens_a_view_with_no_chat_installed():
+    """Only the gate waits for chat: a host that pushes its own first screen keeps its views."""
+    from textual.screen import Screen
+
+    from tests._async_wait import wait_until
+    from tests._lilbee_app_test_host import LilbeeAppHost
+
+    app = LilbeeAppHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.push_screen(Screen())
+        assert not app.is_screen_installed("chat")
+        app.switch_view("Tasks")
+        assert await wait_until(pilot, lambda: app.active_view == "Tasks", timeout=5.0)
+
+
+@pytest.fixture
+def failed_install_app(monkeypatch, tmp_path):
+    """Build an app whose chat screen fails to install, with the list of boots it starts."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    def _build(*, cold: bool, error: Exception) -> tuple[LilbeeApp, list[StartupGate]]:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+        if cold:
+            monkeypatch.setattr(LilbeeApp, "_load_chat_screen", LilbeeApp._chat_import_worker)
+        monkeypatch.setattr(ChatScreen, "__init__", mock.Mock(side_effect=error))
+        boots: list[StartupGate] = []
+        monkeypatch.setattr(StartupGate, "_boot_worker", lambda self: boots.append(self))
+        return LilbeeApp(), boots
+
+    return _build
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (RuntimeError("boom"), "boom"),
+        (ValueError("boom"), "boom"),
+        (ValueError(), "ValueError"),
+    ],
+)
+@pytest.mark.parametrize("cold", [True, False])
+async def test_the_app_leaves_the_gate_when_chat_cannot_be_installed(
+    failed_install_app, monkeypatch, cold, error, reason
+):
+    """No view opens without chat, so a failed install ends the app and says why."""
+    import asyncio
+
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app, _boots = failed_install_app(cold=cold, error=error)
+    messages: list[object] = []
+    leave = LilbeeApp.exit
+
+    def _exit(self, *args, **kwargs):
+        messages.append(kwargs.get("message"))
+        leave(self, *args, **kwargs)
+
+    monkeypatch.setattr(LilbeeApp, "exit", _exit)
+
+    await asyncio.wait_for(app.run_async(headless=True, size=(120, 40)), timeout=20)
+    assert app.return_code == 1
+    assert messages == [msg.CHAT_STACK_FAILED.format(error=reason)]
+
+
+@pytest.mark.parametrize("cold", [True, False])
+async def test_no_boot_starts_when_chat_cannot_be_installed(failed_install_app, cold):
+    """The boot builds the services and the role servers, which an app that leaves must not."""
+    import asyncio
+
+    app, boots = failed_install_app(cold=cold, error=ValueError("boom"))
+    await asyncio.wait_for(app.run_async(headless=True, size=(120, 40)), timeout=20)
+    assert boots == []
+
+
+async def test_a_view_opens_once_chat_is_installed(monkeypatch, tmp_path):
+    """The refusal ends with the install, also while the gate still shows."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+    from tests._async_wait import wait_until
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_until(pilot, lambda: app.is_screen_installed("chat"), timeout=5.0)
+        assert isinstance(app.screen, StartupGate)
+        app.switch_view("Tasks")
+        assert await wait_until(pilot, lambda: app.active_view == "Tasks", timeout=5.0)
+        assert not isinstance(app.screen, StartupGate)
+
+
 async def test_gate_release_hands_the_typed_keys_to_the_app():
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 

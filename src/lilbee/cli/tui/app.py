@@ -392,20 +392,27 @@ class LilbeeApp(App[None]):
             # Without chat the app has no home screen; exit loudly like the old
             # inline import did rather than stranding the user on the gate.
             log.exception("the chat screen failed to import")
-            call_from_thread(self, self._exit_on_chat_import_failure, str(exc))
+            call_from_thread(self, self._exit_without_chat, exc)
             return
         call_from_thread(self, self._install_chat_screen, gate)
 
-    def _exit_on_chat_import_failure(self, error: str) -> None:
-        """Leave the TUI with the import error where the user can read it."""
+    def _exit_without_chat(self, exc: Exception) -> None:
+        """Leave the TUI with the chat error where the user can read it."""
+        error = str(exc) or type(exc).__name__
         self.exit(return_code=1, message=msg.CHAT_STACK_FAILED.format(error=error))
 
     def _install_chat_screen(self, gate: StartupGate) -> None:
         """Install chat and start the gate's boot; runs once chat's modules exist."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        chat = ChatScreen()
-        self.install_screen(chat, name=_CHAT_SCREEN_NAME)
+        try:
+            self.install_screen(ChatScreen(), name=_CHAT_SCREEN_NAME)
+        except Exception as exc:
+            # The gate opens no view without chat, and the import worker's hop to
+            # this thread drops or hides an error raised here.
+            log.exception("the chat screen failed to install")
+            self._exit_without_chat(exc)
+            return
         gate.start_boot()
 
     def reveal_landing(self) -> None:
@@ -827,12 +834,22 @@ class LilbeeApp(App[None]):
 
     def _view_is_refused(self, view_name: str) -> bool:
         """True when *view_name* cannot be entered now, having handled the refusal."""
+        if self._chat_is_loading():
+            return True
         if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
             # The tab stays visible so the feature is discoverable, but opening it
             # while off shows why rather than an empty list.
             self.notify_sessions_disabled()
             return True
         return view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None
+
+    def _chat_is_loading(self) -> bool:
+        """True while the startup gate waits for chat, the view every other one returns to."""
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        return not self.is_screen_installed(_CHAT_SCREEN_NAME) and any(
+            isinstance(screen, StartupGate) for screen in self.screen_stack
+        )
 
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view, installing each screen at most once.
@@ -959,9 +976,10 @@ class LilbeeApp(App[None]):
             return False
         # Nothing to jump to when Chat is already the active view. [ and ] are
         # priority bindings, which run before a modal screen's own handling, so
-        # over a dialog they would switch views and close it with no answer.
+        # over a dialog they would switch views and close it with no answer. While
+        # chat loads no view opens, so the gate keeps them as typed text.
         if (action == "open_chat" and self.active_view == msg.DEFAULT_VIEW) or (
-            action in ("nav_prev", "nav_next") and self.screen.is_modal
+            action in ("nav_prev", "nav_next") and (self.screen.is_modal or self._chat_is_loading())
         ):
             return False
         # False, not None: Textual drops a False binding from the row entirely

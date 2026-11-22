@@ -1536,7 +1536,11 @@ class TestSyncHint:
 
 
 class TestChatImportWorker:
-    def test_import_failure_exits_with_the_error(self) -> None:
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [(ImportError("boom"), "boom"), (ImportError(), "ImportError")],
+    )
+    def test_import_failure_exits_with_the_error(self, error, reason) -> None:
         """An unimportable chat stack must exit loudly, not strand the gate."""
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.app import LilbeeApp
@@ -1544,7 +1548,7 @@ class TestChatImportWorker:
         app = LilbeeApp.__new__(LilbeeApp)
         gate = mock.MagicMock()
         with (
-            mock.patch("lilbee.cli.tui.app._import_chat_stack", side_effect=ImportError("boom")),
+            mock.patch("lilbee.cli.tui.app._import_chat_stack", side_effect=error),
             mock.patch(
                 "lilbee.cli.tui.app.call_from_thread",
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
@@ -1553,7 +1557,7 @@ class TestChatImportWorker:
         ):
             LilbeeApp._chat_import_worker.__wrapped__(app, gate)
         mock_exit.assert_called_once_with(
-            return_code=1, message=msg.CHAT_STACK_FAILED.format(error="boom")
+            return_code=1, message=msg.CHAT_STACK_FAILED.format(error=reason)
         )
 
     def test_successful_import_installs_chat_and_boots(self) -> None:
