@@ -15,8 +15,7 @@ from types import ModuleType
 
 import pytest
 
-from tests._pack_workflow import pack_workflow
-from tests._workflow_steps import commands, steps
+from tests._pack_workflow import pack_cells
 
 _TOOLS = Path(__file__).resolve().parents[1] / "tools/wheel-build"
 _PROJECT = Path(__file__).resolve().parents[1] / "packaging/engine-wheel-tei/pyproject.toml"
@@ -64,10 +63,12 @@ def _wheel(
     extra: tuple[str, ...] = (),
     router_mode: int = _EXECUTABLE,
     router: bytes = b"\x7fELF",
+    line_end: str = "\n",
 ) -> Path:
+    metadata = f"Metadata-Version: 2.4{line_end}License-Expression: {expression}{line_end}"
     entries = {
         "lilbee_engine_tei/bin/text-embeddings-router": (router, router_mode),
-        f"{_DIST}/METADATA": (f"License-Expression: {expression}\n".encode(), _PLAIN),
+        f"{_DIST}/METADATA": (metadata.encode(), _PLAIN),
         f"{_DIST}/licenses/LICENSE-tei": (b"Apache licence", _PLAIN),
         f"{_DIST}/licenses/LICENSE-openssl": (b"OpenSSL licence", _PLAIN),
         f"{_DIST}/licenses/THIRD-PARTY/tei/LICENSES.txt": (b"crate licences", _PLAIN),
@@ -122,6 +123,11 @@ def test_stamp_main_needs_three_arguments() -> None:
 
 def test_a_complete_cpu_wheel_passes(tmp_path: Path) -> None:
     assert _problems(_wheel(tmp_path), "cpu", "Apache-2.0 AND MIT") == []
+
+
+def test_a_metadata_file_with_crlf_line_ends_passes(tmp_path: Path) -> None:
+    wheel = _wheel(tmp_path, line_end="\r\n")
+    assert _problems(wheel, "cpu", "Apache-2.0 AND MIT") == []
 
 
 def test_a_complete_cuda_wheel_passes(tmp_path: Path) -> None:
@@ -668,16 +674,6 @@ def test_an_mpl_expression_with_its_notice_passes(tmp_path: Path) -> None:
     assert _problems(wheel, "cpu", "Apache-2.0 AND MPL-2.0") == []
 
 
-def test_the_metal_build_enables_the_candle_backend() -> None:
-    lines = [
-        line
-        for line in pack_workflow().read_text(encoding="utf-8").splitlines()
-        if "text-embeddings-router" in line and "--features" in line
-    ]
-    assert len(lines) == 1
-    assert "--features candle,metal,http" in lines[0]
-
-
 _PYTHON_STUB = """#!/bin/sh
 # Runs the .py tools; records where the wheel build starts and its --outdir.
 case "$1" in
@@ -930,28 +926,28 @@ def test_the_linux_build_targets_the_portable_x86_64_baseline(tmp_path: Path, cu
     assert _build_env(tmp_path, cuda_cc, "rustflags") == "-C target-cpu=x86-64-v2"
 
 
-def test_the_metal_build_targets_the_first_apple_silicon_cpu() -> None:
-    text = pack_workflow().read_text(encoding="utf-8")
-    tei = text[text.index("\n  tei:\n") :]
-    build = tei[tei.index("- name: Build the router for Metal") :]
-    build = build[: build.index("- name: Collect the wheel")]
-    lines = [line.strip() for line in build.splitlines()]
-    exports = [line for line in lines if line.startswith("export RUSTFLAGS")]
-    assert exports == ['export RUSTFLAGS="-C target-cpu=apple-m1"']
-    assert build.index("export RUSTFLAGS") < build.index("cargo build")
+def test_each_linux_pack_cell_has_the_platform_that_the_repair_writes() -> None:
+    script = (_TOOLS / "tei_manylinux.sh").read_text(encoding="utf-8")
+    (platform,) = re.findall(r"auditwheel repair --plat (\S+)", script)
+    cells = [cell for cell in pack_cells("tei") if cell["os"] == "linux"]
+    assert cells
+    assert {cell["platform"] for cell in cells} == {platform}
 
 
-def test_the_metal_repair_runs_with_the_commit_time_of_the_source() -> None:
-    (build,) = (
-        step["run"]
-        for step in steps(pack_workflow(), "tei")
-        if step.get("name") == "Build the router for Metal"
-    )
-    run = commands(build)
-    epoch = "export $(bash tools/wheel-build/source_date_epoch.sh ${RUNNER_TEMP}/tei)"
-    assert run.count(epoch) == 1
-    wrap = run.index("tools/wheel-build/tei_wheel.sh")
-    assert run.index(epoch) < wrap < run.index("delocate-wheel")
+def test_the_backend_of_each_cuda_pack_cell_names_its_compute_capability() -> None:
+    cells = [cell for cell in pack_cells("tei") if cell["os"] == "linux"]
+    backends = {cell["backend"]: cell.get("cc") for cell in cells}
+    assert backends.pop("cpu") is None
+    assert backends
+    assert backends == {backend: backend.removeprefix("cuda-sm") for backend in backends}
+
+
+def test_the_platform_of_the_metal_pack_cell_is_the_floor_that_the_pack_checks() -> None:
+    script = (_TOOLS / "pack_tei.sh").read_text(encoding="utf-8")
+    (floor,) = re.findall(r"--require-target-macos-version (\S+)", script)
+    (cell,) = (cell for cell in pack_cells("tei") if cell["os"] == "macos")
+    assert cell["backend"] == "metal"
+    assert cell["platform"] == f"macosx_{floor.replace('.', '_')}_arm64"
 
 
 _SMOKE_QEMU_STUB = """#!/bin/sh
@@ -968,8 +964,20 @@ _SMOKE_UNAME_STUB = "#!/bin/sh\necho Linux\n"
 _SMOKE_LDD_STUB = "#!/bin/sh\necho 'libc.so.6 => /lib/libc.so.6'\n"
 
 
+_SMOKE_CURL_STUB = """#!/bin/sh
+case "$*" in
+  */embed*) echo "[[$(yes 0 | head -n 384 | paste -s -d, -)]]" ;;
+esac
+"""
+
+
 def _run_smoke(
-    tmp_path: Path, backend: str, cpu: str | None, qemu: str = _SMOKE_QEMU_STUB
+    tmp_path: Path,
+    backend: str,
+    cpu: str | None,
+    qemu: str = _SMOKE_QEMU_STUB,
+    router: str = _SMOKE_ROUTER_STUB,
+    ldd: str = _SMOKE_LDD_STUB,
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
     """Run smoke_tei.sh on a stub router; return the record folder and the result."""
     record = tmp_path / "record"
@@ -978,9 +986,10 @@ def _run_smoke(
     bin_dir.mkdir()
     stubs = {
         "qemu-x86_64-static": qemu,
-        "router": _SMOKE_ROUTER_STUB,
+        "router": router,
         "uname": _SMOKE_UNAME_STUB,
-        "ldd": _SMOKE_LDD_STUB,
+        "ldd": ldd,
+        "curl": _SMOKE_CURL_STUB,
     }
     for name, body in stubs.items():
         stub = bin_dir / name
@@ -1024,11 +1033,6 @@ _SMOKE_SERVING_ROUTER_STUB = """#!/bin/sh
 echo "router $*" >> "{record}/router-calls"
 case "$1" in --version) echo "text-embeddings-router 1.9.4"; exit 0 ;; esac
 exec sleep 30
-"""
-_SMOKE_CURL_STUB = """#!/bin/sh
-case "$*" in
-  */embed*) echo "[[$(yes 0 | head -n 384 | paste -s -d, -)]]" ;;
-esac
 """
 
 
@@ -1075,17 +1079,23 @@ def test_the_emulated_smoke_fails_when_the_router_dies_on_the_cpu(tmp_path: Path
     assert result.returncode != 0
 
 
-def test_the_linux_pack_cells_run_the_smoke_on_an_emulated_cpu() -> None:
-    text = pack_workflow().read_text(encoding="utf-8")
-    tei = text[text.index("\n  tei:\n") :]
-    install = tei.index("- name: Install the CPU emulator")
-    smoke = tei.index("- name: Start the router on an emulated CPU without AVX")
-    step = tei[smoke : tei.index("- uses: actions/upload-artifact", smoke)]
-    emulator = tei[install:smoke]
-    assert install < smoke
-    assert "if: matrix.os == 'linux'" in emulator
-    assert "apt-get install -y qemu-user-static" in emulator
-    assert "if: matrix.os == 'linux'" in step
-    assert "EMULATE_CPU: Nehalem" in step
-    assert step.count("smoke_tei.sh") == 1
-    assert "continue-on-error" not in step
+_SMOKE_SLOW_ROUTER_STUB = """#!/bin/sh
+case "$1" in --version) echo "text-embeddings-router 1.9.4"; exit 0 ;; esac
+trap 'sleep 1; echo ended > "{record}/ended"; exit 0' TERM
+while :; do sleep 0.1; done
+"""
+
+
+@_SMOKE
+def test_the_cpu_smoke_ends_after_its_router(tmp_path: Path) -> None:
+    record, result = _run_smoke(tmp_path, "cpu", None, router=_SMOKE_SLOW_ROUTER_STUB)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (record / "ended").exists()
+
+
+@_SMOKE
+def test_the_smoke_refuses_a_router_with_an_unresolved_library(tmp_path: Path) -> None:
+    missing = "#!/bin/sh\necho 'libssl.so.3 => not found'\n"
+    _, result = _run_smoke(tmp_path, "cuda-sm89", None, ldd=missing)
+    assert result.returncode == 1
+    assert "the router has an unresolved library" in result.stdout
