@@ -119,6 +119,14 @@ class TestTheRepackedCopy:
         estimate = IK_LLAMA.estimate_memory(_request(model, on_cpu=True))
         assert estimate.resident_footprint(unified=True) == CPU_CHARGE - REPACKED
 
+    def test_the_openvino_build_backs_the_file_and_the_copy_on_the_cpu(self, model: Path) -> None:
+        from lilbee.providers.fleet.engines.openvino import OPENVINO
+
+        cpu = OPENVINO.estimate_memory(_request(model, on_cpu=True))
+        card = OPENVINO.estimate_memory(_request(model, on_cpu=False))
+        assert cpu.resident_footprint(unified=True) == UNIFIED + FILE_SIZE + REPACKED
+        assert card.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
+
     def test_the_alternate_build_on_a_card_is_charged_as_llama_cpp(self, model: Path) -> None:
         from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 

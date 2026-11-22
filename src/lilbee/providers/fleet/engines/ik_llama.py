@@ -190,10 +190,11 @@ class IkLlamaAdapter:
         return LLAMA.target_env(target, cards)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        """The llama.cpp figure without the repacked copy: this CPU build loads none.
+        """The llama.cpp figure without the repacked copy.
 
-        Its resident memory on the CPU does not grow with the Q4_0, Q4_K or IQ4_NL weights
-        that the llama.cpp CPU build repacks.
+        Measured on the AVX2 CPU build, chat role: its resident memory does not grow with the
+        Q4_0, Q4_K or IQ4_NL weights that the llama.cpp CPU build repacks. The embed and rerank
+        roles, AVX-512, ARM and the CUDA build at zero GPU layers are not measured.
         """
         return LLAMA.estimate_memory(dataclasses.replace(request, cpu_repack=False))
 
