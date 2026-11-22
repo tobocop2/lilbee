@@ -1322,7 +1322,9 @@ def hung_side_route(monkeypatch: pytest.MonkeyPatch):
     server.start()
     paths: list[str] = []
 
-    def serve(hung: str, hang_s: float = _HANG_S) -> LlamaServerClient:
+    def serve(
+        hung: str, hang_s: float = _HANG_S, token_cap: int | None = None
+    ) -> LlamaServerClient:
         def answer(request: Request) -> Response:
             paths.append(request.path)
             if request.path.endswith(hung):
@@ -1341,7 +1343,7 @@ def hung_side_route(monkeypatch: pytest.MonkeyPatch):
         server.expect_request(re.compile(".*")).respond_with_handler(answer)
         profile = TEI.request_profile(WorkerRole.EMBED)
         base = f"http://127.0.0.1:{server.port}"
-        return LlamaServerClient(base, "m", timeout=_HANG_S, profile=profile)
+        return LlamaServerClient(base, "m", timeout=_HANG_S, profile=profile, token_cap=token_cap)
 
     yield serve, paths
     release.set()
@@ -1638,6 +1640,287 @@ def test_threads_with_other_texts_than_a_waited_probe_each_get_their_own_count(
     assert _run_together([lambda b=b: cut_of(b) for b in batches]) == [1, 2, 3]
     assert len(watch.found) == 2
     assert router.counted == 3
+
+
+_WIDE_CAP = 10
+# Eight tokens, the router's limit, in forty characters: an estimate of fourteen, past the cap.
+_WIDE_WITHIN_LIMIT = "word " * 8
+
+
+def _cut_by_the_estimate(caplog) -> int:
+    return sum("Truncating oversize embed input" in r.getMessage() for r in caplog.records)
+
+
+def test_a_hung_count_route_never_holds_an_embed_of_wide_inputs_back(
+    hung_side_route, caplog
+) -> None:
+    serve, paths = hung_side_route
+    client = serve("/tokenize", token_cap=_WIDE_CAP)
+    with caplog.at_level("WARNING"):
+        first, second = _timed_embed(client), _timed_embed(client)
+    assert first < _CHECK_BOUND_S, f"first embed took {first:.2f} s with /tokenize hung"
+    assert second < _CHECK_BOUND_S, f"second embed took {second:.2f} s with /tokenize hung"
+    assert sum(path.endswith("/tokenize") for path in paths) == 1
+    assert sum(path.endswith("/embeddings") for path in paths) == 2
+    assert _cut_by_the_estimate(caplog) == 2
+
+
+@pytest.mark.parametrize("hung", ["/info", "/tokenize"])
+def test_four_first_embeds_of_wide_inputs_make_one_request_to_a_hung_route(
+    hung, hung_side_route
+) -> None:
+    serve, paths = hung_side_route
+    client = serve(hung, token_cap=_WIDE_CAP)
+    seconds = _run_together([lambda: _timed_embed(client)] * 4)
+    assert max(seconds) < _CHECK_BOUND_S, f"slowest embed took {max(seconds):.2f} s"
+    assert sum(path.endswith(hung) for path in paths) == 1
+    assert sum(path.endswith("/embeddings") for path in paths) == 4
+
+
+def test_four_first_embeds_of_different_wide_inputs_make_one_request_to_a_hung_count_route(
+    hung_side_route, caplog
+) -> None:
+    serve, paths = hung_side_route
+    client = serve("/tokenize", token_cap=_WIDE_CAP)
+    calls = [lambda i=i: client.embed([_words(30 + i)]) for i in range(4)]
+    started = time.monotonic()
+    with caplog.at_level("DEBUG"):
+        _run_together(calls)
+    total = time.monotonic() - started
+    assert sum(path.endswith("/tokenize") for path in paths) == 1
+    assert sum(path.endswith("/embeddings") for path in paths) == 4
+    assert total < _CHECK_BOUND_S, f"four embeds took {total:.2f} s in all with /tokenize hung"
+    assert _cut_by_the_estimate(caplog) == 4
+    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_a_thread_that_asks_as_a_failed_wide_count_ends_sends_no_second_request(
+    monkeypatch, hung_side_route
+) -> None:
+    """The wide count pauses the check before its slot clears, as the check's own counts do."""
+    serve, paths = hung_side_route
+    client = serve("/tokenize", token_cap=_WIDE_CAP)
+    pause = client._pause_truncation_check
+    late: list[threading.Thread] = []
+    embedded: list[int] = []
+
+    def pause_after_a_late_ask(exc: Exception, route: str | None) -> None:
+        thread = threading.Thread(target=lambda: embedded.append(len(client.embed([_words(31)]))))
+        late.append(thread)
+        thread.start()
+        thread.join(0.5)
+        pause(exc, route)
+
+    monkeypatch.setattr(client, "_pause_truncation_check", pause_after_a_late_ask)
+    assert len(client.embed([_words(30)])) == 1
+    late[0].join()
+    assert embedded == [1]
+    assert sum(path.endswith("/tokenize") for path in paths) == 1
+
+
+def test_embeds_that_wait_on_one_wide_count_use_its_answer(
+    monkeypatch, hung_side_route, caplog
+) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    noted: list[int] = []
+    monkeypatch.setattr(fleet_client, "note_truncated", lambda cut, *_rest: noted.append(cut))
+    client = serve("/tokenize", hang_s=0.4, token_cap=_WIDE_CAP)
+    with caplog.at_level("DEBUG"):
+        _run_together([lambda: client.embed([_WIDE_WITHIN_LIMIT])] * 4)
+    assert sum(path.endswith("/tokenize") for path in paths) == 1
+    assert _cut_by_the_estimate(caplog) == 0
+    assert not [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert noted == [0, 0, 0, 0]
+
+
+def test_embeds_of_different_wide_inputs_each_use_their_own_count(
+    monkeypatch, hung_side_route, caplog
+) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    client = serve("/tokenize", hang_s=0.4, token_cap=_WIDE_CAP)
+    with caplog.at_level("WARNING"):
+        _run_together([lambda t=t: client.embed([t]) for t in (_WIDE_WITHIN_LIMIT, _words(30))])
+    # One wide count for each text, and one for the text that the estimate cut.
+    assert sum(path.endswith("/tokenize") for path in paths) == 3
+    assert _cut_by_the_estimate(caplog) == 1
+
+
+def test_a_wide_count_that_answers_ends_the_probe_for_the_counts_after_it(
+    monkeypatch, hung_side_route
+) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    client = serve("/tokenize", hang_s=0.4, token_cap=_WIDE_CAP)
+    client.embed([_WIDE_WITHIN_LIMIT])
+    paths.clear()
+    started = time.monotonic()
+    _run_together([lambda i=i: client.embed([_words(9 + i)]) for i in range(2)])
+    total = time.monotonic() - started
+    assert sum(path.endswith("/tokenize") for path in paths) == 2
+    assert total < 0.7, f"two embeds took {total:.2f} s in all; each count waits 0.4 s"
+
+
+class _FailingCounts(_Embedder):
+    """A router that holds each count and fails those *fails* picks, by order and inputs."""
+
+    def __init__(
+        self, failure: int | Exception, fails: Callable[[int, list[str]], bool], hold_s: float = 0.4
+    ) -> None:
+        super().__init__()
+        self.failure = failure
+        self.fails = fails
+        self.hold_s = hold_s
+        self.counted: list[list[str]] = []
+        self.embedded: list[str] = []
+        self.first_sent = threading.Event()
+        self._lock = threading.Lock()
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content) if req.content else {}
+        if req.url.path.endswith("/embeddings"):
+            self.embedded.extend(body["input"])
+        if not req.url.path.endswith("/tokenize"):
+            return super().__call__(req)
+        with self._lock:
+            self.counted.append(body["inputs"])
+            order = len(self.counted)
+        self.first_sent.set()
+        time.sleep(self.hold_s)
+        if not self.fails(order, body["inputs"]):
+            return super().__call__(req)
+        if isinstance(self.failure, Exception):
+            raise self.failure
+        return httpx.Response(self.failure, json={"error": "not this one"})
+
+    def client(self) -> LlamaServerClient:
+        http = httpx.Client(transport=httpx.MockTransport(self), base_url="http://gpu0")
+        profile = TEI.request_profile(WorkerRole.EMBED)
+        return LlamaServerClient(
+            "http://gpu0", "m", http=http, profile=profile, token_cap=_WIDE_CAP
+        )
+
+
+def _wide_within_limit(word: str) -> str:
+    """Eight tokens, the router's limit, of a four-letter *word*: an estimate past the cap."""
+    return " ".join([word] * 8)
+
+
+_FOUR_WIDE_TEXTS = [_wide_within_limit(word) for word in ("east", "west", "nord", "sued")]
+
+
+@pytest.mark.parametrize("status", [400, 413, 422, 429])
+def test_a_refused_first_count_cuts_the_inputs_of_its_own_call_only(status) -> None:
+    router = _FailingCounts(status, lambda order, _inputs: order == 1)
+    client = router.client()
+    _run_together([lambda text=text: client.embed([text]) for text in _FOUR_WIDE_TEXTS])
+    [refused] = router.counted[0]
+    assert sorted(text for text in router.embedded if text in _FOUR_WIDE_TEXTS) == sorted(
+        text for text in _FOUR_WIDE_TEXTS if text != refused
+    )
+    assert len(router.counted) == 4
+    router.counted.clear()
+    client.embed([_wide_within_limit("late")])
+    assert router.counted == []  # the refused call paused the check
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [401, 403, 404, 424, 500, 503, httpx.ReadTimeout("hung"), httpx.ConnectError("down")],
+    ids=str,
+)
+def test_a_first_count_that_fails_for_the_route_takes_one_request_for_every_call(failure) -> None:
+    router = _FailingCounts(failure, lambda *_: True)
+    client = router.client()
+    _run_together([lambda text=text: client.embed([text]) for text in _FOUR_WIDE_TEXTS])
+    assert len(router.counted) == 1
+    assert len(router.embedded) == 4
+    assert not set(router.embedded) & set(_FOUR_WIDE_TEXTS)
+
+
+def test_calls_of_one_text_share_one_count_after_the_first_is_refused() -> None:
+    router = _FailingCounts(429, lambda order, _inputs: order == 1)
+    client = router.client()
+    _run_together([lambda: client.embed([_FOUR_WIDE_TEXTS[0]])] * 4)
+    assert router.embedded.count(_FOUR_WIDE_TEXTS[0]) == 3
+    assert len(router.counted) == 2
+    assert client._count_route_answered  # the second count ends the probe for later ones
+
+
+def test_threads_that_wait_for_a_probe_of_other_texts_each_get_their_own_counts(
+    monkeypatch, hung_side_route
+) -> None:
+    serve, paths = hung_side_route
+    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
+    client = serve("/tokenize", hang_s=0.4)
+    texts = [_words(30), _words(3), _words(31), _words(4)]
+    cuts = _run_together(
+        [
+            lambda text=text: client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+            for text in texts
+        ]
+    )
+    assert cuts == [1, 0, 1, 0]
+    assert sum(path.endswith("/tokenize") for path in paths) == 4
+
+
+@pytest.mark.parametrize("failure", [500, httpx.ReadTimeout("hung")], ids=str)
+def test_a_count_that_fails_after_the_route_has_answered_pauses_the_check(failure) -> None:
+    router = _FailingCounts(failure, lambda order, _inputs: order > 1, hold_s=0.0)
+    client = router.client()
+    good, failed, paused = _FOUR_WIDE_TEXTS[:3]
+    client.embed([good])
+    client.embed([failed])
+    client.embed([paused])
+    assert router.counted == [[good], [failed]]
+    assert good in router.embedded
+    assert failed not in router.embedded
+    assert len(router.embedded) == 3
+
+
+def test_a_thread_whose_own_count_fails_after_the_probe_pauses_the_check() -> None:
+    good, failed, paused = _FOUR_WIDE_TEXTS[:3]
+    router = _FailingCounts(500, lambda _order, inputs: failed in inputs)
+    client = router.client()
+    probe = threading.Thread(target=lambda: client.embed([good]))
+    probe.start()
+    assert router.first_sent.wait(5.0)
+    client.embed([failed])
+    probe.join()
+    client.embed([paused])
+    assert router.counted == [[good], [failed]]
+    assert good in router.embedded
+    assert len(router.embedded) == 3
+
+
+def test_a_failed_count_after_the_embed_still_reports_the_inputs_of_the_call(caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(500, text="boom"))
+    http = httpx.Client(transport=httpx.MockTransport(router), base_url="http://gpu0")
+    client = LlamaServerClient(
+        "http://gpu0",
+        "m",
+        http=http,
+        token_cap=640,
+        profile=TEI.request_profile(WorkerRole.EMBED),
+    )
+    with caplog.at_level("WARNING"), truncation_scope():
+        assert len(client.embed([_words(3), _words(4), _words(30)])) == 3
+        note_truncated(1, 1, _ROUTER_LIMIT)
+    assert router.paths[0].endswith("/embeddings")  # no input is past the estimate
+    assert sum(path.endswith("/tokenize") for path in router.paths) == 1
+    [record] = [r for r in caplog.records if "embed inputs" in r.getMessage()]
+    assert "1 of 4 embed inputs" in record.getMessage()
+
+
+def test_a_count_answer_of_the_wrong_length_after_the_embed_is_a_failed_check(caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json=[[{"id": 1}]]))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("WARNING"):
+        assert len(client.embed([_words(30), _words(3)])) == 2
+    [record] = caplog.records
+    assert "check skipped" in record.getMessage()
+    assert "1 token lists for 2 inputs" in record.getMessage()
 
 
 class _SingleFlightProbe:
