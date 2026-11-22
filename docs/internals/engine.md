@@ -334,9 +334,10 @@ When a saved spec is not in use, `refusal` holds the reason in words and
 `refusal_kind` names the case: `waiting_for_engine` or `waiting_for_model` when the
 spec applies once an engine or a model is installed, `unreadable` when the saved
 text cannot be parsed, and
-`refused` when an engine refuses roles or the spec places no role on this
-machine. The field is null when there is no refusal, and also for a saved spec
-that does not fit the hardware: that reply carries `rejected_spec_json` alone.
+`refused` when an engine refuses roles, the spec places no role on this
+machine, or a saved spec does not fit the hardware: for that last case `refusal`
+holds the planner's sentence and `refusal_kind` is `refused`, and the reply also
+carries `rejected_spec_json`. The field is null when there is no refusal.
 A client reads `refusal_kind`, not the sentence, to decide whether the spec is
 kept or must be corrected.
 
