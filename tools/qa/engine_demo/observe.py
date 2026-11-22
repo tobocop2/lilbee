@@ -37,6 +37,7 @@ Known limits:
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import subprocess
@@ -239,6 +240,14 @@ def _lines(log_path: Path, start: int, end: int | None = None) -> tuple[str, ...
     return tuple(raw.decode("utf-8", errors="replace").splitlines())
 
 
+def _text(raw: bytes) -> str:
+    """The UTF-8 *raw* output with every line ending read as a newline, as a text pipe reads it.
+
+    The CLI ends its lines with CRLF on Windows; the oracles match whole lines.
+    """
+    return io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace").read()
+
+
 def _run_cli(
     plan: RunPlan,
     env: dict[str, str],
@@ -267,7 +276,7 @@ def _run_cli(
         name=name,
         command=command,
         exit_code=code,
-        stdout=out.decode("utf-8", errors="replace"),
+        stdout=_text(out),
         json_output=json_output,
         log_lines=_lines(log_path, offset),
     )
