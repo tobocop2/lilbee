@@ -17,10 +17,9 @@ Known limits:
 - ``engine use`` refuses a role whose model is not set, and accepts only the
   stored ref, which is the full file ref of a bare repo ref. The embed role is
   set with ``lilbee use-embedder``, and ``engine roles`` names the ref it stored.
-  No CLI command stores the chat, rerank or vision model, so those roles are set
-  through the server's model routes in one short server session, and each
-  route's reply names the stored ref. The demo moves to the CLI command when the
-  CLI gains a setter.
+  ``lilbee model use`` sets the chat, rerank and vision model too. The demo sets
+  those roles through the server's model routes in one short server session, and
+  each route's reply names the stored ref.
 - The engines-left-running steps only record the processes below the server that
   outlive it, each with its command line. No oracle reads them: the engine reaper
   and a kept-warm engine outlive the server by design. A run on a host calibrates
