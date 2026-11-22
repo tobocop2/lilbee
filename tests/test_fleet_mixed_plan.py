@@ -22,6 +22,7 @@ from lilbee.providers.fleet.engines.llama import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
 from lilbee.providers.fleet.swap_config import build_swap_config
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
@@ -47,6 +48,10 @@ def _warnings(caplog) -> str:
     return " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
 
 
+def _size(gib: float) -> str:
+    return memory_size_text(round(gib * 1024**3))
+
+
 def _m0(model: str) -> str:
     return (
         f"{model} does not fit available memory and will not be served; "
@@ -56,8 +61,8 @@ def _m0(model: str) -> str:
 
 def _m1(model: str, need: float, room: float, others: str) -> str:
     return (
-        f"{model} needs {need:.1f} GiB, but the GPU with the most room has {room:.1f} GiB "
-        f"left beside the other models ({others}), short by {max(need - room, 0):.1f} GiB, "
+        f"{model} needs {_size(need)}, but the GPU with the most room has {_size(room)} "
+        f"left beside the other models ({others}), short by {_size(max(need - room, 0))}, "
         f"so it will not be served. Use a smaller model for {model.split()[0]} or for one of "
         "those."
     )
@@ -65,7 +70,7 @@ def _m1(model: str, need: float, room: float, others: str) -> str:
 
 def _m2(model: str, need: float, usable: float) -> str:
     return (
-        f"{model} needs {need:.1f} GiB, more than any one GPU can hold ({usable:.1f} GiB "
+        f"{model} needs {_size(need)}, more than any one GPU can hold ({_size(usable)} "
         "usable), and no split across the GPUs holds it, so it will not be served. "
         "Use a smaller model."
     )

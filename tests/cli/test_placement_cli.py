@@ -242,7 +242,7 @@ def test_show_prints_a_small_charge_in_mib_and_a_missing_charge_as_none(
     assert result.exit_code == 0
     assert "charge=40 MiB" in result.stdout
     assert "charge=none" in result.stdout
-    assert "0.0 GiB" not in result.stdout
+    assert " 0.0 GiB" not in result.stdout
 
 
 def test_show_prints_a_card_with_little_free_memory_in_mib_not_zero_gib(

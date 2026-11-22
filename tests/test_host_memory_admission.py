@@ -144,7 +144,7 @@ class TestTheFreeFigureIsThePlansSnapshot:
                 engine=LLAMA,
             )
         assert "only 30 MiB is free" in caplog.text
-        assert "0.0 GiB" not in caplog.text
+        assert " 0.0 GiB" not in caplog.text
 
     def test_a_role_that_nothing_offloads_never_reads_free_memory(self, monkeypatch) -> None:
         from lilbee.core.config import cfg

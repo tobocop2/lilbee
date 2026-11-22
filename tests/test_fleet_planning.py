@@ -4034,12 +4034,12 @@ class TestUnusableChatCtxReason:
 
     def test_a_card_with_little_memory_left_prints_in_mib_not_zero_gib(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
-        cards = [FleetDevice("CUDA", 0, "gpu", 8 * _GB, 40 * 1024**2)]
+        cards = [FleetDevice("CUDA", 0, "gpu", 512 * 1024**2, 100 * 1024**2)]
         launch = self._launch(WorkerRole.CHAT, 512, weights_bytes=1)
         reason = planning_mod._unusable_chat_ctx_reason(launch, cards)
         assert reason is not None
-        assert "Other processes hold" in reason
-        assert "0.0 GiB" not in reason
+        assert "Other processes hold 412 MiB of the card's 512 MiB." in reason
+        assert " 0.0 GiB" not in reason
 
     def test_usable_window_passes(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "num_ctx", None)
