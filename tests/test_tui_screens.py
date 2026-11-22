@@ -603,9 +603,7 @@ class SettingsTestApp(LilbeeAppHost):
 
     def on_mount(self) -> None:
         self.push_screen(
-            _make_eager_settings_screen(
-                eager=self.eager_panes, keys=self.settings_to_populate
-            )()
+            _make_eager_settings_screen(eager=self.eager_panes, keys=self.settings_to_populate)()
         )
 
 
