@@ -594,13 +594,16 @@ def test_the_port_opens_only_after_the_model_loads() -> None:
     )
     try:
         _wait_for_health(port)
+        # The load reports before the port opens, or, in a server that loads late, while it is open.
+        assert proc.stdout is not None
+        report = proc.stdout.readline().strip()
         proc.send_signal(signal.SIGTERM)
-        out, _ = proc.communicate(timeout=10)
+        proc.communicate(timeout=10)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    assert out.split() == ["PORT-CLOSED-DURING-LOAD"]
+    assert report == "PORT-CLOSED-DURING-LOAD"
 
 
 def test_the_server_binds_to_the_loopback_address_unless_told_otherwise() -> None:
