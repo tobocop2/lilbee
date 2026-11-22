@@ -85,7 +85,9 @@ def test_the_record_after_a_publish_holds_one_row_for_each_cell_at_its_number() 
     assert published_builds("lilbee_engine_x", "1", "cpu", "linux", _ROWS) == [2, 3]
 
 
-_CELLS_FILE = "engines:\n  llama:\n    cells:\n      - {cell: a, build_number: 3}\n      - {cell: b}\n"
+_CELLS_FILE = (
+    "engines:\n  llama:\n    cells:\n      - {cell: a, build_number: 3}\n      - {cell: b}\n"
+)
 
 
 def test_pack_cells_returns_the_cells_of_the_engine_in_file_order(
