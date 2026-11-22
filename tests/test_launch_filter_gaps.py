@@ -65,7 +65,7 @@ def test_every_role_with_no_layer_on_the_card_gets_the_low_free_finding(
 
     assert {launch.role for launch in plan.launches} == {CHAT, EMBED}
     assert _warned_roles(caplog) == ["chat", "embed"]
-    assert f"only {SNAPSHOT_FREE_GIB} GiB is free" in caplog.text
+    assert "only 512 MiB is free" in caplog.text
 
 
 def test_the_free_figure_of_the_finding_is_the_one_in_the_plan_snapshot(
@@ -78,7 +78,7 @@ def test_the_free_figure_of_the_finding_is_the_one_in_the_plan_snapshot(
 
     running = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Running the")]
     assert len(running) == 2
-    assert all("only 0.5 GiB is free" in message for message in running)
+    assert all("only 512 MiB is free" in message for message in running)
 
 
 def test_a_role_with_every_layer_on_the_card_gets_no_finding(
