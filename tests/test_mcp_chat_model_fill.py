@@ -146,9 +146,7 @@ def test_a_set_and_installed_chat_model_is_kept(
     assert seen == dict.fromkeys(WIKI_TOOLS, other)
 
 
-def _assert_kept_with_the_same_error(
-    monkeypatch: pytest.MonkeyPatch, model: str
-) -> None:
+def _assert_kept_with_the_same_error(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
     """Each tool runs with *model* and returns the error that names it, as it does at the base."""
     monkeypatch.setattr(cfg, "chat_model", model)
     with (
