@@ -138,9 +138,7 @@ def test_the_sizing_returns_the_baseline_the_fleet_devices_and_the_worker_count(
     asked: list[object] = []
     engine = object()
     services = types.SimpleNamespace(
-        engines=types.SimpleNamespace(
-            for_role=lambda _role: types.SimpleNamespace(adapter=engine)
-        )
+        engines=types.SimpleNamespace(for_role=lambda _role: types.SimpleNamespace(adapter=engine))
     )
     monkeypatch.setattr(pipeline, "get_services", lambda: services)
     monkeypatch.setattr(pipeline, "profile_for", lambda _mode: object())

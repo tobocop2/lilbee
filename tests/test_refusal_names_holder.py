@@ -60,7 +60,9 @@ class _RealSizeEngine(MistralAdapter):
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         integrated = [
-            FleetDevice("CUDA", len(self._cards) + n, f"igpu{n}", gib * GIB, gib * GIB, unified=True)
+            FleetDevice(
+                "CUDA", len(self._cards) + n, f"igpu{n}", gib * GIB, gib * GIB, unified=True
+            )
             for n, gib in enumerate(self._integrated_gib)
         ]
         return DeviceProbe(devices=[*cards_of(self._cards), *integrated], output="")
