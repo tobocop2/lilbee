@@ -1766,7 +1766,10 @@ class _FailingCounts(_Embedder):
     """A router that holds each count and fails those *fails* picks, by order and inputs."""
 
     def __init__(
-        self, failure: int | Exception, fails: Callable[[int, list[str]], bool], hold_s: float = 0.4
+        self,
+        failure: int | Exception | httpx.Response,
+        fails: Callable[[int, list[str]], bool],
+        hold_s: float = 0.4,
     ) -> None:
         super().__init__()
         self.failure = failure
@@ -1774,6 +1777,8 @@ class _FailingCounts(_Embedder):
         self.hold_s = hold_s
         self.counted: list[list[str]] = []
         self.embedded: list[str] = []
+        self.active = 0
+        self.peak = 0
         self.first_sent = threading.Event()
         self._lock = threading.Lock()
 
@@ -1786,12 +1791,18 @@ class _FailingCounts(_Embedder):
         with self._lock:
             self.counted.append(body["inputs"])
             order = len(self.counted)
+            self.active += 1
+            self.peak = max(self.peak, self.active)
         self.first_sent.set()
         time.sleep(self.hold_s)
+        with self._lock:
+            self.active -= 1
         if not self.fails(order, body["inputs"]):
             return super().__call__(req)
         if isinstance(self.failure, Exception):
             raise self.failure
+        if isinstance(self.failure, httpx.Response):
+            return self.failure
         return httpx.Response(self.failure, json={"error": "not this one"})
 
     def client(self) -> LlamaServerClient:
@@ -1921,6 +1932,97 @@ def test_a_count_answer_of_the_wrong_length_after_the_embed_is_a_failed_check(ca
     [record] = caplog.records
     assert "check skipped" in record.getMessage()
     assert "1 token lists for 2 inputs" in record.getMessage()
+
+
+def test_a_busy_count_route_costs_a_debug_line_that_says_it_is_busy_and_no_warning(caplog) -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(429, text="slow down"))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        assert len(client.embed([_words(30)])) == 1
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == "DEBUG"
+    assert "The model is busy with too many requests" in record.getMessage()
+
+
+def test_a_422_from_the_count_route_is_a_warning_that_carries_the_body(caplog) -> None:
+    body = {"error": "inputs are not text", "error_type": "Validation"}
+    router = _BrokenSideRoute("/tokenize", httpx.Response(422, json=body))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with caplog.at_level("DEBUG"):
+        assert len(client.embed([_words(30)])) == 1
+    [record] = [r for r in caplog.records if "check skipped" in r.getMessage()]
+    assert record.levelname == "WARNING"
+    assert "returned HTTP 422" in record.getMessage()
+    assert "inputs are not text" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("answer", "kind", "said"),
+    [
+        (httpx.Response(429, text="slow down"), ProviderErrorKind.RATE_LIMIT, "busy"),
+        (
+            httpx.Response(422, text="`inputs` must have less than 512 tokens. Given: 600"),
+            ProviderErrorKind.CONTEXT_OVERFLOW,
+            "exceeds this model's context window",
+        ),
+    ],
+    ids=["busy", "overflow"],
+)
+def test_counting_one_text_keeps_the_kind_and_the_words_of_a_refused_count(
+    answer, kind, said
+) -> None:
+    client = _tei_client(_BrokenSideRoute("/tokenize", answer), WorkerRole.EMBED)
+    with pytest.raises(ProviderError) as raised:
+        client.count_text_tokens(_words(30))
+    assert raised.value.kind is kind
+    assert said in str(raised.value)
+
+
+def test_a_refused_count_does_not_end_the_probe_for_the_counts_after_it() -> None:
+    refusal = _FailingCounts(429, lambda order, _inputs: order == 1)
+    client = refusal.client()
+    with pytest.raises(ProviderError):
+        client._count_inputs_past_limit([_FOUR_WIDE_TEXTS[2]], _ROUTER_LIMIT, "/tokenize")
+    refusal.peak = 0
+    _run_together(
+        [
+            lambda text=text: client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+            for text in _FOUR_WIDE_TEXTS[:2]
+        ]
+    )
+    assert refusal.peak == 1  # one probe, then the other count: a refusal is no answer
+
+
+def test_a_count_of_the_wrong_length_does_not_end_the_probe_for_the_counts_after_it() -> None:
+    router = _FailingCounts(httpx.Response(200, json=[]), lambda order, _inputs: order == 1)
+    client = router.client()
+    with pytest.raises(ValueError, match="0 token lists for 1 inputs"):
+        client._count_inputs_past_limit([_FOUR_WIDE_TEXTS[2]], _ROUTER_LIMIT, "/tokenize")
+    router.peak = 0
+    _run_together(
+        [
+            lambda text=text: client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+            for text in _FOUR_WIDE_TEXTS[:2]
+        ]
+    )
+    assert router.peak == 1  # one probe, then the other count: a wrong length is no answer
+
+
+def test_threads_that_wait_on_a_refused_probe_count_their_own_texts_at_once() -> None:
+    router = _FailingCounts(429, lambda order, _inputs: order == 1)
+    client = router.client()
+
+    def count(text: str) -> int | ProviderError:
+        try:
+            return client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+        except ProviderError as exc:
+            return exc
+
+    results = _run_together([lambda text=text: count(text) for text in _FOUR_WIDE_TEXTS[:3]])
+    assert sum(isinstance(result, ProviderError) for result in results) == 1
+    assert len(router.counted) == 3
+    assert router.peak == 2  # the two waiters send together, after the refusal
 
 
 class _SingleFlightProbe:
