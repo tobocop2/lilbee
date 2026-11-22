@@ -9,6 +9,9 @@ One process loads one model for one task:
 - ``--task rerank`` serves ``POST /v1/rerank`` in the Cohere shape. A score is the probability
   of "yes" against "no" after the prompt of Qwen3-Reranker.
 
+Both tasks also serve ``POST /tokenize`` and ``POST /detokenize`` in the shape of llama-server,
+so the client can cut an input to the window by exact token counts.
+
 ``GET /health`` answers once the model is loaded; the port opens only then. SIGTERM stops the
 server. The server imports mlx, mlx-lm, numpy and the standard library, and never
 mlx-embeddings, whose licence is GPL-3.0.
@@ -31,6 +34,9 @@ import numpy as np
 TASK_EMBED = "embed"
 TASK_RERANK = "rerank"
 ROUTES = {TASK_EMBED: "/v1/embeddings", TASK_RERANK: "/v1/rerank"}
+TOKENIZE = "/tokenize"
+DETOKENIZE = "/detokenize"
+"""The routes of the llama.cpp server that the client reads to cut an input to the window."""
 HEALTH = "/health"
 SERVED_NAME = "default_model"
 OVERFLOW = "the input holds {count} tokens, which exceeds the window of {limit} tokens"
@@ -53,6 +59,10 @@ class Backend(Protocol):
 
     def encode(self, text: str, special: bool) -> list[int]:
         """The token ids of *text*; with *special*, plus the tokens of the tokenizer's template."""
+        ...
+
+    def decode(self, ids: Sequence[int]) -> str:
+        """The text of the token *ids*."""
         ...
 
     def token_id(self, token: str) -> int:
@@ -84,6 +94,9 @@ class MlxBackend:
 
     def encode(self, text: str, special: bool) -> list[int]:
         return list(self._tokenizer.encode(text, add_special_tokens=special))
+
+    def decode(self, ids: Sequence[int]) -> str:
+        return str(self._tokenizer.decode(list(ids)))
 
     def token_id(self, token: str) -> int:
         return int(self._tokenizer.convert_tokens_to_ids(token))
@@ -202,7 +215,30 @@ class Service:
             "results": [{"index": i, "relevance_score": float(scores[i])} for i in order],
         }
 
+    def tokenize(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The token ids of ``content``, with the template tokens when ``add_special`` is set."""
+        content = body.get("content")
+        if not isinstance(content, str):
+            raise RequestError(400, "content must be a string")
+        special = body.get("add_special", False)
+        if not isinstance(special, bool):
+            raise RequestError(400, "add_special must be true or false")
+        return {"tokens": self.backend.encode(content, special=special)}
+
+    def detokenize(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The text of the token ids in ``tokens``."""
+        tokens = body.get("tokens")
+        if not isinstance(tokens, list) or not all(
+            isinstance(t, int) and not isinstance(t, bool) for t in tokens
+        ):
+            raise RequestError(400, "tokens must be a list of whole numbers")
+        return {"content": self.backend.decode(tokens)}
+
     def answer(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        if path == TOKENIZE:
+            return self.tokenize(body)
+        if path == DETOKENIZE:
+            return self.detokenize(body)
         if path != ROUTES[self.task]:
             raise RequestError(404, f"this server runs the {self.task} task and has no route {path}")
         return self.embed(body) if self.task == TASK_EMBED else self.rerank(body)
