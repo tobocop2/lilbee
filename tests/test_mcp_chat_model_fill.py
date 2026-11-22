@@ -299,4 +299,5 @@ def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
     assert record.getMessage() == (
         "The chat model could not be filled at start (registry); tools use the chat model as set."
     )
-    assert record.exc_info is not None
+    assert record.exc_info
+    assert record.exc_info[0] is OSError
