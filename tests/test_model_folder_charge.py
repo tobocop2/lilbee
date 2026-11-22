@@ -182,6 +182,24 @@ class TestTheFolderTotal:
         _sparse(model, 3 * GIB)
         assert MISTRAL.estimate_memory(_request(model)).device_bytes == 3 * GIB
 
+    def test_a_split_gguf_is_charged_every_shard_of_its_own_set(self, tmp_path: Path) -> None:
+        for number, size in ((1, GIB), (2, 2 * GIB), (3, 3 * GIB)):
+            _sparse(tmp_path / f"m-0000{number}-of-00003.gguf", size)
+        _sparse(tmp_path / "other-00001-of-00003.gguf", 50 * GIB)
+        _sparse(tmp_path / "m-00001-of-00002.gguf", 50 * GIB)
+        estimate = MISTRAL.estimate_memory(_request(tmp_path / "m-00001-of-00003.gguf"))
+        assert estimate.device_bytes == 6 * GIB
+        assert estimate.size_known is True
+
+    def test_a_split_gguf_with_a_missing_shard_has_the_bytes_on_disk_as_a_floor(
+        self, tmp_path: Path
+    ) -> None:
+        for number in (1, 3):
+            _sparse(tmp_path / f"m-0000{number}-of-00003.gguf", 10 * GIB)
+        estimate = MISTRAL.estimate_memory(_request(tmp_path / "m-00001-of-00003.gguf"))
+        assert estimate.device_bytes == 20 * GIB
+        assert estimate.size_known is False
+
     def test_a_missing_file_is_charged_the_reserve(self, tmp_path: Path) -> None:
         estimate = MISTRAL.estimate_memory(_request(tmp_path / "gone.gguf"))
         assert estimate.device_bytes == model_memory.UNKNOWN_SIZE_RESERVE_BYTES
