@@ -1161,7 +1161,6 @@ def test_an_embed_of_a_hundred_full_chunks_counts_them_in_two_requests() -> None
     chunks = _hundred_full_chunks()
     assert all(2040 <= len(chunk) <= 2060 for chunk in chunks)
     _tei_embed_client(_tei_full_chunks_handler(requests, embedded), cap=640).embed(chunks)
-    print("REQUESTS", dict(requests))
     assert embedded == chunks
     assert requests["tokenize"] == 2  # 100 inputs, 64 to a request, none asked for again
     assert requests["info"] == 1

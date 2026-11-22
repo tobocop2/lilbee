@@ -461,6 +461,10 @@ _HTTP_OK = 200
 _HTTP_NOT_FOUND = 404
 _HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
+# Statuses that refuse one request and say nothing of the route: a malformed, oversize or
+# unprocessable request, and one past the concurrency limit. Any other error status, such
+# as a missing key, a missing route or a failed backend, is true of every request.
+_ONE_REQUEST_REFUSALS = frozenset({400, 413, 422, _HTTP_TOO_MANY_REQUESTS})
 # Gateway statuses llama-swap returns while an upstream is unreachable
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
 # succeeds once the upstream is back, so these must never terminalize a call.
@@ -531,6 +535,10 @@ class StreamInterruptedError(ProviderError):
 
     def __init__(self, provider: str = "") -> None:
         super().__init__(_STREAM_INTERRUPTED_MESSAGE, provider=provider)
+
+
+class _SideRouteRefusalError(ProviderError):
+    """A side route that is up refused one request, with a status that blames the request."""
 
 
 def retry_on_gateway_error(
@@ -1279,12 +1287,9 @@ class LlamaServerClient:
         try:
             for start in range(0, len(wide), step):
                 part = wide[start : start + step]
-                answer = self._count_route_tokens(path, part, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
-                if len(answer) != len(part):
-                    raise ValueError(f"{len(answer)} token lists for {len(part)} inputs")
-                counts.update(zip(part, map(len, answer), strict=True))
-        except _TRUNCATION_CHECK_FAILURES as exc:
-            self._pause_truncation_check(exc, path)
+                counts.update(zip(part, self._route_token_counts(path, part), strict=True))
+        except _TRUNCATION_CHECK_FAILURES:
+            # The thread that sent the failed request paused the check already.
             return {}
         return counts
 
@@ -1348,7 +1353,12 @@ class LlamaServerClient:
                 provider=self._profile.label,
                 kind=ProviderErrorKind.NOT_FOUND,
             )
-        self._raise_for_status(resp)
+        try:
+            self._raise_for_status(resp)
+        except ProviderError as exc:
+            if resp.status_code not in _ONE_REQUEST_REFUSALS:
+                raise
+            raise _SideRouteRefusalError(str(exc), provider=exc.provider, kind=exc.kind) from exc
 
     def _pausing(self, route: str) -> Callable[[BaseException], None]:
         """A failure hook for ``_single_flight`` that pauses the check when *route* fails."""
@@ -1430,35 +1440,53 @@ class LlamaServerClient:
     def _count_inputs_past_limit(self, texts: list[str], limit: int, path: str) -> int:
         """How many of *texts* the tokenizer route *path* counts past *limit*.
 
-        Every text is counted, in one request: the route counts the special tokens, and
-        a byte-level tokenizer makes more than one token from a character, so no
-        character count bounds the tokens. Threads that count the same texts together
-        share one request.
+        Every text is counted: the route counts the special tokens, and a byte-level
+        tokenizer makes more than one token from a character, so no character count
+        bounds the tokens.
         """
+        return sum(tokens > limit for tokens in self._route_token_counts(path, texts))
 
-        def count() -> int:
-            counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
-            return sum(len(tokens) > limit for tokens in counts)
+    def _route_token_counts(self, path: str, texts: list[str]) -> list[int]:
+        """The token count of each of *texts* on the route *path*.
+
+        Threads that count the same texts together share one request. A thread that waits
+        for the first probe of other texts sends its own request after it. A failure pauses
+        the check before any thread sees it.
+        """
+        led = False
+
+        def count() -> list[int]:
+            answer = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+            if len(answer) != len(texts):
+                raise ValueError(f"{len(answer)} token lists for {len(texts)} inputs")
+            self._count_route_answered = True
+            return [len(tokens) for tokens in answer]
 
         pausing = self._pausing(path)
         if self._count_route_answered:
             return self._single_flight(("count", tuple(texts)), count, on_failure=pausing)
 
-        def first_probe() -> tuple[tuple[str, ...], int]:
-            probed = count()
-            self._count_route_answered = True
-            return tuple(texts), probed
+        def first_probe() -> tuple[tuple[str, ...], list[int]]:
+            nonlocal led
+            led = True
+            return tuple(texts), count()
 
         # Until the route has answered once, one thread probes it, whatever it counts. The
         # other threads wait for that probe: a failure reaches them. A success serves the
         # threads that count the same texts, and each other thread counts its own.
         # One request at a time goes to a route that has not answered: a slow route gets no
-        # parallel counts from the first embeds, and a hung route gets one.
-        probed_texts, probed = self._single_flight(
-            ("first-probe", path), first_probe, on_failure=pausing
-        )
-        if probed_texts == tuple(texts):
-            return probed
+        # parallel counts from the first embeds, and a hung route gets one. A refusal of the
+        # probe's request is an answer of a live route, so each waiting thread counts its own.
+        try:
+            probed_texts, probed = self._single_flight(
+                ("first-probe", path), first_probe, on_failure=pausing
+            )
+        except _SideRouteRefusalError:
+            if led:
+                raise
+        else:
+            if probed_texts == tuple(texts):
+                return probed
         return self._single_flight(("count", tuple(texts)), count, on_failure=pausing)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
