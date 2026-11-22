@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Stand-in for docker when pack_tei.sh builds a Linux cell: it writes what tei_manylinux.sh leaves in the mounted folder.
+#
+# Reads:
+#   DOCKER_LOG   a file that receives the arguments, one per line (required)
+#   DOCKER_FAIL  when set, the call fails
+# and what tei-wheel-pack reads. The wheel stub must be on PATH.
+
+set -euo pipefail
+
+printf '%s\n' "$@" > "${DOCKER_LOG:?}"
+[ -z "${DOCKER_FAIL-}" ] || { echo "stub docker: failed" >&2; exit 1; }
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -v) mount="${2%%:/work}" ; shift ;;
+  esac
+  shift
+done
+[ -d "${mount:?}/out" ] || { echo "stub docker: no folder out in ${mount}" >&2; exit 1; }
+tei-wheel-pack "${mount}/out/repaired" "${mount}/out/license-expression.txt" manylinux_2_34_x86_64
+if [ -n "${CUDA_CC-}" ]; then
+  mkdir -p "${mount}/out/stubs"
+  : > "${mount}/out/stubs/libcuda.so.1"
+fi
