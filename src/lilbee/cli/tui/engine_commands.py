@@ -94,7 +94,9 @@ def _store_verb(
             words[0], on_update=on_update, on_retry=on_retry, cancel=cancel
         )
         done = msg.ENGINE_INSTALL_DONE.format(build=built.label)
-        return EngineCommandResult(True, f"{done} {built.note}" if built.note else done)
+        folder = engine_service.FOLDER_LINE.format(folder=engine_service.engines_folder())
+        lines = [done, folder, built.note] if built.note else [done, folder]
+        return EngineCommandResult(True, "\n".join(lines))
     return None
 
 

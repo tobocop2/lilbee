@@ -706,7 +706,8 @@ def test_the_slash_command_installs_from_the_packs_folder(good: Path, root: Path
     (root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl").write_bytes(good.read_bytes())
     out = run_engine_command(f"install {ENGINE.value}")
     assert out.ok
-    assert out.text == f"Installed engine {ENGINE} {VERSION} (cpu)."
+    folder = engine_service.FOLDER_LINE.format(folder=engine_service.engines_folder())
+    assert out.text == f"Installed engine {ENGINE} {VERSION} (cpu).\n{folder}"
     assert _builds() == [(ENGINE.value, VERSION, "cpu")]
 
 
