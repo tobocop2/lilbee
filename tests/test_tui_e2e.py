@@ -25,6 +25,15 @@ from tests._async_wait import wait_for_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 
+async def settle_on_first_tab(pilot, app) -> None:
+    """Wait until the catalog screen has landed on its first tab.
+
+    The screen activates its Chat tab and then takes its first focus, so a
+    focused widget means the tab is active and tab events are no longer ignored.
+    """
+    assert await wait_until(pilot, lambda: app.screen.focused is not None, timeout=30.0)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
     """Snapshot and restore config for each test."""
@@ -500,11 +509,7 @@ class TestScreenTransitions:
 
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 assert app.active_view == "Catalog"
 
                 app.switch_view("Settings")
@@ -549,11 +554,7 @@ class TestScreenTransitions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 assert app.active_view == "Catalog"
 
                 await pilot.press("q")
@@ -574,11 +575,7 @@ class TestScreenTransitions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 app.switch_view("Tasks")
                 await pilot.pause()
                 assert app.active_view == "Tasks"
@@ -692,11 +689,7 @@ class TestScreenTransitions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("q")
                 await pilot.pause()
                 assert isinstance(app.screen, ChatScreen)
@@ -1110,11 +1103,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 grids = app.screen.query(ModelGrid)
                 assert len(grids) > 0
                 assert app.screen.has_class("-grid-view")
@@ -1131,11 +1120,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 assert app.screen.has_class("-grid-view")
                 grid = app.screen.query_one("#grid-chat")
@@ -1143,10 +1128,6 @@ class TestCatalogInteractions:
                 assert grid.display is True
                 assert list_container.display is False
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1155,10 +1136,6 @@ class TestCatalogInteractions:
                 assert grid.display is False
                 assert list_container.display is True
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1184,11 +1161,7 @@ class TestCatalogInteractions:
                 await pilot.press("right_square_bracket")
                 await pilot.pause()
                 assert isinstance(app.screen, CatalogScreen)
-                # The 6-tab redesign defaults to Discover during the initial
-                # mount race which gates action_toggle_view; pin Chat first.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 assert app.screen.has_class("-grid-view")
 
                 grid = app.screen.query_one("#grid-chat")
@@ -1196,10 +1169,6 @@ class TestCatalogInteractions:
                 assert grid.display is True
                 assert list_container.display is False
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1219,11 +1188,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.pause()
 
                 initial_count = sum(len(g.rows) for g in app.screen.query(ModelGrid))
@@ -1260,11 +1225,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 await pilot.press("slash")
                 await pilot.pause()
@@ -1291,11 +1252,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 await pilot.press("slash")
                 await pilot.pause()
@@ -1320,14 +1277,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("v")
                 await pilot.pause()
                 initial = app.screen._list_widget.option_count
@@ -1349,14 +1299,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("v")  # list view
                 await pilot.pause()
 
@@ -1364,10 +1307,6 @@ class TestCatalogInteractions:
                 search.value = "some-missing-model"
                 await pilot.pause()
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")  # back to grid view
                 await pilot.pause()
@@ -1398,11 +1337,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "anything"
@@ -1442,11 +1377,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "foo"
@@ -1454,16 +1385,10 @@ class TestCatalogInteractions:
                 # Roundtrip through list view and back: the staleness bug
                 # surfaced when the grid cache hit on (rows, bool(search))
                 # and skipped re-mounting the CTA with fresh text.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
                 await pilot.press("v")
                 await pilot.pause()
                 search.value = "bar"
                 await pilot.pause()
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
                 await pilot.press("v")
                 await pilot.pause()
 
@@ -1511,11 +1436,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "zzz_remote"
@@ -1552,14 +1473,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("v")
                 await pilot.pause()
 
@@ -1588,11 +1502,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 screen = app.screen
                 screen._search_in_flight = True
@@ -1614,11 +1524,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 search = app.screen.query_one("#catalog-search")
                 search.value = "some-query"
@@ -1643,11 +1549,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
                 screen = app.screen
                 screen._search_in_flight = True
@@ -1674,14 +1576,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("v")
                 await pilot.pause()
 
@@ -1718,12 +1613,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; without it the active tab races to Discover.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                    if hasattr(app.screen, "_refresh_grid"):
-                        app.screen._refresh_grid()
+                await settle_on_first_tab(pilot, app)
                 # Pump frames until the chat tab's grid renders the family.
                 chat_tab = app.screen.query_one("#grid-chat", VerticalScroll)
                 total_rows = 0
@@ -1747,16 +1637,8 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1800,17 +1682,9 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.pause()
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1846,16 +1720,8 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1882,23 +1748,12 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
 
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-
-                    app.screen._activation_settled = True
 
                 await pilot.press("v")
                 await pilot.pause()
                 # Re-pin in case activation cascade reset it during pause.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
 
                 assert app.screen._sort_column == "Name"
                 assert app.screen._sort_ascending is True
@@ -1935,14 +1790,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("v")
                 await pilot.pause()
                 await pilot.press("d")
@@ -1961,11 +1809,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.press("q")
                 await pilot.pause()
                 assert isinstance(app.screen, ChatScreen)
@@ -1981,11 +1825,7 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 # These key bindings should delegate to the grid safely.
                 await pilot.press("j")
                 await pilot.press("k")
@@ -2999,11 +2839,7 @@ class TestCatalogViewToggle:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 assert app.screen.query_one(GridListToggle) is not None
 
     async def test_task_headings_in_grid(self, _mock_resolve):
@@ -3023,11 +2859,7 @@ class TestCatalogViewToggle:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
-                    if hasattr(app.screen, "_refresh_grid"):
-                        app.screen._refresh_grid()
+                await settle_on_first_tab(pilot, app)
                 texts: list[str] = []
                 for _ in range(10):
                     await pilot.pause()
@@ -3056,11 +2888,7 @@ class TestCatalogPickBadge:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 await pilot.pause()
                 featured_rows = [
                     row
@@ -3272,11 +3100,7 @@ class TestCatalogViewSwitching:
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 assert isinstance(app.screen, CatalogScreen)
 
                 app.switch_view("Status")
@@ -3285,11 +3109,7 @@ class TestCatalogViewSwitching:
 
                 app.switch_view("Catalog")
                 await pilot.pause()
-                # Pin Chat tab; the 6-tab redesign defaults to Discover during the
-                # initial mount race which gates action_toggle_view / action_cycle_sort.
-                if hasattr(app.screen, "_active_tab_id_cache"):
-                    app.screen._active_tab_id_cache = "chat"
-                    app.screen._activation_settled = True
+                await settle_on_first_tab(pilot, app)
                 assert isinstance(app.screen, CatalogScreen)
 
 
