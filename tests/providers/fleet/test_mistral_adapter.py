@@ -43,6 +43,7 @@ from lilbee.providers.fleet.placement import InstancePlan
 from lilbee.providers.gguf_meta import snapshot_entry_of_blob
 from lilbee.providers.roles import RoleTarget, WorkerRole
 from lilbee.server.routes import engines as routes
+from tests._gguf_fixture import cut_file_of
 from tests._litestar_test_client import create_test_client
 from tests._mistral_cuda_pick import pick_cuda_on_gpu_hosts
 from tests._published import publish
@@ -509,26 +510,9 @@ def test_the_memory_estimate_is_a_fixed_reserve_of_the_file_size(tmp_path: Path)
     assert missing.size_known is False
 
 
-def _cut_gguf(path: Path, declared_bytes: int) -> Path:
-    """A one-tensor F32 GGUF whose header declares *declared_bytes* of data the file lacks."""
-    import struct
-
-    name = b"t0"
-    infos = (
-        struct.pack("<Q", len(name))
-        + name
-        + struct.pack("<I", 1)
-        + struct.pack("<Q", declared_bytes // 4)
-        + struct.pack("<I", 0)
-        + struct.pack("<Q", 0)
-    )
-    head = b"GGUF" + struct.pack("<IQQ", 3, 1, 0) + infos
-    path.write_bytes(head + b"\0" * (-len(head) % 32))
-    return path
-
-
+@pytest.mark.usefixtures("stated_sizes")
 def test_a_cut_off_gguf_is_an_unknown_size_not_its_partial_bytes(tmp_path: Path) -> None:
-    model = _cut_gguf(tmp_path / "cut.gguf", declared_bytes=4096)
+    model = cut_file_of(tmp_path / "cut.gguf", declared_bytes=4096, size=60)
     estimate = MISTRAL.estimate_memory(MemoryRequest(model, 4096, 1, 99, True, cfg.kv_cache_type))
     assert estimate.size_known is False
     assert estimate.device_bytes == UNKNOWN_SIZE_RESERVE_BYTES
