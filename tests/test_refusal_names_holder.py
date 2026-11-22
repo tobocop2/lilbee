@@ -84,7 +84,7 @@ class TestAChatRefusedBesideAnEmbed:
         plan = plan_real_sizes(monkeypatch, tmp_path, GIB, 8 * GIB, 8)
         assert _launched(plan) == {WorkerRole.EMBED}
         assert plan.refused_roles[WorkerRole.CHAT] == (
-            f"The chat model {CHAT_REF} needs 1.0 GiB but device 0 has 0.0 GiB usable "
+            f"The chat model {CHAT_REF} needs 1.0 GiB but device 0 has 0 MiB usable "
             "(8.0 GiB total, 90% headroom). "
             f"The embed model {EMBED_REF} (8.0 GiB) holds the rest. "
             "Use a smaller embed model, or set the target of one of these models "
@@ -164,6 +164,20 @@ class TestTheText:
             "m needs 22.0 GiB but device 0 has 21.6 GiB usable "
             "(24.0 GiB total, 90% headroom). Use a smaller model, or set its target to cpu."
         )
+
+    def test_a_card_with_40_mib_left_names_mib_not_zero_gib(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        reason = card_refusal("m", 0, 2 * GIB, 40 * 1024**2, 8 * GIB, fix=True)
+        assert reason is not None
+        assert "has 40 MiB usable" in reason
+        assert "0.0 GiB" not in reason
+
+    def test_a_small_holder_is_named_in_mib(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        holders = (RoomHolder(WorkerRole.EMBED, "e", 300 * 1024**2),)
+        reason = card_refusal("m", 0, 2 * GIB, 0.2 * GIB, 8 * GIB, fix=False, holders=holders)
+        assert reason is not None
+        assert "The embed model e (300 MiB) holds the rest." in reason
 
     def test_two_holders_are_both_named_with_their_roles(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
