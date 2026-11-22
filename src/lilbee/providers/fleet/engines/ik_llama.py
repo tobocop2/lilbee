@@ -166,8 +166,7 @@ class IkLlamaAdapter:
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
         argv = LLAMA.launch_argv(spec, request)
-        # The argv builder writes the flag when the pinned build's help lists it; this build
-        # needs it either way, so a help that does not list it still gets it.
+        # Always carries the flag, once.
         return argv if FLAG_NO_CONTEXT_SHIFT in argv else [*argv, FLAG_NO_CONTEXT_SHIFT]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:

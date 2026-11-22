@@ -32,9 +32,7 @@ NO_DEVICE = "none"
 FLAG_FIT_TARGET = "--fit-target"
 FLAG_KV_UNIFIED = "--kv-unified"
 FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
-# llama.cpp turns context shift off, and ik_llama.cpp turns it on. With it on, the server cuts a
-# prompt longer than its context and answers from the rest, or aborts in its sampler. With it
-# off, the server refuses that prompt with HTTP 400, as llama.cpp does.
+# Refuse a prompt longer than the context instead of cutting it.
 FLAG_NO_CONTEXT_SHIFT = "--no-context-shift"
 
 

@@ -16,8 +16,7 @@ from tests._llama_swap_scenario import BASE_PORT, BINARY, CONFIGS, LOG_DIR, THRE
 
 # The text recorded for the same model set, one string per config. The default entry
 # is what origin/main writes; the swap entry has one group per launch. The scenario binary
-# prints no help text, so the adapter writes every optional flag. Each command gains
-# `--no-context-shift` before the role's own flags; no other token changed.
+# prints no help text, so every optional flag is written.
 GOLDEN = Path(__file__).parent / "llama_swap_config_main_golden.json"
 _GOLDEN_WORKERS = 14
 
