@@ -264,7 +264,9 @@ def _run_notice_loop(tmp_path: Path, listing: list[str]) -> subprocess.Completed
         if step.get("name") == "Check the licences in the installed wheel"
     )
     loop = "for pair in" + check.split("for pair in", 1)[1].split("\ndone", 1)[0] + "\ndone"
-    (tmp_path / "crate-licences.txt").write_text("MPL-2.0\nOpenSSL\n", encoding="utf-8", newline="\n")
+    (tmp_path / "crate-licences.txt").write_text(
+        "MPL-2.0\nOpenSSL\n", encoding="utf-8", newline="\n"
+    )
     listed = "\n".join(listing) + "\n"
     (tmp_path / "wheel-listing.txt").write_text(listed, encoding="utf-8", newline="\n")
     script = tmp_path / "check_notices.sh"
