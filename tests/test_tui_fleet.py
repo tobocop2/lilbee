@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from lilbee.app.placement import CLEAR_INSTRUCTION
 from lilbee.cli.tui.widgets.fleet_body import FleetPill
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -628,7 +629,31 @@ async def test_a_fallback_drawer_names_the_reason_and_where_each_pinned_role_run
         await pilot.pause()
         line = app.screen.query_one("#placement-skipped", Static)
         assert line.display
-        assert str(line.render()).split("\n") == [reason, dropped]
+        assert str(line.render()).split("\n") == [reason, dropped, CLEAR_INSTRUCTION]
+
+
+@pytest.mark.asyncio
+async def test_a_drawer_for_a_waiting_spec_does_not_offer_to_clear_it(monkeypatch):
+    """A spec that waits for an engine is kept, so the drawer gives no clear instruction."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import PlacementRefusal
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    view = replace(
+        _make_view(rejected_spec_json='{"chat": {"devices": [0]}}'),
+        refusal="The saved placement applies once an engine is installed.",
+        refusal_kind=PlacementRefusal.WAITING_FOR_ENGINE,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert CLEAR_INSTRUCTION not in str(line.render())
 
 
 @pytest.mark.asyncio
@@ -1567,7 +1592,7 @@ async def test_a_refused_spec_shows_the_service_reason_and_not_the_ignored_text(
         await pilot.pause()
         line = body.query_one("#placement-skipped", Static)
         assert line.display
-        assert str(line.render()) == _LOST_CARD
+        assert str(line.render()) == f"{_LOST_CARD}\n{CLEAR_INSTRUCTION}"
     assert not [note for note in notes if "being ignored" in note]
 
 
