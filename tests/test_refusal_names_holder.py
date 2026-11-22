@@ -550,6 +550,95 @@ class TestAnotherProcessHoldsTheCard:
         assert reason.endswith("Another process (under 1 MiB) holds the rest.")
 
 
+class _TenantedCards(_RealSizeEngine):
+    """The real adapter on cards given as (total, free) bytes; another process holds the rest."""
+
+    def __init__(self, binary: Path, cards: tuple[tuple[int, int], ...]) -> None:
+        super().__init__(binary, tuple(total // GIB for total, _free in cards))
+        self._tenanted = cards
+
+    def discover_devices(self, binary: Path) -> DeviceProbe:
+        devices = [
+            FleetDevice("CUDA", index, f"gpu{index}", total, free)
+            for index, (total, free) in enumerate(self._tenanted)
+        ]
+        return DeviceProbe(devices=devices, output="")
+
+
+class TestTheProcessHoldingACardIsTheOneTheRefusalNames:
+    """The figure is the refused card's own, not card 0's and not the sum over cards."""
+
+    def test_an_auto_chat_refused_on_card_one_names_what_card_one_holds(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        prepare_host(
+            monkeypatch, tmp_path, (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1)), 64 * GIB
+        )
+        for name, size in (("chat.gguf", 4 * GIB), ("embed.gguf", GIB)):
+            state_size(tmp_path / name, size)
+        monkeypatch.setattr(cfg, "placement", CHAT_AUTO_EMBED_ON_CPU)
+        binary = tmp_path / "engine-server"
+        binary.write_text("", encoding="utf-8")
+        # Another process holds 1.0 GiB of card 0 and 0.5 GiB of card 1. Card 1 has more room,
+        # so the oversize chat lands there.
+        cards = ((5 * GIB // 2, 3 * GIB // 2), (3 * GIB, 5 * GIB // 2))
+        engines = dict.fromkeys(WorkerRole, _TenantedCards(binary, cards))
+        planning.capture_plan_probe(engines)
+        plan = planning.plan_all_launches(engines=engines)
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert "device 1 has" in reason
+        assert reason.endswith("Another process (512 MiB) holds the rest.")
+
+    def test_a_pinned_role_refused_on_card_one_names_what_card_one_holds(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
+        with pytest.raises(PlacementError) as refused:
+            placement_from_spec(
+                spec,
+                (WorkerRole.EMBED,),
+                {0: 7 * GIB, 1: 6 * GIB},
+                estimate_peak=lambda role, ratio: (7 * GIB,),
+                outside={0: GIB, 1: 2 * GIB},
+            )
+        assert str(refused.value).endswith("Another process (2.0 GiB) holds the rest.")
+        assert "(8.0 GiB total, 90% headroom)" in str(refused.value)
+
+    def test_a_card_held_only_by_another_process_gets_the_plain_remedy(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        reason = card_refusal("m", 0, 2 * GIB, GIB, 8 * GIB, fix=True, outside=4 * GIB)
+        assert reason == (
+            "m needs 2.0 GiB but device 0 has 1.0 GiB usable (12.0 GiB total, 90% headroom). "
+            "Use a smaller model, or set its target to cpu. "
+            "Another process (4.0 GiB) holds the rest."
+        )
+
+    def test_a_card_with_holders_and_no_process_names_the_holders_remedy(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        holders = (RoomHolder(WorkerRole.EMBED, "e", 4 * GIB),)
+        reason = card_refusal("m", 0, 2 * GIB, GIB, 8 * GIB, fix=True, holders=holders)
+        assert reason is not None
+        assert "Use a smaller embed model" in reason
+
+
+class TestTheReplicasOfOneRoleAreNamedOnce:
+    def test_the_third_replica_names_the_earlier_two_as_one_holder(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,), replicas=3)})
+        with pytest.raises(PlacementError) as refused:
+            placement_from_spec(
+                spec,
+                (WorkerRole.EMBED,),
+                {0: 8 * GIB},
+                estimate_peak=lambda role, ratio: (3 * GIB,),
+                model_refs={WorkerRole.EMBED: EMBED_REF},
+            )
+        assert str(refused.value) == (
+            "embed pinned to device 0 needs 3.0 GiB but device 0 has 1.2 GiB usable "
+            "(8.0 GiB total, 90% headroom). "
+            f"This role's 2 other replicas of the embed model {EMBED_REF} (6.0 GiB) holds the rest."
+        )
+
+
 class TestASmallSizeIsNotZero:
     def test_a_room_above_zero_reads_in_mib(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
