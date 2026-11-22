@@ -122,7 +122,7 @@ from lilbee.data.types import (
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.gpu_stats import DeviceLike
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.truncation import one_truncation_warning
+from lilbee.providers.truncation import cut_inputs_in_scope, one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1713,10 +1713,6 @@ async def sync(
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
     plan_batches = _plan_batches(disk_files, existing_sources, held_hashes, moves, state, cancel)
 
-    # Snapshot the cumulative truncation counter so the delta over this sync can
-    # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
-    truncated_before = get_services().embedder.truncated_total
-
     # Ingest files (with optional progress bar). Only non-empty batches are yielded,
     # so the first one arriving is what proves there is work to do.
     try:
@@ -1802,7 +1798,7 @@ async def sync(
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
         held_out=held_out,
-        truncated=get_services().embedder.truncated_total - truncated_before,
+        truncated=cut_inputs_in_scope(),
         unreadable_folders=list(scan.unreadable),
         index_mismatch=index_mismatch,
     )

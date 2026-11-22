@@ -47,6 +47,5 @@ def ingesting_services() -> tuple[Services, dict[str, dict[str, Any]]]:
     embedder = MagicMock()
     embedder.embed.side_effect = lambda _text, **_kw: np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **_kw: [[0.1] * 768 for _ in texts]
-    embedder.truncated_total = 0
     services = make_mock_services(store=store, embedder=embedder, searcher=MagicMock())
     return services, sources

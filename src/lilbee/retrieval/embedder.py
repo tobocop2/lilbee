@@ -1,7 +1,6 @@
 """Thin wrapper around LLM provider embeddings API."""
 
 import logging
-import threading
 
 import numpy as np
 
@@ -12,6 +11,7 @@ from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import EmbeddingOverflowError, LLMProvider, ProviderError
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.providers.truncation import note_char_cut
 from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 
@@ -63,8 +63,6 @@ class Embedder:
     def __init__(self, config: Config, provider: LLMProvider) -> None:
         self._config = config
         self._provider = provider
-        self._truncated_total = 0
-        self._truncated_lock = threading.Lock()
 
     @property
     def embed_char_budget(self) -> int:
@@ -86,12 +84,6 @@ class Embedder:
         """
         return self._config.embed_batch_sequences * self._config.chunk_size * CHARS_PER_TOKEN
 
-    @property
-    def truncated_total(self) -> int:
-        """Cumulative count of chunks truncated since process start (thread-safe read)."""
-        with self._truncated_lock:
-            return self._truncated_total
-
     def truncate(self, text: str, reserved: int = 0) -> str:
         """Truncate text to the embed char budget, counting any truncation.
 
@@ -102,8 +94,7 @@ class Embedder:
         if len(text) <= budget:
             return text
         log.debug("Truncating chunk from %d to %d chars for embedding", len(text), budget)
-        with self._truncated_lock:
-            self._truncated_total += 1
+        note_char_cut()
         return text[:budget]
 
     def validate_vector(self, vector: Vector) -> None:
@@ -224,10 +215,7 @@ class Embedder:
             return []
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
-        # A provider with a token cap bounds every input by that same count (the
-        # fleet client cuts to it), and a chunk of cap tokens can run past any
-        # fixed character count. The character cut guards only a provider with
-        # no token cap, where the chunker's token estimate is characters.
+        # A provider with a token cap cuts to it; the character cut guards only one without.
         token_bounded = self._provider.embed_token_cap() is not None
         vectors: list[Vector] = []
         batch: list[str] = []

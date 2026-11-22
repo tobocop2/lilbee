@@ -9,6 +9,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
 from lilbee.retrieval.embedder import Embedder, is_model_available
 
 
@@ -73,9 +74,19 @@ class TestTokenBoundedProvider:
         assert sent.endswith(query)
 
     def test_nothing_is_counted_as_cut(self, embedder, capped):
-        before = embedder.truncated_total
-        embedder.embed_batch(["x" * (embedder.embed_char_budget + 500)])
-        assert embedder.truncated_total == before
+        with truncation_scope():
+            embedder.embed_batch(["x" * (embedder.embed_char_budget + 500)])
+            assert cut_inputs_in_scope() == 0
+
+    def test_a_character_cut_is_counted_in_the_scope_without_a_warning(
+        self, embedder, mock_provider, caplog
+    ):
+        mock_provider.embed_token_cap.return_value = None
+        mock_provider.embed.side_effect = lambda texts: [[0.0] * 768 for _ in texts]
+        with caplog.at_level("WARNING"), truncation_scope():
+            embedder.embed_query("x" * (embedder.embed_char_budget + 500))
+            assert cut_inputs_in_scope() == 1
+        assert not caplog.records
 
     def test_the_character_cut_still_guards_a_provider_with_no_cap(self, embedder, mock_provider):
         mock_provider.embed_token_cap.return_value = None

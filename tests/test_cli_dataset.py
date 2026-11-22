@@ -31,8 +31,6 @@ _ONE_PAGE = '{"source":"doc.pdf","page":1,"text":"body","content_type":"pdf"}\n'
 
 
 class _StubEmbedder:
-    truncated_total = 0
-
     def embed_batch(self, texts, **_kwargs):
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
