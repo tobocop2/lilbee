@@ -29,8 +29,8 @@ def _make_eager_settings_screen():
     class _EagerSettingsScreen(SettingsScreen):
         CSS_PATH = css_path
 
+        # Textual runs the on_mount of every class in the tree, SettingsScreen's after this one.
         def on_mount(self) -> None:
-            super().on_mount()
             self.populate_all_panes()
 
     return _EagerSettingsScreen
