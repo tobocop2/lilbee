@@ -901,6 +901,36 @@ class TestProviderCallersAskTheRoleEngine:
         monkeypatch.setattr(EngineBook, "read", lambda self: BookReading(book, {}))
         assert FleetProvider().supports_rerank() is False
 
+    def test_a_rerank_call_is_served_by_the_rerank_roles_engine(
+        self,
+        spy: SpyEngine,
+        mixed: None,
+        model_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rerank request reaches the rerank role's client, not the chat role's."""
+        chat = planning.build_single_role_launch(WorkerRole.CHAT, model_file, engine=spy)
+        rerank = planning.build_single_role_launch(WorkerRole.RERANK, model_file, engine=spy)
+        provider = FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock:
+            provider._adopt_group("chat", swap, [chat])  # type: ignore[arg-type]
+            provider._adopt_group("rerank", swap, [rerank])  # type: ignore[arg-type]
+        chat_client = provider._clients[WorkerRole.CHAT][0]
+        rerank_client = provider._clients[WorkerRole.RERANK][0]
+        assert chat_client._profile.label == LLAMA.request_profile(WorkerRole.CHAT).label
+        assert rerank_client._profile.label == spy.request_profile(WorkerRole.RERANK).label
+        asked: list[str] = []
+        monkeypatch.setattr(
+            chat_client, "rerank", lambda q, c: asked.append("chat") or [0.0] * len(c)
+        )
+        monkeypatch.setattr(
+            rerank_client, "rerank", lambda q, c: asked.append("rerank") or [0.5] * len(c)
+        )
+        assert provider.rerank("q", ["a", "b"]) == [0.5, 0.5]
+        assert asked == ["rerank"]
+
     def test_embed_token_cap_reads_the_model_with_the_embed_engine(
         self, spy: SpyEngine, mixed: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
