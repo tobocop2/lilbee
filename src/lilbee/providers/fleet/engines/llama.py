@@ -47,7 +47,11 @@ from lilbee.providers.fleet.readback import engine_advertises, supports_memory_r
 from lilbee.providers.gguf_meta import read_gguf_metadata
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
+_REQUEST_TOKENS = 2048
+"""llama-server runs each input of an embed request as its own task, so --batch-size bounds
+one input and not the request. A request of about 2000 tokens ran on a 648-token batch."""
 _PROFILE = RequestProfile(
+    request_tokens=_REQUEST_TOKENS,
     embed_fields={"embd_normalize": -1},
     stream_fields={"return_progress": True},
     takes_cache_prompt=True,
