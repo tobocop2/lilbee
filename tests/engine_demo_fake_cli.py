@@ -8,6 +8,7 @@ server wants the token it wrote.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import secrets
@@ -274,4 +275,11 @@ def main(argv: list[str]) -> None:
     sys.exit(f"unknown command {argv}")
 
 
+if isinstance(sys.stdout, io.TextIOWrapper):
+    # Like lilbee's launcher, write UTF-8 under any locale. FAKE_CRLF ends lines as Windows does.
+    sys.stdout.reconfigure(
+        encoding=UTF8,
+        errors="backslashreplace",
+        **({"newline": "\r\n"} if os.environ.get("FAKE_CRLF") else {}),
+    )
 main(sys.argv[1:])

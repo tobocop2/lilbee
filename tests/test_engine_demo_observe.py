@@ -12,7 +12,6 @@ import json
 import os
 import runpy
 import shlex
-import signal
 import socket
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import psutil
 import pytest
 from tools.qa.engine_demo import __main__ as demo_main
 from tools.qa.engine_demo.observe import (
@@ -374,8 +374,8 @@ def test_a_server_child_left_running_is_recorded(
         assert judge(t) == []
     finally:
         for pid in pids:
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+            with contextlib.suppress(psutil.NoSuchProcess):
+                psutil.Process(pid).kill()
 
 
 def test_a_chat_request_that_fails_below_http_is_recorded(
@@ -392,8 +392,7 @@ def test_a_chat_request_that_fails_below_http_is_recorded(
 def test_the_chat_server_is_stopped_after_the_turn(tmp_path: Path) -> None:
     observe(_plan(), tmp_path)
     pid = int((tmp_path / "lilbee" / "serve.pid").read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not psutil.pid_exists(pid)
 
 
 def test_a_server_that_ignores_terminate_is_killed(
@@ -404,8 +403,7 @@ def test_a_server_that_ignores_terminate_is_killed(
     (chat,) = _step(t, StepName.CHAT)
     assert chat.exit_code == 0
     pid = int((tmp_path / "lilbee" / "serve.pid").read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not psutil.pid_exists(pid)
 
 
 def test_a_server_that_exits_before_it_answers_is_recorded(
@@ -494,8 +492,7 @@ def test_a_server_that_never_comes_up_times_out(
     (chat,) = _step(t, StepName.CHAT)
     assert chat.exit_code == TIMEOUT_EXIT_CODE
     pid = int((tmp_path / "lilbee" / "serve.pid").read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not psutil.pid_exists(pid)
 
 
 def test_a_chat_route_error_records_the_status(
@@ -518,6 +515,28 @@ def test_a_step_that_hangs_is_killed_and_recorded(
     assert install.exit_code == TIMEOUT_EXIT_CODE
     assert install.stdout == "begun\n"
     assert Rule.STEP_FAILED in _rules(t)
+
+
+def test_a_cli_that_ends_its_lines_with_crlf_passes_the_oracles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows the CLI ends each line with CRLF; the oracles still read every count line."""
+    monkeypatch.setenv("FAKE_CRLF", "1")
+    t = observe(_plan(), tmp_path)
+    (add,) = _step(t, StepName.ADD)
+    assert "\r" not in add.stdout
+    assert judge(t) == []
+
+
+def test_a_step_that_hangs_after_a_crlf_line_records_the_line_with_a_newline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_CRLF", "1")
+    monkeypatch.setenv("FAKE_MODE", "hang-install")
+    t = observe(_plan(step_timeout_s=1.5), tmp_path)
+    (install,) = _step(t, StepName.INSTALL)
+    assert install.exit_code == TIMEOUT_EXIT_CODE
+    assert install.stdout == "begun\n"
 
 
 def test_a_chat_turn_that_never_answers_times_out(
