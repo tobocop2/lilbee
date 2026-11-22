@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stand-in for the Python 3.12 of a text-embeddings-inference pack build. A venv holds this stub again, pip unpacks
+# a wheel beside the venv and installs nothing else. Every other call runs the real python3.
+#
+# Reads:
+#   REAL_PYTHON     the interpreter for the other calls (required)
+#   PYTHON_LOG      a file that receives one line per venv or pip call (required)
+#   PYTHON_VERSION  the version the stub reports (default: 3.12)
+
+set -euo pipefail
+
+site="$(dirname "$0")/../site"
+case "${1-} ${2-} ${3-}" in
+  "-c "*version_info*)
+    echo "${PYTHON_VERSION:-3.12}" ;;
+  "-c import lilbee_engine_tei"*)
+    PYTHONPATH="${site}" exec "${REAL_PYTHON:?}" "$@" ;;
+  "-m venv "*)
+    mkdir -p "$3/bin"
+    cp "$0" "$3/bin/python"
+    echo "$*" >> "${PYTHON_LOG:?}" ;;
+  "-m pip "*)
+    echo "$* | constraint=${PIP_CONSTRAINT-unset} cwd=${PWD##*/}" >> "${PYTHON_LOG:?}"
+    for file in ${PIP_CONSTRAINT-}; do
+      [ -s "${file}" ] || { echo "stub python: no file ${file}" >&2; exit 1; }
+    done
+    case "${!#}" in
+      *.whl) "${REAL_PYTHON:?}" -c '
+import os, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    for info in wheel.infolist():
+        os.chmod(wheel.extract(info, sys.argv[2]), info.external_attr >> 16)' "${!#}" "${site}" ;;
+    esac ;;
+  *)
+    exec "${REAL_PYTHON:?}" "$@" ;;
+esac

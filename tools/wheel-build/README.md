@@ -28,8 +28,13 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   the script names at its top.
 - `check_mistralrs_wheel.sh` — checks a built mistral.rs pack: the tag, the licences, and
   that the tool starts. `pack_mistralrs.sh` runs it before the pack leaves the build.
+- `pack_tei.sh` — builds and checks the text-embeddings-inference engine pack of one
+  cell, in the same way. A Linux cell builds in the manylinux image (`tei_manylinux.sh`),
+  the macOS cell on the Mac. `check_tei_wheel.py` checks the wheel and `smoke_tei.sh` starts
+  its router.
 - `pack_common.sh` — the functions that the pack scripts share.
 - `build-tools.constraints` — the pinned Python build tools of the packs.
+  `tei-tools.constraints` adds the ones that only the text-embeddings-inference pack needs.
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
