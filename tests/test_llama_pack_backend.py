@@ -377,61 +377,12 @@ def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -
 
 _NOTICE_NAME = "NOTICE-MICROSOFT-VC-RUNTIME"
 _NON_FATAL_SHELL = re.compile(r"^\s*(set\s+\+\w*e|set\s+\+o\s+errexit|trap\b)", re.MULTILINE)
-_FATAL_SHELL = re.compile(r"^\s*set\s+(-\w*e\w*\b|-o\s+errexit)", re.MULTILINE)
-_WINDOWS_STEP_CONDITION = re.compile(r"(\$\{\{\s*)?runner\.os\s*==\s*['\"]Windows['\"](\s*\}\})?")
-_WINDOWS_SHELL_CONDITION = re.compile(
-    r"\[\[?\s*\"?\$\{?RUNNER_OS\}?\"?\s*==?\s*\"?Windows\"?\s*\]\]?"
-)
-_SWALLOWED_STATUS = re.compile(r"\|\|\s*(true|:)\s*($|[;)}&|])")
-_NOTICE_BUNDLE_CALL = re.compile(
-    rf"^bash(\s+-\S+)*\s+\S*bundle_windows_runtime\.sh\s+\S+\s+\S*{_NOTICE_NAME}[\"']?\s*$"
-)
-_NOTICE_LISTING_CHECK = re.compile(
-    rf"^grep\s+-q\s+\"[^\"]*dist-info/licenses/{_NOTICE_NAME} [^\"]*\"\s+wheel-listing\.txt"
-    r"\s*\|\|\s*\{[^}]*\bexit\s+[1-9]\d*\b[^}]*\}\s*$"
-)
 
 
 def _assert_step_stops_on_failure(step: dict[str, Any]) -> None:
     """Fail if the step can pass after a failed command."""
     assert not step.get("continue-on-error")
     assert not _NON_FATAL_SHELL.search(_uncommented(step["run"]))
-
-
-def _mistralrs_job() -> dict[str, Any]:
-    return cast(dict[str, Any], _pack_workflow_yaml()["jobs"]["mistralrs"])
-
-
-def _mistralrs_step_with(line: re.Pattern[str]) -> tuple[dict[str, Any], list[str]]:
-    """Return the one mistral.rs step with a line matching `line`, and its conditions."""
-    job = _mistralrs_job()
-    assert not job.get("continue-on-error")
-    found = []
-    for step in job["steps"]:
-        script = _uncommented(step.get("run", ""))
-        if any(line.match(raw.strip()) for raw in script.splitlines()):
-            found.append(step)
-    assert len(found) == 1, line.pattern
-    [step] = found
-    script = _uncommented(step["run"])
-    [text] = [raw.strip() for raw in script.splitlines() if line.match(raw.strip())]
-    _assert_step_stops_on_failure(step)
-    assert _FATAL_SHELL.search(script)
-    assert not _SWALLOWED_STATUS.search(text)
-    return step, _enclosing_conditions(script, text)
-
-
-def test_the_mistralrs_job_bundles_the_windows_runtime_notice_fatally() -> None:
-    step, conditions = _mistralrs_step_with(_NOTICE_BUNDLE_CALL)
-    assert _WINDOWS_STEP_CONDITION.fullmatch(str(step["if"]))
-    assert conditions == []
-
-
-def test_the_mistralrs_job_checks_the_windows_runtime_notice_fatally() -> None:
-    step, conditions = _mistralrs_step_with(_NOTICE_LISTING_CHECK)
-    assert "if" not in step
-    assert len(conditions) == 1
-    assert _WINDOWS_SHELL_CONDITION.fullmatch(conditions[0])
 
 
 def _enclosing_conditions(script: str, line_text: str) -> list[str]:

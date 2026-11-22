@@ -1,5 +1,7 @@
 # Sourced by bash on every platform; a CRLF checkout would embed \r in the pins.
 engine-versions.env text eol=lf
+tools/wheel-build/pack_*.sh text eol=lf
+tools/wheel-build/check_*_wheel.sh text eol=lf
 # Skill files are matched by sha256 against released copies; a CRLF checkout would change them.
 plugins/lilbee/skills/lilbee-mcp/** text eol=lf
 tests/fixtures/skill/** text eol=lf
