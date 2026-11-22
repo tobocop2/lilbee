@@ -8,8 +8,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # An extras list that names engine, such as [engine] or [cuda,engine]; a link text is not one.
-_EXTRA_LIST = re.compile(r"\[(?:[\w-]+,)*engine(?:,[\w-]+)*\]")
+_EXTRA_LIST = re.compile(r"\[(?:[\w-]+\s*,\s*)*engine(?:\s*,\s*[\w-]+)*\]")
+# The pattern before spaces were allowed around the commas.
+_NO_SPACE_EXTRA_LIST = re.compile(r"\[(?:[\w-]+,)*engine(?:,[\w-]+)*\]")
 DOCS = (
+    "CONTRIBUTING.md",
     "README.md",
     "docs/install.md",
     "docs/usage.md",
@@ -44,7 +47,20 @@ def test_no_install_text_names_the_engine_extra() -> None:
 
 def test_a_link_named_engine_is_not_an_extra() -> None:
     assert not _EXTRA_LIST.search("Details: [engine internals](internals/engine.md).")
-    for spelling in ("lilbee[engine]", "lilbee[engine,crawler]", "lilbee[cuda,engine]"):
+    for spelling in (
+        "lilbee[engine]",
+        "lilbee[engine,crawler]",
+        "lilbee[cuda,engine]",
+        "lilbee[engine, crawler]",
+        "lilbee[cuda, engine]",
+        "lilbee[cuda , engine , crawler]",
+    ):
+        assert _EXTRA_LIST.search(spelling), spelling
+
+
+def test_the_pattern_before_spaces_missed_a_spaced_extras_list() -> None:
+    for spelling in ("lilbee[engine, crawler]", "lilbee[cuda, engine]"):
+        assert not _NO_SPACE_EXTRA_LIST.search(spelling), spelling
         assert _EXTRA_LIST.search(spelling), spelling
 
 

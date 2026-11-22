@@ -28,19 +28,15 @@ uv sync --extra crawler    # website crawling (/crawl, Playwright)
 uv sync --extra graph      # concept-graph search
 ```
 
-To get the real engine (the `engine` extra) in a dev install, run this inside the checkout:
+To get the real engine in a dev install, run this inside the checkout:
 
 ```bash
-uv pip install -e .[engine]
+uv run lilbee engine install
 ```
 
-From another folder, add `--no-sources` (or `--project <checkout>`):
+The command downloads the engine pack into lilbee's engine cache. To use your own build, set `LILBEE_LLAMA_SERVER_PATH` to your `llama-server`.
 
-```bash
-uv pip install --no-sources -e <checkout>[engine]
-```
-
-Without one of these, `uv` resolves `lilbee-engine-llama-cpp` to the 0.0.0 placeholder package in `packaging/engine-wheel`, which has no `llama-server` binary. `uv sync --extra engine` does the same, because it reads the lock file, which records the placeholder. The `[tool.uv.pip] no-sources` setting in `pyproject.toml` only applies when `uv` runs inside the checkout.
+The dev group depends on `lilbee-engine-llama-cpp`, which `uv` resolves to the 0.0.0 placeholder package in `packaging/engine-wheel`. The placeholder has no `llama-server` binary, so it is not an engine.
 
 Optionally install the git hooks so lint, format, and type checks run on each commit (the same checks CI enforces):
 
