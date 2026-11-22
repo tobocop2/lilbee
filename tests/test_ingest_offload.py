@@ -131,6 +131,7 @@ def _fleet_of_two_cards_after_a_failed_probe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> _Clock:
     """Wire the real sizing path to a device probe that fails once, then finds two cards."""
+    from lilbee.app.services import set_services
     from lilbee.providers.fleet import planning
     from lilbee.providers.fleet.devices import FleetDevice
 
@@ -140,7 +141,7 @@ def _fleet_of_two_cards_after_a_failed_probe(
     services = SimpleNamespace(
         engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=engine))
     )
-    monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+    set_services(services)
     monkeypatch.setattr(replicas, "resolve_replica_count", _REAL_RESOLVE_REPLICA_COUNT)
     monkeypatch.setattr(cfg, "embed_replicas", 0)
     cards = [FleetDevice("CUDA", i, "gpu", 24 * 1024**3, 23 * 1024**3) for i in range(2)]
