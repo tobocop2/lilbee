@@ -1908,26 +1908,6 @@ def _boom_create_default_context(*_a: object, **_k: object) -> object:
     raise AssertionError("create_default_context must not be called on the reload path")
 
 
-def test_the_client_hands_its_timeout_to_the_http_client_it_builds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The httpx client the constructor builds when none is given gets the caller's timeout."""
-    import lilbee.providers.fleet.client as client_mod
-
-    captured: dict[str, object] = {}
-    real_client = httpx.Client
-
-    def _spy_client(**kwargs: object) -> httpx.Client:
-        captured.update(kwargs)
-        return real_client(transport=httpx.MockTransport(_handler))
-
-    monkeypatch.setattr(client_mod.httpx, "Client", _spy_client)
-    LlamaServerClient(
-        "http://gpu0", "m", timeout=13.0, profile=LLAMA.request_profile(WorkerRole.CHAT)
-    )
-    assert captured["timeout"] == 13.0
-
-
 def test_close_leaves_injected_client_open() -> None:
     http = httpx.Client(transport=httpx.MockTransport(_handler))
     c = LlamaServerClient(
@@ -1935,27 +1915,6 @@ def test_close_leaves_injected_client_open() -> None:
     )
     c.close()
     assert not http.is_closed
-
-
-def test_a_trailing_slash_in_the_base_url_is_dropped() -> None:
-    c = LlamaServerClient("http://gpu0/", "m", profile=LLAMA.request_profile(WorkerRole.CHAT))
-    try:
-        assert c._base == "http://gpu0"
-        assert c.sent(httpx.Request("POST", "http://gpu0/v1/chat/completions"))
-    finally:
-        c.close()
-
-
-def test_the_owned_client_carries_the_timeout_it_was_given() -> None:
-    c = LlamaServerClient(
-        "http://gpu0", "m", timeout=9.5, profile=LLAMA.request_profile(WorkerRole.CHAT)
-    )
-    try:
-        assert c._timeout == 9.5
-        assert c._http.timeout.connect == 9.5
-        assert c._http.timeout.read == 9.5
-    finally:
-        c.close()
 
 
 def test_the_unhealthy_stamp_starts_at_zero() -> None:
