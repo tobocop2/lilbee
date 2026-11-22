@@ -32,6 +32,8 @@ class MemoryRequest:
     expert_offload: tuple[str, ...] = ()
     on_cpu: bool = False
     """True when the weights load into the CPU backend, not onto a card."""
+    cpu_repack: bool = True
+    """True when the engine's CPU backend keeps a repacked copy of the weights it loads."""
 
 
 @dataclass(frozen=True)

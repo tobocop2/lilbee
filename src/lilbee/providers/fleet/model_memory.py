@@ -501,7 +501,8 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
     A pooled CPU load, which launches with a batch raised to its context, is sized with no
     layer offloaded: the parser then books only the batch compute buffer to the device, and
     that buffer lives in host memory. The weights are already charged as the mapped file.
-    A CPU chat load keeps the parser figure, which its own estimator corrects.
+    A CPU chat load keeps the parser figure, which its own estimator corrects. A CPU load
+    also holds the repacked copy of the weights when the request says the engine keeps one.
 
     A cut-off file, or a split set with a missing shard, has no known size; it is charged the
     reserve, or the bytes on disk when those are larger.
@@ -522,7 +523,11 @@ def estimate_gguf(request: MemoryRequest) -> MemoryEstimate:
         host_bytes=parsed.ram_bytes,
         shared_bytes=parsed.unified_bytes + compute_buffer,
         mapped_weights_bytes=parsed.mapped_weights_bytes
-        + (repacked_weight_bytes(request.model_path) if request.on_cpu else 0),
+        + (
+            repacked_weight_bytes(request.model_path)
+            if request.on_cpu and request.cpu_repack
+            else 0
+        ),
         per_device=parsed.per_device_vram,
         per_device_shared=parsed.per_device_unified,
     )
