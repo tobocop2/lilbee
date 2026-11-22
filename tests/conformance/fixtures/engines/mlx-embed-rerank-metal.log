@@ -1,0 +1,12 @@
+engine: mlx-embed-rerank-metal
+version: 0.32.2
+host: macOS-27.2.1-arm64-arm-64bit
+backend: metal
+reported-backend: metal
+devices: MTL0
+devices-from: engine-log
+models: embed=mlx-community/Qwen3-Embedding-0.6B-8bit,rerank=mlx-community/Qwen3-Reranker-0.6B-4bit
+STEP mlx-embed-rerank-metal embed ok=True dims=[1024]
+STEP mlx-embed-rerank-metal rerank ok=True best=1
+STEP mlx-embed-rerank-metal named ok=True log=['served by engine=mlx-embed-rerank-metal version=preset build=none role=embed model=mlx-embed-rerank-metal/mlx-community/Qwen3-Embedding-0.6B-8bit'] status={<WorkerRole.EMBED: 'embed'>: 'mlx-embed-rerank-metal', <WorkerRole.RERANK: 'rerank'>: 'mlx-embed-rerank-metal'}
+gpu: Apple M3 Pro, 36 GB unified, Metal 4
