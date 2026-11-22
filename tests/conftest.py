@@ -408,10 +408,14 @@ def _fresh_session_host(request, monkeypatch):
 
     The live read starts a child process for the CPU probe, so a read per test is slow. The cache
     is cleared around each test, so an engine install that refreshes the host reads it afresh.
+    The remembered device probe is dropped on entry only: a test may still hold a fake cache in
+    its place when teardown runs.
     """
     from lilbee.catalog import runnable
+    from lilbee.providers.fleet import planning
     from lilbee.providers.fleet.host_caps import collect
 
+    planning._read_device_cache.clear()
     session_host = runnable._read_host
     session_host.cache_clear()
     if "real_host_read" not in {m.name for m in request.node.iter_markers()}:

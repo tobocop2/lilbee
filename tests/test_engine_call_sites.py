@@ -198,14 +198,14 @@ class TestDeviceReads:
         assert spy.probed == [spy.binary()]
 
     def test_gpu_device_count_counts_the_engine_devices(self, spy: SpyEngine) -> None:
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         two = SpyEngine(
             spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
         )
         assert replicas.gpu_device_count(two) == 2
 
     def test_gpu_device_count_is_one_without_an_engine_binary(self, spy: SpyEngine) -> None:
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         assert replicas.gpu_device_count(_binaryless(spy)) == 1
 
     def test_gpu_device_count_reads_the_cards_again_once_the_binary_is_installed(
@@ -224,11 +224,11 @@ class TestDeviceReads:
         late = LateBinary(
             spy.binary(), devices=(SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
         )
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         assert replicas.gpu_device_count(late) == 1
         late.installed = True
         assert replicas.gpu_device_count(late) == 2
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
 
     def test_gpu_device_count_is_one_when_the_engine_cannot_load(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -239,10 +239,10 @@ class TestDeviceReads:
         def cannot_load(_binary: Path, _engine: object) -> None:
             raise EngineDllMissingError("DLL missing", provider="llama")
 
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
         assert replicas.gpu_device_count(spy) == 1
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
 
     def test_gpu_device_count_is_one_when_the_engine_dies_on_an_illegal_instruction(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -253,10 +253,10 @@ class TestDeviceReads:
         def cannot_run(_binary: Path, _engine: object) -> None:
             raise EngineIllegalInstructionError("illegal instruction", provider="llama")
 
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", cannot_run)
         assert replicas.gpu_device_count(spy) == 1
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
 
     def test_gpu_device_count_reads_the_cards_again_once_the_runtime_is_installed(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -267,13 +267,13 @@ class TestDeviceReads:
         def cannot_load(_binary: Path, _engine: object) -> None:
             raise EngineDllMissingError("DLL missing", provider="llama")
 
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
         assert replicas.gpu_device_count(spy) == 1
         two_cards = [SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4)]
         monkeypatch.setattr(planning, "resolve_devices", lambda _binary, _engine: two_cards)
         assert replicas.gpu_device_count(spy) == 2
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
 
     def test_a_sync_that_needs_no_engine_plans_with_an_engine_that_cannot_load(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -288,11 +288,11 @@ class TestDeviceReads:
         services = SimpleNamespace(
             engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=spy))
         )
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         monkeypatch.setattr("lilbee.app.services._state.singleton", services)
         monkeypatch.setattr(planning, "resolve_devices", cannot_load)
         assert fanout.plan_fanout() == []
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
 
     def test_gpu_device_count_still_raises_a_wedged_probe(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
@@ -300,11 +300,11 @@ class TestDeviceReads:
         def wedged(_binary: Path, _engine: object) -> None:
             raise ProviderError("probe timed out", provider="llama")
 
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
         monkeypatch.setattr(planning, "resolve_devices", wedged)
         with pytest.raises(ProviderError, match="probe timed out"):
             replicas.gpu_device_count(spy)
-        replicas._probed_gpu_count.cache_clear()
+        planning.clear_read_device_cache()
 
     def test_probed_devices_and_backend_come_from_the_engine(self, spy: SpyEngine) -> None:
         assert planning.probed_devices(spy) == (SPY_DEVICE,)

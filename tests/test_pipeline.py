@@ -289,6 +289,7 @@ class TestMaxConcurrent:
         services = MagicMock()
         services.provider.vision_slot_capacity.return_value = value
         monkeypatch.setattr(pipeline, "get_services", lambda: services)
+        monkeypatch.setattr("lilbee.providers.fleet.replicas.gpu_device_count", lambda _engine: 1)
 
     def test_defaults_to_cpu_quota_without_vision(self, monkeypatch) -> None:
         from lilbee.data.ingest import pipeline
