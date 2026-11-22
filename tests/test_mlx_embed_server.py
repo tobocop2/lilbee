@@ -434,6 +434,45 @@ def test_a_bad_body_answers_its_status_with_a_message(
     assert payload["error"]["message"]
 
 
+def test_a_dimensions_field_the_model_cannot_honour_is_refused_in_plain_words() -> None:
+    with pytest.raises(srv.RequestError) as refused:
+        service(srv.TASK_EMBED).embed({"input": "a", "dimensions": 1})
+    assert refused.value.status == 400
+    assert str(refused.value) == (
+        "dimensions 1 is not supported: this model returns vectors of 2 values"
+    )
+
+
+@pytest.mark.parametrize("dimensions", [None, 2])
+def test_a_dimensions_field_that_names_the_model_size_is_accepted(dimensions: int | None) -> None:
+    answer = service(srv.TASK_EMBED).embed({"input": "a", "dimensions": dimensions})
+    assert len(answer["data"][0]["embedding"]) == 2
+
+
+@pytest.mark.parametrize("instruction", [3, ["x"], {"a": 1}])
+def test_an_instruction_that_is_not_a_string_is_refused(instruction: object) -> None:
+    with pytest.raises(srv.RequestError) as refused:
+        service(srv.TASK_RERANK).rerank(
+            {"query": "q", "documents": ["a"], "instruction": instruction}
+        )
+    assert refused.value.status == 400
+
+
+@pytest.mark.parametrize("length", ["abc", "-5", "1.5"])
+def test_a_bad_content_length_answers_400_instead_of_dropping_the_connection(
+    embed_http: int, length: str
+) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", embed_http, timeout=10)
+    conn.putrequest("POST", "/v1/embeddings")
+    conn.putheader("Content-Length", length)
+    conn.endheaders()
+    resp = conn.getresponse()
+    payload = json.loads(resp.read())
+    conn.close()
+    assert resp.status == 400
+    assert "Content-Length" in payload["error"]["message"]
+
+
 def test_a_model_failure_answers_500_with_its_reason() -> None:
     class Broken(FakeBackend):
         def last_hidden(self, batch: Sequence[Sequence[int]]) -> np.ndarray:
