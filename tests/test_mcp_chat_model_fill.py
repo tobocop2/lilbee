@@ -100,13 +100,36 @@ def _call_each_wiki_tool(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 
 def test_an_empty_chat_model_is_filled_before_each_wiki_tool_runs(
-    monkeypatch: pytest.MonkeyPatch, installed_chat: str
+    monkeypatch: pytest.MonkeyPatch, installed_chat: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(cfg, "chat_model", "")
 
-    seen = _call_each_wiki_tool(monkeypatch)
+    with caplog.at_level(logging.INFO, logger=mcp_mod.log.name):
+        seen = _call_each_wiki_tool(monkeypatch)
 
     assert seen == dict.fromkeys(WIKI_TOOLS, installed_chat)
+    notices = [
+        r for r in caplog.records if r.name == mcp_mod.log.name and installed_chat in r.getMessage()
+    ]
+    assert [r.levelno for r in notices] == [logging.INFO]
+
+
+def test_the_services_build_after_the_chat_model_is_filled(
+    monkeypatch: pytest.MonkeyPatch, installed_chat: str
+) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "")
+    built_with: list[str] = []
+    build = mcp_mod.get_services
+
+    def record_the_chat_model() -> Any:
+        built_with.append(cfg.chat_model)
+        return build()
+
+    monkeypatch.setattr(mcp_mod, "get_services", record_the_chat_model)
+
+    _start_and_call(())
+
+    assert built_with[:1] == [installed_chat]
 
 
 def test_the_fill_is_never_written_to_the_config_file(
@@ -245,7 +268,7 @@ def test_search_expands_the_query_with_the_filled_chat_model(
 
 
 def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
-    capfd: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
     served = []
 
@@ -271,3 +294,10 @@ def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
     assert served
     assert out == ""
     assert "The chat model could not be filled at start (registry)" in err
+    [record] = [r for r in caplog.records if "could not be filled" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.getMessage() == (
+        "The chat model could not be filled at start (registry); "
+        "tools use the chat model as set."
+    )
+    assert record.exc_info is not None
