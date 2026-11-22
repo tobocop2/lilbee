@@ -30,6 +30,9 @@ class _Engine:
         self.width = width
         self.calls = 0
 
+    def embed_token_cap(self) -> int | None:
+        return None
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         return [[0.1] * self.width for _ in texts]

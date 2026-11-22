@@ -23,6 +23,7 @@ from lilbee.retrieval.embedder import Embedder
 @pytest.fixture()
 def mock_provider():
     provider = MagicMock()
+    provider.embed_token_cap.return_value = None
     provider.embed.side_effect = lambda texts: [[0.0] * cfg.embedding_dim for _ in texts]
     return provider
 

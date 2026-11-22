@@ -27,6 +27,9 @@ class _WideProvider:
     def __init__(self) -> None:
         self.calls = 0
 
+    def embed_token_cap(self) -> int | None:
+        return None
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         return [[0.5] * SERVED_WIDTH for _ in texts]
