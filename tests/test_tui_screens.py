@@ -1804,7 +1804,7 @@ async def test_settings_is_writable():
 
 async def test_settings_persist_invalid_int():
     """Invalid value for int field shows error and does not change cfg."""
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
@@ -1829,7 +1829,7 @@ async def test_settings_repeated_identical_invalid_blur_notifies_twice():
     """
     from textual.widgets import Input
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         original = cfg.top_k
         editor = app.screen.query_one("#ed-top_k", Input)
@@ -1881,7 +1881,7 @@ async def test_settings_select_save_compares_against_mount_baseline_not_cfg():
     """
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("wiki_clusterer")
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1902,7 +1902,7 @@ async def test_reset_button_resets_scalar():
     from textual.widgets import Button, Input
 
     cfg.wiki_clusterer_k = 99
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("wiki_clusterer_k")
     async with app.run_test(size=(120, 40)):
         button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
         async with saved_setting(app, "wiki_clusterer_k"):
@@ -1915,7 +1915,7 @@ async def test_reset_button_resets_scalar():
 
 async def test_reset_button_absent_for_readonly():
     """Read-only rows (e.g. chat_model) do not render a reset button."""
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("chat_model")
     async with app.run_test(size=(120, 40)) as _pilot:
         chat_row = app.screen.query_one("#row-chat_model")
         buttons = chat_row.query(".setting-reset-button")
@@ -1927,7 +1927,7 @@ async def test_ctrl_r_resets_focused_row():
     from textual.widgets import Input
 
     cfg.top_k = 99
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
@@ -1978,7 +1978,7 @@ async def test_refresh_editor_updates_checkbox():
 
     default = bool(builtin_value("show_reasoning"))
     cfg.show_reasoning = not default
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("show_reasoning")
     async with app.run_test(size=(120, 40)) as pilot:
         checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
         checkbox.value = not default
@@ -1997,7 +1997,7 @@ async def test_reset_nullable_to_none():
     from textual.widgets import Button, Input
 
     cfg.seed = 42
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("seed")
     async with app.run_test(size=(120, 40)):
         button = app.screen.query_one("#reset-seed", Button)
         async with saved_setting(app, "seed"):
@@ -2018,7 +2018,7 @@ async def test_reset_select_clears_when_default_none():
 
     # The blank row exists only on a Select built for a nullable setting.
     nullable = dataclasses.replace(SETTINGS_MAP["wiki_clusterer"], nullable=True)
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("wiki_clusterer")
     with patch.dict(SETTINGS_MAP, {"wiki_clusterer": nullable}):
         async with app.run_test(size=(120, 40)) as _pilot:
             screen = app.screen
@@ -2041,7 +2041,7 @@ async def test_reset_select_sets_value_when_default_provided():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("wiki_clusterer")
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2134,7 +2134,7 @@ async def test_refresh_editor_guard_skips_untracked_key():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2219,7 +2219,7 @@ async def test_list_restore_removes_the_user_key(tmp_path):
     persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine"})
     cfg.crawl_exclude_patterns = ["mine"]
     expected = builtin_value("crawl_exclude_patterns")
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
@@ -2237,7 +2237,7 @@ async def test_ctrl_r_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"top_k": 99, "chunk_size": 1024})
     cfg.top_k = 99
     default = builtin_value("top_k")
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k", "max_distance")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
@@ -2275,7 +2275,7 @@ async def test_flash_attention_shows_three_distinct_states(tmp_path, stored, sho
 
     cfg.data_root = tmp_path
     cfg.flash_attention = stored
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("flash_attention")
     async with app.run_test(size=(120, 40)):
         select = app.screen.query_one("#ed-flash_attention", Select)
         assert select.is_blank() if shown == "" else (select.value == shown)
@@ -2287,7 +2287,7 @@ async def test_flash_attention_picks_save_and_auto_clears(tmp_path):
 
     cfg.data_root = tmp_path
     cfg.flash_attention = None
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("flash_attention")
     async with app.run_test(size=(120, 40)) as pilot:
         select = app.screen.query_one("#ed-flash_attention", Select)
         select.value = "False"
@@ -2307,7 +2307,7 @@ async def test_a_late_editor_sync_does_not_save_the_old_select_value_again(tmp_p
 
     cfg.data_root = tmp_path
     cfg.flash_attention = None
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("flash_attention")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         select = screen.query_one("#ed-flash_attention", Select)
@@ -2333,7 +2333,7 @@ async def test_select_reset_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"ocr_strategy": "scanned_pages", "top_k": 5})
     cfg.ocr_strategy = "scanned_pages"
     default = str(builtin_value("ocr_strategy"))
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("ocr_strategy", "max_distance")
     async with app.run_test(size=(120, 40)) as pilot:
         select = app.screen.query_one("#ed-ocr_strategy", Select)
         app.screen.query_one("#reset-ocr_strategy", Button).press()
@@ -2352,7 +2352,7 @@ async def test_multiline_reset_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"general_system_prompt": "mine", "top_k": 5})
     cfg.general_system_prompt = "mine"
     default = str(builtin_value("general_system_prompt"))
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("general_system_prompt", "max_distance")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-general_system_prompt", ListTextArea)
         app.screen.query_one("#reset-general_system_prompt", Button).press()
@@ -2371,7 +2371,7 @@ async def test_list_restore_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine", "top_k": 5})
     cfg.crawl_exclude_patterns = ["mine"]
     expected = builtin_value("crawl_exclude_patterns")
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns", "max_distance")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         app.screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
@@ -2393,7 +2393,7 @@ async def test_list_restore_updates_the_title_and_clears_the_error(tmp_path):
     cfg.crawl_exclude_patterns = ["a", "b", "c", "d", "e"]
     expected = builtin_value("crawl_exclude_patterns")
     assert len(expected) != 5
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as pilot:
         collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
         assert str(collapsible.title) == msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=5)
@@ -2414,7 +2414,7 @@ async def test_checkbox_reset_does_not_write_the_value_back(tmp_path):
     default = bool(builtin_value("show_reasoning"))
     persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 7})
     cfg.show_reasoning = not default
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("show_reasoning")
     async with app.run_test(size=(120, 40)) as pilot:
         checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
         app.screen.query_one("#reset-show_reasoning", Button).press()
@@ -2438,7 +2438,7 @@ async def test_checkbox_toggle_queued_before_a_reset_does_not_resave(tmp_path):
     default = bool(builtin_value("show_reasoning"))
     persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 5})
     cfg.show_reasoning = not default
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("show_reasoning")
     async with app.run_test(size=(120, 40)) as pilot:
         checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
         checkbox.toggle()
@@ -2495,7 +2495,7 @@ async def test_reset_failure_toasts_and_changes_nothing(tmp_path):
 
     persistent_settings.update_values(tmp_path, {"top_k": 99})
     cfg.top_k = 99
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14404,7 +14404,7 @@ async def test_settings_on_input_save_same_value_skip():
     """_on_input_save skips persist when the value matches what the row showed at mount."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -16399,7 +16399,7 @@ async def test_profile_source_shows_pill_in_settings_screen(tmp_path):
         '[profile]\nname = "Court filings"\n\n[profile.values]\ntop_k = 77\n',
         encoding="utf-8",
     )
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k", "chunk_overlap")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
         assert "Court filings" in _row_title(app, "top_k")
@@ -16446,7 +16446,7 @@ async def test_env_pill_hidden_for_empty_env_var(monkeypatch):
     """An empty LILBEE_X= has no effect, so its row shows no env pill; a set one does."""
     monkeypatch.setenv("LILBEE_TOP_K", "")
     monkeypatch.setenv("LILBEE_CHUNK_SIZE", "900")
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("chunk_size", "top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_size")))
         assert "LILBEE_CHUNK_SIZE" in _row_title(app, "chunk_size")
@@ -16458,7 +16458,7 @@ async def test_user_pill_only_on_set_key(tmp_path):
     from lilbee.cli.tui import messages as msg
 
     persistent_settings.update_values(tmp_path, {"top_k": 7})
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k", "chunk_overlap")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
         assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
@@ -16481,7 +16481,7 @@ async def test_advanced_rows_show_their_own_source_pill(tmp_path, monkeypatch):
         "seed": "LILBEE_SEED",
         "rerank_candidates": "Court filings",
     }
-    app = LazySettingsTestApp()
+    app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         assert await wait_until(
             pilot, lambda: all(app.screen.query(f"#row-{key}") for key in pill_text_by_key)
@@ -16506,7 +16506,7 @@ async def test_no_pill_on_built_in_or_auto():
     sources = setting_sources()
     assert sources["temperature"] is SettingSource.BUILT_IN
     assert sources["num_ctx"] is SettingSource.AUTO
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("temperature", "num_ctx")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-num_ctx")))
         for key in ("temperature", "num_ctx"):
@@ -16521,7 +16521,7 @@ async def test_user_pill_follows_save_and_reset(tmp_path):
 
     from lilbee.cli.tui import messages as msg
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
@@ -16546,7 +16546,7 @@ async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
     from lilbee.cli.tui import messages as msg
 
     persistent_settings.update_values(tmp_path, {"top_k": 7, "chunk_overlap": 50})
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("top_k", "chunk_overlap")
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_overlap")))
         assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
@@ -16689,7 +16689,7 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
 
     from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("chat_model")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with patch_model_write() as mock_apply:
@@ -16758,7 +16758,7 @@ async def test_settings_clearing_the_vision_model_updates_the_ocr_rows():
     cfg.ocr = OcrMode.AUTO
     cfg.ocr_language = ["eng"]
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("ocr", "vision_model", "ocr_language")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         # Settle the mount-time profile reload before triggering another one below:
@@ -16785,7 +16785,7 @@ async def test_settings_turning_ocr_off_updates_the_vision_model_row():
 
     cfg.ocr = OcrMode.AUTO
     cfg.vision_model = ""
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("ocr", "vision_model")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert "read by Tesseract" in _ocr_help_texts(screen)["vision_model"]
@@ -16801,7 +16801,7 @@ async def test_settings_ocr_picker_shows_the_scanned_pages_labels(size):
     from textual.widgets import Select
 
     cfg.ocr = OcrMode.ALL
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("ocr")
     async with app.run_test(size=size):
         select = app.screen.query_one("#ed-ocr", Select)
         options = [(str(label), value) for label, value in select._options if str(label)]
@@ -17603,7 +17603,7 @@ async def test_settings_masks_credentials_but_keeps_the_value():
     secret_keys = [k for k, d in SETTINGS_MAP.items() if d.secret]
     assert secret_keys, "no setting is marked secret"
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp(*secret_keys)
     async with app.run_test(size=(120, 40)) as pilot:
         assert await wait_until(
             pilot, lambda: bool(app.screen.query("#settings-tabs")), timeout=30.0
@@ -17688,7 +17688,7 @@ async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable(
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from tests._async_wait import wait_until
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("chat_mode")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -17708,7 +17708,7 @@ async def test_blanking_a_select_hands_the_save_an_empty_value():
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("chat_mode")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -17910,7 +17910,7 @@ async def test_settings_advanced_section_expands_and_reaches_field_at_80x24():
     from lilbee.cli.tui.screens.settings_widgets import ADVANCED_COLLAPSIBLE_ID_PREFIX
     from tests._async_wait import wait_until
 
-    app = LazySettingsTestApp()
+    app = LazySettingsTestApp("reranker_type")
     async with app.run_test(size=(80, 24)) as pilot:
         collapsible = app.screen.query_one(
             f"#{ADVANCED_COLLAPSIBLE_ID_PREFIX}settings-tab-models", Collapsible
