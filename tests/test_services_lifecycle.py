@@ -1132,6 +1132,67 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
     provider.shutdown.assert_called_once()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
+    """The loop callback counts the press: the first joins the stop, the second ends the process."""
+    provider = _install_stub_services()
+    forced: list[int] = []
+    monkeypatch.setattr(services_mod, "_force_quit_from_handler", lambda: forced.append(1))
+    # A registered server hook takes the first press, so the callback does not raise.
+    set_server_exit_hook(lambda _status: None)
+    previous = signal.getsignal(signal.SIGINT)
+
+    async def until(condition) -> None:
+        async with asyncio.timeout(10):
+            while not condition():
+                await asyncio.sleep(0.01)
+
+    async def serve() -> None:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            os.kill(os.getpid(), signal.SIGINT)
+            await until(lambda: services_mod._lifecycle._interrupts == 1)
+            first_press_forced = list(forced)
+            os.kill(os.getpid(), signal.SIGINT)
+            await until(lambda: forced)
+            assert first_press_forced == []
+
+    try:
+        stop_on_interrupt()
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(serve())
+        _join_teardown()
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        set_server_exit_hook(lambda _status: None)
+        set_server_exit_hook(None)
+
+    assert forced == [1]
+    provider.shutdown.assert_called_once()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
+def test_an_ordinary_exception_in_the_loop_signals_block_still_restores_the_handlers():
+    """The restore is a finally: a body that raises anything leaves the earlier handlers back."""
+    install_engine_lifecycle_hooks()
+    stop_on_interrupt()
+    routed = services_mod._lifecycle.routed_in_loop()
+    before = {sig: signal.getsignal(sig) for sig in routed}
+
+    async def failing() -> None:
+        with loop_takes_signals(asyncio.get_running_loop()):
+            raise RuntimeError("the body failed")
+
+    with (
+        pytest.raises(RuntimeError, match="the body failed"),
+        asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner,
+    ):
+        runner.run(failing())
+
+    assert routed
+    assert {sig: signal.getsignal(sig) for sig in routed} == before
+    assert all(callable(handler) for handler in before.values())
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP")
 def test_an_ignored_sighup_stays_ignored_inside_the_loop_signals():
     """The loop takes no signal the launch ignored: an inherited ignore of SIGHUP holds."""
