@@ -3573,6 +3573,15 @@ def _device_capacity(devices: list[FleetDevice], charge_against_free: bool) -> d
     return {d.index: min(d.total_bytes, d.free_bytes) for d in devices}
 
 
+def _held_outside(devices: Iterable[FleetDevice], capacity: Mapping[int, int]) -> dict[int, int]:
+    """What other processes hold of each card: its total less the *capacity* to charge."""
+    return {
+        d.index: d.total_bytes - capacity[d.index]
+        for d in devices
+        if d.index in capacity and d.total_bytes > capacity[d.index]
+    }
+
+
 def _named_cards(spec: PlacementSpec | None) -> set[int]:
     """The card indexes *spec* pins a role to."""
     return {index for entry in (spec.roles.values() if spec else ()) for index in entry.devices}
@@ -3677,6 +3686,7 @@ def _resolve_placement(
             model_refs=model_refs,
             lost_card=_lost_card_wording(devices, host_cards),
             equal_split_roles=frozenset(m.role for m in inputs if m.equal_split_only),
+            outside=_held_outside(devices, capacity),
         )
         cpu_present = _cpu_roles(placement).intersection(model_refs)
         if cpu_present:
@@ -4901,6 +4911,7 @@ def _launches_and_refusals(
                     capacity[device],
                     fix=True,
                     holders=holders,
+                    outside=_held_outside(by_index.values(), capacity).get(device, 0),
                     cards=len(by_index),
                 )
                 or reason
