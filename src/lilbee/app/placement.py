@@ -34,6 +34,9 @@ PLACEMENT_READ_ERRORS = (PlacementError, ProviderError, OSError)
 
 _PLACEMENT_KEY = "placement"
 
+CLEAR_INSTRUCTION = "run 'lilbee placement clear' or set a new one"
+"""The next step shown after a refusal of a saved spec; the CLI and the TUI drawer share it."""
+
 
 class PlacementConfigWriteError(OSError):
     """Saving the placement to config.toml failed; the device probe is not at fault."""
@@ -179,6 +182,12 @@ class PlacementView:
     def co_tenants(self) -> tuple[WorkerRole, ...]:
         """Every role in the shared swap process, in role name order."""
         return tuple(sorted(class_roles(self.swap_classes), key=lambda role: role.value))
+
+    @property
+    def clear_instruction(self) -> str:
+        """The next step for a saved spec that is not in use; empty when the spec is kept."""
+        waiting = self.refusal_kind is not None and self.refusal_kind.is_waiting
+        return CLEAR_INSTRUCTION if self.rejected_spec_json and not waiting else ""
 
 
 def _active_spec() -> PlacementSpec | None:

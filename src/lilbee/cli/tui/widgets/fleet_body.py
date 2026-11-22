@@ -421,6 +421,8 @@ class FleetBody(Widget):
             lines.append(view.refusal)
         if view.pins_dropped:
             lines.append(view.pins_dropped)
+        if view.refusal and view.clear_instruction:
+            lines.append(view.clear_instruction)
         if view.hidden_note:
             lines.append(view.hidden_note)
         widget.display = bool(lines)

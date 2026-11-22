@@ -278,9 +278,16 @@ def terminal(monkeypatch):
     return buffer
 
 
+def _rejected_view(**fields):
+    """A view with only the fields the renderer reads; the clear step comes from the real property."""
+    view = SimpleNamespace(**fields)
+    view.clear_instruction = app_placement.PlacementView.clear_instruction.fget(view)
+    return view
+
+
 def test_a_refusal_prints_unwrapped_and_styled_then_the_clear_instruction(terminal):
     cli_placement._render_rejected(
-        SimpleNamespace(
+        _rejected_view(
             refusal=LONG_REFUSAL,
             refusal_kind=app_placement.PlacementRefusal.UNREADABLE,
             rejected_spec_json="{}",
@@ -297,7 +304,7 @@ def test_a_refusal_prints_unwrapped_and_styled_then_the_clear_instruction(termin
 
 def test_the_waiting_refusal_prints_without_the_clear_instruction(terminal):
     cli_placement._render_rejected(
-        SimpleNamespace(
+        _rejected_view(
             refusal=app_placement.SAVED_PLACEMENT_WAITS_FOR_ENGINE,
             refusal_kind=app_placement.PlacementRefusal.WAITING_FOR_ENGINE,
             rejected_spec_json="{}",
@@ -310,7 +317,7 @@ def test_the_waiting_refusal_prints_without_the_clear_instruction(terminal):
 
 def test_a_refused_roles_refusal_prints_the_clear_instruction(terminal):
     cli_placement._render_rejected(
-        SimpleNamespace(
+        _rejected_view(
             refusal="chat needs more memory",
             refusal_kind=app_placement.PlacementRefusal.REFUSED,
             rejected_spec_json="{}",
@@ -323,7 +330,7 @@ def test_a_refused_roles_refusal_prints_the_clear_instruction(terminal):
 
 def test_the_dropped_pins_print_between_the_refusal_and_the_clear_instruction(terminal):
     cli_placement._render_rejected(
-        SimpleNamespace(
+        _rejected_view(
             refusal="chat needs more memory",
             refusal_kind=app_placement.PlacementRefusal.REFUSED,
             rejected_spec_json="{}",
