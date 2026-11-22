@@ -9,7 +9,8 @@ No machine ran OVMS for these tests. The fake server follows the OVMS 2026.4.1 s
   ``encoding_format`` field takes ``float`` or ``base64``; the answer is the OpenAI list shape.
 - Rerank: docs.openvino.ai/2026/model-server/ovms_docs_rest_api_rerank.html. The body holds
   ``model``, ``query`` and ``documents`` as strings; the answer is ``results`` of ``index`` and
-  ``relevance_score``. A request with more than 100 documents is refused by default.
+  ``relevance_score``. The server refuses more than ``max_allowed_chunks`` documents, which is
+  10000 by default (``docs/parameters.md``); lilbee sends at most 100 in one request.
 - Chat: docs.openvino.ai/2026/model-server/ovms_docs_rest_api_chat.html, the OpenAI shape, with
   an image as an ``image_url`` content part.
 
@@ -35,7 +36,8 @@ from lilbee.providers.roles import WorkerRole
 MODEL = "lilbee-embed-0"
 SERVED = "default_model"
 _OVMS_ROUTE = re.compile(r"(?:/v3/|/v1/)(?:v1/)?(.+)")
-_DOC_LIMIT = 100
+_DOC_LIMIT = 10000
+"""The server's ``max_allowed_chunks`` default."""
 
 
 def _b64(values: list[float]) -> str:
@@ -91,7 +93,9 @@ class _FakeOvms:
     def _rerank(body: dict[str, Any]) -> httpx.Response:
         documents = body["documents"]
         if len(documents) > _DOC_LIMIT or not all(isinstance(d, str) for d in documents):
-            return httpx.Response(400, json={"error": "Number of documents exceeds max_allowed"})
+            return httpx.Response(
+                400, json={"error": "Number of documents exceeds max_allowed_chunks"}
+            )
         scored = [
             {"index": i, "relevance_score": 1.0 / (1 + len(d))} for i, d in enumerate(documents)
         ]
@@ -137,7 +141,7 @@ def test_rerank_posts_the_cohere_body_and_orders_scores_by_candidate() -> None:
     assert (endpoint, body["query"], body["documents"]) == ("rerank", "q", candidates)
 
 
-def test_rerank_splits_candidates_at_the_server_limit_of_100_documents() -> None:
+def test_rerank_sends_at_most_100_documents_in_one_request() -> None:
     server = _FakeOvms()
     candidates = [f"doc {i}" for i in range(150)]
     scores = _client(WorkerRole.RERANK, server).rerank("q", candidates)
