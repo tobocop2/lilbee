@@ -1007,8 +1007,8 @@ class PlacementResponse(BaseModel):
     rejected_spec_json: str | None = None
     refusal: str | None = None
     # waiting: the saved spec applies once an engine or model is installed; unreadable: the
-    # saved text cannot be parsed; refused: an engine refuses roles, or the spec places no
-    # role on this machine. Null without a refusal.
+    # saved text cannot be parsed; refused: an engine refuses roles, the spec places no role
+    # on this machine, or a saved spec does not fit the hardware. Null without a refusal.
     refusal_kind: PlacementRefusal | None = None
     # Where each pinned role runs after the auto plan replaced the saved spec; empty otherwise.
     pins_dropped: str = ""
