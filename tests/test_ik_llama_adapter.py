@@ -1075,8 +1075,10 @@ def _release(*names: str, draft: bool = False) -> dict[str, Any]:
 def _publish(
     tmp_path: Path, wheels: list[str], pages: list[_Page], api_fail: str = ""
 ) -> subprocess.CompletedProcess[str]:
-    """Run the publish step with a gh that serves *pages* of releases and records the create."""
+    """Run the script of the publish step with a gh that serves *pages* and records the create."""
     (run,) = (s["run"] for s in steps(pack_workflow(), "publish") if s.get("name") == _PUBLISH_STEP)
+    assert commands(run) == "bash scripts/publish.sh packs ${SUFFIX} ${LILBEE_TAG} ${LILBEE_COMMIT}"
+    script = pack_workflow().parents[2] / "scripts" / "publish.sh"
     (tmp_path / "bin").mkdir()
     gh = tmp_path / "bin" / "gh"
     gh.write_text(_FAKE_GH, encoding="utf-8")
@@ -1087,22 +1089,17 @@ def _publish(
     (tmp_path / "packs").mkdir()
     for wheel in wheels:
         (tmp_path / "packs" / wheel).write_bytes(b"")
-    script = tmp_path / "publish.sh"
-    script.write_text(run, encoding="utf-8")
     env = {
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "GITHUB_REPOSITORY": "owner/packs",
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
-        "SUFFIX": "",
-        "LILBEE_TAG": "pin",
-        "LILBEE_COMMIT": "abc",
         "PAGES": str(tmp_path / "pages"),
         "API_FAIL": api_fail,
         "API_ARGS": str(tmp_path / "api-args.txt"),
         "CREATED": str(tmp_path / "created.txt"),
     }
     return subprocess.run(
-        ["bash", str(script)],
+        ["bash", str(script), "packs", "", "pin", "abc"],
         cwd=tmp_path,
         env=env,
         capture_output=True,
