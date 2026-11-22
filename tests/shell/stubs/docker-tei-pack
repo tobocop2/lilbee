@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Stand-in for docker when pack_tei.sh builds a Linux cell: it writes what tei_manylinux.sh leaves in the mounted folder.
+# Stand-in for docker when pack_tei.sh builds a Linux cell. It checks that the script of the call is in the mounted
+# folder and that the variables of the call are the ones that the script requires, and then writes what the script
+# leaves there. tests/test_tei_wheel_tools.py runs the script itself.
 #
 # Reads:
 #   DOCKER_LOG   a file that receives the arguments, one per line (required)
@@ -10,13 +12,26 @@ set -euo pipefail
 
 printf '%s\n' "$@" > "${DOCKER_LOG:?}"
 [ -z "${DOCKER_FAIL-}" ] || { echo "stub docker: failed" >&2; exit 1; }
+script="${!#}"
+inside=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -v) mount="${2%%:/work}" ; shift ;;
+    -e)
+      case "$2" in
+        *=*) inside+=("$2") ;;
+        *) inside+=("$2=${!2-}") ;;
+      esac
+      shift ;;
   esac
   shift
 done
 [ -d "${mount:?}/out" ] || { echo "stub docker: no folder out in ${mount}" >&2; exit 1; }
+required="$(grep -E '^ *: "\$\{[A-Z_]+:\?\}"' "${mount}${script#/work}")"
+case "$(printf '%s\n' "${inside[@]}" | grep '^CUDA_CC=')" in
+  CUDA_CC=) required="$(grep -v '^ ' <<< "${required}")" ;;
+esac
+env -i PATH="${PATH}" "${inside[@]}" bash -euc "${required}"
 tei-wheel-pack "${mount}/out/repaired" "${mount}/out/license-expression.txt" manylinux_2_34_x86_64
 if [ -n "${CUDA_CC-}" ]; then
   mkdir -p "${mount}/out/stubs"

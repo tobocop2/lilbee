@@ -23,9 +23,14 @@
 set -euo pipefail
 
 : "${TEI_REPO:?}" "${TEI_TAG:?}" "${RUSTC_VERSION:?}" "${WHEEL_VERSION:?}" "${BACKEND:?}" "${WORK:?}" "${OUT:?}" "${OWNER:?}"
+# shellcheck source=tools/wheel-build/pack_common.sh
+. "${WORK}/tools/wheel-build/pack_common.sh"
 CUDA_CC="${CUDA_CC:-}"
 jobs="$(nproc)"
 py=/opt/python/cp312-cp312/bin
+# The wheel build sees every package of its Python, and the Python of the image holds some. So it uses a new venv.
+venv=/tmp/build-venv
+[ ! -e "${venv}" ] || { echo "tei_manylinux: an earlier build used this container (${venv} exists). Use a new one." >&2; exit 2; }
 
 packages=(gcc-toolset-13-gcc-c++ openssl-devel pkgconf-pkg-config jq)
 if [ -n "${CUDA_CC}" ]; then
@@ -38,11 +43,13 @@ if [ -n "${CUDA_CC}" ]; then
     "libcurand-devel-${CUDA_PACKAGE_SUFFIX}")
 fi
 dnf install -y "${packages[@]}"
-"${py}/python" -m pip install -q cmake ninja build wheel
+"${py}/python" -m venv "${venv}"
+install_build_tools "${venv}/bin/python" "${WORK}/tools/wheel-build/build-tools.constraints" \
+  "${WORK}/tools/wheel-build/tei-tools-linux.constraints"
 
 curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors -fsSL https://sh.rustup.rs -o /tmp/rustup.sh
 sh /tmp/rustup.sh -y --profile minimal --default-toolchain "${RUSTC_VERSION}"
-export PATH="${HOME}/.cargo/bin:${py}:${PATH}"
+export PATH="${HOME}/.cargo/bin:${venv}/bin:${PATH}"
 test "$(rustc --version | cut -d' ' -f2)" = "${RUSTC_VERSION}"
 bash "${WORK}/tools/wheel-build/install_cargo_about.sh" /usr/local/bin
 
@@ -98,7 +105,7 @@ fi
 "${binary}" --version || true
 
 mkdir -p "${OUT}"
-export WHEEL_VERSION OPENSSL_LICENSE=/usr/share/licenses/openssl-libs/LICENSE.txt PYTHON="${py}/python"
+export WHEEL_VERSION OPENSSL_LICENSE=/usr/share/licenses/openssl-libs/LICENSE.txt PYTHON="${venv}/bin/python"
 bash "${WORK}/tools/wheel-build/tei_wheel.sh" "${src}" "${binary}" "${features}" x86_64-unknown-linux-gnu \
   "${BACKEND}" linux_x86_64 "${OUT}"
 
