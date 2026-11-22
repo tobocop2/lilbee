@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Stand-in for git when pack_llama.sh builds a cell. A clone writes the source tree that the pack reads, and `log`
+# prints the commit time of the cloned llama.cpp.
+#
+# Reads:
+#   PACK_LOG     a file that receives one line per call (required)
+#   EMPTY_LICENSE  when set, the licence file of llama-swap is empty
+
+set -euo pipefail
+
+if [ "${1-}" = -C ]; then
+  [ "${3-}" = log ] || { echo "stub git: unexpected command '$*'" >&2; exit 2; }
+  [ -e "$2/LICENSE" ] || { echo "stub git: no source in $2" >&2; exit 1; }
+  echo "git log ${2##*/}" >> "${PACK_LOG:?}"
+  echo 1700000000
+  exit 0
+fi
+case "$*" in *"clone "*) ;; *) echo "stub git: unexpected command '$*'" >&2; exit 2 ;; esac
+dest="${!#}"
+call="$*"
+echo "git ${call% *} ${dest##*/}" >> "${PACK_LOG:?}"
+
+grant='Permission is hereby granted, free of charge, to any person obtaining a copy'
+source_file() {  # path line...
+  local path="${dest}/$1"
+  shift
+  mkdir -p "$(dirname "${path}")"
+  printf '%s\n' "$@" > "${path}"
+}
+case "${dest##*/}" in
+  llama-swap)
+    source_file LICENSE.md "llama-swap licence"
+    [ -z "${EMPTY_LICENSE-}" ] || : > "${dest}/LICENSE.md" ;;
+  gguf-parser-go)
+    source_file LICENSE "gguf-parser licence"
+    mkdir -p "${dest}/cmd/gguf-parser" ;;
+  cccl-src)
+    source_file LICENSE "CCCL licence" ;;
+  llama.cpp)
+    source_file LICENSE "MIT License" "" "Copyright (c) 2023 The ggml authors" "" "${grant}"
+    source_file vendor/nlohmann/json.hpp "// Niels Lohmann" "// ${grant}" "int json;"
+    source_file vendor/stb/stb_image.h "int image;" "This software is available under 2 licenses" "ALTERNATIVE A - MIT License" "${grant}"
+    source_file vendor/miniaudio/miniaudio.h "int audio;" "ALTERNATIVE 1 - Public Domain" "This is free and unencumbered software released into the public domain" "ALTERNATIVE 2 - MIT No Attribution" "MIT No Attribution"
+    source_file tools/ui/LICENSE "${grant}" ;;
+  *) echo "stub git: unexpected folder '${dest}'" >&2; exit 2 ;;
+esac

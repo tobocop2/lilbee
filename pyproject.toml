@@ -302,6 +302,8 @@ extend-immutable-calls = ["litestar.params.Body"]
 "tools/build_wheel_indexes.py" = ["S603", "S607"]
 # Invokes the trusted `gh` CLI with fixed args to read the release assets.
 "tools/gen_engine_packs.py" = ["S603", "S607"]
+# Runs the trusted `otool` of the macOS toolchain on files of the unpacked archive.
+"tools/wheel-build/repack_llama_archives.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]
