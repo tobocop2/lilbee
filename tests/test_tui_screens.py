@@ -12,6 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, PropertyMock, call, patch
 
 import pytest
@@ -578,8 +579,8 @@ def _make_eager_settings_screen(*, eager: bool = True):
     class _EagerSettingsScreen(SettingsScreen):
         CSS_PATH = css_path
 
+        # Textual runs the on_mount of every class in the tree, SettingsScreen's after this one.
         def on_mount(self) -> None:
-            super().on_mount()
             if eager:
                 self.populate_all_panes()
 
@@ -590,19 +591,20 @@ class SettingsTestApp(LilbeeAppHost):
     """Test fixture that pre-populates every Settings pane on mount."""
 
     CSS = ""
+    # A subclass sets this, not its own on_mount: Textual runs every on_mount in the class tree.
+    eager_panes: ClassVar[bool] = True
 
     def compose(self) -> ComposeResult:
         yield Footer()
 
     def on_mount(self) -> None:
-        self.push_screen(_make_eager_settings_screen()())
+        self.push_screen(_make_eager_settings_screen(eager=self.eager_panes)())
 
 
 class LazySettingsTestApp(SettingsTestApp):
     """Test fixture that mounts the Settings screen as production does: panes build on demand."""
 
-    def on_mount(self) -> None:
-        self.push_screen(_make_eager_settings_screen(eager=False)())
+    eager_panes = False
 
 
 def populate_pane_of(screen, key: str) -> None:
@@ -610,6 +612,23 @@ def populate_pane_of(screen, key: str) -> None:
     for pane_id, group in screen._pane_groups.items():
         if any(name == key for name, _defn in group.items):
             screen._populate_pane(pane_id)
+
+
+@pytest.mark.parametrize(
+    ("app_class", "eager"), [(SettingsTestApp, True), (LazySettingsTestApp, False)]
+)
+async def test_a_settings_fixture_mounts_one_screen_once(app_class, eager):
+    """Each fixture pushes one Settings screen, and that screen subscribes to changes once."""
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = app_class()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screens = [s for s in app.screen_stack if isinstance(s, SettingsScreen)]
+        assert screens == [app.screen]
+        built = [app.screen._pane_is_populated(pane_id) for pane_id in app.screen._pane_groups]
+        assert built == [eager] * len(built)
+        assert len(app.settings_changed_signal._subscriptions[app.screen]) == 1
 
 
 async def test_settings_screen_mounts_grouped_sections():
