@@ -37,6 +37,7 @@ from pathlib import Path
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.fleet.devices import FleetDevice
+from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
 
@@ -169,8 +170,8 @@ def divergence_warning(
     return HealthWarning(
         code=WarningCode.PLACEMENT_DIVERGED,
         message=(
-            f"The {role.value} model {model} allocated {actual_bytes / 1024**3:.1f} GiB "
-            f"of GPU memory but was planned for {estimated_bytes / 1024**3:.1f} GiB "
+            f"The {role.value} model {model} allocated {memory_size_text(actual_bytes)} "
+            f"of GPU memory but was planned for {memory_size_text(estimated_bytes)} "
             f"({(ratio - 1.0) * 100:+.0f}%). Placement decisions for this model were "
             f"made on the smaller figure; if it fails to load or runs slowly, that "
             f"gap is why."
@@ -405,8 +406,8 @@ def _per_device_warning(
         code=WarningCode.PLACEMENT_DIVERGED,
         message=(
             f"The {role.value} model {model} did not land where it was planned: "
-            f"{worst_label} holds {actual.get(worst_label, 0) / 1024**3:.1f} GiB but was "
-            f"planned for {estimated.get(worst_label, 0) / 1024**3:.1f} GiB. Placement, "
+            f"{worst_label} holds {memory_size_text(actual.get(worst_label, 0))} but was "
+            f"planned for {memory_size_text(estimated.get(worst_label, 0))}. Placement, "
             f"the tensor split and the context were all decided per card, so a total "
             f"that looks right can still overrun one of them."
         ),
