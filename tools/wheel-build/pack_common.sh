@@ -62,6 +62,35 @@ merge_terms() {
     | awk '!seen[$0]++ { printf "%s%s", (n++ ? " AND " : ""), $0 } END { print "" }'
 }
 
+# Install the pinned build tools into a Python. Each file is a requirements file that lists every tool, and what the
+# tool needs, with one version and its digests. pip refuses a line without a version or a digest, an archive with
+# another digest, and a listed tool that needs one that no file lists. pip does not know which tools the build needs, so
+# it accepts a file that lacks one: the tests of the packs check the names. This function refuses a file that pins no
+# tool, because pip installs nothing from it and succeeds.
+# pip does not check the digest of a tool that the Python already holds at that version. --force-reinstall makes pip
+# install each listed tool again from an archive that it checks. A package that no file lists stays in the Python and
+# the build sees it, so the caller passes the Python of a fresh venv.
+# A constraints file is not enough: a pip before 26.1 refuses a named tool that only a constraint pins.
+install_build_tools() {  # python requirements-file...
+  local python="$1" file files=()
+  shift
+  [ "$#" -gt 0 ] || { echo "install_build_tools: name a requirements file" >&2; return 2; }
+  for file in "$@"; do
+    grep -qE '^[[:alnum:]].*==' "${file}" || { echo "install_build_tools: ${file} pins no tool" >&2; return 2; }
+    files+=(-r "${file}")
+  done
+  "${python}" -m pip install --require-hashes --force-reinstall "${files[@]}"
+}
+
+# Build the wheel of the project in the current folder with the tools that install_build_tools installed.
+# The build makes no environment of its own, so it installs nothing: a tool that the project needs and the
+# Python lacks stops the build.
+build_wheel_with_tools() {  # python build-argument...
+  local python="$1"
+  shift
+  "${python}" -m build --wheel --no-isolation "$@"
+}
+
 # Copy the one wheel of a build folder into the output folder and write its sha256 file beside it.
 collect_wheel() {  # build-folder output-folder
   local from="$1" out="$2" wheels name
