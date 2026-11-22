@@ -51,6 +51,8 @@ _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
 # server cuts a prompt longer than the context and then aborts in its sampler. With it off, the
 # server refuses that prompt with HTTP 400 exceed_context_size_error, as llama.cpp does.
 _NO_CONTEXT_SHIFT = "--no-context-shift"
+# The embed request budget is llama.cpp's 2048. The CPU pack of the pin accepted a request of
+# 38400 tokens, so the figure is a safe lower bound (tests/test_ik_llama_adapter.py).
 _PROFILE = dataclasses.replace(
     LLAMA.request_profile(WorkerRole.CHAT),
     label="ik_llama.cpp server",

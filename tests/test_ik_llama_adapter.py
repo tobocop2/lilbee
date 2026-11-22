@@ -459,6 +459,14 @@ def test_the_request_profile_differs_from_llama_cpp_in_its_wording_only() -> Non
     assert differing == {"label", "unreadable_embedding_hint"}
 
 
+def test_the_embed_request_budget_is_the_figure_measured_on_the_cpu_pack() -> None:
+    # Measured on D3, 2026-11-22, on the CPU pack of the pin (13cffc006b82) with --batch-size 648:
+    # a request of 64 inputs of 600 tokens (38400 tokens) was accepted and every input was embedded,
+    # on 1 slot and on 4. llama-server gave the same on 1 slot. One input of 700 tokens was refused.
+    # The pack has no limit on a request below 2048 tokens, so llama.cpp's budget holds.
+    assert IK_LLAMA.request_profile(WorkerRole.EMBED).request_tokens == 2048
+
+
 def test_the_engine_serves_chat_and_embed_and_loads_gguf() -> None:
     assert IK_LLAMA.served_roles == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert IK_LLAMA.formats == frozenset({ModelFormat.GGUF})

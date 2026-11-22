@@ -490,13 +490,15 @@ def _long_segment() -> tuple[_Token, ...]:
     return tuple(_Token("a", kept_escape=False) for _ in range(40))
 
 
-def test_a_spelling_can_escape_every_character_of_a_long_segment():
+def test_the_byte_draw_reads_one_escape_bit_per_character_of_a_long_segment():
+    """Pins the bit layout of the byte draw; the late-character test is below."""
     data = _FixedBytes(b"\x55" * 10)  # every escape bit set, every case bit clear
     assert _spell(_long_segment(), data) == "%61" * 40  # type: ignore[arg-type]
     assert len(data.draws) == 1
 
 
-def test_a_spelling_can_escape_only_the_last_character_of_a_long_segment():
+def test_the_byte_draw_puts_the_escape_bit_of_the_last_character_at_the_end_of_the_bytes():
+    """Pins the bit layout of the byte draw, as the test above does."""
     data = _FixedBytes(bytes(9) + b"\x40")  # only the escape bit of position 39 (bit 78)
     assert _spell(_long_segment(), data) == "a" * 39 + "%61"  # type: ignore[arg-type]
 
