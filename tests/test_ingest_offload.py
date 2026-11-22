@@ -81,6 +81,22 @@ def test_an_ignored_env_override_is_named_in_a_warning(
     ]
 
 
+def test_an_ignored_env_override_is_a_warning_and_names_the_value_as_given(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", " abc ")
+    with caplog.at_level(logging.WARNING, logger=offload.log.name):
+        assert offload.max_workers() == 12
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (
+            logging.WARNING,
+            "Ignoring LILBEE_INGEST_MAX_WORKERS=' abc ': must be a positive integer; "
+            "using default.",
+        )
+    ]
+
+
 def test_an_ignored_env_override_is_named_once_for_many_sizing_calls(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
