@@ -18,6 +18,7 @@ from lilbee import mcp_server as mcp_mod
 from lilbee.app import services as svc_mod
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.providers.base import ChatResult, FinishReason
+from lilbee.wiki.lazy import UnknownStubError
 from tests.conftest import install_fake_model, make_mock_services
 
 UNREACHABLE_CHAT = "ollama/llama3:latest"
@@ -73,13 +74,19 @@ def _call_each_wiki_tool(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str
     seen: dict[str, str] = {}
     current = {"tool": ""}
 
-    def report(*_args: Any, **_kwargs: Any) -> Any:
+    def message() -> str:
         seen[current["tool"]] = cfg.chat_model
-        raise RuntimeError(f"model {cfg.chat_model!r} is not available")
+        return f"model {cfg.chat_model!r} is not available"
+
+    def report(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {"error": message()}
+
+    def report_stub(*_args: Any, **_kwargs: Any) -> Any:
+        raise UnknownStubError(message())
 
     monkeypatch.setattr("lilbee.wiki.run_full_build", report)
     monkeypatch.setattr("lilbee.wiki.run_full_synthesize", report)
-    monkeypatch.setattr("lilbee.wiki.lazy.generate_stub_page", report)
+    monkeypatch.setattr("lilbee.wiki.lazy.generate_stub_page", report_stub)
     replies: dict[str, str] = {}
 
     async def serve(server: Any) -> None:
@@ -90,7 +97,7 @@ def _call_each_wiki_tool(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str
             except Exception as exc:
                 replies[name] = str(exc)
             else:
-                replies[name] = str(result)
+                replies[name] = str(result.structured_content)
 
     with (
         mock.patch.object(mcp_mod, "_serve_stdio", serve),
