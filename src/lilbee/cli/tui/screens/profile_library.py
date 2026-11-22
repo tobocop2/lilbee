@@ -15,7 +15,6 @@ from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
-from textual.screen import ModalScreen
 from textual.style import Style
 from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.option_list import Option
@@ -39,6 +38,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     start_profile_switch,
 )
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.core.profile_files import ProfileCatalog, ProfileEntry, ProfileFolder, ProfileStore
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ def _without(catalog: ProfileCatalog, path: Path) -> ProfileCatalog:
     return replace(catalog, entries=tuple(e for e in catalog.entries if e.path != path))
 
 
-class ProfileLibrary(ModalScreen[None]):
+class ProfileLibrary(Dialog[None]):
     """Lists every profile and applies, duplicates, renames, deletes, exports or imports one."""
 
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_library.tcss"]
@@ -478,7 +478,7 @@ class ProfileLibrary(ModalScreen[None]):
 
     def _ask(
         self,
-        dialog: ModalScreen[R | None],
+        dialog: Dialog[R | None],
         write: Callable[[R], profiles.ProfileLocation],
         done: Callable[[profiles.ProfileLocation], None],
     ) -> None:

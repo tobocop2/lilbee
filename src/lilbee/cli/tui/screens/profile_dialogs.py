@@ -14,7 +14,7 @@ from textual.app import ComposeResult, CSSPathType
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
-from textual.screen import ModalScreen, Screen
+from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Select, Static
 
@@ -27,6 +27,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.settings_widgets import user_pill
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import (
     MAX_NAME_LENGTH,
@@ -290,7 +291,7 @@ def start_profile_switch(
     )
 
 
-class ApplyProfileDialog(ModalScreen[ApplyChoice]):
+class ApplyProfileDialog(Dialog[ApplyChoice]):
     """Shows what applying a profile changes and keeps; nothing changes until a pill is picked."""
 
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
@@ -405,7 +406,7 @@ def diff_cells(row: DiffRow) -> Sequence[str | Content]:
     return (row.key, value_text(row.current), value_text(row.new), effect_cell(row.effect))
 
 
-class SaveProfileDialog(ModalScreen[SaveRequest | None]):
+class SaveProfileDialog(Dialog[SaveRequest | None]):
     """Asks for a new profile's name and folder; Save stays off while the name is refused."""
 
     CSS_PATH: ClassVar[CSSPathType] = ["dialog.tcss", "profile_dialogs.tcss"]
@@ -501,7 +502,7 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
         self.dismiss(None)
 
 
-class ProfilePathDialog(ModalScreen[profiles.ProfileLocation | None]):
+class ProfilePathDialog(Dialog[profiles.ProfileLocation | None]):
     """Asks for a path, and for a folder when it offers a choice.
 
     The dialog runs *write* with the answer and closes with its result; when *write* fails,

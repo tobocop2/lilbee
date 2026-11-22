@@ -14,8 +14,9 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Vertical
-from textual.screen import ModalScreen
 from textual.widgets import Label, Static
+
+from lilbee.cli.tui.widgets.dialog import Dialog
 
 _CSS_FILE = Path(__file__).parent / "notice_dialog.tcss"
 
@@ -31,7 +32,7 @@ class _DismissPill(Static, can_focus=True):
         self.screen.dismiss(None)
 
 
-class NoticeDialog(ModalScreen[None]):
+class NoticeDialog(Dialog[None]):
     """Modal that shows a title and a message with a single dismiss action."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")

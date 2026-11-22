@@ -16,7 +16,6 @@ from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
@@ -31,6 +30,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.cli.tui.widgets.model_pick import config_key_for_scope
@@ -187,7 +187,7 @@ def _matches(option: ModelOption, search: str) -> bool:
     return needle in option.label.lower() or needle in option.ref.lower()
 
 
-class ModelPickerModal(ModalScreen[str | None]):
+class ModelPickerModal(Dialog[str | None]):
     """Searchable model list. Returns the selected ref, or None on cancel.
 
     A pick that changes the engine of the model returns None at once, and the role keeps

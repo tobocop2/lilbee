@@ -9,7 +9,6 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
 from lilbee.app.presets import (
@@ -26,6 +25,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.preset_commands import key_state_text, preset_line
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.server_registry import RerankWire
 
@@ -41,7 +41,7 @@ def _reserve_value(preset: ServerPreset | None) -> str:
     return f"{preset.memory_reserve_gb:g}"
 
 
-class PresetDialog(ModalScreen[str | None]):
+class PresetDialog(Dialog[str | None]):
     """Add a preset, or edit one. It dismisses with the notice to show, or None on cancel."""
 
     CSS_PATH = "settings_presets.tcss"
