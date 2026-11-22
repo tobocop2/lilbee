@@ -321,14 +321,14 @@ def _host_bytes(per_device: dict[str, int]) -> int:
     return sum(size for label, size in per_device.items() if _is_host_device(label))
 
 
-def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int) -> bool:
+def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_bytes: int) -> None:
     """Warn when the engine's fit left more of *model* in system memory than estimated.
 
     *est_host_bytes* is what the host holds with every layer on the card; 0
     means the engine's fit does not run for this launch, and nothing is said.
     """
     if est_host_bytes <= 0 or host_bytes <= est_host_bytes * (1.0 + _TOLERANCE):
-        return False
+        return
     log.warning(
         "The %s model %s does not fit in GPU memory: the engine keeps %s of it in "
         "system memory, where it runs slower. Free GPU memory or use a smaller model.",
@@ -336,7 +336,6 @@ def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_by
         model,
         memory_size_text(host_bytes),
     )
-    return True
 
 
 def _without_unreported(est_by_device: dict[str, int], unreported: int) -> dict[str, int]:
