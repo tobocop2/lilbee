@@ -32,7 +32,6 @@ placement_app = typer.Typer(
 )
 
 _GIB = 1024**3
-_CLEAR_INSTRUCTION = "run 'lilbee placement clear' or set a new one"
 
 
 def _read_spec(spec: str | None) -> PlacementSpec | None:
@@ -165,9 +164,8 @@ def _render_rejected(view: PlacementView) -> None:
         console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
         if view.pins_dropped:
             console.print(Text(f"  {view.pins_dropped}", style=theme.WARNING), soft_wrap=True)
-        waiting = view.refusal_kind is not None and view.refusal_kind.is_waiting
-        if view.rejected_spec_json and not waiting:
-            console.print(Text(f"  {_CLEAR_INSTRUCTION}", style=theme.WARNING), soft_wrap=True)
+        if view.clear_instruction:
+            console.print(Text(f"  {view.clear_instruction}", style=theme.WARNING), soft_wrap=True)
 
 
 @placement_app.command("show")
