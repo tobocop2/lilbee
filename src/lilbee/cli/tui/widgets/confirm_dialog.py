@@ -11,10 +11,10 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Horizontal, Vertical
 from textual.message import Message
-from textual.screen import ModalScreen
 from textual.widgets import Label, Static
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.dialog import Dialog
 
 _CSS_FILE = Path(__file__).parent / "confirm_pill.tcss"
 
@@ -50,7 +50,7 @@ class ConfirmPill(Static, can_focus=True):
         self.action_select()
 
 
-class ConfirmDialog(ModalScreen[bool]):
+class ConfirmDialog(Dialog[bool]):
     """Modal yes/no dialog that returns True (confirmed) or False (cancelled).
 
     The dialog opens on No, so a bare Enter keeps the current state, as a bare Enter

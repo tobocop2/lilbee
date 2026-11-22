@@ -16,9 +16,11 @@ from __future__ import annotations
 from textual.command import CommandPalette, SearchIcon
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.dialog import Dialog
 
 
-class LilbeeCommandPalette(CommandPalette):
+# CommandPalette comes first: Textual takes a widget's CSS from its first base.
+class LilbeeCommandPalette(CommandPalette, Dialog[None]):
     """Command palette whose search icon is a plain single-width glyph."""
 
     def on_mount(self) -> None:

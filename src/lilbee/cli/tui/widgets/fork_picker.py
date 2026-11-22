@@ -9,12 +9,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
-from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.sessions import MessageRole, SessionMessage, derive_title
 
 
@@ -48,7 +48,7 @@ def _label(point: ForkPoint) -> Content:
     return Content.assemble(answer, "\n", Content.styled(question, "$text-muted"))
 
 
-class ForkPicker(ModalScreen[int | None]):
+class ForkPicker(Dialog[int | None]):
     """Dismisses with the number of leading messages to copy, or ``None`` on escape."""
 
     CSS_PATH = "fork_picker.tcss"

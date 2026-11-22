@@ -8,7 +8,6 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
-from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
 
 from lilbee.app import engine_service
@@ -18,6 +17,7 @@ from lilbee.cli.tui.engine_install_flow import choose_for_model
 from lilbee.cli.tui.engine_mark import engine_mark
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 from lilbee.cli.tui.screens.engine_picker import EnginePickerModal, option_detail
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.choice import AUTO, NoEngineError
 
@@ -60,7 +60,7 @@ def engine_section(ref: str) -> Content:
     return Content("\n").join(lines)
 
 
-class ModelInfoModal(ModalScreen[None]):
+class ModelInfoModal(Dialog[None]):
     """Read-only modal showing what we know about one catalog model."""
 
     CSS_PATH: ClassVar[str] = "model_info.tcss"
