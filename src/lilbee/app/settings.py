@@ -876,15 +876,18 @@ def apply_ephemeral_model_swap(field: str, ref: str) -> None:
 def use_installed_models_for_this_run(
     *, chat_overridden: bool, fill_empty_chat_only: bool = False
 ) -> list[str]:
-    """Swap an empty or stale chat/embedding ref to an installed model for this process.
+    """Swap an empty or stale chat/embedding ref to a usable model for this process.
+
+    A chat ref is filled with the first cloud model that has an accepted API key, or else
+    the first installed local model. An embedding ref is filled with an installed local model.
 
     Every process that answers a question runs this before it builds its services,
     so the CLI and the server resolve the same model. The config file is never
     rewritten. An explicit --model override is kept as given. Returns one notice
     per swap, for the caller to show.
 
-    With *fill_empty_chat_only* (the server), the only swap is an installed chat model
-    for an empty chat ref. A chat ref that is set stays as set, even when it is not
+    With *fill_empty_chat_only* (the server), the only swap is a usable chat model
+    (cloud first, then installed) for an empty chat ref. A chat ref that is set stays as set, even when it is not
     reachable yet, and the embedding ref is never swapped.
     """
     from lilbee.modelhub.model_manager import (
@@ -903,15 +906,18 @@ def use_installed_models_for_this_run(
         if canon.status == ValidationResult.OK or canon.effective == canon.original:
             continue
         apply_ephemeral_model_swap(field, canon.effective)
+        chosen = (
+            f"installed {canon.effective!r}"
+            if parse_model_ref(canon.effective).is_local
+            else f"cloud model {canon.effective!r}"
+        )
         if canon.original:
             notices.append(
                 f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
-                f"using installed {canon.effective!r} for this run."
+                f"using {chosen} for this run."
             )
         else:
-            notices.append(
-                f"No {label.lower()} model configured; using installed {canon.effective!r}."
-            )
+            notices.append(f"No {label.lower()} model configured; using {chosen}.")
     return notices
 
 

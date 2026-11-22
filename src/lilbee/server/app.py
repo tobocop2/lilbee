@@ -330,8 +330,9 @@ class _ConfigFileReload(ASGIMiddleware):
 def _start_services() -> None:
     """Build the services before the server serves; a failed build ends the startup.
 
-    An empty chat model is filled with an installed one first, so the services and the
-    chat routes see the same model. A chat model that is set stays as set, and the
+    An empty chat model is filled first, so the services and the chat routes see the
+    same model. The fill takes the first cloud model with an accepted API key, or else
+    the first installed local model. A chat model that is set stays as set, and the
     embedding model is never swapped.
     """
     try:
@@ -344,7 +345,11 @@ def _start_services() -> None:
         log.info("A stop arrived during the services build, so the server does not start")
         raise
     except Exception:
-        log.error("The services build failed, so the server does not start", exc_info=True)
+        log.error(
+            "The services build failed (the chat-model fill or the build), "
+            "so the server does not start",
+            exc_info=True,
+        )
         raise
     log.info("LLM provider pre-loaded")
     _log_embedding_model_state(services.embedder)
