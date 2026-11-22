@@ -181,6 +181,7 @@ def _wrap_tei(tmp_path: Path, run: str, checkout_time: int) -> str:
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not installed")
+@pytest.mark.skipif(sys.platform == "win32", reason="tei_wheel.sh runs only on Linux and macOS")
 def test_wrapping_one_tei_source_twice_gives_one_wheel(tmp_path: Path) -> None:
     _source(tmp_path)
     first = _wrap_tei(tmp_path, "first", 1_750_000_000)
