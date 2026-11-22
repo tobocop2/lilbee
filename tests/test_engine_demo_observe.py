@@ -133,9 +133,9 @@ def test_a_safetensors_engine_is_chosen_before_its_first_pull(
     first_pull = names.index(StepName.PULL)
     assert names.index(StepName.INSTALL) < names.index(StepName.PREFER) < first_pull
     prefers = _step(t, StepName.PREFER)
-    assert [p.command[len(_CLI) :] for p in prefers] == [("engine", "prefer", engine, "--yes")] * len(
-        roles
-    )
+    assert [p.command[len(_CLI) :] for p in prefers] == [
+        ("engine", "prefer", engine, "--yes")
+    ] * len(roles)
     pulls = _step(t, StepName.PULL)
     refs = {s.command[-1] for s in pulls}
     assert refs == set(models.values())

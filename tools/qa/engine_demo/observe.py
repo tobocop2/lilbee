@@ -147,7 +147,10 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
 
     steps = [
         cli(StepName.ENGINE_LIST_BEFORE, "--json", "engine", "list", json_output=True),
-        *(cli(StepName.INSTALL, "engine", "install", e) for e in dict.fromkeys(plan.engines.values())),
+        *(
+            cli(StepName.INSTALL, "engine", "install", e)
+            for e in dict.fromkeys(plan.engines.values())
+        ),
     ]
     for role, ref in plan.models.items():
         steps += [
