@@ -51,10 +51,12 @@ typecheck:
 # so a worker that dies fails the run instead.
 XDIST := -n logical --dist loadgroup --max-worker-restart=0
 
-# The pack workflow tests read the build workflow of the engine-packs repository.
-# A sibling checkout named lilbee-engine-packs next to this one supplies it.
+# The pack tests read the build workflow and the cells file of the engine-packs repository.
+# A sibling checkout named lilbee-engine-packs next to this one supplies them.
 ENGINE_PACKS_WORKFLOW ?= $(abspath $(wildcard ../lilbee-engine-packs/.github/workflows/build-packs.yml))
 export ENGINE_PACKS_WORKFLOW
+ENGINE_PACKS_CELLS ?= $(abspath $(wildcard ../lilbee-engine-packs/cells.yml))
+export ENGINE_PACKS_CELLS
 
 test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)

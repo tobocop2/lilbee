@@ -90,10 +90,7 @@ def pack_workflow() -> Path:
 
 
 def pack_cells(engine: str) -> list[dict[str, Any]]:
-    """The build cells of one engine in the file named by ENGINE_PACKS_CELLS, in file order.
-
-    Fail when CI is set and the variable is empty, else skip. An engine that the file lacks fails.
-    """
+    """The cells of one engine in ENGINE_PACKS_CELLS, in file order; fail in CI if unset, else skip."""
     path = os.environ.get(CELLS_ENV)
     if not path:
         message = f"{CELLS_ENV} names the cells file of the engine-packs repository"
