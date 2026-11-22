@@ -7322,6 +7322,11 @@ class TestTesseractUnderRealXberg:
         assert _non_blank(_page_line(2, line)) == chars
         assert self._ocr_pages(_layout_pdf("STS", (line,)), OcrMode.AUTO) == expected
 
+    def test_ocr_reads_the_run_language_data_and_downloads_none(self):
+        """Each test has its own HOME, so a download lands in this test's own cache."""
+        assert self._ocr_pages(_mixed_pdf(), OcrMode.AUTO) == [2]
+        assert list(Path.home().glob("**/tessdata/*.traineddata")) == []
+
     def test_ocr_text_replaces_a_text_layer_too_short_to_be_usable(self):
         line = "x" * (_USABLE_TEXT_CHARS - 1 - _non_blank(_page_line(2, "")))
         usable = "y" * (_USABLE_TEXT_CHARS - _non_blank(_page_line(3, "")))
