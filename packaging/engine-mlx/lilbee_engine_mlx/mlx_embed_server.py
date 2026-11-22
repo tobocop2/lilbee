@@ -168,6 +168,13 @@ class Service:
         with self._lock:
             batch = [self._embed_ids(text) for text in texts]
             states = self.backend.last_hidden(batch)
+        wanted = body.get("dimensions")
+        if wanted is not None and wanted != states.shape[1]:
+            raise RequestError(
+                400,
+                f"dimensions {wanted} is not supported: this model returns vectors of "
+                f"{states.shape[1]} values",
+            )
         norms = np.linalg.norm(states, axis=1, keepdims=True)
         vectors = (states / np.maximum(norms, 1e-12)).astype("<f4")
         data = [
@@ -208,6 +215,8 @@ class Service:
         if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n < 1:
             raise RequestError(400, "top_n must be a positive whole number")
         instruction = body.get("instruction", RERANK_INSTRUCTION)
+        if not isinstance(instruction, str):
+            raise RequestError(400, "instruction must be a string")
         with self._lock:
             batch = [self._rerank_ids(query, doc, instruction) for doc in documents]
             picks = [self.backend.token_id(_NO), self.backend.token_id(_YES)]
@@ -273,9 +282,17 @@ def handler_for(service: Service) -> type[BaseHTTPRequestHandler]:
             else:
                 self._send(404, {"error": {"message": f"no route {self.path}"}})
 
+        def _content_length(self) -> int:
+            raw = self.headers.get("Content-Length") or "0"
+            if not raw.isascii() or not raw.isdigit():
+                # The body cannot be framed, so the connection ends after the answer.
+                self.close_connection = True
+                raise RequestError(400, "Content-Length must be a whole number")
+            return int(raw)
+
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length") or 0)
             try:
+                length = self._content_length()
                 body = json.loads(self.rfile.read(length) or b"null")
                 if not isinstance(body, dict):
                     raise RequestError(400, "the request body must be a JSON object")
