@@ -694,17 +694,17 @@ class FleetBody(Widget):
         self._change_placement(lambda: set_placement(None))
 
     def _change_placement(self, change: Callable[[], PlacementView]) -> None:
-        """Apply a placement change off the UI thread, then re-render the live view.
+        """Apply a placement change off the UI thread, then render a view.
 
         ``applying`` (and with it the chat screen's submit hold) stays up until the
         restarted chat role actually serves: releasing when the reload returns
         still leaves the model warming, and a prompt sent then races the restart
-        instead of getting an answer. The view is re-rendered from the live
-        placement whether the change applied or failed, so a rejected or failed
-        draft returns to the current read-only state instead of stranding the
-        stale 'edited'/won't-fit editor. A change that succeeds renders the view it
+        instead of getting an answer. A change that succeeds renders the view it
         returned: when the plan cannot be read, that view names the models the
         running fleet still serves, and a fresh read of the placement cannot.
+        The live placement is read only after a change that raised, so a
+        rejected or failed draft returns to the current read-only state instead
+        of stranding the stale 'edited'/won't-fit editor.
         """
         error: str | None = None
         view: PlacementView | None = None
