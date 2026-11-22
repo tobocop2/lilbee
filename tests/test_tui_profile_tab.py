@@ -185,7 +185,8 @@ async def _loaded(app: LilbeeAppHost, pilot: Pilot, name: str) -> SettingsScreen
 
     def _ready() -> bool:
         screens = [s for s in app.screen_stack if isinstance(s, SettingsScreen)]
-        if not screens or not screens[0].query(ProfileTab):
+        # The tab joins the tree before it composes the dropdown.
+        if not screens or not any(tab.is_mounted for tab in screens[0].query(ProfileTab)):
             return False
         select = screens[0].query_one("#profile-select", Select)
         line = screens[0].query_one("#profile-line-name", Static)
@@ -634,7 +635,10 @@ async def test_a_bare_enter_on_the_apply_dialog_cancels_and_changes_nothing(sour
         screen = await _loaded(app, pilot, "Default")
         _pick(screen, "fewer")
         dialog = await _dialog(app, pilot, ApplyProfileDialog)
-        assert app.focused is dialog.query_one("#apply-cancel", ConfirmPill)
+        cancel = dialog.query_one("#apply-cancel", ConfirmPill)
+        # The screen first gives the focus to its scroll area.
+        await _until(pilot, lambda: app.focused is cancel)
+        assert app.focused is cancel
         await pilot.press("enter")
         assert await _until(pilot, lambda: app.screen is screen)
     assert cfg.max_chunks_per_file == 3000

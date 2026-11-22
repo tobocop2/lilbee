@@ -64,7 +64,7 @@ from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
 from lilbee.wiki.drafts import StaleDraftError
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
-from tests._async_wait import wait_for_widget, wait_until
+from tests._async_wait import subtree_mounted, wait_for_widget, wait_until
 from tests._crafted_titles import CONTROL_TITLES, TERMINAL_CONTROL_RE
 from tests._crawlberg_stub import StubCrawlberg, refusing_patterns
 from tests._held import held_hashes, held_kinds, held_reasons, hold_failed, hold_removed
@@ -692,8 +692,8 @@ async def test_settings_tab_activation_populates_pane():
 
     app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause(0.15)
         tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+        await wait_for_widget(pilot, app, "#profile-tab")
         # Find a non-active tab; activating it should populate its body.
         target_pane_id = None
         for pane in tabbed.query("TabPane"):
@@ -702,10 +702,25 @@ async def test_settings_tab_activation_populates_pane():
                 break
         assert target_pane_id is not None
         tabbed.active = target_pane_id
-        await pilot.pause(0.15)
-        target_pane = app.screen.query_one(f"#{target_pane_id}")
-        rows = list(target_pane.query(".setting-row"))
-        assert rows, f"activating {target_pane_id} did not mount any rows"
+        await _wait_for_pane_rows(app, pilot, target_pane_id)
+
+
+async def _wait_for_pane_rows(app, pilot, pane_id):
+    """Wait until *pane_id* holds rows and the screen, each dropdown included, has mounted.
+
+    A dropdown that still mounts when the app exits raises for the overlay it misses.
+    """
+    from textual.widgets import Select
+
+    def _ready() -> bool:
+        pane = app.screen.query_one(f"#{pane_id}")
+        return (
+            bool(pane.query(".setting-row"))
+            and subtree_mounted(app.screen)
+            and all(select.query("SelectOverlay") for select in app.screen.query(Select))
+        )
+
+    assert await wait_until(pilot, _ready, timeout=5.0), f"{pane_id} did not mount all its rows"
 
 
 async def test_settings_bool_renders_checkbox():
@@ -739,6 +754,7 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
     """Clicking the picker runs discovery in a worker, then pushes the modal."""
     from unittest.mock import patch
 
+    from textual.errors import NoWidget
     from textual.widgets import TabbedContent
 
     from lilbee.catalog.types import ModelTask
@@ -754,13 +770,28 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
     app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
-        await pilot.pause()
+        await _wait_for_pane_rows(app, pilot, "settings-tab-models")
+        button = app.screen.query_one("#model-pick-chat_model")
+
+        # A mounted button holds no place on the screen until the layout runs.
+        def _clickable() -> bool:
+            x, y = button.region.center
+            try:
+                return app.screen.get_widget_at(int(x), int(y))[0] is button
+            except NoWidget:
+                return False
+
+        assert await wait_until(pilot, _clickable, timeout=5.0)
         with patch(
             "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
             return_value=fake_buckets,
         ):
-            await pilot.click("#model-pick-chat_model")
-            await pilot.pause(0.3)
+            await pilot.click(button)
+            await wait_until(
+                pilot,
+                lambda: isinstance(app.screen, ModelPickerModal) and subtree_mounted(app.screen),
+                timeout=5.0,
+            )
         assert isinstance(app.screen, ModelPickerModal), (
             f"expected ModelPickerModal on top, got {type(app.screen).__name__}"
         )
