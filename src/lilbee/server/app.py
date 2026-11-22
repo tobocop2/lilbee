@@ -330,12 +330,15 @@ class _ConfigFileReload(ASGIMiddleware):
 def _start_services() -> None:
     """Build the services before the server serves; a failed build ends the startup.
 
-    The model refs are resolved first, as ``lilbee ask`` resolves them, so the
-    services and the chat routes see the same installed model.
+    An empty chat model is filled with an installed one first, so the services and the
+    chat routes see the same model. A chat model that is set stays as set, and the
+    embedding model is never swapped.
     """
-    for notice in use_installed_models_for_this_run(chat_overridden=False):
-        log.info("%s", notice)
     try:
+        for notice in use_installed_models_for_this_run(
+            chat_overridden=False, fill_empty_chat_only=True
+        ):
+            log.info("%s", notice)
         services = get_services()
     except ServicesStoppingError:
         log.info("A stop arrived during the services build, so the server does not start")
