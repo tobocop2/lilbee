@@ -574,7 +574,8 @@ def card_refusal(
     """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit.
 
     *holders* are the roles charged to the card ahead of the *refused* role, and
-    *outside* is what other processes hold of it.
+    *outside* is what other processes hold of it. *capacity* is what placement may
+    charge, so the card's total is *capacity* plus *outside*.
 
     *cards* is the count of cards the host lists, whether or not the auto planner
     packs them: a pin can name any listed card. The remedy offers another card
@@ -584,7 +585,7 @@ def card_refusal(
         return None
     figures = (
         f"{subject} needs {memory_size_text(needed)} but device {device} has "
-        f"{memory_size_text(room)} usable ({memory_size_text(capacity)} total, "
+        f"{memory_size_text(room)} usable ({memory_size_text(capacity + outside)} total, "
         f"{usable_vram_fraction():.0%} headroom)"
     )
     held = _holders_sentence(holders, outside, refused) if holders or outside > 0 else ""
