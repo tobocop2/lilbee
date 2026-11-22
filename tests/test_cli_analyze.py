@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from rich.progress import Progress
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -459,6 +460,27 @@ def test_the_add_command_scopes_ctrl_c_with_a_plain_flag(project, notes):
     assert len(seen) == 1
     assert isinstance(seen[0], SignalFlag)
     assert not isinstance(seen[0], threading.Event)
+
+
+def test_a_force_quit_of_analyze_follows_the_close_of_its_bar(project, notes, monkeypatch):
+    """The bar hides the cursor, and its close shows it again."""
+    steps: list[str] = []
+    real_stop = Progress.stop
+
+    def stop(progress: Progress) -> None:
+        real_stop(progress)
+        steps.append("bar closed")
+
+    async def interrupted(*_args: object, **_kwargs: object) -> None:
+        signal.raise_signal(signal.SIGINT)
+        signal.raise_signal(signal.SIGINT)
+
+    monkeypatch.setattr(Progress, "stop", stop)
+    monkeypatch.setattr(svc_mod, "force_quit", lambda: steps.append("force quit"))
+    monkeypatch.setattr("lilbee.app.analyze.run_analysis", interrupted)
+    result = _invoke(project, str(notes))
+    assert result.exit_code == 130
+    assert steps == ["bar closed", "force quit"]
 
 
 @pytest.mark.parametrize("ingest", [_refused_ingest, _cancelled_ingest])

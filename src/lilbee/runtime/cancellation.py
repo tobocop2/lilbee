@@ -49,8 +49,10 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     default KeyboardInterrupt drops it wherever the interpreter happened to be.
     Setting a token instead lets it stop at a boundary with what it wrote intact.
     The handler stays installed until the scope exits, where the previous handler
-    returns on the main thread. A second Ctrl-C reaches the handler and raises
-    KeyboardInterrupt, so a pass that never checks the token still stops.
+    returns on the main thread. A second Ctrl-C raises KeyboardInterrupt, so the
+    command unwinds and its rollback and its message run on the main thread; the
+    scope's exit then ends the process, because a normal exit joins every worker
+    thread, also a stuck one. A further Ctrl-C ends the process from the handler.
 
     signal.signal only works on the main thread; off it (pytest-xdist workers)
     the token is simply never set and Ctrl-C keeps its default behaviour.
@@ -59,15 +61,25 @@ def sigint_cancel() -> Iterator[SignalFlag]:
     if threading.current_thread() is not threading.main_thread():
         yield token
         return
+    from lilbee.app.services import force_quit, force_quit_from_handler
+
     previous = signal.getsignal(signal.SIGINT)
+    unwinding = False
 
     def _on_sigint(_signum: int, _frame: object) -> None:
-        if token.is_set():
+        nonlocal unwinding
+        if unwinding:
+            force_quit_from_handler()
+        elif token.is_set():
+            unwinding = True
             raise KeyboardInterrupt
-        token.set()
+        else:
+            token.set()
 
     signal.signal(signal.SIGINT, _on_sigint)
     try:
         yield token
     finally:
+        if unwinding:
+            force_quit()
         signal.signal(signal.SIGINT, previous)

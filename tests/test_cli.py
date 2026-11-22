@@ -6171,6 +6171,46 @@ def _citation_row(**overrides: object) -> dict:
 class TestSigintCancel:
     """Ctrl-C stops a build at a boundary instead of dropping it mid-page."""
 
+    @pytest.fixture
+    def quits(self, monkeypatch) -> list[str]:
+        """Record the force quits instead of ending the test process."""
+        seen: list[str] = []
+        monkeypatch.setattr(svc_mod, "force_quit", lambda: seen.append("scope"))
+        monkeypatch.setattr(svc_mod, "force_quit_from_handler", lambda: seen.append("handler"))
+        return seen
+
+    def test_a_second_sigint_force_quits_once_the_scope_has_unwound(self, quits) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        previous = signal.getsignal(signal.SIGINT)
+        with pytest.raises(KeyboardInterrupt), sigint_cancel():
+            signal.raise_signal(signal.SIGINT)
+            try:
+                signal.raise_signal(signal.SIGINT)
+            finally:
+                assert quits == []
+        assert quits == ["scope"]
+        assert signal.getsignal(signal.SIGINT) is previous
+
+    def test_a_third_sigint_force_quits_from_the_handler(self, quits) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel():
+            signal.raise_signal(signal.SIGINT)
+            with pytest.raises(KeyboardInterrupt):
+                signal.raise_signal(signal.SIGINT)
+            # A raise here would end the test worker.
+            with contextlib.suppress(KeyboardInterrupt):
+                signal.raise_signal(signal.SIGINT)
+            assert quits == ["handler"]
+
+    def test_one_sigint_never_force_quits(self, quits) -> None:
+        from lilbee.runtime.cancellation import sigint_cancel
+
+        with sigint_cancel():
+            signal.raise_signal(signal.SIGINT)
+        assert quits == []
+
     def test_the_token_is_set_when_sigint_arrives(self) -> None:
 
         from lilbee.runtime.cancellation import sigint_cancel
@@ -6214,7 +6254,7 @@ class TestSigintCancel:
             signal.raise_signal(signal.SIGINT)
             assert signal.getsignal(signal.SIGINT) is scoped
 
-    def test_the_handler_never_changes_signal_handlers(self, monkeypatch) -> None:
+    def test_the_handler_never_changes_signal_handlers(self, monkeypatch, quits) -> None:
         from lilbee.runtime.cancellation import sigint_cancel
 
         with sigint_cancel() as token:
@@ -6230,7 +6270,7 @@ class TestSigintCancel:
             monkeypatch.undo()
             assert token.is_set()
 
-    def test_a_second_sigint_reaches_the_scoped_handler_and_interrupts(self) -> None:
+    def test_a_second_sigint_reaches_the_scoped_handler_and_interrupts(self, quits) -> None:
         """A pass that ignores the token must still be interruptible."""
         from lilbee.runtime.cancellation import sigint_cancel
 
@@ -6358,6 +6398,36 @@ class TestWikiRunProgress:
         result = runner.invoke(app, command)
         assert result.exit_code == 0
         assert seen and seen[0] is not None, f"{command} ran the wiki with no cancel token"
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            (["wiki", "build"], "lilbee.wiki.run_full_build"),
+            (["wiki", "synthesize"], "lilbee.wiki.run_full_synthesize"),
+        ],
+    )
+    @pytest.mark.usefixtures("wiki_enabled")
+    def test_a_force_quit_follows_the_close_of_the_spinner(
+        self, mock_svc, isolated_env, monkeypatch, command, target
+    ):
+        """The spinner hides the cursor, and its close shows it again."""
+        steps: list[str] = []
+        real_stop = Progress.stop
+
+        def stop(progress: Progress) -> None:
+            real_stop(progress)
+            steps.append("spinner closed")
+
+        def run(config=None, on_progress=noop_callback, cancel=None):
+            signal.raise_signal(signal.SIGINT)
+            signal.raise_signal(signal.SIGINT)
+
+        monkeypatch.setattr(Progress, "stop", stop)
+        monkeypatch.setattr(svc_mod, "force_quit", lambda: steps.append("force quit"))
+        monkeypatch.setattr(target, run)
+        result = runner.invoke(app, command)
+        assert result.exit_code == 130
+        assert steps == ["spinner closed", "force quit"]
 
     @pytest.mark.usefixtures("wiki_enabled")
     def test_json_mode_leaves_stdout_a_single_document(self, mock_svc, isolated_env, monkeypatch):
