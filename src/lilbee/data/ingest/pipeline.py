@@ -18,6 +18,7 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    Sequence,
 )
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -119,6 +120,7 @@ from lilbee.data.types import (
     _IngestResult,
 )
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.gpu_stats import DeviceLike
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.truncation import one_truncation_warning
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
@@ -1865,8 +1867,19 @@ def _ingest_progress_bar(quiet: bool) -> Progress:
 _TASK_WINDOW_MULTIPLIER = 2
 
 
+def _admission_sizing() -> tuple[int, Sequence[DeviceLike]]:
+    """The admission baseline and the adaptive devices; it probes, so run it off the loop."""
+    profile = profile_for(resolve_mode())
+    devices = (
+        enumerate_fleet_devices(get_services().engines.for_role(WorkerRole.EMBED).adapter)
+        if profile is not None
+        else []
+    )
+    return _max_concurrent(), devices
+
+
 def _build_admission(
-    baseline: int, pages_done: list[int]
+    baseline: int, pages_done: list[int], devices: Sequence[DeviceLike]
 ) -> tuple[asyncio.Semaphore | ResizableGate, int, asyncio.Task[None] | None]:
     """The batch's admission control, plus its task-window size and controller task.
 
@@ -1876,11 +1889,6 @@ def _build_admission(
     no fleet it falls back to the static path so a GPU-less host is never affected.
     """
     profile = profile_for(resolve_mode())
-    devices = (
-        enumerate_fleet_devices(get_services().engines.for_role(WorkerRole.EMBED).adapter)
-        if profile is not None
-        else []
-    )
     if profile is None or not devices:
         return asyncio.Semaphore(baseline), baseline * _TASK_WINDOW_MULTIPLIER, None
     permit_max = max_workers()
@@ -2047,7 +2055,8 @@ async def ingest_stream(
     # ingest or a rebuild and near zero for an incremental sync, so a small sync
     # over a large corpus stays in-process. Undercounting only keeps a run
     # in-process, which is the safe direction.
-    admission, window, controller_task = _build_admission(_max_concurrent(), pages_done)
+    baseline, devices = await to_ingest_thread(_admission_sizing)
+    admission, window, controller_task = _build_admission(baseline, pages_done, devices)
     progress = _ingest_progress_bar(quiet)
     # The corpus the discovery walk found, known before the first batch is planned.
     corpus_total = plan.corpus_total if plan is not None else 0

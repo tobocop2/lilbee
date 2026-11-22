@@ -8,15 +8,12 @@ effective replica count.
 
 from __future__ import annotations
 
-import functools
 import logging
 from typing import TYPE_CHECKING
 
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from lilbee.providers.fleet.engines.base import EngineAdapter
 
 log = logging.getLogger(__name__)
@@ -45,11 +42,12 @@ def gpu_device_count(engine: EngineAdapter) -> int:
 
     Counts the devices auto placement packs, so a shared-memory GPU beside a dedicated
     card adds no replica. An engine with no binary, or a binary that cannot load, sizes
-    as GPU-less: the paths that start the engine raise on their own. Neither count is
-    kept, so a process that outlives the fix counts its cards again.
+    as GPU-less: the paths that start the engine raise on their own. The probe reads the
+    device read cache, so a failed probe is remembered for its failure window.
     """
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet.devices import EngineDllMissingError, EngineIllegalInstructionError
+    from lilbee.providers.fleet.planning import packable_devices, resolve_devices
 
     try:
         binary = engine.binary()
@@ -57,18 +55,7 @@ def gpu_device_count(engine: EngineAdapter) -> int:
         log.debug("engine binary not found; treating host as GPU-less for replica sizing")
         return _MIN_REPLICAS
     try:
-        return _probed_gpu_count(engine, binary)
+        return max(_MIN_REPLICAS, len(packable_devices(resolve_devices(binary, engine))))
     except (EngineDllMissingError, EngineIllegalInstructionError):
         log.debug("engine cannot load; sizing for a GPU-less host")
         return _MIN_REPLICAS
-
-
-@functools.cache
-def _probed_gpu_count(engine: EngineAdapter, binary: Path) -> int:
-    """Count *engine*'s packable devices once per process (cached); a missing DLL raises uncached.
-
-    Resolved the same way planning does (binary ``--list-devices`` view).
-    """
-    from lilbee.providers.fleet.planning import packable_devices, resolve_devices
-
-    return max(_MIN_REPLICAS, len(packable_devices(resolve_devices(binary, engine))))
