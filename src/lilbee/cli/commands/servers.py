@@ -296,8 +296,9 @@ def mcp_cmd(
     _report_upgrade_as_log_lines()
     from lilbee.mcp_server import main
 
-    # Set before the loop starts, so asyncio leaves Ctrl-C to this handler and no
-    # loop takes a signal disposition with it when it closes.
+    # Set before the loop starts, so Ctrl-C has this handler while no loop runs. The
+    # serving loop takes the routed signals as callbacks and gives these handlers back
+    # when it ends, so a late signal still reaches the stop.
     stop_on_interrupt()
     try:
         main()
