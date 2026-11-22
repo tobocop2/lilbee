@@ -1219,10 +1219,10 @@ def test_a_signal_on_another_thread_ends_an_idle_loop_with_its_status():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no loop signal handlers")
 def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
-    """The loop callback counts the press: the first joins the stop, the second ends the process."""
+    """The loop callback reaches the one handler: the second press ends the process."""
     provider = _install_stub_services()
     forced: list[int] = []
-    monkeypatch.setattr(services_mod, "_force_quit_from_handler", lambda: forced.append(1))
+    monkeypatch.setattr(services_mod, "_force_quit_from_handler", forced.append)
     # A registered server hook takes the first press, so the callback does not raise.
     set_server_exit_hook(lambda _status: None)
     previous = signal.getsignal(signal.SIGINT)
@@ -1235,7 +1235,7 @@ def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
     async def serve() -> None:
         with loop_takes_signals(asyncio.get_running_loop()):
             os.kill(os.getpid(), signal.SIGINT)
-            await until(lambda: services_mod._lifecycle._interrupts == 1)
+            await until(lambda: services_mod._lifecycle._signalled)
             first_press_forced = list(forced)
             os.kill(os.getpid(), signal.SIGINT)
             await until(lambda: forced)
@@ -1251,7 +1251,7 @@ def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
         set_server_exit_hook(lambda _status: None)
         set_server_exit_hook(None)
 
-    assert forced == [1]
+    assert forced == [128 + signal.SIGINT]
     provider.shutdown.assert_called_once()
 
 
