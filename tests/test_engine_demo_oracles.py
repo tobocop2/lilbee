@@ -113,10 +113,9 @@ def _ask_step(payload: object = _ASK, lines: tuple[str, ...] = _GOOD_ASK_LINES) 
 
 def _good() -> Transcript:
     return Transcript(
-        engine=_ENGINE,
         backend="cpu",
-        pin=_PIN,
-        claimed_roles=_ROLES,
+        pins={_ENGINE: _PIN},
+        role_engines={r: _ENGINE for r in _ROLES},
         steps=(
             _json_step(StepName.ENGINE_LIST_BEFORE, _listing([])),
             Step(StepName.INSTALL, ("lilbee", "engine", "install"), 0),
@@ -171,7 +170,7 @@ def test_missing_role_is_a_failure_not_a_skip() -> None:
 
 
 def test_a_transcript_that_claims_no_role_fails() -> None:
-    assert _rules(replace(_good(), claimed_roles=())) == {Rule.NO_ROLES_CLAIMED}
+    assert _rules(replace(_good(), role_engines={})) == {Rule.NO_ROLES_CLAIMED}
 
 
 def test_served_by_another_engine_fails() -> None:
@@ -191,7 +190,7 @@ def test_a_run_of_the_real_llama_engine_is_served_by_the_version_engine_list_sho
     def line(role: str) -> str:
         return _served(served.engine, served.version, role, build=served.build)
 
-    t = replace(_good(), pin=version)
+    t = replace(_good(), pins={_ENGINE: version})
     t = _with_step(t, StepName.SYNC, log_lines=(line("embed"),))
     t = _ask_lines(t, tuple(line(str(r)) for r in _ROLES))
     listing = json.dumps(_listing([_build(_ENGINE, version)]))
@@ -225,7 +224,7 @@ def test_preset_version_line_does_not_count() -> None:
 
 def test_preset_pin_in_the_transcript_never_matches_a_preset_line() -> None:
     lines = tuple(_served(_ENGINE, "preset", str(r)) for r in _ROLES)
-    t = replace(_ask_lines(_good(), lines), pin="preset")
+    t = replace(_ask_lines(_good(), lines), pins={_ENGINE: "preset"})
     assert {Rule.PIN_NOT_AN_INSTALL, Rule.SERVED_BY_PRESET} <= _rules(t)
 
 
@@ -270,9 +269,93 @@ def test_a_vision_ingest_step_carries_the_vision_role() -> None:
         0,
         log_lines=(_served(_ENGINE, _PIN, "vision"),),
     )
-    t = replace(_good(), claimed_roles=(*_ROLES, WorkerRole.VISION))
+    t = replace(_good(), role_engines={r: _ENGINE for r in (*_ROLES, WorkerRole.VISION)})
     views = [_role_view(str(r)) for r in t.claimed_roles]
     assert judge(_roles_with(_plus(t, vision), views)) == []
+
+
+_TEI = "tei"
+_TEI_PIN = "1.9.3"
+
+
+def _mixed() -> Transcript:
+    """A good run with the embed role on tei and the other roles on llama.cpp."""
+    t = replace(
+        _good(),
+        pins={_ENGINE: _PIN, _TEI: _TEI_PIN},
+        role_engines={
+            WorkerRole.CHAT: _ENGINE,
+            WorkerRole.EMBED: _TEI,
+            WorkerRole.RERANK: _ENGINE,
+        },
+    )
+    lines = (
+        _served(_TEI, _TEI_PIN, "embed"),
+        _served(_ENGINE, _PIN, "rerank"),
+        _served(_ENGINE, _PIN, "chat"),
+    )
+    views = [
+        _role_view("chat"),
+        _role_view("embed", _TEI),
+        _role_view("rerank"),
+    ]
+    t = _roles_with(_ask_lines(t, lines), views)
+    t = _with_step(t, StepName.SYNC, log_lines=(_served(_TEI, _TEI_PIN, "embed"),))
+    listing = _listing([_build(), _build(_TEI, _TEI_PIN)])
+    return _with_step(t, StepName.ENGINE_LIST_AFTER, stdout=json.dumps(listing))
+
+
+def test_a_mixed_engine_run_passes_when_each_role_is_served_by_its_own_engine() -> None:
+    assert judge(_mixed()) == []
+
+
+def test_a_mixed_run_fails_when_a_role_is_served_by_the_engine_of_another_role() -> None:
+    lines = tuple(_served(_ENGINE, _PIN, str(r)) for r in _ROLES)
+    assert _rules(_ask_lines(_mixed(), lines)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_mixed_run_fails_when_a_role_is_served_at_the_pin_of_another_engine() -> None:
+    lines = (
+        _served(_TEI, _PIN, "embed"),
+        _served(_ENGINE, _PIN, "rerank"),
+        _served(_ENGINE, _PIN, "chat"),
+    )
+    assert _rules(_ask_lines(_mixed(), lines)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_mixed_run_fails_when_engine_roles_shows_another_engine_for_a_role() -> None:
+    views = [_role_view("chat"), _role_view("embed"), _role_view("rerank")]
+    failures = judge(_roles_with(_mixed(), views))
+    assert [(f.rule, f.detail) for f in failures] == [
+        (Rule.ROLE_WRONG_ENGINE, f"embed runs on {_ENGINE}, not {_TEI}")
+    ]
+
+
+def test_a_mixed_run_needs_every_engine_installed_in_the_list_after() -> None:
+    listing = json.dumps(_listing([_build()]))
+    failures = judge(_with_step(_mixed(), StepName.ENGINE_LIST_AFTER, stdout=listing))
+    assert [(f.rule, f.detail) for f in failures] == [
+        (Rule.PIN_NOT_INSTALLED, f"engine list shows no {_TEI} build at {_TEI_PIN} on cpu")
+    ]
+
+
+@pytest.mark.parametrize("pin", ["", "preset"])
+def test_a_mixed_run_needs_every_engine_to_have_a_pin_that_is_an_install(pin: str) -> None:
+    t = replace(_mixed(), pins={_ENGINE: _PIN, _TEI: pin})
+    assert Rule.PIN_NOT_AN_INSTALL in _rules(t)
+    assert f"pin {pin!r} names no install of {_TEI}" in [f.detail for f in judge(t)]
+
+
+def test_an_engine_a_role_runs_on_with_no_recorded_pin_has_no_install() -> None:
+    t = replace(_mixed(), pins={_ENGINE: _PIN})
+    assert Rule.PIN_NOT_AN_INSTALL in _rules(t)
+    assert dict(t.engines) == {_ENGINE: _PIN, _TEI: ""}
+
+
+def test_a_mixed_transcript_round_trips_through_json() -> None:
+    t = _mixed()
+    assert Transcript.from_json(json.loads(json.dumps(t.to_json()))) == t
+    assert t.claimed_roles == (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
 
 
 def test_served_by_model_must_be_the_assigned_model() -> None:

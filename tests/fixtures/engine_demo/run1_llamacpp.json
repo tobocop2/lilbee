@@ -1,14 +1,15 @@
 {
-  "schema": 1,
-  "engine": "llama.cpp",
+  "schema": 2,
   "backend": "cpu",
-  "pin": "1.12032.1",
-  "claimed_roles": [
-    "chat",
-    "embed",
-    "rerank",
-    "vision"
-  ],
+  "pins": {
+    "llama.cpp": "1.12032.1"
+  },
+  "role_engines": {
+    "chat": "llama.cpp",
+    "embed": "llama.cpp",
+    "rerank": "llama.cpp",
+    "vision": "llama.cpp"
+  },
   "steps": [
     {
       "name": "engine-list-before",

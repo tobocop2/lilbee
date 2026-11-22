@@ -6,9 +6,10 @@ so each step's stderr goes to one log file and the lines a step produced are the
 bytes appended to that file while the step ran. The oracles count served-by lines
 only from the steps that serve a request, so a line must belong to its own step.
 
-The engine is chosen before the first pull: ``engine prefer`` follows
-``engine install`` and precedes every pull, so no pull prints the warning for a
-format with no chosen engine.
+Each role names its own engine, so a run can mix engines. Every engine is installed
+first. Then each pull is preceded by ``engine prefer`` for the engine of the role it
+pulls for, so no pull prints the warning for a format with no chosen engine. After the
+models are set, ``engine use`` pins each role to its engine.
 
 Known limits:
 - ``lilbee chat`` refuses a stdin or stdout that is not a terminal, so the chat
@@ -76,14 +77,16 @@ DEFAULT_QUESTION = "How do honeybees tell each other where the flowers are?"
 
 @dataclass(frozen=True)
 class RunPlan:
-    """What to run: the CLI, the engine under test and the model of each claimed role."""
+    """What to run: the CLI, and the engine and model of each claimed role."""
 
     cli: tuple[str, ...]
     """The command that starts lilbee, for example ``("lilbee",)``."""
-    engine: str
     backend: str
+    """The backend of every engine install."""
     models: Mapping[WorkerRole, str]
     """The claimed roles, in run order, each with the model ref assigned to it."""
+    engines: Mapping[WorkerRole, str]
+    """The engine each claimed role runs on."""
     image_pdf: Path | None = None
     """An image-only PDF page; the vision role needs it."""
     question: str = DEFAULT_QUESTION
@@ -92,6 +95,8 @@ class RunPlan:
     stop_grace_s: float = 10.0
 
     def __post_init__(self) -> None:
+        if set(self.engines) != set(self.models):
+            raise ValueError("each claimed role needs one model and one engine")
         if WorkerRole.VISION in self.models and self.image_pdf is None:
             raise ValueError("the vision role needs an image-only PDF to ingest")
 
@@ -143,15 +148,18 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
 
     steps = [
         cli(StepName.ENGINE_LIST_BEFORE, "--json", "engine", "list", json_output=True),
-        cli(StepName.INSTALL, "engine", "install", plan.engine),
-        cli(StepName.PREFER, "engine", "prefer", plan.engine, "--yes"),
-        *(cli(StepName.PULL, "model", "pull", ref) for ref in plan.models.values()),
+        *(cli(StepName.INSTALL, "engine", "install", e) for e in dict.fromkeys(plan.engines.values())),
     ]
+    for role, ref in plan.models.items():
+        steps += [
+            cli(StepName.PREFER, "engine", "prefer", plan.engines[role], "--yes"),
+            cli(StepName.PULL, "model", "pull", ref),
+        ]
     set_steps, stored = _set_models(plan.models, cli, session)
     steps += set_steps
     steps += [
         *(
-            cli(StepName.USE, "engine", "use", str(role), stored[role], plan.engine, "--yes")
+            cli(StepName.USE, "engine", "use", str(role), stored[role], plan.engines[role], "--yes")
             for role in plan.models
         ),
         cli(StepName.ADD, "add", *map(str, corpus)),
@@ -166,10 +174,12 @@ def observe(plan: RunPlan, run_dir: Path) -> Transcript:
         cli(StepName.ENGINE_LIST_AFTER, "--json", "engine", "list", json_output=True),
     ]
     return Transcript(
-        engine=plan.engine,
         backend=plan.backend,
-        pin=installed_pin(steps[-1].stdout, plan.engine, plan.backend),
-        claimed_roles=tuple(plan.models),
+        pins={
+            engine: installed_pin(steps[-1].stdout, engine, plan.backend)
+            for engine in dict.fromkeys(plan.engines.values())
+        },
+        role_engines={role: plan.engines[role] for role in plan.models},
         steps=tuple(steps),
     )
 
