@@ -17262,9 +17262,9 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
             await screen._grid_container.mount(grid)
             await grid.mount(ModelCard(row))
             await wait_until(_pilot, lambda: bool(grid.children))
-            grid.highlighted = 0
             grid.focus()
-            await wait_until(_pilot, lambda: grid.highlighted == 0)
+            # Widget.focus() only queues the focus change; the cursor is set by the app on focus.
+            assert await wait_until(_pilot, lambda: grid.has_focus and grid.highlighted == 0)
             with patch.object(screen, "_focused_grid", return_value=grid):
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
