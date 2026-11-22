@@ -656,6 +656,17 @@ Intel. The OpenVINO runtime in the pack is under Apache-2.0, so no licence step 
 lilbee does not publish the OpenVINO pack yet, so `lilbee engine install openvino` reports that
 no pack is published.
 
+OpenVINO Model Server (`ovms`) has no pack, so you install it yourself. Follow the
+[OpenVINO Model Server install guide](https://docs.openvino.ai/2026/model-server/ovms_docs_deploying_server_baremetal.html)
+for version 2026.4.1 on Linux x86_64. It puts `ovms/lib` on `LD_LIBRARY_PATH` and `ovms/bin`
+on `PATH`. lilbee finds `ovms` there, and `lilbee engine list` no longer lists ovms as not
+installed.
+
+OpenVINO Model Server serves chat, embed and rerank of OpenVINO IR models (`org/repo#openvino`)
+on the CPU, an Intel GPU or an Intel NPU. It is the one engine that offers embed and rerank on
+the Intel NPU. lilbee offers the NPU target only on a computer with an Intel NPU. lilbee has no
+recorded run of OpenVINO Model Server on any device.
+
 **Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.

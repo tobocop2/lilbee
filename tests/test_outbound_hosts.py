@@ -46,6 +46,9 @@ ALLOWED_HOSTS: frozenset[str] = frozenset(
         # Lemonade install guide, named in the message that says the engine is missing.
         # A string in a message; nothing fetches it.
         "lemonade-server.ai",
+        # OpenVINO Model Server install guide, named in the message that says the engine
+        # is missing. A string in a message; nothing fetches it.
+        "docs.openvino.ai",
         # Agent-client documentation links cited from agent_configs/ module docstrings.
         "docs.litellm.ai",
         "opencode.ai",
