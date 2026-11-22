@@ -29,7 +29,7 @@ from lilbee.app.services import (
     set_config_refresh,
     wait_for_opens,
 )
-from lilbee.app.settings import config_write_failure_message, use_installed_models_for_this_run
+from lilbee.app.settings import config_write_failure_message, fill_empty_chat_model
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
@@ -336,9 +336,7 @@ def _start_services() -> None:
     embedding model is never swapped.
     """
     try:
-        for notice in use_installed_models_for_this_run(
-            chat_overridden=False, fill_empty_chat_only=True
-        ):
+        for notice in fill_empty_chat_model():
             log.info("%s", notice)
         services = get_services()
     except ServicesStoppingError:

@@ -921,6 +921,16 @@ def use_installed_models_for_this_run(
     return notices
 
 
+def fill_empty_chat_model() -> list[str]:
+    """Fill an empty chat ref for a long-running process; one notice per fill.
+
+    The server and the stdio MCP server call this before they build their services.
+    A chat ref that is set stays as set, installed or not, and the embedding ref is
+    never swapped. The config file is never rewritten.
+    """
+    return use_installed_models_for_this_run(chat_overridden=False, fill_empty_chat_only=True)
+
+
 def _pin_legacy_store_meta() -> None:
     """Pin the current embedding ref into store meta before swapping it."""
     # heavy: ~100ms (lance + store init); only paid when embedding_model is in the batch.
