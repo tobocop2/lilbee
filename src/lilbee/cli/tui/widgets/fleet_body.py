@@ -702,16 +702,20 @@ class FleetBody(Widget):
         instead of getting an answer. The view is re-rendered from the live
         placement whether the change applied or failed, so a rejected or failed
         draft returns to the current read-only state instead of stranding the
-        stale 'edited'/won't-fit editor.
+        stale 'edited'/won't-fit editor. A change that succeeds renders the view it
+        returned: when the plan cannot be read, that view names the models the
+        running fleet still serves, and a fresh read of the placement cannot.
         """
         error: str | None = None
+        view: PlacementView | None = None
         try:
-            change()
+            view = change()
             wait_chat_ready()
         except Exception as exc:
             error = str(exc)
         try:
-            view = get_placement()
+            if view is None:
+                view = get_placement()
             call_from_thread(self, self._render_view, view)
         except Exception as exc:
             error = error or str(exc)
