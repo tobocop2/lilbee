@@ -1176,6 +1176,51 @@ def test_a_stream_cut_after_its_change_was_undone_still_hears_of_the_reload(
     assert str(caught.value) == _RELOADING
 
 
+_PINNED_CHAT_CTX = 4096
+
+
+def test_a_group_that_changes_again_during_its_drain_starts_once_from_the_last_plan(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second write lands during the drain: the chat group drains once and starts once."""
+    provider, swaps = engine_fleet
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", _LONG_DRAIN_S)
+    real_plan = planning_mod.plan_all_launches
+    plans: list[int] = []
+
+    def pin_the_window_before_the_second_plan(**kwargs: object) -> object:
+        plans.append(1)
+        if len(plans) == 2:
+            monkeypatch.setattr(cfg, "num_ctx", _PINNED_CHAT_CTX)
+        return real_plan(**kwargs)
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", pin_the_window_before_the_second_plan)
+    old = provider._swap_for(WorkerRole.CHAT)
+    started = len(swaps)
+    answers: list[object] = []
+    caller = _held_chat(provider, answers)
+    _reload_chat_model(provider)
+
+    old.engine.release.set()
+    caller.join(_JOIN_S)
+    _join_fleet_threads()
+
+    assert _texts(answers) == ["the answer"]
+    assert len(plans) == 2
+    assert old.shutdowns == 1
+    assert old.answers_at_stop == 1
+    assert len(swaps) == started + 1
+    new = provider._swap_for(WorkerRole.CHAT)
+    assert new is swaps[-1]
+    [launches] = new.started
+    assert {launch.ctx for launch in launches if launch.role is WorkerRole.CHAT} == {
+        _PINNED_CHAT_CTX
+    }
+    assert {launch.model for launch in launches if launch.role is WorkerRole.CHAT} == {
+        _OTHER_CHAT_REF
+    }
+
+
 def test_a_peer_takes_the_build_lock_while_a_settings_reload_drains(
     engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
