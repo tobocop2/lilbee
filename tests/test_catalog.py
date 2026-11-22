@@ -2112,7 +2112,9 @@ class TestResolveFilename:
             catalog.resolve_filename(PICKS_CHAT[0], engine=LLAMA)
         assert str(raised.value) == (
             f"{PICKS_CHAT[0].hf_repo} requires HuggingFace authentication. "
-            "Set HF_TOKEN env var or visit the repo page to request access."
+            "Run `lilbee login`, run `/login` in the TUI, or set the HF_TOKEN variable. "
+            "A running TUI must restart to read HF_TOKEN. "
+            "Then request access on the repo page."
         )
 
     @pytest.mark.parametrize(
@@ -3143,7 +3145,9 @@ class TestResolveMmprojFilename:
             (
                 "GatedRepo",
                 "repo requires HuggingFace authentication. "
-                "Set HF_TOKEN env var or visit the repo page to request access",
+                "Run `lilbee login`, run `/login` in the TUI, or set the HF_TOKEN variable. "
+                "A running TUI must restart to read HF_TOKEN. "
+                "Then request access on the repo page",
             ),
         ],
     )

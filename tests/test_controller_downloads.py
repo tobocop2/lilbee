@@ -22,6 +22,7 @@ from textual.app import ComposeResult
 from textual.widgets import Footer
 
 from lilbee.catalog import CatalogModel
+from lilbee.catalog.download import gated_repo_message
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import (
     ProgressReporter,
@@ -365,7 +366,7 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
         controller = TaskBarController(app)
 
         def fake_download(model, engine, on_progress=None, on_complete=None, cancel=None):
-            raise PermissionError("401 Unauthorized")
+            raise PermissionError(gated_repo_message("org/gated"))
 
         with patch("lilbee.catalog.download_model", side_effect=fake_download):
             task_id = controller.start_download(_make_model(display="Gated Model"))
@@ -377,8 +378,7 @@ async def test_start_download_permission_error_gets_gated_repo_message() -> None
         task = controller.queue.get_task(task_id)
         assert task is not None
         assert task.status == TaskStatus.FAILED
-        # Message comes from messages.CATALOG_GATED_REPO; just check the model name is in it.
-        assert "Gated Model" in task.detail
+        assert task.detail == gated_repo_message("org/gated")
 
 
 @pytest.mark.asyncio

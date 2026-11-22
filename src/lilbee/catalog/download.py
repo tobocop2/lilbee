@@ -60,6 +60,16 @@ log = logging.getLogger(__name__)
 PROJECTOR_LISTING_TIMEOUT = 3.0
 
 
+def gated_repo_message(hf_repo: str) -> str:
+    """The one text every surface shows when a HuggingFace repo needs a login."""
+    return (
+        f"{hf_repo} requires HuggingFace authentication. "
+        "Run `lilbee login`, run `/login` in the TUI, or set the HF_TOKEN variable. "
+        "A running TUI must restart to read HF_TOKEN. "
+        "Then request access on the repo page."
+    )
+
+
 class RemoteFile(NamedTuple):
     """The Hub's answer about one repo file.
 
@@ -338,10 +348,7 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     except TaskCancelledError:
         raise
     except GatedRepoError:
-        raise PermissionError(
-            f"{entry.hf_repo} requires HuggingFace authentication. "
-            "Set HF_TOKEN env var or visit the repo page to request access."
-        ) from None
+        raise PermissionError(gated_repo_message(entry.hf_repo)) from None
     except RepositoryNotFoundError:
         raise RuntimeError(f"Repository {entry.hf_repo!r} not found on HuggingFace.") from None
     except EntryNotFoundError:
@@ -723,10 +730,7 @@ def _model_info(hf_repo: str, timeout: float) -> "ModelInfo":
     try:
         return HfApi().model_info(hf_repo, timeout=timeout, token=token)
     except GatedRepoError as exc:
-        raise PermissionError(
-            f"{hf_repo} requires HuggingFace authentication. "
-            "Set HF_TOKEN env var or visit the repo page to request access."
-        ) from exc
+        raise PermissionError(gated_repo_message(hf_repo)) from exc
     except RepositoryNotFoundError as exc:
         if token:
             reason = (
