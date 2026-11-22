@@ -11,6 +11,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
@@ -51,6 +52,9 @@ def _provider(monkeypatch, *, owed: frozenset[WorkerRole]) -> FleetProvider:
     provider._reload_done = _SignalCondition(provider._lock)
     provider._reload_owed = owed
     monkeypatch.setattr(provider, "_ensure_fleet", lambda: True)
+    # Each adoption and each failed request reads the engine book, which searches PATH;
+    # these tests check the wait for a role's server, not which engine serves it.
+    monkeypatch.setattr(provider, "_engines", lambda: dict.fromkeys(WorkerRole, LLAMA))
     return provider
 
 
