@@ -68,7 +68,7 @@ class Embedder:
 
     @property
     def embed_char_budget(self) -> int:
-        """Effective char limit, never below the chunker's max chunk size.
+        """Effective char limit for an embedder with no token cap, never below the chunk size.
 
         ``max_embed_chars`` guards the embed model's context; clamping it up to
         ``chunk_size * CHARS_PER_TOKEN`` stops a finished full-budget chunk from
@@ -224,6 +224,11 @@ class Embedder:
             return []
         total_chunks = len(texts)
         max_batch_chars = self.batch_char_budget
+        # A provider with a token cap bounds every input by that same count (the
+        # fleet client cuts to it), and a chunk of cap tokens can run past any
+        # fixed character count. The character cut guards only a provider with
+        # no token cap, where the chunker's token estimate is characters.
+        token_bounded = self._provider.embed_token_cap() is not None
         vectors: list[Vector] = []
         batch: list[str] = []
         batch_chars = 0
@@ -231,7 +236,8 @@ class Embedder:
             # The prefix is charged against the budget: it is part of what the
             # embed model receives, so counting only the text would ship
             # budget+len(prefix) chars and lose the tail the clamp protects.
-            truncated = prefix + self.truncate(text, reserved=len(prefix))
+            sent = text if token_bounded else self.truncate(text, reserved=len(prefix))
+            truncated = prefix + sent
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
                 vectors.extend(self._embed_batch_of(batch))

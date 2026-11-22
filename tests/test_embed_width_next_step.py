@@ -27,6 +27,9 @@ MISMATCH = f"Embedding dimension mismatch: expected {STORED_WIDTH}, got {SERVED_
 class _WideProvider:
     """An engine whose model answers with SERVED_WIDTH, whatever the config says."""
 
+    def embed_token_cap(self) -> int | None:
+        return None
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [[0.5] * SERVED_WIDTH for _ in texts]
 
