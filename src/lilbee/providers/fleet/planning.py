@@ -2584,7 +2584,10 @@ _NO_ENGINE_BINARY = "no-engine"
 
 
 class _ReadDeviceCache:
-    """Short-TTL device-probe cache for the read/view path.
+    """Short-TTL device-probe cache for the read/view path and for sizing.
+
+    The ingest sizing (the pool size, the fan-out plan, the admission) and the
+    GPU count read through it as well, so one probe answers all of them.
 
     Not a ``cachetools.TTLCache``: it caches the *failure* too, under its own
     longer TTL, and re-raises it. A memoizing cache stores return values only,

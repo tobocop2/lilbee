@@ -251,7 +251,8 @@ def test_adaptive_admission_enumerates_devices_of_the_embed_engine(
         "enumerate_fleet_devices",
         lambda engine: seen.append(_tag(engine)) or [],
     )
-    ingest_pipeline._admission_sizing()
+    monkeypatch.setattr(ingest_pipeline, "max_workers", lambda: 5)
+    assert ingest_pipeline._admission_sizing()[2] == 5
     assert seen == [_expected(WorkerRole.EMBED, mlx_role)]
 
 

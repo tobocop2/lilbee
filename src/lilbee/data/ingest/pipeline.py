@@ -1867,19 +1867,23 @@ def _ingest_progress_bar(quiet: bool) -> Progress:
 _TASK_WINDOW_MULTIPLIER = 2
 
 
-def _admission_sizing() -> tuple[int, Sequence[DeviceLike]]:
-    """The admission baseline and the adaptive devices; it probes, so run it off the loop."""
+def _admission_sizing() -> tuple[int, Sequence[DeviceLike], int]:
+    """The admission baseline, the adaptive devices and the pool's worker count.
+
+    It probes, so run it off the loop. The worker count comes back with the rest so
+    the admission never has to read it on the loop.
+    """
     profile = profile_for(resolve_mode())
     devices = (
         enumerate_fleet_devices(get_services().engines.for_role(WorkerRole.EMBED).adapter)
         if profile is not None
         else []
     )
-    return _max_concurrent(), devices
+    return _max_concurrent(), devices, max_workers()
 
 
 def _build_admission(
-    baseline: int, pages_done: list[int], devices: Sequence[DeviceLike]
+    baseline: int, pages_done: list[int], devices: Sequence[DeviceLike], permit_max: int
 ) -> tuple[asyncio.Semaphore | ResizableGate, int, asyncio.Task[None] | None]:
     """The batch's admission control, plus its task-window size and controller task.
 
@@ -1891,8 +1895,7 @@ def _build_admission(
     profile = profile_for(resolve_mode())
     if profile is None or not devices:
         return asyncio.Semaphore(baseline), baseline * _TASK_WINDOW_MULTIPLIER, None
-    permit_max = max_workers()
-    gate = ResizableGate(min(baseline, permit_max))
+    gate =ResizableGate(min(baseline, permit_max))
     controller = AdaptiveController(
         gate,
         profile,
@@ -2055,8 +2058,8 @@ async def ingest_stream(
     # ingest or a rebuild and near zero for an incremental sync, so a small sync
     # over a large corpus stays in-process. Undercounting only keeps a run
     # in-process, which is the safe direction.
-    baseline, devices = await to_ingest_thread(_admission_sizing)
-    admission, window, controller_task = _build_admission(baseline, pages_done, devices)
+    baseline, devices, permit_max = await to_ingest_thread(_admission_sizing)
+    admission, window, controller_task = _build_admission(baseline, pages_done, devices, permit_max)
     progress = _ingest_progress_bar(quiet)
     # The corpus the discovery walk found, known before the first batch is planned.
     corpus_total = plan.corpus_total if plan is not None else 0
