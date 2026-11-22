@@ -290,12 +290,14 @@ def test_a_breakdown_of_the_wrong_length_keeps_the_count_text() -> None:
     with pytest.raises(PlacementError, match=r"2 device\(s\) but its memory estimate covers 1"):
         _charge_devices(
             WorkerRole.CHAT,
+            "chat",
             (0, 1),
             (GIB,),
             dict.fromkeys(range(2), float(_CARD)),
             dict.fromkeys(range(2), _CARD),
             refuse_alone=False,
             held={},
+            outside={},
         )
 
 
