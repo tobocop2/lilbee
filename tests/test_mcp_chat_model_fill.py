@@ -128,7 +128,7 @@ def test_a_later_settings_set_does_not_write_the_filled_chat_model(
     payloads = _start_and_call((("settings_set", {"updates": {"top_k": 7}}),))
 
     assert payloads["settings_set"]["updated"] == ["top_k"]
-    written = (cfg.data_root / CONFIG_FILE_NAME).read_text()
+    written = (cfg.data_root / CONFIG_FILE_NAME).read_text(encoding="utf-8")
     assert "top_k" in written
     assert "chat_model" not in written
     assert cfg.chat_model == installed_chat
@@ -175,7 +175,7 @@ def test_a_set_chat_model_that_is_not_installed_is_kept(
 def _write_wiki_page_made_by(model: str) -> None:
     page = cfg.data_root / "wiki" / "summaries" / "doc.md"
     page.parent.mkdir(parents=True)
-    page.write_text(f"---\ngenerated_by: {model}\n---\n\n# Doc\n")
+    page.write_text(f"---\ngenerated_by: {model}\n---\n\n# Doc\n", encoding="utf-8")
     svc_mod.get_services().store.get_citations_for_wiki.return_value = []
 
 
