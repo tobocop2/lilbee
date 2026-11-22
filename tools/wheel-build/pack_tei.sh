@@ -64,12 +64,10 @@ require_inputs() {
   done
 }
 
-# Build the repaired wheel in the manylinux image. pip and the isolated build read the pinned build tools.
+# Build the repaired wheel in the manylinux image. tei_manylinux.sh installs the pinned build tools there.
 build_linux() {
-  local constraints="/work/tools/wheel-build/build-tools.constraints /work/tools/wheel-build/tei-tools.constraints"
   docker run --rm -v "${PWD}:/work" -w /work \
     -e TEI_REPO -e TEI_TAG -e RUSTC_VERSION -e WHEEL_VERSION -e BACKEND -e CUDA_CC -e CUDA_PACKAGE_SUFFIX -e CUDA_VERSION \
-    -e "PIP_CONSTRAINT=${constraints}" \
     -e WORK=/work -e OUT=/work/out -e "OWNER=$(id -u):$(id -g)" \
     "${MANYLINUX_IMAGE}" \
     bash /work/tools/wheel-build/tei_manylinux.sh
@@ -102,9 +100,7 @@ build_metal() (
   compiled="$({ grep -aoE '/rustc/[0-9a-f]{40}/' "${src}/target/release/text-embeddings-router" || true; } | sort -u)"
   [ "${compiled}" = "${pinned}" ] \
     || { echo "pack_tei: the router comes from ${compiled:-no known compiler}, not from Rust ${RUSTC_VERSION} (${pinned})" >&2; exit 1; }
-  # A path that is relative to the wheel project: pip splits the value at a space, and the checkout path can hold one.
-  export PIP_CONSTRAINT="../../tools/wheel-build/build-tools.constraints ../../tools/wheel-build/tei-tools.constraints"
-  (cd "${WHEEL_TREE}" && python -m pip install -q build wheel delocate)
+  install_build_tools python tools/wheel-build/build-tools.constraints tools/wheel-build/tei-tools-macos.constraints
   # The wheel build, the retag and delocate stamp every entry with the commit time of the source.
   epoch="$(bash tools/wheel-build/source_date_epoch.sh "${src}")"
   export "${epoch?}"
@@ -138,6 +134,7 @@ check_tag() {  # wheel
 start_router() {  # wheel
   local root="${PWD}" router stubs="" cpu cpus=("")
   python -m venv check-venv
+  # No pin: the wheel needs no other package, so pip installs this one local file.
   check-venv/bin/python -m pip install -q "$1"
   router="$(check-venv/bin/python -c "import lilbee_engine_tei as m, pathlib; print(pathlib.Path(m.__file__).parent / 'bin' / 'text-embeddings-router')")"
   echo "router: ${router}"

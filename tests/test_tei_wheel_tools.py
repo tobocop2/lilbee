@@ -684,6 +684,7 @@ case "$1" in
 esac
 if [ "$1 $2" = "-m build" ]; then
   pwd > "{record}/build-cwd"
+  echo "$*" > "{record}/build-args"
   echo "$SOURCE_DATE_EPOCH" > "{record}/build-epoch"
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "--outdir" ]; then
@@ -789,6 +790,15 @@ def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Pat
 
 
 @_WHEEL_SCRIPT
+def test_the_wheel_build_makes_no_environment_of_its_own(tmp_path: Path) -> None:
+    result, _, record = _run_wheel_script(tmp_path)
+    assert result.returncode == 0, result.stderr
+    args = (record / "build-args").read_text(encoding="utf-8")
+    option = "-C--build-option=--build-number=1.cpu"
+    assert args.startswith(f"-m build --wheel --no-isolation {option} --outdir ")
+
+
+@_WHEEL_SCRIPT
 def test_the_wheel_build_runs_with_the_commit_time_of_the_source(tmp_path: Path) -> None:
     result, _, record = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -843,25 +853,53 @@ case "${name}" in
     chmod 755 target/release/text-embeddings-router
     echo "${NVCC_APPEND_FLAGS-unset}" > "{record}/nvcc-flags"
     echo "${RUSTFLAGS-unset}" > "{record}/rustflags"
+    for tool in cmake ninja; do command -v "${tool}"; done > "{record}/cmake"
     ;;
 esac
 exit 0
 """
 _IMAGE_TOOLS = ("dnf", "curl", "sh", "nproc", "rustc", "git", "nvcc", "nvprune", "cargo")
 _IMAGE_TOOLS += ("auditwheel", "chown", "uname")
+_LINUX_TOOL_FILES = ("build-tools.constraints", "tei-tools-linux.constraints")
+_WRITE_TOOLS = Path(__file__).resolve().parent / "shell/tei_build_tools.py"
 _IMAGE_ROOTS = re.compile(r"/(?:etc|usr/local|tmp|opt)(?=/)")
 
 
 def _run_build(
-    tmp_path: Path, cuda_cc: str, installer: str = ""
+    tmp_path: Path, cuda_cc: str, installer: str = "", edit: tuple[str, str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run tei_manylinux.sh on stub tools, with the text of its cargo-about installer."""
+    """Run tei_manylinux.sh on stub tools, with the text of its cargo-about installer.
+
+    The venv and its pip are real. pip installs stand-ins for the build tools from a folder, by the
+    names of the real requirements files. *edit* replaces a pattern in one of those files.
+    """
     script = (_TOOLS / "tei_manylinux.sh").read_text(encoding="utf-8")
     script = re.sub(_IMAGE_ROOTS, lambda m: f"{tmp_path}{m.group(0)}", script)
     work = tmp_path / "work"
     (work / "tools/wheel-build").mkdir(parents=True)
-    for name in ("tei_wheel.sh", "write_cuda_notice.py"):
-        (work / "tools/wheel-build" / name).write_text("", encoding="utf-8")
+    for name in ("pack_common.sh", *_LINUX_TOOL_FILES):
+        shutil.copy(_TOOLS / name, work / "tools/wheel-build" / name)
+    subprocess.run(
+        [
+            *(sys.executable, str(_WRITE_TOOLS), str(tmp_path / "wheels")),
+            *(str(work / "tools/wheel-build" / name) for name in _LINUX_TOOL_FILES),
+        ],
+        check=True,
+    )
+    if edit is not None:
+        name, pattern, replacement = edit
+        file = work / "tools/wheel-build" / name
+        text, count = re.subn(
+            pattern, replacement, file.read_text(encoding="utf-8"), flags=re.MULTILINE
+        )
+        assert count == 1
+        file.write_text(text, encoding="utf-8")
+    (work / "tools/wheel-build/write_cuda_notice.py").write_text("", encoding="utf-8")
+    (work / "tools/wheel-build/tei_wheel.sh").write_text(
+        '"${PYTHON}" -m build --no-isolation --outdir "$7/dist"\n'
+        f'echo "${{PYTHON}}" > "{tmp_path}/record/python"\n',
+        encoding="utf-8",
+    )
     (work / "tools/wheel-build/install_cargo_about.sh").write_text(installer, encoding="utf-8")
     (work / "tools/wheel-build/source_date_epoch.sh").write_text(
         f"echo SOURCE_DATE_EPOCH={_COMMIT_TIME}\n", encoding="utf-8"
@@ -878,15 +916,22 @@ def _run_build(
         stub.chmod(0o755)
     py = tmp_path / "opt/python/cp312-cp312/bin"
     py.mkdir(parents=True)
-    (py / "python").symlink_to(bin_dir / "dnf")
+    base = getattr(sys, "_base_executable", sys.executable)
+    (py / "python").write_text(f'#!/bin/sh\nexec "{base}" "$@"\n', encoding="utf-8")
+    (py / "python").chmod(0o755)
     cuda = tmp_path / "usr/local/cuda-12.9"
     (cuda / "lib64/stubs").mkdir(parents=True)
     (cuda / "lib64/stubs/libcuda.so").write_text("", encoding="utf-8")
-    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp").mkdir(exist_ok=True)
     (tmp_path / "etc").mkdir()
     (tmp_path / "usr/local/bin").mkdir()
-    env = {k: v for k, v in os.environ.items() if k not in ("NVCC_APPEND_FLAGS", "RUSTFLAGS")}
+    unset = ("NVCC_APPEND_FLAGS", "RUSTFLAGS", "STEP_LOG")
+    env = {k: v for k, v in os.environ.items() if k not in unset and not k.startswith("PIP_")}
     env |= {
+        "PIP_NO_INDEX": "1",
+        "PIP_FIND_LINKS": str(tmp_path / "wheels"),
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "TMPDIR": str(tmp_path / "tmp"),
@@ -944,6 +989,65 @@ def test_a_cargo_about_digest_that_differs_stops_the_linux_build(
     assert not (record / "rustflags").exists()
     assert result.returncode != 0
     assert f"install_cargo_about: digest {digest}, wanted " in result.stderr
+
+
+@pytest.mark.parametrize("cuda_cc", ["", "89"])
+@_MANYLINUX
+def test_the_linux_build_installs_its_pinned_tools_into_a_new_venv(
+    tmp_path: Path, cuda_cc: str
+) -> None:
+    result = _run_build(tmp_path, cuda_cc)
+    assert result.returncode == 0, result.stderr
+    venv = tmp_path / "tmp/build-venv"
+    names = [
+        name
+        for file in _LINUX_TOOL_FILES
+        for name in re.findall(
+            r"^(\w+)==", (_TOOLS / file).read_text(encoding="utf-8"), re.MULTILINE
+        )
+    ]
+    installed = (path.name for path in venv.glob("lib/python3*/site-packages/*-99.dist-info"))
+    assert sorted(installed) == sorted(f"{name}-99.dist-info" for name in names)
+    record = tmp_path / "record"
+    assert (record / "python").read_text(encoding="utf-8").strip() == f"{venv}/bin/python"
+    tools = (record / "cmake").read_text(encoding="utf-8").split()
+    assert tools == [f"{venv}/bin/cmake", f"{venv}/bin/ninja"]
+
+
+@pytest.mark.parametrize(
+    ("file", "name"),
+    [("build-tools.constraints", "setuptools"), ("tei-tools-linux.constraints", "cmake")],
+)
+@_MANYLINUX
+def test_a_build_tool_with_another_digest_stops_the_linux_build(
+    tmp_path: Path, file: str, name: str
+) -> None:
+    result = _run_build(
+        tmp_path, "", edit=(file, f"^{name}==99 .*$", f"{name}==99 --hash=sha256:{'0' * 64}")
+    )
+    assert result.returncode != 0
+    assert "DO NOT MATCH THE HASHES" in result.stderr
+    assert not (tmp_path / "record/rustflags").exists()
+
+
+@_MANYLINUX
+def test_a_tool_that_needs_one_which_no_file_lists_stops_the_linux_build(tmp_path: Path) -> None:
+    result = _run_build(tmp_path, "", edit=("build-tools.constraints", r"^packaging==99 .*\n", ""))
+    assert result.returncode != 0
+    assert "all requirements must have their versions pinned with ==" in result.stderr
+    assert "packaging" in result.stderr
+    assert not (tmp_path / "record/rustflags").exists()
+
+
+@_MANYLINUX
+def test_a_venv_of_an_earlier_build_stops_the_linux_build(tmp_path: Path) -> None:
+    venv = tmp_path / "tmp/build-venv"
+    venv.mkdir(parents=True)
+    result = _run_build(tmp_path, "")
+    assert result.returncode == 2
+    assert f"an earlier build used this container ({venv} exists)" in result.stderr
+    assert list(venv.iterdir()) == []
+    assert not (tmp_path / "record/rustflags").exists()
 
 
 @_MANYLINUX

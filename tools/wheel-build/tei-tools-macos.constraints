@@ -1,0 +1,10 @@
+# The Python build tools that only the macOS build of the text-embeddings-inference pack needs: delocate and what it
+# needs. pack_tei.sh installs them with build-tools.constraints.
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+delocate==0.13.0 \
+    --hash=sha256:11f7596f88984c33f76b27fe2eea7637d1ce369a9e0b6737bbc706b6426e862c
+macholib==1.16.4 \
+    --hash=sha256:da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
