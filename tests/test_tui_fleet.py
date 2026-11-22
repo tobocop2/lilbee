@@ -606,23 +606,29 @@ async def test_unplaceable_warns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ignored_saved_placement_warns(monkeypatch):
-    """A stale pin reaches the surface the user is looking at, not just the log."""
+async def test_a_fallback_drawer_names_the_reason_and_where_each_pinned_role_runs(monkeypatch):
+    """After a placement fallback the drawer says what CLI, REST and MCP say."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
     from lilbee.cli.tui.widgets import fleet_body as fbm
 
-    view = _make_view(rejected_spec_json='{"embed": {"devices": [7]}}')
+    reason = "embed is pinned to device 7, but this machine lists only devices 0 to 3."
+    dropped = "The pins are dropped: embed was pinned to device 7 and now runs on device 0."
+    view = replace(
+        _make_view(rejected_spec_json='{"embed": {"devices": [7]}}'),
+        refusal=reason,
+        pins_dropped=dropped,
+    )
     monkeypatch.setattr(fbm, "get_placement", lambda: view)
 
-    notes: list[str] = []
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
-        body = app.screen.query_one("FleetBody")
-        body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
-        body._load_worker()
-        await app.workers.wait_for_complete()
         await pilot.pause()
-
-    assert any("does not fit this hardware" in n for n in notes)
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()).split("\n") == [reason, dropped]
 
 
 @pytest.mark.asyncio

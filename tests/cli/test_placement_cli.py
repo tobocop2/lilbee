@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 import lilbee.cli.placement as cli_placement
-from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+from lilbee.app.placement import GpuInfo, PlacementRefusal, PlacementView, RolePlacementView
 from lilbee.cli.placement import placement_app
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
@@ -70,6 +70,8 @@ def _view_with_rejected_spec() -> PlacementView:
         manual=False,
         spec_json=None,
         rejected_spec_json='{"embed": {"devices": [1]}}',
+        refusal="embed is pinned to device 1, and this host has no device 1.",
+        refusal_kind=PlacementRefusal.REFUSED,
     )
 
 
@@ -78,7 +80,7 @@ def test_show_reports_a_saved_placement_that_is_being_ignored(monkeypatch: objec
     monkeypatch.setattr(cli_placement, "get_placement", _view_with_rejected_spec)
     result = runner.invoke(placement_app, ["show"])
     assert result.exit_code == 0
-    assert "does not fit this hardware" in result.stdout
+    assert "this host has no device 1" in plain_cli_text(result.stdout)
     assert "placement clear" in result.stdout
 
 

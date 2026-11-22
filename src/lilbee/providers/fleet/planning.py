@@ -4132,10 +4132,11 @@ def _placement_or_auto(
     unified_budget: int | None,
     host_cards: HostCards,
     charge_against_free: bool = False,
-) -> tuple[Placement, bool]:
+) -> tuple[Placement, bool, str]:
     """Resolve a saved spec, falling back to auto when it no longer fits the hardware.
 
-    Returns the placement and whether the spec was the one applied. Hardware moves
+    Returns the placement, whether the spec was the one applied, and the sentence that
+    says why the spec was replaced (empty when it was not). Hardware moves
     under a saved placement: a card is removed, a driver stops enumerating a GPU, a
     container starts without one. Refusing to plan there takes chat, embed and
     ingest down over a pin set on hardware the host no longer has, so the fleet
@@ -4151,31 +4152,40 @@ def _placement_or_auto(
     the fallback for a card role whose engine takes no pin.
     """
     if placement is None:
-        return _resolve_placement(
-            None,
-            inputs,
-            model_refs,
-            devices,
-            engines=engines,
-            unified_budget=unified_budget,
-            host_cards=host_cards,
-            charge_against_free=charge_against_free,
-        ), False
+        return (
+            _resolve_placement(
+                None,
+                inputs,
+                model_refs,
+                devices,
+                engines=engines,
+                unified_budget=unified_budget,
+                host_cards=host_cards,
+                charge_against_free=charge_against_free,
+            ),
+            False,
+            "",
+        )
     try:
-        return _resolve_placement(
-            placement,
-            inputs,
-            model_refs,
-            devices,
-            engines=engines,
-            unified_budget=unified_budget,
-            host_cards=host_cards,
-            charge_against_free=charge_against_free,
-        ), True
+        return (
+            _resolve_placement(
+                placement,
+                inputs,
+                model_refs,
+                devices,
+                engines=engines,
+                unified_budget=unified_budget,
+                host_cards=host_cards,
+                charge_against_free=charge_against_free,
+            ),
+            True,
+            "",
+        )
     except TargetRefusedError:
         raise
     except PlacementError as exc:
-        reason = str(exc).rstrip(".")
+        refusal = str(exc)
+        reason = refusal.rstrip(".")
     auto = _resolve_placement(
         None,
         inputs,
@@ -4199,7 +4209,7 @@ def _placement_or_auto(
             if part
         ),
     )
-    return auto, False
+    return auto, False, refusal
 
 
 def _placement_that_runs(
@@ -4212,8 +4222,10 @@ def _placement_that_runs(
     unified_budget: int | None,
     host_cards: HostCards,
     charge_against_free: bool = False,
-) -> tuple[Placement, bool, dict[WorkerRole, str]]:
-    """The placement the fleet runs for *spec*, whether the spec applied, and the roles it drops.
+) -> tuple[Placement, bool, dict[WorkerRole, str], str]:
+    """The placement the fleet runs for *spec*, whether it applied, and the roles it drops.
+
+    The last item is the sentence that says why the automatic plan replaced *spec*.
 
     A role on a card this machine lacks or cannot hold it, on a target its engine
     cannot run, or on auto with no room beside the named roles gets no server and a
@@ -4226,7 +4238,7 @@ def _placement_that_runs(
         log.warning(refusal)
     while True:
         try:
-            placed, applied = _placement_or_auto(
+            placed, applied, replaced = _placement_or_auto(
                 spec,
                 *_without_roles(inputs, model_refs, refused),
                 devices,
@@ -4240,7 +4252,7 @@ def _placement_that_runs(
             for refusal in exc.reasons.values():
                 log.warning(refusal)
         else:
-            return placed, applied, refused
+            return placed, applied, refused, replaced
 
 
 @dataclass(frozen=True)
@@ -4294,6 +4306,8 @@ class ResolvedPlacement:
     charged_bytes: dict[WorkerRole, int] = field(default_factory=dict)
     # Where each pinned role runs once the auto plan replaced a spec that did not fit.
     pins_dropped: str = ""
+    # Why the auto plan replaced the spec: the sentence the interactive set raises.
+    spec_replaced_reason: str = ""
 
     @property
     def co_tenants(self) -> frozenset[WorkerRole]:
@@ -4331,9 +4345,10 @@ def resolve_placement_plan(
     )
     admission_budget = _unified_admission_budget(devices, engine)
     refused_roles: dict[WorkerRole, str] = {}
+    spec_replaced_reason = ""
     host_cards = HostCards(devices)
     if fall_back_to_auto:
-        resolved, spec_applied, refused_roles = _placement_that_runs(
+        resolved, spec_applied, refused_roles, spec_replaced_reason = _placement_that_runs(
             placement,
             inputs,
             model_refs,
@@ -4372,6 +4387,7 @@ def resolve_placement_plan(
     )
     return ResolvedPlacement(
         pins_dropped=pins_dropped,
+        spec_replaced_reason=spec_replaced_reason,
         devices=tuple(devices),
         instances=tuple(inst for inst in resolved.instances if inst.role not in unlaunched),
         unlaunched_roles=unlaunched,
@@ -4750,7 +4766,7 @@ def _planned_launches(
     admission_budget = _unified_admission_budget(devices, snapshot_engine)
     capacity = _auto_capacity(devices, clean_box, _named_cards(spec))
     host_cards = HostCards(devices)
-    placement, _spec_applied, refused_roles = _placement_that_runs(
+    placement, _spec_applied, refused_roles, _replaced = _placement_that_runs(
         spec,
         inputs,
         model_refs,

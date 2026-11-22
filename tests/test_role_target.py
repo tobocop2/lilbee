@@ -493,8 +493,9 @@ class TestNoFallbackToAuto:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            _, applied = self._saved('{"embed": {"devices": [3]}}', monkeypatch, tmp_path)
+            _, applied, why = self._saved('{"embed": {"devices": [3]}}', monkeypatch, tmp_path)
         assert applied is False
+        assert why.startswith("embed is pinned to device 3")
         assert "using automatic placement" in caplog.text
 
 
