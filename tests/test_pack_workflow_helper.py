@@ -12,6 +12,7 @@ from tests._pack_workflow import (
     WORKFLOW_ENV,
     cells_below_the_record,
     pack_cells,
+    pack_pins,
     pack_workflow,
     published_builds,
     record_after_publish,
@@ -86,8 +87,18 @@ def test_the_record_after_a_publish_holds_one_row_for_each_cell_at_its_number() 
 
 
 _CELLS_FILE = (
-    "engines:\n  llama:\n    cells:\n      - {cell: a, build_number: 3}\n      - {cell: b}\n"
+    "engines:\n  llama:\n    pins: {TAG: b1}\n"
+    "    cells:\n      - {cell: a, build_number: 3}\n      - {cell: b}\n"
 )
+
+
+def test_pack_pins_returns_the_pins_of_the_engine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cells_file = tmp_path / "cells.yml"
+    cells_file.write_text(_CELLS_FILE, encoding="utf-8")
+    monkeypatch.setenv(CELLS_ENV, str(cells_file))
+    assert pack_pins("llama") == {"TAG": "b1"}
 
 
 def test_pack_cells_returns_the_cells_of_the_engine_in_file_order(
