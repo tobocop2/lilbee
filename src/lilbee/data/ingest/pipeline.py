@@ -58,6 +58,7 @@ from lilbee.data.ingest.adaptive import (
 )
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import (
+    CorpusScan,
     ExclusionReason,
     archive_content_types,
     classify_file,
@@ -1343,6 +1344,53 @@ def _sources_in_scope(store: Store, shard: ShardId | None) -> list[SourceRecord]
     return store.get_sources_where(shard.owns)
 
 
+@dataclass(frozen=True)
+class _ScannedCorpus:
+    """What a sync reads off the disk and the index before it plans: blocking work."""
+
+    scan: CorpusScan
+    existing_sources: dict[str, SourceRecord]
+    ignored: list[str]
+    refused: list[str]
+    moves: _MovePool
+
+
+def _scan_corpus(
+    store: Store,
+    shard: ShardId | None,
+    rules: IgnoreRules,
+    *,
+    force_rebuild: bool,
+    prune_ignored: bool,
+) -> _ScannedCorpus:
+    """Walk the corpus, read the sources and drop the ones the corpus now refuses.
+
+    Blocking: a sync calls it on the ingest pool so the loop keeps answering requests.
+    """
+    scan = discover_corpus(shard, rules)
+    sources = _sources_in_scope(store, shard)
+    # A rebuild plans every file as new: nothing is unchanged, held out or moved, so each
+    # file is chunked and embedded again and replaces its own chunks when its write lands.
+    existing_sources = {} if force_rebuild else {s["filename"]: s for s in sources}
+    # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
+    # leaves this pass to the parent.
+    ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
+    # A worker removes only keys from its own slice; the parent reconciles the wiki index.
+    refused = _forget_refused(scan.excluded, existing_sources, forget_in_wiki=shard is None)
+    # Sources whose backing file is not on disk this pass. A vanished file is NOT
+    # removed: it stays indexed and searchable, a dead path-link the user
+    # discovers only when they try to open it, and the set pairs a reappeared
+    # identical file to its old key below. What was just removed leaves the set,
+    # where it could otherwise capture a real move.
+    gone = set(ignored) | set(refused)
+    moves = (
+        _MovePool([], {})
+        if force_rebuild
+        else _move_pool(store, shard, sources, scan.files, gone, rules)
+    )
+    return _ScannedCorpus(scan, existing_sources, ignored, refused, moves)
+
+
 def _require_embedding_model() -> None:
     """Refuse ingest without an embedding model.
 
@@ -1616,7 +1664,8 @@ async def sync(
     config.documents_dir.mkdir(parents=True, exist_ok=True)
     index_mismatch = await to_ingest_thread(_report_index_mismatch, _store)
     corpus_root = await _corpus_root(_store, shard, retry_skipped=retry_skipped)
-    if shard is None and (specs := plan_fanout()):
+    # The plan probes the devices and walks the corpus for its size.
+    if shard is None and (specs := await to_ingest_thread(plan_fanout)):
         merged = await _sync_across_workers(
             specs,
             _store,
@@ -1630,12 +1679,19 @@ async def sync(
         return merged.model_copy(update={"index_mismatch": index_mismatch})
 
     rules = IgnoreRules.for_corpus(corpus_root)
-    scan = discover_corpus(shard, rules)
-    disk_files = scan.files
-    sources = _sources_in_scope(_store, shard)
-    # A rebuild plans every file as new: nothing is unchanged, held out or moved, so each
-    # file is chunked and embedded again and replaces its own chunks when its write lands.
-    existing_sources = {} if force_rebuild else {s["filename"]: s for s in sources}
+    # The disk walk and the index reads and drops before planning block, so they run
+    # on the ingest pool, not on the loop.
+    corpus = await to_ingest_thread(
+        _scan_corpus, _store, shard, rules, force_rebuild=force_rebuild, prune_ignored=prune_ignored
+    )
+    scan, disk_files, ignored, refused, moves = (
+        corpus.scan,
+        corpus.scan.files,
+        corpus.ignored,
+        corpus.refused,
+        corpus.moves,
+    )
+    existing_sources = corpus.existing_sources
     held_hashes = {} if force_rebuild else await to_ingest_thread(_held_hashes, _store)
 
     failed: dict[str, None] = {}
@@ -1646,24 +1702,6 @@ async def sync(
     # filename → the cause of the engine or write failure the next sync retries
     retry_next: dict[str, str] = {}
     _log_excluded(scan.excluded)
-
-    # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
-    # leaves this pass to the parent.
-    ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
-    # A worker removes only keys from its own slice; the parent reconciles the wiki index.
-    refused = _forget_refused(scan.excluded, existing_sources, forget_in_wiki=shard is None)
-
-    # Sources whose backing file is not on disk this pass. A vanished file is NOT
-    # removed: it stays indexed and searchable, a dead path-link the user
-    # discovers only when they try to open it, and the set pairs a reappeared
-    # identical file to its old key below. What was just removed leaves the set,
-    # where it could otherwise capture a real move.
-    gone = set(ignored) | set(refused)
-    moves = (
-        _MovePool([], {})
-        if force_rebuild
-        else _move_pool(_store, shard, sources, disk_files, gone, rules)
-    )
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
     # batch off the event loop and overlapped with ingest. A brand-new file whose
@@ -1740,7 +1778,10 @@ async def sync(
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor an accounting set was dropped without a
     # signal. Surface it loudly instead of letting a whole dataset vanish quietly.
-    if missing := _missing_from_index(_store, shard, disk_files, failed, skipped, state.held_out):
+    missing = await to_ingest_thread(
+        _missing_from_index, _store, shard, disk_files, failed, skipped, state.held_out
+    )
+    if missing:
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "
             "with no failure reported (possible silent drop): %s",
@@ -1748,6 +1789,7 @@ async def sync(
             ", ".join(missing[:20]),
         )
 
+    held_out = await to_ingest_thread(_describe_failures, _store, state.held_out)
     result = SyncResult(
         added=list(added),
         updated=list(updated),
@@ -1757,7 +1799,7 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=_describe_failures(_store, state.held_out),
+        held_out=held_out,
         truncated=get_services().embedder.truncated_total - truncated_before,
         unreadable_folders=list(scan.unreadable),
         index_mismatch=index_mismatch,

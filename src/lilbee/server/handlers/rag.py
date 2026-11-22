@@ -32,6 +32,7 @@ from lilbee.retrieval.query.formatting import (
 from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
+    AskResult,
     RagContext,
 )
 from lilbee.retrieval.reasoning import (
@@ -177,8 +178,14 @@ async def ask(
     )
     # Mirror the streaming ask path: auto-extract memories from a real answer,
     # but never from the search-needs-embedder refusal ask_raw returns.
-    if not searcher.search_unavailable():
+    if not await asyncio.to_thread(searcher.search_unavailable):
         await _store_extracted_memories(question, result.answer)
+    # Cleaning reads the stored web titles, so it runs on a worker too.
+    return await asyncio.to_thread(_ask_response, result)
+
+
+def _ask_response(result: AskResult) -> AskResponse:
+    """The one-shot ask response for *result*; reads the store, so call it off the loop."""
     return AskResponse(
         answer=result.answer,
         sources=_cleaned_chunks(result.sources, result.sources),
@@ -353,7 +360,8 @@ async def _emit_sources_and_memories(
         source_list = [*cited, *memories]
     else:
         source_list = sources
-    yield sse_event(SseEvent.SOURCES, clean_results(source_list, sources))
+    # clean_results reads the stored web titles, so it runs on a worker.
+    yield sse_event(SseEvent.SOURCES, await asyncio.to_thread(clean_results, source_list, sources))
     yield sse_done({})
     async for event in _emit_extracted_memories(question, answer):
         yield event
@@ -374,11 +382,11 @@ async def _stream_rag_response(
     """
     yield ""  # force generator
 
-    for warming in _chat_warming_events():
+    for warming in await _warming_frames():
         yield warming
 
     searcher = get_services().searcher
-    if searcher.search_unavailable():
+    if await asyncio.to_thread(searcher.search_unavailable):
         # Search needs an embedder to ground. Mirror Searcher.ask_stream by
         # returning the refusal as a normal answer token (not an SSE error) so the
         # streaming, one-shot, and CLI ask paths all surface it the same way.
@@ -389,6 +397,7 @@ async def _stream_rag_response(
     # Retrieval embeds, searches, reranks, and can spend an LLM call expanding
     # the query. On the loop it stalls every other admitted request for the whole
     # turn; the non-streaming siblings already thread the same work.
+    retrieval_off = await asyncio.to_thread(searcher.skip_retrieval)
     results, messages, preempt = await asyncio.to_thread(
         _resolve_stream_context,
         searcher,
@@ -396,7 +405,7 @@ async def _stream_rag_response(
         history,
         top_k,
         chunk_type,
-        retrieval_off=searcher.skip_retrieval(),
+        retrieval_off=retrieval_off,
     )
     for frame in preempt:
         yield frame
