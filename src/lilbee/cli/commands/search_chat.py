@@ -106,35 +106,14 @@ _scope_option = typer.Option(
 def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
     """Swap a stale chat/embedding ref to an installed model for this run only.
 
-    The persisted config is never rewritten from a one-shot command; durable
-    swaps belong to the TUI's interactive startup canonicalization. An explicit
-    --model override is honored as given, so an unusable value surfaces the
-    engine's not-installed error instead of a silent substitute. The notice
-    prints to stderr in every mode: stdout stays answer-only and JSON stays
-    parseable.
+    Durable swaps belong to the TUI's interactive startup canonicalization. The
+    notice prints to stderr in every mode: stdout stays answer-only and JSON
+    stays parseable.
     """
-    from lilbee.app.settings import apply_ephemeral_model_swap
-    from lilbee.modelhub.model_manager import (
-        ValidationResult,
-        canonicalize_chat_model,
-        canonicalize_embedding_model,
-    )
+    from lilbee.app.settings import use_installed_models_for_this_run
 
-    checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
-    if not chat_overridden:
-        checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
     err = PlainConsole(stderr=True)
-    for canon, field, label in checks:
-        if canon.status == ValidationResult.OK or canon.effective == canon.original:
-            continue
-        apply_ephemeral_model_swap(field, canon.effective)
-        if canon.original:
-            notice = (
-                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
-                f"using installed {canon.effective!r} for this run."
-            )
-        else:
-            notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
+    for notice in use_installed_models_for_this_run(chat_overridden=chat_overridden):
         err.print(notice, style=theme.WARNING, soft_wrap=True)
 
 

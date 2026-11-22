@@ -873,6 +873,40 @@ def apply_ephemeral_model_swap(field: str, ref: str) -> None:
     setattr(cfg, field, ref)
 
 
+def use_installed_models_for_this_run(*, chat_overridden: bool) -> list[str]:
+    """Swap an empty or stale chat/embedding ref to an installed model for this process.
+
+    Every process that answers a question runs this before it builds its services,
+    so the CLI and the server resolve the same model. The config file is never
+    rewritten. An explicit --model override is kept as given. Returns one notice
+    per swap, for the caller to show.
+    """
+    from lilbee.modelhub.model_manager import (
+        ValidationResult,
+        canonicalize_chat_model,
+        canonicalize_embedding_model,
+    )
+
+    checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
+    if not chat_overridden:
+        checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
+    notices: list[str] = []
+    for canon, field, label in checks:
+        if canon.status == ValidationResult.OK or canon.effective == canon.original:
+            continue
+        apply_ephemeral_model_swap(field, canon.effective)
+        if canon.original:
+            notices.append(
+                f"{label} model {canon.original!r} is unavailable ({canon.reason}); "
+                f"using installed {canon.effective!r} for this run."
+            )
+        else:
+            notices.append(
+                f"No {label.lower()} model configured; using installed {canon.effective!r}."
+            )
+    return notices
+
+
 def _pin_legacy_store_meta() -> None:
     """Pin the current embedding ref into store meta before swapping it."""
     # heavy: ~100ms (lance + store init); only paid when embedding_model is in the batch.
