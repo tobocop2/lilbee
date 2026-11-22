@@ -39,7 +39,7 @@ _WHEEL_SCRIPT = pytest.mark.skipif(
 _MANYLINUX = pytest.mark.skipif(
     sys.platform == "win32", reason="tei_manylinux.sh runs only on Linux"
 )
-_SMOKE = pytest.mark.skipif(sys.platform == "win32", reason="smoke_tei.sh runs only on Linux")
+_SMOKE = pytest.mark.skipif(sys.platform == "win32", reason="smoke_tei.sh runs only on Linux and macOS")
 
 
 def _load(name: str) -> ModuleType:
