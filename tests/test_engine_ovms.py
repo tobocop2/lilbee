@@ -6,17 +6,19 @@ from pathlib import Path
 
 import pytest
 
+from lilbee.app import engine_service
 from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import host_caps
-from lilbee.providers.fleet.engines import choice, proof
+from lilbee.providers.fleet.engines import choice, ovms, proof
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
     EngineName,
     LaunchRequest,
     RerankShape,
+    UserInstalled,
 )
 from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.fleet.host_caps import HostCaps
@@ -25,6 +27,12 @@ from lilbee.providers.roles import RoleTarget, WorkerRole
 
 BINARY = Path("/engines/bin/ovms")
 MODEL = Path("/models/bge-base-en-v1.5-int8-ov")
+IR_REPO = "OpenVINO/bge-base-en-v1.5-int8-ov"
+INSTALL_DOCS = (
+    "https://docs.openvino.ai/2026/model-server/ovms_docs_deploying_server_baremetal.html"
+)
+"""The upstream install page; its Ubuntu 24 steps unpack the 2026.4.1 archive and put
+``ovms/bin`` on PATH."""
 INTEL = 0x8086
 NVIDIA = 0x10DE
 
@@ -145,19 +153,70 @@ def test_the_other_roles_have_no_rerank_route() -> None:
     assert OVMS.request_profile(WorkerRole.CHAT).rerank_path is None
 
 
-def test_a_pack_for_the_engine_is_not_published_yet() -> None:
+def test_the_pin_record_has_no_pack_and_names_no_licence() -> None:
+    """lilbee ships no OVMS pack, so the record carries no digest, no platform and no licence."""
     record = OVMS.pin_record()
-    assert (record["platforms"], record["sha256"]) == ({}, None)
+    assert (record["sha256"], record["platforms"], record["licenses"]) == (None, {}, [])
 
 
-def test_the_binary_is_the_store_tool_or_an_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runnable, "session_host", lambda: _host())
-    monkeypatch.setattr(choice, "store_tool", lambda pin, tool, host: BINARY)
+def test_the_engine_is_one_the_user_installs() -> None:
+    assert isinstance(OVMS, UserInstalled)
+    assert OVMS.install_docs_url == INSTALL_DOCS
+    assert INSTALL_DOCS in OVMS.install_hint
+
+
+def test_an_ovms_on_path_is_the_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(BINARY))
     assert OVMS.binary() == BINARY
     assert OVMS.identity(BINARY) == f"ovms 2026.4.1 {BINARY}"
-    monkeypatch.setattr(choice, "store_tool", lambda pin, tool, host: None)
-    with pytest.raises(ProviderError, match="OpenVINO Model Server engine is not installed"):
+
+
+def test_the_lookup_asks_for_ovms(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: asked.append(name))
+    assert OVMS.user_binary() is None
+    assert asked == ["ovms"]
+
+
+def test_a_missing_install_says_where_to_get_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
+    with pytest.raises(ProviderError) as exc:
         OVMS.binary()
+    text = str(exc.value)
+    assert text.startswith("The OpenVINO Model Server engine is not installed. ")
+    assert INSTALL_DOCS in text
+    assert "PATH" in text
+    assert "lilbee engine install" not in text
+
+
+def test_an_ovms_on_path_counts_as_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(BINARY))
+    assert EngineName.OVMS in choice.installed_engines()
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
+    assert EngineName.OVMS not in choice.installed_engines()
+
+
+def test_install_refuses_with_the_user_install_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engine_service, "refresh_session_host", lambda: _host())
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install("ovms")
+    text = str(exc.value)
+    assert "No pack of ovms is published yet." in text
+    assert INSTALL_DOCS in text
+
+
+def test_the_engine_row_says_install_it_yourself_with_its_docs_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runnable, "session_host", lambda: _host())
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
+    rows = {o.name: o for o in engine_service.engine_options(f"{IR_REPO}#openvino")}
+    row = rows["ovms"]
+    assert (row.installed, row.route, row.docs_url) == (
+        False,
+        engine_service.InstallRoute.BY_HAND,
+        INSTALL_DOCS,
+    )
 
 
 def test_the_engine_has_no_optional_features_to_probe() -> None:
@@ -190,14 +249,6 @@ def test_the_memory_estimate_charges_the_weights_of_the_ir_folder(tmp_path: Path
     )
     estimate = OVMS.estimate_memory(request)
     assert estimate.device_bytes >= 4096
-
-
-def test_the_pin_record_names_the_licences_of_the_linked_code() -> None:
-    assert OVMS.pin_record()["licenses"] == [
-        "Apache-2.0",
-        "BSD-3-Clause",
-        "GPL-2.0-only WITH GCC-exception-2.0",
-    ]
 
 
 def test_the_proof_table_lists_every_device_as_not_run() -> None:

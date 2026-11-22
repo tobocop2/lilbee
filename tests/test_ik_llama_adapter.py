@@ -43,6 +43,7 @@ from lilbee.providers.fleet.engines.choice import installed_engines
 from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.lemonade import LemonadeAdapter
 from lilbee.providers.fleet.engines.llama import LLAMA
+from lilbee.providers.fleet.engines.ovms import OvmsAdapter
 from lilbee.providers.fleet.host_caps import NO_NVIDIA_DRIVER, collect
 from lilbee.providers.fleet.memory_types import MemoryRequest
 from lilbee.providers.roles import RoleTarget, WorkerRole
@@ -352,6 +353,7 @@ def test_engine_list_json_names_the_engines_that_are_not_installed(
     import json
 
     monkeypatch.setattr(LemonadeAdapter, "user_binary", lambda self: None)
+    monkeypatch.setattr(OvmsAdapter, "user_binary", lambda self: None)
     monkeypatch.setattr("lilbee.app.engine_service.llama_server_ready", lambda: False)
     result = runner.invoke(cli_app, ["--json", "engine", "list"])
     body = json.loads(result.output)

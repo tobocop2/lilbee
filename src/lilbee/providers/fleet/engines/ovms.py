@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +14,6 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
-from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engines.base import (
     PORT_SLOT,
     EngineName,
@@ -32,10 +32,14 @@ from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 _VERSION = "2026.4.1"
 _BACKEND = "openvino"
 _TOOL = "ovms"
-_LICENCES = ["Apache-2.0", "BSD-3-Clause", "GPL-2.0-only WITH GCC-exception-2.0"]
-"""The server is Apache-2.0. It links libgit2, which is GPL-2.0 with a linking exception.
-
-The wheel takes ittnotify under its BSD-3-Clause option."""
+_INSTALL_DOCS_URL = (
+    "https://docs.openvino.ai/2026/model-server/ovms_docs_deploying_server_baremetal.html"
+)
+_INSTALL_HINT = (
+    "lilbee has no OpenVINO Model Server pack. "
+    f"Install OpenVINO Model Server {_VERSION} as {_INSTALL_DOCS_URL} tells, "
+    f"then put the folder with {_TOOL} on PATH."
+)
 _HOST = "127.0.0.1"
 _INTEL_PCI_VENDOR = 0x8086
 _SERVED_NAME = "default_model"
@@ -92,6 +96,9 @@ class OvmsAdapter:
     It loads OpenVINO IR folders only, one model for each process. Its HTTP port is
     ``--rest_port``; ``--port`` is its gRPC port, which lilbee leaves off. Its routes sit
     under ``/v3``, and its rerank route takes the Cohere request shape.
+
+    lilbee has no pack of it: the user installs the server, and lilbee runs the
+    ``ovms`` on PATH.
     """
 
     name = EngineName.OVMS
@@ -103,6 +110,8 @@ class OvmsAdapter:
     concatenates_pooling = False
     bundled = False
     server_process = ServerProcess(name=_TOOL)
+    install_hint = _INSTALL_HINT
+    install_docs_url = _INSTALL_DOCS_URL
 
     def supports_architecture(self, architecture: str) -> bool:
         return True
@@ -118,33 +127,33 @@ class OvmsAdapter:
         return PASS
 
     def binary(self) -> Path:
-        from lilbee.catalog.runnable import session_host
-        from lilbee.providers.fleet.engines.choice import install_advice, store_tool
-
-        tool = store_tool(self.pin_record(), _TOOL, session_host())
+        tool = self.user_binary()
         if tool is None:
             raise ProviderError(
-                f"The OpenVINO Model Server engine is not installed. {install_advice(self)}"
+                f"The OpenVINO Model Server engine is not installed. {_INSTALL_HINT}"
             )
         return tool
+
+    def user_binary(self) -> Path | None:
+        """The ``ovms`` that the user put on PATH, or ``None``."""
+        found = shutil.which(_TOOL)
+        return None if found is None else Path(found)
 
     def identity(self, binary: Path) -> str:
         return f"{self.name.value} {_VERSION} {binary}"
 
     def pin_record(self) -> Mapping[str, Any]:
-        from lilbee.catalog.runnable import session_host
-
-        host = session_host()
+        """The record of an engine with no pack: no digest, no platforms and no licences."""
         return {
             "engine": self.name.value,
             "version": _VERSION,
             "backend": _BACKEND,
-            "sha256": pack_digest(self.name.value, _VERSION, host, _BACKEND),
+            "sha256": None,
             "tool": _TOOL,
             "launch": _PIN_LAUNCH,
-            "platforms": pack_platforms(self.name.value, _VERSION, host, _BACKEND),
+            "platforms": {},
             "memory": {"sizing": None, "rule": None},
-            "licenses": _LICENCES,
+            "licenses": [],
         }
 
     def role_spec(
