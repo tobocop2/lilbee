@@ -28,6 +28,11 @@ cuda_dash=12-4
 cuda_full=12.4.1
 cuda_dir=/usr/local/cuda-12.4
 jobs="$(nproc)"
+# shellcheck source=tools/wheel-build/pack_common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pack_common.sh"
+# The Python of the image holds other packages, so the build tools go into a new venv.
+venv=/tmp/build-venv
+[ ! -e "${venv}" ] || { echo "ik_llama_manylinux: an earlier build used this container (${venv} exists). Use a new one." >&2; exit 2; }
 
 packages=(gcc-toolset-13-gcc-c++)
 if [ "${BACKEND}" = cuda ]; then
@@ -38,8 +43,9 @@ if [ "${BACKEND}" = cuda ]; then
     "cuda-driver-devel-${cuda_dash}")
 fi
 dnf install -y "${packages[@]}"
-/opt/python/cp312-cp312/bin/python -m pip install -q cmake ninja
-export PATH="/opt/python/cp312-cp312/bin:${PATH}"
+/opt/python/cp312-cp312/bin/python -m venv "${venv}"
+install_build_tools "${venv}/bin/python" "$(dirname "${BASH_SOURCE[0]}")/ik-tools.constraints"
+export PATH="${venv}/bin:${PATH}"
 gcc13=/opt/rh/gcc-toolset-13/root/usr/bin
 "${gcc13}/g++" --version | head -1
 

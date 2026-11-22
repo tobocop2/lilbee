@@ -33,10 +33,14 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   cell, in the same way. A Linux cell builds in the manylinux image (`tei_manylinux.sh`),
   the macOS cell on the Mac. `check_tei_wheel.py` checks the wheel and `smoke_tei.sh` starts
   its router.
+- `pack_ik.sh` — builds and checks the ik_llama.cpp engine pack of one cell, in the same
+  way. The server builds in the manylinux image (`ik_llama_manylinux.sh`), and
+  `check_ik_wheel.py` checks the notices and the licence expression of the wheel.
 - `pack_common.sh` — the functions that the pack scripts share.
 - `build-tools.constraints` — the pinned Python build tools of the packs.
   `tei-tools-linux.constraints` and `tei-tools-macos.constraints` add the ones that only one
   build of the text-embeddings-inference pack needs.
+  `ik-tools.constraints` pins the ones that build the ik_llama.cpp server.
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone

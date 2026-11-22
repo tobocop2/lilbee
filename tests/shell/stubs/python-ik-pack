@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Stand-in for the Python 3.12 of an ik_llama.cpp pack build. A venv holds this stub again, pip unpacks a wheel beside
+# the venv and records that the venv got the tools of a requirements file. `build`, which wants those tools, and
+# `wheel tags` write a wheel of the project files with the licence files and the licence expression of pyproject.toml.
+# Every other call runs the real python3. tests/shell/pack_common.bats runs the real pip.
+#
+# Reads:
+#   REAL_PYTHON     the interpreter for the other calls (required)
+#   PYTHON_CALLS    a file that receives one line per call: the path of this stub, the first line of the arguments, and
+#                   the commit time, the constraint and the folder (required)
+#   PYTHON_VERSION  the version the stub reports (default: 3.12)
+#   PIP_STATUS      the status of the install of the tools (default: 0)
+#   BUILD_WHEELS    how many wheels `build` writes (default: 1)
+#   WHEEL_WITHOUT   the end of a name of a licence file to leave out
+#   WHEEL_TAG       the tag that `wheel tags` writes into the WHEEL file (default: the tag of the name)
+
+set -euo pipefail
+
+site="$(dirname "$0")/../site"
+tools="$(dirname "$0")/../pinned-tools"
+call="$0 $*"
+echo "${call%%$'\n'*} | epoch=${SOURCE_DATE_EPOCH-unset} constraint=${PIP_CONSTRAINT-unset} locale=${LC_ALL-unset} cwd=${PWD##*/}" >> "${PYTHON_CALLS:?}"
+case "${1-} ${2-} ${3-}" in
+  "-c "*version_info*)
+    echo "${PYTHON_VERSION:-3.12}" ;;
+  "-c import lilbee_engine_ik_llama_cpp"*)
+    PYTHONPATH="${site}" exec "${REAL_PYTHON:?}" "$@" ;;
+  "-m venv "*)
+    mkdir -p "$3/bin"
+    cp "$0" "$3/bin/python"
+    cp "$0" "$3/bin/python3" ;;
+  "-m pip install")
+    case "$*" in
+      *.whl) "${REAL_PYTHON:?}" -c '
+import os, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    for info in wheel.infolist():
+        os.chmod(wheel.extract(info, sys.argv[2]), info.external_attr >> 16)' "${!#}" "${site}" ;;
+      *" --require-hashes --force-reinstall -r "*)
+        [ -s "${!#}" ] || { echo "stub python: no file ${!#}" >&2; exit 1; }
+        [ -z "${PIP_STATUS-}" ] || { echo "stub python: pip failed" >&2; exit "${PIP_STATUS}"; }
+        : > "${tools}" ;;
+      *) echo "stub python: this pip call installs no pinned tool" >&2; exit 1 ;;
+    esac ;;
+  "-m build --wheel")
+    if [ ! -e "${tools}" ] || [ "${4-}" != --no-isolation ]; then echo "stub python: a build without the pinned tools" >&2; exit 1; fi
+    mkdir -p dist
+    for ((n = 0; n < ${BUILD_WHEELS:-1}; n++)); do
+      "${REAL_PYTHON:?}" -c '
+import os, pathlib, re, sys, zipfile
+build, extra = sys.argv[1].rpartition("=")[2], sys.argv[2]
+text = pathlib.Path("pyproject.toml").read_text()
+version, expression = (re.search(rf"^{key} = \"(.*)\"$", text, re.M)[1] for key in ("version", "license"))
+info = f"lilbee_engine_ik_llama_cpp-{version}.dist-info/"
+without = os.environ.get("WHEEL_WITHOUT")
+with zipfile.ZipFile(f"dist/lilbee_engine_ik_llama_cpp-{version}{extra}-{build}-py3-none-any.whl", "w") as wheel:
+    for path in sorted(pathlib.Path(".").rglob("*")):
+        name = path.as_posix()
+        if not path.is_file() or name.startswith("dist/") or name == "pyproject.toml":
+            continue
+        if without and name.endswith(without):
+            continue
+        wheel.write(name, name if name.startswith("lilbee_engine") else f"{info}licenses/{name}")
+    wheel.writestr(info + "METADATA", f"Metadata-Version: 2.4\nLicense-Expression: {expression}\n")
+    wheel.writestr(info + "WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n")' "${@: -1}" "$([ "${n}" -eq 0 ] || echo ".${n}")"
+    done ;;
+  "-m wheel tags")
+    for wheel in "${@:7}"; do
+      "${REAL_PYTHON:?}" -c '
+import os, sys, zipfile
+old, platform = sys.argv[1:]
+tag = os.environ.get("WHEEL_TAG") or f"py3-none-{platform}"
+with zipfile.ZipFile(old) as source, zipfile.ZipFile(old.replace("-any.whl", f"-{platform}.whl"), "w") as target:
+    for item in source.infolist():
+        data = source.read(item)
+        if item.filename.endswith(".dist-info/WHEEL"):
+            data = data.replace(b"py3-none-any", tag.encode())
+        target.writestr(item, data)
+os.remove(old)' "${wheel}" "$6"
+    done ;;
+  *)
+    exec "${REAL_PYTHON:?}" "$@" ;;
+esac
