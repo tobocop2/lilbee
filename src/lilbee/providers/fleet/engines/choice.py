@@ -297,7 +297,8 @@ def choose_engine(
     The result never names an engine that cannot load *fmt* or that the host
     refuses. A request that is unusable gives the host default, with a notice
     that holds the reason. An override that is installed but cannot load *fmt*
-    gives no engine. A notice names *role* and *model* when given.
+    gives no engine. A notice names *model* when given. It names *role* only when the
+    cause is specific to that role.
     """
     request = _request(preferred, override)
     of_model = f" of {model}" if model else ""
@@ -309,21 +310,23 @@ def choose_engine(
     answer = host_answer(name, host) if loads and serves else PASS
     if loads and serves and answer.ok:
         return EngineChoice(EngineName(name), None, None)
-    subject = f"Engine {name} for {role.value}" if role else f"Engine {name}"
+    # A cause that holds for every role names no role, so one engine gives one notice text.
+    subject = f"Engine {name}"
+    role_subject = f"{subject} for {role.value}" if role else subject
     hint = ""
     left = f"loads the {fmt} format"
     if name not in installed:
         reason = f"{subject} is not installed."
         hint = f" {LIST_HINT}"
     elif not loads:
-        reason = f"{subject} cannot load the {fmt} format{of_model}."
+        reason = f"{role_subject} cannot load the {fmt} format{of_model}."
         if kind is NoticeKind.OVERRIDE_UNUSABLE:
             return EngineChoice(None, kind, f"{reason} Choose an engine that loads {fmt}.")
     elif role is not None and refuses_format_for_role(name, role, fmt):
-        reason = f"{subject} cannot load the {fmt} format{of_model}."
+        reason = f"{role_subject} cannot load the {fmt} format{of_model}."
         left = f"loads the {fmt} format for {role}"
     elif not serves:
-        reason = f"{subject} does not serve this role."
+        reason = f"{role_subject} does not serve this role."
         left = "serves this role"
     else:
         reason = f"{subject} cannot run on this host. {answer.reason}"

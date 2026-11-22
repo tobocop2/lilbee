@@ -121,8 +121,10 @@ class RoutingProvider(LLMProvider):
         """Log why *role* did not get the engine asked for, once for each notice text."""
         notice = resolve_engines(cfg).choices[role].notice
         if notice is not None and self._noticed.get(role) != notice:
+            shown = notice in self._noticed.values()
             self._noticed[role] = notice
-            log.warning("%s", notice)
+            if not shown:
+                log.warning("%s", notice)
 
     def _announce(self, role: WorkerRole, ref: ProviderModelRef) -> None:
         """Log what serves *role*, and refuse a local run when it has no engine."""
@@ -439,17 +441,20 @@ class RoutingProvider(LLMProvider):
         return [*self._engine_fallbacks(), *self._local_warnings()]
 
     def _engine_fallbacks(self) -> list[HealthWarning]:
-        """One warning for each role whose engine choice did not hold.
+        """One warning for each distinct reason an engine choice did not hold.
 
         While a reload runs or after one failed, the live choice may not be what the
-        server holds, so a warning says that before the per-role warnings.
+        server holds, so a warning says that before the engine warnings. Roles that
+        share one reason share one warning.
         """
         notice = self.reload_notice()
         warnings = [] if notice is None else [notice]
         warnings.extend(
-            choice.notice
-            for choice in resolve_engines(cfg).choices.values()
-            if choice.notice is not None
+            dict.fromkeys(
+                choice.notice
+                for choice in resolve_engines(cfg).choices.values()
+                if choice.notice is not None
+            )
         )
         return [HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=m) for m in warnings]
 

@@ -204,8 +204,8 @@ def roles() -> None:
         return
     for view in views:
         console.print(f"{view.role}: {view.model} ({view.format}) on {view.engine or 'no engine'}")
-        if view.notice:
-            console.print(view.notice)
+    for notice in dict.fromkeys(view.notice for view in views if view.notice):
+        console.print(notice)
 
 
 @engine_app.command("use")

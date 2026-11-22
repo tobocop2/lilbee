@@ -336,7 +336,7 @@ def test_a_named_engine_that_is_not_installed_falls_back_with_the_notice(monkeyp
     got = engine_choice.resolve_engines(cfg).choices[WorkerRole.CHAT]
     assert got.name is EngineName.LLAMA
     assert got.notice is not None
-    assert "Engine ik_llama.cpp for chat is not installed. Using llama.cpp." in got.notice
+    assert "Engine ik_llama.cpp is not installed. Using llama.cpp." in got.notice
 
 
 def test_engine_list_shows_the_engine_as_not_installed_and_writes_nothing() -> None:
