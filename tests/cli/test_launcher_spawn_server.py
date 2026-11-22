@@ -7,8 +7,12 @@ mode, a size-capped log file otherwise).
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +22,91 @@ import pytest
 from lilbee.cli.launchers import server as server_mod
 from lilbee.core.config import cfg
 from tests._mock_effects import repeat_last
+from tests.conftest import clean_env
+
+_FAKE_SERVE = """\
+import os
+import signal
+import sys
+import time
+
+record = os.environ["FAKE_SERVE_RECORD"]
+
+
+def note(signum, _frame):
+    with open(record, "a", encoding="utf-8") as handle:
+        handle.write(signal.Signals(signum).name + "\\n")
+    if signum == signal.SIGTERM:
+        sys.exit(0)
+
+
+signal.signal(signal.SIGINT, note)
+signal.signal(signal.SIGTERM, note)
+with open(os.environ["FAKE_SERVE_READY"], "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()))
+while True:
+    time.sleep(1)
+"""
+
+_LAUNCHER = """\
+import os
+import sys
+import time
+
+from lilbee.cli.launchers import server as server_mod
+
+proc = server_mod.spawn_server(0)
+ready = os.environ["FAKE_SERVE_READY"]
+deadline = time.monotonic() + 20
+while not os.path.exists(ready) and time.monotonic() < deadline:
+    time.sleep(0.05)
+try:
+    print("ready", flush=True)
+    time.sleep(60)
+except KeyboardInterrupt:
+    pass
+server_mod.stop_spawned_server(proc)
+print(proc.returncode, flush=True)
+"""
+
+
+def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
+    """Start a launcher, in a process group of its own as a terminal job, over a fake serve."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "lilbee"
+    fake.write_text(f"#!{sys.executable}\n{_FAKE_SERVE}", encoding="utf-8")
+    fake.chmod(0o755)
+    env = {
+        **clean_env(tmp_path),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "LILBEE_LAUNCHER_SERVE_QUIET": "1",
+        "FAKE_SERVE_RECORD": str(tmp_path / "signals.txt"),
+        "FAKE_SERVE_READY": str(tmp_path / "serve.pid"),
+    }
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", _LAUNCHER],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        start_new_session=True,
+    )
+    assert launcher.stdout is not None
+    assert launcher.stdout.readline().strip() == "ready", launcher.communicate()[1]
+    return launcher
+
+
+def _signals_seen(tmp_path: Path) -> list[str]:
+    record = tmp_path / "signals.txt"
+    return record.read_text(encoding="utf-8").split() if record.exists() else []
+
+
+def _end_fake_serve(tmp_path: Path) -> None:
+    """Stop a fake serve the test left running; it is this test's own process."""
+    pid = int((tmp_path / "serve.pid").read_text(encoding="utf-8"))
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
 
 
 @pytest.fixture()
@@ -25,7 +114,7 @@ def _capture_popen():
     """Patch the bound spawn to record the stdout/stderr kwargs without spawning."""
     captured: dict = {}
 
-    def fake_popen(cmd, *, stdout, stderr, env=None):
+    def fake_popen(cmd, *, stdout, stderr, env=None, **_popen_kwargs):
         captured["cmd"] = cmd
         captured["stdout"] = stdout
         captured["stderr"] = stderr
@@ -645,3 +734,34 @@ class TestServerExitAtStartup:
         secho.assert_called_once_with(
             "lilbee server failed to start on port 4321.", err=True, fg=typer.colors.RED
         )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no process groups to signal")
+def test_a_ctrl_c_to_the_launcher_group_leaves_the_stop_to_the_launcher(tmp_path: Path) -> None:
+    """A terminal Ctrl-C reaches the launcher only; the launcher's SIGTERM is serve's one signal."""
+    launcher = _start_launcher(tmp_path)
+    try:
+        os.killpg(launcher.pid, signal.SIGINT)
+        stdout, stderr = launcher.communicate(timeout=30)
+    finally:
+        _end_fake_serve(tmp_path)
+
+    assert launcher.returncode == 0, stderr
+    assert stdout.split() == ["0"], stderr
+    assert _signals_seen(tmp_path) == ["SIGTERM"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows ends the child through a job object")
+def test_serve_still_stops_when_the_launcher_is_killed(tmp_path: Path) -> None:
+    """Outside the launcher's group, serve still gets SIGTERM when the launcher dies hard."""
+    launcher = _start_launcher(tmp_path)
+    try:
+        os.kill(launcher.pid, signal.SIGKILL)
+        launcher.communicate(timeout=30)
+        deadline = time.monotonic() + 10
+        while not _signals_seen(tmp_path) and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        _end_fake_serve(tmp_path)
+
+    assert _signals_seen(tmp_path) == ["SIGTERM"]
