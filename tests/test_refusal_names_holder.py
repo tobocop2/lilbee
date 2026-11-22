@@ -47,16 +47,23 @@ AUTO_CHAT_CPU_EMBED = '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}}'
 class _RealSizeEngine(MistralAdapter):
     """The real adapter, which reads each model's true size, on cards this host lacks."""
 
-    def __init__(self, binary: Path, cards: tuple[int, ...]) -> None:
+    def __init__(
+        self, binary: Path, cards: tuple[int, ...], integrated_gib: tuple[int, ...] = ()
+    ) -> None:
         super().__init__()
         self._binary = binary
         self._cards = cards
+        self._integrated_gib = integrated_gib
 
     def binary(self) -> Path:
         return self._binary
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=cards_of(self._cards), output="")
+        integrated = [
+            FleetDevice("CUDA", len(self._cards) + n, f"igpu{n}", gib * GIB, gib * GIB, unified=True)
+            for n, gib in enumerate(self._integrated_gib)
+        ]
+        return DeviceProbe(devices=[*cards_of(self._cards), *integrated], output="")
 
 
 def plan_real_sizes(
@@ -68,8 +75,12 @@ def plan_real_sizes(
     spec: str | None = None,
     *,
     more_cards_gib: tuple[int, ...] = (),
+    integrated_gib: tuple[int, ...] = (),
 ):
-    """Plan a chat and an embed GGUF of these byte sizes through the real adapter."""
+    """Plan a chat and an embed GGUF of these byte sizes through the real adapter.
+
+    An integrated card is listed after the discrete ones: the auto planner leaves it alone.
+    """
     prepare_host(
         monkeypatch, tmp_path, (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1)), 64 * GIB
     )
@@ -78,7 +89,7 @@ def plan_real_sizes(
     monkeypatch.setattr(cfg, "placement", spec)
     binary = tmp_path / "engine-server"
     binary.write_text("", encoding="utf-8")
-    engine = _RealSizeEngine(binary, (card_gib, *more_cards_gib))
+    engine = _RealSizeEngine(binary, (card_gib, *more_cards_gib), integrated_gib)
     return planning.plan_all_launches(engines=dict.fromkeys(WorkerRole, engine))
 
 
@@ -147,6 +158,36 @@ class TestAnAutoChatOnATwoCardHost:
         reason = plan.refused_roles[WorkerRole.CHAT]
         assert f"The embed model {EMBED_REF} (8.0 GiB) holds the rest." in reason
         assert reason.endswith("to cpu or another card.")
+
+
+class TestACardTheAutoPlannerDoesNotPack:
+    """The host lists the card, so a pin can name it, so the remedy may offer it.
+
+    The auto planner packs only the discrete card; the integrated one is listed but
+    holds no capacity. The count of cards is the listed count, never the packed count.
+    """
+
+    def test_the_remedy_offers_a_listed_integrated_card(self, tmp_path, monkeypatch) -> None:
+        plan = plan_real_sizes(
+            monkeypatch,
+            tmp_path,
+            21 * GIB,
+            8 * GIB,
+            24,
+            '{"embed": {"devices": [0]}}',
+            integrated_gib=(4,),
+        )
+        assert WorkerRole.CHAT not in _launched(plan)
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert f"The embed model {EMBED_REF} (8.0 GiB) holds the rest." in reason
+        assert reason.endswith("to cpu or another card.")
+
+    def test_a_lone_discrete_card_offers_no_other_card(self, tmp_path, monkeypatch) -> None:
+        plan = plan_real_sizes(
+            monkeypatch, tmp_path, 21 * GIB, 8 * GIB, 24, '{"embed": {"devices": [0]}}'
+        )
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert reason.endswith("to cpu.")
 
 
 class TestAPinnedChatBesideAPinnedEmbed:

@@ -1789,6 +1789,41 @@ class TestSyncCancellation:
         assert read_on
         assert threading.main_thread() not in read_on
 
+    async def test_the_sizing_result_reaches_the_adaptive_admission(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """The baseline starts the gate; the ceiling and the devices go to the controller."""
+        import types
+
+        from lilbee.data.ingest import ingest_stream, pipeline
+        from tests.conftest import one_plan_batch
+
+        card = object()
+        built: dict[str, object] = {}
+        sampled: list[list[object]] = []
+
+        class _RecordingController:
+            def __init__(self, gate, _profile, _sampler, _completed, **kwargs):
+                built.update(kwargs, gate=gate)
+
+            async def run(self) -> None:
+                return None
+
+        monkeypatch.setattr(pipeline, "_admission_sizing", lambda: (3, [card], 7))
+        monkeypatch.setattr(
+            pipeline, "profile_for", lambda _mode: types.SimpleNamespace(name="adaptive")
+        )
+        monkeypatch.setattr(
+            pipeline,
+            "make_signal_sampler",
+            lambda devices: sampled.append(list(devices)) or (lambda: None),
+        )
+        monkeypatch.setattr(pipeline, "AdaptiveController", _RecordingController)
+        await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
+        assert built["permit_max"] == 7
+        assert built["gate"].limit == 3
+        assert sampled == [[card]]
+
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
         not drop that file: it is buffered and flushed before the cancel propagates
