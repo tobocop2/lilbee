@@ -18,7 +18,12 @@ from lilbee.core.config import cfg
 from lilbee.core.web_names import WEB_PREFIX
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
-from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL, SEARCH_NEEDS_EMBEDDER, RagContext
+from lilbee.retrieval.query.searcher import (
+    GROUNDED_REFUSAL,
+    SEARCH_NEEDS_EMBEDDER,
+    AskResult,
+    RagContext,
+)
 from lilbee.runtime.progress.types import LibraryUpgradeEvent, UpgradePhase
 from lilbee.server import handlers
 from lilbee.server import wiki as server_wiki
@@ -431,6 +436,139 @@ class TestChatRetrievalStaysOffTheLoop:
         assert [source.source for source in result.sources] == [page.source]
         # Titles are read for the sources, the cited subset and the dropped list.
         _assert_off_the_loop(threads, 3)
+
+
+def _web_chunk() -> SearchChunk:
+    return SearchChunk(
+        source=f"{WEB_PREFIX}page.md",
+        content_type="text",
+        chunk="text",
+        distance=0.1,
+        page_start=1,
+        page_end=1,
+        line_start=0,
+        line_end=0,
+        chunk_index=0,
+        vector=[0.1],
+    )
+
+
+class TestAskStaysOffTheLoop:
+    """The ask routes read the store and probe the engine on a worker thread."""
+
+    async def test_the_one_shot_response_is_titled_off_the_loop(self, services):
+        threads: list[int] = []
+        page = _web_chunk()
+        services.store.web_titles.side_effect = _recording(threads, returns={})
+        with (
+            patch.object(
+                services.searcher, "ask_raw", return_value=AskResult(answer="a", sources=[page])
+            ),
+            patch.object(services.searcher, "search_unavailable", return_value=True),
+        ):
+            result = await rag_handlers.ask("q")
+        assert [source.source for source in result.sources] == [page.source]
+        # Titles are read for the sources, the cited subset and the dropped list.
+        _assert_off_the_loop(threads, 3)
+
+    async def test_the_one_shot_embedder_probe_runs_off_the_loop(self, services):
+        threads: list[int] = []
+        with (
+            patch.object(
+                services.searcher, "ask_raw", return_value=AskResult(answer="a", sources=[])
+            ),
+            patch.object(
+                services.searcher,
+                "search_unavailable",
+                side_effect=_recording(threads, returns=True),
+            ),
+        ):
+            await rag_handlers.ask("q")
+        _assert_off_the_loop(threads, 1)
+
+    async def test_the_stream_probes_the_engine_and_embedder_off_the_loop(self, services):
+        warming: list[int] = []
+        unavailable: list[int] = []
+        with (
+            patch.object(
+                rag_handlers, "_chat_warming_events", side_effect=_recording(warming, returns=[])
+            ),
+            patch.object(
+                services.searcher,
+                "search_unavailable",
+                side_effect=_recording(unavailable, returns=True),
+            ),
+        ):
+            [f async for f in rag_handlers.ask_stream("q")]
+        _assert_off_the_loop(warming, 1)
+        _assert_off_the_loop(unavailable, 1)
+
+    async def test_the_stream_decides_to_skip_retrieval_off_the_loop(self, services):
+        threads: list[int] = []
+        searcher = services.searcher
+        with (
+            patch.object(searcher, "search_unavailable", return_value=False),
+            patch.object(
+                searcher, "skip_retrieval", side_effect=_recording(threads, returns=True)
+            ),
+            patch.object(
+                rag_handlers, "_resolve_stream_context", return_value=([], None, [])
+            ),
+        ):
+            [f async for f in rag_handlers.ask_stream("q")]
+        _assert_off_the_loop(threads, 1)
+
+    async def test_the_sources_frame_is_titled_off_the_loop(self, services):
+        threads: list[int] = []
+        page = _web_chunk()
+        services.store.web_titles.side_effect = _recording(threads, returns={})
+        with patch.object(rag_handlers, "_store_extracted_memories", AsyncMock(return_value=[])):
+            frames = [f async for f in rag_handlers._emit_sources_and_memories("q", ["a"], [page])]
+        assert any(page.source in frame for frame in frames)
+        _assert_off_the_loop(threads, 1)
+
+
+class TestSyncPlanningStaysOffTheLoop:
+    """The sync behind an upload walks the disk and reads the index on a worker thread."""
+
+    async def test_the_walk_and_the_index_reads_run_off_the_loop(self, services):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.discovery import CorpusScan
+
+        ran: dict[str, list[int]] = {
+            name: []
+            for name in (
+                "plan_fanout",
+                "discover_corpus",
+                "_sources_in_scope",
+                "_forget_refused",
+                "_move_pool",
+                "_missing_from_index",
+                "_describe_failures",
+            )
+        }
+        services.store.embedding_mismatch.return_value = None
+        services.store.held_records.return_value = {}
+        services.store.get_sources.return_value = []
+
+        def stub(name: str, returns):
+            return patch.object(
+                pipeline, name, side_effect=_recording(ran[name], returns=returns)
+            )
+
+        with (
+            stub("plan_fanout", []),
+            stub("discover_corpus", CorpusScan({}, {})),
+            stub("_sources_in_scope", []),
+            stub("_forget_refused", []),
+            stub("_move_pool", pipeline._MovePool([], {})),
+            stub("_missing_from_index", []),
+            stub("_describe_failures", []),
+        ):
+            await pipeline.sync(quiet=True)
+        for name, threads in ran.items():
+            assert threads, name
+            assert threading.get_ident() not in threads, name
 
 
 class TestSessionCallsStayOffTheLoop:
