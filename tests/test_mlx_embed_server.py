@@ -495,26 +495,74 @@ s.serve(s.parse_args(sys.argv[2:]), B())
 """
 
 
+_LOAD_RUNNER = """
+import importlib.util, socket, sys
+spec = importlib.util.spec_from_file_location("s", sys.argv[1])
+s = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(s)
+class Loading:
+    def __init__(self, path):
+        port = int(sys.argv[sys.argv.index("--port") + 1])
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=2).close()
+            print("PORT-OPEN-DURING-LOAD", flush=True)
+        except ConnectionRefusedError:
+            print("PORT-CLOSED-DURING-LOAD", flush=True)
+s.MlxBackend = Loading
+s.main(sys.argv[2:])
+"""
+
+
+def _wait_for_health(port: int) -> None:
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            assert _call(port, "GET", "/health")[0] == 200
+            return
+        except OSError:
+            assert time.monotonic() < deadline, "the server did not open its port"
+            time.sleep(0.1)
+
+
+def _server_args(port: int) -> list[str]:
+    return ["--model", "m", "--port", str(port), "--task", "embed", "--max-length", "8"]
+
+
 def test_one_sigterm_stops_the_server(tmp_path: Path) -> None:
     port = _free_port()
-    args = ["--model", "m", "--port", str(port), "--task", "embed", "--max-length", "8"]
     proc = subprocess.Popen(
-        [sys.executable, "-c", _RUNNER, str(SERVER), *args],
+        [sys.executable, "-c", _RUNNER, str(SERVER), *_server_args(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
-        deadline = time.monotonic() + 30
-        while True:
-            try:
-                assert _call(port, "GET", "/health")[0] == 200
-                break
-            except OSError:
-                assert time.monotonic() < deadline, "the server did not open its port"
-                time.sleep(0.1)
+        _wait_for_health(port)
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=10) == 0
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_the_port_opens_only_after_the_model_loads() -> None:
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _LOAD_RUNNER, str(SERVER), *_server_args(port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        _wait_for_health(port)
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert out.split() == ["PORT-CLOSED-DURING-LOAD"]
+
+
+def test_the_server_binds_to_the_loopback_address_unless_told_otherwise() -> None:
+    assert srv.parse_args(_server_args(5800)).host == "127.0.0.1"
