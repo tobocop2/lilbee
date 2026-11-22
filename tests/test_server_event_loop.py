@@ -564,6 +564,71 @@ class TestSyncPlanningStaysOffTheLoop:
             assert threads, name
             assert threading.get_ident() not in threads, name
 
+    async def test_the_embedder_probe_runs_off_the_loop_when_a_file_is_planned(self, services):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.discovery import CorpusScan
+
+        async def one_batch(*_args):
+            yield [MagicMock()]
+
+        probed: list[int] = []
+        services.store.embedding_mismatch.return_value = None
+        services.store.held_records.return_value = {}
+        services.store.get_sources.return_value = []
+
+        with (
+            patch.object(pipeline, "plan_fanout", return_value=[]),
+            patch.object(pipeline, "discover_corpus", return_value=CorpusScan({}, {})),
+            patch.object(pipeline, "_forget_refused", return_value=[]),
+            patch.object(pipeline, "_move_pool", return_value=pipeline._MovePool([], {})),
+            patch.object(pipeline, "_plan_batches", one_batch),
+            patch.object(pipeline, "_require_embedding_model", _recording(probed)),
+            patch.object(pipeline, "ingest_stream", new_callable=AsyncMock) as ingest,
+            patch.object(pipeline, "_run_post_ingest_passes", new_callable=AsyncMock),
+            patch.object(pipeline, "_persist_failures"),
+            patch.object(pipeline, "_missing_from_index", return_value=[]),
+            patch.object(pipeline, "_describe_failures", return_value=[]),
+        ):
+            await pipeline.sync(quiet=True)
+        ingest.assert_awaited_once()
+        _assert_off_the_loop(probed, 1)
+
+    async def test_the_documents_dir_and_the_ignore_file_are_made_and_read_off_the_loop(
+        self, services
+    ):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.discovery import CorpusScan
+
+        made: list[int] = []
+        read: list[int] = []
+        make_dir = Path.mkdir
+        services.store.embedding_mismatch.return_value = None
+        services.store.held_records.return_value = {}
+        services.store.get_sources.return_value = []
+
+        def record_mkdir(path, *args, **kwargs):
+            if path == cfg.documents_dir:
+                made.append(threading.get_ident())
+            return make_dir(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "mkdir", record_mkdir),
+            patch.object(
+                pipeline.IgnoreRules,
+                "for_corpus",
+                _recording(read, wrapped=pipeline.IgnoreRules.for_corpus),
+            ),
+            patch.object(pipeline, "plan_fanout", return_value=[]),
+            patch.object(pipeline, "discover_corpus", return_value=CorpusScan({}, {})),
+            patch.object(pipeline, "_forget_refused", return_value=[]),
+            patch.object(pipeline, "_move_pool", return_value=pipeline._MovePool([], {})),
+            patch.object(pipeline, "_missing_from_index", return_value=[]),
+            patch.object(pipeline, "_describe_failures", return_value=[]),
+        ):
+            await pipeline.sync(quiet=True)
+        _assert_off_the_loop(made, 1)
+        _assert_off_the_loop(read, 1)
+
 
 class TestSessionCallsStayOffTheLoop:
     """Each handler's store calls run on a worker thread; one session exists to act on."""

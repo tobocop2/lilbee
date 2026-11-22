@@ -1661,7 +1661,7 @@ async def sync(
         shard is not None or await to_ingest_thread(_prepare_forced_rebuild, _store)
     )
 
-    config.documents_dir.mkdir(parents=True, exist_ok=True)
+    await to_ingest_thread(config.documents_dir.mkdir, parents=True, exist_ok=True)
     index_mismatch = await to_ingest_thread(_report_index_mismatch, _store)
     corpus_root = await _corpus_root(_store, shard, retry_skipped=retry_skipped)
     # The plan probes the devices and walks the corpus for its size.
@@ -1678,7 +1678,7 @@ async def sync(
         )
         return merged.model_copy(update={"index_mismatch": index_mismatch})
 
-    rules = IgnoreRules.for_corpus(corpus_root)
+    rules = await to_ingest_thread(IgnoreRules.for_corpus, corpus_root)
     # The disk walk and the index reads and drops before planning block, so they run
     # on the ingest pool, not on the loop.
     corpus = await to_ingest_thread(
@@ -1727,7 +1727,7 @@ async def sync(
             from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
 
             with keep_fleet_warm():
-                _require_embedding_model()
+                await to_ingest_thread(_require_embedding_model)
                 await ingest_stream(
                     _chain_plan_batches(first, plan_batches),
                     added,
