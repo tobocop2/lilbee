@@ -240,6 +240,7 @@ async def test_an_unreadable_engine_list_shows_a_toast(monkeypatch: pytest.Monke
     app = _SettingsApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
+        await app.workers.wait_for_complete()  # the load runs on a thread; its toast follows it
         assert await wait_until(
             pilot, lambda: "The engine list could not be read: disk gone" in _toasts()
         )
