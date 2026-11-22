@@ -459,9 +459,17 @@ class RoutingProvider(LLMProvider):
         return [HealthWarning(code=WarningCode.ENGINE_FALLBACK, message=m) for m in warnings]
 
     def _local_warnings(self) -> list[HealthWarning]:
-        """Serving degradations of the local engine, started when it serves the embedder."""
-        local = self._local_embedder() or self._local
-        return [] if local is None else local.health_warnings()
+        """Serving degradations of the local engine; the embed warning needs a local embedder."""
+        local = self._local_embedder()
+        if local is not None:
+            return local.health_warnings()
+        if self._local is None:
+            return []
+        return [
+            w
+            for w in self._local.health_warnings()
+            if w.code != WarningCode.EMBED_WINDOW_BELOW_CHUNK
+        ]
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """Chat prefill progress of the local engine, or None when none exists."""

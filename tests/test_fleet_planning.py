@@ -5266,6 +5266,28 @@ class TestWarnWhenChatDownsized:
             built_ctx_target=target,
         )
 
+    def test_warns_when_the_embed_window_is_below_the_chunk_size(self, caplog, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        launch = self._launch(slots=1, ctx=512, target=0)
+        launch.token_cap = 504
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_embed_window_below_chunk(launch)
+        assert [r.message for r in caplog.records] == [
+            "The embedding model accepts 504 tokens per input, below chunk_size 512, "
+            "so each chunk holds at most 504 tokens. Set chunk_size to 504 or lower."
+        ]
+
+    def test_stays_quiet_when_the_embed_window_holds_the_chunk_size(
+        self, caplog, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        launch = self._launch(slots=1, ctx=648, target=0)
+        launch.token_cap = 640
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_embed_window_below_chunk(launch)
+            planning_mod.warn_when_embed_window_below_chunk(self._launch(slots=1, ctx=1, target=0))
+        assert caplog.records == []
+
     def test_warns_when_window_is_below_target(self, caplog) -> None:
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
             planning_mod.warn_when_chat_downsized(self._launch(slots=1, ctx=41472, target=65536))

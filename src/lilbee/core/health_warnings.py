@@ -25,6 +25,8 @@ class WarningCode(StrEnum):
     """The index was built with another embedding model; search refuses until they agree."""
     SCALAR_INDEX_UNAVAILABLE = "scalar_index_unavailable"
     """A scalar index is registered but its files are gone; filtered search is degraded."""
+    EMBED_WINDOW_BELOW_CHUNK = "embed_window_below_chunk"
+    """The embedding model accepts fewer tokens than chunk_size, so chunks are cut to its cap."""
     PLACEMENT_DIVERGED = "placement_diverged"
     """The engine allocated materially more or less GPU memory than planned."""
     LIBRARY_UPGRADING = "library_upgrading"

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from lilbee.providers.fleet.engines import EngineAdapter
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.base import (
     CONTEXT_WINDOW_MARGIN_TOKENS,
     GENERATION_RESERVE_TOKENS,
@@ -61,6 +62,20 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
 def embed_token_cap(ctx: int) -> int:
     """Tokens an embed server truncates one input to, given its per-slot context."""
     return max(1, ctx - _EMBED_CTX_MARGIN)
+
+
+def embed_window_warning(cap: int) -> HealthWarning | None:
+    """The warning that chunks are cut below ``chunk_size``, when *cap* is under it."""
+    if cap >= cfg.chunk_size:
+        return None
+    return HealthWarning(
+        code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+        message=(
+            f"The embedding model accepts {cap} tokens per input, below chunk_size "
+            f"{cfg.chunk_size}, so each chunk holds at most {cap} tokens."
+        ),
+        remedy=f"Set chunk_size to {cap} or lower.",
+    )
 
 
 _LLM_RERANK_HEADROOM = 512

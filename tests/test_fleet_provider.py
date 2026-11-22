@@ -1048,6 +1048,26 @@ def test_adopt_group_gives_each_client_its_engine_request_profile(monkeypatch) -
     assert captured["profile"] is sentinel
 
 
+def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
+    """Every serving process passes through adoption, so the window check fires there."""
+    launch = _fake_launch(WorkerRole.EMBED)
+    seen: list[object] = []
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda *_a, **_kw: _fake_client())
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m" if role is WorkerRole.EMBED else ""
+    )
+    monkeypatch.setattr(
+        planning_mod, "role_model_placeable", lambda _role, _ref, _vram, *, engine: True
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda *, engines: planning_mod.FleetPlan((launch,))
+    )
+    monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
+    FleetProvider()._ensure_fleet()
+    assert seen == [launch]
+
+
 def test_embed_without_server_raises(engine_installed: Path) -> None:
     from lilbee.providers.base import ProviderError
 
@@ -5059,12 +5079,21 @@ class TestEmbedTokenCap:
         assert seen == ["org/repo/e.gguf"]
 
     @pytest.mark.parametrize("semantic", [False, True])
-    def test_health_names_no_embed_window_below_the_chunk_size(self, monkeypatch, semantic) -> None:
-        """Every chunker cuts its chunks to the served cap in the model's tokens, so a cap
-        below chunk_size loses no text and health has nothing to report."""
+    def test_health_names_an_embed_window_below_the_chunk_size(self, monkeypatch, semantic) -> None:
+        """Every chunker cuts its chunks to a cap below chunk_size, so the chunk_size the
+        user set is not the one served, and health says so."""
+        from lilbee.core.health_warnings import WarningCode
+
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "semantic_chunking", semantic)
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: 504)
+        codes = [w.code for w in FleetProvider().health_warnings()]
+        assert codes == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
+
+    @pytest.mark.parametrize("cap", [512, 640, None])
+    def test_health_is_clean_when_the_cap_holds_the_chunk_size(self, monkeypatch, cap) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: cap)
         assert FleetProvider().health_warnings() == []
 
 
@@ -5107,6 +5136,17 @@ class TestRoutingProviderEmbedCap:
         from lilbee.core.health_warnings import WarningCode
 
         routing = self._routing_over_a_capped_engine(monkeypatch, embedding_model)
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
+
+    def test_drops_the_embed_window_warning_without_a_local_embedder(self, monkeypatch) -> None:
+        """The local engine's window is not a remote embedder's, so its warning is not reported."""
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+
+        routing = self._routing_over_a_capped_engine(monkeypatch, "openai/text-embedding-3-small")
+        routing._local.health_warnings.return_value = [
+            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
+            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan"),
+        ]
         assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
 
     def test_reports_no_warnings_before_a_local_engine_exists(self, monkeypatch) -> None:

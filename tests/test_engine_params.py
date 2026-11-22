@@ -339,3 +339,23 @@ class TestResolveEmbedCtx:
     def test_a_trained_context_below_the_window_caps_it(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         assert ep.resolve_embed_ctx({"context_length": "512"}, Path("/m/e.gguf")) == 512
+
+
+class TestEmbedWindowWarning:
+    def test_a_cap_below_the_chunk_size_is_named(self, monkeypatch) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        warning = ep.embed_window_warning(504)
+        assert warning is not None
+        assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
+        assert warning.message == (
+            "The embedding model accepts 504 tokens per input, below chunk_size 512, "
+            "so each chunk holds at most 504 tokens."
+        )
+        assert warning.remedy == "Set chunk_size to 504 or lower."
+
+    @pytest.mark.parametrize("cap", [512, 640])
+    def test_a_cap_that_holds_the_chunk_size_gives_no_warning(self, monkeypatch, cap) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        assert ep.embed_window_warning(cap) is None
