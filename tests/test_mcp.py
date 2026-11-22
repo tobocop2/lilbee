@@ -3751,7 +3751,7 @@ class TestMcpCommandExit:
             side_effect=lambda: seen.append(signal.getsignal(signal.SIGINT)),
         ):
             CliRunner().invoke(app, ["mcp", "-d", str(tmp_path)])
-        assert seen == [services_mod._lifecycle._on_interrupt]
+        assert seen == [services_mod._lifecycle._on_hard_exit]
 
     def test_a_non_numeric_exit_code_reports_failure(self, tmp_path):
         from typer.testing import CliRunner

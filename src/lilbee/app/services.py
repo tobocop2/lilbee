@@ -622,7 +622,6 @@ class _EngineLifecycle:
 
     def __init__(self) -> None:
         self._installed = False
-        self._interrupts = 0
         self._reset_in_forked_child()
 
     def _reset_in_forked_child(self) -> None:
@@ -734,18 +733,10 @@ class _EngineLifecycle:
 
         An inherited ignore of SIGINT stays in place.
         """
-        self._interrupts = 0
         if signal.SIGINT not in self._routed_signals(interrupt=True):
             return
         self._ensure_stop_thread()
-        signal.signal(signal.SIGINT, self._on_interrupt)
-
-    def _on_interrupt(self, signum: int, frame: object) -> None:
-        self._interrupts += 1
-        if self._interrupts > 1:
-            _force_quit_from_handler()
-        else:
-            self._on_hard_exit(signum, frame)
+        signal.signal(signal.SIGINT, self._on_hard_exit)
 
     def routed_in_loop(self) -> tuple[signal.Signals, ...]:
         """Signals a running loop takes over: the ones install and route_interrupt route."""
@@ -753,25 +744,26 @@ class _EngineLifecycle:
 
     def on_loop_signal(self, signum: int) -> None:
         """Run the handler of *signum* as a loop callback, with no interrupted frame."""
-        if signum == signal.SIGINT:
-            self._on_interrupt(signum, None)
-        else:
-            self._on_hard_exit(signum, None)
+        self._on_hard_exit(signum, None)
 
     def reset(self) -> None:
         """Forget that handlers were installed and every stop request."""
         self._installed = False
-        self._interrupts = 0
         self._forget_stop()
 
     def _on_hard_exit(self, signum: int, frame: object) -> None:
         """Queue the stop and exit with the signal status; the handler only records.
 
         It starts no thread, takes no lock and logs nothing: a signal can land
-        while the main thread holds one of threading's own locks.
+        while the main thread holds one of threading's own locks. A second
+        routed signal ends the process at once: the exit after the first one
+        joins the executor threads, and a stuck worker never ends that join.
         """
         del frame
         status = _SIGNAL_EXIT_BASE + signum
+        if self._signalled:
+            _force_quit_from_handler(status)
+            return
         server_took = request_server_exit(status)
         joining = server_took or server_is_stopping() or self.stop_requested
         if joining and not server_took and not self._signalled:
@@ -831,11 +823,11 @@ def _exit_now(status: int, note: str) -> None:
     os._exit(status)
 
 
-def _force_quit_from_handler() -> None:
-    """End the process from a signal handler: a bare write of the note to fd 2, no lock."""
+def _force_quit_from_handler(status: int) -> None:
+    """End the process with *status* from a signal handler: a bare write of the note to fd 2."""
     with suppress(OSError):
         os.write(2, _FORCE_QUIT_NOTE_BYTES)
-    os._exit(_FORCE_QUIT_EXIT_CODE)
+    os._exit(status)
 
 
 @contextmanager
