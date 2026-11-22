@@ -538,8 +538,7 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
 def _holder_phrase(holder: RoomHolder, refused: WorkerRole | None) -> str:
     """One holder as a noun phrase; the refused role's own earlier replicas read as such."""
     model = (
-        f"the {holder.role.value} model {holder.model} "
-        f"({memory_size_text(holder.charged_bytes)})"
+        f"the {holder.role.value} model {holder.model} ({memory_size_text(holder.charged_bytes)})"
     )
     if holder.role is not refused:
         return model
