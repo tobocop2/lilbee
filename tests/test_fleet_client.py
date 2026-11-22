@@ -3201,10 +3201,17 @@ def test_abort_streams_closes_registered_responses() -> None:
     resp.close.assert_called_once_with()
 
 
-def test_abort_streams_shuts_down_the_socket_and_leaves_the_close_to_the_reader() -> None:
+@pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+def test_abort_streams_shuts_down_the_socket_closes_it_on_windows_and_leaves_the_response(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    """On Windows a shutdown ends no read that waits, so the socket is closed after it there."""
     import socket
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, call
 
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_CLOSE_AFTER_SHUTDOWN", windows)
     client = _client()
     resp = MagicMock()
     sock = resp.extensions.get.return_value.get_extra_info.return_value
@@ -3212,8 +3219,43 @@ def test_abort_streams_shuts_down_the_socket_and_leaves_the_close_to_the_reader(
     client.abort_streams()
     resp.extensions.get.assert_called_once_with("network_stream")
     resp.extensions.get.return_value.get_extra_info.assert_called_once_with("socket")
-    sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+    closes = [call.close()] if windows else []
+    assert sock.mock_calls == [call.shutdown(socket.SHUT_RDWR), *closes]
     resp.close.assert_not_called()
+
+
+def test_the_socket_is_closed_after_a_shutdown_only_on_windows() -> None:
+    import sys
+
+    from lilbee.providers.fleet import client as client_mod
+
+    assert client_mod._CLOSE_AFTER_SHUTDOWN is (sys.platform == "win32")
+
+
+def test_an_aborted_stream_on_windows_closes_its_socket_so_the_next_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The abort closes the stream's real socket, and the reader's next read is a read error.
+
+    The socket has a read timeout, as every stream's does. On Windows a read on such a socket
+    after a shutdown alone waits for the server; on a closed socket it fails at once.
+    """
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_CLOSE_AFTER_SHUTDOWN", True)
+    server = _HeadersOnlyServer()
+    http = httpx.Client(base_url=server.url, timeout=httpx.Timeout(30.0))
+    client = LlamaServerClient(
+        server.url, "test-model", http=http, profile=LLAMA.request_profile(WorkerRole.CHAT)
+    )
+    with http.stream("POST", "/v1/chat/completions", json={"stream": True}) as resp:
+        client._abortable(resp)
+        sock = resp.extensions["network_stream"].get_extra_info("socket")
+        client.abort_streams()
+        assert sock.fileno() == -1
+        with pytest.raises(httpx.ReadError):
+            next(resp.iter_raw())
+    server.close()
 
 
 def test_abort_streams_survives_close_errors() -> None:
