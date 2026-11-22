@@ -273,6 +273,48 @@ def test_the_handler_force_quit_writes_to_fd_2_and_takes_no_lock(monkeypatch):
     assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
 
 
+def test_the_force_quit_kills_the_ingest_workers_then_ends_the_process(monkeypatch):
+    """Only Linux ends a worker with its parent, and this exit skips the join of the workers."""
+    steps: list[object] = []
+    worker = MagicMock()
+    worker.kill.side_effect = lambda: steps.append("kill")
+    monkeypatch.setattr(services_mod.multiprocessing, "active_children", lambda: [worker, worker])
+    monkeypatch.setattr(services_mod, "_exit_now", lambda *args: steps.append(args))
+
+    services_mod.force_quit()
+
+    exit_call = (services_mod._FORCE_QUIT_EXIT_CODE, services_mod._FORCE_QUIT_NOTE)
+    assert steps == ["kill", "kill", exit_call]
+
+
+def test_the_ctrl_c_force_quit_from_a_handler_kills_the_workers_first(monkeypatch):
+    steps: list[object] = []
+    worker = MagicMock()
+    worker.kill.side_effect = lambda: steps.append("kill")
+    monkeypatch.setattr(services_mod.multiprocessing, "active_children", lambda: [worker, worker])
+    monkeypatch.setattr(services_mod.os, "write", lambda fd, data: steps.append((fd, data)))
+    monkeypatch.setattr(services_mod.os, "_exit", steps.append)
+
+    services_mod.force_quit_from_handler()
+
+    note = (2, services_mod._FORCE_QUIT_NOTE.encode())
+    assert steps == ["kill", "kill", note, services_mod._FORCE_QUIT_EXIT_CODE]
+
+
+@pytest.mark.parametrize("error", [ValueError("process object is closed"), PermissionError()])
+def test_a_worker_that_cannot_be_killed_does_not_stop_the_force_quit(monkeypatch, error):
+    """Another thread can close or reap a worker between the listing and the kill."""
+    killed: list[str] = []
+    gone, live = MagicMock(), MagicMock()
+    gone.kill.side_effect = error
+    live.kill.side_effect = lambda: killed.append("live")
+    monkeypatch.setattr(services_mod.multiprocessing, "active_children", lambda: [gone, live])
+
+    services_mod._kill_worker_processes()
+
+    assert killed == ["live"]
+
+
 def test_the_handler_force_quit_exits_when_fd_2_is_gone(monkeypatch):
     exits: list[int] = []
 

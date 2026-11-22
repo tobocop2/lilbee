@@ -430,7 +430,7 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    with _library_refusal_exits(), _wiki_progress() as on_progress, sigint_cancel() as cancel:
+    with sigint_cancel() as cancel, _library_refusal_exits(), _wiki_progress() as on_progress:
         result = run_full_synthesize(cfg, on_progress, cancel)
 
     if cfg.json_mode:
@@ -627,7 +627,7 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    with _library_refusal_exits(), _wiki_progress() as on_progress, sigint_cancel() as cancel:
+    with sigint_cancel() as cancel, _library_refusal_exits(), _wiki_progress() as on_progress:
         result = run_full_build(cfg, on_progress, cancel)
 
     if cfg.json_mode:
