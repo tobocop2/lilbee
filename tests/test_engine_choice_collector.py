@@ -87,7 +87,7 @@ def test_a_role_with_no_engine_raises_and_the_others_still_answer() -> None:
     assert assignment.for_role(WorkerRole.CHAT).name is EngineName.LLAMA
 
 
-def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
+def test_a_cause_that_holds_for_every_role_names_no_role() -> None:
     kwargs = dict(
         fmt=ModelFormat.GGUF,
         host=lambda: collect(
@@ -99,7 +99,7 @@ def test_the_notice_names_the_role_as_an_input_of_the_text() -> None:
     )
     with_role = choose_engine(**kwargs, role=WorkerRole.CHAT)
     assert with_role.notice == (
-        "Engine mlx for chat is not installed. Using llama.cpp. "
+        "Engine mlx is not installed. Using llama.cpp. "
         "Run lilbee engine list to see the installed engines."
     )
     assert choose_engine(**kwargs).notice == (

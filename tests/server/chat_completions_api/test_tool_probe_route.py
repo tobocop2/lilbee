@@ -34,7 +34,7 @@ _TOOL = {
 }
 _NO_TOOLS_ERROR = "model_does_not_support_tools"
 _NO_ENGINE_MESSAGE = (
-    "Engine mistral.rs for chat is not installed. No installed engine loads the safetensors format."
+    "Engine mistral.rs is not installed. No installed engine loads the safetensors format."
 )
 
 

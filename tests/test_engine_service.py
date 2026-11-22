@@ -219,7 +219,7 @@ def test_an_unusable_override_falls_back_with_the_notice_in_the_role_view(with_m
     chat = next(v for v in engine_service.roles(config) if v.role is WorkerRole.CHAT)
     assert chat.engine == "llama.cpp"
     assert chat.notice == (
-        "Engine openvino for chat is not installed. Using llama.cpp. "
+        "Engine openvino is not installed. Using llama.cpp. "
         "Run lilbee engine list to see the installed engines."
     )
 
@@ -266,7 +266,7 @@ def test_the_unreadable_notice_comes_before_the_fallback_notice(with_mlx: None) 
     config.engine_choices = "not json"
     chat = next(v for v in engine_service.roles(config) if v.role is WorkerRole.CHAT)
     assert chat.notice == (
-        f"{UNREADABLE_NOTICE} Engine openvino for chat is not installed. Using llama.cpp. "
+        f"{UNREADABLE_NOTICE} Engine openvino is not installed. Using llama.cpp. "
         "Run lilbee engine list to see the installed engines."
     )
 

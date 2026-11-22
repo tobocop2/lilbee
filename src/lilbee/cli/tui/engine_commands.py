@@ -53,12 +53,13 @@ class EngineCommandResult:
 
 
 def _roles_text() -> str:
-    lines = []
-    for view in engine_service.roles():
-        lines.append(f"{view.role}: {view.model} ({view.format}) on {view.engine or 'no engine'}")
-        if view.notice:
-            lines.append(view.notice)
-    return "\n".join(lines)
+    views = engine_service.roles()
+    lines = [
+        f"{view.role}: {view.model} ({view.format}) on {view.engine or 'no engine'}"
+        for view in views
+    ]
+    notices = dict.fromkeys(view.notice for view in views if view.notice)
+    return "\n".join([*lines, *notices])
 
 
 def _builds_text() -> str:

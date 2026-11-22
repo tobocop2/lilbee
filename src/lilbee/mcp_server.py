@@ -299,10 +299,12 @@ TOOL_GATE_SETTINGS: frozenset[str] = frozenset(
     }
 )
 
+_TURN_ON_AT_ONCE = "The tool works again at once after the setting is on."
+
 ENGINES_DISABLED_ERROR = (
     "The engine tools are off over MCP. Turn them on with settings_set mcp_engines_enabled "
     "true, /set mcp_engines_enabled true in the TUI, or mcp_engines_enabled = true in "
-    "config.toml."
+    f"config.toml. {_TURN_ON_AT_ONCE}"
 )
 _ENGINE_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -318,7 +320,7 @@ _ENGINE_TOOL_NAMES: frozenset[str] = frozenset(
 PRESETS_DISABLED_ERROR = (
     "Server presets are off over MCP. Turn them on with settings_set mcp_presets_enabled "
     "true, /set mcp_presets_enabled true in the TUI, or mcp_presets_enabled = true in "
-    "config.toml."
+    f"config.toml. {_TURN_ON_AT_ONCE}"
 )
 _PRESET_TOOL_NAMES: frozenset[str] = frozenset(
     {"preset_list", "preset_add", "preset_edit", "preset_remove"}

@@ -48,7 +48,7 @@ GGUF_EMBED_REF = "org/embed/embed-Q8_0.gguf"
 ALL_ROUTES = [routes.engine_roles_route, routes.engine_use_route, routes.engine_prefer_route]
 SURFACES = ("cli", "rest", "mcp", "slash")
 FALLBACK = (
-    "Engine mlx for chat is not installed. Using llama.cpp. "
+    "Engine mlx is not installed. Using llama.cpp. "
     "Run lilbee engine list to see the installed engines."
 )
 
@@ -403,6 +403,15 @@ def test_every_role_view_shows_the_fallback_notice(no_mlx: None) -> None:
         assert FALLBACK in " ".join(text.split()), surface
 
 
+def test_the_roles_text_shows_one_notice_once_for_every_role(no_mlx: None) -> None:
+    settings.update_values(cfg.data_root, {"preferred_engine": EngineSetting.MLX.value})
+    cfg.preferred_engine = EngineSetting.MLX
+    assert len({view.notice for view in engine_service.roles()}) == 1
+    texts = _roles_texts()
+    for surface in ("cli text", "slash"):
+        assert " ".join(texts[surface].split()).count(FALLBACK) == 1, surface
+
+
 def test_every_role_view_shows_the_unreadable_choices_notice() -> None:
     settings.update_values(cfg.data_root, {"engine_choices": "not json"})
     cfg.engine_choices = "not json"
@@ -436,9 +445,7 @@ def test_the_first_request_of_a_role_shows_the_notice_once(
         provider._warn_once(WorkerRole.CHAT)
         provider._warn_once(WorkerRole.CHAT)
         provider._warn_once(WorkerRole.EMBED)
-    messages = [r.getMessage() for r in caplog.records]
-    assert messages.count(FALLBACK) == 1
-    assert any(m.startswith("Engine mlx for embed is not installed") for m in messages)
+    assert [r.getMessage() for r in caplog.records] == [FALLBACK]
 
 
 def test_the_first_request_shows_the_unreadable_choices_notice_once(
@@ -525,7 +532,7 @@ def test_the_first_rerank_request_shows_the_notice_once(
         assert provider.rerank("q", ["a"]) == [0.5]
         assert provider.rerank("q", ["a"]) == [0.5]
     rerank_notice = (
-        "Engine mlx for rerank is not installed. Using llama.cpp. "
+        "Engine mlx is not installed. Using llama.cpp. "
         "Run lilbee engine list to see the installed engines."
     )
     assert [r.getMessage() for r in caplog.records].count(rerank_notice) == 1
@@ -668,8 +675,7 @@ def test_the_health_list_carries_the_fallback_notice(no_mlx: None) -> None:
     cfg.preferred_engine = EngineSetting.MLX
     warnings = _provider().health_warnings()
     assert {w.code for w in warnings} == {WarningCode.ENGINE_FALLBACK}
-    assert FALLBACK in [w.message for w in warnings]
-    assert len(warnings) == 4
+    assert [w.message for w in warnings] == [FALLBACK]
 
 
 def test_a_different_notice_for_a_role_is_logged_again(
@@ -785,3 +791,35 @@ def test_every_role_view_shows_why_the_host_refused_an_engine(
     cfg.engine_choices = choices
     for surface, text in _roles_texts().items():
         assert "Xeon lacks AVX2" in " ".join(text.split()), surface
+
+
+def test_a_missing_preferred_engine_gives_every_role_the_same_notice(no_mlx: None) -> None:
+    cfg.preferred_engine = EngineSetting.MLX
+    notices = {view.notice for view in engine_service.roles()}
+    assert notices == {FALLBACK}
+
+
+@pytest.mark.parametrize(
+    "refusal", [mcp_server.ENGINES_DISABLED_ERROR, mcp_server.PRESETS_DISABLED_ERROR]
+)
+def test_the_mcp_tool_gate_refusal_says_the_tool_works_at_once_and_asks_for_no_restart(
+    refusal: str,
+) -> None:
+    assert refusal.endswith("The tool works again at once after the setting is on.")
+    assert "restart" not in refusal
+
+
+@pytest.mark.parametrize(
+    ("setting", "refused"),
+    [
+        ("mcp_engines_enabled", mcp_server._engine_read_refused),
+        ("mcp_presets_enabled", mcp_server._preset_read_refused),
+    ],
+)
+def test_turning_the_mcp_setting_back_on_lifts_the_refusal_with_no_restart(
+    monkeypatch: pytest.MonkeyPatch, setting: str, refused: Callable[[], dict[str, Any] | None]
+) -> None:
+    monkeypatch.setattr(cfg, setting, False)
+    assert refused() is not None
+    monkeypatch.setattr(cfg, setting, True)
+    assert refused() is None
