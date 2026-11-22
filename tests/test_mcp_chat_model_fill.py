@@ -6,6 +6,8 @@ entry points, so a tool that sends an empty model name fails the test.
 
 from __future__ import annotations
 
+import logging
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -132,21 +134,66 @@ def test_a_set_chat_model_that_is_not_installed_is_kept(
     assert {seen[tool] for tool in WIKI_TOOLS} == {missing}
 
 
-def test_a_failed_fill_does_not_stop_the_server_from_starting(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def _lint_message_for_a_page_made_by(model: str) -> list[str]:
+    """Start the stdio server, lint one wiki page made by *model*, return its issue types."""
+    page = cfg.data_root / "wiki" / "summaries" / "doc.md"
+    page.parent.mkdir(parents=True)
+    page.write_text(f"---\ngenerated_by: {model}\n---\n\n# Doc\n")
+    svc_mod.get_services().store.get_citations_for_wiki.return_value = []
+    result: dict[str, Any] = {}
+
+    async def serve(server: Any) -> None:
+        call = await server.call_tool("wiki_lint", {"wiki_source": "wiki/summaries/doc.md"})
+        result.update(call.structured_content)
+
+    with (
+        mock.patch.object(mcp_mod, "_serve_stdio", serve),
+        mock.patch("lilbee.parent_monitor.parse_parent_pid", return_value=None),
+    ):
+        mcp_mod.main()
+    return [issue["issue_type"] for issue in result["issues"]]
+
+
+def test_wiki_lint_compares_a_page_with_the_filled_chat_model(
+    monkeypatch: pytest.MonkeyPatch, installed_chat: str
+) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "")
+
+    assert "model_changed" not in _lint_message_for_a_page_made_by(installed_chat)
+
+
+def test_wiki_lint_still_flags_a_page_made_by_another_model(
+    monkeypatch: pytest.MonkeyPatch, installed_chat: str
+) -> None:
+    monkeypatch.setattr(cfg, "chat_model", "")
+
+    assert "model_changed" in _lint_message_for_a_page_made_by("some/other-model")
+
+
+def test_a_failed_fill_warns_on_stderr_and_leaves_stdout_empty(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
     served = []
 
     async def serve(server: Any) -> None:
         served.append(server)
 
-    with (
-        mock.patch.object(mcp_mod, "fill_empty_chat_model", side_effect=OSError("registry")),
-        mock.patch.object(mcp_mod, "_serve_stdio", serve),
-        mock.patch("lilbee.parent_monitor.parse_parent_pid", return_value=None),
-        caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
-    ):
-        mcp_mod.main()
+    # The CLI sends the log to stderr at WARNING; stdout carries the MCP protocol.
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        with (
+            mock.patch.object(mcp_mod, "fill_empty_chat_model", side_effect=OSError("registry")),
+            mock.patch.object(mcp_mod, "_serve_stdio", serve),
+            mock.patch("lilbee.parent_monitor.parse_parent_pid", return_value=None),
+        ):
+            mcp_mod.main()
+    finally:
+        root.removeHandler(handler)
 
+    out, err = capfd.readouterr()
     assert served
-    assert "MCP pre-warm failed" in caplog.text
+    assert out == ""
+    assert "The chat model could not be filled at start (registry)" in err
