@@ -11,6 +11,7 @@ import math
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
@@ -59,6 +60,8 @@ _STREAM_INTERRUPTED_MESSAGE = (
 _LOOPBACK_SSL_CONTEXT = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 _LOOPBACK_SSL_CONTEXT.check_hostname = False
 _LOOPBACK_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+# Only on Windows does a stream abort close the socket after its shutdown (see abort_streams).
+_CLOSE_AFTER_SHUTDOWN = sys.platform == "win32"
 # Reranker pair format: query and candidate are joined with this separator into
 # one document so a cross-encoder GGUF scores the pair as a single sequence.
 _RERANK_PAIR_SEPARATOR = "</s></s>"
@@ -1851,17 +1854,21 @@ class LlamaServerClient:
     def abort_streams(self) -> None:
         """Sever every in-flight SSE response on this replica.
 
-        A socket shutdown sends the server a FIN and makes a reader blocked in
-        ``iter_lines`` read end-of-stream at once, so it raises a stream error
-        and closes its own response; llama-server stops generating when the
-        connection drops. Closing the socket from another thread does neither.
-        A response with no socket (a mock transport), or whose shutdown fails
-        because the peer is gone, is closed instead.
+        Each socket is shut down. The shutdown sends the server a FIN, and
+        llama-server stops generating when the connection drops. On Linux and
+        macOS the shutdown also ends a read that waits in ``iter_lines``. On
+        Windows it ends no read that waits, in this thread or another, so the
+        socket is closed after it there; the close ends the read at once.
+        Elsewhere the socket stays open: on macOS a close right after the
+        shutdown can drop the wake-up of a read that waits in another thread.
+        A reader whose read ends raises a stream error and closes its own
+        response. A response with no socket (a mock transport), or whose
+        shutdown fails because the peer is gone, is closed instead.
 
-        The shutdowns run under the registry lock, and a response leaves the
-        registry under that lock before its close returns the connection to
-        the pool, so a shutdown never reaches a pooled socket. The fallback
-        closes run after the lock is released, because a close takes it.
+        The socket calls run under the registry lock, and a response leaves
+        the registry under that lock before its close returns the connection
+        to the pool, so they never reach a pooled socket. The fallback closes
+        run after the lock is released, because a close takes it.
         """
         unsevered: list[httpx.Response] = []
         with self._in_flight_lock:
@@ -1940,7 +1947,7 @@ class _AbortableStream(httpx.SyncByteStream):
 
 
 def _shut_down_socket(resp: httpx.Response) -> bool:
-    """Shut down *resp*'s socket; False when it has no socket or the shutdown fails."""
+    """Shut down *resp*'s socket, and close it on Windows; False when no socket or no shutdown."""
     network_stream = resp.extensions.get("network_stream")
     sock = network_stream.get_extra_info("socket") if network_stream else None
     if sock is None:
@@ -1949,6 +1956,8 @@ def _shut_down_socket(resp: httpx.Response) -> bool:
         sock.shutdown(socket.SHUT_RDWR)
     except OSError:
         return False
+    if _CLOSE_AFTER_SHUTDOWN:
+        sock.close()
     return True
 
 
