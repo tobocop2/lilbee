@@ -1,6 +1,7 @@
 """A config.toml that cannot be read shows one clean line on every surface.
 
-Each test locks a real config.toml with chmod 000, then goes through the surface a user touches.
+Each test locks a real config.toml, then goes through the surface a user touches. The lock is a
+chmod 000 on POSIX, and on Windows an open handle that shares nothing.
 """
 
 from __future__ import annotations
@@ -43,6 +44,9 @@ def locked_config(tmp_path: Path) -> Iterator[Path]:
     cfg.data_root = tmp_path
     settings.set_value(tmp_path, "server_presets", json.dumps([_PRESET]))
     config = tmp_path / "config.toml"
+    if sys.platform == "win32":
+        yield from _held_open_without_sharing(config, previous)
+        return
     config.chmod(0o000)
     if os.access(config, os.R_OK):
         config.chmod(0o600)
@@ -51,6 +55,24 @@ def locked_config(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path
     config.chmod(0o600)
     cfg.data_root = previous
+
+
+def _held_open_without_sharing(config: Path, previous: Path) -> Iterator[Path]:
+    """Hold *config* open with no sharing, as another Windows program can; every read fails.
+
+    Windows keeps no POSIX mode bits, so a chmod 000 file stays readable there.
+    """
+    import _winapi
+
+    no_sharing = 0
+    handle = _winapi.CreateFile(
+        str(config), _winapi.GENERIC_READ, no_sharing, 0, _winapi.OPEN_EXISTING, 0, 0
+    )
+    try:
+        yield config.parent
+    finally:
+        _winapi.CloseHandle(handle)
+        cfg.data_root = previous
 
 
 def _services() -> mock.Mock:
