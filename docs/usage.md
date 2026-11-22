@@ -2029,7 +2029,7 @@ cmake --build build -j --target llama-server
 LILBEE_LLAMA_SERVER_PATH=$PWD/build/bin/llama-server lilbee
 ```
 
-lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`, `--device`, `--tensor-split`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues. The one exception is `--pooling` for a cross-encoder reranker, described below.
+lilbee reads the `--help` text of the binary once. It writes an optional flag (`--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--kv-unified`, `--device`, `--tensor-split`, `--no-context-shift`) only if the help lists it. For each flag the build lacks, lilbee logs one warning that names the flag and the effect, and the launch continues. The one exception is `--pooling` for a cross-encoder reranker, described below.
 
 These rules keep the launch safe:
 
@@ -2037,10 +2037,11 @@ These rules keep the launch safe:
 - lilbee always writes `--embeddings` for an embedding model and for a reranker. It does not check the help text for this flag. A build that lacks it stops with its own error.
 - A cross-encoder reranker needs `--pooling`. If the help text does not list it, lilbee refuses to load the reranker and names the build and the flag. Chat and embedding models still load. Set `reranker_type` to `llm` to rerank with such a build.
 - A build whose help text does not list `--device` or `--tensor-split` gets neither flag. Placement across several GPUs then does not apply to that build.
+- A build whose help text lists `--no-context-shift` starts with context shift off. llama.cpp already starts that way. ik_llama.cpp starts with context shift on, and then cuts a prompt that is longer than the context and can abort in its sampler. With the flag, the server refuses such a prompt with HTTP 400 and stays up.
 
 An ik_llama.cpp build does not list `--list-devices`. lilbee then reads the GPU list from the Vulkan loader of the host. The ik_llama.cpp README lists ROCm, Vulkan and Metal as unsupported, so use a CPU or CUDA build. The CPU build of the commit below answered chat and embed requests from lilbee.
 
-The help text of ik_llama.cpp commit 229c703c4c948382e634a0c563a049740ceac3ff (2026-11-03) lists `--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling` and `--memory`. It does not list `--device`, `--tensor-split`, `--kv-unified`, `--list-devices` or `--load-mode`. It lists the embedding flag as `--embedding(s)`.
+The help text of ik_llama.cpp commit 229c703c4c948382e634a0c563a049740ceac3ff (2026-11-03) lists `--flash-attn`, `--cache-type-k`, `--cache-type-v`, `--batch-size`, `--ubatch-size`, `--mmproj`, `--n-cpu-moe`, `--cpu-moe`, `--threads`, `--jinja`, `--reasoning-format`, `--no-prefill-assistant`, `--pooling`, `--memory` and `--no-context-shift`. It does not list `--device`, `--tensor-split`, `--kv-unified`, `--list-devices` or `--load-mode`. It lists the embedding flag as `--embedding(s)`.
 
 ---
 

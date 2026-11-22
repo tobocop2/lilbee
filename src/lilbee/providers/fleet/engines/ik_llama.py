@@ -13,7 +13,7 @@ from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.adapters import RoleServerSpec
+from lilbee.providers.fleet.adapters import FLAG_NO_CONTEXT_SHIFT, RoleServerSpec
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
@@ -47,10 +47,6 @@ _CPU_LICENCES = ["MIT AND Apache-2.0 AND MIT-0 AND Unlicense"]
 _PIN_LAUNCH = ["{binary}", "--model", "{model}", "--host", "127.0.0.1", "--port", "{port}"]
 _PIN_SIZING = ["gguf-parser", "--model", "{model}"]
 _REFUSAL_TAIL = "ik_llama.cpp needs a CPU with AVX2 or NEON."
-# ik_llama.cpp turns context shift on by default, and llama.cpp turns it off. With it on, the
-# server cuts a prompt longer than the context and then aborts in its sampler. With it off, the
-# server refuses that prompt with HTTP 400 exceed_context_size_error, as llama.cpp does.
-_NO_CONTEXT_SHIFT = "--no-context-shift"
 # The embed request budget is llama.cpp's 2048. The CPU pack of the pin accepted a request of
 # 38400 tokens, so the figure is a safe lower bound (tests/test_ik_llama_adapter.py).
 _PROFILE = dataclasses.replace(
@@ -169,7 +165,10 @@ class IkLlamaAdapter:
         return LLAMA.role_spec(role, rerank_mode, meta)
 
     def launch_argv(self, spec: RoleServerSpec, request: LaunchRequest) -> list[str]:
-        return [*LLAMA.launch_argv(spec, request), _NO_CONTEXT_SHIFT]
+        argv = LLAMA.launch_argv(spec, request)
+        # The argv builder writes the flag when the pinned build's help lists it; this build
+        # needs it either way, so a help that does not list it still gets it.
+        return argv if FLAG_NO_CONTEXT_SHIFT in argv else [*argv, FLAG_NO_CONTEXT_SHIFT]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
         """An empty probe: this engine's server has no device listing to run."""
