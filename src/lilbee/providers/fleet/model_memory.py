@@ -247,17 +247,15 @@ def fixed_weights_estimate(weights: int | None) -> MemoryEstimate:
 
 
 def fixed_file_estimate(model_path: Path) -> MemoryEstimate:
-    """The size of the weights file at *model_path* as a fixed charge.
+    """The size of the weights at *model_path*, every shard of a split set, as a fixed charge.
 
     A cut-off GGUF, or a split set with a missing shard, has no known size: it is charged the
     reserve, or the bytes on disk when those are larger. An unreadable file is unknown too.
     """
+    weights = gguf_bytes_on_disk(model_path)
     if gguf_is_incomplete(model_path):
-        return _unknown_estimate(gguf_bytes_on_disk(model_path))
-    try:
-        return fixed_weights_estimate(model_path.stat().st_size)
-    except OSError:
-        return fixed_weights_estimate(None)
+        return _unknown_estimate(weights)
+    return fixed_weights_estimate(weights)
 
 
 def safetensors_chat_estimate(
