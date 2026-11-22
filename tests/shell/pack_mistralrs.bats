@@ -166,26 +166,62 @@ ${WHEEL}.sha256" ]
   [ ! -e "${OUT}" ]
 }
 
-@test "pip and the build read the pinned build tools" {
+@test "pip installs the pinned build tools by their digests, and the build installs nothing" {
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -q '^-m pip install build wheel .* constraint=../../tools/wheel-build/build-tools.constraints .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
-  grep -q '^-m build --wheel .* constraint=../../tools/wheel-build/build-tools.constraints ' "${PYTHON_LOG}"
+  grep -q '^-m pip install --require-hashes --force-reinstall -r ../../tools/wheel-build/build-tools.constraints | .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
+  grep -q '^-m build --wheel --no-isolation .* cwd=engine-wheel-mistral-rs$' "${PYTHON_LOG}"
+  [ "$(grep -c '^-m pip ' "${PYTHON_LOG}")" -eq 1 ]
+}
+
+@test "the stand-in for pip refuses what the pip of Python 3.12 refuses" {
+  local file="${ROOT}/tools/wheel-build/build-tools.constraints"
+  run "${BIN}/python" -m pip install --require-hashes -r "${file}"
+  [ "$status" -eq 0 ]
+  PIP_CONSTRAINT="${file}" run "${BIN}/python" -m pip install build wheel
+  [ "$status" -eq 1 ]
+  run "${BIN}/python" -m pip install -r "${file}"
+  [ "$status" -eq 1 ]
+  run "${BIN}/python" -m pip install --require-hashes -r "${ROOT}/no-such-file"
+  [ "$status" -eq 1 ]
+  cd "${TREE}"
+  run "${BIN}/python" -m build --wheel
+  [ "$status" -eq 1 ]
+  [ ! -e dist ]
 }
 
 @test "the constraints pin every build tool to one version and one digest" {
   local file="${REPO_ROOT}/tools/wheel-build/build-tools.constraints" name
+  # build runs `python -m build`. It needs packaging and pyproject_hooks, and colorama on Windows.
+  # setuptools is the build backend of the wheel project. wheel runs `python -m wheel tags`, and it needs packaging.
   for name in build colorama packaging pyproject_hooks setuptools wheel; do
-    grep -qE "^${name}==[0-9.]+ \\\\$" "${file}"
+    grep -qE "^${name}==[0-9.]+ \\\\$" "${file}" || { echo "no pinned ${name} in ${file}"; return 1; }
   done
   [ "$(grep -cE '^[a-z_]+==' "${file}")" -eq 6 ]
   [ "$(grep -cE '^    --hash=sha256:[0-9a-f]{64}$' "${file}")" -eq 6 ]
 }
 
+@test "the wheel project needs only the setuptools of the constraints" {
+  local file="${REPO_ROOT}/tools/wheel-build/build-tools.constraints" project="${REPO_ROOT}/packaging/engine-wheel-mistral-rs/pyproject.toml"
+  # The build runs without isolation, so the constraints must also pin a new entry of this list.
+  grep -qxF 'requires = ["setuptools>=77"]' "${project}"
+  grep -qxF 'build-backend = "setuptools.build_meta"' "${project}"
+  # The WHEEL files of the baseline packs name this version. Another version changes the bytes of every pack.
+  grep -qxF 'setuptools==84.2.1 \' "${file}"
+}
+
+@test "a venv that the checkout already holds stops the build before pip runs" {
+  mkdir "${ROOT}/pack-venv"
+  run bash "${SCRIPT}"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"an earlier build used this checkout (pack-venv exists)"* ]]
+  [ ! -e "${PYTHON_LOG}" ]
+}
+
 @test "the build number holds the backend and the retag the platform" {
   run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
-  grep -q '^-m build --wheel -C--build-option=--build-number=1.cpu ' "${PYTHON_LOG}"
+  grep -q '^-m build --wheel --no-isolation -C--build-option=--build-number=1.cpu ' "${PYTHON_LOG}"
   grep -q '^-m wheel tags --remove --platform-tag manylinux_2_35_x86_64 dist/' "${PYTHON_LOG}"
 }
 
