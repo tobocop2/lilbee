@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Stand-in for docker when pack_llama.sh builds a source cell. It writes what llama_cuda_manylinux.sh or
+# llama_gpu_manylinux.sh leaves in the mounted checkout.
+#
+# Reads:
+#   DOCKER_LOG   a file that receives the arguments, one per line (required)
+#   PACK_LOG     a file that receives one line per call (required)
+#   DOCKER_FAIL  when set, the call fails after it wrote its files
+#   NO_KERNELS   when set, a ROCm build writes no rocBLAS kernel
+# and BACKEND, as the container does.
+
+set -euo pipefail
+
+printf '%s\n' "$@" > "${DOCKER_LOG:?}"
+mount=""
+script="${!#}"
+for arg in "$@"; do
+  case "${arg}" in
+    *:/work) mount="${arg%:/work}" ;;
+    BIN_DIR=/work/* | SHA_FILE=/work/* | DEPS_DIR=/work/* | LICENSE_DIR=/work/*) declare "${arg%%=*}=${mount}/${arg#*=/work/}" ;;
+  esac
+done
+echo "docker ${script##*/}" >> "${PACK_LOG:?}"
+echo "server" > "${BIN_DIR:?}/llama-server"
+case "${script##*/}" in
+  llama_cuda_manylinux.sh)
+    echo "cuda digests" > "${SHA_FILE:?}"
+    mkdir -p "${DEPS_DIR:?}/cccl-src"
+    echo "CCCL licence" > "${DEPS_DIR}/cccl-src/LICENSE" ;;
+  llama_gpu_manylinux.sh)
+    if [ "${BACKEND:?}" = rocm ]; then
+      mkdir -p "${BIN_DIR}/rocblas/library"
+      [ -n "${NO_KERNELS-}" ] || : > "${BIN_DIR}/rocblas/library/TensileLibrary_lazy_gfx1030.dat"
+      [ -n "${NO_KERNELS-}" ] || : > "${BIN_DIR}/rocblas/library/TensileLibrary_lazy_gfx90a.dat"
+      echo "ROCm licence" > "${LICENSE_DIR:?}/LICENSE-ROCm-HIP"
+    fi ;;
+  *) echo "stub docker: unexpected script '${script}'" >&2; exit 2 ;;
+esac
+[ -z "${DOCKER_FAIL-}" ] || { echo "stub docker: failed" >&2; exit 8; }

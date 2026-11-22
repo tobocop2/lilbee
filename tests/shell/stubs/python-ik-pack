@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stand-in for the Python 3.12 of an ik_llama.cpp pack build. A venv holds this stub again, pip unpacks a wheel beside
+# Stand-in for the Python 3.12 of an ik_llama.cpp or llama.cpp pack build. A venv holds this stub again, pip unpacks a wheel beside
 # the venv and records that the venv got the tools of a requirements file. `build`, which wants those tools, and
 # `wheel tags` write a wheel of the project files with the licence files and the licence expression of pyproject.toml.
 # Every other call runs the real python3. tests/shell/pack_common.bats runs the real pip.
@@ -50,10 +50,11 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
 import os, pathlib, re, sys, zipfile
 build, extra = sys.argv[1].rpartition("=")[2], sys.argv[2]
 text = pathlib.Path("pyproject.toml").read_text()
-version, expression = (re.search(rf"^{key} = \"(.*)\"$", text, re.M)[1] for key in ("version", "license"))
-info = f"lilbee_engine_ik_llama_cpp-{version}.dist-info/"
+dist, version, expression = (re.search(rf"^{key} = \"(.*)\"$", text, re.M)[1] for key in ("name", "version", "license"))
+dist = dist.replace("-", "_")
+info = f"{dist}-{version}.dist-info/"
 without = os.environ.get("WHEEL_WITHOUT")
-with zipfile.ZipFile(f"dist/lilbee_engine_ik_llama_cpp-{version}{extra}-{build}-py3-none-any.whl", "w") as wheel:
+with zipfile.ZipFile(f"dist/{dist}-{version}{extra}-{build}-py3-none-any.whl", "w") as wheel:
     for path in sorted(pathlib.Path(".").rglob("*")):
         name = path.as_posix()
         if not path.is_file() or name.startswith("dist/") or name == "pyproject.toml":

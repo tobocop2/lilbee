@@ -1,7 +1,7 @@
 .PHONY: lint license-check lint-shell test-shell format format-check typecheck test test-ci test-ci-split test-ci-serial test-ci-forked test-integration test-presets imports-check fuzz-smoke engine-archs docs-settings docs-formats check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint: lint-shell
-	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/wheel-build/metal_floor.py hatch_build.py
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/wheel-build/metal_floor.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 	uv run python scripts/check_style_rules.py
 	# docs/settings.md is generated from the Config fields; a new setting must
 	# land in the reference with the code that adds it.
@@ -32,10 +32,10 @@ test-shell:  ## Run the bats and Pester tests for the release scripts
 	else echo "test-shell: pwsh is not installed, skipping Pester"; fi
 
 format:
-	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/ tools/readme_media.py tools/gen_settings_reference.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -45,7 +45,7 @@ typecheck:
 	uv run mypy tools/qa/placement_matrix/ tools/qa/engine_demo/ tools/qa/multi_gpu_smoke.py
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
-	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py hatch_build.py
+	uv run mypy tools/readme_media.py tools/gen_formats_table.py tools/gen_engine_packs.py tools/build_wheel_indexes.py tools/wheel-build/llama_cuda_notice.py tools/wheel-build/repack_llama_archives.py hatch_build.py
 
 # A replaced worker deadlocks --dist loadgroup (pytest-dev/pytest-xdist#1378),
 # so a worker that dies fails the run instead.

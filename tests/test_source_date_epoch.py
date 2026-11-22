@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from tests._pack_workflow import pack_workflow
 from tests._workflow_steps import commands, steps
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +109,7 @@ def test_the_script_refuses_a_folder_that_is_not_a_git_tree(tmp_path: Path) -> N
 
 
 def test_building_the_llama_cpp_project_twice_gives_one_wheel(tmp_path: Path) -> None:
-    """The build step of the cell is inline in the workflow, so this builds the project itself."""
+    """pack_llama.sh needs Go, a gh login and an engine, so this builds the project itself."""
     assert UV is not None
     env = dict([_epoch(_source(tmp_path)).stdout.strip().split("=", 1)])
     digests = []
@@ -187,15 +186,6 @@ def test_wrapping_one_tei_source_twice_gives_one_wheel(tmp_path: Path) -> None:
     first = _wrap_tei(tmp_path, "first", 1_750_000_000)
     second = _wrap_tei(tmp_path, "second", 1_760_000_000)
     assert first == second
-
-
-def test_the_llama_cpp_cell_hands_the_epoch_to_the_wheel_build() -> None:
-    runs = [commands(step.get("run", "")) for step in steps(pack_workflow(), "cell")]
-    (clone,) = (i for i, run in enumerate(runs) if "source_date_epoch.sh" in run)
-    (build,) = (i for i, run in enumerate(runs) if "python -m build --wheel" in run)
-    assert clone < build
-    piped = "bash tools/wheel-build/source_date_epoch.sh ${work}/llama.cpp >> $GITHUB_ENV"
-    assert piped in runs[clone]
 
 
 def test_the_multigpu_wheel_build_reads_the_epoch_before_it_builds() -> None:

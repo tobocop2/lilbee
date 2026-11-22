@@ -24,12 +24,18 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${script_dir}/../../engine-versions.env"
+# shellcheck source=tools/wheel-build/pack_common.sh
+. "${script_dir}/pack_common.sh"
 jobs="$(nproc)"
+# The Python of the image holds other packages, so the build tools go into a new venv.
+venv=/tmp/build-venv
+[ ! -e "${venv}" ] || { echo "llama_gpu_manylinux: an earlier build used this container (${venv} exists). Use a new one." >&2; exit 2; }
 
 df -h / | tail -1
 dnf install -y gcc-toolset-13-gcc-c++ xz
-/opt/python/cp312-cp312/bin/python -m pip install -q cmake ninja
-export PATH="/opt/python/cp312-cp312/bin:${PATH}"
+/opt/python/cp312-cp312/bin/python -m venv "${venv}"
+install_build_tools "${venv}/bin/python" "${script_dir}/llama-tools-linux.constraints"
+export PATH="${venv}/bin:${PATH}"
 gcc13=/opt/rh/gcc-toolset-13/root/usr/bin
 "${gcc13}/g++" --version | head -1
 
