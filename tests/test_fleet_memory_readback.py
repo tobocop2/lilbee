@@ -180,6 +180,43 @@ class TestHostSpillWarning:
             "smaller model."
         ]
 
+    def test_a_small_spill_reads_in_mib_and_not_as_zero_gib(self, caplog) -> None:
+        payload = {
+            "data": [
+                {"name": "CUDA0", "model": 4 * GIB},
+                {"name": "Host", "model": 200 * 1024**2},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(
+                WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=50 * 1024**2
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert spills == [
+            "The chat model qwen-8b does not fit in GPU memory: the engine keeps 200 MiB "
+            "of it in system memory, where it runs slower. Free GPU memory or use a "
+            "smaller model."
+        ]
+
+    def test_a_small_spill_in_the_engine_log_reads_in_mib(self, tmp_path: Path, caplog) -> None:
+        readback.engine_log_path(tmp_path, "chat-0").write_text(
+            "load_tensors:   CPU_Mapped model buffer size =   200.00 MiB\n"
+            "load_tensors:        CUDA0 model buffer size = 4096.00 MiB\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            check_launch(
+                tmp_path,
+                "chat-0",
+                WorkerRole.CHAT,
+                "qwen-8b",
+                4 * GIB,
+                est_host_bytes=50 * 1024**2,
+            )
+        spills = [r.getMessage() for r in caplog.records if "system memory" in r.getMessage()]
+        assert len(spills) == 1
+        assert "keeps 200 MiB of it in system memory" in spills[0]
+
     def test_a_full_offload_host_row_is_quiet(self, caplog) -> None:
         # Every layer on the card still leaves the token embedding on the host.
         payload = {
