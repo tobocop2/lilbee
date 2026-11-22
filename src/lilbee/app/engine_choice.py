@@ -14,6 +14,7 @@ from lilbee.providers.fleet.engines.choice import (
     ADAPTERS,
     EngineAssignment,
     EngineChoice,
+    InstalledEngines,
     NoEngineError,
     RoleEngine,
     choose_engine,
@@ -51,13 +52,15 @@ def stored_choices(raw: str | None) -> dict[str, str]:
     return _parse_choices(raw) or {}
 
 
-def _choice_for(config: Config, ref: str, role: WorkerRole | None = None) -> EngineChoice:
+def _choice_for(
+    config: Config, ref: str, installed: InstalledEngines, role: WorkerRole | None = None
+) -> EngineChoice:
     """The one rule for the engine of the model *ref* under *config*, for a run or a pull."""
     stored = _parse_choices(config.engine_choices)
     chosen = choose_engine(
         fmt=model_format(ref),
         host=runnable.session_host,
-        installed=installed_engines(),
+        installed=installed,
         preferred=str(config.preferred_engine),
         override=(stored or {}).get(ref),
         role=role,
@@ -69,10 +72,11 @@ def _choice_for(config: Config, ref: str, role: WorkerRole | None = None) -> Eng
 
 
 def resolve_engines(config: Config) -> EngineAssignment:
-    """Ask the rule once for the model of each role and keep every answer."""
+    """Ask the rule once for the model of each role, all from one read of the installed engines."""
+    installed = installed_engines()
     return EngineAssignment(
         {
-            role: _choice_for(config, str(getattr(config, info.config_field)), role)
+            role: _choice_for(config, str(getattr(config, info.config_field)), installed, role)
             for role, info in ROLE_REGISTRY.items()
         }
     )
@@ -92,7 +96,7 @@ def engine_for_format(fmt: ModelFormat, config: Config) -> EngineAdapter:
 
 def engine_for_ref(ref: str, config: Config) -> EngineAdapter:
     """The adapter for the model *ref* under *config*: the same choice a run makes."""
-    return ADAPTERS[_choice_for(config, ref).require()]
+    return ADAPTERS[_choice_for(config, ref, installed_engines()).require()]
 
 
 @dataclass(frozen=True)
