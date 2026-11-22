@@ -89,12 +89,13 @@ def test_llama_role_spec_ignores_a_rerank_mode_on_other_roles() -> None:
     assert spec is adapters.ROLE_SPECS[WorkerRole.CHAT]
 
 
-def test_llama_launch_argv_refuses_a_reranker_on_a_build_without_pooling(tmp_path: Path) -> None:
+def test_llama_launch_argv_refuses_a_reranker_on_a_build_without_pooling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from lilbee.providers.base import ProviderError
 
     binary = tmp_path / "srv"
-    binary.write_text("#!/bin/sh\necho '  --model X  text'\n", encoding="utf-8")
-    binary.chmod(0o755)
+    monkeypatch.setattr(adapters, "engine_help", lambda _binary: "  --model X  text\n")
     request = LaunchRequest(
         binary=binary,
         model_path=Path("/m/r.gguf"),

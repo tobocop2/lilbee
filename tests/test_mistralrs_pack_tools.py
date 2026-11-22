@@ -50,7 +50,8 @@ def test_repack_places_the_tool(tmp_path: Path) -> None:
     archive = _tar(tmp_path / "a.tar.gz", {"./mistralrs": b"bin"})
     repack.repack(archive, tmp_path / "bin")
     assert (tmp_path / "bin" / "mistralrs").read_bytes() == b"bin"
-    assert (tmp_path / "bin" / "mistralrs").stat().st_mode & 0o111
+    # Windows has no execute bit: there, every file that exists passes.
+    assert os.access(tmp_path / "bin" / "mistralrs", os.X_OK)
 
 
 def test_repack_refuses_a_shared_library(tmp_path: Path) -> None:
@@ -196,7 +197,8 @@ def test_vendored_files_take_notices_and_third_party_licences(tmp_path: Path) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("t", encoding="utf-8")
     found = [p.relative_to(tmp_path).as_posix() for p in rust_notices.vendored_files(tmp_path)]
-    assert found == ["NOTICE", "a/NOTICE.md", "a/third_party/x/LICENSE-BSD"]
+    # Windows sorts paths without regard to case, so only the set of files is the same everywhere.
+    assert sorted(found) == ["NOTICE", "a/NOTICE.md", "a/third_party/x/LICENSE-BSD"]
 
 
 def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
@@ -221,6 +223,16 @@ def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
     vendored = tree / "THIRD-PARTY" / "vendored"
     assert (vendored / "aws-lc-sys-1.0.0__NOTICE").read_text(encoding="utf-8") == "crate notice"
     assert (vendored / "mistral.rs__sub__NOTICE").read_text(encoding="utf-8") == "checkout notice"
+
+
+def _bash() -> str:
+    """The bash on PATH, which the pack job runs on every OS.
+
+    On Windows a bare ``bash`` starts the WSL launcher in System32 before PATH is searched.
+    """
+    found = shutil.which("bash")
+    assert found is not None
+    return found
 
 
 def _mistralrs_job() -> dict:
@@ -252,12 +264,13 @@ def _run_notice_loop(tmp_path: Path, listing: list[str]) -> subprocess.Completed
         if step.get("name") == "Check the licences in the installed wheel"
     )
     loop = "for pair in" + check.split("for pair in", 1)[1].split("\ndone", 1)[0] + "\ndone"
-    (tmp_path / "crate-licences.txt").write_text("MPL-2.0\nOpenSSL\n", encoding="utf-8")
-    (tmp_path / "wheel-listing.txt").write_text("\n".join(listing) + "\n", encoding="utf-8")
+    (tmp_path / "crate-licences.txt").write_text("MPL-2.0\nOpenSSL\n", encoding="utf-8", newline="\n")
+    listed = "\n".join(listing) + "\n"
+    (tmp_path / "wheel-listing.txt").write_text(listed, encoding="utf-8", newline="\n")
     script = tmp_path / "check_notices.sh"
-    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8")
+    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8", newline="\n")
     return subprocess.run(
-        ["bash", str(script)],
+        [_bash(), str(script)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -292,19 +305,20 @@ def test_the_pack_job_refuses_an_empty_licence_file(tmp_path: Path, name: str) -
     )
     loop = "for f in" + step.split("for f in", 1)[1].split("\ndone", 1)[0] + "\ndone"
     script = tmp_path / "check_empty.sh"
-    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8")
+    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8", newline="\n")
     tree = tmp_path / "tree"
     tree.mkdir()
     for held in ("LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"):
         (tree / held).write_text("text", encoding="utf-8")
     env = {**os.environ, "WHEEL_TREE": str(tree)}
     run = subprocess.run
-    ok = run(["bash", str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
+    ok = run([_bash(), str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
     assert ok.returncode == 0
     (tree / name).write_text("", encoding="utf-8")
-    bad = run(["bash", str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
+    bad = run([_bash(), str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
     assert bad.returncode == 1
-    assert f"empty licence file {tree / name}" in bad.stdout
+    # The step joins the folder and the name with a slash on every OS.
+    assert f"empty licence file {tree}/{name}" in bad.stdout
 
 
 def _wheel_listing(tmp_path: Path) -> set[str]:

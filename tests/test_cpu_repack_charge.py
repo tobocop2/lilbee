@@ -565,7 +565,7 @@ class TestTheRepackedBytesMemo:
 
         monkeypatch.setattr(vram_mod, "_run_parser", _parser)
         vram_mod.repacked_weight_bytes(model)
-        assert argvs == [["/fake/gguf-parser", "--path", str(model), "--raw"]]
+        assert argvs == [[str(Path("/fake/gguf-parser")), "--path", str(model), "--raw"]]
 
     def test_a_rewritten_file_is_sized_again(
         self, model: Path, monkeypatch: pytest.MonkeyPatch

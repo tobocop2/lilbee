@@ -438,14 +438,15 @@ def test_a_ctrl_c_during_a_stuck_shutdown_logs_no_failure(start: Callable[..., _
 
 
 @posix_only
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["sigterm", "sighup"])
+# Named, not looked up, at collection: Windows has no SIGHUP, and the test is POSIX only.
+@pytest.mark.parametrize("signal_name", ["SIGTERM", "SIGHUP"], ids=["sigterm", "sighup"])
 def test_a_terminate_signal_during_a_stuck_shutdown_logs_no_failure(
-    start: Callable[..., _Serve], signum: signal.Signals
+    start: Callable[..., _Serve], signal_name: str
 ) -> None:
     server = start(X_DEADLINE="20", X_TEARDOWN="stuck")
     server.request("POST", "/api/shutdown")
     server.read_until("HELD")
-    server.process.send_signal(signum)
+    server.process.send_signal(signal.Signals[signal_name])
     server.read_until("HELD")
     time.sleep(_QUIET_WINDOW_S)
     server.process.send_signal(signal.SIGINT)

@@ -28,6 +28,13 @@ def _link(snapshot: Path, blobs: Path, name: str, blob: str) -> Path:
     return entry
 
 
+def _set_mtime(entry: Path, seconds: int) -> None:
+    """Date the blob *entry* links to, and the link itself where the OS can date a link."""
+    os.utime(entry, (seconds, seconds))
+    if os.utime in os.supports_follow_symlinks:
+        os.utime(entry, (seconds, seconds), follow_symlinks=False)
+
+
 @pytest.fixture
 def cache(tmp_path: Path) -> Path:
     """A models dir whose cache holds ``a.gguf`` and ``sub/q.gguf`` of one revision."""
@@ -138,8 +145,8 @@ class TestRegistryLookup:
         newer = cache / "models--org--repo" / "snapshots" / "rev2"
         newer.mkdir()
         _link(newer, blobs, _ROOT_FILE, "blob-a2")
-        os.utime(_snapshot(cache) / _ROOT_FILE, (1_000, 1_000), follow_symlinks=False)
-        os.utime(newer / _ROOT_FILE, (2_000, 2_000), follow_symlinks=False)
+        _set_mtime(_snapshot(cache) / _ROOT_FILE, 1_000)
+        _set_mtime(newer / _ROOT_FILE, 2_000)
         found = ModelRegistry(cache)._snapshot_gguf_path(_REPO, _ROOT_FILE)
         assert found == _snapshot(cache) / _ROOT_FILE
 

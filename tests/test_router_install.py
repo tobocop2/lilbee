@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import shutil
-import stat
 import tarfile
 import threading
 import zipfile
@@ -202,7 +202,8 @@ class TestInstall:
         folder = engines_root(cfg.models_dir) / "router" / ROUTER_VERSION
         assert binary == folder / "llama-swap"
         assert binary.read_bytes() == BINARY_BODY
-        assert binary.stat().st_mode & stat.S_IXUSR
+        # Windows has no execute bit: there, every file that exists passes.
+        assert os.access(binary, os.X_OK)
         assert "MIT License" in (folder / LICENCE_FILE).read_text(encoding="utf-8")
         assert sorted(p.name for p in folder.iterdir()) == [LICENCE_FILE, "llama-swap"]
         assert release == [
