@@ -330,11 +330,11 @@ def report_host_spill(role: WorkerRole, model: str, host_bytes: int, est_host_by
     if est_host_bytes <= 0 or host_bytes <= est_host_bytes * (1.0 + _TOLERANCE):
         return False
     log.warning(
-        "The %s model %s does not fit in GPU memory: the engine keeps %.1f GiB of it in "
+        "The %s model %s does not fit in GPU memory: the engine keeps %s of it in "
         "system memory, where it runs slower. Free GPU memory or use a smaller model.",
         role.value,
         model,
-        host_bytes / 1024**3,
+        memory_size_text(host_bytes),
     )
     return True
 
