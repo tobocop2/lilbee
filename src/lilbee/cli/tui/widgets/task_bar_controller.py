@@ -637,7 +637,7 @@ def _download_target(
 ) -> None:
     """``start_task`` target for a HuggingFace model download.
 
-    Translates ``PermissionError`` into the gated-repo friendly message and
+    Re-raises ``PermissionError`` as a ``RuntimeError`` with the shared gated-repo text and
     ``UnsupportedArchError`` into a user-facing arch-mismatch message so
     every call site gets consistent error UX.
     """
@@ -661,7 +661,7 @@ def _download_target(
         if result.warning is not None:
             reporter.warn(result.warning)
     except PermissionError as exc:
-        raise RuntimeError(msg.CATALOG_GATED_REPO.format(name=model.display_name)) from exc
+        raise RuntimeError(str(exc)) from exc
     except NoEngineError as exc:
         raise RuntimeError(str(exc)) from exc
     except UnsupportedArchError as exc:
