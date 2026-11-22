@@ -65,10 +65,7 @@ _MAX_TOP_K = 100
 _EMBED_MISMATCH_ADOPT_HINT = (
     "Run `lilbee use-embedder {model}` to search this index with its embedder."
 )
-_EMBED_MISMATCH_REBUILD_HINT = (
-    "This index needs a {dim}-dim embedder; run `lilbee rebuild` to re-embed it "
-    "under your current model."
-)
+_EMBED_MISMATCH_REBUILD_HINT = "This index needs a {dim}-dim embedder."
 
 
 def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:

@@ -528,14 +528,14 @@ class EmbeddingModelMismatchError(RuntimeError):
             return (
                 f"This index was built with embedding model '{self.persisted_model}', "
                 f"but lilbee is configured to use '{self.current_model}'. Configure lilbee "
-                f"to use '{self.persisted_model}' to search this index, or rebuild it under "
-                f"'{self.current_model}'."
+                f"to use '{self.persisted_model}' to search this index, or run `lilbee "
+                f"rebuild` to rebuild it under '{self.current_model}'."
             )
         return (
             f"This index was built with embedding model '{self.persisted_model}' "
             f"(dim {self.persisted_dim}), which differs from the current "
-            f"'{self.current_model}' (dim {self.current_dim}). The dimensions differ, "
-            f"so rebuild the index under '{self.current_model}' to use it."
+            f"'{self.current_model}' (dim {self.current_dim}). The dimensions differ. "
+            f"Run `lilbee rebuild` to rebuild the index under '{self.current_model}'."
         )
 
 

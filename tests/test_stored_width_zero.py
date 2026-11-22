@@ -243,7 +243,7 @@ def test_a_search_with_a_damaged_width_and_chunks_of_another_width_is_refused(st
     with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
         Store(cfg).search(query, top_k=2, max_distance=0)
 
-    assert "so rebuild the index" in str(refused.value)
+    assert "to rebuild the index" in str(refused.value)
 
 
 def test_a_search_with_no_meta_row_and_chunks_of_another_width_is_refused():
@@ -371,7 +371,7 @@ def test_an_ingest_at_another_width_than_the_stored_chunks_shows_the_rebuild_adv
     with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
         ingest(store)
 
-    assert "so rebuild the index" in str(refused.value)
+    assert "to rebuild the index" in str(refused.value)
     assert _library_rows() == before
 
 
@@ -390,8 +390,8 @@ def test_an_ingest_with_no_meta_row_and_chunks_of_another_width_shows_the_rebuil
     assert _library_rows() == before
     assert str(refused.value) == (
         f"This index was built with embedding model '{MODEL}' (dim 16), which differs "
-        f"from the current '{MODEL}' (dim 8). The dimensions differ, so rebuild the "
-        f"index under '{MODEL}' to use it."
+        f"from the current '{MODEL}' (dim 8). The dimensions differ. Run `lilbee "
+        f"rebuild` to rebuild the index under '{MODEL}'."
     )
 
 
@@ -409,8 +409,8 @@ def test_an_ingest_after_a_model_change_names_both_models_in_the_rebuild_advice(
 
     assert str(refused.value) == (
         f"This index was built with embedding model '{old_model}' (dim 16), which differs "
-        f"from the current '{MODEL}' (dim 8). The dimensions differ, so rebuild the "
-        f"index under '{MODEL}' to use it."
+        f"from the current '{MODEL}' (dim 8). The dimensions differ. Run `lilbee "
+        f"rebuild` to rebuild the index under '{MODEL}'."
     )
 
 
@@ -521,7 +521,7 @@ def test_a_search_with_a_text_width_and_chunks_of_another_width_is_refused(store
     with pytest.raises(EmbeddingModelMismatchError, match="dim 16") as refused:
         Store(cfg).search(np.zeros(CONFIGURED_WIDTH, dtype=np.float32), top_k=2, max_distance=0)
 
-    assert "so rebuild the index" in str(refused.value)
+    assert "to rebuild the index" in str(refused.value)
 
 
 @pytest.mark.parametrize("stored", TEXT_WIDTHS)
