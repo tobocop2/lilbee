@@ -2504,16 +2504,31 @@ async def _serve_stdio(server: LilbeeMCP) -> None:
         await server.run_stdio_async()
 
 
+def _fill_empty_chat_model() -> None:
+    """Fill an empty chat model, as the HTTP server does, so no tool sends an empty name.
+
+    A failed fill never stops the server from attaching to stdio. It leaves one warning on
+    the log, which goes to stderr: stdout is the MCP channel.
+    """
+    try:
+        for notice in fill_empty_chat_model():
+            log.info("%s", notice)
+    except Exception as exc:
+        log.warning(
+            "The chat model could not be filled at start (%s); tools use the chat model as set.",
+            exc,
+            exc_info=True,
+        )
+
+
 def main() -> None:
     """Entry point for the stdio MCP server."""
     # Preload so the first tool call doesn't pay the cold-start cost
     # of provider/embedder/store init. Failures (missing model, bad
     # config) still surface on the first tool call rather than crashing
-    # the server before it attaches to stdio. An empty chat model is filled first, the
-    # same way the HTTP server does, so the wiki tools never send an empty model name.
+    # the server before it attaches to stdio.
+    _fill_empty_chat_model()
     try:
-        for notice in fill_empty_chat_model():
-            log.info("%s", notice)
         get_services()
     except Exception:
         log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
