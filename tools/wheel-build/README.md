@@ -23,6 +23,13 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   own.
 - `llama_gpu_manylinux.sh` — builds the Linux CPU, Vulkan or ROCm engine pack in the
   manylinux_2_34 image for the build workflow of the engine-packs repository.
+- `pack_mistralrs.sh` — builds and checks the mistral.rs engine pack of one cell. The
+  engine-packs repository runs it through its `scripts/pack.sh`, which sets the variables
+  the script names at its top.
+- `check_mistralrs_wheel.sh` — checks a built mistral.rs pack: the tag, the licences, and
+  that the tool starts. `pack_mistralrs.sh` runs it before the pack leaves the build.
+- `pack_common.sh` — the functions that the pack scripts share.
+- `build-tools.constraints` — the pinned Python build tools of the packs.
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone

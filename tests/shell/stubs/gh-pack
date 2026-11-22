@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Stand-in for the gh CLI when a pack script fetches a release asset.
+#
+# Reads:
+#   GH_ASSETS  a folder of the assets; `release download` copies the one named by --pattern (required)
+#   GH_DIGEST  the digest that `release view` lists (default: the sha256 of the asset)
+#   GH_DIGEST_OF  the one asset that GH_DIGEST applies to (default: every asset)
+#   GH_LOG     a file that receives one line per call (required)
+#   GH_DOWNLOAD_STATUS  the exit status of `release download` (default: 0)
+
+set -euo pipefail
+
+echo "$*" >> "${GH_LOG:?}"
+verb="${1-} ${2-}"
+pattern=
+dir=
+filter=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pattern) pattern="$2"; shift ;;
+    --dir) dir="$2"; shift ;;
+    --jq) filter="$2"; shift ;;
+  esac
+  shift
+done
+
+case "${verb}" in
+  "release download")
+    [ -e "${GH_ASSETS:?}/${pattern}" ] || { echo "no assets match the file pattern" >&2; exit 1; }
+    mkdir -p "${dir}"
+    cp "${GH_ASSETS}/${pattern}" "${dir}/"
+    exit "${GH_DOWNLOAD_STATUS:-0}" ;;
+  "release view")
+    for file in "${GH_ASSETS:?}"/*; do
+      digest="${GH_DIGEST-}"
+      if [ -z "${digest}" ] || [ "${GH_DIGEST_OF:-${file##*/}}" != "${file##*/}" ]; then
+        digest="sha256:$(sha256sum "${file}" | cut -d' ' -f1)"
+      fi
+      jq -nc --arg name "${file##*/}" --arg digest "${digest}" '{name: $name, digest: $digest}'
+    done | jq -s '{assets: .}' | jq -r "${filter}" ;;
+  *)
+    echo "stub gh: unexpected command '${verb}'" >&2
+    exit 2 ;;
+esac
