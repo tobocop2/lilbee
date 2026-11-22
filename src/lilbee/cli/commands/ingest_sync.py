@@ -55,6 +55,7 @@ from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.providers.base import ProviderError
+from lilbee.runtime.asyncio_loop import run_without_join
 from lilbee.runtime.cancellation import CancelSignal, SignalFlag, sigint_cancel
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
@@ -333,15 +334,8 @@ def _run_crawl_with_signal_cancel(
     login: CrawlLogin = NO_LOGIN,
 ) -> list[Path]:
     """Crawl one URL on its own event loop; a crawl that ends under a set cancel raises it."""
-    # Manage the event loop explicitly. In the CLI this runs once per process,
-    # but under pytest-xdist the same worker thread runs many tests; leaving a
-    # closed loop set as the "current" loop for the thread poisons every later
-    # asyncio.get_event_loop() call and hangs macOS 3.12/3.13 unit-test CI.
-    # Always clear the thread-current loop in finally.
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        coro = crawl_and_save(
+    result: list[Path] = run_without_join(
+        crawl_and_save(
             url,
             depth=depth,
             max_pages=max_pages,
@@ -350,14 +344,11 @@ def _run_crawl_with_signal_cancel(
             include_subdomains=include_subdomains,
             login=login,
         )
-        result: list[Path] = loop.run_until_complete(coro)
-        # A cancelled crawl returns the pages it saved; the command still stops here.
-        if cancel_event.is_set():
-            raise asyncio.CancelledError
-        return result
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+    )
+    # A cancelled crawl returns the pages it saved; the command still stops here.
+    if cancel_event.is_set():
+        raise asyncio.CancelledError
+    return result
 
 
 def _cancellable_progress(
@@ -404,14 +395,16 @@ def _exit_cancelled(
 def _ctrl_c_stops(rollback: AddRollback) -> Iterator[SignalFlag]:
     """Run a command under Ctrl+C and yield the cancel it polls; a stop exits 130 after *rollback*.
 
-    The first Ctrl+C sets the cancel; a second one force-quits a run that never polls it.
+    The first Ctrl+C sets the cancel; a second one force-quits a run that never polls it,
+    after the rollback and its message.
     """
-    try:
-        # Only the user's Ctrl+C sets this cancel.
-        with sigint_cancel() as cancel_event, leave_as_cancel(rollback, cancel_event, lambda: True):
-            yield cancel_event
-    except asyncio.CancelledError:
-        _exit_cancelled(rollback)
+    with sigint_cancel() as cancel_event:
+        try:
+            # Only the user's Ctrl+C sets this cancel.
+            with leave_as_cancel(rollback, cancel_event, lambda: True):
+                yield cancel_event
+        except asyncio.CancelledError:
+            _exit_cancelled(rollback)
 
 
 def run_sync_with_signal_cancel(
@@ -493,23 +486,17 @@ def _run_sync(
     callback = _cancellable_progress(
         cancel_event, _wait_shown_on_stderr(on_progress or _default_progress())
     )
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(
-            sync(
-                force_rebuild=force_rebuild,
-                quiet=cfg.json_mode,
-                on_progress=callback,
-                cancel=cancel_event,
-                retry_skipped=retry_skipped,
-                prune_ignored=prune_ignored,
-                started_by=started_by,
-            )
+    return run_without_join(
+        sync(
+            force_rebuild=force_rebuild,
+            quiet=cfg.json_mode,
+            on_progress=callback,
+            cancel=cancel_event,
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            started_by=started_by,
         )
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+    )
 
 
 def _exit_if_failed(result: object) -> None:

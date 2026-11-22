@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import multiprocessing
 import os
 import queue
 import signal
@@ -823,11 +824,34 @@ def _exit_now(status: int, note: str) -> None:
     os._exit(status)
 
 
+def _kill_worker_processes() -> None:
+    """Kill the worker processes: only Linux ends one with its parent, and a forced exit joins none.
+
+    A signal handler may run it: it takes no lock and starts no thread.
+    """
+    for worker in multiprocessing.active_children():
+        # One that another thread ended first must not stop the exit.
+        with suppress(OSError, ValueError):
+            worker.kill()
+
+
 def _force_quit_from_handler(status: int) -> None:
     """End the process with *status* from a signal handler: a bare write of the note to fd 2."""
+    _kill_worker_processes()
     with suppress(OSError):
         os.write(2, _FORCE_QUIT_NOTE_BYTES)
     os._exit(status)
+
+
+def force_quit_from_handler() -> None:
+    """End the process from a Ctrl-C handler, with the Ctrl-C status."""
+    _force_quit_from_handler(_FORCE_QUIT_EXIT_CODE)
+
+
+def force_quit() -> None:
+    """End the process with the Ctrl-C status; a normal exit joins a stuck worker thread."""
+    _kill_worker_processes()
+    _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
 @contextmanager

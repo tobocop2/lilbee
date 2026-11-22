@@ -181,21 +181,26 @@ def test_ctrl_c_handler_records_without_an_event_or_a_lock(monkeypatch) -> None:
 
 
 def test_a_second_ctrl_c_in_a_sync_stops_it_where_it_is(monkeypatch) -> None:
-    ran_on: list[str] = []
+    steps: list[str] = []
 
     async def _fake_sync(**kwargs):
         handler = signal.getsignal(signal.SIGINT)
         handler(signal.SIGINT, None)
         assert kwargs["cancel"].is_set()
         handler(signal.SIGINT, None)
-        ran_on.append("past the second Ctrl+C")
+        steps.append("past the second Ctrl+C")
         raise asyncio.CancelledError
 
+    def _forget(_rollback: ingest_sync.AddRollback) -> None:
+        steps.append("rollback")
+
     monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=True))
-    monkeypatch.setattr(ingest_sync, "json_output", lambda _payload: None)
+    monkeypatch.setattr(ingest_sync, "json_output", lambda payload: steps.append(payload["error"]))
+    monkeypatch.setattr(ingest_sync.AddRollback, "forget_unfinished", _forget)
+    monkeypatch.setattr("lilbee.app.services.force_quit", lambda: steps.append("force quit"))
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
     with pytest.raises(SystemExit) as stopped:
         ingest_sync.run_sync_with_signal_cancel()
     assert stopped.value.code == 130
-    assert ran_on == []
+    assert steps == ["rollback", "Sync cancelled.", "force quit"]

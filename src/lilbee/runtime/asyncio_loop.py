@@ -11,8 +11,11 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextlib
+import signal
+import socket
+import sys
 import threading
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Coroutine, Iterator
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -25,6 +28,8 @@ T = TypeVar("T")
 _EXECUTOR_SHUTDOWN_MSG = "cannot schedule new futures after shutdown"
 # Seconds the pending tasks get to unwind when the loop shuts down.
 _DRAIN_BUDGET_S = 10.0
+# Python writes one byte for each signal; what a read leaves wakes the loop again.
+_WAKEUP_READ_BYTES = 4096
 
 
 def is_executor_shutdown(exc: BaseException) -> bool:
@@ -74,6 +79,49 @@ def run(coro: Coroutine[Any, Any, T]) -> T:
         # run_coroutine_threadsafe re-raises cancellation as the concurrent
         # flavour; rewrap so `except asyncio.CancelledError` still matches.
         raise asyncio.CancelledError(*exc.args) from None
+
+
+@contextlib.contextmanager
+def _signals_wake(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
+    """Make each signal wake *loop*, which sleeps until a descriptor is ready.
+
+    A signal interrupts only a sleep that has started. One that lands just before
+    leaves its Python handler unrun until the loop wakes for something else. Python
+    takes a wakeup descriptor on the main thread only, and the proactor loop of
+    Windows sets its own.
+    """
+    if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        reader.setblocking(False)
+        writer.setblocking(False)
+        loop.add_reader(reader, reader.recv, _WAKEUP_READ_BYTES)
+        previous = signal.set_wakeup_fd(writer.fileno())
+        try:
+            yield
+        finally:
+            signal.set_wakeup_fd(previous)
+            loop.remove_reader(reader)
+
+
+def run_without_join(coro: Awaitable[T]) -> T:
+    """Run *coro* on its own loop on this thread, then close the loop.
+
+    ``asyncio.run`` joins the threads of ``asyncio.to_thread`` as it closes, so a
+    Ctrl-C would wait there for a stuck one. A signal wakes the loop, so its handler
+    runs at once.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        with _signals_wake(loop):
+            return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        # A closed loop left current poisons a later get_event_loop on this thread.
+        asyncio.set_event_loop(None)
 
 
 def shutdown(drain_budget_s: float = _DRAIN_BUDGET_S) -> None:
