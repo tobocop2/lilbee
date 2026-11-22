@@ -509,6 +509,31 @@ def test_the_memory_estimate_is_a_fixed_reserve_of_the_file_size(tmp_path: Path)
     assert missing.size_known is False
 
 
+def _cut_gguf(path: Path, declared_bytes: int) -> Path:
+    """A one-tensor F32 GGUF whose header declares *declared_bytes* of data the file lacks."""
+    import struct
+
+    name = b"t0"
+    infos = (
+        struct.pack("<Q", len(name))
+        + name
+        + struct.pack("<I", 1)
+        + struct.pack("<Q", declared_bytes // 4)
+        + struct.pack("<I", 0)
+        + struct.pack("<Q", 0)
+    )
+    head = b"GGUF" + struct.pack("<IQQ", 3, 1, 0) + infos
+    path.write_bytes(head + b"\0" * (-len(head) % 32))
+    return path
+
+
+def test_a_cut_off_gguf_is_an_unknown_size_not_its_partial_bytes(tmp_path: Path) -> None:
+    model = _cut_gguf(tmp_path / "cut.gguf", declared_bytes=4096)
+    estimate = MISTRAL.estimate_memory(MemoryRequest(model, 4096, 1, 99, True, cfg.kv_cache_type))
+    assert estimate.size_known is False
+    assert estimate.device_bytes == UNKNOWN_SIZE_RESERVE_BYTES
+
+
 def test_the_memory_estimate_of_a_folder_prices_its_weights_and_its_cache(tmp_path: Path) -> None:
     folder = tmp_path / "model"
     folder.mkdir()

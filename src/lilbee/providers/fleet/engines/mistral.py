@@ -27,7 +27,7 @@ from lilbee.providers.fleet.engines.host_gate import PASS, PLATFORM_UNREAD, Host
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
-from lilbee.providers.fleet.model_memory import estimate_memory, fixed_weights_estimate
+from lilbee.providers.fleet.model_memory import estimate_memory, fixed_file_estimate
 from lilbee.providers.folder_embed_width import read_folder_config
 from lilbee.providers.gguf_meta import (
     is_hf_cache_blob,
@@ -416,11 +416,7 @@ class MistralAdapter:
     def _whole_estimate(request: MemoryRequest) -> MemoryEstimate:
         if request.model_path.is_dir():
             return estimate_memory(ModelFormat.SAFETENSORS, request)
-        try:
-            weights = request.model_path.stat().st_size
-        except OSError:
-            weights = None
-        return fixed_weights_estimate(weights)
+        return fixed_file_estimate(request.model_path)
 
     def check_readback(self, binary: Path) -> bool:
         return False
