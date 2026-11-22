@@ -13,6 +13,7 @@ from textual.widgets import OptionList
 from lilbee.app import engine_service
 from lilbee.app.settings import SettingsUpdateResult
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.engine_commands import EngineCommandResult
 from lilbee.cli.tui.pick_order import PickOrder
 from lilbee.cli.tui.screens import model_picker
@@ -419,6 +420,69 @@ def test_the_late_pick_runs_while_it_is_the_newest_pick_of_the_role() -> None:
     picks.take("embedding_model", THIRD_REF)
     model_picker._pick_if_newest(app, "chat_model", number, OTHER_REF, later)
     later.assert_called_once_with(OTHER_REF)
+    app.notify.assert_not_called()
+
+
+def _picker_on(app: mock.Mock, scope: str) -> mock.Mock:
+    """A stand-in for a picker of *scope* whose pick later is a mock."""
+    return mock.Mock(app=app, _scope=scope, _pick_later=mock.Mock())
+
+
+def test_a_direct_pick_records_its_model_for_the_role() -> None:
+    (app, picks), later = _app_with_picks(), mock.Mock()
+    number = picks.take("chat_model", OTHER_REF)
+    picker = _picker_on(app, "chat")
+    ModelPickerModal._pick_now(picker, OTHER_REF)
+    picker.dismiss.assert_called_once_with(OTHER_REF)
+    model_picker._pick_if_newest(app, "chat_model", number, OTHER_REF, later)
+    later.assert_not_called()
+    app.notify.assert_not_called()
+
+
+def test_a_direct_pick_in_another_role_takes_the_number_of_that_role() -> None:
+    app, picks = _app_with_picks()
+    number = picks.take("embedding_model", OTHER_REF)
+    ModelPickerModal._pick_now(_picker_on(app, "embed"), THIRD_REF)
+    assert not picks.is_newest("embedding_model", number)
+    assert picks.newest_ref("embedding_model") == THIRD_REF
+
+
+def test_browse_catalog_does_not_invalidate_a_pending_late_pick() -> None:
+    (app, picks), later = _app_with_picks(), mock.Mock()
+    number = picks.take("chat_model", OTHER_REF)
+    picker = _picker_on(app, "chat")
+    ModelPickerModal._pick_now(picker, model_picker.BROWSE_CATALOG_REF)
+    picker.dismiss.assert_called_once_with(model_picker.BROWSE_CATALOG_REF)
+    model_picker._pick_if_newest(app, "chat_model", number, OTHER_REF, later)
+    later.assert_called_once_with(OTHER_REF)
+    app.notify.assert_not_called()
+
+
+def test_a_second_engine_pick_of_the_same_model_records_that_model() -> None:
+    (app, picks), later = _app_with_picks(), mock.Mock()
+    picker = _picker_on(app, "chat")
+    option = engine_service.EngineOption("openvino", installed=False, backend="cpu")
+    ModelPickerModal._use_with_engine(picker, OTHER_REF, option)
+    ModelPickerModal._use_with_engine(picker, OTHER_REF, option)
+    first_done = app.call_later.call_args_list[0].args[-1]
+    first_done()
+    assert picks.newest_ref("chat_model") == OTHER_REF
+    app.notify.assert_not_called()
+    later.assert_not_called()
+
+
+def test_a_settings_change_records_its_model_for_the_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (app, picks), later = _app_with_picks(), mock.Mock()
+    number = picks.take("chat_model", OTHER_REF)
+    monkeypatch.setattr(cfg, "chat_model", THIRD_REF)
+    LilbeeApp.publish_settings(app, ["chat_model"])
+    assert picks.newest_ref("chat_model") == THIRD_REF
+    monkeypatch.setattr(cfg, "chat_model", OTHER_REF)
+    LilbeeApp.publish_settings(app, ["chat_model"])
+    model_picker._pick_if_newest(app, "chat_model", number, OTHER_REF, later)
+    later.assert_not_called()
     app.notify.assert_not_called()
 
 
