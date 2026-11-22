@@ -607,6 +607,31 @@ async def test_unplaceable_warns(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_drawer_says_why_a_role_does_not_fit(monkeypatch):
+    """A role that gets no server shows the planner's reason beside the warning, as the CLI does."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    reason = (
+        "vision model org/vision.gguf does not fit available memory and will not be served. "
+        "Pick a smaller model."
+    )
+    view = replace(_make_view(unplaceable=(WorkerRole.VISION,)), refusal=reason)
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert line.display
+        assert str(line.render()) == reason
+
+
+@pytest.mark.asyncio
 async def test_a_fallback_drawer_names_the_reason_and_where_each_pinned_role_runs(monkeypatch):
     """After a placement fallback the drawer says what CLI, REST and MCP say."""
     from dataclasses import replace
@@ -689,7 +714,7 @@ async def test_apply_disables_editor_while_running(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     gate = threading.Event()
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait() and _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -717,6 +742,7 @@ async def test_apply_ignored_while_applying(monkeypatch):
     def _blocking(spec):  # type: ignore[no-untyped-def]
         calls.append(spec)
         gate.wait()
+        return _make_view()
 
     monkeypatch.setattr(fbm, "set_placement", _blocking)
 
@@ -1051,7 +1077,7 @@ async def test_apply_shows_rebuilding_status(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     gate = threading.Event()
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait() and _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -1083,7 +1109,7 @@ async def test_reset_shows_rebuilding_then_clears_draft(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     gate = threading.Event()
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait() and _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -1141,13 +1167,16 @@ async def test_failed_change_restores_live_view(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reload_read_error_after_change_notifies(monkeypatch):
-    """If re-reading the live placement after an applied change fails, the error
-    surfaces and the editor doesn't hang in the applying state."""
+async def test_reload_read_error_after_a_failed_change_keeps_the_change_error(monkeypatch):
+    """A change that failed is followed by a re-read of the live placement. If that read
+    fails too, the change error surfaces and the editor doesn't hang in the applying state."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: _make_view(manual=True))
+    def _fail(spec):  # type: ignore[no-untyped-def]
+        raise RuntimeError("apply failed")
+
+    monkeypatch.setattr(fbm, "set_placement", _fail)
     reads = {"n": 0}
 
     def _get():
@@ -1169,7 +1198,7 @@ async def test_reload_read_error_after_change_notifies(monkeypatch):
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert body.applying is False
-    assert any("probe failed on reload" in n for n in notes)
+    assert any("apply failed" in n for n in notes)
 
 
 @pytest.mark.asyncio
@@ -1634,7 +1663,7 @@ async def test_a_refused_spec_applies_unedited_and_applies_a_correction(monkeypa
 
     monkeypatch.setattr(fbm, "get_placement", _refused_view)
     calls: list[object] = []
-    monkeypatch.setattr(fbm, "set_placement", lambda spec: calls.append(spec))
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: calls.append(spec) or _refused_view())
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
@@ -1882,3 +1911,52 @@ async def test_an_editor_row_keeps_the_model_the_plan_runs(
         row = body._edits[WorkerRole.CHAT]
         assert row.model == "org/chat.gguf"
         assert row.tensor_split == split
+
+
+@pytest.mark.asyncio
+async def test_a_clear_the_planner_cannot_read_names_the_models_still_running(monkeypatch):
+    """A clear that cannot read the plan shows the view it returned, not a fresh read that fails."""
+    from textual.widgets import Static
+
+    from lilbee.app.placement import PlacementView, SkippedNoEngine
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+    from tests._async_wait import wait_until
+
+    notice = (
+        "The chat model org/chat.gguf is still running: the placement could not be read, "
+        "so the clear is saved but not applied. Restart lilbee to apply it."
+    )
+    returned = PlacementView(
+        gpus=(),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        skipped_no_engine=(SkippedNoEngine(WorkerRole.CHAT, "org/chat.gguf", notice),),
+    )
+    reads = iter([_make_view()])
+
+    def _read():  # type: ignore[no-untyped-def]
+        try:
+            return next(reads)
+        except StopIteration:
+            raise RuntimeError("the plan cannot be read") from None
+
+    monkeypatch.setattr(fbm, "get_placement", _read)
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: returned)
+    monkeypatch.setattr(fbm, "wait_chat_ready", lambda: None)
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(
+            app.screen.query_one("FleetBody"), "notify", lambda msg, **_k: notes.append(msg)
+        )
+        await pilot.press("ctrl+x")
+        line = app.screen.query_one("#placement-skipped", Static)
+        assert await wait_until(pilot, lambda: line.display)
+        assert notice in str(line.render())
+
+    assert notes == []
