@@ -3113,6 +3113,7 @@ class TestCatalogGridFocus:
     async def test_grid_focus_auto_highlights_first_card(self, _mock_resolve):
         """A focused ModelGrid must auto-highlight a card so users see Tab feedback."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
@@ -3120,16 +3121,15 @@ class TestCatalogGridFocus:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
-                for _ in range(20):
-                    await pilot.pause()
-                    if app.screen.query("#grid-chat ModelGrid"):
-                        break
-                grid = app.screen.query("#grid-chat ModelGrid").first()
+                grid = await wait_for_widget(
+                    pilot, app, "#grid-chat ModelGrid", ModelGrid, timeout=30.0
+                )
                 grid.highlighted = None
                 app.set_focus(None)
                 await pilot.pause()
+                # Widget.focus() only queues the focus change, so one pause can miss it.
                 grid.focus()
-                await pilot.pause()
+                await wait_until(pilot, lambda: grid.highlighted is not None, timeout=30.0)
                 assert grid.highlighted == 0, (
                     "Tab focus on a ModelGrid must auto-highlight the first card"
                 )
@@ -3140,7 +3140,7 @@ class TestCatalogGridFocus:
         reason="Textual highlighted-row update timing is flaky on Windows runners",
     )
     async def test_g_key_does_not_trigger_install(self, _mock_resolve):
-        """Pressing G in the catalog grid jumps to the bottom, never installs (bb-8kxf)."""
+        """Pressing G in a catalog grid jumps to its last card, never installs (bb-8kxf)."""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
@@ -3150,20 +3150,17 @@ class TestCatalogGridFocus:
                 await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
-                for _ in range(20):
-                    await pilot.pause()
-                    if app.screen.query(ModelGrid):
-                        break
-                grid = app.screen.query(ModelGrid).first()
-
-                def _focused_on_first_card() -> bool:
-                    if not grid.has_focus:
-                        app.screen.set_focus(grid)
-                    elif grid.highlighted is None:
-                        grid.highlighted = 0
-                    return grid.has_focus and grid.highlighted == 0
-
-                assert await wait_until(pilot, _focused_on_first_card, timeout=30.0)
+                grid = await wait_for_widget(
+                    pilot, app, "#discover-grid-for-you", ModelGrid, timeout=30.0
+                )
+                # Focus opens the Discover tab, and the tab fills its rails a message later:
+                # G on the rail before then has no card to move to.
+                app.screen.set_focus(grid)
+                assert await wait_until(
+                    pilot,
+                    lambda: grid.has_focus and len(grid.rows) > 1 and grid.highlighted == 0,
+                    timeout=30.0,
+                )
                 notifications: list[str] = []
                 original_notify = app.notify
                 app.notify = lambda message, **kw: notifications.append(str(message))
