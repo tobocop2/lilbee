@@ -8,8 +8,10 @@ import pytest
 from _pytest.outcomes import Failed, Skipped
 
 from tests._pack_workflow import (
+    CELLS_ENV,
     WORKFLOW_ENV,
     cells_below_the_record,
+    pack_cells,
     pack_workflow,
     published_builds,
     record_after_publish,
@@ -81,3 +83,47 @@ def test_the_record_after_a_publish_holds_one_row_for_each_cell_at_its_number() 
     assert published_builds("lilbee_engine_x", "1", "cpu", "linux", after) == [4]
     assert after[0] == _ROWS[2]
     assert published_builds("lilbee_engine_x", "1", "cpu", "linux", _ROWS) == [2, 3]
+
+
+_CELLS_FILE = "engines:\n  llama:\n    cells:\n      - {cell: a, build_number: 3}\n      - {cell: b}\n"
+
+
+def test_pack_cells_returns_the_cells_of_the_engine_in_file_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cells_file = tmp_path / "cells.yml"
+    cells_file.write_text(_CELLS_FILE, encoding="utf-8")
+    monkeypatch.setenv(CELLS_ENV, str(cells_file))
+    assert pack_cells("llama") == [{"cell": "a", "build_number": 3}, {"cell": "b"}]
+
+
+def test_pack_cells_fails_for_an_engine_the_file_lacks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cells_file = tmp_path / "cells.yml"
+    cells_file.write_text(_CELLS_FILE, encoding="utf-8")
+    monkeypatch.setenv(CELLS_ENV, str(cells_file))
+    with pytest.raises(KeyError, match="nope"):
+        pack_cells("nope")
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_pack_cells_fails_in_ci_when_the_path_is_missing(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    monkeypatch.setenv("CI", "true")
+    if value is None:
+        monkeypatch.delenv(CELLS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(CELLS_ENV, value)
+    with pytest.raises(Failed, match=CELLS_ENV):
+        pack_cells("llama")
+
+
+def test_pack_cells_skips_outside_ci_when_the_path_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv(CELLS_ENV, raising=False)
+    with pytest.raises(Skipped, match=CELLS_ENV):
+        pack_cells("llama")

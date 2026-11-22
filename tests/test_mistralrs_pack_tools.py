@@ -18,7 +18,7 @@ from types import ModuleType
 import pytest
 import yaml
 
-from tests._pack_workflow import pack_workflow
+from tests._pack_workflow import pack_cells, pack_workflow
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools" / "wheel-build"
 PACKAGING = Path(__file__).resolve().parents[1] / "packaging" / "engine-wheel-mistral-rs"
@@ -496,7 +496,7 @@ def test_the_pack_job_has_no_cuda_step() -> None:
 
 
 def test_the_pack_matrix_holds_no_cuda_cell() -> None:
-    cells = _mistralrs_job()["strategy"]["matrix"]["include"]
+    cells = pack_cells("mistralrs")
     assert {cell["cell"] for cell in cells} == {
         "mistralrs-linux-x86_64-cpu",
         "mistralrs-windows-x86_64-cpu",
