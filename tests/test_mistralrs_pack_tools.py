@@ -197,8 +197,11 @@ def test_vendored_files_take_notices_and_third_party_licences(tmp_path: Path) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("t", encoding="utf-8")
     found = [p.relative_to(tmp_path).as_posix() for p in rust_notices.vendored_files(tmp_path)]
-    # Windows sorts paths without regard to case, so only the set of files is the same everywhere.
-    assert sorted(found) == ["NOTICE", "a/NOTICE.md", "a/third_party/x/LICENSE-BSD"]
+    # The function sorts Path objects; Windows orders those without regard to case, so the
+    # expectation sorts Path objects too.
+    expected = ["NOTICE", "a/NOTICE.md", "a/third_party/x/LICENSE-BSD"]
+    ordered = sorted(tmp_path / n for n in expected)
+    assert found == [p.relative_to(tmp_path).as_posix() for p in ordered]
 
 
 def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
