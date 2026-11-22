@@ -534,8 +534,7 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
 def _holders_sentence(holders: Sequence[RoomHolder]) -> str:
     """The sentence that names each role charged to a card ahead of the refused one."""
     named = [
-        f"the {h.role.value} model {h.model} ({memory_size_text(h.charged_bytes)})"
-        for h in holders
+        f"the {h.role.value} model {h.model} ({memory_size_text(h.charged_bytes)})" for h in holders
     ]
     verb = "holds" if len(named) == 1 else "hold"
     joined = " and ".join(named)
