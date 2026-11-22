@@ -5,11 +5,14 @@
 # Reads:
 #   REAL_PYTHON     the interpreter for the other calls (required)
 #   PYTHON_LOG      a file that receives one line per venv or pip call (required)
+#   PYTHON_CALLS    a file that receives the path of this stub and the first line of the arguments, per call (required)
 #   PYTHON_VERSION  the version the stub reports (default: 3.12)
 
 set -euo pipefail
 
 site="$(dirname "$0")/../site"
+call="$0 $*"
+echo "${call%%$'\n'*}" >> "${PYTHON_CALLS:?}"
 case "${1-} ${2-} ${3-}" in
   "-c "*version_info*)
     echo "${PYTHON_VERSION:-3.12}" ;;

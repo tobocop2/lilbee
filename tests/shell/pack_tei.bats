@@ -24,7 +24,7 @@ setup() {
   tool curl 'case "$*" in */embed*) echo "[[$(yes 0 | head -n 384 | paste -s -d, -)]]" ;; esac'
   PATH="${BIN}:${PATH}"
 
-  export REAL_PYTHON DOCKER_LOG="${BATS_TEST_TMPDIR}/docker.log" PYTHON_LOG="${BATS_TEST_TMPDIR}/python.log"
+  export REAL_PYTHON DOCKER_LOG="${BATS_TEST_TMPDIR}/docker.log" PYTHON_LOG="${BATS_TEST_TMPDIR}/python.log" PYTHON_CALLS="${BATS_TEST_TMPDIR}/calls.log"
   export QEMU_LOG="${BATS_TEST_TMPDIR}/qemu.log" ROUTER_LOG="${BATS_TEST_TMPDIR}/router.log" ROUTER_FAIL=
   export STEP_LOG="${BATS_TEST_TMPDIR}/step.log" TMPDIR="${BATS_TEST_TMPDIR}/tmp/"
   export TEI_REPO="${BATS_TEST_TMPDIR}/tei-origin" TEI_TAG=v1.9.4 RUSTC_VERSION=1.92.0 WHEEL_VERSION=1.9.4
@@ -256,6 +256,28 @@ bash
   [ "$status" -eq 0 ]
   [ -x "${ROOT}/pack-venv/bin/python" ]
   [ "$(grep -c '^-m venv pack-venv$' "${PYTHON_LOG}")" -eq 1 ]
+}
+
+# Pass when each Python call after the venv of the checkout runs an interpreter of a venv, and each call in "$@" is one.
+only_venv_python() {  # call...
+  local call
+  sed '1,/ -m venv pack-venv$/d' "${PYTHON_CALLS}" > calls.after
+  for call in "$@"; do grep -qF -- "${ROOT}/pack-venv/bin/python ${call}" calls.after; done
+  run grep -vF -e "${ROOT}/pack-venv/bin/python " -e 'check-venv/bin/python ' calls.after
+  [ "$status" -eq 1 ]
+}
+
+@test "a Linux cell checks its wheel with the Python of the build venv" {
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  only_venv_python '-c import pathlib' 'tools/wheel-build/check_tei_wheel.py ' '-m venv check-venv'
+}
+
+@test "the macOS cell builds and checks its wheel with the Python of the build venv" {
+  metal
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  only_venv_python '-m pip install -q build wheel delocate' '-m zipfile -l ' 'tools/wheel-build/check_tei_wheel.py ' '-m venv check-venv'
 }
 
 @test "a wheel that lacks a licence is refused" {
