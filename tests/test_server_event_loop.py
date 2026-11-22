@@ -508,12 +508,8 @@ class TestAskStaysOffTheLoop:
         searcher = services.searcher
         with (
             patch.object(searcher, "search_unavailable", return_value=False),
-            patch.object(
-                searcher, "skip_retrieval", side_effect=_recording(threads, returns=True)
-            ),
-            patch.object(
-                rag_handlers, "_resolve_stream_context", return_value=([], None, [])
-            ),
+            patch.object(searcher, "skip_retrieval", side_effect=_recording(threads, returns=True)),
+            patch.object(rag_handlers, "_resolve_stream_context", return_value=([], None, [])),
         ):
             [f async for f in rag_handlers.ask_stream("q")]
         _assert_off_the_loop(threads, 1)
@@ -552,9 +548,7 @@ class TestSyncPlanningStaysOffTheLoop:
         services.store.get_sources.return_value = []
 
         def stub(name: str, returns):
-            return patch.object(
-                pipeline, name, side_effect=_recording(ran[name], returns=returns)
-            )
+            return patch.object(pipeline, name, side_effect=_recording(ran[name], returns=returns))
 
         with (
             stub("plan_fanout", []),
