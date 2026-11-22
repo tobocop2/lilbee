@@ -8,7 +8,6 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
-from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -16,9 +15,10 @@ from lilbee.catalog.types import ModelFormat
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.format_rows import FormatRow, format_prompt
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
+from lilbee.cli.tui.widgets.dialog import Dialog
 
 
-class FormatPicker(ModalScreen[ModelFormat | None]):
+class FormatPicker(Dialog[ModelFormat | None]):
     """Dismisses with the chosen format, or ``None`` on escape."""
 
     CSS_PATH = "format_picker.tcss"

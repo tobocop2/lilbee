@@ -8,10 +8,10 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Horizontal, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin, crawl_limit_error
@@ -43,7 +43,7 @@ class CrawlParams:
     login: CrawlLogin = field(default=NO_LOGIN, repr=False)
 
 
-class CrawlDialog(ModalScreen[CrawlParams | None]):
+class CrawlDialog(Dialog[CrawlParams | None]):
     """Modal dialog that collects URL, recursion toggle, and optional caps."""
 
     CSS_PATH = "crawl_dialog.tcss"

@@ -59,7 +59,12 @@ from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileSt
 from lilbee.core.system import default_data_dir
 from lilbee.data.store.types import HeldOut, HeldRecord
 from tests._async_wait import press_widget, wait_until
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._lilbee_app_test_host import (
+    LilbeeAppHost,
+    app_reads_queue,
+    await_chat,
+    send_key_burst,
+)
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
     isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
@@ -641,6 +646,24 @@ async def test_a_bare_enter_on_the_apply_dialog_cancels_and_changes_nothing(sour
         assert app.focused is cancel
         await pilot.press("enter")
         assert await _until(pilot, lambda: app.screen is screen)
+    assert cfg.max_chunks_per_file == 3000
+
+
+async def test_two_enters_on_the_apply_dialog_leave_settings_open(sources) -> None:
+    _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "fewer")
+        dialog = await _dialog(app, pilot, ApplyProfileDialog)
+        cancel = dialog.query_one("#apply-cancel", ConfirmPill)
+        assert await _until(pilot, lambda: app.focused is cancel)
+        send_key_burst(app, "enter", "enter")
+        assert await app_reads_queue(app, pilot)
+        # The dialog stops after it has read every message posted before the close.
+        assert await _until(pilot, lambda: not dialog.is_running)
+        assert await app_reads_queue(app, pilot)
+        assert app.screen is screen
     assert cfg.max_chunks_per_file == 3000
 
 

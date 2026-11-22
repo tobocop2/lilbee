@@ -11,6 +11,7 @@ from unittest.mock import patch
 from lilbee.app.settings import SettingsUpdateResult
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
+from tests._async_wait import wait_until
 
 
 class LilbeeAppHost(LilbeeApp):
@@ -178,6 +179,17 @@ def send_key_burst(app, *keys: str) -> None:
 
     for key in keys:
         app.post_message(events.Key(key, key if len(key) == 1 else None))
+
+
+async def app_reads_queue(app, pilot) -> bool:
+    """Wait until *app* has read every message posted to it before this call.
+
+    A key that no widget takes goes back up to the app, so a test that ends with
+    one still on its way closes the screens under it.
+    """
+    read: list[bool] = []
+    app.call_later(read.append, True)
+    return await wait_until(pilot, lambda: bool(read), timeout=10)
 
 
 def shown_footer_keys(app) -> set[str]:

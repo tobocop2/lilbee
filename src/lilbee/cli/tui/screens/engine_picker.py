@@ -8,13 +8,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
-from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from lilbee.app.engine_service import EngineOption, InstallRoute
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
+from lilbee.cli.tui.widgets.dialog import Dialog
 from lilbee.providers.fleet.engines.choice import AUTO
 
 _DETAIL_SEP = " · "
@@ -42,7 +42,7 @@ def state_text(option: EngineOption) -> str:
     return msg.ENGINE_STATE_DOWNLOAD.format(size=format_size(option.download_bytes))
 
 
-class EnginePickerModal(ModalScreen[EngineOption | None]):
+class EnginePickerModal(Dialog[EngineOption | None]):
     """One engine per row; Enter returns its option, Esc returns None."""
 
     CSS_PATH: ClassVar[str] = "engine_picker.tcss"
