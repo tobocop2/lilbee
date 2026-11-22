@@ -59,6 +59,8 @@ def plan_real_sizes(
     embed: int,
     card_gib: int,
     spec: str | None = None,
+    *,
+    more_cards_gib: tuple[int, ...] = (),
 ):
     """Plan a chat and an embed GGUF of these byte sizes through the real adapter."""
     prepare_host(
@@ -69,7 +71,7 @@ def plan_real_sizes(
     monkeypatch.setattr(cfg, "placement", spec)
     binary = tmp_path / "engine-server"
     binary.write_text("", encoding="utf-8")
-    engine = _RealSizeEngine(binary, (card_gib,))
+    engine = _RealSizeEngine(binary, (card_gib, *more_cards_gib))
     return planning.plan_all_launches(engines=dict.fromkeys(WorkerRole, engine))
 
 
@@ -120,6 +122,24 @@ class TestAChatRefusedBesideAnEmbed:
         reason = plan.refused_roles[WorkerRole.CHAT]
         assert reason.startswith(f"The chat model {CHAT_REF} needs 22.0 GiB")
         assert "Use a smaller model, or set its target to cpu." in reason
+
+
+class TestAnAutoChatOnATwoCardHost:
+    def test_the_remedy_keeps_the_other_card(self, tmp_path, monkeypatch) -> None:
+        # The embed is pinned to the big card; the chat fits neither card beside it.
+        plan = plan_real_sizes(
+            monkeypatch,
+            tmp_path,
+            21 * GIB,
+            8 * GIB,
+            24,
+            '{"embed": {"devices": [0]}}',
+            more_cards_gib=(4,),
+        )
+        assert WorkerRole.CHAT not in _launched(plan)
+        reason = plan.refused_roles[WorkerRole.CHAT]
+        assert f"The embed model {EMBED_REF} (8.0 GiB) holds the rest." in reason
+        assert reason.endswith("to cpu or another card.")
 
 
 class TestAPinnedChatBesideAPinnedEmbed:
