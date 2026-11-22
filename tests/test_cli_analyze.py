@@ -444,13 +444,16 @@ def test_the_add_command_scopes_ctrl_c_with_a_plain_flag(project, notes):
 
     seen: list[object] = []
 
+    from lilbee.runtime.cancellation import sigint_cancel
+
     @contextmanager
-    def _scope(cancel_event, rollback):
-        seen.append(cancel_event)
+    def _scope():
+        with sigint_cancel() as token:
+            seen.append(token)
         raise SystemExit(0)
         yield
 
-    with mock.patch("lilbee.cli.commands.ingest_sync._ctrl_c_stops", _scope):
+    with mock.patch("lilbee.cli.commands.ingest_sync.sigint_cancel", _scope):
         result = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
     assert result.exit_code == 0, result.output
     assert len(seen) == 1
