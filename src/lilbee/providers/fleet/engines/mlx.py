@@ -101,6 +101,10 @@ _PROFILE = RequestProfile(
 _EMBED_PROFILE = replace(
     _PROFILE,
     label="mlx embed server",
+    # The embed server answers these in the shape of llama-server, so an input that the
+    # character estimate under-counts is cut to the window by exact token counts.
+    tokenize_path="/tokenize",
+    detokenize_path="/detokenize",
     # The server refuses an embed input past --max-length with a 400 in these words.
     context_overflow=re.compile(r"exceeds the window of \d+ tokens"),
     unreadable_embedding_hint="the mlx embed server returned vectors that could not be decoded.",

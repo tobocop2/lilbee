@@ -22,9 +22,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import httpx
 import numpy as np
 import pytest
 
+from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.roles import WorkerRole
 
@@ -62,6 +64,9 @@ class FakeBackend:
         ids = [ord(c) for c in text]
         return [*ids, self.end] if special and self.end is not None else ids
 
+    def decode(self, ids: Sequence[int]) -> str:
+        return "".join(chr(i) for i in ids if i != self.end)
+
     def token_id(self, token: str) -> int:
         return {"no": NO, "yes": YES}[token]
 
@@ -95,6 +100,15 @@ def test_a_tokenizer_with_no_template_pools_the_text_as_it_is() -> None:
 class _Tokenizer:
     def encode(self, text: str, add_special_tokens: bool) -> list[int]:
         return [len(text), int(add_special_tokens)]
+
+    def decode(self, ids: list[int]) -> str:
+        return "-".join(str(i) for i in ids)
+
+
+def test_the_mlx_backend_decodes_ids_through_the_tokenizer() -> None:
+    backend = srv.MlxBackend.__new__(srv.MlxBackend)
+    backend._tokenizer = _Tokenizer()
+    assert backend.decode((4, 5)) == "4-5"
 
 
 @pytest.mark.parametrize("special", [True, False])
@@ -137,6 +151,83 @@ def test_a_malformed_embed_request_is_refused(body: dict[str, Any]) -> None:
     with pytest.raises(srv.RequestError) as refused:
         service(srv.TASK_EMBED).embed(body)
     assert refused.value.status == 400
+
+
+@pytest.mark.parametrize("task", [srv.TASK_EMBED, srv.TASK_RERANK])
+def test_tokenize_answers_the_tokens_in_the_shape_of_llama_server(task: str) -> None:
+    served = service(task)
+    assert served.answer("/tokenize", {"content": "ab"}) == {"tokens": [97, 98]}
+    with_template = served.answer("/tokenize", {"content": "ab", "add_special": True})
+    assert with_template == {"tokens": [97, 98, END]}
+    assert served.answer("/detokenize", {"tokens": [97, 98]}) == {"content": "ab"}
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/tokenize", {}),
+        ("/tokenize", {"content": 3}),
+        ("/tokenize", {"content": "a", "add_special": "yes"}),
+        ("/detokenize", {}),
+        ("/detokenize", {"tokens": "ab"}),
+        ("/detokenize", {"tokens": [97, "b"]}),
+        ("/detokenize", {"tokens": [True]}),
+    ],
+)
+def test_a_malformed_tokenize_request_is_refused(path: str, body: dict[str, Any]) -> None:
+    with pytest.raises(srv.RequestError) as refused:
+        service(srv.TASK_EMBED).answer(path, body)
+    assert refused.value.status == 400
+
+
+def test_the_embed_and_rerank_profiles_declare_the_tokenize_routes_and_chat_does_not() -> None:
+    for role in (WorkerRole.EMBED, WorkerRole.RERANK):
+        profile = MLX.request_profile(role)
+        assert (profile.tokenize_path, profile.detokenize_path) == (
+            srv.TOKENIZE,
+            srv.DETOKENIZE,
+        )
+    chat = MLX.request_profile(WorkerRole.CHAT)
+    assert (chat.tokenize_path, chat.detokenize_path) == (None, None)
+
+
+def _client_of(served: Any, token_cap: int) -> tuple[LlamaServerClient, list[str]]:
+    """A client of the profile of mlx embed whose HTTP calls are answered by *served*."""
+    paths: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.removeprefix("/upstream/m")
+        paths.append(path)
+        body = json.loads(req.content)
+        try:
+            return httpx.Response(200, json=served.answer(path, body))
+        except srv.RequestError as exc:
+            return httpx.Response(exc.status, json={"error": {"message": str(exc)}})
+
+    http = httpx.Client(base_url="http://engine.invalid", transport=httpx.MockTransport(handler))
+    client = LlamaServerClient(
+        "http://engine.invalid",
+        "m",
+        http=http,
+        token_cap=token_cap,
+        profile=MLX.request_profile(WorkerRole.EMBED),
+    )
+    return client, paths
+
+
+def test_a_dense_chunk_the_estimate_undercounts_is_cut_exactly_and_embeds() -> None:
+    # 30 characters make an estimate of 10 tokens, under the cap of 15, so the client sends
+    # the chunk whole. The model counts 31 tokens, over the window of 20: the server refuses
+    # it, and the exact retry cuts the chunk to 15 tokens, which fit with the end token.
+    client, paths = _client_of(service(srv.TASK_EMBED, max_length=20), token_cap=15)
+    vectors = client.embed(["x" * 30])
+    assert len(vectors) == 1
+    assert paths == [
+        srv.ROUTES[srv.TASK_EMBED],
+        srv.TOKENIZE,
+        srv.DETOKENIZE,
+        srv.ROUTES[srv.TASK_EMBED],
+    ]
 
 
 def _prompt(query: str, document: str) -> list[int]:
