@@ -22,37 +22,37 @@ PUBLISHED = {
         "96d7a448b522bde5c970767094cb4d8c0e6add596e9ed5f9bb681dfde97e734c",
         14951773,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-2.cpu-py3-none-manylinux_2_34_x86_64.whl": (
-        "cfa58ff9f48b238d187b8bf06c6914cec4ff30378a047cf4aa7707e222194d06",
-        45691140,
+    "lilbee_engine_llama_cpp-1.12032.1-3.cpu-py3-none-manylinux_2_34_x86_64.whl": (
+        "4c5dfa351e8baa59e99df0b08cf0ec097f97a5c9cdfdf80ebcb5665cfb90770b",
+        45856888,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-2.cuda-py3-none-manylinux_2_34_x86_64.whl": (
-        "4ff9e1a52a6d50762458a497307f7b0e775a9346a6b5a5eb8e9ff88c39ff6bcd",
-        671178889,
+    "lilbee_engine_llama_cpp-1.12032.1-3.cuda-py3-none-manylinux_2_34_x86_64.whl": (
+        "39bc41d7ae80c5ae3971a576581cf5849d2cd76714bdc2fc53b735aa3dd0664d",
+        671350130,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-2.metal-py3-none-macosx_14_0_arm64.whl": (
-        "ae859d55e57d58a1f59de4084adbf41a9d5e84a7cb993562abd838ec2d17c5ab",
-        42202565,
+    "lilbee_engine_llama_cpp-1.12032.1-3.metal-py3-none-macosx_14_0_arm64.whl": (
+        "99058e20d0e5cb8241187c2fc95f52f9ef840e6aedfb03dd25ba44ac7b4f8537",
+        42372998,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-2.rocm-py3-none-manylinux_2_34_x86_64.whl": (
-        "6616907f7c5c49065767ecd59a1912a8b7df454d6e459593faff08e0f59bd674",
-        507199053,
+    "lilbee_engine_llama_cpp-1.12032.1-3.rocm-py3-none-manylinux_2_34_x86_64.whl": (
+        "db9cffd80df56eb2d3f6c245844e99271c0103881d092d687aae3ed071106e03",
+        507364803,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-2.vulkan-py3-none-manylinux_2_34_x86_64.whl": (
-        "03b16d8054726674c63a61b924f470c4d9ffe0cf86b4d4c23c34f2cbf7f1e094",
-        56088704,
+    "lilbee_engine_llama_cpp-1.12032.1-3.vulkan-py3-none-manylinux_2_34_x86_64.whl": (
+        "4291bf88c0bf58918c4e66ac7eae0f5b2b79497a44076f04bbe87da1198a6f8f",
+        56254453,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-3.cpu-py3-none-win_amd64.whl": (
-        "14a0039d4348f19017aaa23549b7fac2c4b1515071214e9ec98b225e5fdae18d",
-        51838997,
+    "lilbee_engine_llama_cpp-1.12032.1-4.cpu-py3-none-win_amd64.whl": (
+        "3ada06318c4b2d4a63b2ac772a0ccc90bb7de23b48f2e87bcf52d427711a0cd6",
+        51993057,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-3.cuda-py3-none-win_amd64.whl": (
-        "aa34661441f26d8e964d33ddf9c1f68c69c45d314dc8f42fa3f7d3fb69679107",
-        709727703,
+    "lilbee_engine_llama_cpp-1.12032.1-4.cuda-py3-none-win_amd64.whl": (
+        "ae205af3bfd9224760884630cfb0bde328597cf4f6378c9631fd28fc01a377fd",
+        709881758,
     ),
-    "lilbee_engine_llama_cpp-1.12032.1-3.vulkan-py3-none-win_amd64.whl": (
-        "a01a032c23e41f51d696d0ce6bb80bfeb87994cb5d56afc2819f30bca4296ce9",
-        64798338,
+    "lilbee_engine_llama_cpp-1.12032.1-4.vulkan-py3-none-win_amd64.whl": (
+        "6285fad074767caebc53dd5ed42ca522d28ddabbef3240f3d53968927b74a987",
+        64952399,
     ),
     "lilbee_engine_mistral_rs-0.9.5-1.cpu-py3-none-manylinux_2_35_x86_64.whl": (
         "b55ace7732b20c64a0f91e46325d68370388620b02e5deeee4317d7e2e9fef4d",
@@ -113,3 +113,10 @@ def test_the_record_lists_each_published_wheel_and_no_other() -> None:
 @pytest.mark.parametrize("row", RECORD, ids=[row["file"] for row in RECORD])
 def test_each_row_has_the_published_sha256_and_size(row: dict[str, object]) -> None:
     assert (row["sha256"], row["size"]) == PUBLISHED[str(row["file"])]
+
+
+def test_every_llama_row_names_the_release_built_with_the_bumped_helpers() -> None:
+    """The release before this one ships gguf-parser v0.27.0 and llama-swap v267."""
+    rows = [r for r in RECORD if str(r["file"]).startswith("lilbee_engine_llama_cpp-")]
+    assert len(rows) == 8
+    assert {str(r["url"]).rsplit("/", 2)[1] for r in rows} == {"engine-packs-20261121-llama"}
