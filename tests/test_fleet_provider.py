@@ -4669,7 +4669,7 @@ def test_preload_raises_first_chains_error_after_every_chain_finishes(monkeypatc
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
 
-    def _failing_listener(role: WorkerRole) -> None:
+    def _failing_warm(role: WorkerRole, clients: list) -> bool:
         if role is WorkerRole.EMBED:
             embed_failed.set()
             raise RuntimeError("embed broke")
@@ -4678,7 +4678,7 @@ def test_preload_raises_first_chains_error_after_every_chain_finishes(monkeypatc
         chat_finished.set()
         raise RuntimeError("chat broke")
 
-    p.add_spawn_listener(on_spawning=_failing_listener)
+    monkeypatch.setattr(p, "_warm_role_clients", _failing_warm)
     with pytest.raises(RuntimeError, match="embed broke"):
         p._preload_roles()
     assert chat_finished.is_set()
