@@ -38,15 +38,6 @@ require_inputs() {
   done
 }
 
-# Put a venv of Python 3.12 first on PATH: the build tools do not go into the Python of the computer.
-use_build_python() {
-  local base
-  base="$(python_312)"
-  "${base}" -m venv pack-venv
-  if [ "$(host_os)" = Windows ]; then PATH="${PWD}/pack-venv/Scripts:${PATH}"; else PATH="${PWD}/pack-venv/bin:${PATH}"; fi
-  export PATH
-}
-
 fetch_cargo_about() {
   local name tool
   name="cargo-about-${CARGO_ABOUT_VERSION}-${ABOUT_TARGET}.tar.gz"
