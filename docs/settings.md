@@ -344,7 +344,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_ENGINE_DIR` | Engine directory for this process. Set it to a separate directory to run an engine of its own while other lilbee processes hold the shared one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
 | `LILBEE_INGEST_CONCURRENCY` | Extraction-admission mode: `static` (the default), `adaptive-conservative`, or `adaptive-aggressive` |
-| `LILBEE_INGEST_MAX_WORKERS` | Files per embed replica kept in flight during ingest |
+| `LILBEE_INGEST_MAX_WORKERS` | Worker threads in the ingest pool, which is the most documents that extract at once. Defaults to `min(32, cpu_count + 4)`, raised to feed the embed fleet; a non-positive or unparseable value falls back to that default with a warning |
 | `LILBEE_INGEST_TRACE` | Set to any value to trace each document through ingest |
 | `LILBEE_INGEST_TRACE_FILE` | File the ingest trace is written to |
 | `LILBEE_LOG_LEVEL` | Logging level: DEBUG, INFO, WARNING, or ERROR. `--log-level` overrides it |
