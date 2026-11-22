@@ -65,46 +65,38 @@ def _start_and_call(calls: tuple[tuple[str, dict[str, Any]], ...]) -> dict[str, 
     return payloads
 
 
-def _call_each_wiki_tool(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str], dict[str, str]]:
-    """Call each model-reading wiki tool by its own call.
+def _call_each_wiki_tool(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Call each model-reading wiki tool by its own call; return the chat model each saw.
 
-    Returns the chat model each tool saw and the text each tool answered with. Each
-    work function fails with an error that names the model it saw.
+    The work functions are doubles that record the model, so these tests prove which model
+    the tools run with, not what the real provider answers.
     """
     seen: dict[str, str] = {}
     current = {"tool": ""}
 
-    def message() -> str:
+    def record(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         seen[current["tool"]] = cfg.chat_model
-        return f"model {cfg.chat_model!r} is not available"
+        return {}
 
-    def report(*_args: Any, **_kwargs: Any) -> dict[str, str]:
-        return {"error": message()}
+    def record_stub(*_args: Any, **_kwargs: Any) -> Any:
+        seen[current["tool"]] = cfg.chat_model
+        raise UnknownStubError("no such page")
 
-    def report_stub(*_args: Any, **_kwargs: Any) -> Any:
-        raise UnknownStubError(message())
-
-    monkeypatch.setattr("lilbee.wiki.run_full_build", report)
-    monkeypatch.setattr("lilbee.wiki.run_full_synthesize", report)
-    monkeypatch.setattr("lilbee.wiki.lazy.generate_stub_page", report_stub)
-    replies: dict[str, str] = {}
+    monkeypatch.setattr("lilbee.wiki.run_full_build", record)
+    monkeypatch.setattr("lilbee.wiki.run_full_synthesize", record)
+    monkeypatch.setattr("lilbee.wiki.lazy.generate_stub_page", record_stub)
 
     async def serve(server: Any) -> None:
         for name, args in WIKI_CALLS:
             current["tool"] = name
-            try:
-                result = await server.call_tool(name, args)
-            except Exception as exc:
-                replies[name] = str(exc)
-            else:
-                replies[name] = str(result.structured_content)
+            await server.call_tool(name, args)
 
     with (
         mock.patch.object(mcp_mod, "_serve_stdio", serve),
         mock.patch("lilbee.parent_monitor.parse_parent_pid", return_value=None),
     ):
         mcp_mod.main()
-    return seen, replies
+    return seen
 
 
 def test_an_empty_chat_model_is_filled_before_each_wiki_tool_runs(
@@ -112,7 +104,7 @@ def test_an_empty_chat_model_is_filled_before_each_wiki_tool_runs(
 ) -> None:
     monkeypatch.setattr(cfg, "chat_model", "")
 
-    seen, _replies = _call_each_wiki_tool(monkeypatch)
+    seen = _call_each_wiki_tool(monkeypatch)
 
     assert seen == dict.fromkeys(WIKI_TOOLS, installed_chat)
 
@@ -148,13 +140,13 @@ def test_a_set_and_installed_chat_model_is_kept(
     other = install_fake_model("org/Other-Chat-GGUF", "other-chat-Q4_K_M.gguf", task="chat")
     monkeypatch.setattr(cfg, "chat_model", other)
 
-    seen, _replies = _call_each_wiki_tool(monkeypatch)
+    seen = _call_each_wiki_tool(monkeypatch)
 
     assert seen == dict.fromkeys(WIKI_TOOLS, other)
 
 
-def _assert_kept_with_the_same_error(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
-    """Each tool runs with *model* and returns the error that names it, as it does at the base."""
+def _assert_kept(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+    """Each tool runs with *model* as set, with the model unreachable or uninstalled."""
     monkeypatch.setattr(cfg, "chat_model", model)
     with (
         mock.patch("lilbee.providers.availability.provider_sdk_available", return_value=True),
@@ -163,24 +155,21 @@ def _assert_kept_with_the_same_error(monkeypatch: pytest.MonkeyPatch, model: str
             return_value=False,
         ),
     ):
-        seen, replies = _call_each_wiki_tool(monkeypatch)
+        seen = _call_each_wiki_tool(monkeypatch)
 
     assert seen == dict.fromkeys(WIKI_TOOLS, model)
-    expected = f"model {model!r} is not available"
-    for tool in WIKI_TOOLS:
-        assert expected in replies[tool], tool
 
 
-def test_a_set_chat_model_that_is_not_reachable_is_kept_with_the_same_error(
+def test_a_set_chat_model_that_is_not_reachable_is_kept(
     monkeypatch: pytest.MonkeyPatch, installed_chat: str
 ) -> None:
-    _assert_kept_with_the_same_error(monkeypatch, UNREACHABLE_CHAT)
+    _assert_kept(monkeypatch, UNREACHABLE_CHAT)
 
 
-def test_a_set_chat_model_that_is_not_installed_is_kept_with_the_same_error(
+def test_a_set_chat_model_that_is_not_installed_is_kept(
     monkeypatch: pytest.MonkeyPatch, installed_chat: str
 ) -> None:
-    _assert_kept_with_the_same_error(monkeypatch, MISSING_CHAT)
+    _assert_kept(monkeypatch, MISSING_CHAT)
 
 
 def _write_wiki_page_made_by(model: str) -> None:
