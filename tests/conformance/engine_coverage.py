@@ -146,8 +146,14 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         _ORACLE_ITSELF,
         Oracle.ABSOLUTE_ONLY,
     ),
-    _deferred(
-        EngineName.LLAMA, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST
+    _compared(
+        EngineName.LLAMA,
+        "macos-arm64-metal",
+        Device.METAL,
+        _LLAMA_VERSION,
+        tuple(Step),
+        _ORACLE_ITSELF,
+        Oracle.ABSOLUTE_ONLY,
     ),
     _deferred(
         EngineName.LLAMA, "windows-x86_64-cpu", Device.CPU, Route.PACK, _WINDOWS_HOST, _NO_RECORD
@@ -187,7 +193,12 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         "chat on GGUF, embed and vision on safetensors, against llama.cpp",
     ),
     _deferred(
-        EngineName.MISTRAL, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST
+        EngineName.MISTRAL,
+        "macos-arm64-metal",
+        Device.METAL,
+        Route.PACK,
+        _MAC_HOST,
+        "its server needs macOS 15; the Mac runs macOS 14",
     ),
     _compared(
         EngineName.TEI,
@@ -216,7 +227,14 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         )
         for cc in (75, 80, 86, 90, 100, 120)
     ),
-    _deferred(EngineName.TEI, "macos-arm64-metal", Device.METAL, Route.PACK, _MAC_HOST, _MAC_LAST),
+    _compared(
+        EngineName.TEI,
+        "macos-arm64-metal",
+        Device.METAL,
+        _TEI_VERSION,
+        _TEI_STEPS,
+        "embed and rerank on safetensors on Metal, against llama.cpp",
+    ),
     _deferred(
         EngineName.MLX,
         "macos-arm64-metal",
