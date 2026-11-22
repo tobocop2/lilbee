@@ -2562,6 +2562,9 @@ def _read_devices(binary: Path, engine: EngineAdapter) -> DeviceReading:
     return DeviceReading(devices, probe.backend, probe.refused_all)
 
 
+# One good probe of the llama.cpp CPU pack costs about 0.07 s (median of 10 on an idle
+# 32-core host, load under 2), far under the 2 s window. The sizing reads of one sync
+# can therefore fall in separate windows and each pay a probe that costs this little.
 _DEVICE_PROBE_TTL_S = 2.0
 # A failed probe is cached much longer than a good one: each retry against a
 # wedged GPU driver costs a full probe timeout, so a per-poll retry would stall

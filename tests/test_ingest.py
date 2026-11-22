@@ -1760,6 +1760,7 @@ class TestSyncCancellation:
     ):
         """The pool's worker count can probe, so only the sizing thread may read it."""
         import threading
+        import types
 
         from lilbee.data.ingest import ingest_stream, pipeline
         from tests.conftest import one_plan_batch
@@ -1777,7 +1778,9 @@ class TestSyncCancellation:
             async def run(self) -> None:
                 return None
 
-        monkeypatch.setattr(pipeline, "profile_for", lambda _model: object())
+        monkeypatch.setattr(
+            pipeline, "profile_for", lambda _model: types.SimpleNamespace(name="adaptive")
+        )
         monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda _engine: [object()])
         monkeypatch.setattr(pipeline, "make_signal_sampler", lambda _devices: lambda: None)
         monkeypatch.setattr(pipeline, "AdaptiveController", _IdleController)
