@@ -766,7 +766,7 @@ class _EngineLifecycle:
             return
         server_took = request_server_exit(status)
         joining = server_took or server_is_stopping() or self.stop_requested
-        if joining and not server_took and not self._signalled:
+        if joining and not server_took:
             self.owed_status = status
         self._signalled = True
         self.request_stop(signum)
