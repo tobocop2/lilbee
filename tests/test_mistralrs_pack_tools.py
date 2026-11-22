@@ -7,8 +7,10 @@ import importlib.util
 import io
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import time
 import zipfile
@@ -229,7 +231,7 @@ def test_write_notices_writes_each_file_into_the_tree(tmp_path: Path) -> None:
 
 
 def _bash() -> str:
-    """The bash on PATH, which the pack job runs on every OS.
+    """The bash on PATH, which runs the pack scripts on every OS.
 
     On Windows a bare ``bash`` starts the WSL launcher in System32 before PATH is searched.
     """
@@ -238,98 +240,360 @@ def _bash() -> str:
     return found
 
 
-def _mistralrs_job() -> dict:
-    return yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))["jobs"]["mistralrs"]
-
-
-def test_the_pack_job_writes_the_notices_before_it_builds_the_wheel() -> None:
-    steps = [step.get("run", "") for step in _mistralrs_job()["steps"]]
-    writer = next(i for i, run in enumerate(steps) if "rust_notices.py" in run)
-    builder = next(i for i, run in enumerate(steps) if "python -m build" in run)
-    assert writer < builder
-
-
-def test_the_pack_job_checks_the_notices_in_the_built_wheel() -> None:
-    check = next(
-        step["run"]
-        for step in _mistralrs_job()["steps"]
-        if step.get("name") == "Check the licences in the installed wheel"
+def _env(tmp_path: Path, **env: str) -> dict[str, str]:
+    """This environment with the running Python and the stubs of the test first on PATH."""
+    path = os.pathsep.join(
+        [str(tmp_path / "stubs"), str(Path(sys.executable).parent), os.environ["PATH"]]
     )
-    assert "THIRD-PARTY/vendored/" in check
-    assert "NOTICE-OpenSSL" in check and "SOURCE-MPL-2.0" in check
+    return {**os.environ, "PATH": path, **env}
 
 
-def _run_notice_loop(tmp_path: Path, listing: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run the OpenSSL and MPL notice loop of the wheel check against a wheel listing."""
-    check = next(
-        step["run"]
-        for step in _mistralrs_job()["steps"]
-        if step.get("name") == "Check the licences in the installed wheel"
-    )
-    loop = "for pair in" + check.split("for pair in", 1)[1].split("\ndone", 1)[0] + "\ndone"
-    (tmp_path / "crate-licences.txt").write_text(
-        "MPL-2.0\nOpenSSL\n", encoding="utf-8", newline="\n"
-    )
-    listed = "\n".join(listing) + "\n"
-    (tmp_path / "wheel-listing.txt").write_text(listed, encoding="utf-8", newline="\n")
-    script = tmp_path / "check_notices.sh"
-    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8", newline="\n")
+def _tree(tmp_path: Path) -> Path:
+    """A copy of the files that the pack scripts read. Its chat check records its arguments."""
+    root = tmp_path / "lilbee"
+    if not root.exists():
+        shutil.copytree(TOOLS, root / "tools" / "wheel-build")
+        shutil.copytree(
+            PACKAGING,
+            root / "packaging" / PACKAGING.name,
+            ignore=shutil.ignore_patterns("bin", "__pycache__", "*.egg-info"),
+        )
+        (root / "tools" / "qa").mkdir()
+        (root / "tools" / "qa" / "check_mistralrs_chat.py").write_text(
+            "import pathlib, sys\n"
+            "pathlib.Path(__file__).with_name('asked').write_text('\\n'.join(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+    return root
+
+
+def _pack_stage(tmp_path: Path, stage: str, **env: str) -> subprocess.CompletedProcess[str]:
+    """Run one stage of the pack script in the tree, under the shell options of the script."""
     return subprocess.run(
-        [_bash(), str(script)],
-        cwd=tmp_path,
+        [
+            _bash(),
+            "-c",
+            f"set -euo pipefail; . tools/wheel-build/pack_mistralrs.sh; {stage}",
+        ],
+        cwd=_tree(tmp_path),
+        env=_env(tmp_path, **env),
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
 
 
-_HELD = [
-    "x.dist-info/licenses/SOURCE-MPL-2.0 12",
-    "x.dist-info/licenses/NOTICE-OpenSSL 12",
-]
+_INFO = "lilbee_engine_mistral_rs-0.9.5.dist-info"
+_LICENCES = f"{_INFO}/licenses"
+_EXPRESSION = "MIT AND MPL-2.0 AND OpenSSL"
+_HOST_PLATFORM = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+_HELD = {
+    f"{_LICENCES}/LICENSE-mistral.rs": "mit",
+    f"{_LICENCES}/SOURCE-MPL-2.0": "mpl",
+    f"{_LICENCES}/NOTICE-OpenSSL": "ssl",
+    f"{_LICENCES}/NOTICE-MICROSOFT-VC-RUNTIME": "vc",
+    f"{_LICENCES}/THIRD-PARTY/mistral.rs/MIT-001.txt": "mit",
+    f"{_LICENCES}/THIRD-PARTY/vendored/mistral.rs__NOTICE": "notice",
+}
 
 
-def test_the_pack_job_passes_a_wheel_that_holds_both_notices(tmp_path: Path) -> None:
-    assert _run_notice_loop(tmp_path, _HELD).returncode == 0
+def _wheel(
+    tmp_path: Path,
+    drop: str | None = None,
+    tool: bytes = b"#!/bin/sh\necho mistralrs 0.9.5\n",
+    tool_mode: int = 0o755,
+    tag: str = f"py3-none-{_HOST_PLATFORM}",
+    name_tag: str = f"1.cpu-py3-none-{_HOST_PLATFORM}",
+    expression: str = _EXPRESSION,
+    newline: str = "\n",
+    more: dict[str, bytes] | None = None,
+) -> Path:
+    """An installable mistral.rs wheel that a check passes, unless an argument breaks it."""
+    files: dict[str, bytes] = {
+        "lilbee_engine_mistral_rs/__init__.py": b"",
+        "lilbee_engine_mistral_rs/bin/mistralrs": tool,
+        f"{_INFO}/METADATA": (
+            "Metadata-Version: 2.4\nName: lilbee-engine-mistral-rs\nVersion: 0.9.5\n"
+            f"License-Expression: {expression}\n"
+        )
+        .replace("\n", newline)
+        .encode(),
+        f"{_INFO}/WHEEL": (
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
+            f"Tag: {tag}\nBuild: 1.cpu\n"
+        )
+        .replace("\n", newline)
+        .encode(),
+        **{name: text.encode() for name, text in _HELD.items()},
+        **(more or {}),
+    }
+    if drop is not None:
+        files = {name: data for name, data in files.items() if not name.startswith(drop)}
+    files[f"{_INFO}/RECORD"] = "".join(f"{name},,\n" for name in files).encode()
+    wheel = tmp_path / f"lilbee_engine_mistral_rs-0.9.5-{name_tag}.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, data in files.items():
+            info = zipfile.ZipInfo(name)
+            mode = tool_mode if "/bin/mistralrs" in name else 0o644
+            info.external_attr = (stat.S_IFREG | mode) << 16
+            archive.writestr(info, data)
+    return wheel
 
 
-@pytest.mark.parametrize("missing", ["SOURCE-MPL-2.0", "NOTICE-OpenSSL"])
-def test_the_pack_job_fails_a_wheel_that_lacks_a_notice(tmp_path: Path, missing: str) -> None:
-    listing = [line for line in _HELD if missing not in line]
-    bad = _run_notice_loop(tmp_path, listing)
+def _check(
+    tmp_path: Path, wheel: Path, stage: str = "main", crates: Path | None = None, **env: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the wheel check, or one stage of it, the way the pack script does."""
+    if crates is None:
+        crates = tmp_path / "crate-licences.txt"
+        crates.write_text("MIT\nMPL-2.0\nOpenSSL\n", encoding="utf-8", newline="\n")
+    script = _tree(tmp_path) / "tools" / "wheel-build" / "check_mistralrs_wheel.sh"
+    args = [wheel.as_posix()]
+    if stage in ("main", "check_licences"):
+        args += [crates.as_posix(), _EXPRESSION]
+    settings = {
+        "RUNNER_OS": "Linux",
+        "RUNNER_TEMP": str(tmp_path),
+        "BACKEND": "cpu",
+        "PLATFORM": _HOST_PLATFORM,
+        "MISTRALRS_CHAT_MODEL": "owner/model",
+        **env,
+    }
+    return subprocess.run(
+        [
+            _bash(),
+            "-c",
+            f'set -euo pipefail; script="$1"; shift; . "$script"; {stage} "$@"',
+            "stage",  # $0 is not the script, so sourcing it does not run its main
+            script.as_posix(),
+            *args,
+        ],
+        cwd=tmp_path,
+        env=_env(tmp_path, **settings),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("runner", ["Linux", "macOS", "Windows"])
+def test_the_check_passes_a_wheel_that_holds_every_licence(tmp_path: Path, runner: str) -> None:
+    done = _check(tmp_path, _wheel(tmp_path), "check_licences", RUNNER_OS=runner)
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("stage", ["check_tag", "check_licences"])
+def test_the_check_reads_the_crlf_files_of_a_windows_build(tmp_path: Path, stage: str) -> None:
+    done = _check(tmp_path, _wheel(tmp_path, newline="\r\n"), stage, RUNNER_OS="Windows")
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize(
+    ("missing", "named"),
+    [
+        ("LICENSE-mistral.rs", "the mistral.rs licence"),
+        ("SOURCE-MPL-2.0", "SOURCE-MPL-2.0"),
+        ("NOTICE-OpenSSL", "NOTICE-OpenSSL"),
+        ("THIRD-PARTY/mistral.rs/", "the crate licences"),
+        ("THIRD-PARTY/vendored/", "the vendored notices"),
+    ],
+)
+def test_the_check_fails_a_wheel_that_lacks_a_licence(
+    tmp_path: Path, missing: str, named: str
+) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, drop=f"{_LICENCES}/{missing}"), "check_licences")
     assert bad.returncode == 1
-    assert f"wheel lacks {missing}" in bad.stdout
+    assert f"wheel lacks {named}" in bad.stderr
+
+
+@pytest.mark.parametrize("kind", ["missing", "folder", "empty"])
+def test_the_check_fails_without_the_list_of_crate_licences(tmp_path: Path, kind: str) -> None:
+    crates = tmp_path / "list"
+    if kind == "folder":
+        crates.mkdir()
+    elif kind == "empty":
+        crates.touch()
+    wheel = _wheel(tmp_path, drop=f"{_LICENCES}/NOTICE-OpenSSL")
+    bad = _check(tmp_path, wheel, "check_licences", crates=crates)
+    assert bad.returncode == 1
+    assert "no crate licences in" in bad.stderr
+
+
+def test_the_whole_check_stops_at_a_wheel_that_lacks_a_licence(tmp_path: Path) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, drop=f"{_LICENCES}/NOTICE-OpenSSL"))
+    assert bad.returncode == 1
+    assert "wheel lacks NOTICE-OpenSSL" in bad.stderr
+    assert "mistralrs:" not in bad.stdout
+
+
+def test_the_check_fails_a_wheel_with_another_licence_expression(tmp_path: Path) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, expression="MIT"), "check_licences")
+    assert bad.returncode == 1
+    assert f"wheel lacks the licence expression {_EXPRESSION}" in bad.stderr
+
+
+@pytest.mark.parametrize(("runner", "status"), [("Linux", 0), ("macOS", 0), ("Windows", 1)])
+def test_only_a_windows_wheel_needs_the_runtime_notice(
+    tmp_path: Path, runner: str, status: int
+) -> None:
+    wheel = _wheel(tmp_path, drop=f"{_LICENCES}/NOTICE-MICROSOFT")
+    done = _check(tmp_path, wheel, "check_licences", RUNNER_OS=runner)
+    assert done.returncode == status
+    assert ("wheel lacks the Visual C++ runtime notice" in done.stderr) == bool(status)
+
+
+@pytest.mark.parametrize(
+    ("broken", "message"),
+    [
+        ({"name_tag": f"1.cuda-py3-none-{_HOST_PLATFORM}"}, "wrong tag on"),
+        ({"name_tag": "1.cpu-py3-none-any"}, "wrong tag on"),
+        ({"name_tag": f"2.cpu-py3-none-{_HOST_PLATFORM}"}, "wrong tag on"),
+        ({"tag": "py3-none-any"}, "lacks the tag py3-none-"),
+    ],
+)
+def test_the_whole_check_fails_a_wheel_with_a_wrong_tag(
+    tmp_path: Path, broken: dict[str, str], message: str
+) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, **broken))
+    assert bad.returncode == 1
+    assert message in bad.stderr
+
+
+_POSIX_TOOL = pytest.mark.skipif(
+    sys.platform == "win32", reason="the tool of the test wheel is a POSIX shell script"
+)
+
+
+@_POSIX_TOOL
+def test_the_whole_check_starts_the_tool_and_asks_a_cpu_wheel_one_question(tmp_path: Path) -> None:
+    done = _check(tmp_path, _wheel(tmp_path))
+    assert done.returncode == 0, done.stderr
+    assert "mistralrs 0.9.5" in done.stdout
+    asked = (tmp_path / "lilbee" / "tools" / "qa" / "asked").read_text(encoding="utf-8")
+    exe, model = asked.splitlines()
+    assert exe.endswith("lilbee_engine_mistral_rs/bin/mistralrs")
+    assert model == "owner/model"
+
+
+@_POSIX_TOOL
+def test_the_check_asks_a_metal_wheel_no_question(tmp_path: Path) -> None:
+    done = _check(tmp_path, _wheel(tmp_path), "start_tool", BACKEND="metal")
+    assert done.returncode == 0, done.stderr
+    assert not (tmp_path / "lilbee" / "tools" / "qa" / "asked").exists()
+
+
+@_POSIX_TOOL
+def test_the_check_fails_a_wheel_whose_tool_fails_to_start(tmp_path: Path) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, tool=b"#!/bin/sh\nexit 3\n"), "start_tool")
+    assert bad.returncode == 1
+    assert "the installed tool does not start" in bad.stderr
+
+
+@_POSIX_TOOL
+def test_the_check_fails_a_wheel_whose_tool_is_not_executable(tmp_path: Path) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, tool_mode=0o644), "start_tool")
+    assert bad.returncode == 1
+    assert "the installed tool is not executable" in bad.stderr
+
+
+@_POSIX_TOOL
+def test_the_check_fails_a_wheel_without_the_tool(tmp_path: Path) -> None:
+    bad = _check(tmp_path, _wheel(tmp_path, drop="lilbee_engine_mistral_rs/bin/"), "start_tool")
+    assert bad.returncode == 1
+    assert "the installed wheel lacks mistralrs" in bad.stderr
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the test renames a library of an ELF file")
+def test_the_check_fails_a_wheel_whose_tool_needs_a_library_that_does_not_resolve(
+    tmp_path: Path,
+) -> None:
+    true = shutil.which("true")
+    assert true is not None
+    good = Path(true).read_bytes()
+    assert b"libc.so.6\0" in good
+    tool = good.replace(b"libc.so.6\0", b"libq.so.6\0")
+    bad = _check(tmp_path, _wheel(tmp_path, tool=tool), "start_tool", BACKEND="metal")
+    assert bad.returncode == 1
+    assert "libq.so.6" in bad.stderr
+    assert "the installed tool does not start" in bad.stderr
+
+
+@_POSIX_TOOL
+@pytest.mark.parametrize(
+    ("library", "status"),
+    [
+        ("/usr/lib/libSystem.B.dylib", 0),
+        ("/System/Library/Frameworks/Metal.framework/Metal", 0),
+        ("/opt/homebrew/lib/libssl.dylib", 1),
+        ("@rpath/libmissing.dylib", 1),
+    ],
+)
+def test_the_check_fails_a_macos_tool_that_loads_a_library_outside_the_system(
+    tmp_path: Path, library: str, status: int
+) -> None:
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    otool = stubs / "otool"
+    otool.write_text(
+        f'#!/bin/sh\necho "$2:"\necho "\t{library} (compatibility version 1.0.0)"\n',
+        encoding="utf-8",
+    )
+    otool.chmod(0o755)
+    done = _check(tmp_path, _wheel(tmp_path), "start_tool", RUNNER_OS="macOS", BACKEND="metal")
+    assert done.returncode == status, done.stderr
+    assert ("loads a library outside the system" in done.stderr) == bool(status)
+
+
+_RUNTIME = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+
+
+@_POSIX_TOOL
+@pytest.mark.parametrize("missing", [None, *_RUNTIME])
+def test_the_check_fails_a_windows_wheel_that_lacks_a_runtime_dll(
+    tmp_path: Path, missing: str | None
+) -> None:
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    # The check runs the interpreter that a Windows venv holds.
+    stub = stubs / "python"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'"{sys.executable}" "$@" || exit\n'
+        'if [ "$1 $2" = "-m venv" ]; then\n'
+        '  mkdir "$3/Scripts"\n'
+        '  printf \'#!/bin/sh\\nexec "%s" "$@"\\n\' "$3/bin/python" > "$3/Scripts/python.exe"\n'
+        '  chmod +x "$3/Scripts/python.exe"\n'
+        "fi\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    folder = "lilbee_engine_mistral_rs/bin"
+    more = {f"{folder}/{name}": b"dll" for name in _RUNTIME if name != missing}
+    more[f"{folder}/mistralrs.exe"] = b"#!/bin/sh\necho mistralrs 0.9.5\n"
+    done = _check(tmp_path, _wheel(tmp_path, more=more), "start_tool", RUNNER_OS="Windows")
+    assert done.returncode == (0 if missing is None else 1), done.stderr
+    if missing is not None:
+        assert f"wheel lacks {missing}" in done.stderr
 
 
 @pytest.mark.parametrize("name", ["LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"])
-def test_the_pack_job_refuses_an_empty_licence_file(tmp_path: Path, name: str) -> None:
-    step = next(
-        step["run"]
-        for step in _mistralrs_job()["steps"]
-        if step.get("name") == "Name every licence in the wheel expression"
-    )
-    loop = "for f in" + step.split("for f in", 1)[1].split("\ndone", 1)[0] + "\ndone"
-    script = tmp_path / "check_empty.sh"
-    script.write_text(f"set -euo pipefail\n{loop}\n", encoding="utf-8", newline="\n")
-    tree = tmp_path / "tree"
-    tree.mkdir()
+def test_the_pack_refuses_an_empty_licence_file(tmp_path: Path, name: str) -> None:
+    root = _tree(tmp_path)
+    tree = root / "packaging" / PACKAGING.name
+    (root / "crate-licences.txt").write_text("MIT\n", encoding="utf-8", newline="\n")
     for held in ("LICENSE-mistral.rs", "NOTICE-OpenSSL", "SOURCE-MPL-2.0"):
         (tree / held).write_text("text", encoding="utf-8")
-    env = {**os.environ, "WHEEL_TREE": str(tree)}
-    run = subprocess.run
-    ok = run([_bash(), str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
-    assert ok.returncode == 0
+    ok = _pack_stage(tmp_path, "name_licences")
+    assert ok.returncode == 0, ok.stderr
     (tree / name).write_text("", encoding="utf-8")
-    bad = run([_bash(), str(script)], env=env, capture_output=True, text=True, encoding="utf-8")
+    bad = _pack_stage(tmp_path, "name_licences")
     assert bad.returncode == 1
-    # The step joins the folder and the name with a slash on every OS.
-    assert f"empty licence file {tree}/{name}" in bad.stdout
+    assert f"empty licence file packaging/{PACKAGING.name}/{name}" in bad.stderr
 
 
 def _wheel_listing(tmp_path: Path) -> set[str]:
-    """Build the wheel as the pack job does and list the files under dist-info/licenses."""
-    tree = tmp_path / "wheel-tree"
-    shutil.copytree(PACKAGING, tree)
+    """Build the wheel as the pack script does and list the files under dist-info/licenses."""
+    tree = _tree(tmp_path) / "packaging" / PACKAGING.name
     report = _mpl_report("selectors", "0.26.0")
     report["licenses"].append(_entry("OpenSSL", "ssl text", "aws-lc-sys"))
     checkout = tmp_path / "checkout"
@@ -341,13 +605,10 @@ def _wheel_listing(tmp_path: Path) -> set[str]:
     crates = tree / "THIRD-PARTY" / "mistral.rs"
     crates.mkdir(parents=True)
     (crates / "MIT.txt").write_text("mit", encoding="utf-8")
-    step = next(
-        step["run"] for step in _mistralrs_job()["steps"] if step.get("name") == "Build the wheel"
+    stamped = _pack_stage(
+        tmp_path, "stamp_project", MISTRALRS_TAG="v0.9.5", LICENSE_EXPRESSION=_EXPRESSION
     )
-    script = tmp_path / "set_metadata.py"
-    script.write_text(step.split("<<'PY'\n")[1].split("\nPY")[0], encoding="utf-8")
-    env = {**os.environ, "LICENSE_EXPRESSION": "MIT AND MPL-2.0 AND OpenSSL"}
-    subprocess.run([sys.executable, "-I", str(script), "0.9.5"], cwd=tree, env=env, check=True)
+    assert stamped.returncode == 0, stamped.stderr
     uv = shutil.which("uv")
     assert uv is not None
     subprocess.run(
@@ -365,7 +626,7 @@ def _wheel_listing(tmp_path: Path) -> set[str]:
         }
 
 
-def test_the_built_wheel_holds_every_licence_file_the_job_writes(tmp_path: Path) -> None:
+def test_the_built_wheel_holds_every_licence_file_the_pack_writes(tmp_path: Path) -> None:
     held = _wheel_listing(tmp_path)
     assert {
         "SOURCE-MPL-2.0",
@@ -446,53 +707,32 @@ def test_repack_reports_the_time_of_the_tool_in_the_archive(
 
 @pytest.mark.skipif(
     sys.platform == "win32" or shutil.which("bash") is None,
-    reason="the step is a POSIX shell script and the shim is a symlink",
+    reason="the mode of the tool is a POSIX mode",
 )
-def test_the_repack_step_writes_the_archive_time_to_the_job_environment(tmp_path: Path) -> None:
-    """Run the step as the job does: the later steps read the time from the job environment."""
-    run = next(
-        step["run"]
-        for step in _mistralrs_job()["steps"]
-        if step.get("name") == "Repack the upstream archive into the wheel tree"
-    )
-    (tmp_path / "upstream").mkdir()
-    with tarfile.open(tmp_path / "upstream" / "a.tar.gz", "w:gz") as tar:
+def test_the_repack_stage_exports_the_archive_time_to_the_later_stages(tmp_path: Path) -> None:
+    """The wheel build and the retag run in this shell and read the exported time."""
+    upstream = _tree(tmp_path) / "upstream"
+    upstream.mkdir()
+    with tarfile.open(upstream / "a.tar.gz", "w:gz") as tar:
         info = tarfile.TarInfo("mistralrs")
         info.size = 3
         info.mtime = 1_700_000_000
         tar.addfile(info, io.BytesIO(b"bin"))
-    shutil.copytree(TOOLS, tmp_path / "tools" / "wheel-build")
-    shims = tmp_path / "shims"
-    shims.mkdir()
-    (shims / "python").symlink_to(sys.executable)
-    script = tmp_path / "step.sh"
-    script.write_text(run, encoding="utf-8")
-    job_env = tmp_path / "github-env"
-    job_env.touch()
-    done = subprocess.run(
-        ["bash", str(script)],
-        cwd=tmp_path,
-        env={
-            **os.environ,
-            "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}",
-            "ASSET": "a.tar.gz",
-            "WHEEL_TREE": str(tmp_path / "tree"),
-            "GITHUB_ENV": str(job_env),
-        },
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+    done = _pack_stage(
+        tmp_path, "repack; bash -c 'echo read=${SOURCE_DATE_EPOCH}'", ASSET="a.tar.gz"
     )
     assert done.returncode == 0, done.stderr
-    assert job_env.read_text(encoding="utf-8") == "SOURCE_DATE_EPOCH=1700000000\n"
+    assert "read=1700000000" in done.stdout.splitlines()
 
 
-def test_the_pack_job_has_no_cuda_step() -> None:
-    job = _mistralrs_job()
-    text = yaml.safe_dump(job)
+def test_the_pack_has_no_cuda_stage() -> None:
+    job = yaml.safe_load(pack_workflow().read_text(encoding="utf-8"))["jobs"]["mistralrs"]
     assert job["steps"]
+    texts = [yaml.safe_dump(job)]
+    for script in ("pack_mistralrs.sh", "check_mistralrs_wheel.sh"):
+        texts.append((TOOLS / script).read_text(encoding="utf-8"))
     for word in ("CUDA", "cuda", "NCCL", "nccl", "ldd"):
-        assert word not in text
+        assert not [text for text in texts if word in text]
 
 
 def test_the_pack_matrix_holds_no_cuda_cell() -> None:

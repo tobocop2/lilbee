@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Stand-in for git when a pack script clones the mistral.rs sources: it makes the files the script reads.
+#
+# Reads:
+#   GIT_LOG  a file that receives one line per call (required)
+
+set -euo pipefail
+
+echo "$*" >> "${GIT_LOG:?}"
+[ "${1-}" = clone ] || { echo "stub git: unexpected command '$*'" >&2; exit 2; }
+dest="${!#}"
+mkdir -p "${dest}/mistralrs-cli" "${dest}/sub"
+echo "mistral.rs licence" > "${dest}/LICENSE"
+echo "checkout notice" > "${dest}/sub/NOTICE"
+: > "${dest}/mistralrs-cli/Cargo.toml"
+cat > "${dest}/Cargo.lock" <<'LOCK'
+[[package]]
+name = "selectors"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc123"
+LOCK

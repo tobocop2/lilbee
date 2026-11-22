@@ -21,6 +21,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+import yaml
 
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet import engine_store
@@ -1004,9 +1005,21 @@ def test_a_pin_names_a_notice_term_and_the_archive_is_the_gate(
 def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
     workflow = pack_workflow().read_text(encoding="utf-8")
     name = engine_store.NOTICE_RULES["LicenseRef-Microsoft-VC-Runtime"].file
-    # The llama.cpp job and the mistral.rs job each write the notice and each check the listing.
-    assert workflow.count(name) == 4
-    assert workflow.lower().count(name.lower()) == 4
+    tools = Path(__file__).parents[3] / "tools" / "wheel-build"
+    # The llama.cpp job writes the notice and checks it. For mistral.rs one script does each.
+    llama = yaml.safe_load(workflow)["jobs"]["cell"]["steps"]
+    texts = {
+        "llama.cpp job": ("\n".join(step.get("run", "") for step in llama), 2),
+        "pack_mistralrs.sh": ((tools / "pack_mistralrs.sh").read_text(encoding="utf-8"), 1),
+        "check_mistralrs_wheel.sh": (
+            (tools / "check_mistralrs_wheel.sh").read_text(encoding="utf-8"),
+            1,
+        ),
+    }
+    for place, (text, uses) in texts.items():
+        assert text.count(name) == uses, place
+        assert text.lower().count(name.lower()) == uses, place
+    assert workflow.lower().count(name.lower()) == workflow.count(name)
 
 
 @pytest.mark.parametrize("bad", ["../x", "a/b", ".hidden", "", "a b"])
