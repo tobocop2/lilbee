@@ -1,4 +1,4 @@
-"""One warning per ingest or search for the embed inputs a server cuts."""
+"""One warning per ingest or search for the embed inputs a client or server cuts."""
 
 from __future__ import annotations
 
@@ -20,12 +20,13 @@ _R = TypeVar("_R")
 @dataclass
 class _Tally:
     cut: int = 0
+    unwarned: int = 0
     total: int = 0
     limit: int | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
-_active: ContextVar[_Tally | None] = ContextVar("lilbee_embed_truncation", default=None)
+_active: ContextVar[_Tally] = ContextVar("lilbee_embed_truncation")
 
 
 def _warn(tally: _Tally) -> None:
@@ -41,16 +42,41 @@ def _warn(tally: _Tally) -> None:
 
 def note_truncated(cut: int, total: int, limit: int | None) -> None:
     """Record *cut* of *total* embed inputs past *limit*; log at once outside a scope."""
-    tally = _active.get()
+    tally = _active.get(None)
     if tally is None:
         if cut:
-            _warn(_Tally(cut, total, limit))
+            _warn(_Tally(cut=cut, total=total, limit=limit))
         return
     with tally.lock:
         tally.cut += cut
         tally.total += total
         if tally.limit is None:
             tally.limit = limit
+
+
+def note_cut_to_limit(limit: int) -> None:
+    """Count one input cut to *limit* tokens in the current scope; the cutter logs it itself."""
+    tally = _active.get(None)
+    if tally is not None:
+        with tally.lock:
+            tally.cut += 1
+            if tally.limit is None:
+                tally.limit = limit
+
+
+def note_char_cut() -> None:
+    """Count one input cut by a character limit in the current scope, with no warning."""
+    tally = _active.get(None)
+    if tally is not None:
+        with tally.lock:
+            tally.unwarned += 1
+
+
+def cut_inputs_in_scope() -> int:
+    """Embed inputs cut so far in the current scope; a ``LookupError`` outside one."""
+    tally = _active.get()
+    with tally.lock:
+        return tally.cut + tally.unwarned
 
 
 @contextmanager

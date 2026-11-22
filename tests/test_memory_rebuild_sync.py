@@ -26,7 +26,6 @@ async def test_force_rebuild_preserves_and_reembeds_memory(tmp_path):
     embedder = MagicMock()
     embedder.embedding_available.return_value = True
     embedder.embed_batch.return_value = [new_vector]
-    embedder.truncated_total = 0
     services = make_mock_services(
         store=store,
         embedder=embedder,

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import sys
@@ -167,8 +168,6 @@ def mock_svc():
     embedder = MagicMock()
     embedder.embed.side_effect = lambda text, **kw: np.full(768, 0.1, dtype=np.float32)
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    # Real int so sync()'s truncated_total delta is 0, not a coerced MagicMock.
-    embedder.truncated_total = 0
     searcher = MagicMock()
     services = make_mock_services(store=store, embedder=embedder, searcher=searcher)
     svc_mod.set_services(services)
@@ -495,6 +494,83 @@ class TestSync:
                 await sync()
         assert mock_svc.embedder.embed_batch.call_count == 4
         assert len(caplog.records) == 2
+
+    async def test_the_sync_summary_counts_inputs_the_fleet_client_cuts_to_its_token_cap(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """A local embedder cuts by tokens in the fleet client; the summary still counts it."""
+        import base64
+
+        import httpx
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import sync
+        from lilbee.providers.fleet.client import LlamaServerClient
+        from lilbee.providers.fleet.engines import LLAMA
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.retrieval.embedder import Embedder
+
+        vector = base64.b64encode(np.full(cfg.embedding_dim, 0.1, dtype="<f4").tobytes()).decode()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/tokenize"):
+                return httpx.Response(200, json={"tokens": [1, 2, 3, 4, 5]})  # past the cap of 3
+            if request.url.path.endswith("/detokenize"):
+                return httpx.Response(200, json={"content": "cut"})
+            inputs = json.loads(request.content)["input"]
+            data = [
+                {
+                    "embedding": vector,
+                    "index": i,
+                    "object": "embedding",
+                    "encoding_format": "base64",
+                }
+                for i, _ in enumerate(inputs)
+            ]
+            return httpx.Response(200, json={"data": data, "object": "list", "model": "m"})
+
+        client = LlamaServerClient(
+            "http://gpu0",
+            "m",
+            http=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0"),
+            token_cap=3,
+            profile=LLAMA.request_profile(WorkerRole.EMBED),
+        )
+        provider = MagicMock()
+        provider.embed_token_cap.return_value = 3
+        provider.embed.side_effect = client.embed
+        embedder = Embedder(cfg, provider)
+        monkeypatch.setattr(embedder, "embedding_available", lambda: True)
+        svc_mod.set_services(dataclasses.replace(mock_svc, embedder=embedder))
+        (isolated_env / "long.txt").write_text("A long document. " * 40, encoding="utf-8")
+
+        result = await sync()
+
+        assert "long.txt" in result.added
+        assert result.truncated >= 1
+
+    async def test_the_sync_summary_does_not_count_a_cut_made_outside_the_run(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """A search or memory write cut on another thread, during the sync, is not its cut."""
+        import threading
+
+        from lilbee.data.ingest import sync
+        from lilbee.providers.truncation import note_truncated
+
+        def embed_while_another_thread_cuts(texts, **kw):
+            other = threading.Thread(target=note_truncated, args=(1, 1, 8))
+            other.start()
+            other.join()
+            return [[0.1] * 768 for _ in texts]
+
+        mock_svc.embedder.embed_batch.side_effect = embed_while_another_thread_cuts
+        (isolated_env / "doc.txt").write_text("A short document.", encoding="utf-8")
+
+        result = await sync()
+
+        assert "doc.txt" in result.added
+        assert result.truncated == 0
 
     async def test_ingest_text_file(self, mock_extract_file, isolated_env):
         (isolated_env / "test.txt").write_text("Hello world. This is a test document.")

@@ -3252,8 +3252,6 @@ class TestAuthRequiredRoutes:
 
 
 class _StubEmbedder:
-    truncated_total = 0
-
     def embed_batch(self, texts, source="", on_progress=None, **_kwargs):
         if on_progress is not None:
             on_progress(

@@ -592,7 +592,6 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
     embedder.embed_batch.side_effect = lambda texts, **kw: [
         np.full(cfg.embedding_dim, 0.1, dtype=np.float32) for _ in texts
     ]
-    embedder.truncated_total = 0
     set_services(
         make_mock_services(
             store=store,

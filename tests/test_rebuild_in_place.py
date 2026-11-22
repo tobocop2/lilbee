@@ -39,7 +39,6 @@ def _embedder() -> MagicMock:
     embedder = MagicMock()
     embedder.validate_model.return_value = True
     embedder.embedding_available.return_value = True
-    embedder.truncated_total = 0
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * DIM for _ in texts]
     return embedder
 
