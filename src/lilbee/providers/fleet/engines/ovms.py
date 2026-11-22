@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from collections.abc import Mapping
@@ -35,17 +36,18 @@ _TOOL = "ovms"
 _INSTALL_DOCS_URL = (
     "https://docs.openvino.ai/2026/model-server/ovms_docs_deploying_server_baremetal.html"
 )
+_LIBRARY_PATH_VAR = "LD_LIBRARY_PATH"
 _INSTALL_HINT = (
     "lilbee has no OpenVINO Model Server pack. "
     f"Install OpenVINO Model Server {_VERSION} as {_INSTALL_DOCS_URL} tells, "
-    f"then put the folder with {_TOOL} on PATH."
+    f"then put the folder with {_TOOL} on PATH and set {_LIBRARY_PATH_VAR} to its lib folder."
 )
 _HOST = "127.0.0.1"
 _INTEL_PCI_VENDOR = 0x8086
 _SERVED_NAME = "default_model"
 """The one name OVMS serves the model under; llama-swap rewrites the model of a request to it."""
 _BATCH_LIMIT = 100
-"""The most documents one rerank request holds; the server default refuses more."""
+"""The most documents lilbee sends in one rerank request. The server allows 10000 by default."""
 _TASKS = {
     WorkerRole.CHAT: "text_generation",
     WorkerRole.EMBED: "embeddings",
@@ -182,7 +184,7 @@ class OvmsAdapter:
         ]
 
     def discover_devices(self, binary: Path) -> DeviceProbe:
-        return DeviceProbe(devices=[], output="", spoke_protocol=False)
+        return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
 
     def device_targets(self, binary: Path) -> frozenset[RoleTarget]:
         from lilbee.catalog.runnable import session_host
@@ -215,7 +217,19 @@ class OvmsAdapter:
         return None
 
     def runtime_env(self) -> Mapping[str, str]:
-        return {}
+        """``ovms/lib`` on ``LD_LIBRARY_PATH``: the binary finds ``libtbb`` only through it.
+
+        The release archive holds ``ovms/bin/ovms`` beside ``ovms/lib``. A value already set
+        stays after the new folder. Nothing is added when there is no ``lib`` folder.
+        """
+        tool = self.user_binary()
+        if tool is None:
+            return {}
+        lib = tool.resolve().parent.parent / "lib"
+        if not lib.is_dir():
+            return {}
+        existing = os.environ.get(_LIBRARY_PATH_VAR, "")
+        return {_LIBRARY_PATH_VAR: os.pathsep.join(p for p in (str(lib), existing) if p)}
 
     def target_env(self, target: RoleTarget, cards: int) -> Mapping[str, str]:
         return {}

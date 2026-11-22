@@ -14,13 +14,14 @@ from lilbee.providers.fleet.engines.lemonade import LEMONADE
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.mlx import MLX
 from lilbee.providers.fleet.engines.openvino import OPENVINO
+from lilbee.providers.fleet.engines.ovms import OVMS
 from lilbee.providers.fleet.engines.tei import TEI
 
 _BINARY = Path("engine-binary")
 _CARD = object()
 
 
-@pytest.mark.parametrize("adapter", [MLX, OPENVINO, LEMONADE], ids=lambda a: a.name.value)
+@pytest.mark.parametrize("adapter", [MLX, OPENVINO, LEMONADE, OVMS], ids=lambda a: a.name.value)
 def test_an_engine_with_no_probe_reports_no_device_listing(adapter: Any) -> None:
     probe = adapter.discover_devices(_BINARY)
     assert (probe.devices, probe.has_listing) == ([], False)
