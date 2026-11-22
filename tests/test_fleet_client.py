@@ -9,6 +9,7 @@ import dataclasses
 import json
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
@@ -1051,9 +1052,9 @@ def test_the_warning_for_an_input_cut_to_the_cap_counts_each_input_once(caplog) 
 
     from lilbee.providers.truncation import truncation_scope
 
-    with caplog.at_level("WARNING", logger="lilbee.providers.truncation"), truncation_scope():
+    with caplog.at_level("WARNING"), truncation_scope():
         _capped_client(handler, cap=3).embed(["a long input", "short"])
-    [record] = [r for r in caplog.records if r.name == "lilbee.providers.truncation"]
+    [record] = caplog.records
     assert "1 of 2 embed inputs" in record.getMessage()
     assert "3-token limit" in record.getMessage()
 
@@ -1074,12 +1075,223 @@ def test_every_input_cut_to_the_cap_in_one_run_is_counted() -> None:
         assert cut_inputs_in_scope() == 2
 
 
-def test_a_cut_to_the_cap_outside_a_run_logs_only_the_clients_own_warning(caplog) -> None:
+def test_a_cut_to_the_cap_outside_a_run_logs_one_warning_for_each_input(caplog) -> None:
     with caplog.at_level("WARNING"):
         _capped_client(_every_input_is_long, cap=3).embed(["one long input", "two long inputs"])
-    assert not [r for r in caplog.records if r.name == "lilbee.providers.truncation"]
-    own = [r for r in caplog.records if "Truncating oversize embed input" in r.getMessage()]
-    assert len(own) == 2
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages == ["Truncating oversize embed input: 5 tokens > cap 3"] * 2
+
+
+def _tei_embed_client(handler, cap: int) -> LlamaServerClient:
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://cpu0")
+    return LlamaServerClient(
+        "http://cpu0", "m", http=http, token_cap=cap, profile=TEI.request_profile(WorkerRole.EMBED)
+    )
+
+
+def _tei_handler(token_count: int, paths: list[str], embedded: list[list[str]]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json=[[{"id": i} for i in range(token_count)]])
+        embedded.append(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    return handler
+
+
+def test_a_tei_input_within_the_cap_but_past_the_estimate_reaches_the_server_whole() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    paths: list[str] = []
+    embedded: list[list[str]] = []
+    text = "word " * 8  # 40 characters: an estimate of 14 tokens, past the cap of 10
+    with truncation_scope():
+        _tei_embed_client(_tei_handler(8, paths, embedded), cap=10).embed([text])
+        assert cut_inputs_in_scope() == 0
+    assert embedded == [[text]]
+    assert paths[:2] == ["/upstream/m/tokenize", "/v1/embeddings"]
+
+
+def test_a_tei_input_within_the_estimate_makes_no_count_request() -> None:
+    paths: list[str] = []
+    embedded: list[list[str]] = []
+    _tei_embed_client(_tei_handler(8, paths, embedded), cap=10).embed(["short"])
+    assert paths[0] == "/v1/embeddings"  # the server-cut check after the embed may follow
+
+
+def test_a_tei_input_past_the_cap_in_tokens_is_cut_by_the_estimate_and_counted() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    paths: list[str] = []
+    embedded: list[list[str]] = []
+    text = "word " * 8
+    with truncation_scope():
+        _tei_embed_client(_tei_handler(12, paths, embedded), cap=10).embed([text])
+        assert cut_inputs_in_scope() == 1
+    assert embedded == [[text[:30]]]
+
+
+def _tei_full_chunks_handler(requests: Counter[str], embedded: list[str], failure=None):
+    """A TEI router: each chunk of about 2048 characters is 500 tokens, within the cap of 640."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        route = request.url.path.rsplit("/", 1)[-1]
+        requests[route] += 1
+        if route == "info":
+            return httpx.Response(200, json={"max_input_length": 640})
+        body = json.loads(request.content)
+        if route == "tokenize":
+            if failure is not None:
+                raise failure
+            return httpx.Response(200, json=[[{"id": 1}] * 500 for _ in body["inputs"]])
+        embedded.extend(body["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]] * len(body["input"])))
+
+    return handler
+
+
+def _hundred_full_chunks() -> list[str]:
+    return [f"chunk {i} " + "word " * 408 for i in range(100)]
+
+
+def test_an_embed_of_a_hundred_full_chunks_counts_them_in_two_requests() -> None:
+    requests: Counter[str] = Counter()
+    embedded: list[str] = []
+    chunks = _hundred_full_chunks()
+    assert all(2040 <= len(chunk) <= 2060 for chunk in chunks)
+    _tei_embed_client(_tei_full_chunks_handler(requests, embedded), cap=640).embed(chunks)
+    print("REQUESTS", dict(requests))
+    assert embedded == chunks
+    assert requests["tokenize"] == 2  # 100 inputs, 64 to a request, none asked for again
+    assert requests["info"] == 1
+
+
+def test_identical_wide_inputs_are_counted_once_and_each_one_is_tallied(caplog) -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    # Both texts are past the estimate and within the cap of 10. The server's limit is 6.
+    past_limit, within_limit = "long " * 8, "wide " * 8
+    tokens = {past_limit: 8, within_limit: 5}
+    texts = [past_limit, within_limit, past_limit, within_limit, past_limit]
+    counted: list[list[str]] = []
+    embedded: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        route = request.url.path.rsplit("/", 1)[-1]
+        if route == "info":
+            return httpx.Response(200, json={"max_input_length": 6})
+        inputs = json.loads(request.content)["input" if route == "embeddings" else "inputs"]
+        if route == "tokenize":
+            counted.append(inputs)
+            return httpx.Response(200, json=[[{"id": 1}] * tokens[text] for text in inputs])
+        embedded.extend(inputs)
+        return httpx.Response(200, json=_embed_body([[0.5]] * len(inputs)))
+
+    with caplog.at_level("WARNING"), truncation_scope():
+        vectors = _tei_embed_client(handler, cap=10).embed(texts)
+        assert cut_inputs_in_scope() == 3
+    assert len(vectors) == 5
+    assert counted == [[past_limit, within_limit]]
+    assert embedded == texts
+    [record] = caplog.records
+    assert "3 of 5 embed inputs" in record.getMessage()
+    assert "6-token limit" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("refused"),
+        httpx.ReadTimeout("timed out"),
+        None,
+    ],
+    ids=["refused", "timeout", "server-error"],
+)
+def test_a_failed_count_request_leaves_the_embed_to_the_estimate(failure, caplog) -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    requests: Counter[str] = Counter()
+    embedded: list[str] = []
+    inner = _tei_full_chunks_handler(requests, embedded, failure or httpx.ReadError("x"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure is None and request.url.path.endswith("/tokenize"):
+            return httpx.Response(500, json={"error": "boom"})
+        return inner(request)
+
+    chunks = _hundred_full_chunks()[:3]
+    with truncation_scope():
+        vectors = _tei_embed_client(handler, cap=640).embed(chunks)
+        cut = cut_inputs_in_scope()
+    assert len(vectors) == 3
+    assert embedded == [chunk[:1920] for chunk in chunks]  # what an engine with no route does
+    assert cut == 3
+    assert requests["tokenize"] <= 1  # one failed request; the cool-down skips the later ones
+
+
+def test_a_count_answer_of_the_wrong_length_leaves_the_embeds_to_the_estimate(caplog) -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    requests: Counter[str] = Counter()
+    embedded: list[str] = []
+    inner = _tei_full_chunks_handler(requests, embedded)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        answer = inner(request)
+        if request.url.path.endswith("/tokenize"):
+            return httpx.Response(200, json=answer.json()[:1])
+        return answer
+
+    chunks = _hundred_full_chunks()[:3]
+    cut_chunks = [chunk[:1920] for chunk in chunks]  # what an engine with no route does
+    client = _tei_embed_client(handler, cap=640)
+    with caplog.at_level("WARNING"), truncation_scope():
+        assert len(client.embed(chunks)) == 3
+        assert len(client.embed(chunks)) == 3  # in the pause: no second count request
+        assert cut_inputs_in_scope() == 6
+    assert embedded == cut_chunks * 2
+    assert requests["tokenize"] == 1
+    skipped = [r.getMessage() for r in caplog.records if "check skipped" in r.getMessage()]
+    assert len(skipped) == 1
+    assert "1 token lists for 3 inputs" in skipped[0]
+
+
+def test_a_chunk_of_the_chunkers_estimate_with_its_prefix_is_whole_up_to_a_size() -> None:
+    """No-route engine: cap = chunk_size + headroom (640); a full chunk is 1536 characters."""
+    from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+
+    cap = 512 + INPUT_HEADROOM_TOKENS
+    chunk = "x" * (512 * 3)  # exactly the chunker's estimate of 512 tokens
+    embedded: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        embedded.append(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    client = _no_route_client(handler, cap=cap)
+    title_and_sentence = "T" * (INPUT_HEADROOM_TOKENS * 3)  # 384 characters: the headroom
+    client.embed([title_and_sentence + chunk])
+    assert embedded[-1] == [title_and_sentence + chunk]
+    client.embed([title_and_sentence + "S" + chunk])  # one character past the headroom
+    assert embedded[-1] == [(title_and_sentence + "S" + chunk)[: cap * 3]]
+
+
+def test_an_engine_with_no_count_route_never_cuts_a_chunk_its_estimate_sized() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    embedded: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/embeddings"
+        embedded.append(json.loads(request.content)["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]]))
+
+    chunk = "x" * 30  # an estimate of 10 tokens, the chunker's count for an engine with no route
+    with truncation_scope():
+        _no_route_client(handler, cap=10).embed([chunk])
+        assert cut_inputs_in_scope() == 0
+    assert embedded == [[chunk]]
 
 
 def test_embed_keeps_input_within_cap_unchanged() -> None:
