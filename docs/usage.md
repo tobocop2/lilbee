@@ -979,6 +979,9 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
   `search` tool returns `warnings` in its structured result. The first search
   after the engine pack installs on a computer with a GPU the pack cannot use
   carries one more warning, with the code `gpu_not_served`, once.
+- **A refused embedding role answers 400.** If the saved placement refuses the
+  embedding role, `GET /api/search` answers 400 with the reason in the
+  body. Earlier versions answered 503. Other search failures still answer 503.
 - **Citation rule still applies.** Every fact stated from `search` results must
   trace back to a chunk's `source` + line range, exactly as returned. Don't
   invent.
