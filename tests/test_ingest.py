@@ -1746,14 +1746,45 @@ class TestSyncCancellation:
 
         sized_on: list[threading.Thread] = []
 
-        def sizing() -> tuple[int, list[object]]:
+        def sizing() -> tuple[int, list[object], int]:
             sized_on.append(threading.current_thread())
-            return 1, []
+            return 1, [], 1
 
         monkeypatch.setattr(pipeline, "_admission_sizing", sizing)
         await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
         assert sized_on
         assert sized_on[0] is not threading.main_thread()
+
+    async def test_the_adaptive_admission_reads_the_worker_count_off_the_event_loop(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """The pool's worker count can probe, so only the sizing thread may read it."""
+        import threading
+
+        from lilbee.data.ingest import ingest_stream, pipeline
+        from tests.conftest import one_plan_batch
+
+        read_on: list[threading.Thread] = []
+
+        def workers() -> int:
+            read_on.append(threading.current_thread())
+            return 7
+
+        class _IdleController:
+            def __init__(self, *_a: object, **kwargs: object) -> None:
+                self.permit_max = kwargs["permit_max"]
+
+            async def run(self) -> None:
+                return None
+
+        monkeypatch.setattr(pipeline, "profile_for", lambda _model: object())
+        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda _engine: [object()])
+        monkeypatch.setattr(pipeline, "make_signal_sampler", lambda _devices: lambda: None)
+        monkeypatch.setattr(pipeline, "AdaptiveController", _IdleController)
+        monkeypatch.setattr(pipeline, "max_workers", workers)
+        await ingest_stream(one_plan_batch([]), {}, {}, {}, {}, quiet=True)
+        assert read_on
+        assert threading.main_thread() not in read_on
 
     async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
         """A cancel landing in the same done-batch as a genuinely completed file must
