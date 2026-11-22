@@ -189,6 +189,26 @@ def fit_token_budget(content: str, budget: int) -> list[str]:
     return _split_to_tokens(content, "text/plain", budget)
 
 
+def fit_table_budget(markdown: str, budget: int) -> list[str]:
+    """A markdown table whole when it fits *budget* tokens, else cut at its rows.
+
+    Each piece repeats the header row and the separator row. The header is counted
+    in the budget, and a header that takes more than half of it is not repeated,
+    so the rows keep their room.
+    """
+    if count_embed_tokens(markdown) <= budget:
+        return [markdown]
+    lines = markdown.splitlines()
+    header = "\n".join(lines[:2]) + "\n"
+    room = budget - count_embed_tokens(header)
+    if room < budget // 2:
+        return _split_to_tokens(markdown, "text/plain", budget)
+    # The rows are cut as plain text: xberg's markdown chunker parses the table, so its
+    # pieces do not keep the table's own text.
+    rows = "\n".join(lines[2:])
+    return [header + piece for piece in _split_to_tokens(rows, "text/plain", room)]
+
+
 def _split_to_tokens(content: str, mime_type: str, budget: int) -> list[str]:
     """*content* cut into pieces of at most *budget* tokens of the embedder."""
     from xberg import ChunkingConfig

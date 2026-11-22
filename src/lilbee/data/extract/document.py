@@ -49,6 +49,7 @@ from .chunk import (
     build_chunking_config,
     chunk_text,
     enforce_chunk_limit,
+    fit_table_budget,
     fit_token_budget,
     token_budget,
 )
@@ -431,6 +432,18 @@ def _chunk_pieces(contents: Sequence[str]) -> list[tuple[int, str]]:
         (i, piece)
         for i, content in enumerate(contents)
         for piece in fit_token_budget(content, budget)
+    ]
+
+
+def _table_pieces(markdowns: Sequence[str]) -> list[tuple[int, str]]:
+    """``(table position, text)`` for each piece of each table, cut to the token budget."""
+    if not markdowns:
+        return []
+    budget = token_budget()
+    return [
+        (i, piece)
+        for i, markdown in enumerate(markdowns)
+        for piece in fit_table_budget(markdown, budget)
     ]
 
 
@@ -834,7 +847,8 @@ async def _records_from_document(
         _warn_skipped_scanned_pages(doc, source_name)
     chunks = doc.chunks or []
     pieces = await to_ingest_thread(_chunk_pieces, [chunk.content for chunk in chunks])
-    enforce_chunk_limit(len(pieces) + len(tables))
+    table_pieces = await to_ingest_thread(_table_pieces, [table.markdown for table in tables])
+    enforce_chunk_limit(len(pieces) + len(table_pieces))
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
@@ -849,7 +863,7 @@ async def _records_from_document(
     # Content chunks and table serializations share one embed batch; the vector
     # list is split back apart below by position.
     texts = [text for _, text in pieces]
-    table_texts = [table.markdown for table in tables]
+    table_texts = [text for _, text in table_pieces]
     embed_texts = await to_ingest_thread(
         _enrich_texts, texts + table_texts, texts[0] if texts else "", source_name
     )
@@ -881,16 +895,16 @@ async def _records_from_document(
             source=source_name,
             content_type=content_type,
             chunk_type=ChunkType.TABLE,
-            page_start=table.page_number,
-            page_end=table.page_number,
+            page_start=tables[pos].page_number,
+            page_end=tables[pos].page_number,
             line_start=0,
             line_end=0,
             chunk=text,
             chunk_index=len(texts) + i,
             vector=vec,
         )
-        for i, (table, text, vec) in enumerate(
-            zip(tables, table_texts, vectors[len(texts) :], strict=True)
+        for i, ((pos, text), vec) in enumerate(
+            zip(table_pieces, vectors[len(texts) :], strict=True)
         )
     )
     return records, meta
