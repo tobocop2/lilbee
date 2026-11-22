@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import clean_env
 from lilbee.app import services as services_mod
 from lilbee.app.services import (
     ServicesStoppingError,
@@ -260,9 +262,9 @@ def test_the_handler_force_quit_writes_to_fd_2_and_takes_no_lock(monkeypatch):
     monkeypatch.setattr(services_mod.os, "_exit", exits.append)
     monkeypatch.setattr(services_mod, "_write_exit_note", _no_lock_taking_call)
     monkeypatch.setattr(services_mod, "_flush_logs", _no_lock_taking_call)
-    services_mod._lifecycle._interrupts = 1
+    services_mod._lifecycle._signalled = True
 
-    services_mod._lifecycle._on_interrupt(signal.SIGINT, None)
+    services_mod._lifecycle._on_hard_exit(signal.SIGINT, None)
 
     assert writes == [(2, services_mod._FORCE_QUIT_NOTE.encode())]
     assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
@@ -277,9 +279,9 @@ def test_the_handler_force_quit_exits_when_fd_2_is_gone(monkeypatch):
     monkeypatch.setattr(services_mod.os, "write", _closed)
     monkeypatch.setattr(services_mod.os, "_exit", exits.append)
 
-    services_mod._force_quit_from_handler()
+    services_mod._force_quit_from_handler(128 + signal.SIGTERM)
 
-    assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
+    assert exits == [128 + signal.SIGTERM]
 
 
 def test_a_ctrl_c_after_the_server_hook_is_gone_joins_the_stop_without_raising():
@@ -899,17 +901,100 @@ def test_a_signal_during_an_exit_stop_joins_it_and_sets_the_exit_status(sig):
     provider.shutdown.assert_called_once()
 
 
-def test_the_first_signal_status_wins_over_a_joined_one():
-    """A second signal joins the stop the first one raised for; it owes no status."""
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_a_second_signal_force_quits_with_its_status(sig, monkeypatch):
+    """The first signal raises for the clean stop; the next one ends the process at once."""
+    exits: list[int] = []
+    monkeypatch.setattr(services_mod.os, "_exit", exits.append)
     _install_stub_services()
     install_engine_lifecycle_hooks()
     with pytest.raises(SystemExit) as raised:
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-    signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
     _join_teardown()
+    assert exits == []
+
+    signal.getsignal(sig)(sig, None)
 
     assert raised.value.code == 128 + signal.SIGTERM
-    assert exit_status_after_stop(raised.value.code) == 128 + signal.SIGTERM
+    assert exits == [128 + sig]
+
+
+_STUCK_WORKER_CHILD = """
+import asyncio
+import sys
+import time
+
+from lilbee.app.services import install_engine_lifecycle_hooks
+
+
+def _worker() -> None:
+    print("ready", flush=True)
+    time.sleep(float(sys.argv[1]))  # a worker thread: no signal interrupts it
+
+
+async def _main() -> None:
+    await asyncio.to_thread(_worker)
+
+
+install_engine_lifecycle_hooks()
+asyncio.run(_main())
+"""
+
+
+def _start_worker_child(tmp_path, worker_s: float) -> subprocess.Popen[str]:
+    """Start a process whose asyncio.run waits on a worker thread for *worker_s* seconds."""
+    script = tmp_path / "stuck_worker.py"
+    script.write_text(_STUCK_WORKER_CHILD, encoding="utf-8")
+    child = subprocess.Popen(
+        [sys.executable, str(script), str(worker_s)],
+        env=clean_env(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == "ready", child.stderr.read() if child.stderr else ""
+    return child
+
+
+def _wait_or_kill(child: subprocess.Popen[str], timeout: float) -> tuple[int | None, str]:
+    """The child's status within *timeout* (None when it still ran, then killed) and stderr."""
+    try:
+        status: int | None = child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        status = None
+        child.kill()
+        child.wait()
+    _, stderr = child.communicate()
+    return status, stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+def test_a_second_terminate_ends_a_process_whose_worker_thread_is_stuck(tmp_path):
+    """The exit after a first SIGTERM joins the stuck worker; the second SIGTERM ends it."""
+    child = _start_worker_child(tmp_path, worker_s=120.0)
+    child.send_signal(signal.SIGTERM)
+    time.sleep(1.0)
+    still_running = child.poll() is None
+    child.send_signal(signal.SIGTERM)
+
+    status, stderr = _wait_or_kill(child, timeout=5.0)
+
+    assert still_running, stderr
+    assert status == 128 + signal.SIGTERM, stderr
+    assert services_mod._FORCE_QUIT_NOTE in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+def test_a_first_terminate_waits_for_a_worker_that_finishes(tmp_path):
+    """A worker that returns lets the first SIGTERM end the process cleanly, with no force quit."""
+    child = _start_worker_child(tmp_path, worker_s=1.0)
+    child.send_signal(signal.SIGTERM)
+
+    status, stderr = _wait_or_kill(child, timeout=30.0)
+
+    assert status == 128 + signal.SIGTERM, stderr
+    assert services_mod._FORCE_QUIT_NOTE not in stderr
 
 
 def test_a_forked_child_drops_the_parent_stop_thread():
