@@ -32,7 +32,6 @@ def embedder(dim: int) -> MagicMock:
     stub.embed_batch.side_effect = lambda texts, **_kw: [
         np.full(dim, 0.1, dtype=np.float32) for _ in texts
     ]
-    stub.truncated_total = 0
     return stub
 
 

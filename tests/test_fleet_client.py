@@ -1024,6 +1024,64 @@ def test_embed_truncates_oversize_input_via_server_tokenizer() -> None:
     assert seen["embedded"] == ["trunc"]
 
 
+def test_an_input_cut_to_the_cap_is_counted_and_one_within_it_is_not() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            count = 5 if b"long" in request.content else 2
+            return httpx.Response(200, json={"tokens": list(range(count))})
+        if request.url.path.endswith("/detokenize"):
+            return httpx.Response(200, json={"content": "cut"})
+        return httpx.Response(200, json=_embed_body([[0.5], [0.5]]))
+
+    with truncation_scope():
+        _capped_client(handler, cap=3).embed(["a long input", "short"])
+        assert cut_inputs_in_scope() == 1
+
+
+def test_the_warning_for_an_input_cut_to_the_cap_counts_each_input_once(caplog) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            count = 5 if b"long" in request.content else 2
+            return httpx.Response(200, json={"tokens": list(range(count))})
+        if request.url.path.endswith("/detokenize"):
+            return httpx.Response(200, json={"content": "cut"})
+        return httpx.Response(200, json=_embed_body([[0.5], [0.5]]))
+
+    from lilbee.providers.truncation import truncation_scope
+
+    with caplog.at_level("WARNING", logger="lilbee.providers.truncation"), truncation_scope():
+        _capped_client(handler, cap=3).embed(["a long input", "short"])
+    [record] = [r for r in caplog.records if r.name == "lilbee.providers.truncation"]
+    assert "1 of 2 embed inputs" in record.getMessage()
+    assert "3-token limit" in record.getMessage()
+
+
+def _every_input_is_long(request: httpx.Request) -> httpx.Response:
+    if request.url.path.endswith("/tokenize"):
+        return httpx.Response(200, json={"tokens": list(range(5))})
+    if request.url.path.endswith("/detokenize"):
+        return httpx.Response(200, json={"content": "cut"})
+    return httpx.Response(200, json=_embed_body([[0.5], [0.5]]))
+
+
+def test_every_input_cut_to_the_cap_in_one_run_is_counted() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    with truncation_scope():
+        _capped_client(_every_input_is_long, cap=3).embed(["one long input", "two long inputs"])
+        assert cut_inputs_in_scope() == 2
+
+
+def test_a_cut_to_the_cap_outside_a_run_logs_only_the_clients_own_warning(caplog) -> None:
+    with caplog.at_level("WARNING"):
+        _capped_client(_every_input_is_long, cap=3).embed(["one long input", "two long inputs"])
+    assert not [r for r in caplog.records if r.name == "lilbee.providers.truncation"]
+    own = [r for r in caplog.records if "Truncating oversize embed input" in r.getMessage()]
+    assert len(own) == 2
+
+
 def test_embed_keeps_input_within_cap_unchanged() -> None:
     seen: dict[str, object] = {}
 

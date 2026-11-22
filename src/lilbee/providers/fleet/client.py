@@ -43,7 +43,7 @@ from lilbee.providers.fleet.engines.base import RequestProfile
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.reasoning import ThinkInliner, inline_reasoning
 from lilbee.providers.roles import RerankMode
-from lilbee.providers.truncation import note_truncated
+from lilbee.providers.truncation import note_cut_to_limit, note_truncated
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 # Shown when a stream breaks after its first frame. The client cannot know why.
@@ -1258,19 +1258,20 @@ class LlamaServerClient:
         return vectors
 
     def _note_cut_inputs(self, sub_batches: list[list[str]], total: int) -> None:
-        """Record how many inputs the server cut; a failure pauses the check, never raises."""
-        if time.monotonic() < self._check_resume_at:
-            return
-        try:
-            limit = self._input_limit()
-            path = self._profile.input_count_path
-            if limit is None or path is None:
-                return
-            cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
-        except _TRUNCATION_CHECK_FAILURES:
-            # The thread that sent the failed request paused the check before it let go
-            # of the request, so every thread that reaches here finds the pause set.
-            return
+        """Record an embed's input count and the server's cuts; a failure never raises."""
+        cut, limit = 0, None
+        if time.monotonic() >= self._check_resume_at:
+            try:
+                limit = self._input_limit()
+                path = self._profile.input_count_path
+                if limit is not None and path is not None:
+                    cut = sum(
+                        self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches
+                    )
+            except _TRUNCATION_CHECK_FAILURES:
+                # The thread that sent the failed request paused the check before it let go
+                # of the request, so every thread that reaches here finds the pause set.
+                pass
         note_truncated(cut, total, limit)
 
     def _pause_truncation_check(self, exc: Exception, route: str | None) -> None:
@@ -1669,10 +1670,12 @@ class LlamaServerClient:
                 return text, est
             if self._profile.tokenize_path is None:
                 log.warning("Truncating oversize embed input: ~%d tokens > cap %d", est, cap)
+                note_cut_to_limit(cap)
                 return text[: cap * _EMBED_EST_CHARS_PER_TOKEN], cap
         tokens = self._tokenize(text)
         if len(tokens) > cap:
             log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
+            note_cut_to_limit(cap)
             return self._detokenize(tokens[:cap]), cap
         return text, max(1, len(tokens))
 

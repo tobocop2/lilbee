@@ -1121,9 +1121,6 @@ def _default_embedder_mock():
     embedder.embed_query_batch.side_effect = lambda texts, **kw: [
         np.full(768, 0.1, dtype=np.float32) for _ in texts
     ]
-    # Production reads embedder.truncated_total to compute the per-sync delta; the
-    # mock never truncates, so it must report a real 0 rather than a MagicMock.
-    embedder.truncated_total = 0
     return embedder
 
 

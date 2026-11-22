@@ -47,8 +47,6 @@ def services(store):
 class _StubEmbedder:
     """Deterministic embedder: every chunk maps to a fixed-dim vector."""
 
-    truncated_total = 0
-
     def embed_batch(self, texts, **_kwargs):
         return [[0.1] * cfg.embedding_dim for _ in texts]
 

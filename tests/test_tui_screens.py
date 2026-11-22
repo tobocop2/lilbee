@@ -3686,8 +3686,6 @@ async def test_chat_slash_delete_turns_a_failure_under_a_directory_root_into_a_r
 
 
 class _DatasetStubEmbedder:
-    truncated_total = 0
-
     def embed_batch(self, texts, *, source="", on_progress=None, **_kwargs):
         if on_progress is not None:
             from lilbee.runtime.progress import EmbedEvent, EventType

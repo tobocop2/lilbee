@@ -3552,8 +3552,6 @@ class TestToolsSchemaSize:
 
 
 class _StubEmbedder:
-    truncated_total = 0
-
     def embed_batch(self, texts, **_kwargs):
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
@@ -3600,8 +3598,6 @@ class TestExportDataset:
 class _ProgressStubEmbedder:
     """Stub embedder that forwards one non-embed and one embed progress event."""
 
-    truncated_total = 0
-
     def embed_batch(self, texts, source="", on_progress=noop_callback, **_kwargs):
         on_progress(
             EventType.FILE_START, FileStartEvent(file=source, total_files=1, current_file=1)
@@ -3614,8 +3610,6 @@ class _ProgressStubEmbedder:
 
 class _RaisingEmbedder:
     """Embedder whose every batch fails with the given error."""
-
-    truncated_total = 0
 
     def __init__(self, failure: Exception) -> None:
         self._failure = failure

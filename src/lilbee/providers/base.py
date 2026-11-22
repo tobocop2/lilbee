@@ -652,7 +652,10 @@ class LLMProvider(Protocol):
         """Tokens the embedder truncates one input to, or None when it has no fixed cap.
 
         The chunker bounds its budget to this so no chunk loses text at embedding
-        time. Default ``None``: a remote embedder advertises no window.
+        time. Default ``None``: a remote embedder advertises no window, and the
+        embedder cuts its inputs to ``max_embed_chars`` instead. A provider that
+        returns a cap bounds every input by that token count itself and reports
+        each cut input through ``providers.truncation.note_cut_to_limit``.
         """
         return None
 
