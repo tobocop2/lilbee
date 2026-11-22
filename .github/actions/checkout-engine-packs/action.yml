@@ -11,7 +11,7 @@ runs:
     - uses: actions/checkout@v7
       with:
         repository: tobocop2/lilbee-engine-packs
-        ref: refs/tags/workflow-pin-5
+        ref: refs/tags/workflow-pin-6
         path: engine-packs
 
     - name: Name the workflow and the cells file for the tests
