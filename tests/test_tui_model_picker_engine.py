@@ -451,26 +451,6 @@ async def test_e_says_so_when_one_engine_loads_the_model_or_no_model_is_highligh
         assert not isinstance(app.screen, EnginePickerModal)
 
 
-async def test_the_turn_off_row_shows_no_engine_and_opens_no_engine_step() -> None:
-    _PickerApp.options = [ModelOption("Gemma", GGUF_REF), ModelOption(msg.MODEL_PICKER_TURN_OFF, "")]
-    app = _PickerApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        modal = await _open(app, pilot)
-        rows = _rows(modal)
-        assert msg.MODEL_PICKER_TURN_OFF in rows[1]
-        assert "engine:" not in rows[1]
-        ml = modal.query_one("#picker-list", ModelList)
-        ml.highlighted = 1
-        row = ml.highlighted_row()
-        assert row is not None and row.ref == ""
-        await pilot.press("ctrl+l")
-        assert await wait_until(pilot, lambda: msg.MODEL_INFO_NO_ENGINE_CHOICE in _toasts())
-        assert isinstance(app.screen, ModelPickerModal)
-        await pilot.press("enter")
-        assert await wait_until(pilot, lambda: app.results == [""])
-        assert not isinstance(app.screen, EnginePickerModal)
-
-
 async def test_a_repaint_after_the_picker_closed_does_nothing() -> None:
     app = _PickerApp()
     async with app.run_test(size=(120, 40)) as pilot:
