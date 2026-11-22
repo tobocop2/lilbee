@@ -4437,7 +4437,8 @@ class FleetPlan:
     # instead of spinning the warm line forever.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
     # Roles left unlaunched, each with its user-facing reason: a window below the
-    # minimum grounded prompt, or a device target the engine's build cannot run.
+    # minimum grounded prompt, a device target the engine's build cannot run, or a
+    # model the memory budget leaves no room for.
     refused_roles: dict[WorkerRole, str] = field(default_factory=dict)
     # Configured roles whose engine mapping has no engine (role -> ref); the plan
     # warns for each. Left out of the repr so a one-engine plan reads as it always did.
@@ -4464,8 +4465,8 @@ def _log_refused_roles(
     *,
     unified_budget: int | None,
     capacity: dict[int, int],
-) -> None:
-    """Warn for each role that gets no server, with its cause and the next step."""
+) -> dict[WorkerRole, str]:
+    """Warn for each role that gets no server, and return each reason by role."""
     reasons = _unplaceable_reasons(
         placement,
         model_refs,
@@ -4478,6 +4479,7 @@ def _log_refused_roles(
     )
     for reason in reasons.values():
         log.warning("%s", reason)
+    return reasons
 
 
 def _unplaceable_reasons(
@@ -4776,7 +4778,7 @@ def _planned_launches(
         host_cards=host_cards,
         charge_against_free=clean_box,
     )
-    _log_refused_roles(
+    unplaceable = _log_refused_roles(
         placement,
         model_refs,
         engines,
@@ -4810,7 +4812,7 @@ def _planned_launches(
         launches=tuple(launches),
         swap_classes=placement.swap_classes,
         skipped_not_installed=skipped_not_installed,
-        refused_roles={**refused_roles, **unlaunched},
+        refused_roles={**unplaceable, **refused_roles, **unlaunched},
     )
 
 
