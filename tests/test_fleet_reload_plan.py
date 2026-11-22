@@ -313,7 +313,7 @@ def test_a_small_card_refusal_names_the_memory_other_processes_hold(
 
     assert ("Other processes hold" in reason) is names_other_processes
     if names_other_processes:
-        assert f"Other processes hold {8 - free_gb} GiB of the card's 8 GiB." in reason
+        assert f"Other processes hold {8 - free_gb}.0 GiB of the card's 8.0 GiB." in reason
 
 
 class _EngineSwap(_FakeSwap):

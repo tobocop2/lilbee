@@ -31,8 +31,6 @@ placement_app = typer.Typer(
     no_args_is_help=True,
 )
 
-_GIB = 1024**3
-
 
 def _read_spec(spec: str | None) -> PlacementSpec | None:
     """Parse a spec from a file path or stdin ('-'); return None when omitted."""
@@ -92,12 +90,10 @@ def _render_view(view: PlacementView) -> None:
             placed.setdefault(idx, []).append(role_view.role.value)
 
     for g in view.gpus:
-        free_gib = g.free_bytes / _GIB
-        total_gib = g.total_bytes / _GIB
         table.add_row(
             g.label,
             g.name or "(unnamed)",
-            f"{free_gib:.0f} / {total_gib:.0f} GiB",
+            f"{memory_size_text(g.free_bytes)} / {memory_size_text(g.total_bytes)}",
             Text(", ".join(placed.get(g.index, [])) or "-"),
         )
     console.print(table)
