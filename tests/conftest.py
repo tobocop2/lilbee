@@ -913,21 +913,33 @@ def _no_leaked_task_workers():
 
 
 @pytest.fixture(scope="session")
-def tessdata_ready(tmp_path_factory):
-    """Have xberg fetch Tesseract's language data once, under a lock every worker shares.
+def tessdata_ready(tmp_path_factory) -> Iterator[None]:
+    """Fetch Tesseract's language data once per run, and point every OCR call at it.
 
     xberg downloads a missing language file on first use through one fixed temp
-    name and no lock, so workers that OCR at once on a cold cache can read a partial file.
+    name and no lock, so OCR calls that run at once on a cold cache can each fail
+    the download, and a page comes back without its OCR text. Each test has its
+    own HOME, so xberg's default cache is cold in every test. The run's folder
+    sits beside the workers' temp folders, is filled under a lock every worker
+    shares, and is named by TESSDATA_PREFIX, which xberg searches before its cache.
     """
     from xberg import ExtractionConfig, OcrConfig
 
+    run_root = tmp_path_factory.getbasetemp().parent
+    cache = run_root / "xberg-cache"
+    tessdata = cache / "tessdata"
     image = Image.new("RGB", (400, 100), "white")
     ImageDraw.Draw(image).text((10, 40), "tessdata ready", fill="black")
     png = io.BytesIO()
     image.save(png, format="PNG")
     config = ExtractionConfig(ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True)
-    with FileLock(tmp_path_factory.getbasetemp().parent / "tessdata.lock"):
+    with FileLock(run_root / "tessdata.lock"), pytest.MonkeyPatch.context() as env:
+        # xberg writes a download under XBERG_CACHE_DIR/tessdata.
+        env.setenv("XBERG_CACHE_DIR", str(cache))
         _PRISTINE_EXTRACT_DOCUMENT(png.getvalue(), "image/png", filename="ready.png", config=config)
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("TESSDATA_PREFIX", str(tessdata))
+        yield
 
 
 def shutdown_ingest_pool() -> None:
