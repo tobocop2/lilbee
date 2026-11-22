@@ -226,6 +226,32 @@ class TestHostSpillWarning:
             check_memory_report(WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=GIB)
         assert not [r for r in caplog.records if "system memory" in r.getMessage()]
 
+    @pytest.mark.parametrize(
+        ("host_bytes", "warns"),
+        [
+            (5 * GIB - 1, False),
+            (5 * GIB, False),
+            (5 * GIB + 1, True),
+            (4 * GIB + GIB // 2, False),
+            (4 * GIB, False),
+            (3 * GIB, False),
+        ],
+    )
+    def test_the_warning_starts_just_past_a_quarter_over_the_estimate(
+        self, caplog, host_bytes: int, warns: bool
+    ) -> None:
+        # The estimate is 4 GiB, so the quarter tolerance puts the limit at 5 GiB.
+        payload = {
+            "data": [{"name": "CUDA0", "model": 4 * GIB}, {"name": "Host", "model": host_bytes}]
+        }
+        with caplog.at_level(logging.WARNING):
+            check_memory_report(
+                WorkerRole.CHAT, "qwen-8b", 0, None, payload, est_host_bytes=4 * GIB
+            )
+        spills = [r for r in caplog.records if "system memory" in r.getMessage()]
+        assert bool(spills) is warns
+        assert all(r.levelno == logging.WARNING for r in spills)
+
     def test_no_host_estimate_says_nothing(self, caplog) -> None:
         # 0 means the engine's fit does not run for the launch (a user layer count).
         with caplog.at_level(logging.WARNING):
