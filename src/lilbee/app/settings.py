@@ -886,7 +886,7 @@ def use_installed_models_for_this_run(
     rewritten. An explicit --model override is kept as given. Returns one notice
     per swap, for the caller to show.
 
-    With *fill_empty_chat_only* (the server), the only swap is a usable chat model
+    With *fill_empty_chat_only* (for a long-running process), the only swap is a usable chat model
     (cloud first, then installed) for an empty chat ref. A chat ref that is set stays as
     set, even when it is not reachable yet, and the embedding ref is never swapped.
     """
@@ -922,12 +922,7 @@ def use_installed_models_for_this_run(
 
 
 def fill_empty_chat_model() -> list[str]:
-    """Fill an empty chat ref for a long-running process; one notice per fill.
-
-    The server and the stdio MCP server call this before they build their services.
-    A chat ref that is set stays as set, installed or not, and the embedding ref is
-    never swapped. The config file is never rewritten.
-    """
+    """Fill an empty chat ref and keep a set one; one notice per fill."""
     return use_installed_models_for_this_run(chat_overridden=False, fill_empty_chat_only=True)
 
 
