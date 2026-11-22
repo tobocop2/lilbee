@@ -50,6 +50,7 @@ from lilbee.providers.roles import RoleTarget, WorkerRole
 from tests._pack_workflow import (
     Cell,
     cells_below_the_record,
+    pack_cells,
     pack_workflow,
 )
 from tests._published import publish
@@ -827,8 +828,7 @@ def _ik_step(name: str) -> str:
 
 
 def _ik_cells() -> dict[str, dict[str, Any]]:
-    matrix = _workflow_job("ik")["strategy"]["matrix"]["include"]
-    return {cell["cell"]: cell for cell in matrix}
+    return {cell["cell"]: cell for cell in pack_cells("ik")}
 
 
 def test_the_ik_job_builds_the_commit_the_adapter_pins() -> None:

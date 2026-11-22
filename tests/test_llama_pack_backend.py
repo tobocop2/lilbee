@@ -29,6 +29,7 @@ from lilbee.providers.fleet.host_caps import HostCaps, collect
 from tests._pack_workflow import (
     Cell,
     cells_below_the_record,
+    pack_cells,
     pack_workflow,
 )
 from tests._published import render_table, wheel_name
@@ -279,12 +280,12 @@ def _pack_cells() -> dict[str, Any]:
     return cast(dict[str, Any], yaml.safe_load(pack_workflow().read_text(encoding="utf-8")))
 
 
-def _pack_matrix(cells: dict[str, Any]) -> list[dict[str, Any]]:
-    return cast(list[dict[str, Any]], cells["jobs"]["cell"]["strategy"]["matrix"]["include"])
+def _pack_matrix() -> list[dict[str, Any]]:
+    return pack_cells("llama")
 
 
 def _pack_build_cuda_versions() -> set[tuple[int, int]]:
-    matrix = _pack_matrix(_pack_cells())
+    matrix = _pack_matrix()
     texts = [str(value) for cell in matrix if cell["backend"] == "cuda" for value in cell.values()]
     texts.append(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
     return {(int(m[1]), int(m[2])) for text in texts for m in _PACK_CUDA_VERSION.finditer(text)}
@@ -300,7 +301,7 @@ def test_the_driver_floor_is_the_cuda_version_the_pack_is_built_with() -> None:
 
 def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032() -> None:
     cells = _pack_cells()
-    assets = [cell["asset"] for cell in _pack_matrix(cells) if "asset" in cell]
+    assets = [cell["asset"] for cell in _pack_matrix() if "asset" in cell]
     linux_build = _uncommented(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
     workflow = _uncommented(pack_workflow().read_text(encoding="utf-8"))
     assert cells["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR
@@ -324,15 +325,15 @@ def test_the_pinned_wheel_version_is_the_version_the_pack_workflow_builds() -> N
     assert _pack_cells()["env"]["WHEEL_VERSION"] == _WHEEL_VERSION
 
 
-def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_workflow() -> None:
+def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_cells() -> None:
     shipped = set(MANIFESTS["llama.cpp"][_WHEEL_VERSION])
-    built = {cell["cell"] for cell in _pack_matrix(_pack_cells())}
+    built = {cell["cell"] for cell in _pack_matrix()}
     assert shipped
     assert shipped - built == set()
 
 
 def test_every_shipped_llama_url_names_the_wheel_of_its_cell_apart_from_the_build_number() -> None:
-    cells = {cell["cell"]: cell for cell in _pack_matrix(_pack_cells())}
+    cells = {cell["cell"]: cell for cell in _pack_matrix()}
     shipped = MANIFESTS["llama.cpp"][_WHEEL_VERSION]
     assert shipped
     for key, row in shipped.items():
@@ -349,7 +350,7 @@ def test_every_shipped_llama_url_names_the_wheel_of_its_cell_apart_from_the_buil
 
 
 def _llama_builds() -> list[Cell]:
-    cells = _pack_matrix(_pack_cells())
+    cells = _pack_matrix()
     assert cells
     return [(c["cell"], c["backend"], c["platform"], c["build_number"]) for c in cells]
 
@@ -454,7 +455,7 @@ def _enclosing_conditions(script: str, line_text: str) -> list[str]:
 def test_the_windows_cells_run_the_notice_check_under_the_windows_condition() -> None:
     steps = _pack_cells()["jobs"]["cell"]["steps"]
     [start] = [s for s in steps if s.get("name") == "Start llama-server from the installed wheel"]
-    windows_cells = [c for c in _pack_matrix(_pack_cells()) if c["cell"].startswith("windows-")]
+    windows_cells = [c for c in _pack_matrix() if c["cell"].startswith("windows-")]
     assert windows_cells
     assert all(c["runner"].startswith("windows-") for c in windows_cells)
     assert "if" not in start
