@@ -1703,10 +1703,11 @@ def _saved_chat_placement(
 def test_a_saved_placement_without_a_split_gets_an_equal_split_on_unequal_cards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    placed, applied = _saved_chat_placement(
+    placed, applied, why = _saved_chat_placement(
         tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}', model_gib=26
     )
     assert applied is True
+    assert why == ""
     (instance,) = placed.instances
     assert instance.devices == (0, 1)
     assert instance.tensor_split == (1, 1)
@@ -1717,7 +1718,7 @@ def test_a_saved_placement_without_a_split_is_refused_when_half_exceeds_the_smal
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level("WARNING")
-    _placed, applied = _saved_chat_placement(
+    _placed, applied, _why = _saved_chat_placement(
         tmp_path, monkeypatch, '{"chat": {"devices": [0, 1]}}', model_gib=36
     )
     assert applied is False
@@ -1730,8 +1731,9 @@ def test_a_saved_placement_the_split_rule_refuses_falls_back_to_automatic(
 ) -> None:
     caplog.set_level("WARNING")
     raw = '{"chat": {"devices": [0, 1], "tensor_split": [3, 2]}}'
-    placed, applied = _saved_chat_placement(tmp_path, monkeypatch, raw)
+    placed, applied, why = _saved_chat_placement(tmp_path, monkeypatch, raw)
     assert applied is False
+    assert "mistral.rs splits m.gguf only evenly across cards" in why
     assert all(instance.tensor_split == () for instance in placed.instances)
     assert "mistral.rs splits m.gguf only evenly across cards" in caplog.text
     assert "using automatic placement instead" in caplog.text

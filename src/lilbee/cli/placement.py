@@ -24,7 +24,6 @@ from lilbee.core.config import cfg
 from lilbee.providers.fleet.groups import swap_summary
 from lilbee.providers.fleet.model_memory import memory_size_text
 from lilbee.providers.fleet.placement_spec import PlacementSpec
-from lilbee.runtime.console import styled
 
 placement_app = typer.Typer(
     name="placement",
@@ -164,22 +163,11 @@ def _render_rejected(view: PlacementView) -> None:
     """Print why a saved placement is not in use, when it is not."""
     if view.refusal:
         console.print(Text(f"  {view.refusal}", style=theme.ERROR), soft_wrap=True)
+        if view.pins_dropped:
+            console.print(Text(f"  {view.pins_dropped}", style=theme.WARNING), soft_wrap=True)
         waiting = view.refusal_kind is not None and view.refusal_kind.is_waiting
         if view.rejected_spec_json and not waiting:
             console.print(Text(f"  {_CLEAR_INSTRUCTION}", style=theme.WARNING), soft_wrap=True)
-    elif view.rejected_spec_json:
-        console.print(
-            styled(
-                "  ",
-                (
-                    "a saved placement does not fit this hardware and is being ignored; "
-                    f"{_CLEAR_INSTRUCTION}",
-                    theme.WARNING,
-                ),
-            )
-        )
-        if view.pins_dropped:
-            console.print(Text(f"  {view.pins_dropped}", style=theme.WARNING), soft_wrap=True)
 
 
 @placement_app.command("show")

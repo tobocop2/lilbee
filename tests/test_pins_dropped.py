@@ -78,7 +78,7 @@ class TestTheViewCarriesTheSameSentence:
         monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)
         return app_placement.get_placement()
 
-    def test_on_two_cards_the_view_names_the_move_and_has_no_refusal(
+    def test_on_two_cards_the_view_names_the_move_and_the_refusal(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         view = self._view(monkeypatch, tmp_path, (24, 24))
@@ -86,7 +86,9 @@ class TestTheViewCarriesTheSameSentence:
         assert CHAT_MOVED in view.pins_dropped
         assert VISION_STAYED in view.pins_dropped
         assert view.rejected_spec_json is not None
-        assert view.refusal is None
+        assert view.refusal is not None
+        assert view.refusal.startswith("chat pinned to device 0")
+        assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
 
     def test_on_one_card_the_view_names_no_move(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -94,7 +96,7 @@ class TestTheViewCarriesTheSameSentence:
         view = self._view(monkeypatch, tmp_path, (24,))
         assert CHAT_STAYED in view.pins_dropped
         assert "now runs on" not in view.pins_dropped
-        assert view.refusal is None
+        assert view.refusal is not None
 
     def test_a_spec_that_applies_has_no_such_sentence(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -161,7 +163,7 @@ class TestEverySurfaceShowsTheSentence:
         with create_test_client([placement_route]) as client:
             body = client.get("/api/placement").json()
         assert CHAT_MOVED in body["pins_dropped"]
-        assert body["refusal"] is None
+        assert body["refusal"].startswith("chat pinned to device 0")
         assert body["manual"] is False
 
     def test_the_mcp_tool_returns_it_in_pins_dropped(
@@ -184,7 +186,7 @@ class TestEverySurfaceShowsTheSentence:
         assert result.exit_code == 0
         shown = " ".join(result.stdout.split())
         assert shown.count(CHAT_MOVED) == 1
-        assert shown.count("a saved placement does not fit this hardware") == 1
+        assert shown.count("chat pinned to device 0") == 1
 
 
 class TestTheCliSentenceIsAWarningLine:
