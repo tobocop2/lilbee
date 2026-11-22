@@ -294,15 +294,23 @@ def _escape(char: str, upper: bool) -> str:
 
 
 def _spell(tokens: tuple[_Token, ...], data: st.DataObject, kept: frozenset[str] = _KEPT) -> str:
-    """One spelling of *tokens*: each character raw or escaped where that keeps the address."""
+    """One spelling of *tokens*: each character raw or escaped where that keeps the address.
+
+    One draw gives two choice bits for each character (escaped or raw, upper or lower case
+    hex). A draw for each choice made this test spend most of its time in Hypothesis itself,
+    which a loaded host stretched past the test timeout.
+    """
+    choices = data.draw(st.integers(0, (1 << (2 * len(tokens))) - 1)) if tokens else 0
     spelled = []
-    for token in tokens:
+    for position, token in enumerate(tokens):
+        escaped = bool(choices >> (2 * position) & 1)
+        upper = bool(choices >> (2 * position + 1) & 1)
         if token.kept_escape:
-            spelled.append(_escape(token.char, data.draw(st.booleans())))
+            spelled.append(_escape(token.char, upper))
         elif token.char in kept:
             spelled.append(token.char)
-        elif data.draw(st.booleans()):
-            spelled.append(_escape(token.char, data.draw(st.booleans())))
+        elif escaped:
+            spelled.append(_escape(token.char, upper))
         else:
             spelled.append(token.char)
     return "".join(spelled)
