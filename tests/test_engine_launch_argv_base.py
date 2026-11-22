@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.providers.fleet.engines import proof
-from tests._engine_launch_argv import launch_argvs
+from tests._engine_launch_argv import BINARY, MODEL, launch_argvs
 
 # The argv of each adapter at 6c19ed322, recorded before any proof table existed.
 # Updated by hand after commit 05be33fae, which put the engine subcommand after
@@ -29,7 +29,13 @@ def test_l4_with_no_row_every_shipped_engine_launches_with_the_base_argv(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(proof, "HARDWARE_PROOF", {})
-    base = json.loads(BASE.read_text(encoding="utf-8"))
+    recorded = json.loads(BASE.read_text(encoding="utf-8"))
+    # The base holds the POSIX form of each path; the adapters write the host's form.
+    host_form = {str(path): str(Path(path)) for path in (BINARY, MODEL, MODEL.parent)}
+    base = {
+        name: {role: [host_form.get(arg, arg) for arg in argv] for role, argv in roles.items()}
+        for name, roles in recorded.items()
+    }
     now = launch_argvs(monkeypatch, tmp_path / "models")
     assert set(base) == {"ik_llama.cpp", "llama.cpp", "mistral.rs", "mlx", "tei"}
     assert {name: now[name] for name in base} == base

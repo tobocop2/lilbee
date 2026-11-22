@@ -140,6 +140,8 @@ async def test_skipped_role_shows_not_downloaded_note(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         note = app.screen.query_one("#placement-skipped", Static)
         assert note.display is True
         rendered = str(note.render())
@@ -168,6 +170,8 @@ async def test_skipped_note_shows_a_bracketed_model_name_as_written(monkeypatch,
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         rendered = str(app.screen.query_one("#placement-skipped", Static).render())
     assert f"chat: {fbm._clean_model_name(model)} not downloaded" in rendered
 
@@ -193,6 +197,8 @@ async def test_a_role_with_no_engine_shows_its_notice(monkeypatch, size):
     app = FleetTestApp()
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         note = app.screen.query_one("#placement-skipped", Static)
         assert note.display is True
         assert str(note.render()) == f"chat: {notice}"
@@ -216,6 +222,8 @@ async def test_a_model_of_unknown_size_shows_its_notice(monkeypatch, size):
 
     app = FleetTestApp()
     async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         note = app.screen.query_one("#placement-skipped", Static)
         assert note.display is True
@@ -247,6 +255,8 @@ async def test_a_tight_role_shows_how_much_memory_it_lacks_and_what_to_do(monkey
 
     app = FleetTestApp()
     async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         note = app.screen.query_one("#placement-skipped", Static)
         assert note.display is True
@@ -284,6 +294,8 @@ async def test_two_tight_roles_show_one_line_each(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         lines = str(app.screen.query_one("#placement-skipped", Static).render()).split("\n")
 
     assert len(lines) == 2
@@ -302,6 +314,8 @@ async def test_no_skipped_note_when_all_models_installed(monkeypatch):
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         assert app.screen.query_one("#placement-skipped", Static).display is False
 

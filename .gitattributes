@@ -3,3 +3,5 @@ engine-versions.env text eol=lf
 # Skill files are matched by sha256 against released copies; a CRLF checkout would change them.
 plugins/lilbee/skills/lilbee-mcp/** text eol=lf
 tests/fixtures/skill/** text eol=lf
+# The wheels ship the canonical Apache text, which a test matches by sha256.
+tools/wheel-build/LICENSE-Apache-2.0 text eol=lf

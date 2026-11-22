@@ -26,6 +26,18 @@ _MAC_NAME = "lilbee_engine_tei-1.9.4-1.metal-py3-none-macosx_14_0_arm64.whl"
 _EXECUTABLE = 0o100755 << 16
 _PLAIN = 0o100644 << 16
 _CUTLASS = "THIRD-PARTY/tei-notices/git-candle-1/candle-flash-attn/cutlass/LICENSE.txt"
+# The TEI pack job runs these shell scripts on its Linux and macOS cells only.
+_VENDORED_SCAN = pytest.mark.skipif(
+    sys.platform == "win32", reason="vendored_notices.sh runs only on Linux and macOS"
+)
+_RUST_LICENCES = pytest.mark.skipif(
+    sys.platform == "win32", reason="rust_licences.sh runs only on Linux and macOS"
+)
+_WHEEL_SCRIPT = pytest.mark.skipif(
+    sys.platform == "win32", reason="tei_wheel.sh runs only on Linux and macOS"
+)
+_MANYLINUX = pytest.mark.skipif(sys.platform == "win32", reason="tei_manylinux.sh runs only on Linux")
+_SMOKE = pytest.mark.skipif(sys.platform == "win32", reason="smoke_tei.sh runs only on Linux")
 
 
 def _load(name: str) -> ModuleType:
@@ -393,6 +405,7 @@ def _copied(out: Path) -> list[str]:
     return sorted(str(p.relative_to(out)) for p in out.rglob("*") if p.is_file())
 
 
+@_VENDORED_SCAN
 def test_vendored_scan_copies_notices_and_third_party_licences(tmp_path: Path) -> None:
     out = _scan(
         tmp_path,
@@ -412,6 +425,7 @@ def test_vendored_scan_copies_notices_and_third_party_licences(tmp_path: Path) -
     ]
 
 
+@_VENDORED_SCAN
 def test_vendored_scan_copies_the_licence_of_a_git_submodule(tmp_path: Path) -> None:
     out = _scan(
         tmp_path,
@@ -434,6 +448,7 @@ def test_vendored_scan_copies_the_licence_of_a_git_submodule(tmp_path: Path) -> 
     assert cutlass.read_text(encoding="utf-8") == "BSD-3-Clause NVIDIA"
 
 
+@_VENDORED_SCAN
 def test_vendored_scan_runs_without_a_git_checkout(tmp_path: Path) -> None:
     registry = tmp_path / "cargo/registry/src/index-1"
     _tree(registry, {"kernels-0.1.0/NOTICE": "Apache notice"})
@@ -467,6 +482,7 @@ fi
 """
 
 
+@_RUST_LICENCES
 def test_rust_licences_writes_to_relative_output_paths(tmp_path: Path) -> None:
     stub = tmp_path / "bin/cargo"
     stub.parent.mkdir()
@@ -490,6 +506,7 @@ def test_rust_licences_writes_to_relative_output_paths(tmp_path: Path) -> None:
     assert (tmp_path / "out/terms.json").is_file()
 
 
+@_VENDORED_SCAN
 def test_vendored_scan_stops_without_a_cargo_registry(tmp_path: Path) -> None:
     result = subprocess.run(
         ["bash", str(_TOOLS / "vendored_notices.sh"), str(tmp_path), str(tmp_path / "out")],
@@ -759,6 +776,7 @@ def _run_wheel_script(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str],
     return result, project, record
 
 
+@_WHEEL_SCRIPT
 def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Path) -> None:
     result, _, record = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -767,12 +785,14 @@ def test_the_wheel_script_builds_into_an_absolute_output_directory(tmp_path: Pat
     assert outdir.resolve() == (tmp_path / "out/dist").resolve()
 
 
+@_WHEEL_SCRIPT
 def test_the_wheel_build_runs_with_the_commit_time_of_the_source(tmp_path: Path) -> None:
     result, _, record = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
     assert (record / "build-epoch").read_text(encoding="utf-8").strip() == str(_COMMIT_TIME)
 
 
+@_WHEEL_SCRIPT
 def test_the_wheel_retag_runs_with_the_commit_time_of_the_source(tmp_path: Path) -> None:
     result, _, record = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -781,6 +801,7 @@ def test_the_wheel_retag_runs_with_the_commit_time_of_the_source(tmp_path: Path)
     assert retag == f"{_COMMIT_TIME} -m wheel tags --remove --platform-tag linux_x86_64 {wheels}"
 
 
+@_WHEEL_SCRIPT
 def test_the_wheel_script_writes_the_mpl_source_file_into_the_project(tmp_path: Path) -> None:
     result, project, _ = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -790,6 +811,7 @@ def test_the_wheel_script_writes_the_mpl_source_file_into_the_project(tmp_path: 
     ]
 
 
+@_WHEEL_SCRIPT
 def test_the_wheel_script_copies_the_vendored_notices_into_the_project(tmp_path: Path) -> None:
     result, project, _ = _run_wheel_script(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -878,17 +900,20 @@ def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
     return (record / recorded).read_text(encoding="utf-8").strip()
 
 
+@_MANYLINUX
 def test_the_cuda_build_compiles_kernels_position_independent(tmp_path: Path) -> None:
     assert _build_env(tmp_path, "89", "nvcc-flags") == "-Xcompiler -fPIC"
 
 
 @pytest.mark.parametrize("cuda_cc", ["", "89"])
+@_MANYLINUX
 def test_auditwheel_repairs_with_the_commit_time_of_the_source(
     tmp_path: Path, cuda_cc: str
 ) -> None:
     assert _build_env(tmp_path, cuda_cc, "auditwheel-epoch") == str(_COMMIT_TIME)
 
 
+@_MANYLINUX
 def test_the_cpu_build_leaves_the_nvcc_flags_alone(tmp_path: Path) -> None:
     assert _build_env(tmp_path, "", "nvcc-flags") == "unset"
 
@@ -896,6 +921,7 @@ def test_the_cpu_build_leaves_the_nvcc_flags_alone(tmp_path: Path) -> None:
 # The upstream source tree sets target-cpu=native in .cargo/config.toml; the RUSTFLAGS variable
 # replaces that setting, so a router built on a CPU with AVX-512 still runs on one without it.
 @pytest.mark.parametrize("cuda_cc", ["", "89"])
+@_MANYLINUX
 def test_the_linux_build_targets_the_portable_x86_64_baseline(tmp_path: Path, cuda_cc: str) -> None:
     assert _build_env(tmp_path, cuda_cc, "rustflags") == "-C target-cpu=x86-64-v2"
 
@@ -972,6 +998,7 @@ def _run_smoke(
 
 
 @pytest.mark.parametrize("backend", ["cuda-sm89", "cuda-sm120"])
+@_SMOKE
 def test_the_smoke_runs_the_router_on_an_emulated_cpu_without_avx(
     tmp_path: Path, backend: str
 ) -> None:
@@ -981,6 +1008,7 @@ def test_the_smoke_runs_the_router_on_an_emulated_cpu_without_avx(
     assert (record / "router-calls").read_text(encoding="utf-8").strip() == "router --version"
 
 
+@_SMOKE
 def test_the_smoke_runs_the_router_directly_without_an_emulated_cpu(tmp_path: Path) -> None:
     record, result = _run_smoke(tmp_path, "cuda-sm89", None)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1000,6 +1028,7 @@ esac
 """
 
 
+@_SMOKE
 def test_the_cpu_smoke_serves_a_model_on_the_emulated_cpu(tmp_path: Path) -> None:
     record = tmp_path / "record"
     record.mkdir()
@@ -1036,6 +1065,7 @@ def test_the_cpu_smoke_serves_a_model_on_the_emulated_cpu(tmp_path: Path) -> Non
     assert all(line.startswith("-cpu Nehalem ") for line in emulated)
 
 
+@_SMOKE
 def test_the_emulated_smoke_fails_when_the_router_dies_on_the_cpu(tmp_path: Path) -> None:
     _, result = _run_smoke(tmp_path, "cuda-sm89", "Nehalem", "#!/bin/sh\nkill -ILL $$\n")
     assert result.returncode != 0

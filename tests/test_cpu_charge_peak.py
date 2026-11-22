@@ -9,6 +9,7 @@ the way the planner builds it, from the launch's flash mode and cache type.
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -400,7 +401,7 @@ class TestTheAttentionShape:
     def test_the_parser_is_asked_about_the_model_file(self, parser_for: ParserFor) -> None:
         path, fake = parser_for("qwen-7b-q4km")
         vram_mod.attention_shape(path)
-        assert fake.argvs == [["/fake/gguf-parser", "--path", str(path), "--raw"]]
+        assert fake.argvs == [[str(Path("/fake/gguf-parser")), "--path", str(path), "--raw"]]
 
     def test_a_rewritten_file_is_read_again(
         self, parser_for: ParserFor, monkeypatch: pytest.MonkeyPatch
@@ -408,7 +409,10 @@ class TestTheAttentionShape:
         path, _ = parser_for("qwen-7b-q4km")
         assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(28, 4, 152_064)
         monkeypatch.setattr(vram_mod, "_run_parser", lambda _a, _p: json.dumps(_header(OTHER)))
+        written = path.stat().st_mtime_ns
         path.write_bytes(b"GGUF2")
+        # A clock that ticks in 16 ms steps, as on Windows, can give both writes one mtime.
+        os.utime(path, ns=(written + 1_000_000_000, written + 1_000_000_000))
         assert vram_mod.attention_shape(path) == vram_mod.AttentionShape(1, 1, 1)
 
     def test_another_engine_build_is_read_again(

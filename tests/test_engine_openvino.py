@@ -106,7 +106,7 @@ def test_a1_a_cpu_target_sets_the_cpu_device_for_that_process(both_devices: None
 def test_a1_a_gpu_target_sets_the_gpu_device_and_keeps_the_llama_form(both_devices: None) -> None:
     argv = _argv(RoleTarget.GPU)
     assert argv[:3] == ["/usr/bin/env", "GGML_OPENVINO_DEVICE=GPU", str(BINARY)]
-    assert argv[argv.index("--model") + 1] == "/models/m.gguf"
+    assert argv[argv.index("--model") + 1] == str(Path("/models/m.gguf"))
 
 
 def test_a1_the_device_is_not_in_the_shared_environment() -> None:
@@ -447,10 +447,11 @@ def test_a_listing_that_exits_non_zero_raises_with_the_exit_status(
 def test_a_listing_killed_by_a_signal_raises_with_the_signal_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _probe_exits(monkeypatch, _PARTIAL_LIST, -9)
+    # Python on Windows names SIGTERM, but not SIGKILL.
+    _probe_exits(monkeypatch, _PARTIAL_LIST, -15)
     with pytest.raises(ProviderError) as raised:
         OPENVINO.device_targets(BINARY)
-    assert str(raised.value) == _expected("was stopped by signal 9 (SIGKILL)")
+    assert str(raised.value) == _expected("was stopped by signal 15 (SIGTERM)")
 
 
 def test_a_listing_names_an_unknown_signal_as_unknown(monkeypatch: pytest.MonkeyPatch) -> None:

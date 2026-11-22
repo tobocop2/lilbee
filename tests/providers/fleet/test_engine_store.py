@@ -13,6 +13,8 @@ import sys
 import textwrap
 import threading
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -289,11 +291,21 @@ def test_install_gives_up_when_another_process_holds_the_engine_lock(
 
 
 def test_install_takes_the_engine_lock_file_in_the_lock_folder(
-    store: EngineStore, wheel: tuple[Path, str]
+    store: EngineStore, wheel: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The lock file is read while the lock is held: on Windows, filelock deletes it on release.
+    held: list[tuple[Path, bool]] = []
+
+    @contextmanager
+    def watched_lock(path: Path, timeout_s: float) -> Iterator[None]:
+        with file_lock(path, timeout_s):
+            held.append((path, (store.root / LOCK_DIR / "fx.lock").is_file()))
+            yield
+
+    monkeypatch.setattr(engine_store, "file_lock", watched_lock)
     path, sha = wheel
     store.install_from_wheel(pin(sha), path)
-    assert (store.root / LOCK_DIR / "fx.lock").is_file()
+    assert (store.root / LOCK_DIR / "fx", True) in held
 
 
 @pytest.mark.parametrize(
