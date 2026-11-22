@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,7 +55,7 @@ from lilbee.crawler import is_url
 from lilbee.crawler.models import NO_LOGIN, CrawlLogin
 from lilbee.crawler.url_filter import without_userinfo
 from lilbee.providers.base import ProviderError
-from lilbee.runtime.cancellation import CancelSignal, SignalFlag
+from lilbee.runtime.cancellation import CancelSignal, SignalFlag, sigint_cancel
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
@@ -402,33 +401,15 @@ def _exit_cancelled(
 
 
 @contextmanager
-def _ctrl_c_sets(cancel_event: SignalFlag) -> Iterator[None]:
-    """Make Ctrl+C set *cancel_event* instead of raising KeyboardInterrupt, for the block."""
-    import signal
+def _ctrl_c_stops(rollback: AddRollback) -> Iterator[SignalFlag]:
+    """Run a command under Ctrl+C and yield the cancel it polls; a stop exits 130 after *rollback*.
 
-    # signal.signal raises ValueError off the main thread (e.g. under pytest-xdist
-    # workers); the cancel_event can still be driven externally there.
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        cancel_event.set()
-
-    previous_handler = signal.signal(signal.SIGINT, _on_sigint)
-    try:
-        yield
-    finally:
-        signal.signal(signal.SIGINT, previous_handler)
-
-
-@contextmanager
-def _ctrl_c_stops(cancel_event: SignalFlag, rollback: AddRollback) -> Iterator[None]:
-    """Run a command under Ctrl+C; one it stops exits 130 after *rollback*."""
+    The first Ctrl+C sets the cancel; a second one force-quits a run that never polls it.
+    """
     try:
         # Only the user's Ctrl+C sets this cancel.
-        with _ctrl_c_sets(cancel_event), leave_as_cancel(rollback, cancel_event, lambda: True):
-            yield
+        with sigint_cancel() as cancel_event, leave_as_cancel(rollback, cancel_event, lambda: True):
+            yield cancel_event
     except asyncio.CancelledError:
         _exit_cancelled(rollback)
 
@@ -442,8 +423,7 @@ def run_sync_with_signal_cancel(
     started_by: str = "lilbee sync",
 ) -> SyncResult:
     """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
-    cancel_event = SignalFlag()
-    with _ctrl_c_stops(cancel_event, AddRollback()):
+    with _ctrl_c_stops(AddRollback()) as cancel_event:
         return _run_sync(
             cancel_event,
             force_rebuild=force_rebuild,
@@ -881,12 +861,11 @@ def add(
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
 
-    cancel_event = SignalFlag()
     rollback = AddRollback(paths=file_paths, at_sync=False)
     outcome = _CrawlOutcome()
     sync_results: list[object] = []
     try:
-        with _ctrl_c_stops(cancel_event, rollback):
+        with _ctrl_c_stops(rollback) as cancel_event:
             outcome = _crawl_urls_step(
                 urls,
                 crawl=crawl,
