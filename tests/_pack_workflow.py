@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import yaml
 
 WORKFLOW_ENV = "ENGINE_PACKS_WORKFLOW"
+CELLS_ENV = "ENGINE_PACKS_CELLS"
 Cell = tuple[str, str, str, int]  # name, backend, platform, build number
 _WHEEL = re.compile(
     r"^(?P<dist>[^-]+)-(?P<version>[^-]+)-(?P<build>\d+)\.(?P<backend>\w+)"
@@ -85,3 +87,18 @@ def pack_workflow() -> Path:
     if os.environ.get("CI"):
         pytest.fail(message, pytrace=False)
     pytest.skip(message)
+
+
+def pack_cells(engine: str) -> list[dict[str, Any]]:
+    """The build cells of one engine in the file named by ENGINE_PACKS_CELLS, in file order.
+
+    Fail when CI is set and the variable is empty, else skip. An engine that the file lacks fails.
+    """
+    path = os.environ.get(CELLS_ENV)
+    if not path:
+        message = f"{CELLS_ENV} names the cells file of the engine-packs repository"
+        if os.environ.get("CI"):
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
+    engines = yaml.safe_load(Path(path).read_text(encoding="utf-8"))["engines"]
+    return cast(list[dict[str, Any]], engines[engine]["cells"])
