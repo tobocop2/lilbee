@@ -33,6 +33,24 @@ python_312() {
   return 1
 }
 
+# Put a venv of Python 3.12 first on PATH: the build tools do not go into the Python of the computer.
+use_build_python() {
+  local base
+  base="$(python_312)"
+  "${base}" -m venv pack-venv
+  if [ "$(host_os)" = Windows ]; then PATH="${PWD}/pack-venv/Scripts:${PATH}"; else PATH="${PWD}/pack-venv/bin:${PATH}"; fi
+  export PATH
+}
+
+# Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF.
+dist_info() {  # wheel file
+  python -c 'import pathlib, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+paths = [pathlib.PurePosixPath(n) for n in z.namelist()]
+(path,) = [p for p in paths if p.name == sys.argv[2] and p.parent.suffix == ".dist-info"]
+sys.stdout.buffer.write(b"\n".join(z.read(str(path)).splitlines()) + b"\n")' "$1" "$2"
+}
+
 # Print the sha256 line of one file, "<digest>  <file name>", as sha256sum writes it in the folder of the file.
 sha256_line() {  # file
   local dir name

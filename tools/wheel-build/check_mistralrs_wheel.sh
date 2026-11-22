@@ -18,15 +18,6 @@ refuse() {
   return 1
 }
 
-# Print one file of the dist-info folder of a wheel with LF line ends: a Windows build writes CRLF.
-dist_info() {  # wheel file
-  python -c 'import pathlib, sys, zipfile
-z = zipfile.ZipFile(sys.argv[1])
-paths = [pathlib.PurePosixPath(n) for n in z.namelist()]
-(path,) = [p for p in paths if p.name == sys.argv[2] and p.parent.suffix == ".dist-info"]
-sys.stdout.buffer.write(b"\n".join(z.read(str(path)).splitlines()) + b"\n")' "$1" "$2"
-}
-
 check_tag() {  # wheel
   local name info
   name="$(basename "$1")"
