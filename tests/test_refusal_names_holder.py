@@ -14,9 +14,16 @@ from lilbee.cli.tui.widgets import gpu_fleet_panel
 from lilbee.core.config import cfg
 from lilbee.mcp_server import get_placement_tool
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.devices import DeviceProbe
+from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines.mistral import MistralAdapter
-from lilbee.providers.fleet.placement import InstancePlan, Placement, RoomHolder, card_refusal
+from lilbee.providers.fleet.placement import (
+    InstancePlan,
+    Placement,
+    RoomHolder,
+    card_refusal,
+    placement_from_spec,
+)
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.routes.placement import placement_route
 from tests._async_wait import wait_until
@@ -347,3 +354,201 @@ class TestWhoHoldsTheRoom:
         assert planning._room_holders(chat, 0, placement, charged, refs) == (
             RoomHolder(WorkerRole.VISION, "vision", GIB),
         )
+
+
+MIB = 1024**2
+EMBED_TWICE_ON_THE_CARD = '{"chat": {"target": "cpu"}, "embed": {"devices": [0], "replicas": 2}}'
+EMBED_THREE_TIMES_ON_THE_CARD = (
+    '{"chat": {"target": "cpu"}, "embed": {"devices": [0], "replicas": 3}}'
+)
+CHAT_PINNED_EMBED_ON_CPU = '{"chat": {"devices": [0]}, "embed": {"target": "cpu"}}'
+CHAT_AUTO_EMBED_ON_CPU = '{"chat": {"target": "auto"}, "embed": {"target": "cpu"}}'
+
+
+class _CardWithATenant(_RealSizeEngine):
+    """The real adapter on one 8 GiB card whose free memory another process has taken."""
+
+    def __init__(self, binary: Path, free: int) -> None:
+        super().__init__(binary, (8,))
+        self._free = free
+
+    def discover_devices(self, binary: Path) -> DeviceProbe:
+        card = FleetDevice("CUDA", 0, "gpu0", 8 * GIB, self._free)
+        return DeviceProbe(devices=[card], output="")
+
+
+def plan_beside_a_tenant(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    free: int,
+    spec: str | None,
+    embed: int = GIB,
+):
+    """Plan a 1 GiB chat and an *embed* of this size on a card with *free* bytes left."""
+    prepare_host(
+        monkeypatch, tmp_path, (Role(WorkerRole.CHAT, 1), Role(WorkerRole.EMBED, 1)), 64 * GIB
+    )
+    for name, size in (("chat.gguf", GIB), ("embed.gguf", embed)):
+        state_size(tmp_path / name, size)
+    monkeypatch.setattr(cfg, "placement", spec)
+    binary = tmp_path / "engine-server"
+    binary.write_text("", encoding="utf-8")
+    engines = dict.fromkeys(WorkerRole, _CardWithATenant(binary, free))
+    planning.capture_plan_probe(engines)
+    return planning.plan_all_launches(engines=engines)
+
+
+class TestARoleDrainsItsOwnCard:
+    def test_the_refused_replica_names_the_replica_that_took_the_card(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        plan = plan_real_sizes(monkeypatch, tmp_path, GIB, 7360 * MIB, 8, EMBED_TWICE_ON_THE_CARD)
+        assert plan.refused_roles[WorkerRole.EMBED] == (
+            "embed pinned to device 0 needs 7.2 GiB but device 0 has 13 MiB usable "
+            "(8.0 GiB total, 90% headroom). "
+            f"This role's other replica of the embed model {EMBED_REF} (7.2 GiB) holds the rest. "
+            "Use a smaller embed model, or set the target of one of these models "
+            "to cpu or another card."
+        )
+
+    def test_the_third_replica_counts_the_two_before_it(self, tmp_path, monkeypatch) -> None:
+        plan = plan_real_sizes(
+            monkeypatch, tmp_path, GIB, 3 * GIB, 8, EMBED_THREE_TIMES_ON_THE_CARD
+        )
+        reason = plan.refused_roles[WorkerRole.EMBED]
+        assert "device 0 has 1.2 GiB usable" in reason
+        assert f"This role's 2 other replicas of the embed model {EMBED_REF} (6.0 GiB)" in reason
+
+    def test_a_replica_that_fits_names_nothing(self, tmp_path, monkeypatch) -> None:
+        plan = plan_real_sizes(monkeypatch, tmp_path, GIB, 3 * GIB, 8, EMBED_TWICE_ON_THE_CARD)
+        assert plan.refused_roles == {}
+        assert _launched(plan) == {WorkerRole.CHAT, WorkerRole.EMBED}
+
+    def test_a_neighbour_is_named_by_its_role_beside_the_replicas_of_the_refused_one(
+        self,
+    ) -> None:
+        reason = card_refusal(
+            "embed pinned to device 0",
+            0,
+            3 * GIB,
+            GIB,
+            8 * GIB,
+            fix=False,
+            holders=(
+                RoomHolder(WorkerRole.CHAT, "c", 2 * GIB),
+                RoomHolder(WorkerRole.EMBED, "e", 3 * GIB),
+            ),
+            refused=WorkerRole.EMBED,
+        )
+        assert reason is not None
+        assert reason.endswith(
+            "The chat model c (2.0 GiB) and this role's other replica of the embed model e "
+            "(3.0 GiB) hold the rest."
+        )
+
+    def test_a_role_with_no_model_name_is_named_by_its_role(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,), replicas=2)})
+        with pytest.raises(PlacementError) as refused:
+            placement_from_spec(
+                spec,
+                (WorkerRole.EMBED,),
+                {0: 8 * GIB},
+                estimate_peak=lambda role, ratio: (5 * GIB,),
+            )
+        assert str(refused.value) == (
+            "embed pinned to device 0 needs 5.0 GiB but device 0 has 2.2 GiB usable "
+            "(8.0 GiB total, 90% headroom). "
+            "This role's other replica of the embed model embed (5.0 GiB) holds the rest."
+        )
+
+
+class TestAnotherProcessHoldsTheCard:
+    def test_an_auto_chat_names_the_process_and_shows_the_room_in_mib(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        plan = plan_beside_a_tenant(monkeypatch, tmp_path, 50 * MIB, CHAT_AUTO_EMBED_ON_CPU)
+        assert plan.refused_roles[WorkerRole.CHAT] == (
+            f"The chat model {CHAT_REF} needs 1.0 GiB but device 0 has 45 MiB usable "
+            "(50 MiB total, 90% headroom). Use a smaller model, or set its target to cpu. "
+            "Another process (8.0 GiB) holds the rest."
+        )
+
+    def test_a_pinned_chat_names_the_process_too(self, tmp_path, monkeypatch) -> None:
+        plan = plan_beside_a_tenant(monkeypatch, tmp_path, 50 * MIB, CHAT_PINNED_EMBED_ON_CPU)
+        assert plan.refused_roles[WorkerRole.CHAT] == (
+            "chat pinned to device 0 needs 1.0 GiB but device 0 has 45 MiB usable "
+            "(50 MiB total, 90% headroom). Use a smaller model, or set its target to cpu. "
+            "Another process (8.0 GiB) holds the rest."
+        )
+
+    def test_a_role_and_the_process_are_named_together(self, tmp_path, monkeypatch) -> None:
+        plan = plan_beside_a_tenant(monkeypatch, tmp_path, 50 * MIB, None)
+        assert plan.refused_roles[WorkerRole.CHAT].endswith(
+            f"The embed model {EMBED_REF} (1.0 GiB) and another process (8.0 GiB) hold the rest."
+        )
+
+    def test_a_card_with_no_tenant_names_no_process(self, tmp_path, monkeypatch) -> None:
+        plan = plan_beside_a_tenant(monkeypatch, tmp_path, 8 * GIB, None, embed=8 * GIB)
+        assert "another process" not in plan.refused_roles[WorkerRole.CHAT].lower()
+
+    def test_what_other_processes_hold_is_the_total_less_the_capacity_charged(self) -> None:
+        cards = [
+            FleetDevice("CUDA", 0, "full", 8 * GIB, 8 * GIB),
+            FleetDevice("CUDA", 1, "shared", 8 * GIB, 5 * GIB),
+            FleetDevice("CUDA", 2, "not packed", 8 * GIB, 1 * GIB),
+        ]
+        capacity = {0: 8 * GIB, 1: 5 * GIB}
+        assert planning._held_outside(cards, capacity) == {1: 3 * GIB}
+
+    def test_one_byte_held_by_another_process_is_still_named(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        reason = card_refusal("m", 0, 2 * GIB, 0.0, 8 * GIB, fix=False, outside=1)
+        assert reason is not None
+        assert reason.endswith("Another process (under 1 MiB) holds the rest.")
+
+
+class TestASmallSizeIsNotZero:
+    def test_a_room_above_zero_reads_in_mib(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        reason = card_refusal("m", 0, 9 * GIB, GIB // 40, 16 * GIB, fix=False)
+        assert reason is not None
+        assert "has 26 MiB usable" in reason
+
+    def test_a_small_holder_is_shown_in_mib(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.9)
+        holders = (RoomHolder(WorkerRole.EMBED, "e", 20 * MIB),)
+        reason = card_refusal("m", 0, 2 * GIB, 0.0, 8 * GIB, fix=False, holders=holders)
+        assert reason is not None
+        assert reason.endswith("The embed model e (20 MiB) holds the rest.")
+
+    def test_a_need_equal_to_the_usable_card_still_sends_the_user_to_the_holder(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "usable_vram_fraction", 0.5)
+        holders = (RoomHolder(WorkerRole.EMBED, "e", 4 * GIB),)
+        reason = card_refusal("m", 0, 5 * GIB, GIB, 10 * GIB, fix=True, holders=holders)
+        assert reason is not None
+        assert "Use a smaller embed model" in reason
+
+
+class TestEachSurfaceReadsTheReplicaRefusal(TestEachSurfaceReadsTheRefusal):
+    """The saved spec refuses the second embed replica; each surface shows the planner's text."""
+
+    EXPECTED = (
+        "embed pinned to device 0 needs 7.2 GiB but device 0 has 13 MiB usable "
+        "(8.0 GiB total, 90% headroom). "
+        f"This role's other replica of the embed model {EMBED_REF} (7.2 GiB) holds the rest. "
+        "Use a smaller embed model, or set the target of one of these models to cpu or "
+        "another card."
+    )
+
+    @pytest.fixture
+    def saved_refusal(self, tmp_path, monkeypatch) -> None:
+        roles = (Role(WorkerRole.EMBED, 7360 / 1024, 2), Role(WorkerRole.CHAT, 1))
+        prepare_host(monkeypatch, tmp_path, roles, 64 * GIB)
+        monkeypatch.setenv("LILBEE_PLACEMENT", EMBED_TWICE_ON_THE_CARD)
+        monkeypatch.setattr(cfg, "placement", EMBED_TWICE_ON_THE_CARD)
+        engine = CardEngine("engine-a", tmp_path / "engine-server", roles, cards_of((8,)))
+        reading = BookReading(adapters=engines_for_all_roles(engine), notices={})
+        monkeypatch.setattr(app_placement, "_planning_engines", lambda: reading)

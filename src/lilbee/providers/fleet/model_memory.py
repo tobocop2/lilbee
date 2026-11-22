@@ -99,7 +99,12 @@ def unknown_size_text(subject: str, reserve_bytes: int = UNKNOWN_SIZE_RESERVE_BY
 
 
 def memory_size_text(num_bytes: float) -> str:
-    """*num_bytes* as GiB with one decimal, or whole MiB below one GiB."""
+    """*num_bytes* as GiB with one decimal, or whole MiB below one GiB.
+
+    A size above zero never reads as zero: below one MiB it reads "under 1 MiB".
+    """
+    if 0 < num_bytes < _MIB:
+        return "under 1 MiB"
     if num_bytes < 1024**3:
         return f"{round(num_bytes / _MIB)} MiB"
     return f"{num_bytes / 1024**3:.1f} GiB"

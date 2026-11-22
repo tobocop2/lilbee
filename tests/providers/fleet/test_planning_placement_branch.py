@@ -99,6 +99,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
         model_refs,
         lost_card,
         equal_split_roles,
+        outside,
     ):
         captured["equal_split_roles"] = equal_split_roles
         captured["spec"] = spec
@@ -365,6 +366,16 @@ def test_memory_size_text_uses_mib_below_one_gib_and_gib_from_one() -> None:
     assert memory_size_text(1024**3 - 1) == "1024 MiB"
     assert memory_size_text(1024**3) == "1.0 GiB"
     assert memory_size_text(int(7.25 * 1024**3)) == "7.2 GiB"
+
+
+def test_memory_size_text_never_reads_zero_for_a_size_above_zero() -> None:
+    from lilbee.providers.fleet.model_memory import memory_size_text
+
+    assert memory_size_text(0) == "0 MiB"
+    assert memory_size_text(1) == "under 1 MiB"
+    assert memory_size_text(1024**2 // 2) == "under 1 MiB"
+    assert memory_size_text(1024**2 - 1) == "under 1 MiB"
+    assert memory_size_text(1024**2) == "1 MiB"
 
 
 def test_the_planner_logs_the_tight_sentence_and_the_co_tenant_line_as_written(caplog):

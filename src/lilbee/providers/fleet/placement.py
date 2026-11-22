@@ -103,11 +103,15 @@ class InstancePlan:
 
 @dataclass(frozen=True)
 class RoomHolder:
-    """A role charged to a card ahead of the role that a refusal names."""
+    """A role charged to a card ahead of the role that a refusal names.
+
+    ``replicas`` counts the instances of the role that the charge covers.
+    """
 
     role: WorkerRole
     model: str
     charged_bytes: float
+    replicas: int = 1
 
 
 @dataclass(frozen=True)
@@ -531,11 +535,25 @@ def _tight_device_group(needed: int, remaining: dict[int, float]) -> tuple[int, 
     return tuple(usable or by_room[:1])
 
 
-def _holders_sentence(holders: Sequence[RoomHolder]) -> str:
-    """The sentence that names each role charged to a card ahead of the refused one."""
-    named = [
-        f"the {h.role.value} model {h.model} ({memory_size_text(h.charged_bytes)})" for h in holders
-    ]
+def _holder_phrase(holder: RoomHolder, refused: WorkerRole | None) -> str:
+    """One holder as a noun phrase; the refused role's own earlier replicas read as such."""
+    model = (
+        f"the {holder.role.value} model {holder.model} "
+        f"({memory_size_text(holder.charged_bytes)})"
+    )
+    if holder.role is not refused:
+        return model
+    others = "other replica" if holder.replicas == 1 else f"{holder.replicas} other replicas"
+    return f"this role's {others} of {model}"
+
+
+def _holders_sentence(
+    holders: Sequence[RoomHolder], outside: float, refused: WorkerRole | None
+) -> str:
+    """The sentence that names the roles and the other processes that hold a card's room."""
+    named = [_holder_phrase(h, refused) for h in holders]
+    if outside > 0:
+        named.append(f"another process ({memory_size_text(outside)})")
     verb = "holds" if len(named) == 1 else "hold"
     joined = " and ".join(named)
     return f"{joined[0].upper()}{joined[1:]} {verb} the rest."
@@ -550,9 +568,14 @@ def card_refusal(
     *,
     fix: bool,
     holders: Sequence[RoomHolder] = (),
+    outside: float = 0,
+    refused: WorkerRole | None = None,
     cards: int = 1,
 ) -> str | None:
     """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit.
+
+    *holders* are the roles charged to the card ahead of the *refused* role, and
+    *outside* is what other processes hold of it.
 
     *cards* is the count of cards the host lists, whether or not the auto planner
     packs them: a pin can name any listed card. The remedy offers another card
@@ -565,10 +588,10 @@ def card_refusal(
         f"{memory_size_text(room)} usable ({memory_size_text(capacity)} total, "
         f"{usable_vram_fraction():.0%} headroom)"
     )
-    held = _holders_sentence(holders) if holders else ""
+    held = _holders_sentence(holders, outside, refused) if holders or outside > 0 else ""
     if not fix:
         return f"{figures}. {held}" if held else figures
-    if held and needed <= capacity * usable_vram_fraction():
+    if holders and needed <= capacity * usable_vram_fraction():
         roles = " or ".join(h.role.value for h in holders)
         move = "cpu or another card" if cards > 1 else "cpu"
         return (
@@ -982,6 +1005,7 @@ def placement_from_spec(
     model_refs: Mapping[WorkerRole, str] = MappingProxyType({}),
     lost_card: LostCardWording | None = None,
     equal_split_roles: frozenset[WorkerRole] = frozenset(),
+    outside: Mapping[int, int] = MappingProxyType({}),
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
@@ -990,7 +1014,8 @@ def placement_from_spec(
 
     ``device_capacity`` is each card's total VRAM (not instantaneous free): the
     plan defines the fleet's full intended residency, so charging it against live
-    free VRAM would double-count models already loaded. Every active role must
+    free VRAM would double-count models already loaded. ``outside`` is what other
+    processes already hold of each card, which a refusal names. Every active role must
     have an entry; every device must exist (*lost_card* words the refusal for a
     device the machine lacks); each card must fit the sum of the
     per-device peaks charged to it, within the cfg.usable_vram_fraction headroom.
@@ -1039,21 +1064,20 @@ def placement_from_spec(
         for replica in range(rp.replicas):
             _charge_devices(
                 role,
+                model_refs.get(role, role.value),
                 rp.devices,
                 per_device,
                 remaining,
                 device_capacity,
                 refuse_alone=refuses_role_alone(spec),
                 held=held,
+                outside=outside,
             )
             instances.append(
                 InstancePlan(
                     role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
                 )
             )
-        model = model_refs.get(role, role.value)
-        for idx, peak in zip(rp.devices, per_device, strict=True):
-            held.setdefault(idx, []).append(RoomHolder(role, model, peak * rp.replicas))
     if not auto_roles:
         return Placement(instances=tuple(instances), unplaceable_roles=())
     if plan_auto is None:
@@ -1285,15 +1309,20 @@ def refuse_role_without_entry(spec: PlacementSpec, role: WorkerRole) -> None:
 
 def _charge_devices(
     role: WorkerRole,
+    model: str,
     devices: tuple[int, ...],
     per_device: tuple[int, ...],
     remaining: dict[int, float],
     device_capacity: dict[int, int],
     *,
     refuse_alone: bool,
-    held: Mapping[int, Sequence[RoomHolder]],
+    held: dict[int, list[RoomHolder]],
+    outside: Mapping[int, int],
 ) -> None:
     """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows.
+
+    Each subtracted peak is also recorded in *held*, so a refusal names every role
+    that took room, this role's earlier replicas included.
 
     An estimate that does not cover every pinned device is a PlacementError rather
     than a zip mismatch: an engine can state no per-device breakdown, and the auto
@@ -1324,9 +1353,23 @@ def _charge_devices(
             device_capacity[idx],
             fix=refuse_alone,
             holders=held.get(idx, ()),
+            outside=outside.get(idx, 0),
+            refused=role,
             cards=len(device_capacity),
         )
         if reason is not None:
             raise refusal(reason)
     for idx, peak in zip(devices, per_device, strict=True):
         remaining[idx] -= peak
+        _record_holder(held.setdefault(idx, []), role, model, peak)
+
+
+def _record_holder(holders: list[RoomHolder], role: WorkerRole, model: str, peak: int) -> None:
+    """Add *peak* bytes to the entry of *role* in *holders*, or open one."""
+    for position, holder in enumerate(holders):
+        if holder.role is role:
+            holders[position] = replace(
+                holder, charged_bytes=holder.charged_bytes + peak, replicas=holder.replicas + 1
+            )
+            return
+    holders.append(RoomHolder(role, model, peak))
