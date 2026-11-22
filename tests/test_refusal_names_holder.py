@@ -450,8 +450,7 @@ class TestARoleDrainsItsOwnCard:
             "embed pinned to device 0 needs 7.2 GiB but device 0 has 13 MiB usable "
             "(8.0 GiB total, 90% headroom). "
             f"This role's other replica of the embed model {EMBED_REF} (7.2 GiB) holds the rest. "
-            "Use a smaller embed model, or set the target of one of these models "
-            "to cpu or another card."
+            "Use a smaller embed model, or set the target of one of these models to cpu."
         )
 
     def test_the_third_replica_counts_the_two_before_it(self, tmp_path, monkeypatch) -> None:
@@ -582,8 +581,7 @@ class TestEachSurfaceReadsTheReplicaRefusal(TestEachSurfaceReadsTheRefusal):
         "embed pinned to device 0 needs 7.2 GiB but device 0 has 13 MiB usable "
         "(8.0 GiB total, 90% headroom). "
         f"This role's other replica of the embed model {EMBED_REF} (7.2 GiB) holds the rest. "
-        "Use a smaller embed model, or set the target of one of these models to cpu or "
-        "another card."
+        "Use a smaller embed model, or set the target of one of these models to cpu."
     )
 
     @pytest.fixture
