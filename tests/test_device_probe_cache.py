@@ -173,6 +173,62 @@ def test_a_count_is_read_again_after_the_success_window(healthy: SpyEngine, cloc
     assert len(healthy.probed) == 2
 
 
+def test_the_success_window_is_two_seconds_on_both_sides_of_its_edge(
+    healthy: SpyEngine, clock: Clock
+) -> None:
+    assert gpu_device_count(healthy) == 2
+    stamp = clock.now
+    clock.now = stamp + 1.99
+    assert gpu_device_count(healthy) == 2
+    assert len(healthy.probed) == 1
+    clock.now = stamp + 2.0
+    assert gpu_device_count(healthy) == 2
+    assert len(healthy.probed) == 2
+
+
+def test_the_failure_window_is_sixty_seconds_on_both_sides_of_its_edge(
+    wedged: WedgedEngine, clock: Clock
+) -> None:
+    with pytest.raises(ProviderError):
+        gpu_device_count(wedged)
+    stamp = clock.now
+    clock.now = stamp + 30
+    with pytest.raises(ProviderError):
+        gpu_device_count(wedged)
+    clock.now = stamp + 59.99
+    with pytest.raises(ProviderError):
+        gpu_device_count(wedged)
+    assert len(wedged.probed) == 1
+    clock.now = stamp + 60.0
+    with pytest.raises(ProviderError):
+        gpu_device_count(wedged)
+    assert len(wedged.probed) == 2
+
+
+def test_a_good_probe_after_an_expired_failure_ends_the_failure(
+    healthy: SpyEngine, clock: Clock
+) -> None:
+    class Recovering(SpyEngine):
+        failing = True
+
+        def discover_devices(self, binary: Path):
+            if self.failing:
+                self.probed.append(binary)
+                raise ProviderError("device probe did not respond", provider="spy")
+            return super().discover_devices(binary)
+
+    cards = (SPY_DEVICE, dataclasses.replace(SPY_DEVICE, index=4))
+    engine = Recovering(healthy.binary(), devices=cards)
+    with pytest.raises(ProviderError, match="did not respond"):
+        gpu_device_count(engine)
+    engine.failing = False
+    clock.now += 61
+    assert gpu_device_count(engine) == 2
+    clock.now += 1
+    assert gpu_device_count(engine) == 2
+    assert len(engine.probed) == 2
+
+
 def test_the_count_and_the_placement_view_share_one_probe(healthy: SpyEngine) -> None:
     assert gpu_device_count(healthy) == 2
     assert len(planning.probed_devices(healthy)) == 2
