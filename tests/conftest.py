@@ -428,11 +428,11 @@ def _fresh_session_host(request, monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_ingest_pool_size():
     """Size the ingest pool afresh per test; a cached count would fix it for later tests."""
-    from lilbee.data.offload import max_workers
+    from lilbee.data.offload import reset_max_workers
 
-    max_workers.cache_clear()
+    reset_max_workers()
     yield
-    max_workers.cache_clear()
+    reset_max_workers()
 
 
 @pytest.fixture(autouse=True)

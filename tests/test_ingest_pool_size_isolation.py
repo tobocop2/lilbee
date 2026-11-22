@@ -14,7 +14,7 @@ from lilbee.data import offload
 @pytest.fixture(autouse=True)
 def _pin_other_sizing_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
-    monkeypatch.setattr(offload, "embed_inflight_target", lambda: 0)
+    monkeypatch.setattr(offload, "fleet_inflight_target", lambda: 0)
 
 
 def test_a_small_box_sizes_the_pool_from_its_cpus(monkeypatch: pytest.MonkeyPatch) -> None:

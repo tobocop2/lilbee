@@ -88,9 +88,9 @@ class TestKeepFleetWarm:
         # Emulate an 8-replica fleet: 8 * _EMBED_INFLIGHT_PER_REPLICA (8) = 64.
         # Patch both bound names (pipeline imported the helper by name).
         monkeypatch.setattr(pipeline, "embed_inflight_target", lambda: 64)
-        monkeypatch.setattr(offload, "embed_inflight_target", lambda: 64)
+        monkeypatch.setattr(offload, "fleet_inflight_target", lambda: 64)
         assert pipeline._max_concurrent() == 64  # max(cpu_quota=8, 64)
-        offload.max_workers.cache_clear()  # resolve against the patched fleet probe
+        offload.reset_max_workers()  # resolve against the patched fleet probe
         assert offload.max_workers() == 64  # pool lifts to feed it too
 
     def test_embed_inflight_target_single_card_is_zero(self, monkeypatch):
@@ -110,7 +110,7 @@ class TestKeepFleetWarm:
         cfg.ingest_max_inflight = 0
         assert offload.max_workers() <= 32  # default cap
         cfg.ingest_max_inflight = 96
-        offload.max_workers.cache_clear()  # the ceiling is cached per cfg value
+        offload.reset_max_workers()  # the ceiling is cached per cfg value
         assert offload.max_workers() == 96
 
     def test_signal_propagates_into_a_worker_thread(self, tmp_path):
