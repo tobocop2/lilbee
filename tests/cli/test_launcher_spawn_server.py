@@ -170,11 +170,12 @@ def _capture_popen():
     """Patch the bound spawn to record the stdout/stderr kwargs without spawning."""
     captured: dict = {}
 
-    def fake_popen(cmd, *, stdout, stderr, env=None, **_popen_kwargs):
+    def fake_popen(cmd, *, stdout, stderr, env=None, **popen_kwargs):
         captured["cmd"] = cmd
         captured["stdout"] = stdout
         captured["stderr"] = stderr
         captured["env"] = env
+        captured["popen_kwargs"] = popen_kwargs
         return mock.MagicMock()
 
     with mock.patch.object(server_mod, "spawn_bound_child", side_effect=fake_popen):
@@ -292,6 +293,17 @@ def test_the_server_command_falls_back_to_the_module_form(monkeypatch, _capture_
     server_mod.spawn_server(8080)
 
     assert _capture_popen["cmd"] == [sys.executable, "-m", "lilbee", "serve", "--port", "8080"]
+
+
+@pytest.mark.parametrize("overrides", [None, {"A": "1"}], ids=["no-overrides", "overrides"])
+def test_serve_gets_a_session_of_its_own_on_posix_with_or_without_env_overrides(
+    monkeypatch, _capture_popen, overrides
+) -> None:
+    monkeypatch.setenv("LILBEE_LAUNCHER_SERVE_QUIET", "1")
+
+    server_mod.spawn_server(8080, env_overrides=overrides)
+
+    assert _capture_popen["popen_kwargs"] == {"start_new_session": os.name == "posix"}
 
 
 def test_the_log_directory_is_created_with_its_parents(

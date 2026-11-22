@@ -357,6 +357,27 @@ def test_a_first_terminate_signal_with_no_server_raises_even_when_the_teardown_w
     assert started == [sig]
 
 
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+@pytest.mark.parametrize("server", [False, True], ids=["no-server", "server-takes-it"])
+def test_a_first_signal_that_joins_no_stop_owes_no_exit_status(sig, server):
+    """Only a signal that joins a stop already under way owes its status to the exit."""
+    _install_stub_services()
+    statuses: list[int] = []
+    set_server_exit_hook(statuses.append if server else None)
+    try:
+        install_engine_lifecycle_hooks()
+        if server:
+            signal.getsignal(sig)(sig, None)
+        else:
+            with pytest.raises(SystemExit):
+                signal.getsignal(sig)(sig, None)
+        _join_teardown()
+    finally:
+        set_server_exit_hook(None)
+    assert statuses == ([128 + sig] if server else [])
+    assert exit_status_after_stop(0) == 0
+
+
 def test_cli_entry_point_installs_the_hooks():
     """Every surface enters through the Typer callback, so the hooks install there."""
     import inspect

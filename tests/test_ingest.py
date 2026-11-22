@@ -549,6 +549,26 @@ class TestSync:
         assert "long.txt" in result.added
         assert result.truncated >= 1
 
+    async def test_the_sync_summary_counts_each_cut_of_the_run_once(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        """Two files that each have one input cut give a summary of two cut inputs."""
+        from lilbee.data.ingest import sync
+        from lilbee.providers.truncation import note_truncated
+
+        def embed_and_cut_one(texts, **kw):
+            note_truncated(1, len(texts), 8)
+            return [[0.1] * 768 for _ in texts]
+
+        mock_svc.embedder.embed_batch.side_effect = embed_and_cut_one
+        for name in ("a.txt", "b.txt"):
+            (isolated_env / name).write_text(f"Hello world. The document {name}.", encoding="utf-8")
+
+        result = await sync()
+
+        assert mock_svc.embedder.embed_batch.call_count == 2
+        assert result.truncated == 2
+
     async def test_the_sync_summary_does_not_count_a_cut_made_outside_the_run(
         self, mock_extract_file, isolated_env, mock_svc
     ):
