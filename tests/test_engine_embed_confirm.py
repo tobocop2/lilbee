@@ -12,6 +12,7 @@ import pytest
 from lilbee.app import engine_service
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.data.store import Store
 from lilbee.data.store.canary import CanaryState
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
@@ -352,6 +353,54 @@ def test_a_confirmed_role_choice_for_the_embed_model_writes(
 ) -> None:
     engine_service.use_for_role(WorkerRole.EMBED, MODEL, "openvino", confirmed=True)
     assert json.loads(str(_stored("engine_choices"))) == {MODEL: "openvino"}
+
+
+@pytest.fixture
+def saved_library(
+    library: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> SimpleNamespace:
+    """No running services: a saved library of 3 documents sits on disk."""
+    monkeypatch.setattr(engine_service, "peek_services", lambda: None)
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "saved-lancedb")
+    store = Store(cfg)
+    for index in range(3):
+        store.upsert_source(f"doc{index}.md", f"hash{index}", 1)
+    store.close()
+    return library
+
+
+def test_use_with_no_server_asks_with_the_saved_library_count(
+    saved_library: SimpleNamespace, with_openvino: None
+) -> None:
+    with pytest.raises(engine_service.EmbedConfirmRequiredError) as caught:
+        engine_service.use(MODEL, "openvino")
+    assert (caught.value.library, caught.value.documents) == (cfg.data_root.name, 3)
+    assert _stored("engine_choices") is None
+
+
+def test_prefer_with_no_server_asks_with_the_saved_library_count(
+    saved_library: SimpleNamespace, with_openvino: None
+) -> None:
+    with pytest.raises(engine_service.EmbedConfirmRequiredError) as caught:
+        engine_service.prefer("openvino")
+    assert caught.value.documents == 3
+    assert _stored("preferred_engine") is None
+
+
+def test_a_confirmed_choice_with_no_server_writes(
+    saved_library: SimpleNamespace, with_openvino: None
+) -> None:
+    assert engine_service.prefer("openvino", confirmed=True) == "openvino"
+
+
+def test_a_choice_with_no_server_and_no_saved_library_asks_nothing(
+    saved_library: SimpleNamespace,
+    with_openvino: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cfg, "lancedb_dir", tmp_path / "no-library")
+    assert engine_service.prefer("openvino") == "openvino"
 
 
 def test_a_role_choice_for_another_model_names_the_model_of_the_role(

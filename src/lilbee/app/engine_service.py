@@ -242,14 +242,17 @@ def _apply_to_running() -> None:
 
 
 def _check_embed_identity(candidate: Config, confirmed: bool) -> None:
-    """Refuse unless *confirmed* when the write changes the trigger of the embedder."""
-    services = peek_services()
-    if services is None or confirmed:
+    """Refuse unless *confirmed* when the write changes the trigger of the embedder.
+
+    A running server counts its own documents. With no server, the count is the saved library's.
+    """
+    if confirmed:
         return
-    documents = services.store.source_summary(0).document_count
+    services = peek_services()
+    documents = _document_count(services)
     if documents == 0:
         return
-    registry = services.registry
+    registry = services.registry if services is not None else ModelRegistry(cfg.models_dir)
     if embedder_trigger(cfg, registry) != embedder_trigger(candidate, registry):
         raise EmbedConfirmRequiredError(cfg.data_root.name, documents)
 
