@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
@@ -199,6 +200,21 @@ def _sha256_file(path: Path) -> str:
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 _MAX_LINK_HOPS = 40
+# On Windows os.readlink returns an absolute target in the extended form
+# (\\?\C:\... or \\?\UNC\server\share\...), which is not equal to the plain path.
+_STRIP_EXTENDED_PREFIX = sys.platform == "win32"
+_EXTENDED_PREFIX = "\\\\?\\"
+_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
+
+
+def _link_target(link: Path) -> str:
+    """The target of *link* as a plain path, as ``os.path.realpath`` gives it on Windows."""
+    target = os.readlink(link)
+    if not _STRIP_EXTENDED_PREFIX:
+        return target
+    if target.startswith(_EXTENDED_UNC_PREFIX):
+        return "\\\\" + target[len(_EXTENDED_UNC_PREFIX) :]
+    return target.removeprefix(_EXTENDED_PREFIX)
 
 
 def repo_blob_entry(path: Path) -> Path:
@@ -214,7 +230,7 @@ def repo_blob_entry(path: Path) -> Path:
     for hop in range(_MAX_LINK_HOPS):
         if not path.is_symlink() or (hop and path.parent.name == "blobs"):
             return path
-        path = Path(os.path.normpath(path.parent / os.readlink(path)))
+        path = Path(os.path.normpath(path.parent / _link_target(path)))
     return path
 
 
