@@ -8,6 +8,7 @@ import io
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import sysconfig
@@ -457,6 +458,197 @@ def test_the_whole_check_fails_a_wheel_with_a_wrong_tag(
     bad = _check(tmp_path, _wheel(tmp_path, **broken))
     assert bad.returncode == 1
     assert message in bad.stderr
+
+
+_AIR_15 = b"\0air64-apple-macosx15.0.0\0"
+
+
+def _library(
+    major: int,
+    minor: int = 0,
+    patch: int = 0,
+    *,
+    platform: int = 0x8001,
+    system: int = 0x81,
+    body: bytes = _AIR_15,
+) -> bytes:
+    """A Metal library whose header names that system. The default names macOS."""
+    version = (platform, 2, 8, 0, system, major, minor, patch, 24 + len(body))
+    return struct.pack("<4sHHHBBHBBQ", b"MTLB", *version) + body
+
+
+def _metal_wheel(
+    tmp_path: Path, platform: str, *parts: bytes, more: dict[str, bytes] | None = None
+) -> Path:
+    """A Metal wheel with that platform tag. Its tool holds these parts."""
+    return _wheel(
+        tmp_path,
+        tool=b"\xcf\xfa\xed\xfe" + b"".join(parts),
+        name_tag=f"1.metal-py3-none-{platform}",
+        tag=f"py3-none-{platform}",
+        more=more,
+    )
+
+
+def _metal_floor(
+    tmp_path: Path, platform: str, *parts: bytes, more: dict[str, bytes] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the floor check on a Metal wheel with these parts in its tool."""
+    wheel = _metal_wheel(tmp_path, platform, *parts, more=more)
+    return _check(tmp_path, wheel, "check_metal_floor", BACKEND="metal", PLATFORM=platform)
+
+
+@pytest.mark.parametrize(
+    ("platform", "parts"),
+    [
+        ("macosx_15_0_arm64", [_library(15)]),
+        ("macosx_15_0_arm64", [_library(14, 6, 1), _library(15)]),
+        ("macosx_26_0_arm64", [_library(15, 6)]),
+        ("macosx_26_1_arm64", [_library(26, 1)]),
+        ("macosx_15_10_arm64", [_library(15, 9, 9)]),
+        ("macosx_15_0_arm64", [b"\0MTLBuffer\0MTLResidencySetDescriptor\0", _library(15)]),
+    ],
+)
+def test_the_check_passes_a_metal_wheel_whose_tag_covers_its_libraries(
+    tmp_path: Path, platform: str, parts: list[bytes]
+) -> None:
+    done = _metal_floor(tmp_path, platform, *parts)
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize(
+    ("platform", "parts", "needs", "names"),
+    [
+        ("macosx_11_0_arm64", [_library(15)], "15.0.0", "11.0.0"),
+        ("macosx_15_0_arm64", [_library(26)], "26.0.0", "15.0.0"),
+        ("macosx_15_0_arm64", [_library(15, 10)], "15.10.0", "15.0.0"),
+        ("macosx_15_9_arm64", [_library(15, 10)], "15.10.0", "15.9.0"),
+        ("macosx_15_0_arm64", [_library(26, 1), _library(15)], "26.1.0", "15.0.0"),
+        ("macosx_9_0_arm64", [_library(15)], "15.0.0", "9.0.0"),
+        ("macosx_15_0_arm64", [_library(15, 0, 1)], "15.0.1", "15.0.0"),
+    ],
+)
+def test_the_whole_check_fails_a_metal_wheel_whose_libraries_need_a_newer_macos(
+    tmp_path: Path, platform: str, parts: list[bytes], needs: str, names: str
+) -> None:
+    wheel = _metal_wheel(tmp_path, platform, *parts)
+    bad = _check(tmp_path, wheel, BACKEND="metal", PLATFORM=platform)
+    assert bad.returncode == 1
+    assert (
+        f"the Metal libraries of {wheel.name} need macOS {needs}, "
+        f"but its tag names macOS {names}\n" in bad.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    ("newer", "needs"),
+    [
+        (_library(26, body=b""), "26.0.0"),
+        (_library(26, body=b"\0air64-apple-macosx26\0"), "26.0.0"),
+        (_library(26, body=b"\0air64-apple-macos26.0\0"), "26.0.0"),
+        (_library(15, 0, 1, body=b"\0air64-apple-macosx15.0.1\0"), "15.0.1"),
+    ],
+    ids=["no-text", "text-without-minor", "text-of-macos", "patch"],
+)
+def test_the_check_reads_the_header_of_a_metal_library_not_its_text(
+    tmp_path: Path, newer: bytes, needs: str
+) -> None:
+    bad = _metal_floor(tmp_path, "macosx_15_0_arm64", newer, _library(15))
+    assert bad.returncode == 1
+    assert f"need macOS {needs}, but its tag names macOS 15.0.0" in bad.stderr
+
+
+@pytest.mark.parametrize(
+    ("header", "needs"),
+    [
+        # The 0.9.5 wheel (sha256 08c30b53), macOS 14.6 itself, the Metal compiler of macOS 26.
+        ("01800200080000810f000000", "15.0.0"),
+        ("01800200070000810e000600", "14.6.0"),
+        ("01800200090000811a000000", "26.0.0"),
+    ],
+)
+def test_the_check_reads_the_headers_that_the_metal_compiler_writes(
+    tmp_path: Path, header: str, needs: str
+) -> None:
+    library = b"MTLB" + bytes.fromhex(header) + struct.pack("<Q", 24)
+    bad = _metal_floor(tmp_path, "macosx_11_0_arm64", library)
+    assert bad.returncode == 1
+    assert f"need macOS {needs}, but its tag names macOS 11.0.0" in bad.stderr
+
+
+def test_the_check_reads_the_metal_libraries_of_the_whole_wheel(tmp_path: Path) -> None:
+    more = {"lilbee_engine_mistral_rs/share/kernels.bin": b"kernels" + _library(26)}
+    bad = _metal_floor(tmp_path, "macosx_15_0_arm64", _library(15), more=more)
+    assert bad.returncode == 1
+    assert "need macOS 26.0.0, but its tag names macOS 15.0.0" in bad.stderr
+
+
+@pytest.mark.parametrize(
+    ("platform", "system"),
+    [
+        (0x0001, 0x82),
+        (0x8001, 0x86),
+        (0x8001, 0x00),
+        (0x8001, 0x01),
+        (0x0001, 0x81),
+        (0x8002, 0x81),
+    ],
+    ids=["ios", "catalyst", "no-system", "macos-32-bit", "other-container", "new-container"],
+)
+def test_the_check_fails_a_metal_library_that_names_no_macos(
+    tmp_path: Path, platform: int, system: int
+) -> None:
+    other = _library(11, platform=platform, system=system)
+    bad = _metal_floor(tmp_path, "macosx_15_0_arm64", other, _library(15))
+    assert bad.returncode == 1
+    assert (
+        "the Metal library at byte 4 of lilbee_engine_mistral_rs/bin/mistralrs names no macOS "
+        f"version: its container version is {platform:#06x} "
+        f"and its operating system is {system:#04x}"
+    ) in bad.stderr
+
+
+def test_the_check_fails_a_metal_library_whose_header_ends_the_file(tmp_path: Path) -> None:
+    whole = _library(15)
+    bad = _metal_floor(tmp_path, "macosx_15_0_arm64", whole, _library(15)[:12])
+    assert bad.returncode == 1
+    assert f"the Metal library at byte {4 + len(whole)} of " in bad.stderr
+    assert "has no complete header" in bad.stderr
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [[], [b"cannot build for air64-apple-macosx15.0.0"], [b"\0MTLBuffer\0"]],
+    ids=["nothing", "a-target-in-a-message", "a-class-name"],
+)
+def test_the_whole_check_fails_a_metal_wheel_without_a_metal_library(
+    tmp_path: Path, parts: list[bytes]
+) -> None:
+    wheel = _metal_wheel(tmp_path, "macosx_15_0_arm64", *parts)
+    bad = _check(tmp_path, wheel, BACKEND="metal", PLATFORM="macosx_15_0_arm64")
+    assert bad.returncode == 1
+    assert f"{wheel.name} holds no Metal library" in bad.stderr
+
+
+@pytest.mark.parametrize("platform", ["win_amd64", "macosx_15_0_x86_64"])
+def test_the_whole_check_fails_a_metal_wheel_whose_platform_names_no_macos(
+    tmp_path: Path, platform: str
+) -> None:
+    wheel = _metal_wheel(tmp_path, platform, _library(15))
+    bad = _check(tmp_path, wheel, BACKEND="metal", PLATFORM=platform)
+    assert bad.returncode == 1
+    assert f"the platform {platform} names no macOS version for arm64" in bad.stderr
+
+
+def test_the_check_reads_the_metal_floor_of_a_metal_wheel_only(tmp_path: Path) -> None:
+    wheel = _wheel(tmp_path, more={f"{_LICENCES}/notes.txt": b"air64-apple-macosx99.0.0"})
+    cpu = _check(tmp_path, wheel, "check_metal_floor")
+    assert cpu.returncode == 0, cpu.stderr
+    metal = _check(
+        tmp_path, wheel, "check_metal_floor", BACKEND="metal", PLATFORM="macosx_15_0_arm64"
+    )
+    assert metal.returncode == 1
+    assert "holds no Metal library" in metal.stderr
 
 
 _POSIX_TOOL = pytest.mark.skipif(

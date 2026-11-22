@@ -77,6 +77,7 @@ def test_a_wheel_becomes_a_cell_of_its_engine() -> None:
         ("manylinux_2_39_aarch64", "linux-aarch64-cpu", "2.39"),
         ("macosx_14_0_arm64", "macos-arm64-cpu", "14.0"),
         ("macosx_13_3_arm64", "macos-arm64-cpu", "13.3"),
+        ("macosx_15_0_arm64", "macos-arm64-cpu", "15.0"),
         ("win_amd64", "windows-x86_64-cpu", None),
     ],
 )

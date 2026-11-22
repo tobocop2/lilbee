@@ -317,6 +317,37 @@ def test_a_floor_of_the_generated_table_refuses_an_old_system() -> None:
         host_cell(lock, linux())
 
 
+def mistral_metal_lock() -> PinLock:
+    """The lock of a mistral.rs Metal wheel that names macOS 15 as its floor."""
+    file = "lilbee_engine_mistral_rs-0.9.5-2.metal-py3-none-macosx_15_0_arm64.whl"
+    rows = render_table([(file, SHA, 4)])["mistral.rs"]["0.9.5"]
+    cells = {key: PlatformAsset(**row) for key, row in rows.items()}
+    return PinLock("mistral.rs", "0.9.5", "metal", cells, ("MIT",), SHA, "mistralrs")
+
+
+def mac() -> Any:
+    return collect(system="Darwin", machine="arm64", cpu_info={}, nvidia=None, mac_ver="15.0")
+
+
+@pytest.mark.parametrize("version", ["14.6.1", "14.7.1", "11.0", "9.9"])
+def test_a_macos_15_wheel_refuses_an_older_macos(version: str) -> None:
+    with (
+        mock.patch.object(engine_manifest, "host_os_version", return_value=version),
+        pytest.raises(UnsupportedOsError) as caught,
+    ):
+        host_cell(mistral_metal_lock(), mac())
+    assert str(caught.value) == (
+        "Engine mistral.rs 0.9.5 (metal) needs macOS 15.0 or later. "
+        f"This computer has macOS {version}. Update macOS."
+    )
+
+
+@pytest.mark.parametrize("version", ["15.0", "15.0.1", "15.8.2", "26.0"])
+def test_a_macos_15_wheel_accepts_macos_15_and_later(version: str) -> None:
+    with mock.patch.object(engine_manifest, "host_os_version", return_value=version):
+        assert host_cell(mistral_metal_lock(), mac()) == "macos-arm64-metal"
+
+
 def test_a_floor_of_the_generated_table_accepts_a_new_system() -> None:
     lock = table_lock("2.40")
     with mock.patch.object(engine_manifest, "host_os_version", return_value="2.41"):
