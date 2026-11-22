@@ -9,6 +9,7 @@ full-corpus run. OCR ingest is GPU-bound, so these lock in a default capped at
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,6 +66,28 @@ def test_invalid_env_override_is_ignored(monkeypatch: pytest.MonkeyPatch, bad: s
     monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
     monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", bad)
     assert offload.max_workers() == 12
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-4"])
+def test_an_ignored_env_override_is_named_in_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad: str
+) -> None:
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", bad)
+    with caplog.at_level(logging.WARNING, logger=offload.log.name):
+        assert offload.max_workers() == 12
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Ignoring LILBEE_INGEST_MAX_WORKERS={bad!r}: must be a positive integer; using default."
+    ]
+
+
+def test_a_good_env_override_raises_no_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("LILBEE_INGEST_MAX_WORKERS", "5")
+    with caplog.at_level(logging.WARNING, logger=offload.log.name):
+        assert offload.max_workers() == 5
+    assert caplog.records == []
 
 
 async def test_the_ceiling_matches_the_pool_that_actually_exists(
