@@ -4901,7 +4901,7 @@ def _launches_and_refusals(
                     capacity[device],
                     fix=True,
                     holders=holders,
-                    cards=len(capacity),
+                    cards=len(by_index),
                 )
                 or reason
             )

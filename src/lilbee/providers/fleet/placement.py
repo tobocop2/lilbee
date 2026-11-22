@@ -554,8 +554,9 @@ def card_refusal(
 ) -> str | None:
     """The refusal of *needed* bytes on a card with *room* usable bytes; None when they fit.
 
-    *cards* is the count of cards the host lists; the remedy offers another card
-    only when the host has one.
+    *cards* is the count of cards the host lists, whether or not the auto planner
+    packs them: a pin can name any listed card. The remedy offers another card
+    only when the host lists more than one.
     """
     if needed <= room:
         return None
