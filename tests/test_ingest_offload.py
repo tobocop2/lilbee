@@ -254,6 +254,28 @@ async def test_a_run_keeps_the_pool_size_it_was_built_with(
     assert offload.max_workers() == 16
 
 
+async def test_a_run_reports_a_fleet_sized_pool_above_the_cpu_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ceiling inside a run is the fleet-sized pool, not the CPU default."""
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(cfg, "ingest_max_inflight", 64)
+    offload.reset_max_workers()
+
+    @offload.owns_ingest_pool
+    async def run() -> tuple[int, int]:
+        pool = offload._run_pool.get()
+        assert pool is not None
+        return offload.max_workers(), pool._max_workers
+
+    try:
+        ceiling, pool_size = await run()
+    finally:
+        offload.reset_max_workers()
+    assert pool_size == 64
+    assert ceiling == 64
+
+
 def test_embed_inflight_target_raises_an_unexpected_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

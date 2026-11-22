@@ -150,7 +150,7 @@ async def test_a_raise_in_the_swap_is_reported_as_a_failed_start(caplog) -> None
     ):
         async with _lifespan(mock.MagicMock()):
             pytest.fail("the server served after a failed swap")
-    assert "The services build failed" in caplog.text
+    assert "The services build failed (the chat-model fill or the build)" in caplog.text
     get_services.assert_not_called()
 
 
