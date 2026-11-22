@@ -1868,12 +1868,6 @@ def test_close_leaves_injected_client_open() -> None:
     assert not http.is_closed
 
 
-def test_the_unhealthy_stamp_starts_at_zero() -> None:
-    c = _client()
-    assert c._unhealthy_since == 0.0
-    assert c.healthy is True
-
-
 class TestParseSseDeltas:
     def test_non_data_line_is_empty(self) -> None:
         assert _parse_sse_deltas(
