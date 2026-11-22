@@ -11,6 +11,7 @@ import asyncio
 import logging
 import types
 from collections.abc import Sequence
+from typing import ClassVar
 
 import pytest
 
@@ -25,7 +26,7 @@ CARD = object()
 class _RecordingController:
     """An adaptive controller that records its arguments and ends at once."""
 
-    built: list[_RecordingController] = []
+    built: ClassVar[list[_RecordingController]] = []
 
     def __init__(self, gate: ResizableGate, profile: object, sampler: object, *_a: object, **kw):
         self.gate = gate
