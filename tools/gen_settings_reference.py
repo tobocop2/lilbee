@@ -121,7 +121,12 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         "`adaptive-conservative`, or `adaptive-aggressive`",
         False,
     ),
-    "LILBEE_INGEST_MAX_WORKERS": ("Files per embed replica kept in flight during ingest", False),
+    "LILBEE_INGEST_MAX_WORKERS": (
+        "Worker threads in the ingest pool, which is the most documents that extract at "
+        "once. Defaults to `min(32, cpu_count + 4)`, raised to feed the embed fleet; a "
+        "non-positive or unparseable value falls back to that default with a warning",
+        False,
+    ),
     "LILBEE_INGEST_TRACE": ("Set to any value to trace each document through ingest", False),
     "LILBEE_INGEST_TRACE_FILE": ("File the ingest trace is written to", False),
     "LILBEE_EXCLUSIVE_SCOPE": (
