@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -73,8 +74,10 @@ async def test_a_set_chat_model_whose_server_is_down_at_start_is_kept(
             return_value=False,
         ),
     ):
-        await _chat(app_module)
+        resp = await _chat(app_module)
 
+    assert resp.status_code == 404
+    assert UNREACHABLE_CHAT in resp.text
     assert cfg.chat_model == UNREACHABLE_CHAT
     provider.chat.assert_not_called()
 
@@ -109,6 +112,28 @@ async def test_the_embedding_model_is_unchanged_after_startup_with_an_empty_chat
     assert provider.chat.call_args.kwargs["model"] == ref
     assert cfg.embedding_model == STALE_EMBEDDER
     assert cfg.embedding_dim == stale_embedder
+
+
+def test_an_empty_chat_role_with_an_api_key_logs_a_cloud_model(
+    installed_chat_model, caplog
+) -> None:
+    from lilbee.server.app import _start_services
+
+    cloud = SimpleNamespace(name="gpt-4o", provider="openai")
+    with (
+        mock.patch(
+            "lilbee.modelhub.model_manager.validation.discover_api_models",
+            return_value={"openai": [cloud]},
+        ),
+        mock.patch("lilbee.server.app.get_services"),
+        mock.patch("lilbee.server.app._log_embedding_model_state"),
+        caplog.at_level(logging.INFO, logger="lilbee.server.app"),
+    ):
+        _start_services()
+
+    assert cfg.chat_model == "openai/gpt-4o"
+    assert "No chat model configured; using cloud model 'openai/gpt-4o'." in caplog.messages
+    assert "using installed" not in caplog.text
 
 
 async def test_a_raise_in_the_swap_is_reported_as_a_failed_start(caplog) -> None:
