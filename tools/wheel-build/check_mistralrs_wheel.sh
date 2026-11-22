@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Check one mistral.rs engine wheel: its tag, its licences, and that the tool starts on this computer.
+# Check one mistral.rs engine wheel: its tag, the macOS floor of its Metal libraries, its licences, and that the tool
+# starts on this computer.
 #
 #   check_mistralrs_wheel.sh <wheel> <crate-licences> <licence-expression>
 #
@@ -27,6 +28,13 @@ check_tag() {  # wheel
   esac
   info="$(dist_info "$1" WHEEL)" || return 1
   grep -qxF "Tag: py3-none-${PLATFORM}" <<< "${info}" || refuse "the WHEEL file of ${name} lacks the tag py3-none-${PLATFORM}"
+}
+
+# Fail when a Metal library of the wheel targets a newer macOS than the tag names. The result is a lower bound: the tool
+# also makes a residency set, a class of macOS 15, for every Metal device, and no file of the wheel states that floor.
+check_metal_floor() {  # wheel
+  [ "${BACKEND}" = metal ] || return 0
+  python "$(dirname "${BASH_SOURCE[0]}")/metal_floor.py" "$1" "${PLATFORM}"
 }
 
 check_licences() {  # wheel crate-licences expression
@@ -94,6 +102,7 @@ main() {
     return 2
   fi
   check_tag "$1"
+  check_metal_floor "$1"
   check_licences "$@"
   start_tool "$1"
 }
