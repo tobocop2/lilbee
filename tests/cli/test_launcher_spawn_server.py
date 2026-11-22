@@ -24,13 +24,17 @@ from lilbee.core.config import cfg
 from tests._mock_effects import repeat_last
 from tests.conftest import clean_env
 
+# A stand-in for `lilbee serve`: it answers the health probe and writes the session
+# files the launcher reads, and records every stop signal it gets.
 _FAKE_SERVE = """\
+import http.server
+import json
 import os
 import signal
 import sys
-import time
 
 record = os.environ["FAKE_SERVE_RECORD"]
+data = os.path.join(os.environ["LILBEE_DATA"], "data")
 
 
 def note(signum, _frame):
@@ -40,49 +44,89 @@ def note(signum, _frame):
         sys.exit(0)
 
 
+class Health(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"chat_ready": False}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
 signal.signal(signal.SIGINT, note)
 signal.signal(signal.SIGTERM, note)
-with open(os.environ["FAKE_SERVE_READY"], "w", encoding="utf-8") as handle:
+with open(os.environ["FAKE_SERVE_PID"], "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
-while True:
-    time.sleep(1)
+port = int(sys.argv[sys.argv.index("--port") + 1])
+httpd = http.server.HTTPServer(("127.0.0.1", port), Health)
+os.makedirs(data, exist_ok=True)
+with open(os.path.join(data, "server.json"), "w", encoding="utf-8") as handle:
+    json.dump({"token": "fake-token"}, handle)
+with open(os.path.join(data, "server.port"), "w", encoding="utf-8") as handle:
+    handle.write(str(port))
+httpd.serve_forever()
 """
 
-_LAUNCHER = """\
+# A stand-in for the agent client: it says when it runs, then waits for the Ctrl-C.
+_FAKE_CLIENT = """\
 import os
-import sys
 import time
 
-from lilbee.cli.launchers import server as server_mod
-
-proc = server_mod.spawn_server(0)
-ready = os.environ["FAKE_SERVE_READY"]
-deadline = time.monotonic() + 20
-while not os.path.exists(ready) and time.monotonic() < deadline:
-    time.sleep(0.05)
-try:
-    print("ready", flush=True)
-    time.sleep(60)
-except KeyboardInterrupt:
-    pass
-server_mod.stop_spawned_server(proc)
-print(proc.returncode, flush=True)
+with open(os.environ["FAKE_CLIENT_PID"], "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()))
+print("client ready", flush=True)
+time.sleep(60)
 """
+
+# The launcher: the real run_launcher, over the fake serve and the fake client.
+_LAUNCHER = """\
+import os
+
+from lilbee.cli.launchers.launcher import run_launcher
+
+
+class FakeClientLauncher:
+    name = "fake-client"
+    install_hint = "unused"
+
+    def find_binary(self):
+        return os.environ["FAKE_CLIENT"]
+
+    def prepare(self, *, token, port, model_refs):
+        return [], dict(os.environ)
+
+
+try:
+    run_launcher(FakeClientLauncher())
+except KeyboardInterrupt:
+    print("interrupted", flush=True)
+"""
+
+
+def _write_script(path: Path, source: str) -> Path:
+    path.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
-    """Start a launcher, in a process group of its own as a terminal job, over a fake serve."""
+    """Start a launcher, in a process group of its own as a terminal job, up to the client."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "lilbee"
-    fake.write_text(f"#!{sys.executable}\n{_FAKE_SERVE}", encoding="utf-8")
-    fake.chmod(0o755)
+    _write_script(bin_dir / "lilbee", _FAKE_SERVE)
+    client = _write_script(tmp_path / "fake-client", _FAKE_CLIENT)
     env = {
         **clean_env(tmp_path),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "LILBEE_LAUNCHER_SERVE_QUIET": "1",
+        "FAKE_CLIENT": str(client),
+        "FAKE_CLIENT_PID": str(tmp_path / "client.pid"),
         "FAKE_SERVE_RECORD": str(tmp_path / "signals.txt"),
-        "FAKE_SERVE_READY": str(tmp_path / "serve.pid"),
+        "FAKE_SERVE_PID": str(tmp_path / "serve.pid"),
     }
     launcher = subprocess.Popen(
         [sys.executable, "-c", _LAUNCHER],
@@ -93,8 +137,18 @@ def _start_launcher(tmp_path: Path) -> subprocess.Popen[str]:
         start_new_session=True,
     )
     assert launcher.stdout is not None
-    assert launcher.stdout.readline().strip() == "ready", launcher.communicate()[1]
-    return launcher
+    try:
+        for line in launcher.stdout:
+            if line.strip() == "client ready":
+                return launcher
+    except BaseException:
+        # A timeout here leaves the launcher and its fakes running; they are ours to end.
+        os.killpg(launcher.pid, signal.SIGKILL)
+        _end_fakes(tmp_path)
+        raise
+    stdout, stderr = launcher.communicate()
+    _end_fakes(tmp_path)
+    raise AssertionError(f"the launcher ended before the client ran: {stdout}{stderr}")
 
 
 def _signals_seen(tmp_path: Path) -> list[str]:
@@ -102,11 +156,13 @@ def _signals_seen(tmp_path: Path) -> list[str]:
     return record.read_text(encoding="utf-8").split() if record.exists() else []
 
 
-def _end_fake_serve(tmp_path: Path) -> None:
-    """Stop a fake serve the test left running; it is this test's own process."""
-    pid = int((tmp_path / "serve.pid").read_text(encoding="utf-8"))
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+def _end_fakes(tmp_path: Path) -> None:
+    """Stop the fake serve and client the test left running; they are this test's own."""
+    for name in ("serve.pid", "client.pid"):
+        pid_file = tmp_path / name
+        if pid_file.exists():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGKILL)
 
 
 @pytest.fixture()
@@ -738,16 +794,16 @@ class TestServerExitAtStartup:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no process groups to signal")
 def test_a_ctrl_c_to_the_launcher_group_leaves_the_stop_to_the_launcher(tmp_path: Path) -> None:
-    """A terminal Ctrl-C reaches the launcher only; the launcher's SIGTERM is serve's one signal."""
+    """A terminal Ctrl-C reaches the launcher and client only; serve gets one SIGTERM."""
     launcher = _start_launcher(tmp_path)
     try:
         os.killpg(launcher.pid, signal.SIGINT)
         stdout, stderr = launcher.communicate(timeout=30)
     finally:
-        _end_fake_serve(tmp_path)
+        _end_fakes(tmp_path)
 
     assert launcher.returncode == 0, stderr
-    assert stdout.split() == ["0"], stderr
+    assert stdout.split()[-1:] == ["interrupted"], stderr
     assert _signals_seen(tmp_path) == ["SIGTERM"]
 
 
@@ -757,11 +813,13 @@ def test_serve_still_stops_when_the_launcher_is_killed(tmp_path: Path) -> None:
     launcher = _start_launcher(tmp_path)
     try:
         os.kill(launcher.pid, signal.SIGKILL)
-        launcher.communicate(timeout=30)
+        launcher.wait(timeout=30)
         deadline = time.monotonic() + 10
         while not _signals_seen(tmp_path) and time.monotonic() < deadline:
             time.sleep(0.05)
     finally:
-        _end_fake_serve(tmp_path)
+        # The orphaned client holds the launcher's output pipes open until it ends.
+        _end_fakes(tmp_path)
+        launcher.communicate(timeout=30)
 
     assert _signals_seen(tmp_path) == ["SIGTERM"]
