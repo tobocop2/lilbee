@@ -869,7 +869,7 @@ def test_a_run_that_leaves_no_role_to_any_engine_is_refused(
 ) -> None:
     args = _run_args(tmp_path, "--role-engine", "chat=tei")
     args[args.index("llama.cpp")] = "tei"
-    args += ["--role-engine", "embed=mlx", "--role-engine", "rerank=mlx"]
+    args += ["--role-engine", "embed=openvino", "--role-engine", "rerank=openvino"]
     with pytest.raises(SystemExit) as raised:
         demo_main.main(args)
     assert raised.value.code == 2
