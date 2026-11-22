@@ -220,6 +220,50 @@ class TestSharedBlobStore:
         two.symlink_to(one)
         assert repo_blob_entry(one) in {one, two}
 
+    def test_an_absolute_link_resolves_to_the_plain_path_of_its_target(
+        self, tmp_path: Path
+    ) -> None:
+        from lilbee.modelhub.registry import repo_blob_entry
+
+        blob = tmp_path / "blobs" / ("a" * 64)
+        blob.parent.mkdir()
+        blob.write_bytes(b"GGUF")
+        link = tmp_path / "snapshots" / "m.gguf"
+        link.parent.mkdir()
+        link.symlink_to(blob)
+        assert repo_blob_entry(link) == blob
+        assert str(repo_blob_entry(link)) == str(blob)
+
+    @pytest.mark.parametrize(
+        ("target", "plain"),
+        [
+            ("\\\\?\\C:\\cache\\blobs\\x", "C:\\cache\\blobs\\x"),
+            ("\\\\?\\UNC\\server\\share\\blobs\\x", "\\\\server\\share\\blobs\\x"),
+            ("..\\..\\blobs\\x", "..\\..\\blobs\\x"),
+        ],
+    )
+    def test_a_windows_link_target_drops_the_extended_prefix(
+        self, monkeypatch: pytest.MonkeyPatch, target: str, plain: str
+    ) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        monkeypatch.setattr(registry_mod, "_STRIP_EXTENDED_PREFIX", True)
+        monkeypatch.setattr(registry_mod.os, "readlink", lambda _p: target)
+        assert registry_mod._link_target(Path("link")) == plain
+
+    def test_a_posix_link_target_is_kept_as_written(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        target = "\\\\?\\C:\\cache"
+        monkeypatch.setattr(registry_mod, "_STRIP_EXTENDED_PREFIX", False)
+        monkeypatch.setattr(registry_mod.os, "readlink", lambda _p: target)
+        assert registry_mod._link_target(Path("link")) == target
+
+    def test_the_prefix_is_dropped_only_on_windows(self) -> None:
+        from lilbee.modelhub import registry as registry_mod
+
+        assert registry_mod._STRIP_EXTENDED_PREFIX is (sys.platform == "win32")
+
 
 class TestParseHfRef:
     def test_canonical_shape(self) -> None:
