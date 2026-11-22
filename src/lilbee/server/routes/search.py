@@ -201,6 +201,9 @@ async def search_route(
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
+        if isinstance(exc, ProviderError) and exc.kind in CLIENT_FAULT_STATUSES:
+            # The app's provider-error handler answers it as a 400 with the reason.
+            raise
         # str(exc) here routinely carries data-root paths, LanceDB table names,
         # and model ids. Log the real cause for the operator; return a generic
         # message on the wire.
