@@ -21,7 +21,7 @@ from pathlib import Path
 PIN = "b6123"
 ROOT = Path(os.environ["LILBEE_DATA"])
 MODE = os.environ.get("FAKE_MODE", "")
-SERVED_ENGINE = os.environ.get("FAKE_SERVED_ENGINE", "llama.cpp")
+SERVED_ENGINE = os.environ.get("FAKE_SERVED_ENGINE", "")
 MARKER = ROOT / "installed"
 PREFERRED = ROOT / "preferred"
 ROLES_FILE = ROOT / "roles.json"
@@ -56,16 +56,27 @@ def set_model(role: str, ref: str) -> str:
     return stored
 
 
+def installed() -> list[str]:
+    """The engines installed so far, in install order."""
+    return MARKER.read_text(encoding=UTF8).split() if MARKER.exists() else []
+
+
 def served(role: str) -> None:
-    model = roles().get(role, {}).get("model", "unassigned")
-    log(f"served by engine={SERVED_ENGINE} version={PIN} build=none role={role} model={model}")
+    """Log the engine chosen for *role*, or FAKE_SERVED_ENGINE when that is set."""
+    view = roles().get(role, {})
+    model = view.get("model", "unassigned")
+    engine = SERVED_ENGINE or view.get("engine") or "llama.cpp"
+    log(f"served by engine={engine} version={PIN} build=none role={role} model={model}")
 
 
 def listing() -> dict[str, object]:
     builds = (
-        [{"engine": "llama.cpp", "version": PIN, "backend": "cpu", "not_run_on": []}]
-        if MARKER.exists() and MODE != "no-build"
-        else []
+        []
+        if MODE == "no-build"
+        else [
+            {"engine": engine, "version": PIN, "backend": "cpu", "not_run_on": []}
+            for engine in installed()
+        ]
     )
     return {
         "command": "engine list",
@@ -167,12 +178,12 @@ def engine_install(argv: list[str]) -> None:
     print("begun", flush=True)
     if MODE == "hang-install":
         time.sleep(60)
-    MARKER.write_text(argv[2], encoding=UTF8)
+    MARKER.write_text("\n".join([*installed(), argv[2]]), encoding=UTF8)
 
 
 def engine_prefer(argv: list[str]) -> None:
     assert argv[-1] == "--yes", argv
-    if not MARKER.exists():
+    if argv[2] not in installed():
         sys.exit(f"Engine {argv[2]} is not installed.")
     PREFERRED.write_text(argv[2], encoding=UTF8)
     print(f"The preferred engine is {argv[2]}.")

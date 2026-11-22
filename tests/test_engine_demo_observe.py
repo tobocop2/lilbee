@@ -51,9 +51,9 @@ _IMAGE_PDF = Path("scan.pdf")
 def _plan(roles: tuple[WorkerRole, ...] = _ROLES, **changes: object) -> RunPlan:
     fields: dict[str, object] = {
         "cli": _CLI,
-        "engine": "llama.cpp",
         "backend": "cpu",
         "models": {r: _MODELS[r] for r in roles},
+        "engines": {r: "llama.cpp" for r in roles},
         "image_pdf": _IMAGE_PDF if WorkerRole.VISION in roles else None,
         "step_timeout_s": 30.0,
         "server_wait_s": 30.0,
@@ -74,8 +74,9 @@ def test_a_good_run_passes_the_oracles(tmp_path: Path) -> None:
     t = observe(_plan(), tmp_path)
     assert judge(t) == []
     assert [s.stdout for s in _step(t, StepName.ENGINES_LEFT_RUNNING)] == ["", ""]
-    assert (t.engine, t.backend, t.pin) == ("llama.cpp", "cpu", "b6123")
+    assert (t.backend, t.pins) == ("cpu", {"llama.cpp": "b6123"})
     assert t.claimed_roles == _ROLES
+    assert set(t.role_engines.values()) == {"llama.cpp"}
 
 
 def test_a_cli_that_serves_by_another_engine_fails_the_oracles(
@@ -93,7 +94,9 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
         "install",
         "prefer",
         "pull",
+        "prefer",
         "pull",
+        "prefer",
         "pull",
         "set-model",
         "stored-models",
@@ -123,13 +126,16 @@ def test_the_steps_run_in_the_order_the_design_names(tmp_path: Path) -> None:
 def test_a_safetensors_engine_is_chosen_before_its_first_pull(
     tmp_path: Path, engine: str, roles: tuple[WorkerRole, ...]
 ) -> None:
-    models = demo_main.default_models(engine, roles)
-    t = observe(_plan(roles, engine=engine, models=models), tmp_path)
+    engines = {role: engine for role in roles}
+    models = demo_main.default_models(engines)
+    t = observe(_plan(roles, engines=engines, models=models), tmp_path)
     names = [s.name for s in t.steps]
     first_pull = names.index(StepName.PULL)
     assert names.index(StepName.INSTALL) < names.index(StepName.PREFER) < first_pull
-    (prefer,) = _step(t, StepName.PREFER)
-    assert prefer.command[len(_CLI) :] == ("engine", "prefer", engine, "--yes")
+    prefers = _step(t, StepName.PREFER)
+    assert [p.command[len(_CLI) :] for p in prefers] == [("engine", "prefer", engine, "--yes")] * len(
+        roles
+    )
     pulls = _step(t, StepName.PULL)
     refs = {s.command[-1] for s in pulls}
     assert refs == set(models.values())
@@ -546,7 +552,7 @@ def test_a_run_whose_install_shows_no_build_has_no_pin(
 ) -> None:
     monkeypatch.setenv("FAKE_MODE", "no-build")
     t = observe(_plan(), tmp_path)
-    assert t.pin == ""
+    assert t.pins == {"llama.cpp": ""}
     assert {Rule.PIN_NOT_AN_INSTALL, Rule.PIN_NOT_INSTALLED} <= _rules(t)
 
 
@@ -599,7 +605,7 @@ def test_a_dry_run_writes_a_transcript_the_report_passes(
     assert judge(t) == []
     assert t.claimed_roles == _ROLES
     assert demo_main.main(["report", str(tmp_path / "t.json")]) == 0
-    assert "PASS llama.cpp cpu b6123" in capsys.readouterr().out
+    assert "PASS llama.cpp b6123 on cpu" in capsys.readouterr().out
 
 
 def test_a_run_writes_no_signed_url_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -672,7 +678,7 @@ def test_a_dry_run_records_a_bad_run_and_the_report_fails_it(
     capsys.readouterr()
     assert demo_main.main(["report", str(tmp_path / "t.json")]) == 1
     out = capsys.readouterr().out
-    assert "FAIL llama.cpp cpu b6123" in out
+    assert "FAIL llama.cpp b6123 on cpu" in out
     assert "served-by-other" in out
 
 
@@ -692,7 +698,7 @@ def test_the_served_cells_cover_every_shipped_engine() -> None:
 def test_each_default_model_is_a_format_its_engine_loads(
     name: str, adapter: EngineAdapter, role: WorkerRole
 ) -> None:
-    ref = demo_main.default_models(name, [role])[role]
+    ref = demo_main.default_models({role: name})[role]
     assert model_format(ref) in adapter.formats, f"{name} cannot load {ref}"
 
 
@@ -758,6 +764,114 @@ def test_a_tei_run_from_the_command_line_pulls_safetensors_after_choosing_the_en
     assert [s.exit_code for s in t.steps if s.name is StepName.PULL] == [0, 0]
 
 
+def _transcript(tmp_path: Path) -> Transcript:
+    return Transcript.from_json(json.loads((tmp_path / "t.json").read_text(encoding="utf-8")))
+
+
+def test_a_mixed_run_installs_each_engine_and_prefers_the_engine_of_the_role_it_pulls(
+    tmp_path: Path,
+) -> None:
+    args = _run_args(tmp_path, "--role-engine", "embed=tei")
+    assert demo_main.main(args) == 0
+    t = _transcript(tmp_path)
+    assert t.role_engines == {
+        WorkerRole.CHAT: "llama.cpp",
+        WorkerRole.EMBED: "tei",
+        WorkerRole.RERANK: "llama.cpp",
+    }
+    commands = [s.command[len(_CLI) :] for s in t.steps]
+    assert [c for c in commands if c[:2] == ("engine", "install")] == [
+        ("engine", "install", "llama.cpp"),
+        ("engine", "install", "tei"),
+    ]
+    steps = [c for c in commands if c[:2] in (("engine", "prefer"), ("model", "pull"))]
+    assert [(c[0], c[2]) for c in steps] == [
+        ("engine", "llama.cpp"),
+        ("model", demo_main.DEFAULT_MODELS[WorkerRole.CHAT]),
+        ("engine", "tei"),
+        ("model", "Qwen/Qwen3-Embedding-0.6B#safetensors"),
+        ("engine", "llama.cpp"),
+        ("model", demo_main.DEFAULT_MODELS[WorkerRole.RERANK]),
+    ]
+    uses = {c[2]: c[-2] for c in commands if c[:2] == ("engine", "use")}
+    assert uses == {"chat": "llama.cpp", "embed": "tei", "rerank": "llama.cpp"}
+
+
+def test_a_mixed_run_passes_the_oracles_and_the_report_names_each_build(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert demo_main.main(_run_args(tmp_path, "--role-engine", "embed=tei")) == 0
+    t = _transcript(tmp_path)
+    assert t.pins == {"llama.cpp": "b6123", "tei": "b6123"}
+    assert judge(t) == []
+    capsys.readouterr()
+    assert demo_main.main(["report", str(tmp_path / "t.json")]) == 0
+    assert "PASS llama.cpp b6123, tei b6123 on cpu" in capsys.readouterr().out
+
+
+def test_a_mixed_run_fails_when_a_role_is_served_by_the_engine_of_another_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_SERVED_ENGINE", "llama.cpp")
+    assert demo_main.main(_run_args(tmp_path, "--role-engine", "embed=tei")) == 0
+    assert _rules(_transcript(tmp_path)) == {Rule.SERVED_BY_OTHER}
+
+
+def test_a_role_engine_for_a_role_the_run_does_not_claim_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _run_args(tmp_path, "--roles", "chat", "--role-engine", "embed=tei")
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(args)
+    assert raised.value.code == 2
+    assert "--role-engine names embed" in capsys.readouterr().err
+
+
+def test_a_named_role_its_own_engine_does_not_serve_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _run_args(tmp_path, "--roles", "chat", "embed", "--role-engine", "chat=tei")
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(args)
+    assert raised.value.code == 2
+    assert "tei does not serve chat" in capsys.readouterr().err
+
+
+def test_a_bare_run_skips_a_role_its_own_engine_does_not_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert demo_main.main(_run_args(tmp_path, "--role-engine", "chat=tei")) == 0
+    assert _transcript(tmp_path).claimed_roles == (WorkerRole.EMBED, WorkerRole.RERANK)
+    assert "roles skipped: chat" in capsys.readouterr().out
+
+
+def test_a_run_that_leaves_no_role_to_any_engine_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _run_args(tmp_path, "--role-engine", "chat=tei")
+    args[args.index("llama.cpp")] = "tei"
+    args += ["--role-engine", "embed=mlx", "--role-engine", "rerank=mlx"]
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(args)
+    assert raised.value.code == 2
+    assert "no engine serves any default role" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["embed", "bogus=tei", "embed="])
+def test_a_malformed_role_engine_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        demo_main.main(_run_args(tmp_path, "--role-engine", value))
+    assert raised.value.code == 2
+    assert "ROLE=ENGINE" in capsys.readouterr().err
+
+
+def test_a_plan_whose_roles_and_engines_differ_is_refused() -> None:
+    with pytest.raises(ValueError, match="one model and one engine"):
+        _plan(engines={WorkerRole.CHAT: "llama.cpp"})
+
+
 def test_roles_and_models_come_from_the_command_line(tmp_path: Path) -> None:
     args = _run_args(
         tmp_path, "--roles", "chat", "embed", "--model", "chat=other.gguf", "--question", "Why?"
@@ -809,7 +923,7 @@ def test_the_report_refuses_another_schema(tmp_path: Path) -> None:
 
 def test_the_report_names_every_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     t = observe(_plan(), tmp_path)
-    broken = Transcript.from_json({**t.to_json(), "claimed_roles": []})
+    broken = Transcript.from_json({**t.to_json(), "role_engines": {}})
     (tmp_path / "t.json").write_text(json.dumps(broken.to_json()), encoding="utf-8")
     assert demo_main.main(["report", str(tmp_path / "t.json")]) == 1
     assert "no-roles-claimed" in capsys.readouterr().out
