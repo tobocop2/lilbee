@@ -32,6 +32,10 @@ NO_DEVICE = "none"
 FLAG_FIT_TARGET = "--fit-target"
 FLAG_KV_UNIFIED = "--kv-unified"
 FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
+# llama.cpp turns context shift off, and ik_llama.cpp turns it on. With it on, the server cuts a
+# prompt longer than its context and answers from the rest, or aborts in its sampler. With it
+# off, the server refuses that prompt with HTTP 400, as llama.cpp does.
+FLAG_NO_CONTEXT_SHIFT = "--no-context-shift"
 
 
 @dataclass(frozen=True)
@@ -270,6 +274,7 @@ _OPTIONAL_FLAGS: dict[str, _OptionalFlag] = {
     "--no-prefill-assistant": _OptionalFlag(0, "a trailing assistant message is continued"),
     _FLAG_POOLING: _OptionalFlag(1, "the model's own pooling applies"),
     FLAG_KV_UNIFIED: _OptionalFlag(0, "the slots keep separate KV caches"),
+    FLAG_NO_CONTEXT_SHIFT: _OptionalFlag(0, "the engine keeps its own context shift default"),
 }
 
 
@@ -359,7 +364,8 @@ def build_server_argv(
     the memory the engine's own fit leaves free on each device, in
     ``--device`` order.
     ``kv_unified_per_slot`` makes the slots share one KV pool, each slot capped
-    at that window.
+    at that window. Every argv carries ``--no-context-shift`` when the binary's
+    ``--help`` lists it.
     """
     argv = [
         str(binary),
@@ -409,6 +415,7 @@ def build_server_argv(
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 
         optional += [MEMORY_FLAG]
+    optional += [FLAG_NO_CONTEXT_SHIFT]
     optional += list(spec.extra_args)
     _require_rank_pooling(binary, spec)
     return argv + _drop_unlisted_flags(binary, optional)
