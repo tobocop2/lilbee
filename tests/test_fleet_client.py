@@ -1082,6 +1082,31 @@ def test_a_cut_to_the_cap_outside_a_run_logs_one_warning_for_each_input(caplog) 
     assert messages == ["Truncating oversize embed input: 5 tokens > cap 3"] * 2
 
 
+def test_a_cut_to_the_cap_in_a_run_logs_a_debug_line_for_each_input(caplog) -> None:
+    from lilbee.providers.truncation import truncation_scope
+
+    with caplog.at_level("DEBUG", logger="lilbee.providers.truncation"), truncation_scope():
+        _capped_client(_every_input_is_long, cap=3).embed(["one long input", "two long inputs"])
+        cut_lines = [
+            (r.levelname, r.getMessage())
+            for r in caplog.records
+            if r.name == "lilbee.providers.truncation"
+        ]
+    assert cut_lines == [("DEBUG", "Truncating oversize embed input: 5 tokens > cap 3")] * 2
+
+
+def test_the_warning_of_a_run_names_the_limit_of_its_first_cut(caplog) -> None:
+    from lilbee.providers.truncation import truncation_scope
+
+    texts = ["one long input", "two long inputs"]
+    with caplog.at_level("WARNING"), truncation_scope():
+        _capped_client(_every_input_is_long, cap=3).embed(texts)
+        _capped_client(_every_input_is_long, cap=4).embed(texts)
+    [record] = caplog.records
+    assert "4 of 4 embed inputs" in record.getMessage()
+    assert "3-token limit" in record.getMessage()
+
+
 def _tei_embed_client(handler, cap: int) -> LlamaServerClient:
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://cpu0")
     return LlamaServerClient(
@@ -1253,7 +1278,156 @@ def test_a_count_answer_of_the_wrong_length_leaves_the_embeds_to_the_estimate(ca
     assert requests["tokenize"] == 1
     skipped = [r.getMessage() for r in caplog.records if "check skipped" in r.getMessage()]
     assert len(skipped) == 1
+    assert "the router's /tokenize route gave an unexpected answer" in skipped[0]
     assert "1 token lists for 3 inputs" in skipped[0]
+
+
+class _CountRouter:
+    """A TEI router that counts a word a token and records the requests of each route.
+
+    ``wide`` holds the inputs of each count request sent before the first embed, with
+    its read timeout in ``wide_timeouts``; ``later`` holds those of the count requests
+    after it. ``fail_at`` makes that count request, by its place from one, answer 500.
+    """
+
+    def __init__(self, limit: int = 100, fail_at: int | None = None) -> None:
+        self.limit = limit
+        self.fail_at = fail_at
+        self.wide: list[list[str]] = []
+        self.wide_timeouts: list[float | None] = []
+        self.later: list[list[str]] = []
+        self.embedded: list[list[str]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        route = request.url.path.rsplit("/", 1)[-1]
+        if route == "info":
+            return httpx.Response(200, json={"max_input_length": self.limit})
+        body = json.loads(request.content)
+        if route == "tok":
+            return httpx.Response(200, json={"tokens": list(range(len(body["content"].split())))})
+        if route == "tokenize":
+            inputs = body["inputs"]
+            if self.embedded:
+                self.later.append(inputs)
+            else:
+                self.wide.append(inputs)
+                self.wide_timeouts.append(request.extensions["timeout"]["read"])
+            if len(self.wide) + len(self.later) == self.fail_at:
+                return httpx.Response(500, json={"error": "boom"})
+            return httpx.Response(200, json=[[{"id": 1}] * len(text.split()) for text in inputs])
+        self.embedded.append(body["input"])
+        return httpx.Response(200, json=_embed_body([[0.5]] * len(body["input"])))
+
+
+def _count_client(router: _CountRouter, cap: int = 10, **changes) -> LlamaServerClient:
+    """A TEI embed client whose own timeout is 60 seconds, with *changes* to its profile."""
+    http = httpx.Client(transport=httpx.MockTransport(router), base_url="http://cpu0", timeout=60.0)
+    profile = dataclasses.replace(TEI.request_profile(WorkerRole.EMBED), **changes)
+    return LlamaServerClient("http://cpu0", "m", http=http, token_cap=cap, profile=profile)
+
+
+def _wide_texts(count: int) -> list[str]:
+    """Distinct texts of 8 words: an estimate of 13 tokens, past the cap of 10."""
+    return [f"t{i} " + "word " * 7 for i in range(count)]
+
+
+def test_the_wide_count_sends_at_most_the_profiles_batch_limit_in_one_request() -> None:
+    router = _CountRouter()
+    texts = _wide_texts(5)
+    _count_client(router, batch_limit=2).embed(texts)
+    assert router.wide == [texts[0:2], texts[2:4], texts[4:5]]
+
+
+def test_the_wide_count_with_no_batch_limit_sends_64_inputs_in_one_request() -> None:
+    router = _CountRouter()
+    texts = _wide_texts(65)
+    _count_client(router, batch_limit=None).embed(texts)
+    assert router.wide == [texts[:64], texts[64:]]
+
+
+def test_the_wide_count_asks_for_an_answer_within_five_seconds() -> None:
+    router = _CountRouter()
+    _count_client(router).embed(_wide_texts(1))
+    assert router.wide_timeouts == [5.0]
+
+
+def test_an_input_the_count_finds_at_exactly_the_cap_is_sent_whole_and_not_cut() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    router = _CountRouter()
+    text = "word " * 10  # 50 characters: an estimate of 17 tokens, and 10 tokens counted
+    with truncation_scope():
+        _count_client(router).embed([text])
+        assert cut_inputs_in_scope() == 0
+    assert router.embedded == [[text]]
+
+
+def test_inputs_the_count_finds_within_the_cap_are_packed_by_their_counted_tokens() -> None:
+    """Each input is 5 tokens with an estimate of 14: two fill the budget of 10 exactly."""
+    router = _CountRouter()
+    texts = ["abcdefg " * 5, "hijklmn " * 5]
+    _count_client(router, request_tokens=None).embed(texts)
+    assert router.embedded == [texts]
+
+
+def test_only_a_counted_input_past_the_server_limit_is_counted_as_cut() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    router = _CountRouter(limit=6)
+    at_limit, past_limit = "words " * 6, "words " * 7  # estimates of 12 and 14 tokens
+    with truncation_scope():
+        _count_client(router).embed([at_limit, past_limit])
+        assert cut_inputs_in_scope() == 1
+    assert router.wide == [[at_limit, past_limit]]
+    assert router.later == []
+
+
+def test_the_server_limit_check_counts_only_the_inputs_the_wide_count_did_not() -> None:
+    from lilbee.providers.truncation import cut_inputs_in_scope, truncation_scope
+
+    router = _CountRouter(limit=6)
+    wide, short = "words " * 7, "a b"
+    with truncation_scope():
+        _count_client(router).embed([wide, short])
+        assert cut_inputs_in_scope() == 1
+    assert router.wide == [[wide]]
+    assert router.later == [[short]]
+
+
+def test_an_engine_with_a_tokenize_route_sends_no_wide_count() -> None:
+    router = _CountRouter()
+    _count_client(router, tokenize_path="/tok").embed(_wide_texts(2))
+    assert router.wide == []
+
+
+def test_an_input_with_an_estimate_of_exactly_the_cap_sends_no_wide_count() -> None:
+    router = _CountRouter()
+    text = "abcdefghi " * 3  # 30 characters: an estimate of 10 tokens
+    _count_client(router).embed([text])
+    assert router.wide == []
+    assert router.embedded == [[text]]
+
+
+def test_a_failed_part_of_the_wide_count_leaves_every_input_to_the_estimate() -> None:
+    router = _CountRouter(fail_at=2)
+    first, second = "abcdefg " * 5, "hijklmn " * 5  # 5 tokens each, estimates of 14
+    _count_client(router, batch_limit=1).embed([first, second])
+    assert router.wide == [[first], [second]]
+    assert router.embedded == [[first[:30]], [second[:30]]]
+
+
+@pytest.mark.parametrize(
+    ("changes", "size"),
+    [({}, "12"), ({"input_count_path": None}, "~20")],
+    ids=["counted", "estimated"],
+)
+def test_a_cut_outside_a_run_warns_with_the_size_and_the_cap(changes, size, caplog) -> None:
+    """Twelve words in 60 characters: 12 tokens counted, an estimate of 20."""
+    router = _CountRouter()
+    with caplog.at_level("WARNING"):
+        _count_client(router, **changes).embed(["word " * 12])
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages == [f"Truncating oversize embed input: {size} tokens > cap 10"]
 
 
 def test_a_chunk_of_the_chunkers_estimate_with_its_prefix_is_whole_up_to_a_size() -> None:
