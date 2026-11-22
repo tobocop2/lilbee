@@ -125,6 +125,27 @@ class TestTheFreeFigureIsThePlansSnapshot:
         assert "Offloading the chat model" in caplog.text
         assert "only 8.0 GiB is free" in caplog.text
 
+    def test_a_free_figure_below_one_gib_prints_in_mib_never_as_zero_gib(
+        self, monkeypatch, offload_configured, caplog
+    ) -> None:
+        from lilbee.providers.fleet import planning
+
+        monkeypatch.setattr(planning, "_role_weights_bytes", lambda *_a: 1)
+        monkeypatch.setattr(planning, "_weights_exceed_hardware", lambda *_a, **_k: False)
+        monkeypatch.setattr(planning, "total_system_memory", lambda: 64 * _GB)
+        monkeypatch.setattr(planning, "_plan_free_system_memory", lambda _engine: 30 * 1024**2)
+        with caplog.at_level(logging.WARNING):
+            planning._admit_estimate(
+                _estimate(),
+                WorkerRole.CHAT,
+                _REF,
+                total_vram=64 * _GB,
+                ram_bytes=40 * _GB,
+                engine=LLAMA,
+            )
+        assert "only 30 MiB is free" in caplog.text
+        assert "0.0 GiB" not in caplog.text
+
     def test_a_role_that_nothing_offloads_never_reads_free_memory(self, monkeypatch) -> None:
         from lilbee.core.config import cfg
         from lilbee.providers.fleet import planning

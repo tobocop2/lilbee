@@ -245,6 +245,19 @@ def test_show_prints_a_small_charge_in_mib_and_a_missing_charge_as_none(
     assert "0.0 GiB" not in result.stdout
 
 
+def test_show_prints_a_card_with_little_free_memory_in_mib_not_zero_gib(
+    monkeypatch: object,
+) -> None:
+    view = replace(
+        _view(), gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 300 * 1024**2),)
+    )
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "300 MiB / 80.0 GiB" in plain_cli_text(result.stdout)
+    assert "0 / 80" not in result.stdout
+
+
 def test_show_prints_a_zero_charge_as_zero_mib_not_none(monkeypatch: object) -> None:
     view = PlacementView(
         gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * _GIB, 72 * _GIB),),

@@ -58,6 +58,7 @@ from lilbee.providers.fleet.memory_types import MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import (
     UNKNOWN_SIZE_RESERVE_BYTES,
     installed_safetensors_bytes,
+    memory_size_text,
     tight_memory_text,
     unknown_size_text,
 )
@@ -1635,12 +1636,12 @@ def _floor_implausible_estimate(
     if not _estimate_is_implausible(estimated=estimate.est_vram_bytes, floor=weights):
         return estimate
     log.warning(
-        "The estimator sized the %s model %s at %.1f GiB, below the %.1f GiB of "
+        "The estimator sized the %s model %s at %s, below the %s of "
         "weights the card has to hold. Charging the weights instead.",
         role.value,
         ref,
-        estimate.est_vram_bytes / 1024**3,
-        weights / 1024**3,
+        memory_size_text(estimate.est_vram_bytes),
+        memory_size_text(weights),
     )
     return replace(estimate, est_vram_bytes=weights)
 
@@ -1670,13 +1671,13 @@ def _sizing_failure_fallback(
         return None
     floor = _fallback_floor_for(role, ref, weights, engine=engine)
     log.warning(
-        "Could not size the %s model %s (%s). Charging %.1f GiB, its weights plus the "
+        "Could not size the %s model %s (%s). Charging %s, its weights plus the "
         "cache and buffers it will allocate, which is a floor rather than an estimate: "
         "the load may still need more.",
         role.value,
         ref,
         exc,
-        floor / 1024**3,
+        memory_size_text(floor),
     )
     if _host_memory_refuses(
         role, ref, floor, host_committed, lambda: _plan_free_system_memory(engine)
@@ -1807,13 +1808,13 @@ def _host_memory_refuses(
     total = total_system_memory()
     if total and wanted > total and _host_bytes_must_be_resident(role, ref):
         log.warning(
-            "The %s model %s cannot load: this plan puts %.1f GiB in system memory, which "
-            "cannot be paged out here, and the machine has %.1f GiB in total. Use a smaller "
+            "The %s model %s cannot load: this plan puts %s in system memory, which "
+            "cannot be paged out here, and the machine has %s in total. Use a smaller "
             "model, or offload less.",
             role.value,
             ref,
-            wanted / 1024**3,
-            total / 1024**3,
+            memory_size_text(wanted),
+            memory_size_text(total),
         )
         return True
     _warn_low_free_memory(role, ref, wanted, free(), action="Offloading")
@@ -1826,40 +1827,40 @@ def _warn_low_free_memory(
     """Warn when *wanted* bytes exceed the *free* system memory; a zero *free* is unread."""
     if free and wanted > free:
         log.warning(
-            "%s the %s model %s brings this plan to %.1f GiB in system memory and "
-            "only %.1f GiB is free. It will still load; close other programs if it swaps "
+            "%s the %s model %s brings this plan to %s in system memory and "
+            "only %s is free. It will still load; close other programs if it swaps "
             "or runs slowly.",
             action,
             role.value,
             ref,
-            wanted / 1024**3,
-            free / 1024**3,
+            memory_size_text(wanted),
+            memory_size_text(free),
         )
 
 
 def _warn_weights_exceed(role: WorkerRole, ref: str, weights: int, total_vram: int) -> None:
     log.warning(
-        "The %s model %s cannot load: its weights are %.1f GiB and this machine has "
-        "%.1f GiB of GPU memory and %.1f GiB of system memory, so there is nowhere "
+        "The %s model %s cannot load: its weights are %s and this machine has "
+        "%s of GPU memory and %s of system memory, so there is nowhere "
         "for its layers to go. Use a smaller model or a smaller quantization.",
         role.value,
         ref,
-        weights / 1024**3,
-        total_vram / 1024**3,
-        model_cache.total_system_memory() / 1024**3,
+        memory_size_text(weights),
+        memory_size_text(total_vram),
+        memory_size_text(model_cache.total_system_memory()),
     )
 
 
 def _warn_weights_spill(role: WorkerRole, ref: str, weights: int, total_vram: int) -> None:
     """Say that a model larger than the GPUs will run partly in system memory."""
     log.warning(
-        "The %s model %s is %.1f GiB and this machine has %.1f GiB of GPU memory, so "
+        "The %s model %s is %s and this machine has %s of GPU memory, so "
         "the engine will keep the layers that fit on the GPU and the rest in system "
         "memory. It will run, and it will be slower than a model that fits.",
         role.value,
         ref,
-        weights / 1024**3,
-        total_vram / 1024**3,
+        memory_size_text(weights),
+        memory_size_text(total_vram),
     )
 
 
@@ -3742,7 +3743,7 @@ def _auto_roles_past_named(
     sizes = {model.role: model.est_vram_bytes for model in inputs}
     beside = ", ".join(sorted(role.value for role in named))
     return {
-        role: f"{role.value}: needs {sizes[role] / 1024**3:.1f} GiB, which does not fit in the "
+        role: f"{role.value}: needs {memory_size_text(sizes[role])}, which does not fit in the "
         f"memory left beside {beside}. Use a smaller model, or set its target to cpu."
         for role in placed.unplaceable_roles
         if role not in unpinnable
@@ -3943,8 +3944,8 @@ def _cpu_roles_past_memory(
         need = inp.est_ram_bytes * placement.roles[inp.role].replicas
         if held + need > total:
             refused[inp.role] = (
-                f"{inp.role.value}: the CPU needs {need / 1024**3:.1f} GiB of system memory, "
-                f"{max(total - held, 0) / 1024**3:.1f} GiB of {total / 1024**3:.1f} GiB is left. "
+                f"{inp.role.value}: the CPU needs {memory_size_text(need)} of system memory, "
+                f"{memory_size_text(max(total - held, 0))} of {memory_size_text(total)} is left. "
                 "Choose a smaller model or a GPU."
             )
         elif inp.role in starts:
@@ -4531,17 +4532,17 @@ def _unplaceable_reasons(
             reasons[role] = f"{role.value} model {model} {equal}"
         elif role not in fits_alone:
             reasons[role] = (
-                f"{role.value} model {model} needs {charges[role] / 1024**3:.1f} GiB, more "
-                f"than any one GPU can hold ({largest_usable / 1024**3:.1f} GiB usable), and "
+                f"{role.value} model {model} needs {memory_size_text(charges[role])}, more "
+                f"than any one GPU can hold ({memory_size_text(largest_usable)} usable), and "
                 "no split across the GPUs holds it, so it will not be served. "
                 "Use a smaller model."
             )
         else:
             others = ", ".join(sorted({inst.role.value for inst in placement.instances}))
             reasons[role] = (
-                f"{role.value} model {model} needs {charges[role] / 1024**3:.1f} GiB, but the "
-                f"GPU with the most room has {room / 1024**3:.1f} GiB left beside the other "
-                f"models ({others}), short by {max(charges[role] - room, 0) / 1024**3:.1f} GiB, "
+                f"{role.value} model {model} needs {memory_size_text(charges[role])}, but the "
+                f"GPU with the most room has {memory_size_text(room)} left beside the other "
+                f"models ({others}), short by {memory_size_text(max(charges[role] - room, 0))}, "
                 f"so it will not be served. Use a smaller model for {role.value} or for one "
                 "of those."
             )
@@ -4561,9 +4562,9 @@ def _equal_split_refusal(
         return None
     beside = " beside the other models" if placement.instances else ""
     return (
-        f"needs {model.est_vram_bytes / 1024**3:.1f} GiB, and the engine splits it only "
+        f"needs {memory_size_text(model.est_vram_bytes)}, and the engine splits it only "
         f"evenly: over {miss.count} GPUs, device {miss.device} would need "
-        f"{miss.need_bytes / 1024**3:.1f} GiB but has {miss.room_bytes / 1024**3:.1f} GiB "
+        f"{memory_size_text(miss.need_bytes)} but has {memory_size_text(miss.room_bytes)} "
         f"left{beside}. "
         "It will not be served. Use a smaller model, or another engine for this role."
     )
@@ -4633,11 +4634,6 @@ def _log_placement_findings(
         log.info("%s", swap_summary(placement.swap_classes))
 
 
-def _gib_text(num_bytes: int) -> str:
-    """*num_bytes* in GiB with at most one decimal and no trailing zero."""
-    return f"{round(num_bytes / 1024**3, 1):g}"
-
-
 def _other_processes_clause(launch: InstanceLaunch, devices: list[FleetDevice]) -> str:
     """A sentence naming the memory other processes hold on the cards, or ``""``.
 
@@ -4649,7 +4645,7 @@ def _other_processes_clause(launch: InstanceLaunch, devices: list[FleetDevice]) 
     if not devices or held <= launch.weights_bytes:
         return ""
     owner = "the cards'" if len(devices) > 1 else "the card's"
-    return f" Other processes hold {_gib_text(held)} GiB of {owner} {_gib_text(total)} GiB."
+    return f" Other processes hold {memory_size_text(held)} of {owner} {memory_size_text(total)}."
 
 
 def _unusable_chat_ctx_reason(launch: InstanceLaunch, devices: list[FleetDevice]) -> str | None:
