@@ -1223,6 +1223,16 @@ def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
     provider = _install_stub_services()
     forced: list[int] = []
     monkeypatch.setattr(services_mod, "_force_quit_from_handler", forced.append)
+    # The plain SIGINT handler is the same function, so only the callback record
+    # shows that the loop, not the plain handler, took both presses.
+    loop_signals: list[int] = []
+    on_loop_signal = services_mod._lifecycle.on_loop_signal
+
+    def recording_loop_signal(signum: int) -> None:
+        loop_signals.append(signum)
+        on_loop_signal(signum)
+
+    monkeypatch.setattr(services_mod._lifecycle, "on_loop_signal", recording_loop_signal)
     # A registered server hook takes the first press, so the callback does not raise.
     set_server_exit_hook(lambda _status: None)
     previous = signal.getsignal(signal.SIGINT)
@@ -1252,6 +1262,7 @@ def test_a_second_ctrl_c_in_a_loop_owned_loop_force_quits(monkeypatch):
         set_server_exit_hook(None)
 
     assert forced == [128 + signal.SIGINT]
+    assert loop_signals == [signal.SIGINT, signal.SIGINT]
     provider.shutdown.assert_called_once()
 
 
