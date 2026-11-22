@@ -742,7 +742,7 @@ class _EngineLifecycle:
         """Signals a running loop takes over: the ones install and route_interrupt route."""
         return self._routed_signals(interrupt=True)
 
-    def on_loop_signal(self, signum: int) -> None:
+    def on_loop_signal(self, signum: int) -> None:  # pragma: posix only - no loop signals
         """Run the handler of *signum* as a loop callback, with no interrupted frame."""
         self._on_hard_exit(signum, None)
 
@@ -970,13 +970,13 @@ def loop_takes_signals(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
     try:
         for sig in routed:
             loop.add_signal_handler(sig, _lifecycle.on_loop_signal, sig)
-            added.append(sig)
+            added.append(sig)  # pragma: posix only - Windows loops raise on the add
     except (NotImplementedError, RuntimeError):  # pragma: no cover - Windows, off the main thread
         pass
     try:
         yield
     finally:
-        for sig in added:
+        for sig in added:  # pragma: posix only - empty on Windows
             loop.remove_signal_handler(sig)
             signal.signal(sig, previous[sig])
 

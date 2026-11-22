@@ -180,7 +180,6 @@ def test_the_first_ctrl_c_stops_the_server_and_the_second_forces_the_exit(monkey
     provider.shutdown.assert_called_once()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal disposition")
 def test_an_inherited_ignore_of_sigint_survives_stop_on_interrupt():
     """A process started with SIGINT ignored keeps ignoring it, as Python does at start."""
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
