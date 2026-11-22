@@ -438,6 +438,38 @@ ${ROOT}/out/stubs" ]
   [ "$status" -eq 1 ]
 }
 
+# Make curl write a cargo-about release that another build made. Its cargo-about appends to STEP_LOG.
+other_cargo_about() {  # triple
+  local name="cargo-about-0.8.4-$1"
+  mkdir -p "release/${name}"
+  printf '%s\n' '#!/bin/sh' 'echo "other cargo-about" >> "${STEP_LOG}"' > "release/${name}/cargo-about"
+  chmod +x "release/${name}/cargo-about"
+  tar -czf release.tar.gz -C release "${name}"
+  export OTHER_RELEASE="${PWD}/release.tar.gz"
+  tool curl 'while [ "$#" -gt 1 ]; do [ "$1" != -o ] || cp "${OTHER_RELEASE}" "$2"; shift; done'
+}
+
+@test "a cargo-about digest that differs stops the Metal build before cargo-about runs" {
+  metal
+  cp "${REPO_ROOT}/tools/wheel-build/install_cargo_about.sh" "${ROOT}/tools/wheel-build/"
+  other_cargo_about aarch64-apple-darwin
+  UNAME_M=arm64 run bash "${SCRIPT}"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"install_cargo_about: digest "* ]]
+  run grep -E '^(other cargo-about|cargo build)' "${STEP_LOG}"
+  [ "$status" -eq 1 ]
+  [ ! -e "${OUT}" ]
+}
+
+@test "a cargo-about digest that differs stops the install in the Linux image before cargo-about runs" {
+  other_cargo_about x86_64-unknown-linux-musl
+  run bash "${REPO_ROOT}/tools/wheel-build/install_cargo_about.sh" "${BATS_TEST_TMPDIR}/about"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"install_cargo_about: digest "* ]]
+  [ ! -e "${STEP_LOG}" ]
+  [ ! -e "${BATS_TEST_TMPDIR}/about" ]
+}
+
 @test "a Metal compile that fails stops the pack" {
   metal
   COMPILE_FAIL=1 run bash "${SCRIPT}"

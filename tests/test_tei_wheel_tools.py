@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -825,6 +828,12 @@ name="$(basename "$0")"
 case "${name}" in
   nproc) echo 1 ;;
   rustc) echo "rustc 1.0.0" ;;
+  uname) if [ "$1" = "-s" ]; then echo Linux; else echo x86_64; fi ;;
+  curl)
+    out=/dev/stdout
+    while [ "$#" -gt 1 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
+    case "$1" in */cargo-about-*) cat "{release}" > "${out}" ;; esac
+    ;;
   git) shift "$(($# - 1))"; mkdir -p "$1" ;;
   auditwheel) echo "${SOURCE_DATE_EPOCH-unset}" > "{record}/auditwheel-epoch" ;;
   nvprune) while [ "$#" -gt 0 ]; do [ "$1" = "-o" ] && : > "$2"; shift; done ;;
@@ -839,18 +848,21 @@ esac
 exit 0
 """
 _IMAGE_TOOLS = ("dnf", "curl", "sh", "nproc", "rustc", "git", "nvcc", "nvprune", "cargo")
-_IMAGE_TOOLS += ("auditwheel", "chown")
+_IMAGE_TOOLS += ("auditwheel", "chown", "uname")
 _IMAGE_ROOTS = re.compile(r"/(?:etc|usr/local|tmp|opt)(?=/)")
 
 
-def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
-    """Run tei_manylinux.sh on stub tools; return a variable as the cargo build sees it."""
+def _run_build(
+    tmp_path: Path, cuda_cc: str, installer: str = ""
+) -> subprocess.CompletedProcess[str]:
+    """Run tei_manylinux.sh on stub tools, with the text of its cargo-about installer."""
     script = (_TOOLS / "tei_manylinux.sh").read_text(encoding="utf-8")
     script = re.sub(_IMAGE_ROOTS, lambda m: f"{tmp_path}{m.group(0)}", script)
     work = tmp_path / "work"
     (work / "tools/wheel-build").mkdir(parents=True)
-    for name in ("install_cargo_about.sh", "tei_wheel.sh", "write_cuda_notice.py"):
+    for name in ("tei_wheel.sh", "write_cuda_notice.py"):
         (work / "tools/wheel-build" / name).write_text("", encoding="utf-8")
+    (work / "tools/wheel-build/install_cargo_about.sh").write_text(installer, encoding="utf-8")
     (work / "tools/wheel-build/source_date_epoch.sh").write_text(
         f"echo SOURCE_DATE_EPOCH={_COMMIT_TIME}\n", encoding="utf-8"
     )
@@ -860,7 +872,9 @@ def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
     bin_dir.mkdir()
     for name in _IMAGE_TOOLS:
         stub = bin_dir / name
-        stub.write_text(_MANYLINUX_STUB.replace("{record}", str(record)), encoding="utf-8")
+        text = _MANYLINUX_STUB.replace("{record}", str(record))
+        text = text.replace("{release}", str(tmp_path / "release.tar.gz"))
+        stub.write_text(text, encoding="utf-8")
         stub.chmod(0o755)
     py = tmp_path / "opt/python/cp312-cp312/bin"
     py.mkdir(parents=True)
@@ -870,10 +884,12 @@ def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
     (cuda / "lib64/stubs/libcuda.so").write_text("", encoding="utf-8")
     (tmp_path / "tmp").mkdir()
     (tmp_path / "etc").mkdir()
+    (tmp_path / "usr/local/bin").mkdir()
     env = {k: v for k, v in os.environ.items() if k not in ("NVCC_APPEND_FLAGS", "RUSTFLAGS")}
     env |= {
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
+        "TMPDIR": str(tmp_path / "tmp"),
         "TEI_REPO": "repo",
         "TEI_TAG": "tag",
         "RUSTC_VERSION": "1.0.0",
@@ -888,7 +904,7 @@ def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
     }
     rooted = tmp_path / "tei_manylinux_rooted.sh"
     rooted.write_text(script, encoding="utf-8")
-    result = subprocess.run(
+    return subprocess.run(
         ["bash", str(rooted)],
         capture_output=True,
         text=True,
@@ -896,8 +912,38 @@ def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
         cwd=tmp_path,
         env=env,
     )
+
+
+def _build_env(tmp_path: Path, cuda_cc: str, recorded: str) -> str:
+    """Run tei_manylinux.sh on stub tools; return a variable as the cargo build sees it."""
+    result = _run_build(tmp_path, cuda_cc)
     assert result.returncode == 0, result.stderr
-    return (record / recorded).read_text(encoding="utf-8").strip()
+    return (tmp_path / "record" / recorded).read_text(encoding="utf-8").strip()
+
+
+@pytest.mark.parametrize("cuda_cc", ["", "89"])
+@_MANYLINUX
+def test_a_cargo_about_digest_that_differs_stops_the_linux_build(
+    tmp_path: Path, cuda_cc: str
+) -> None:
+    installer = (_TOOLS / "install_cargo_about.sh").read_text(encoding="utf-8")
+    (version,) = re.findall(r"^version=(\S+)$", installer, re.MULTILINE)
+    record = tmp_path / "record"
+    about = f"#!/bin/sh\n: > '{record}/cargo-about'\n".encode()
+    entry = tarfile.TarInfo(f"cargo-about-{version}-x86_64-unknown-linux-musl/cargo-about")
+    entry.size = len(about)
+    entry.mode = 0o755
+    release = tmp_path / "release.tar.gz"
+    with tarfile.open(release, "w:gz") as archive:
+        archive.addfile(entry, io.BytesIO(about))
+
+    result = _run_build(tmp_path, cuda_cc, installer)
+
+    digest = hashlib.sha256(release.read_bytes()).hexdigest()
+    assert not (record / "cargo-about").exists()
+    assert not (record / "rustflags").exists()
+    assert result.returncode != 0
+    assert f"install_cargo_about: digest {digest}, wanted " in result.stderr
 
 
 @_MANYLINUX
