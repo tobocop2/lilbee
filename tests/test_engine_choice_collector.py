@@ -486,6 +486,22 @@ def test_an_override_for_an_unserved_role_names_what_no_engine_does(
     )
 
 
+def test_the_adapter_of_one_ref_reads_the_installed_engines_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[int] = []
+
+    def counted() -> Any:
+        reads.append(1)
+        return BOTH
+
+    monkeypatch.setattr(engine_choice, "installed_engines", counted)
+    monkeypatch.setattr(runnable, "session_host", lambda: LINUX)
+    adapter = engine_choice.engine_for_ref("org/chat/c.gguf", Config())
+    assert adapter in ADAPTERS.values()
+    assert len(reads) == 1
+
+
 def test_the_launch_plan_puts_rerank_on_the_next_engine_after_the_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

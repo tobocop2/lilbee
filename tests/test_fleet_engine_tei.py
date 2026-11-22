@@ -1838,7 +1838,7 @@ def test_a_refused_first_count_cuts_the_inputs_of_its_own_call_only(status) -> N
 
 @pytest.mark.parametrize(
     "failure",
-    [401, 403, 404, 424, 500, 503, httpx.ReadTimeout("hung"), httpx.ConnectError("down")],
+    [401, 403, 404, 409, 424, 500, 503, httpx.ReadTimeout("hung"), httpx.ConnectError("down")],
     ids=str,
 )
 def test_a_first_count_that_fails_for_the_route_takes_one_request_for_every_call(failure) -> None:
@@ -1976,6 +1976,7 @@ def test_counting_one_text_keeps_the_kind_and_the_words_of_a_refused_count(
     with pytest.raises(ProviderError) as raised:
         client.count_text_tokens(_words(30))
     assert raised.value.kind is kind
+    assert raised.value.provider == client._profile.label
     assert said in str(raised.value)
 
 
@@ -2023,6 +2024,41 @@ def test_threads_that_wait_on_a_refused_probe_count_their_own_texts_at_once() ->
     assert sum(isinstance(result, ProviderError) for result in results) == 1
     assert len(router.counted) == 3
     assert router.peak == 2  # the two waiters send together, after the refusal
+
+
+def test_an_input_that_comes_twice_past_the_limit_is_counted_twice() -> None:
+    router = _Embedder()
+    client = _tei_client(router, WorkerRole.EMBED)
+    text = _words(30)
+    assert client._count_inputs_past_limit([text, text], _ROUTER_LIMIT, "/tokenize") == 2
+    assert router.tokenized == [[text, text]]
+
+
+def test_a_count_answer_with_more_lists_than_inputs_is_a_failed_check() -> None:
+    router = _BrokenSideRoute("/tokenize", httpx.Response(200, json=[[{"id": 1}] * 9, [{"id": 2}]]))
+    client = _tei_client(router, WorkerRole.EMBED)
+    with pytest.raises(ValueError, match="2 token lists for 1 inputs"):
+        client._count_inputs_past_limit([_words(30)], _ROUTER_LIMIT, "/tokenize")
+    assert not client._count_route_answered
+    assert time.monotonic() < client._check_resume_at  # the failed answer paused the check
+
+
+def test_threads_that_wait_on_a_probe_with_a_wrong_length_answer_get_the_failure() -> None:
+    watch = _ProbeWatch(waiters=1)
+    router = _HeldCountRoute(hold=watch.waiting, failing={0: httpx.Response(200, json=[])})
+    client = _tei_client(router, WorkerRole.EMBED)
+    client._flights = watch
+
+    def count(text: str) -> str:
+        try:
+            client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+        except ValueError as exc:
+            return str(exc)
+        return "counted"
+
+    results = _run_together([lambda text=text: count(text) for text in (_words(30), _words(31))])
+    assert results == ["0 token lists for 1 inputs"] * 2
+    assert router.counted == 1  # the waiter sent no request of its own
 
 
 class _SingleFlightProbe:
