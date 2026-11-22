@@ -36,7 +36,9 @@ _RUST_LICENCES = pytest.mark.skipif(
 _WHEEL_SCRIPT = pytest.mark.skipif(
     sys.platform == "win32", reason="tei_wheel.sh runs only on Linux and macOS"
 )
-_MANYLINUX = pytest.mark.skipif(sys.platform == "win32", reason="tei_manylinux.sh runs only on Linux")
+_MANYLINUX = pytest.mark.skipif(
+    sys.platform == "win32", reason="tei_manylinux.sh runs only on Linux"
+)
 _SMOKE = pytest.mark.skipif(sys.platform == "win32", reason="smoke_tei.sh runs only on Linux")
 
 
