@@ -141,7 +141,7 @@ async def test_a_raise_in_the_swap_is_reported_as_a_failed_start(caplog) -> None
 
     with (
         mock.patch(
-            "lilbee.server.app.use_installed_models_for_this_run",
+            "lilbee.server.app.fill_empty_chat_model",
             side_effect=OSError("registry unreadable"),
         ),
         mock.patch("lilbee.server.app.get_services") as get_services,

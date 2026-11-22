@@ -81,6 +81,7 @@ from lilbee.app.settings import (
     SettingInfo,
     apply_settings_update,
     config_write_failure_message,
+    fill_empty_chat_model,
     get_setting,
     list_settings,
     provider_reset_refused_message,
@@ -2508,8 +2509,11 @@ def main() -> None:
     # Preload so the first tool call doesn't pay the cold-start cost
     # of provider/embedder/store init. Failures (missing model, bad
     # config) still surface on the first tool call rather than crashing
-    # the server before it attaches to stdio.
+    # the server before it attaches to stdio. An empty chat model is filled first, the
+    # same way the HTTP server does, so the wiki tools never send an empty model name.
     try:
+        for notice in fill_empty_chat_model():
+            log.info("%s", notice)
         get_services()
     except Exception:
         log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
