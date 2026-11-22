@@ -84,8 +84,12 @@ def _fleet_sized_workers() -> int:
 
 
 def reset_max_workers() -> None:
-    """Forget the fleet-sized pool count so the next ``max_workers`` call sizes it again."""
+    """Forget the fleet-sized pool count and the warned override values.
+
+    The next ``max_workers`` call sizes the pool again and warns again about a bad override.
+    """
     _fleet_sized_workers.cache_clear()
+    _warn_ignored_override.cache_clear()
 
 
 def max_workers() -> int:
@@ -147,12 +151,22 @@ def _worker_override() -> int | None:
             return value
     except ValueError:
         pass  # bad override falls through to the warning + default below
+    _warn_ignored_override(override)
+    return None
+
+
+@functools.cache
+def _warn_ignored_override(override: str) -> None:
+    """Warn about a bad ``LILBEE_INGEST_MAX_WORKERS`` value once per process.
+
+    ``max_workers`` reads the override on every call outside an ingest run, so the
+    warning is kept by value here and not by the caller's result.
+    """
     log.warning(
         "Ignoring %s=%r: must be a positive integer; using default.",
         _MAX_WORKERS_ENV,
         override,
     )
-    return None
 
 
 @functools.cache
