@@ -470,7 +470,7 @@ class TestAnotherProcessHoldsTheCard:
         plan = plan_beside_a_tenant(monkeypatch, tmp_path, 50 * MIB, CHAT_AUTO_EMBED_ON_CPU)
         assert plan.refused_roles[WorkerRole.CHAT] == (
             f"The chat model {CHAT_REF} needs 1.0 GiB but device 0 has 45 MiB usable "
-            "(50 MiB total, 90% headroom). Use a smaller model, or set its target to cpu. "
+            "(8.0 GiB total, 90% headroom). Use a smaller model, or set its target to cpu. "
             "Another process (8.0 GiB) holds the rest."
         )
 
@@ -478,7 +478,7 @@ class TestAnotherProcessHoldsTheCard:
         plan = plan_beside_a_tenant(monkeypatch, tmp_path, 50 * MIB, CHAT_PINNED_EMBED_ON_CPU)
         assert plan.refused_roles[WorkerRole.CHAT] == (
             "chat pinned to device 0 needs 1.0 GiB but device 0 has 45 MiB usable "
-            "(50 MiB total, 90% headroom). Use a smaller model, or set its target to cpu. "
+            "(8.0 GiB total, 90% headroom). Use a smaller model, or set its target to cpu. "
             "Another process (8.0 GiB) holds the rest."
         )
 
