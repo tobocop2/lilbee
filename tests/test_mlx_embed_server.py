@@ -590,7 +590,7 @@ def test_the_port_opens_only_after_the_model_loads() -> None:
         [sys.executable, "-c", _LOAD_RUNNER, str(SERVER), *_server_args(port)],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        text=True,
+        encoding="utf-8",
     )
     try:
         _wait_for_health(port)
