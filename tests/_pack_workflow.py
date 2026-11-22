@@ -89,8 +89,8 @@ def pack_workflow() -> Path:
     pytest.skip(message)
 
 
-def pack_cells(engine: str) -> list[dict[str, Any]]:
-    """The cells of one engine in ENGINE_PACKS_CELLS; fail in CI if unset, else skip."""
+def _pack_engine(engine: str) -> dict[str, Any]:
+    """The entry of one engine in ENGINE_PACKS_CELLS; fail in CI if unset, else skip."""
     path = os.environ.get(CELLS_ENV)
     if not path:
         message = f"{CELLS_ENV} names the cells file of the engine-packs repository"
@@ -98,4 +98,14 @@ def pack_cells(engine: str) -> list[dict[str, Any]]:
             pytest.fail(message, pytrace=False)
         pytest.skip(message)
     engines = yaml.safe_load(Path(path).read_text(encoding="utf-8"))["engines"]
-    return cast(list[dict[str, Any]], engines[engine]["cells"])
+    return cast(dict[str, Any], engines[engine])
+
+
+def pack_cells(engine: str) -> list[dict[str, Any]]:
+    """The cells of one engine in ENGINE_PACKS_CELLS; fail in CI if unset, else skip."""
+    return cast(list[dict[str, Any]], _pack_engine(engine)["cells"])
+
+
+def pack_pins(engine: str) -> dict[str, str]:
+    """The pins of one engine in ENGINE_PACKS_CELLS; fail in CI if unset, else skip."""
+    return cast(dict[str, str], _pack_engine(engine)["pins"])
