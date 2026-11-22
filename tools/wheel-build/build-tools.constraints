@@ -1,4 +1,6 @@
-# The Python build tools of the engine packs. pip and the build isolation read this file through PIP_CONSTRAINT.
+# The Python build tools of the engine packs. install_build_tools of pack_common.sh installs them with
+# `pip install --require-hashes --force-reinstall -r`, so this file lists every tool and what the tool needs. The build
+# runs without isolation and uses the setuptools of this file.
 # The version of setuptools is in the WHEEL file of each pack, so a new version changes the bytes of every pack.
 build==1.6.1 \
     --hash=sha256:ecd351a4be9d35a9eaaba244a7687143c9c7d4aea6ac964e7e7ddab20cbcf4e7
