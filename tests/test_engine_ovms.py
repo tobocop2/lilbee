@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,7 @@ def test_a_missing_install_says_where_to_get_the_server(monkeypatch: pytest.Monk
     assert text.startswith("The OpenVINO Model Server engine is not installed. ")
     assert INSTALL_DOCS in text
     assert "PATH" in text
+    assert "LD_LIBRARY_PATH" in text
     assert "lilbee engine install" not in text
 
 
@@ -219,6 +221,63 @@ def test_the_engine_row_says_install_it_yourself_with_its_docs_link(
     )
 
 
+def _archive(root: Path, *, lib: bool = True) -> Path:
+    """An unpacked release archive: ``ovms/bin/ovms`` and, when asked, ``ovms/lib``."""
+    (root / "ovms" / "bin").mkdir(parents=True)
+    if lib:
+        (root / "ovms" / "lib").mkdir()
+    binary = root / "ovms" / "bin" / "ovms"
+    binary.write_text("", encoding="utf-8")
+    return binary
+
+
+def test_the_launch_env_puts_the_archive_lib_folder_on_the_library_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = _archive(tmp_path)
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": str(tmp_path / "ovms" / "lib")}
+
+
+def test_the_launch_env_keeps_a_library_path_already_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = _archive(tmp_path)
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/other")
+    expected = os.pathsep.join([str(tmp_path / "ovms" / "lib"), "/opt/other"])
+    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": expected}
+
+
+def test_the_launch_env_follows_a_link_to_the_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = _archive(tmp_path / "unpacked")
+    link_dir = tmp_path / "links"
+    link_dir.mkdir()
+    link = link_dir / "ovms"
+    link.symlink_to(binary)
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(link))
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    assert OVMS.runtime_env() == {"LD_LIBRARY_PATH": str(tmp_path / "unpacked" / "ovms" / "lib")}
+
+
+def test_the_launch_env_is_empty_when_the_binary_has_no_lib_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = _archive(tmp_path, lib=False)
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: str(binary))
+    assert OVMS.runtime_env() == {}
+
+
+def test_the_launch_env_is_empty_when_ovms_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ovms.shutil, "which", lambda name: None)
+    assert OVMS.runtime_env() == {}
+
+
 def test_the_engine_has_no_optional_features_to_probe() -> None:
     assert OVMS.supports_architecture("anything") is True
     probe = OVMS.discover_devices(BINARY)
@@ -232,7 +291,6 @@ def test_the_engine_has_no_optional_features_to_probe() -> None:
     )
     assert OVMS.model_meta(MODEL) is None
     assert OVMS.assert_loadable("repo", "file", None) is None  # type: ignore[arg-type]
-    assert OVMS.runtime_env() == {}
     assert OVMS.target_env(RoleTarget.CPU, 1) == {}
 
 

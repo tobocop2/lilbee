@@ -611,12 +611,12 @@ An `xdna` reference names an NPU model by its tag, as in `qwen3:0.6b#xdna`. The 
 writes a small record and no weights. The record lists the model as installed, so you can
 assign it to a role. Lemonade downloads the model the first time it loads it.
 
-**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 ### Install an engine
 
 An engine that is not bundled needs a pack. Packs of ik_llama.cpp, mistral.rs and
-TEI are published for Linux x86_64. No pack of mlx, openvino or lemonade is published
+TEI are published for Linux x86_64. No pack of mlx, openvino, lemonade or ovms is published
 yet, so those engines refuse to install and print the no-pack text. A host with no pack
 for its platform gets the same text. Nothing is installed, and llama.cpp stays in use.
 
@@ -658,16 +658,23 @@ no pack is published.
 
 OpenVINO Model Server (`ovms`) has no pack, so you install it yourself. Follow the
 [OpenVINO Model Server install guide](https://docs.openvino.ai/2026/model-server/ovms_docs_deploying_server_baremetal.html)
-for version 2026.4.1 on Linux x86_64. It puts `ovms/lib` on `LD_LIBRARY_PATH` and `ovms/bin`
-on `PATH`. lilbee finds `ovms` there, and `lilbee engine list` no longer lists ovms as not
-installed.
+for version 2026.4.1 on Linux x86_64. The guide downloads the 2026.4.0 archive. Download
+`ovms_ubuntu24_2026.4.1_python_off.tar.gz` from the
+[2026.4.1 release](https://github.com/openvinotoolkit/model_server/releases/tag/v2026.4.1)
+instead, then put `ovms/bin` on `PATH`. lilbee finds `ovms` there, and `lilbee engine list`
+no longer lists ovms as not installed. When `ovms/lib` sits next to `ovms/bin`, lilbee adds it to
+`LD_LIBRARY_PATH` for the server it starts. Without that folder on the variable, `ovms` fails
+to load `libtbb`. If your `ovms` has another layout, set `LD_LIBRARY_PATH` yourself.
+
+lilbee records the engine version as 2026.4.1, the version it was tested with, whatever
+version `ovms` is.
 
 OpenVINO Model Server serves chat, embed and rerank of OpenVINO IR models (`org/repo#openvino`)
 on the CPU, an Intel GPU or an Intel NPU. It is the one engine that offers embed and rerank on
 the Intel NPU. lilbee offers the NPU target only on a computer with an Intel NPU. lilbee has no
 recorded run of OpenVINO Model Server on any device.
 
-**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade or OpenVINO), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
