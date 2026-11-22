@@ -296,11 +296,14 @@ def _escape(char: str, upper: bool) -> str:
 def _spell(tokens: tuple[_Token, ...], data: st.DataObject, kept: frozenset[str] = _KEPT) -> str:
     """One spelling of *tokens*: each character raw or escaped where that keeps the address.
 
-    One draw gives two choice bits for each character (escaped or raw, upper or lower case
-    hex). A draw for each choice made this test spend most of its time in Hypothesis itself,
-    which a loaded host stretched past the test timeout.
+    One draw of ``ceil(2 * len(tokens) / 8)`` bytes gives two independent, fair choice bits for
+    each character (escaped or raw, upper or lower case hex). A draw for each choice made this
+    test spend most of its time in Hypothesis itself, which a loaded host stretched past the
+    test timeout. A bounded integer draw is not used: Hypothesis samples it by bit length, so
+    the late characters of a long segment would almost never be escaped.
     """
-    choices = data.draw(st.integers(0, (1 << (2 * len(tokens))) - 1)) if tokens else 0
+    size = (2 * len(tokens) + 7) // 8
+    choices = int.from_bytes(data.draw(st.binary(min_size=size, max_size=size)), "little")
     spelled = []
     for position, token in enumerate(tokens):
         escaped = bool(choices >> (2 * position) & 1)
@@ -469,6 +472,48 @@ def test_two_pages_keep_two_saved_paths(one: str, other: str):
 @pytest.mark.parametrize(("one", "other"), _SAME)
 def test_two_spellings_of_one_page_share_a_saved_path(one: str, other: str):
     assert url_to_filename(one) == url_to_filename(other)
+
+
+class _FixedBytes:
+    """A stand-in for ``data`` that hands back chosen bytes and records the strategy it was given."""
+
+    def __init__(self, value: bytes) -> None:
+        self.value = value
+        self.draws: list[Any] = []
+
+    def draw(self, strategy: Any) -> bytes:
+        self.draws.append(strategy)
+        return self.value
+
+
+def _long_segment() -> tuple[_Token, ...]:
+    return tuple(_Token("a", kept_escape=False) for _ in range(40))
+
+
+def test_a_spelling_can_escape_every_character_of_a_long_segment():
+    data = _FixedBytes(b"\x55" * 10)  # every escape bit set, every case bit clear
+    assert _spell(_long_segment(), data) == "%61" * 40  # type: ignore[arg-type]
+    assert len(data.draws) == 1
+
+
+def test_a_spelling_can_escape_only_the_last_character_of_a_long_segment():
+    data = _FixedBytes(bytes(9) + b"\x40")  # only the escape bit of position 39 (bit 78)
+    assert _spell(_long_segment(), data) == "a" * 39 + "%61"  # type: ignore[arg-type]
+
+
+def test_the_last_character_of_a_long_segment_is_escaped_about_half_the_time():
+    drawn: list[bytes] = []
+
+    @given(st.data())
+    @settings(max_examples=200, deadline=None)
+    def run(data: st.DataObject) -> None:
+        spelled = _spell(_long_segment(), data)
+        drawn.append(spelled.encode())
+
+    run()
+    last_escaped = sum(1 for s in drawn if s.endswith(b"%61"))
+    # Fair bits: the last character is escaped in about half of the draws.
+    assert 0.3 < last_escaped / len(drawn) < 0.7
 
 
 def test_a_long_address_is_cut_to_a_path_every_file_system_accepts():
