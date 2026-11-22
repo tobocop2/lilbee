@@ -34,7 +34,8 @@ the same behavior, so a developer can reproduce a CI build off-runner.
   its router.
 - `pack_common.sh` — the functions that the pack scripts share.
 - `build-tools.constraints` — the pinned Python build tools of the packs.
-  `tei-tools.constraints` adds the ones that only the text-embeddings-inference pack needs.
+  `tei-tools-linux.constraints` and `tei-tools-macos.constraints` add the ones that only one
+  build of the text-embeddings-inference pack needs.
 - `check_glibc_floor.sh` — fails when a file in a pack imports glibc above 2.34
   or libstdc++ above 3.4.29.
 - `build_lilbee_binary.sh` — Nuitka one-file build of the lilbee standalone
