@@ -10,6 +10,8 @@ full-corpus run. OCR ingest is GPU-bound, so these lock in a default capped at
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,8 @@ from lilbee.core.config import cfg
 from lilbee.data import offload
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import replicas
+
+_REAL_RESOLVE_REPLICA_COUNT = replicas.resolve_replica_count
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +93,7 @@ def test_the_shared_pool_is_sized_without_probing_the_devices(
     monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
     monkeypatch.delenv("LILBEE_INGEST_MAX_WORKERS", raising=False)
     probes: list[str] = []
-    monkeypatch.setattr(offload, "embed_inflight_target", lambda: probes.append("probe") or 64)
+    monkeypatch.setattr(offload, "fleet_inflight_target", lambda: probes.append("probe") or 64)
     assert offload._ingest_executor()._max_workers == 12
     assert probes == []
 
@@ -113,6 +117,90 @@ def test_embed_inflight_target_is_zero_when_the_device_probe_fails(
     assert offload.embed_inflight_target() == 0
     # A single-replica stub also returns 0, so pin that the raising probe ran.
     assert probed
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _fleet_of_two_cards_after_a_failed_probe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> _Clock:
+    """Wire the real sizing path to a device probe that fails once, then finds two cards."""
+    from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet.devices import FleetDevice
+
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"engine")
+    engine = SimpleNamespace(binary=lambda: binary)
+    services = SimpleNamespace(
+        engines=SimpleNamespace(for_role=lambda _role: SimpleNamespace(adapter=engine))
+    )
+    monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+    monkeypatch.setattr(replicas, "resolve_replica_count", _REAL_RESOLVE_REPLICA_COUNT)
+    monkeypatch.setattr(cfg, "embed_replicas", 0)
+    cards = [FleetDevice("CUDA", i, "gpu", 24 * 1024**3, 23 * 1024**3) for i in range(2)]
+    outcomes: list[object] = [ProviderError("the device probe did not respond"), cards]
+
+    def _probe(_binary: Path, _engine: object) -> planning.DeviceReading:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return planning.DeviceReading(list(outcome), planning.EngineBackend.UNKNOWN)
+
+    clock = _Clock()
+    monkeypatch.setattr(planning, "_read_devices", _probe)
+    monkeypatch.setattr(planning, "time", SimpleNamespace(monotonic=clock.monotonic))
+    monkeypatch.setattr(
+        planning,
+        "_read_device_cache",
+        planning._ReadDeviceCache(
+            planning._DEVICE_PROBE_TTL_S, planning._DEVICE_PROBE_FAILURE_TTL_S
+        ),
+    )
+    monkeypatch.setattr(offload.os, "cpu_count", lambda: 8)
+    return clock
+
+
+def test_a_failed_probe_gives_the_cpu_default_only_until_the_failure_window_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lilbee.providers.fleet import planning
+
+    clock = _fleet_of_two_cards_after_a_failed_probe(monkeypatch, tmp_path)
+    assert offload.max_workers() == 12
+    clock.now += planning._DEVICE_PROBE_FAILURE_TTL_S - 1
+    assert offload.max_workers() == 12
+    clock.now += 2
+    assert offload.max_workers() == 16
+
+
+def test_a_recovered_sizing_is_kept(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    clock = _fleet_of_two_cards_after_a_failed_probe(monkeypatch, tmp_path)
+    assert offload.max_workers() == 12
+    clock.now += 61
+    assert offload.max_workers() == 16
+    clock.now += 600  # a later probe would find a failure, but the sizing is kept
+    assert offload.max_workers() == 16
+
+
+async def test_a_run_keeps_the_pool_size_it_was_built_with(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A probe that recovers during a run does not lift the ceiling above the live pool."""
+    clock = _fleet_of_two_cards_after_a_failed_probe(monkeypatch, tmp_path)
+
+    @offload.owns_ingest_pool
+    async def run() -> int:
+        clock.now += 61
+        return offload.max_workers()
+
+    assert await run() == 12
+    assert offload.max_workers() == 16
 
 
 def test_embed_inflight_target_raises_an_unexpected_error(
