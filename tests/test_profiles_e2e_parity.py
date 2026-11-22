@@ -742,7 +742,8 @@ async def _tab(app: LilbeeApp, pilot: Pilot) -> SettingsScreen:
 
     def _ready() -> bool:
         screens = [s for s in app.screen_stack if isinstance(s, SettingsScreen)]
-        if not screens or not screens[0].query(ProfileTab):
+        # The tab joins the tree before it composes the dropdown.
+        if not screens or not any(tab.is_mounted for tab in screens[0].query(ProfileTab)):
             return False
         line = screens[0].query_one("#profile-line-name", Static)
         select = screens[0].query_one("#profile-select", Select)
