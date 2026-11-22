@@ -43,11 +43,11 @@ class SignalFlag:
 
 @contextmanager
 def sigint_cancel() -> Iterator[SignalFlag]:
-    """Turn Ctrl-C into a token the wiki pass polls, not a mid-page abort.
+    """Turn Ctrl-C into a token a long run polls, not a mid-write abort.
 
-    A build runs for hours and writes pages as it goes, so the default
-    KeyboardInterrupt drops it wherever the interpreter happened to be. Setting
-    a token instead lets it stop at a source boundary with what it wrote intact.
+    A wiki build, a sync, an add, a crawl or an analyze writes as it goes, so the
+    default KeyboardInterrupt drops it wherever the interpreter happened to be.
+    Setting a token instead lets it stop at a boundary with what it wrote intact.
     The handler stays installed until the scope exits, where the previous handler
     returns on the main thread. A second Ctrl-C reaches the handler and raises
     KeyboardInterrupt, so a pass that never checks the token still stops.
