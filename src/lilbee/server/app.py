@@ -29,7 +29,7 @@ from lilbee.app.services import (
     set_config_refresh,
     wait_for_opens,
 )
-from lilbee.app.settings import config_write_failure_message
+from lilbee.app.settings import config_write_failure_message, use_installed_models_for_this_run
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.core.security import FileLockUnavailableError
@@ -328,7 +328,13 @@ class _ConfigFileReload(ASGIMiddleware):
 
 
 def _start_services() -> None:
-    """Build the services before the server serves; a failed build ends the startup."""
+    """Build the services before the server serves; a failed build ends the startup.
+
+    The model refs are resolved first, as ``lilbee ask`` resolves them, so the
+    services and the chat routes see the same installed model.
+    """
+    for notice in use_installed_models_for_this_run(chat_overridden=False):
+        log.info("%s", notice)
     try:
         services = get_services()
     except ServicesStoppingError:
