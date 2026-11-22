@@ -260,6 +260,19 @@ def test_the_presets_target_reaches_the_toy_run_without_its_test_file() -> None:
     assert not any(a.endswith(".py") or a.startswith("tests/") for a in args)
 
 
+def test_a_target_naming_no_test_file_keeps_all_its_arguments() -> None:
+    line = "uv run pytest -v -n logical --dist loadgroup --max-worker-restart=0"
+    assert _line_pytest_args(line) == [
+        "-v",
+        "-n",
+        "logical",
+        "--dist",
+        "loadgroup",
+        "--max-worker-restart=0",
+    ]
+    assert {"-v", "-n", "--dist", "--max-worker-restart=0"} <= set(_XDIST_TARGETS["test"])
+
+
 @pytest.mark.timeout(_RUN_BUDGET_S * 2)
 @pytest.mark.parametrize("target", sorted(_XDIST_TARGETS))
 def test_a_dead_worker_fails_the_run_instead_of_hanging_it(target: str, tmp_path: Path) -> None:
