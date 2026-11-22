@@ -41,7 +41,8 @@ fi
 
 ${run[@]+"${run[@]}"} "${router}" --model-id "${model}" --hostname 127.0.0.1 --port "${port}" > "${work}/router.log" 2>&1 &
 pid=$!
-trap 'kill "${pid}" 2>/dev/null || true' EXIT
+# The next run uses the same port, so this run ends only when its router has ended.
+trap 'kill "${pid}" 2>/dev/null || true; wait "${pid}" 2>/dev/null || true' EXIT
 for _ in $(seq 1 120); do
   if curl -fsS "http://127.0.0.1:${port}/health" > /dev/null 2>&1; then break; fi
   kill -0 "${pid}" 2>/dev/null || { cat "${work}/router.log"; echo "the router stopped"; exit 1; }
