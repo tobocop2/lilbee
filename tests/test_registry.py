@@ -201,8 +201,9 @@ class TestSharedBlobStore:
         nested = cache / "snapshots" / _FAKE_REV / "blobs" / "m.gguf"
         nested.parent.mkdir()
         nested.symlink_to(Path("..") / ".." / ".." / "blobs" / etag)
-        projector = cache / "snapshots" / _FAKE_REV / "blobs" / "mmproj-f16.gguf"
-        projector.symlink_to(Path("..") / ".." / ".." / "blobs" / etag)
+        # The projector lookup reads the top of the snapshot folder, as at the base.
+        projector = cache / "snapshots" / _FAKE_REV / "mmproj-f16.gguf"
+        projector.symlink_to(Path("..") / ".." / "blobs" / etag)
 
         assert repo_blob_entry(nested) == cache / "blobs" / etag
         registry = ModelRegistry(tmp_path)
