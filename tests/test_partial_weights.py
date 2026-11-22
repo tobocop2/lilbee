@@ -21,8 +21,7 @@ from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import AttentionShape, GgufVramEstimate
 from lilbee.providers.roles import WorkerRole
-from tests._gguf_fixture import GGUF_MAGIC, GGUF_VERSION
-from tests._stated_sizes import state_size
+from tests._gguf_fixture import GGUF_MAGIC, GGUF_VERSION, cut_file_of
 
 _F32 = 0
 _UINT32 = 4
@@ -300,26 +299,11 @@ class TestAFileThatVanishes:
 _GIB = 1024**3
 
 
-def _cut_file_of(path: Path, declared_bytes: int, size: int) -> Path:
-    """A one-tensor F32 GGUF that declares *declared_bytes* of data and states *size* bytes."""
-    infos = (
-        _string(b"t0")
-        + struct.pack("<I", 1)
-        + struct.pack("<Q", declared_bytes // 4)
-        + struct.pack("<I", _F32)
-        + struct.pack("<Q", 0)
-    )
-    head = GGUF_MAGIC + struct.pack("<IQQ", GGUF_VERSION, 1, 0) + infos
-    path.write_bytes(head + b"\0" * (-len(head) % 32))
-    state_size(path, size)
-    return path
-
-
 @pytest.mark.usefixtures("stated_sizes")
 class TestACutFileLargerThanTheReserve:
     def test_it_is_charged_at_least_its_size_on_disk(self, tmp_path: Path) -> None:
         size = mm.UNKNOWN_SIZE_RESERVE_BYTES + _GIB
-        model = _cut_file_of(tmp_path / "big.gguf", declared_bytes=size + 4 * _GIB, size=size)
+        model = cut_file_of(tmp_path / "big.gguf", declared_bytes=size + 4 * _GIB, size=size)
         est = mm.estimate_gguf(_request(model))
         assert (est.kind, est.size_known, est.device_bytes) == (
             MemoryKind.FIXED_RESERVE,
@@ -328,13 +312,13 @@ class TestACutFileLargerThanTheReserve:
         )
 
     def test_a_cut_file_under_the_reserve_is_charged_the_reserve(self, tmp_path: Path) -> None:
-        model = _cut_file_of(tmp_path / "small.gguf", declared_bytes=4096, size=60)
+        model = cut_file_of(tmp_path / "small.gguf", declared_bytes=4096, size=60)
         assert _is_unknown(mm.estimate_gguf(_request(model)))
 
     def test_a_split_set_missing_a_shard_is_charged_its_shards_on_disk(
         self, tmp_path: Path
     ) -> None:
-        first = _cut_file_of(
+        first = cut_file_of(
             tmp_path / "big-00001-of-00002.gguf",
             declared_bytes=mm.UNKNOWN_SIZE_RESERVE_BYTES + 4 * _GIB,
             size=mm.UNKNOWN_SIZE_RESERVE_BYTES + _GIB,
@@ -370,7 +354,7 @@ class TestACutFileOnTheCpuDecodePath:
         flash_attn: bool,
         size: int,
     ) -> None:
-        model = _cut_file_of(tmp_path / "m.gguf", declared_bytes=size + 4 * _GIB, size=size)
+        model = cut_file_of(tmp_path / "m.gguf", declared_bytes=size + 4 * _GIB, size=size)
         request = replace(_request(model), on_cpu=True, flash_attn=flash_attn)
         est = LLAMA.estimate_memory(request)
         charge = max(mm.UNKNOWN_SIZE_RESERVE_BYTES, size)
