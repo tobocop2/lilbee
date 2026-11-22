@@ -63,7 +63,13 @@ def _is_helper_call(value: ast.expr) -> bool:
 
 
 def pythonpath_writes(source: str) -> list[tuple[int, bool]]:
-    """Each write to PYTHONPATH in *source* as ``(line, sealed)``."""
+    """Each write to PYTHONPATH in *source* as ``(line, sealed)``.
+
+    Every write holds the name as text, so a source without it is not parsed: the test files
+    hold over 15 MB, and a parse of all of them takes over a minute under gate load.
+    """
+    if _NAME not in source:
+        return []
     return [(value.lineno, _is_helper_call(value)) for value in _written_values(ast.parse(source))]
 
 
@@ -112,6 +118,11 @@ def test_a_write_with_the_helper_passes(source: str) -> None:
 )
 def test_a_read_of_pythonpath_is_no_write(source: str) -> None:
     assert pythonpath_writes(source) == []
+
+
+def test_a_source_without_the_name_is_not_parsed() -> None:
+    # Not Python at all: a parse would raise SyntaxError.
+    assert pythonpath_writes("def (:") == []
 
 
 def test_no_test_sets_pythonpath_without_the_helper() -> None:
