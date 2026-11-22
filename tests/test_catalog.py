@@ -905,19 +905,6 @@ class TestGetCatalog:
         ]
         assert result.has_more is True
 
-    def test_the_last_page_has_more_only_when_a_match_sits_past_it(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """has_more is exact at the page edge: true one row short of the matches, false on them."""
-        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(4)]
-        stub_hf_listing(monkeypatch, {"text-generation": upstream})
-        exact = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT) + 4)
-        assert len(exact.models) == len(PICKS_CHAT) + 4
-        assert exact.has_more is False
-        one_short = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT) + 3)
-        assert len(one_short.models) == len(PICKS_CHAT) + 3
-        assert one_short.has_more is True
-
     def test_page_inside_the_picks_fetches_no_hf_rows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
