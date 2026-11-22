@@ -111,11 +111,19 @@ class TestTheRepackedCopy:
         assert cpu.resident_footprint(unified=True) == CPU_CHARGE
         assert card.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
 
-    def test_the_alternate_build_is_charged_no_copy(self, model: Path) -> None:
+    def test_the_alternate_build_keeps_the_cpu_chat_figure_without_the_copy(
+        self, model: Path
+    ) -> None:
         from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 
         estimate = IK_LLAMA.estimate_memory(_request(model, on_cpu=True))
-        assert estimate.resident_footprint(unified=True) == UNIFIED + FILE_SIZE
+        assert estimate.resident_footprint(unified=True) == CPU_CHARGE - REPACKED
+
+    def test_the_alternate_build_on_a_card_is_charged_as_llama_cpp(self, model: Path) -> None:
+        from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+
+        request = _request(model, on_cpu=False)
+        assert IK_LLAMA.estimate_memory(request) == LLAMA.estimate_memory(request)
 
 
 COMPUTE_BUFFER = 4000
@@ -162,6 +170,12 @@ class TestTheComputeBuffer:
         assert cpu.resident_footprint(unified=True) == (
             HOST_PART + COMPUTE_BUFFER + FILE_SIZE + REPACKED
         )
+
+    def test_the_alternate_build_backs_the_buffer_without_the_copy(self, model: Path) -> None:
+        from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+
+        cpu = IK_LLAMA.estimate_memory(self._pooled(model))
+        assert cpu.resident_footprint(unified=True) == HOST_PART + COMPUTE_BUFFER + FILE_SIZE
 
     def test_a_cpu_chat_load_keeps_the_parser_figure(self, model: Path) -> None:
         chat = model_memory_mod.estimate_gguf(_request(model, on_cpu=True))

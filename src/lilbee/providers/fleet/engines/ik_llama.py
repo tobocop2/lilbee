@@ -190,7 +190,12 @@ class IkLlamaAdapter:
         return LLAMA.target_env(target, cards)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        return LLAMA.estimate_memory(dataclasses.replace(request, on_cpu=False))
+        """The llama.cpp figure without the repacked copy: this CPU build loads none.
+
+        Its resident memory on the CPU does not grow with the Q4_0, Q4_K or IQ4_NL weights
+        that the llama.cpp CPU build repacks.
+        """
+        return LLAMA.estimate_memory(dataclasses.replace(request, cpu_repack=False))
 
     def check_readback(self, binary: Path) -> bool:
         return LLAMA.check_readback(binary)
