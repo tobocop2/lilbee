@@ -2925,6 +2925,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--no-mmap",
     "--load-mode",
     "--no-prefill-assistant",
+    "--no-context-shift",
     "--reasoning-format",
     "--embeddings",
     "--pooling",

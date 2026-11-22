@@ -434,6 +434,40 @@ def test_the_argv_is_the_llama_cpp_argv_with_context_shift_off_for_every_role(
         ]
 
 
+_HELP_POOLING = _HELP_BOTH + "  --pooling TYPE  pooling\n"
+_HELP_CONTEXT_SHIFT = _HELP_POOLING + "         --no-context-shift  disable context-shift.\n"
+
+
+@pytest.mark.parametrize("role", list(WorkerRole), ids=lambda role: role.value)
+def test_a_binary_set_as_the_llama_server_path_starts_with_context_shift_off(
+    role: WorkerRole, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The llama.cpp adapter reads the flag from the help of the binary, ik_llama.cpp layout."""
+    monkeypatch.setattr(fleet_adapters, "engine_help", lambda _b: _HELP_CONTEXT_SHIFT)
+    argv = LLAMA.launch_argv(LLAMA.role_spec(role, None, None), _request())
+    assert argv.count("--no-context-shift") == 1
+
+
+@pytest.mark.parametrize("role", list(WorkerRole), ids=lambda role: role.value)
+def test_a_binary_whose_help_omits_context_shift_gets_no_flag_from_the_llama_adapter(
+    role: WorkerRole, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fleet_adapters, "engine_help", lambda _b: _HELP_POOLING)
+    argv = LLAMA.launch_argv(LLAMA.role_spec(role, None, None), _request())
+    assert "--no-context-shift" not in argv
+
+
+@pytest.mark.parametrize("role", sorted(IK_LLAMA.served_roles), ids=lambda role: role.value)
+def test_the_pack_adapter_writes_the_context_shift_flag_once_when_the_help_lists_it(
+    role: WorkerRole, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fleet_adapters, "engine_help", lambda _b: _HELP_CONTEXT_SHIFT)
+    spec = IK_LLAMA.role_spec(role, None, None)
+    argv = IK_LLAMA.launch_argv(spec, _request())
+    assert argv.count("--no-context-shift") == 1
+    assert argv == LLAMA.launch_argv(LLAMA.role_spec(role, None, None), _request())
+
+
 @pytest.mark.parametrize("target", [RoleTarget.GPU, RoleTarget.CPU], ids=["gpu", "cpu"])
 def test_the_chat_server_starts_with_context_shift_off_on_every_target(
     target: RoleTarget, monkeypatch: pytest.MonkeyPatch
