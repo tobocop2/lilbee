@@ -121,10 +121,9 @@ PY
 build_wheel() {
   (
     cd "${WHEEL_TREE}"
-    # A relative path: pip splits the value at a space, and Windows Python does not read a Git Bash path.
-    export PIP_CONSTRAINT=../../tools/wheel-build/build-tools.constraints
-    python -m pip install build wheel
-    python -m build --wheel -C--build-option="--build-number=1.${BACKEND}"
+    # A relative path: Windows Python does not read a Git Bash path.
+    install_build_tools python ../../tools/wheel-build/build-tools.constraints
+    build_wheel_with_tools python -C--build-option="--build-number=1.${BACKEND}"
     python -m wheel tags --remove --platform-tag "${PLATFORM}" dist/*.whl
     ls dist
   )
