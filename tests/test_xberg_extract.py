@@ -217,6 +217,13 @@ async def test_aextract_batch_sends_no_progress_callback_when_no_item_has_one():
     assert captured["on_progress"] is None
 
 
+# xberg #3174: this test fails now and then, not always. A pass does not show the mark is stale.
+@pytest.mark.xfail(
+    strict=False,
+    reason="xberg #3174 (https://github.com/xberg-io/xberg/issues/3174): the paddle-ocr fallback "
+    "reports a page that tesseract already reported. Remove this mark when lilbee moves to an "
+    "xberg release on PyPI that has the fix and all five platform wheels.",
+)
 @pytest.mark.asyncio
 async def test_real_xberg_batch_reports_ocr_pages_per_input_under_per_file_ocr_overrides():
     """Real xberg: two PDFs with their own OCR configs each get only their own page events."""
