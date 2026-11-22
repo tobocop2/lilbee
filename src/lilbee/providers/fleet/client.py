@@ -1261,16 +1261,15 @@ class LlamaServerClient:
         """Record how many inputs the server cut; a failure pauses the check, never raises."""
         if time.monotonic() < self._check_resume_at:
             return
-        route = self._profile.input_limit_path
         try:
             limit = self._input_limit()
             path = self._profile.input_count_path
             if limit is None or path is None:
                 return
-            route = path
             cut = sum(self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches)
-        except _TRUNCATION_CHECK_FAILURES as exc:
-            self._pause_truncation_check(exc, route)
+        except _TRUNCATION_CHECK_FAILURES:
+            # The thread that sent the failed request paused the check before it let go
+            # of the request, so every thread that reaches here finds the pause set.
             return
         note_truncated(cut, total, limit)
 
@@ -1305,13 +1304,29 @@ class LlamaServerClient:
             )
         self._raise_for_status(resp)
 
-    def _single_flight(self, key: tuple[Any, ...], request: Callable[[], _T]) -> _T:
+    def _pausing(self, route: str) -> Callable[[BaseException], None]:
+        """A failure hook for ``_single_flight`` that pauses the check when *route* fails."""
+
+        def pause(exc: BaseException) -> None:
+            if isinstance(exc, _TRUNCATION_CHECK_FAILURES):
+                self._pause_truncation_check(exc, route)
+
+        return pause
+
+    def _single_flight(
+        self,
+        key: tuple[Any, ...],
+        request: Callable[[], _T],
+        *,
+        on_failure: Callable[[BaseException], None] | None = None,
+    ) -> _T:
         """The answer of *request*, sent once for all the threads that ask for *key* together.
 
         The first thread to ask sends it. A thread that asks while it runs waits for that
         answer, or its failure, so a hung route holds each caller once and takes one
         request, not one for each thread. The slot clears when the request ends, whatever
-        way it ends, so a later caller sends a new one.
+        way it ends, so a later caller sends a new one. *on_failure* runs before the slot
+        clears, so a caller that asks after the clear already finds what it set.
         """
         with self._flights_lock:
             flight = self._flights.get(key)
@@ -1324,6 +1339,8 @@ class LlamaServerClient:
         try:
             answer = request()
         except BaseException as exc:
+            if on_failure is not None:
+                on_failure(exc)
             flight.set_exception(exc)
             raise
         else:
@@ -1338,7 +1355,9 @@ class LlamaServerClient:
         path = self._profile.input_limit_path
         if path is None:
             return self._max_input
-        return self._single_flight(("limit",), lambda: self._read_input_limit(path))
+        return self._single_flight(
+            ("limit",), lambda: self._read_input_limit(path), on_failure=self._pausing(path)
+        )
 
     def _read_input_limit(self, path: str) -> int:
         if self._max_input is None:
@@ -1375,8 +1394,9 @@ class LlamaServerClient:
             counts = self._count_route_tokens(path, texts, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
             return sum(len(tokens) > limit for tokens in counts)
 
+        pausing = self._pausing(path)
         if self._count_route_answered:
-            return self._single_flight(("count", tuple(texts)), count)
+            return self._single_flight(("count", tuple(texts)), count, on_failure=pausing)
 
         def first_probe() -> tuple[tuple[str, ...], int]:
             probed = count()
@@ -1386,10 +1406,14 @@ class LlamaServerClient:
         # Until the route has answered once, one thread probes it, whatever it counts. The
         # other threads wait for that probe: a failure reaches them. A success serves the
         # threads that count the same texts, and each other thread counts its own.
-        probed_texts, probed = self._single_flight(("first-probe", path), first_probe)
+        # One request at a time goes to a route that has not answered: a slow route gets no
+        # parallel counts from the first embeds, and a hung route gets one.
+        probed_texts, probed = self._single_flight(
+            ("first-probe", path), first_probe, on_failure=pausing
+        )
         if probed_texts == tuple(texts):
             return probed
-        return self._single_flight(("count", tuple(texts)), count)
+        return self._single_flight(("count", tuple(texts)), count, on_failure=pausing)
 
     def _embed_subbatch(self, sub_batch: list[str]) -> list[dict[str, Any]]:
         """Embed one estimate-budgeted sub-batch, re-truncating exactly on overflow.

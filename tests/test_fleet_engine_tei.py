@@ -1406,6 +1406,45 @@ def test_four_first_embeds_of_different_texts_make_one_request_to_a_hung_count_r
     assert total < _CHECK_BOUND_S, f"four embeds took {total:.2f} s in all with /tokenize hung"
 
 
+def test_a_thread_that_asks_as_a_failed_probe_ends_sends_no_second_request(
+    monkeypatch, hung_side_route
+) -> None:
+    """The pause is set before the probe lets go, so a late thread waits on it, not on the route."""
+    serve, paths = hung_side_route
+    client = serve("/tokenize")
+    pause = client._pause_truncation_check
+    late: list[threading.Thread] = []
+    embedded: list[int] = []
+
+    def pause_after_a_late_ask(exc: Exception, route: str | None) -> None:
+        thread = threading.Thread(target=lambda: embedded.append(len(client.embed([_words(31)]))))
+        late.append(thread)
+        thread.start()
+        thread.join(0.5)
+        pause(exc, route)
+
+    monkeypatch.setattr(client, "_pause_truncation_check", pause_after_a_late_ask)
+    assert len(client.embed([_words(30)])) == 1
+    late[0].join()
+    assert embedded == [1]
+    assert sum(path.endswith("/tokenize") for path in paths) == 1
+
+
+def test_a_failure_that_is_not_a_router_answer_reaches_the_caller_and_pauses_nothing(
+    monkeypatch,
+) -> None:
+    client = _tei_client(_Embedder(), WorkerRole.EMBED)
+
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("not a router failure")
+
+    monkeypatch.setattr(client, "_count_route_tokens", broken)
+    with pytest.raises(RuntimeError, match="not a router failure"):
+        client.embed([_words(30)])
+    assert client._check_resume_at == 0.0
+    assert client._flights == {}
+
+
 def test_once_the_count_route_has_answered_threads_count_without_waiting_on_each_other(
     monkeypatch, hung_side_route
 ) -> None:
