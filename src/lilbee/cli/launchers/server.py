@@ -363,11 +363,15 @@ def spawn_server(
     child_env = {**os.environ, **(env_overrides or {}), PARENT_PID_ENV: str(os.getpid())}
 
     try:
+        # A session of its own keeps a terminal Ctrl-C to the launcher's group away
+        # from serve: the launcher's one SIGTERM is serve's first signal, so the
+        # clean stop runs instead of the second-signal force quit.
         return spawn_bound_child(
             cmd,
             stdout=stdout,
             stderr=stderr,
             env=child_env,
+            start_new_session=os.name == "posix",
         )
     finally:
         # Popen dups the fd into the child; the parent's handle is no longer
