@@ -556,7 +556,6 @@ class TestScreenTransitions:
                 await pilot.pause()
                 await settle_on_first_tab(pilot, app)
                 assert app.active_view == "Catalog"
-
                 await pilot.press("q")
                 await pilot.pause()
                 # Should be back at Chat (base screen)
@@ -1128,14 +1127,12 @@ class TestCatalogInteractions:
                 assert grid.display is True
                 assert list_container.display is False
 
-
                 await pilot.press("v")
                 await pilot.pause()
                 assert app.screen.has_class("-list-view")
                 assert not app.screen.has_class("-grid-view")
                 assert grid.display is False
                 assert list_container.display is True
-
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1168,7 +1165,6 @@ class TestCatalogInteractions:
                 list_container = app.screen._list_widget
                 assert grid.display is True
                 assert list_container.display is False
-
 
                 await pilot.press("v")
                 await pilot.pause()
@@ -1226,7 +1222,6 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
                 await settle_on_first_tab(pilot, app)
-
                 await pilot.press("slash")
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
@@ -1234,7 +1229,6 @@ class TestCatalogInteractions:
                 assert search.region.width > 0
                 assert search.region.height > 0
                 assert search.has_focus
-
                 await pilot.press("q", "w", "e", "n")
                 await pilot.pause()
                 assert search.value == "qwen"
@@ -1253,7 +1247,6 @@ class TestCatalogInteractions:
                 app.switch_view("Catalog")
                 await pilot.pause()
                 await settle_on_first_tab(pilot, app)
-
                 await pilot.press("slash")
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
@@ -1306,7 +1299,6 @@ class TestCatalogInteractions:
                 search = app.screen.query_one("#catalog-search")
                 search.value = "some-missing-model"
                 await pilot.pause()
-
 
                 await pilot.press("v")  # back to grid view
                 await pilot.pause()
@@ -1579,7 +1571,6 @@ class TestCatalogInteractions:
                 await settle_on_first_tab(pilot, app)
                 await pilot.press("v")
                 await pilot.pause()
-
                 await pilot.press("slash")
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
@@ -1639,7 +1630,6 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await settle_on_first_tab(pilot, app)
 
-
                 await pilot.press("v")
                 await pilot.pause()
 
@@ -1685,7 +1675,6 @@ class TestCatalogInteractions:
                 await settle_on_first_tab(pilot, app)
                 await pilot.pause()
 
-
                 await pilot.press("v")
                 await pilot.pause()
                 await pilot.pause()
@@ -1722,7 +1711,6 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await settle_on_first_tab(pilot, app)
 
-
                 await pilot.press("v")
                 await pilot.pause()
 
@@ -1750,11 +1738,8 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 await settle_on_first_tab(pilot, app)
 
-
                 await pilot.press("v")
                 await pilot.pause()
-                # Re-pin in case activation cascade reset it during pause.
-
                 assert app.screen._sort_column == "Name"
                 assert app.screen._sort_ascending is True
 
