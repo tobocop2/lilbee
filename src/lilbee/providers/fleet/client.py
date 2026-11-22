@@ -1250,14 +1250,44 @@ class LlamaServerClient:
             # Match the in-process embedder; the server rejects an empty input.
             return []
         vectors: list[Vector] = []
-        sub_batches = self._truncate_and_subbatch(texts, estimate=True)
+        counts = self._count_wide_inputs(texts)
+        sub_batches = self._truncate_and_subbatch(texts, estimate=True, counts=counts)
         for sub_batch in sub_batches:
             data = self._embed_subbatch(sub_batch)
             vectors.extend(_embedding_vector(item, self._profile) for item in data)
-        self._note_cut_inputs(sub_batches, len(texts))
+        self._note_cut_inputs(sub_batches, len(texts), counts)
         return vectors
 
-    def _note_cut_inputs(self, sub_batches: list[list[str]], total: int) -> None:
+    def _count_wide_inputs(self, texts: list[str]) -> dict[str, int]:
+        """Exact token counts of the inputs whose estimate is past the cap, in few requests.
+
+        Only an engine with a count route and no tokenize route asks. A failed request
+        pauses the check and leaves the inputs to the estimate, as an engine with no route.
+        """
+        path = self._profile.input_count_path
+        cap = self._token_cap
+        if cap is None or path is None or self._profile.tokenize_path is not None:
+            return {}
+        wide = [text for text in dict.fromkeys(texts) if _estimate_tokens(text) > cap]
+        if not wide or time.monotonic() < self._check_resume_at:
+            return {}
+        step = self._batch_limit or _EMBED_N_SEQ_MAX
+        counts: dict[str, int] = {}
+        try:
+            for start in range(0, len(wide), step):
+                part = wide[start : start + step]
+                answer = self._count_route_tokens(path, part, timeout=_TRUNCATION_CHECK_TIMEOUT_S)
+                if len(answer) != len(part):
+                    raise ValueError(f"{len(answer)} token lists for {len(part)} inputs")
+                counts.update(zip(part, map(len, answer), strict=True))
+        except _TRUNCATION_CHECK_FAILURES as exc:
+            self._pause_truncation_check(exc, path)
+            return {}
+        return counts
+
+    def _note_cut_inputs(
+        self, sub_batches: list[list[str]], total: int, counts: Mapping[str, int]
+    ) -> None:
         """Record an embed's input count and the server's cuts; a failure never raises."""
         cut, limit = 0, None
         if time.monotonic() >= self._check_resume_at:
@@ -1265,14 +1295,26 @@ class LlamaServerClient:
                 limit = self._input_limit()
                 path = self._profile.input_count_path
                 if limit is not None and path is not None:
-                    cut = sum(
-                        self._count_inputs_past_limit(batch, limit, path) for batch in sub_batches
-                    )
+                    for past in self._counts_past_limit(sub_batches, limit, path, counts):
+                        cut += past
             except _TRUNCATION_CHECK_FAILURES:
                 # The thread that sent the failed request paused the check before it let go
                 # of the request, so every thread that reaches here finds the pause set.
                 pass
         note_truncated(cut, total, limit)
+
+    def _counts_past_limit(
+        self, sub_batches: list[list[str]], limit: int, path: str, counts: Mapping[str, int]
+    ) -> Iterator[int]:
+        """Yield how many inputs are past *limit*, in parts, so a failure keeps earlier parts.
+
+        An input in *counts* has its exact count already and is not asked for again.
+        """
+        for batch in sub_batches:
+            yield sum(counts[text] > limit for text in batch if text in counts)
+            unknown = [text for text in batch if text not in counts]
+            if unknown:
+                yield self._count_inputs_past_limit(unknown, limit, path)
 
     def _pause_truncation_check(self, exc: Exception, route: str | None) -> None:
         """Pause the check after *exc* from *route*, and warn once of an unexpected answer.
@@ -1616,7 +1658,9 @@ class LlamaServerClient:
 
         return retry_on_gateway_error(_call)
 
-    def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
+    def _truncate_and_subbatch(
+        self, texts: list[str], *, estimate: bool, counts: Mapping[str, int] | None = None
+    ) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
 
         An input longer than ``token_cap`` (the server's per-slot context /
@@ -1646,7 +1690,7 @@ class LlamaServerClient:
         current: list[str] = []
         current_tokens = 0
         for text in texts:
-            item, item_tokens = self._fit_input(text, cap, estimate=estimate)
+            item, item_tokens = self._fit_input(text, cap, estimate=estimate, counts=counts)
             if current and (current_tokens + item_tokens > budget or len(current) >= limit):
                 batches.append(current)
                 current = []
@@ -1657,25 +1701,29 @@ class LlamaServerClient:
             batches.append(current)
         return batches
 
-    def _fit_input(self, text: str, cap: int, *, estimate: bool) -> tuple[str, int]:
+    def _fit_input(
+        self, text: str, cap: int, *, estimate: bool, counts: Mapping[str, int] | None = None
+    ) -> tuple[str, int]:
         """Return ``(input, token_count)`` for one sequence, truncating if over cap.
 
         Estimation short-circuits the common case: an estimate within the cap is
         trusted (no ``/tokenize``); only an over-cap estimate is confirmed against
-        the server tokenizer and truncated if it really exceeds the cap.
+        the server tokenizer, or the exact count in *counts* for an engine with only a
+        count route, and truncated if it really exceeds the cap.
         """
         if estimate or self._profile.tokenize_path is None:
             est = _estimate_tokens(text)
             if est <= cap:
                 return text, est
             if self._profile.tokenize_path is None:
-                log.warning("Truncating oversize embed input: ~%d tokens > cap %d", est, cap)
-                note_cut_to_limit(cap)
+                exact = None if counts is None else counts.get(text)
+                if exact is not None and exact <= cap:
+                    return text, exact
+                note_cut_to_limit(f"~{est}" if exact is None else str(exact), cap)
                 return text[: cap * _EMBED_EST_CHARS_PER_TOKEN], cap
         tokens = self._tokenize(text)
         if len(tokens) > cap:
-            log.warning("Truncating oversize embed input: %d tokens > cap %d", len(tokens), cap)
-            note_cut_to_limit(cap)
+            note_cut_to_limit(str(len(tokens)), cap)
             return self._detokenize(tokens[:cap]), cap
         return text, max(1, len(tokens))
 

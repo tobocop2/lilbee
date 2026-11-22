@@ -54,14 +54,17 @@ def note_truncated(cut: int, total: int, limit: int | None) -> None:
             tally.limit = limit
 
 
-def note_cut_to_limit(limit: int) -> None:
-    """Count one input cut to *limit* tokens in the current scope; the cutter logs it itself."""
+def note_cut_to_limit(size: str, limit: int) -> None:
+    """Record one input of *size* tokens cut to *limit*: a run counts it, else log it."""
     tally = _active.get(None)
-    if tally is not None:
-        with tally.lock:
-            tally.cut += 1
-            if tally.limit is None:
-                tally.limit = limit
+    if tally is None:
+        log.warning("Truncating oversize embed input: %s tokens > cap %d", size, limit)
+        return
+    log.debug("Truncating oversize embed input: %s tokens > cap %d", size, limit)
+    with tally.lock:
+        tally.cut += 1
+        if tally.limit is None:
+            tally.limit = limit
 
 
 def note_char_cut() -> None:
