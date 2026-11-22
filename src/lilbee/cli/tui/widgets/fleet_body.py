@@ -401,8 +401,6 @@ class FleetBody(Widget):
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
-        if view.rejected_spec_json and not view.refusal:
-            self.notify(msg.FLEET_SAVED_PLACEMENT_IGNORED, severity="warning")
 
     def _render_skipped(self, view: PlacementView) -> None:
         """Show a line per role skipped, why a saved spec is refused, and any hidden GPU."""
@@ -421,6 +419,8 @@ class FleetBody(Widget):
         lines.extend(tight.notice for tight in view.tight)
         if view.refusal:
             lines.append(view.refusal)
+        if view.pins_dropped:
+            lines.append(view.pins_dropped)
         if view.hidden_note:
             lines.append(view.hidden_note)
         widget.display = bool(lines)

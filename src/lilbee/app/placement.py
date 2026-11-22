@@ -379,6 +379,8 @@ def _read_placement(reading: BookReading) -> PlacementView:
             manual=False,
             spec_json=None,
             rejected_spec_json=spec.to_json(),
+            refusal=resolved.spec_replaced_reason,
+            refusal_kind=PlacementRefusal.REFUSED,
             pins_dropped=resolved.pins_dropped,
         )
     if resolved.refused_roles:

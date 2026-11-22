@@ -171,8 +171,8 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
 
     assert view.manual is False
     assert view.rejected_spec_json == spec.to_json()
-    assert view.refusal is None
-    assert view.refusal_kind is None
+    assert view.refusal == "embed is pinned to device 1, but this machine lists no devices."
+    assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
     planning.clear_read_device_cache()
 
 
@@ -184,7 +184,9 @@ def test_get_placement_reports_a_saved_spec_that_did_not_apply_as_auto(monkeypat
     monkeypatch.setattr(
         app_placement,
         "resolve_placement_plan",
-        lambda _spec, **_kw: replace(_resolved(), spec_applied=False),
+        lambda _spec, **_kw: replace(
+            _resolved(), spec_applied=False, spec_replaced_reason="chat is pinned to a lost card."
+        ),
     )
     monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
 
@@ -192,8 +194,8 @@ def test_get_placement_reports_a_saved_spec_that_did_not_apply_as_auto(monkeypat
 
     assert view.manual is False
     assert view.spec_json is None
-    assert view.refusal is None
-    assert view.refusal_kind is None
+    assert view.refusal == "chat is pinned to a lost card."
+    assert view.refusal_kind is app_placement.PlacementRefusal.REFUSED
 
 
 def test_get_placement_reports_an_applied_spec_as_manual(monkeypatch):

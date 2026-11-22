@@ -175,7 +175,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
 
     with caplog.at_level(logging.WARNING):
-        placement, spec_applied = planning._placement_or_auto(
+        placement, spec_applied, why = planning._placement_or_auto(
             spec,
             [],
             {WorkerRole.EMBED: "ref"},
@@ -187,6 +187,7 @@ def test_saved_spec_that_no_longer_fits_falls_back_to_auto(monkeypatch, caplog):
 
     assert placement is auto
     assert spec_applied is False
+    assert why == "embed is pinned to device 1, but this machine lists only device 0."
     assert "does not fit this hardware" in caplog.text
 
 
@@ -199,7 +200,7 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
     monkeypatch.setattr(planning, "_resolve_placement", lambda spec, *_a, **_kw: manual)
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})
 
-    placement, spec_applied = planning._placement_or_auto(
+    placement, spec_applied, why = planning._placement_or_auto(
         spec,
         [],
         {WorkerRole.CHAT: "ref"},
@@ -211,6 +212,7 @@ def test_saved_spec_that_fits_is_applied(monkeypatch):
 
     assert placement is manual
     assert spec_applied is True
+    assert why == ""
 
 
 def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
@@ -219,7 +221,7 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
     auto = Placement(instances=(), unplaceable_roles=())
     monkeypatch.setattr(planning, "_resolve_placement", lambda *_a, **_kw: auto)
 
-    placement, spec_applied = planning._placement_or_auto(
+    placement, spec_applied, why = planning._placement_or_auto(
         None,
         [],
         {},
@@ -231,6 +233,7 @@ def test_no_saved_spec_is_not_reported_as_applied(monkeypatch):
 
     assert placement is auto
     assert spec_applied is False
+    assert why == ""
 
 
 def test_interactive_resolve_still_raises(monkeypatch):
