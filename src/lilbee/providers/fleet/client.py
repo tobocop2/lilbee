@@ -77,8 +77,8 @@ _LLM_RERANK_NO_VERDICT_ERROR = (
     "reranker_prompt to the model's expected format."
 )
 # Max sequences per /v1/embeddings request. Like the in-process backstop, a
-# batch is bounded by BOTH the token budget (the server's n_batch, == token_cap)
-# and this sequence count: a corpus of many tiny chunks would otherwise pack one
+# batch is bounded by BOTH the request token budget (the engine's ``request_tokens``,
+# else token_cap) and this sequence count: a corpus of many tiny chunks would otherwise pack one
 # request past the server's batch/sequence limit and trip a 500.
 _EMBED_N_SEQ_MAX = 64
 # Estimate a chunk's token count from its character length so the bulk embed
@@ -1597,7 +1597,8 @@ class LlamaServerClient:
         An input longer than ``token_cap`` (the server's per-slot context /
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
-        request stays within both the token budget and the sequence limit (the
+        request stays within both the request token budget (the profile's
+        ``request_tokens``, never below ``token_cap``) and the sequence limit (the
         profile's ``batch_limit``, else ``_EMBED_N_SEQ_MAX``), bounding per-request
         size and the gateway-retry window. No cap (chat/vision) sends a single
         batch untouched, unless the profile sets a ``batch_limit``.
@@ -1614,13 +1615,14 @@ class LlamaServerClient:
                 return [texts]
             return [texts[start : start + limit] for start in range(0, len(texts), limit)]
         cap = self._token_cap
+        budget = max(cap, self._profile.request_tokens or 0)
         limit = limit or _EMBED_N_SEQ_MAX
         batches: list[list[str]] = []
         current: list[str] = []
         current_tokens = 0
         for text in texts:
             item, item_tokens = self._fit_input(text, cap, estimate=estimate)
-            if current and (current_tokens + item_tokens > cap or len(current) >= limit):
+            if current and (current_tokens + item_tokens > budget or len(current) >= limit):
                 batches.append(current)
                 current = []
                 current_tokens = 0

@@ -127,6 +127,13 @@ class RequestProfile:
 
     The launch argv of a managed server is built from this figure.
     """
+    request_tokens: int | None = None
+    """The most tokens one embed or rerank request may hold across its inputs.
+
+    ``None`` keeps a request within the per-input token cap, so each request holds one
+    full input. An engine sets it when it queues the inputs of a request one by one and
+    so takes a request larger than its per-input window.
+    """
     batch_count_refusal: re.Pattern[str] | None = None
     """Matches an error body that refuses a request for holding too many inputs, or None."""
     takes_cache_prompt: bool = False

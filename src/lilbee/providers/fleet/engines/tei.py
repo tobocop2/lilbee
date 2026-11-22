@@ -47,7 +47,11 @@ _BATCH_LIMIT = 64
 _SERVED = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 _ENDPOINTS = {WorkerRole.EMBED: "/v1/embeddings", WorkerRole.RERANK: "/rerank"}
 
+_REQUEST_TOKENS = 2048
+"""TEI's --max-batch-tokens bounds one forward batch; the inputs of a request queue into
+batches. A request is bounded by its input count (``_BATCH_LIMIT``) and the 2 MB payload."""
 _PROFILE = RequestProfile(
+    request_tokens=_REQUEST_TOKENS,
     embed_fields={},
     stream_fields={},
     tokenize_path=None,

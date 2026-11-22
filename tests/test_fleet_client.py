@@ -38,6 +38,7 @@ from lilbee.providers.fleet.client import (
 )
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import RerankShape
+from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
 from lilbee.providers.fleet.engines.mistral import MISTRAL
 from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.reasoning import ThinkInliner
@@ -1761,9 +1762,57 @@ def test_embed_subbatches_when_token_budget_exceeded() -> None:
         sent.append(list(inputs))
         return httpx.Response(200, json=_embed_body([[0.0] for _ in inputs]))
 
-    out = _capped_client(handler, cap=4).embed(["x" * 7, "y" * 7, "z" * 7])
+    out = _no_budget_client(handler, cap=4).embed(["x" * 7, "y" * 7, "z" * 7])
     assert sent == [["x" * 7], ["y" * 7], ["z" * 7]]  # 3+3 > 4, so never two per request
     assert len(out) == 3  # one vector per input, order preserved
+
+
+def _no_budget_client(handler, cap: int) -> LlamaServerClient:
+    """A client whose engine sets no request token budget, so a request follows the cap."""
+    profile = dataclasses.replace(LLAMA.request_profile(WorkerRole.EMBED), request_tokens=None)
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    return LlamaServerClient("http://gpu0", "m", http=http, token_cap=cap, profile=profile)
+
+
+def test_embed_fills_a_request_to_the_engine_budget_not_the_input_cap() -> None:
+    # Each 1800-character input is about 600 tokens, under the per-input cap of 640. The
+    # llama.cpp request budget holds three of them (1800 <= 2048), not one.
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(("/tokenize", "/detokenize")):
+            raise AssertionError("the estimate is under the cap, so no tokenize call")
+        inputs = json.loads(request.content)["input"]
+        sizes.append(len(inputs))
+        return httpx.Response(200, json=_embed_body([[0.0] for _ in inputs]))
+
+    texts = [c * 1800 for c in "abcd"]
+    out = _capped_client(handler, cap=640).embed(texts)
+    assert sizes == [3, 1]
+    assert len(out) == 4
+
+
+def test_a_request_budget_below_the_input_cap_never_starves_an_input() -> None:
+    # The budget never falls under the per-input cap: one full input always fits a request.
+    sizes: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        inputs = json.loads(request.content)["input"]
+        sizes.append(len(inputs))
+        return httpx.Response(200, json=_embed_body([[0.0] for _ in inputs]))
+
+    # cap 5000 is above the 2048 engine budget; two 3000-character inputs (1000 tokens each) share
+    _capped_client(handler, cap=5000).embed(["a" * 3000, "b" * 3000])
+    assert sizes == [2]
+
+
+@pytest.mark.parametrize("engine", [LLAMA, IK_LLAMA, TEI])
+def test_engines_that_queue_the_inputs_of_a_request_declare_a_request_budget(engine) -> None:
+    assert engine.request_profile(WorkerRole.EMBED).request_tokens == 2048
+
+
+def test_an_engine_with_no_measured_request_limit_keeps_a_request_within_the_input_cap() -> None:
+    assert MISTRAL.request_profile(WorkerRole.EMBED).request_tokens is None
 
 
 def test_embed_subbatches_when_sequence_count_exceeded() -> None:
