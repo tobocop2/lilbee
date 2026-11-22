@@ -554,8 +554,8 @@ class TestGroupRowsForGrid:
         assert len(experimental.rows) == 1
 
 
-def _make_eager_settings_screen(*, eager: bool = True):
-    """SettingsScreen subclass that populates every pane on mount.
+def _make_eager_settings_screen(*, eager: bool = True, keys: tuple[str, ...] = ()):
+    """SettingsScreen subclass that populates every pane or only the panes holding *keys*.
 
     Production lazy-mounts non-active panes on activation; the test
     suite predates that pattern and queries editors across all panes
@@ -564,9 +564,9 @@ def _make_eager_settings_screen(*, eager: bool = True):
     to the original module's directory because Textual otherwise
     resolves it next to the test file.
 
-    With ``eager=False`` the subclass keeps the production lazy mount. Building
-    every pane styles hundreds of widgets, which takes seconds alone and over a
-    minute under gate load, so a test that needs no pane it did not name uses it.
+    Building every pane styles hundreds of widgets, which takes seconds alone
+    and over a minute under gate load. With ``eager=False``, only the panes
+    holding *keys* build on mount and every other pane stays lazy.
     """
     import importlib
     from pathlib import Path
@@ -583,6 +583,9 @@ def _make_eager_settings_screen(*, eager: bool = True):
         def on_mount(self) -> None:
             if eager:
                 self.populate_all_panes()
+            else:
+                for key in keys:
+                    populate_pane_of(self, key)
 
     return _EagerSettingsScreen
 
@@ -593,18 +596,27 @@ class SettingsTestApp(LilbeeAppHost):
     CSS = ""
     # A subclass sets this, not its own on_mount: Textual runs every on_mount in the class tree.
     eager_panes: ClassVar[bool] = True
+    settings_to_populate: tuple[str, ...] = ()
 
     def compose(self) -> ComposeResult:
         yield Footer()
 
     def on_mount(self) -> None:
-        self.push_screen(_make_eager_settings_screen(eager=self.eager_panes)())
+        self.push_screen(
+            _make_eager_settings_screen(
+                eager=self.eager_panes, keys=self.settings_to_populate
+            )()
+        )
 
 
 class LazySettingsTestApp(SettingsTestApp):
-    """Test fixture that mounts the Settings screen as production does: panes build on demand."""
+    """Test fixture that builds selected Settings panes and leaves the rest lazy."""
 
     eager_panes = False
+
+    def __init__(self, *keys: str) -> None:
+        super().__init__()
+        self.settings_to_populate = keys
 
 
 def populate_pane_of(screen, key: str) -> None:
@@ -633,7 +645,7 @@ async def test_a_settings_fixture_mounts_one_screen_once(app_class, eager):
 
 async def test_settings_screen_mounts_grouped_sections():
     """Settings screen renders grouped sections with setting rows."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as _pilot:
         groups = app.screen.query("TabPane")
         assert len(groups) > 0
@@ -645,7 +657,7 @@ async def test_settings_api_keys_group_shows_plaintext_warning():
     """API-Keys group renders a warning naming the config.toml path."""
     from textual.widgets import Static
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("openai_api_key")
     async with app.run_test(size=(120, 60)) as _pilot:
         warnings = list(app.screen.query(".api-keys-warning").results(Static))
         assert len(warnings) == 1
@@ -659,7 +671,7 @@ async def test_settings_hf_token_help_warns_plaintext():
     """hf_token row in the System tab warns the user about plain-text storage."""
     from textual.widgets import Static, TabbedContent
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 60)) as pilot:
         tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
         tabbed.active = "settings-tab-system"
@@ -680,7 +692,7 @@ async def test_settings_tab_activation_populates_pane():
     """
     from textual.widgets import TabbedContent
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(0.15)
         tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
@@ -700,7 +712,7 @@ async def test_settings_tab_activation_populates_pane():
 
 async def test_settings_bool_renders_checkbox():
     """Boolean settings render as Checkbox widgets."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("show_reasoning")
     async with app.run_test(size=(120, 40)) as _pilot:
         checkboxes = app.screen.query("Checkbox.setting-editor")
         assert len(checkboxes) >= 1
@@ -708,7 +720,7 @@ async def test_settings_bool_renders_checkbox():
 
 async def test_settings_readonly_no_editor():
     """Read-only settings do not have editor widgets."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("chat_model")
     async with app.run_test(size=(120, 40)) as _pilot:
         chat_row = app.screen.query_one("#row-chat_model")
         editors = chat_row.query(".setting-editor")
@@ -717,7 +729,7 @@ async def test_settings_readonly_no_editor():
 
 async def test_settings_model_picker_button_renders_for_model_fields():
     """Each model field surfaces a picker button instead of a plain editor."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("chat_model")
     async with app.run_test(size=(120, 40)) as _pilot:
         for key in ("chat_model", "embedding_model", "vision_model", "reranker_model"):
             row = app.screen.query_one(f"#row-{key}")
@@ -741,7 +753,7 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
         ModelTask.VISION: [],
         ModelTask.RERANK: [],
     }
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
         await pilot.pause()
@@ -792,7 +804,7 @@ def test_settings_screen_has_expected_handlers_and_actions() -> None:
 
 async def test_settings_persist_on_change():
     """Changing a setting persists the value to cfg."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
@@ -812,7 +824,7 @@ async def test_settings_cycle_pane_wraps_through_strip():
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.settings_presets import PRESETS_PANE_ID
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1010,7 +1022,7 @@ async def test_settings_persist_value_does_not_toast_on_success():
     inputs. Errors still toast."""
     from textual.widgets import Input
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
@@ -1031,7 +1043,7 @@ async def test_settings_persist_value_still_toasts_on_error():
     """Error path keeps its toast: the user has to know why a value didn't take."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1082,7 +1094,7 @@ async def test_settings_pane_body_owns_horizontal_padding():
     from textual.containers import VerticalScroll
     from textual.widgets import TabbedContent
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         # Outer Container must NOT carry left/right padding any more.
         outer = app.screen.query_one("#settings-scroll")
@@ -1107,7 +1119,7 @@ async def test_settings_outer_container_does_not_double_scroll():
 
     from lilbee.cli.tui.screens.settings import _LazyGroupBody
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         outer = app.screen.query_one("#settings-scroll")
         assert isinstance(outer, Container)
@@ -1133,7 +1145,7 @@ async def test_settings_wiki_pane_scroll_clamps_past_top():
     where Textual reflow tore the screen and lost the tab strip."""
     from textual.widgets import TabbedContent
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         tabs = app.screen.query_one("#settings-tabs", TabbedContent)
         tabs.active = "settings-tab-wiki"
@@ -1151,7 +1163,7 @@ async def test_settings_wiki_pane_scroll_clamps_past_top():
 
 async def test_settings_exposes_wiki_fields():
     """Settings screen renders an editor for every writable wiki config field."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("wiki")
     async with app.run_test(size=(120, 40)) as _pilot:
         writable_wiki_keys = [
             "wiki",
@@ -1171,7 +1183,7 @@ async def test_settings_exposes_wiki_fields():
 
 async def test_settings_wiki_clusterer_k_persists():
     """Editing wiki_clusterer_k writes through to cfg."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("wiki_clusterer_k")
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
@@ -1186,7 +1198,7 @@ async def test_settings_wiki_clusterer_k_persists():
 
 async def test_settings_checkbox_persist():
     """Toggling a checkbox persists the boolean value."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("show_reasoning")
     async with app.run_test(size=(120, 40)):
         from textual.widgets import Checkbox
 
@@ -1206,7 +1218,7 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
     on the editor."""
     from textual.widgets import Checkbox, TabbedContent
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         tabs = app.screen.query_one(TabbedContent)
         tabs.active = "settings-tab-display"  # group hosting show_reasoning
@@ -1228,7 +1240,7 @@ async def test_settings_vim_keys():
     """Vim navigation keys work on the scroll container."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press("j")
         await pilot.press("k")
@@ -1244,7 +1256,7 @@ async def test_settings_pop_screen():
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         assert isinstance(app.screen, SettingsScreen)
         with patch.object(app, "switch_view") as switch:
@@ -1258,7 +1270,7 @@ async def test_settings_crawl_exclude_patterns_renders_collapsible():
 
     from lilbee.core.config import cfg
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as _pilot:
         collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
         assert collapsible.collapsed is True
@@ -1273,7 +1285,7 @@ async def test_settings_list_editor_can_be_expanded():
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as pilot:
         collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
         assert collapsible.collapsed is True
@@ -1289,7 +1301,7 @@ async def test_settings_list_editor_saves_on_blur():
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
@@ -1318,7 +1330,7 @@ async def test_settings_list_editor_blur_without_edit_leaves_config_untouched(tm
     settings_store.update_values(tmp_path, {"top_k": 99})
     baseline = (tmp_path / "config.toml").read_bytes()
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns", "top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
@@ -1334,7 +1346,7 @@ async def test_settings_list_editor_strips_blanks():
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
@@ -1385,7 +1397,7 @@ async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
 
     pattern = r"/wiki/\p{L}+:"
     stub = StubCrawlberg(refuse=refusing_patterns(r"\Z"))
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     with stub.installed():
         async with app.run_test(size=(120, 40)) as pilot:
             cfg.crawl_exclude_patterns = ["keep"]
@@ -1404,7 +1416,7 @@ async def test_settings_browser_flags_editor_saves_on_blur():
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_browser_extra_args")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
         ta.focus()
@@ -1424,7 +1436,7 @@ async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_browser_extra_args")
     async with app.run_test(size=(120, 40)) as pilot:
         cfg.crawl_browser_extra_args = ["--lang=fr"]
         ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
@@ -1443,7 +1455,7 @@ async def test_settings_crawl_user_agent_editor_saves_the_override():
     """The crawl user agent editor stores the text it holds."""
     from textual.widgets import Input
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_user_agent")
     async with app.run_test(size=(120, 40)) as pilot:
         cfg.crawl_user_agent = ""
         editor = app.screen.query_one("#ed-crawl_user_agent", Input)
@@ -1459,7 +1471,7 @@ async def test_settings_extra_browser_wait_editor_saves_the_wait():
     """The extra browser wait editor stores the milliseconds it holds."""
     from textual.widgets import Input
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_browser_extra_wait_ms")
     async with app.run_test(size=(120, 40)) as pilot:
         cfg.crawl_browser_extra_wait_ms = 1000
         editor = app.screen.query_one("#ed-crawl_browser_extra_wait_ms", Input)
@@ -1476,7 +1488,7 @@ async def test_settings_robots_txt_checkbox_turns_the_setting_off():
     from textual.widgets import Checkbox
 
     cfg.crawl_respect_robots_txt = True
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_respect_robots_txt")
     async with app.run_test(size=(120, 40)):
         checkbox = app.screen.query_one("#ed-crawl_respect_robots_txt", Checkbox)
         assert checkbox.value is True
@@ -1492,7 +1504,7 @@ async def test_settings_list_editor_restore_defaults():
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
     from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)):
         cfg.crawl_exclude_patterns = ["old"]
         btn = app.screen.query_one("#list-restore-crawl_exclude_patterns", Button)
@@ -1515,7 +1527,7 @@ async def test_settings_list_editor_restore_then_blur_does_not_resave():
 
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns", "top_k")
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         ta = screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
@@ -1564,7 +1576,7 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
     from lilbee.core import settings
 
     cfg.data_root = tmp_path
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("crawl_exclude_patterns")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         ta.focus()
@@ -1606,7 +1618,7 @@ async def test_settings_every_list_setting_gets_the_list_editor():
         if SETTINGS_MAP[key].type is list
     ]
     assert "ocr_language" in list_keys
-    app = SettingsTestApp()
+    app = LazySettingsTestApp(*list_keys)
     async with app.run_test(size=(120, 60)):
         for key in list_keys:
             app.screen.query_one(f"#collapsible-{key}", Collapsible)
@@ -1618,7 +1630,7 @@ async def test_settings_ocr_language_round_trips_through_the_list_editor(tmp_pat
     from lilbee.core import settings
 
     cfg.data_root = tmp_path
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("ocr_language")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-ocr_language", ListTextArea)
         ta.focus()
@@ -1637,7 +1649,7 @@ async def test_settings_force_ocr_pages_round_trips_through_the_list_editor(tmp_
 
     cfg.data_root = tmp_path
     monkeypatch.setattr(cfg, "force_ocr_pages", [1, 3])
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("force_ocr_pages")
     async with app.run_test(size=(120, 40)) as pilot:
         ta = app.screen.query_one("#ed-force_ocr_pages", ListTextArea)
         assert ta.text == "1\n3"
@@ -1732,7 +1744,7 @@ async def test_settings_generation_tab_blur_without_edit_leaves_config_untouched
     cfg.max_tokens = None
     cfg.seed = None
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 60)) as pilot:
         tabs = app.screen.query_one("#settings-tabs", TabbedContent)
         tabs.active = "settings-tab-generation"
@@ -1768,7 +1780,7 @@ async def test_settings_edit_over_unset_value_saves(tmp_path):
     cfg.data_root = tmp_path
     cfg.temperature = None
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp("temperature")
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-temperature", Input)
         assert editor.value == ""
@@ -1792,7 +1804,7 @@ async def test_settings_is_writable():
 
 async def test_settings_persist_invalid_int():
     """Invalid value for int field shows error and does not change cfg."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from textual.widgets import Input
 
@@ -1817,7 +1829,7 @@ async def test_settings_repeated_identical_invalid_blur_notifies_twice():
     """
     from textual.widgets import Input
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         original = cfg.top_k
         editor = app.screen.query_one("#ed-top_k", Input)
@@ -1842,7 +1854,7 @@ async def test_settings_select_save():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1869,7 +1881,7 @@ async def test_settings_select_save_compares_against_mount_baseline_not_cfg():
     """
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1890,7 +1902,7 @@ async def test_reset_button_resets_scalar():
     from textual.widgets import Button, Input
 
     cfg.wiki_clusterer_k = 99
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
         async with saved_setting(app, "wiki_clusterer_k"):
@@ -1903,7 +1915,7 @@ async def test_reset_button_resets_scalar():
 
 async def test_reset_button_absent_for_readonly():
     """Read-only rows (e.g. chat_model) do not render a reset button."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         chat_row = app.screen.query_one("#row-chat_model")
         buttons = chat_row.query(".setting-reset-button")
@@ -1915,7 +1927,7 @@ async def test_ctrl_r_resets_focused_row():
     from textual.widgets import Input
 
     cfg.top_k = 99
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
@@ -1929,7 +1941,7 @@ async def test_ctrl_r_with_no_focus_is_noop():
     """action_reset_focused is a no-op when nothing is focused."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1950,7 +1962,7 @@ async def test_ctrl_r_on_non_row_focus_is_noop():
     """
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -1966,7 +1978,7 @@ async def test_refresh_editor_updates_checkbox():
 
     default = bool(builtin_value("show_reasoning"))
     cfg.show_reasoning = not default
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
         checkbox.value = not default
@@ -1985,7 +1997,7 @@ async def test_reset_nullable_to_none():
     from textual.widgets import Button, Input
 
     cfg.seed = 42
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         button = app.screen.query_one("#reset-seed", Button)
         async with saved_setting(app, "seed"):
@@ -2006,7 +2018,7 @@ async def test_reset_select_clears_when_default_none():
 
     # The blank row exists only on a Select built for a nullable setting.
     nullable = dataclasses.replace(SETTINGS_MAP["wiki_clusterer"], nullable=True)
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     with patch.dict(SETTINGS_MAP, {"wiki_clusterer": nullable}):
         async with app.run_test(size=(120, 40)) as _pilot:
             screen = app.screen
@@ -2029,7 +2041,7 @@ async def test_reset_select_sets_value_when_default_provided():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2045,7 +2057,7 @@ async def test_refresh_editor_missing_widget_is_logged(caplog):
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2062,7 +2074,7 @@ async def test_refresh_editor_updates_textarea_list(monkeypatch):
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2080,7 +2092,7 @@ async def test_refresh_editor_updates_textarea_scalar(monkeypatch):
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2098,7 +2110,7 @@ async def test_refresh_editor_updates_textarea_none(monkeypatch):
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2122,7 +2134,7 @@ async def test_refresh_editor_guard_skips_untracked_key():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2136,7 +2148,7 @@ async def test_reset_to_default_ignores_readonly_keys():
     """_reset_to_default is a no-op for read-only settings."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2150,7 +2162,7 @@ async def test_a_store_error_at_reset_shows_a_message_and_keeps_the_tui(error):
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2170,7 +2182,7 @@ async def test_reset_to_default_ignores_unknown_keys():
     """_reset_to_default is a no-op when the key is not in SETTINGS_MAP."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2183,7 +2195,7 @@ async def test_reset_button_with_malformed_id_is_noop():
     """Button press events with unexpected ids are gracefully ignored."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2207,7 +2219,7 @@ async def test_list_restore_removes_the_user_key(tmp_path):
     persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine"})
     cfg.crawl_exclude_patterns = ["mine"]
     expected = builtin_value("crawl_exclude_patterns")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
@@ -2225,7 +2237,7 @@ async def test_ctrl_r_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"top_k": 99, "chunk_size": 1024})
     cfg.top_k = 99
     default = builtin_value("top_k")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         editor.focus()
@@ -2263,7 +2275,7 @@ async def test_flash_attention_shows_three_distinct_states(tmp_path, stored, sho
 
     cfg.data_root = tmp_path
     cfg.flash_attention = stored
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         select = app.screen.query_one("#ed-flash_attention", Select)
         assert select.is_blank() if shown == "" else (select.value == shown)
@@ -2275,7 +2287,7 @@ async def test_flash_attention_picks_save_and_auto_clears(tmp_path):
 
     cfg.data_root = tmp_path
     cfg.flash_attention = None
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         select = app.screen.query_one("#ed-flash_attention", Select)
         select.value = "False"
@@ -2295,7 +2307,7 @@ async def test_a_late_editor_sync_does_not_save_the_old_select_value_again(tmp_p
 
     cfg.data_root = tmp_path
     cfg.flash_attention = None
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         select = screen.query_one("#ed-flash_attention", Select)
@@ -2321,7 +2333,7 @@ async def test_select_reset_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"ocr_strategy": "scanned_pages", "top_k": 5})
     cfg.ocr_strategy = "scanned_pages"
     default = str(builtin_value("ocr_strategy"))
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         select = app.screen.query_one("#ed-ocr_strategy", Select)
         app.screen.query_one("#reset-ocr_strategy", Button).press()
@@ -2340,7 +2352,7 @@ async def test_multiline_reset_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"general_system_prompt": "mine", "top_k": 5})
     cfg.general_system_prompt = "mine"
     default = str(builtin_value("general_system_prompt"))
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-general_system_prompt", ListTextArea)
         app.screen.query_one("#reset-general_system_prompt", Button).press()
@@ -2359,7 +2371,7 @@ async def test_list_restore_then_blur_writes_nothing(tmp_path):
     persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine", "top_k": 5})
     cfg.crawl_exclude_patterns = ["mine"]
     expected = builtin_value("crawl_exclude_patterns")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         app.screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
@@ -2381,7 +2393,7 @@ async def test_list_restore_updates_the_title_and_clears_the_error(tmp_path):
     cfg.crawl_exclude_patterns = ["a", "b", "c", "d", "e"]
     expected = builtin_value("crawl_exclude_patterns")
     assert len(expected) != 5
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
         assert str(collapsible.title) == msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=5)
@@ -2402,7 +2414,7 @@ async def test_checkbox_reset_does_not_write_the_value_back(tmp_path):
     default = bool(builtin_value("show_reasoning"))
     persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 7})
     cfg.show_reasoning = not default
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
         app.screen.query_one("#reset-show_reasoning", Button).press()
@@ -2426,7 +2438,7 @@ async def test_checkbox_toggle_queued_before_a_reset_does_not_resave(tmp_path):
     default = bool(builtin_value("show_reasoning"))
     persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 5})
     cfg.show_reasoning = not default
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
         checkbox.toggle()
@@ -2465,7 +2477,7 @@ async def test_a_refresh_of_every_key_walks_the_screen_once():
 
     from lilbee.app.settings_map import SETTINGS_MAP
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         widgets = len(list(screen.walk_children()))
@@ -2483,7 +2495,7 @@ async def test_reset_failure_toasts_and_changes_nothing(tmp_path):
 
     persistent_settings.update_values(tmp_path, {"top_k": 99})
     cfg.top_k = 99
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -2505,7 +2517,7 @@ async def test_reset_that_turns_the_wiki_off_offers_the_wipe(tmp_path):
     """A reset that switches the wiki off makes the same wipe offer /set does."""
     persistent_settings.update_values(tmp_path, {"wiki": True})
     cfg.wiki = True
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "_offer_wiki_wipe") as offer:
             assert app.reset_and_publish(["wiki"]) == ["wiki"]
@@ -2517,7 +2529,7 @@ async def test_reset_that_turns_the_wiki_off_offers_the_wipe(tmp_path):
 async def test_reset_with_the_wiki_already_off_offers_nothing(tmp_path):
     """Reset only offers the wipe when it is what turned the wiki off."""
     cfg.wiki = False
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app, "_offer_wiki_wipe") as offer:
             assert app.reset_and_publish(["wiki", "top_k"]) == ["top_k", "wiki"]
@@ -2531,7 +2543,7 @@ async def test_a_reset_toasts_the_warning_of_its_update(tmp_path, monkeypatch):
     (tmp_path / "config.toml").write_text("ocr = 'off'\n", encoding="utf-8")
     cfg.ocr = OcrMode.OFF
     cfg.vision_model = ""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.app.settings._invalidate_caches"),
@@ -2569,7 +2581,7 @@ async def test_reset_all_uses_footer_binding_not_button():
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -4139,7 +4151,7 @@ async def test_settings_tab_does_not_turn_unreadable_bool_text_into_false():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -8892,7 +8904,7 @@ async def test_chat_half_page_actions():
 
 async def test_settings_key_g_G():
     """g/G scroll settings via action methods."""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen.action_jump_bottom()
         app.screen.action_jump_top()
@@ -14360,7 +14372,7 @@ async def test_settings_on_input_save_name_none():
     """_on_input_save returns early when name is None."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14376,7 +14388,7 @@ async def test_settings_on_input_save_defn_none():
     """_on_input_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14392,7 +14404,7 @@ async def test_settings_on_input_save_same_value_skip():
     """_on_input_save skips persist when the value matches what the row showed at mount."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14414,7 +14426,7 @@ async def test_settings_on_input_save_different_value_persists():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14431,7 +14443,7 @@ async def test_settings_on_checkbox_save_name_none():
     """_on_checkbox_save returns early when name is None."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14447,7 +14459,7 @@ async def test_settings_on_checkbox_save_defn_none():
     """_on_checkbox_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14463,7 +14475,7 @@ async def test_settings_on_select_save_name_none():
     """_on_select_save returns early when name is None."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14479,7 +14491,7 @@ async def test_settings_on_select_save_defn_none():
     """_on_select_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14495,7 +14507,7 @@ async def test_settings_on_list_blur_save_name_none():
     """_on_list_blur_save returns early when the TextArea has no name."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14510,7 +14522,7 @@ async def test_settings_on_list_blur_save_defn_none():
     """_on_list_blur_save returns early when SETTINGS_MAP has no entry."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14525,7 +14537,7 @@ async def test_settings_on_list_restore_bad_button_id():
     """_on_list_restore ignores buttons whose id does not start with the list-restore prefix."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14544,7 +14556,7 @@ async def test_settings_on_list_restore_defn_none():
     """_on_list_restore returns early when SETTINGS_MAP has no entry for the key."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14559,7 +14571,7 @@ async def test_settings_refresh_list_title_missing_swallows():
     """_refresh_list_title logs (does not raise) when the Collapsible is absent."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14571,7 +14583,7 @@ async def test_settings_parse_value_nullable_none():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         screen = app.screen
@@ -14586,7 +14598,7 @@ async def test_settings_parse_value_nullable_empty():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         screen = app.screen
@@ -14601,7 +14613,7 @@ async def test_settings_refresh_help_exception():
     from lilbee.app.settings_map import SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -14614,7 +14626,7 @@ async def test_settings_go_back_invokes_switch_view():
     """action_go_back asks the host to switch to the Chat view."""
     from unittest.mock import patch
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.screens.settings import SettingsScreen
 
@@ -16387,7 +16399,7 @@ async def test_profile_source_shows_pill_in_settings_screen(tmp_path):
         '[profile]\nname = "Court filings"\n\n[profile.values]\ntop_k = 77\n',
         encoding="utf-8",
     )
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
         assert "Court filings" in _row_title(app, "top_k")
@@ -16434,7 +16446,7 @@ async def test_env_pill_hidden_for_empty_env_var(monkeypatch):
     """An empty LILBEE_X= has no effect, so its row shows no env pill; a set one does."""
     monkeypatch.setenv("LILBEE_TOP_K", "")
     monkeypatch.setenv("LILBEE_CHUNK_SIZE", "900")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_size")))
         assert "LILBEE_CHUNK_SIZE" in _row_title(app, "chunk_size")
@@ -16446,7 +16458,7 @@ async def test_user_pill_only_on_set_key(tmp_path):
     from lilbee.cli.tui import messages as msg
 
     persistent_settings.update_values(tmp_path, {"top_k": 7})
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
         assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
@@ -16469,7 +16481,7 @@ async def test_advanced_rows_show_their_own_source_pill(tmp_path, monkeypatch):
         "seed": "LILBEE_SEED",
         "rerank_candidates": "Court filings",
     }
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         assert await wait_until(
             pilot, lambda: all(app.screen.query(f"#row-{key}") for key in pill_text_by_key)
@@ -16494,7 +16506,7 @@ async def test_no_pill_on_built_in_or_auto():
     sources = setting_sources()
     assert sources["temperature"] is SettingSource.BUILT_IN
     assert sources["num_ctx"] is SettingSource.AUTO
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-num_ctx")))
         for key in ("temperature", "num_ctx"):
@@ -16509,7 +16521,7 @@ async def test_user_pill_follows_save_and_reset(tmp_path):
 
     from lilbee.cli.tui import messages as msg
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         editor = app.screen.query_one("#ed-top_k", Input)
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
@@ -16534,7 +16546,7 @@ async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
     from lilbee.cli.tui import messages as msg
 
     persistent_settings.update_values(tmp_path, {"top_k": 7, "chunk_overlap": 50})
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_overlap")))
         assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
@@ -16677,7 +16689,7 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
 
     from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with patch_model_write() as mock_apply:
@@ -16708,7 +16720,7 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
@@ -16746,7 +16758,7 @@ async def test_settings_clearing_the_vision_model_updates_the_ocr_rows():
     cfg.ocr = OcrMode.AUTO
     cfg.ocr_language = ["eng"]
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         # Settle the mount-time profile reload before triggering another one below:
@@ -16773,7 +16785,7 @@ async def test_settings_turning_ocr_off_updates_the_vision_model_row():
 
     cfg.ocr = OcrMode.AUTO
     cfg.vision_model = ""
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert "read by Tesseract" in _ocr_help_texts(screen)["vision_model"]
@@ -16789,7 +16801,7 @@ async def test_settings_ocr_picker_shows_the_scanned_pages_labels(size):
     from textual.widgets import Select
 
     cfg.ocr = OcrMode.ALL
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=size):
         select = app.screen.query_one("#ed-ocr", Select)
         options = [(str(label), value) for label, value in select._options if str(label)]
@@ -16830,7 +16842,7 @@ async def test_settings_model_picker_dismissed_reload_failure_notifies_the_brack
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     services_mock.reload_role.side_effect = RuntimeError("no route to [gpu0]")
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         notes: list[str] = []
@@ -16859,7 +16871,7 @@ async def test_settings_model_picker_dismissed_reload_success_notifies_the_brack
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         notes: list[str] = []
@@ -16890,7 +16902,7 @@ async def test_settings_embed_picker_against_populated_store_pushes_confirm():
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = True
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
@@ -16912,7 +16924,7 @@ async def test_settings_embed_picker_against_empty_store_applies_directly():
     from unittest.mock import patch
 
     services_mock = MagicMock()
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
@@ -17591,7 +17603,7 @@ async def test_settings_masks_credentials_but_keeps_the_value():
     secret_keys = [k for k, d in SETTINGS_MAP.items() if d.secret]
     assert secret_keys, "no setting is marked secret"
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         assert await wait_until(
             pilot, lambda: bool(app.screen.query("#settings-tabs")), timeout=30.0
@@ -17632,7 +17644,7 @@ async def test_settings_leaves_non_credentials_visible():
 
     from lilbee.app.settings_map import SETTINGS_MAP
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         for editor in app.screen.query(Input):
             key = editor.name or ""
@@ -17650,7 +17662,7 @@ async def test_settings_invalid_regex_error_shows_brackets_as_written():
     def refuse(config):
         return "invalid_config: invalid exclude_path regex\nerror: bad group name '[/x]'"
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     with StubCrawlberg(refuse=refuse).installed():
         async with app.run_test(size=(120, 40)) as pilot:
             screen = app.screen
@@ -17676,7 +17688,7 @@ async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable(
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from tests._async_wait import wait_until
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -17696,7 +17708,7 @@ async def test_blanking_a_select_hands_the_save_an_empty_value():
     from lilbee.cli.tui.screens.settings import SettingsScreen
     from lilbee.cli.tui.screens.settings_widgets import make_select
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
@@ -17898,7 +17910,7 @@ async def test_settings_advanced_section_expands_and_reaches_field_at_80x24():
     from lilbee.cli.tui.screens.settings_widgets import ADVANCED_COLLAPSIBLE_ID_PREFIX
     from tests._async_wait import wait_until
 
-    app = SettingsTestApp()
+    app = LazySettingsTestApp()
     async with app.run_test(size=(80, 24)) as pilot:
         collapsible = app.screen.query_one(
             f"#{ADVANCED_COLLAPSIBLE_ID_PREFIX}settings-tab-models", Collapsible
