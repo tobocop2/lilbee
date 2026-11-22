@@ -180,14 +180,14 @@ COVERAGE_ROWS: tuple[CoverageRow, ...] = (
         EngineName.OVMS,
         "linux-x86_64-openvino",
         Device.CPU,
-        Route.UNPUBLISHED,
+        Route.USER_INSTALLED,
         _CPU_HOST,
         _NO_RECORD,
     ),
     _excluded(
-        EngineName.OVMS, "linux-x86_64-openvino", Device.INTEL_GPU, Route.UNPUBLISHED, _NO_NPU
+        EngineName.OVMS, "linux-x86_64-openvino", Device.INTEL_GPU, Route.USER_INSTALLED, _NO_NPU
     ),
-    _excluded(EngineName.OVMS, "linux-x86_64-openvino", Device.NPU, Route.UNPUBLISHED, _NO_NPU),
+    _excluded(EngineName.OVMS, "linux-x86_64-openvino", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
     _excluded(EngineName.LEMONADE, "linux-x86_64-npu", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
     _excluded(EngineName.LEMONADE, "windows-x86_64-npu", Device.NPU, Route.USER_INSTALLED, _NO_NPU),
     _deferred(
