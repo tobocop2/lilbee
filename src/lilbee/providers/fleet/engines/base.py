@@ -128,7 +128,7 @@ class RequestProfile:
     The launch argv of a managed server is built from this figure.
     """
     request_tokens: int | None = None
-    """The most tokens one embed or rerank request may hold across its inputs.
+    """The most tokens one embed request may hold across its inputs. Rerank does not read it.
 
     ``None`` keeps a request within the per-input token cap, so each request holds one
     full input. An engine sets it when it queues the inputs of a request one by one and

@@ -1792,8 +1792,8 @@ def test_embed_fills_a_request_to_the_engine_budget_not_the_input_cap() -> None:
     assert len(out) == 4
 
 
-def test_a_request_budget_below_the_input_cap_never_starves_an_input() -> None:
-    # The budget never falls under the per-input cap: one full input always fits a request.
+def test_a_cap_above_the_engine_budget_sets_the_request_budget() -> None:
+    # The budget is the larger of the cap and the engine figure, so the cap rules here.
     sizes: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
