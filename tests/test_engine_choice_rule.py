@@ -293,10 +293,9 @@ def _choose_at_run(config: SimpleNamespace, detected: HostCaps | Exception) -> E
     try:
         with (
             patch("lilbee.catalog.runnable.detect", return_value=detected, side_effect=side_effect),
-            patch("lilbee.app.engine_choice.installed_engines", return_value=LLAMA_AND_IK),
             patch("lilbee.app.engine_choice.model_format", return_value=G),
         ):
-            return _choice_for(config, "org/m", WorkerRole.CHAT)
+            return _choice_for(config, "org/m", LLAMA_AND_IK, WorkerRole.CHAT)
     finally:
         _read_host.cache_clear()
 
@@ -360,11 +359,10 @@ def test_the_host_is_read_once_for_many_choices() -> None:
     try:
         with (
             patch("lilbee.catalog.runnable.detect", return_value=NO_AVX2) as detect,
-            patch("lilbee.app.engine_choice.installed_engines", return_value=LLAMA_AND_IK),
             patch("lilbee.app.engine_choice.model_format", return_value=G),
         ):
             for _ in range(3):
-                _choice_for(_config(override=IK), "org/m", WorkerRole.CHAT)
+                _choice_for(_config(override=IK), "org/m", LLAMA_AND_IK, WorkerRole.CHAT)
         assert detect.call_count == 1
     finally:
         _read_host.cache_clear()
@@ -374,10 +372,9 @@ def test_a_process_on_the_bundled_engine_never_reads_the_host() -> None:
     _read_host.cache_clear()
     with (
         patch("lilbee.catalog.runnable.detect") as detect,
-        patch("lilbee.app.engine_choice.installed_engines", return_value=LLAMA_AND_IK),
         patch("lilbee.app.engine_choice.model_format", return_value=G),
     ):
-        _choice_for(_config(), "org/m", WorkerRole.CHAT)
+        _choice_for(_config(), "org/m", LLAMA_AND_IK, WorkerRole.CHAT)
     assert detect.call_count == 0
 
 

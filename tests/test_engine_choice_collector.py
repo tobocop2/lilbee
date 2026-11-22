@@ -46,6 +46,17 @@ def test_installed_mapping_holds_the_formats_each_adapter_loads() -> None:
     assert installed[EngineName.LLAMA] == frozenset({ModelFormat.GGUF})
 
 
+def test_every_role_is_resolved_from_one_path_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    scans: list[str] = []
+    monkeypatch.setattr("shutil.which", lambda tool, *_a, **_k: scans.append(tool))
+    installed_engines()
+    one_read = len(scans)
+    scans.clear()
+    resolve_engines(Config())
+    assert one_read > 0
+    assert len(scans) == one_read
+
+
 def test_every_role_runs_on_the_default_engine_with_no_setting() -> None:
     assignment = resolve_engines(Config())
     assert set(assignment.choices) == set(ROLE_REGISTRY)
