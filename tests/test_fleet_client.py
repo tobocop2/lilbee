@@ -3444,18 +3444,25 @@ def test_abort_streams_survives_close_errors() -> None:
     healthy.close.assert_called_once_with()
 
 
-def test_abort_streams_closes_the_response_when_the_shutdown_fails() -> None:
-    """A shutdown that raises ENOTCONN on a closed peer still closes the response."""
+@pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
+def test_abort_streams_closes_the_response_when_the_shutdown_fails(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    """A shutdown that raises ENOTCONN closes the response and not the socket, on every OS."""
     import errno
-    from unittest.mock import MagicMock
+    import socket
+    from unittest.mock import MagicMock, call
 
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_CLOSE_AFTER_SHUTDOWN", windows)
     client = _client()
     resp = MagicMock()
     sock = resp.extensions.get.return_value.get_extra_info.return_value
     sock.shutdown.side_effect = OSError(errno.ENOTCONN, "not connected")
     client._active_streams.add(resp)
     client.abort_streams()
-    sock.shutdown.assert_called_once()
+    assert sock.mock_calls == [call.shutdown(socket.SHUT_RDWR)]
     resp.close.assert_called_once_with()
 
 
