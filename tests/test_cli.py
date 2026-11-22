@@ -1137,10 +1137,11 @@ class TestEmbeddingMismatchCli:
         assert "rebuild" in result.output.lower()
         assert "use-embedder" not in result.output
 
-    def test_search_mismatch_dim_incompatible_names_the_rebuild_command_once(self, mock_svc):
+    def test_search_mismatch_dim_incompatible_does_not_repeat_the_rebuild_command(self, mock_svc):
+        # Guards against a second mention: the error text and the CLI hint must not both name it.
         mock_svc.searcher.search_report.side_effect = _mismatch_error(dims_match=False)
         result = runner.invoke(app, ["search", "q"])
-        assert " ".join(result.output.split()).count("`lilbee rebuild`") == 1
+        assert " ".join(result.output.split()).count("lilbee rebuild") == 1
 
     def test_search_mismatch_json_carries_persisted_model(self, mock_svc):
         mock_svc.searcher.search_report.side_effect = _mismatch_error()
