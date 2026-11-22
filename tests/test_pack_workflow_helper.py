@@ -129,3 +129,11 @@ def test_pack_cells_skips_outside_ci_when_the_path_is_missing(
     monkeypatch.delenv(CELLS_ENV, raising=False)
     with pytest.raises(Skipped, match=CELLS_ENV):
         pack_cells("llama")
+
+
+def test_the_checkout_action_sets_both_variables_the_pack_tests_read() -> None:
+    action = Path(__file__).parents[1] / ".github/actions/checkout-engine-packs/action.yml"
+    text = action.read_text(encoding="utf-8")
+    assert f"{WORKFLOW_ENV}=" in text
+    assert f"{CELLS_ENV}=" in text
+    assert "engine-packs/cells.yml" in text

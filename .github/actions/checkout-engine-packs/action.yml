@@ -1,7 +1,8 @@
 name: Check out the engine packs workflow
 description: >-
   Check out the public engine-packs repository at its pinned tag and set
-  ENGINE_PACKS_WORKFLOW to its build workflow, for the tests that read it.
+  ENGINE_PACKS_WORKFLOW to its build workflow and ENGINE_PACKS_CELLS to its
+  cells file, for the tests that read them.
   Run it after the checkout of this repository.
 
 runs:
@@ -10,9 +11,11 @@ runs:
     - uses: actions/checkout@v7
       with:
         repository: tobocop2/lilbee-engine-packs
-        ref: refs/tags/workflow-pin-2
+        ref: refs/tags/workflow-pin-5
         path: engine-packs
 
-    - name: Name the workflow for the tests
+    - name: Name the workflow and the cells file for the tests
       shell: bash
-      run: echo "ENGINE_PACKS_WORKFLOW=${GITHUB_WORKSPACE}/engine-packs/.github/workflows/build-packs.yml" >> "$GITHUB_ENV"
+      run: |
+        echo "ENGINE_PACKS_WORKFLOW=${GITHUB_WORKSPACE}/engine-packs/.github/workflows/build-packs.yml" >> "$GITHUB_ENV"
+        echo "ENGINE_PACKS_CELLS=${GITHUB_WORKSPACE}/engine-packs/cells.yml" >> "$GITHUB_ENV"

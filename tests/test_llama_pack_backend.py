@@ -276,7 +276,7 @@ _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR = "b12032"
 _CUDA_ARCHITECTURE_OVERRIDES = ("CUDA_ARCHITECTURES", "CUDAARCHS", "GGML_NATIVE=ON")
 
 
-def _pack_cells() -> dict[str, Any]:
+def _pack_workflow_yaml() -> dict[str, Any]:
     return cast(dict[str, Any], yaml.safe_load(pack_workflow().read_text(encoding="utf-8")))
 
 
@@ -300,7 +300,7 @@ def test_the_driver_floor_is_the_cuda_version_the_pack_is_built_with() -> None:
 
 
 def test_the_compute_floor_is_the_upstream_default_architecture_list_at_b12032() -> None:
-    cells = _pack_cells()
+    cells = _pack_workflow_yaml()
     assets = [cell["asset"] for cell in _pack_matrix() if "asset" in cell]
     linux_build = _uncommented(_PACK_LINUX_CUDA_BUILD.read_text(encoding="utf-8"))
     workflow = _uncommented(pack_workflow().read_text(encoding="utf-8"))
@@ -318,11 +318,11 @@ def test_the_pinned_wheel_version_is_derived_from_the_upstream_tag() -> None:
 
 
 def test_the_pinned_upstream_tag_is_the_tag_the_pack_workflow_builds() -> None:
-    assert _pack_cells()["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG
+    assert _pack_workflow_yaml()["env"]["UPSTREAM_TAG"] == _UPSTREAM_TAG
 
 
 def test_the_pinned_wheel_version_is_the_version_the_pack_workflow_builds() -> None:
-    assert _pack_cells()["env"]["WHEEL_VERSION"] == _WHEEL_VERSION
+    assert _pack_workflow_yaml()["env"]["WHEEL_VERSION"] == _WHEEL_VERSION
 
 
 def test_every_llama_pack_in_the_shipped_table_has_a_cell_in_the_pack_cells() -> None:
@@ -361,10 +361,10 @@ def test_no_llama_cell_builds_a_number_below_a_published_wheel_of_its_name() -> 
 
 
 def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
-    steps = _pack_cells()["jobs"]["cell"]["steps"]
+    steps = _pack_workflow_yaml()["jobs"]["cell"]["steps"]
     noticed = [s for s in steps if _NOTICE_NAME in s.get("run", "")]
     assert len(noticed) == 2
-    assert not _pack_cells()["jobs"]["cell"].get("continue-on-error")
+    assert not _pack_workflow_yaml()["jobs"]["cell"].get("continue-on-error")
     for step in noticed:
         _assert_step_stops_on_failure(step)
     workflow = _uncommented("\n".join(step.get("run", "") for step in steps))
@@ -399,7 +399,7 @@ def _assert_step_stops_on_failure(step: dict[str, Any]) -> None:
 
 
 def _mistralrs_job() -> dict[str, Any]:
-    return cast(dict[str, Any], _pack_cells()["jobs"]["mistralrs"])
+    return cast(dict[str, Any], _pack_workflow_yaml()["jobs"]["mistralrs"])
 
 
 def _mistralrs_step_with(line: re.Pattern[str]) -> tuple[dict[str, Any], list[str]]:
@@ -453,7 +453,7 @@ def _enclosing_conditions(script: str, line_text: str) -> list[str]:
 
 
 def test_the_windows_cells_run_the_notice_check_under_the_windows_condition() -> None:
-    steps = _pack_cells()["jobs"]["cell"]["steps"]
+    steps = _pack_workflow_yaml()["jobs"]["cell"]["steps"]
     [start] = [s for s in steps if s.get("name") == "Start llama-server from the installed wheel"]
     windows_cells = [c for c in _pack_matrix() if c["cell"].startswith("windows-")]
     assert windows_cells
@@ -464,7 +464,7 @@ def test_the_windows_cells_run_the_notice_check_under_the_windows_condition() ->
 
 
 def test_the_notice_check_failure_fails_the_step_and_the_job() -> None:
-    job = _pack_cells()["jobs"]["cell"]
+    job = _pack_workflow_yaml()["jobs"]["cell"]
     step_name = "Start llama-server from the installed wheel"
     [start] = [s for s in job["steps"] if s.get("name") == step_name]
     verify = r"python -I tools/wheel-build/vs_distributable_terms\.py --verify vs-licence\.docx"
