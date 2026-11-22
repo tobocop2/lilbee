@@ -2505,11 +2505,7 @@ async def _serve_stdio(server: LilbeeMCP) -> None:
 
 
 def _fill_empty_chat_model() -> None:
-    """Fill an empty chat model, as the HTTP server does, so no tool sends an empty name.
-
-    A failed fill never stops the server from attaching to stdio. It leaves one warning on
-    the log, which goes to stderr: stdout is the MCP channel.
-    """
+    """Fill an empty chat model; a failed fill logs a warning and the server still starts."""
     try:
         for notice in fill_empty_chat_model():
             log.info("%s", notice)
