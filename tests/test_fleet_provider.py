@@ -4857,6 +4857,27 @@ def test_prewarm_rereads_when_a_shard_changed(monkeypatch, tmp_path) -> None:
     assert opens["n"] == 1  # changed shard is read again
 
 
+def test_prewarm_read_ends_when_shutdown_starts(monkeypatch, tmp_path) -> None:
+    """The cache read checks the latch once per chunk, so a shutdown ends it at once."""
+    shard = tmp_path / "model.gguf"
+    shard.write_bytes(b"x" * 64)
+    _registry_with_shards(monkeypatch, [shard])
+    monkeypatch.setattr(prov_mod, "_PREWARMED_SHARDS", set())
+    monkeypatch.setattr(prov_mod, "_PREWARM_CHUNK_BYTES", 16)
+    p = _provider_with_clients({})
+    read: list[int] = []
+
+    def reading(done: int, total: int, detail: str | None = None) -> None:
+        read.append(done)
+        if done:
+            p._shut_down = True  # the shutdown starts after the first chunk
+
+    monkeypatch.setattr(p._warm_tracker, "reading", reading)
+    p._prewarm_chat_weights()
+
+    assert read == [0, 16]
+    assert not prov_mod._PREWARMED_SHARDS  # a cut read leaves the cache cold
+
 
 def test_warm_role_dispatches_per_role() -> None:
     chat, embed, rerank, vision = (_fake_client() for _ in range(4))
