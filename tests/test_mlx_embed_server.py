@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
@@ -861,3 +862,327 @@ def test_the_families_of_the_server_are_those_of_the_adapter() -> None:
         srv.TASK_RERANK: SERVED_FAMILIES[WorkerRole.RERANK][0],
     }
     assert expected == srv.FAMILIES
+
+
+@pytest.mark.parametrize("missing", ["--model", "--port", "--task", "--max-length"])
+def test_a_server_started_without_a_required_argument_exits_with_a_usage_error(
+    missing: str,
+) -> None:
+    argv = _server_args(5800)
+    at = argv.index(missing)
+    del argv[at : at + 2]
+    with pytest.raises(SystemExit) as stopped:
+        srv.parse_args(argv)
+    assert stopped.value.code == 2
+
+
+def test_a_task_the_server_does_not_run_exits_with_a_usage_error() -> None:
+    argv = _server_args(5800)
+    argv[argv.index("--task") + 1] = "chat"
+    with pytest.raises(SystemExit) as stopped:
+        srv.parse_args(argv)
+    assert stopped.value.code == 2
+
+
+def test_an_embed_input_of_exactly_the_window_is_served() -> None:
+    answer = service(srv.TASK_EMBED, max_length=3).embed({"input": ["ab"]})
+    assert answer["usage"]["prompt_tokens"] == 3
+
+
+def test_an_embed_input_of_text_and_a_number_is_refused() -> None:
+    with pytest.raises(srv.RequestError) as refused:
+        service(srv.TASK_EMBED).embed({"input": ["a", 1]})
+    assert refused.value.status == 400
+
+
+def test_an_embed_refusal_past_the_window_holds_the_real_count_and_limit() -> None:
+    with pytest.raises(srv.RequestError) as refused:
+        service(srv.TASK_EMBED, max_length=3).embed({"input": ["abc"]})
+    assert str(refused.value) == srv.OVERFLOW.format(count=4, limit=3)
+
+
+class _ZeroBackend(FakeBackend):
+    def last_hidden(self, batch: Sequence[Sequence[int]]) -> np.ndarray:
+        return np.zeros((len(batch), 2), dtype=np.float32)
+
+
+def test_a_hidden_state_of_zeros_gives_a_zero_vector_and_not_nan() -> None:
+    answer = service(srv.TASK_EMBED, backend=_ZeroBackend()).embed({"input": ["a"]})
+    assert answer["data"][0]["embedding"] == [0.0, 0.0]
+
+
+def test_an_embed_answer_echoes_the_model_of_the_request() -> None:
+    answer = service(srv.TASK_EMBED).embed({"input": ["a"], "model": "my-model"})
+    assert answer["model"] == "my-model"
+    assert service(srv.TASK_EMBED).embed({"input": ["a"]})["model"] == srv.SERVED_NAME
+
+
+def _fixed_prompt_length() -> int:
+    """The tokens of a rerank prompt outside the document text: the head and the tail."""
+    return len(_prompt("q", "")) - len("<Document>: ")
+
+
+def test_a_rerank_window_with_room_for_one_document_token_is_served() -> None:
+    backend = FakeBackend()
+    window = _fixed_prompt_length() + 1
+    service(srv.TASK_RERANK, max_length=window, backend=backend).rerank(
+        {"query": "q", "documents": ["d"]}
+    )
+    assert [len(ids) for ids in backend.batches[0]] == [window]
+
+
+def test_a_rerank_window_with_no_room_for_a_document_token_is_refused_with_the_true_count() -> None:
+    window = _fixed_prompt_length()
+    with pytest.raises(srv.RequestError) as refused:
+        service(srv.TASK_RERANK, max_length=window).rerank({"query": "q", "documents": ["d"]})
+    assert refused.value.status == 400
+    assert str(refused.value) == srv.OVERFLOW.format(count=window, limit=window)
+
+
+def test_a_rerank_score_stays_finite_for_logits_far_above_the_float_range_of_exp() -> None:
+    class Sure(FakeBackend):
+        def last_logits(self, batch: Sequence[Sequence[int]], picks: Sequence[int]) -> np.ndarray:
+            return np.array([[0.0, 1000.0] for _ in batch], dtype=np.float32)
+
+    answer = service(srv.TASK_RERANK, backend=Sure()).rerank({"query": "q", "documents": ["d"]})
+    assert answer["results"][0]["relevance_score"] == pytest.approx(1.0)
+
+
+def test_the_unknown_get_route_is_not_a_prefix_of_health(embed_http: int) -> None:
+    assert _call(embed_http, "GET", "/hello")[0] == 404
+    assert _call(embed_http, "GET", "/health/x")[0] == 404
+
+
+def test_a_post_without_a_content_length_is_an_empty_body_and_answers_400(
+    embed_http: int,
+) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", embed_http, timeout=5)
+    conn.putrequest("POST", "/v1/embeddings")
+    conn.endheaders()
+    resp = conn.getresponse()
+    payload = json.loads(resp.read())
+    conn.close()
+    assert resp.status == 400
+    assert payload["error"]["message"] == "the request body must be a JSON object"
+
+
+def test_a_connection_with_a_bad_content_length_is_closed_after_the_answer(embed_http: int) -> None:
+    request = b"POST /v1/embeddings HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n"
+    with socket.create_connection(("127.0.0.1", embed_http), timeout=5) as sock:
+        sock.sendall(request)
+        received = b""
+        while chunk := sock.recv(4096):
+            received += chunk
+    assert received.startswith(b"HTTP/1.1 400")
+
+
+def test_the_server_keeps_a_connection_open_for_the_next_request(embed_http: int) -> None:
+    conn = http.client.HTTPConnection("127.0.0.1", embed_http, timeout=5)
+    conn.request("GET", "/health")
+    first = conn.getresponse()
+    first.read()
+    assert first.version == 11
+    assert not first.will_close
+    socket_of_first = conn.sock
+    conn.request("GET", "/health")
+    second = conn.getresponse()
+    second.read()
+    assert conn.sock is socket_of_first
+    conn.close()
+
+
+class _Recorded(ThreadingHTTPServer):
+    """A server that notes the address it was asked to bind and listens on loopback instead."""
+
+    def __init__(self, address: tuple[str, int], handler: Any) -> None:
+        self.requested = address
+        super().__init__(("127.0.0.1", 0), handler)
+
+
+@contextmanager
+def _serving(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], backend: FakeBackend
+) -> Iterator[tuple[_Recorded, threading.Thread]]:
+    """Run ``serve`` in a thread, with the SIGTERM handler left alone, and stop it at the end."""
+    made: list[_Recorded] = []
+
+    class Server(_Recorded):
+        def __init__(self, address: tuple[str, int], handler: Any) -> None:
+            super().__init__(address, handler)
+            made.append(self)
+
+    monkeypatch.setattr(srv, "ThreadingHTTPServer", Server)
+    monkeypatch.setattr(srv.signal, "signal", lambda *_: None)
+    thread = threading.Thread(
+        target=srv.serve, args=(srv.parse_args(argv), backend), daemon=True
+    )
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not made:
+        assert time.monotonic() < deadline, "serve did not create its server"
+        time.sleep(0.01)
+    server = made[0]
+    try:
+        _wait_for_health(server.server_address[1])
+        yield server, thread
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
+
+
+def _argv(task: str, max_length: int, host: str = "127.0.0.1") -> list[str]:
+    return [
+        *("--model", "m", "--host", host, "--port", "0"),
+        *("--task", task, "--max-length", str(max_length)),
+    ]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_the_server_binds_to_the_host_it_is_given(
+    monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    with _serving(monkeypatch, _argv("embed", 8, host), FakeBackend()) as (server, _):
+        assert server.requested == (host, 0)
+
+
+def test_the_server_serves_an_embed_input_up_to_max_length_and_refuses_one_past_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _serving(monkeypatch, _argv("embed", 5), FakeBackend()) as (server, _):
+        port = server.server_address[1]
+        assert _call(port, "POST", "/v1/embeddings", b'{"input": "abcd"}')[0] == 200
+        status, payload = _call(port, "POST", "/v1/embeddings", b'{"input": "abcde"}')
+    assert status == 400
+    assert payload["error"]["message"] == srv.OVERFLOW.format(count=6, limit=5)
+
+
+def test_a_server_of_the_rerank_task_serves_the_rerank_route_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _serving(monkeypatch, _argv("rerank", 4096), FakeBackend()) as (server, _):
+        port = server.server_address[1]
+        body = b'{"query": "q", "documents": ["d"]}'
+        assert _call(port, "POST", "/v1/rerank", body)[0] == 200
+        assert _call(port, "POST", "/v1/embeddings", b'{"input": "a"}')[0] == 404
+
+
+def test_a_stopping_server_does_not_wait_for_a_request_that_is_still_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _serving(monkeypatch, _argv("embed", 8), FakeBackend()) as (server, thread):
+        port = server.server_address[1]
+        stalled = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            stalled.sendall(b"POST /v1/embeddings HTTP/1.1\r\nContent-Length: 10\r\n\r\n")
+            # The server takes connections in order, so its thread for the stalled one exists.
+            assert _call(port, "GET", "/health")[0] == 200
+            server.shutdown()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        finally:
+            stalled.close()
+
+
+class _FakeTokenizer:
+    def encode(self, text: str, add_special_tokens: bool) -> list[int]:
+        return [ord(c) for c in text]
+
+    def convert_tokens_to_ids(self, token: str) -> int:
+        return {"no": 41, "yes": 42}[token]
+
+
+class _Embedding:
+    def as_linear(self, states: np.ndarray) -> np.ndarray:
+        return states @ _EMBED_WEIGHTS
+
+
+_HEAD_WEIGHTS = np.arange(12, dtype=np.float64).reshape(3, 4)
+_EMBED_WEIGHTS = _HEAD_WEIGHTS * 10 + 1
+
+
+class _Body:
+    """The inner model: every state is [token id, position, 1], so the padding and the index show."""
+
+    embed_tokens = _Embedding()
+
+    def __init__(self) -> None:
+        self.seen: list[np.ndarray] = []
+
+    def __call__(self, padded: np.ndarray) -> np.ndarray:
+        self.seen.append(np.array(padded))
+        positions = np.broadcast_to(np.arange(padded.shape[1]), padded.shape)
+        return np.stack([padded, positions, np.ones_like(padded)], axis=-1).astype(np.float64)
+
+
+class _TiedModel:
+    """A model with no lm_head: the logits come from the embedding table."""
+
+    def __init__(self) -> None:
+        self.model = _Body()
+
+    def __call__(self, padded: np.ndarray) -> np.ndarray:
+        return np.zeros((*padded.shape, 3))
+
+
+class _HeadModel(_TiedModel):
+    def lm_head(self, states: np.ndarray) -> np.ndarray:
+        return states @ _HEAD_WEIGHTS
+
+
+@pytest.fixture
+def fake_mlx(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """Stand-ins for mlx.core and mlx_lm.load, on numpy; ``load`` hands out the model set here."""
+    core = ModuleType("mlx.core")
+    vars(core).update(array=np.array, arange=np.arange, float32=np.float32)
+    package = ModuleType("mlx")
+    vars(package).update(core=core)
+    loaded: dict[str, Any] = {"model": _HeadModel(), "path": None}
+
+    def load(path: str) -> tuple[Any, Any]:
+        loaded["path"] = path
+        return loaded["model"], _FakeTokenizer()
+
+    lm = ModuleType("mlx_lm")
+    vars(lm).update(load=load)
+    monkeypatch.setitem(sys.modules, "mlx", package)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    monkeypatch.setitem(sys.modules, "mlx_lm", lm)
+    yield loaded
+
+
+def test_the_mlx_backend_loads_the_folder_and_takes_the_model_before_the_tokenizer(
+    fake_mlx: Any,
+) -> None:
+    backend = srv.MlxBackend("/folder")
+    assert fake_mlx["path"] == "/folder"
+    assert backend.encode("ab", special=False) == [97, 98]
+    assert backend.token_id("yes") == 42
+    assert backend.last_hidden([[5]]).shape == (1, 3)
+
+
+def test_the_mlx_backend_pads_on_the_right_and_reads_each_last_token(fake_mlx: Any) -> None:
+    backend = srv.MlxBackend("/folder")
+    states = backend.last_hidden([[5, 6, 7], [8]])
+    assert fake_mlx["model"].model.seen[0].tolist() == [[5, 6, 7], [8, 0, 0]]
+    assert states.tolist() == [[7.0, 2.0, 1.0], [8.0, 0.0, 1.0]]
+    assert states.dtype == np.float32
+
+
+def test_the_mlx_backend_gives_one_row_per_input_of_the_batch(fake_mlx: Any) -> None:
+    states = srv.MlxBackend("/folder").last_hidden([[1, 2], [3, 4], [5]])
+    assert states.tolist() == [[2.0, 1.0, 1.0], [4.0, 1.0, 1.0], [5.0, 0.0, 1.0]]
+
+
+def test_the_logits_come_from_the_lm_head_in_the_order_of_the_picks(fake_mlx: Any) -> None:
+    backend = srv.MlxBackend("/folder")
+    logits = backend.last_logits([[5, 6, 7], [8]], [3, 1])
+    states = np.array([[7.0, 2.0, 1.0], [8.0, 0.0, 1.0]])
+    assert logits.tolist() == (states @ _HEAD_WEIGHTS)[:, [3, 1]].tolist()
+    assert logits.dtype == np.float32
+
+
+def test_a_model_with_no_lm_head_takes_its_logits_from_the_embedding_table(fake_mlx: Any) -> None:
+    fake_mlx["model"] = _TiedModel()
+    logits = srv.MlxBackend("/folder").last_logits([[5, 6, 7], [8]], [0, 2])
+    states = np.array([[7.0, 2.0, 1.0], [8.0, 0.0, 1.0]])
+    assert logits.tolist() == (states @ _EMBED_WEIGHTS)[:, [0, 2]].tolist()
