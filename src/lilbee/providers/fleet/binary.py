@@ -273,12 +273,49 @@ def _find_llama_server(pack: Callable[[EngineTool], Path | None]) -> Path | None
     return pack(EngineTool.LLAMA_SERVER)
 
 
+def installed_llama_server() -> Path:
+    """The llama-server a launch finds with no install; raises the error that launch gives."""
+    server = _find_llama_server(_known_pack_tool)
+    if server is None:
+        raise ProviderError(
+            f"llama-server binary not found. {engine_install_hint()}",
+            kind=ProviderErrorKind.NOT_FOUND,
+        )
+    return server
+
+
 def llama_server_ready() -> bool:
     """True when a launch finds a llama-server with no install; a bad configured path is not."""
     try:
         return _find_llama_server(_installed_pack_tool) is not None
     except ProviderError:
         return False
+
+
+def _known_pack_tool(tool: EngineTool) -> Path | None:
+    """*tool* from the installed pack; raises naming an install this process saw refused."""
+    # circular: first_use -> engines.llama -> binary
+    from lilbee.providers.fleet import first_use
+
+    try:
+        return first_use.known_tool(tool.value)
+    except first_use.INSTALL_REFUSALS as exc:
+        raise _refused(tool, exc) from exc
+
+
+def _refused(tool: EngineTool, exc: Exception) -> ProviderError:
+    """The error for a *tool* whose install was refused with *exc*."""
+    kind = (
+        ProviderErrorKind.NOT_FOUND
+        if tool is EngineTool.LLAMA_SERVER
+        else ProviderErrorKind.UNKNOWN
+    )
+    # The router refusal already names the router; llama-server's names the pack.
+    from_pack = tool not in (EngineTool.LLAMA_SERVER, EngineTool.LLAMA_SWAP)
+    source = f" {tool.value} comes from the llama.cpp pack." if from_pack else ""
+    return ProviderError(
+        f"{tool.value} binary not found.{source} {exc} {engine_install_hint()}", kind=kind
+    )
 
 
 def _installed_router() -> Path | None:
@@ -306,17 +343,7 @@ def _first_use_tool(tool: EngineTool) -> Path | None:
             return router_install.router_on_first_use()
         return first_use.first_use_tool(tool.value)
     except (*first_use.INSTALL_REFUSALS, *router_install.ROUTER_REFUSALS) as exc:
-        kind = (
-            ProviderErrorKind.NOT_FOUND
-            if tool is EngineTool.LLAMA_SERVER
-            else ProviderErrorKind.UNKNOWN
-        )
-        # The router refusal already names the router; llama-server's names the pack.
-        from_pack = tool not in (EngineTool.LLAMA_SERVER, EngineTool.LLAMA_SWAP)
-        source = f" {tool.value} comes from the llama.cpp pack." if from_pack else ""
-        raise ProviderError(
-            f"{tool.value} binary not found.{source} {exc} {engine_install_hint()}", kind=kind
-        ) from exc
+        raise _refused(tool, exc) from exc
 
 
 def resolve_llama_server() -> Path:

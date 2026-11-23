@@ -238,6 +238,23 @@ def install_pack(
     return lock
 
 
+def _pack_key() -> tuple[str, str, str]:
+    """The key of this computer's pack in the remembered refusals."""
+    lock, cell = pack_lock()
+    return (str(_store().root), lock.version, cell)
+
+
+def known_tool(tool: str) -> Path | None:
+    """The path of *tool* in the installed pack, or ``None``; never installs.
+
+    Raises the refusal of a first-use install this process remembers for the pack.
+    """
+    found = installed_tool(tool)
+    if found is None:
+        _refusals.raise_if_refused(_pack_key())
+    return found
+
+
 def first_use_tool(tool: str) -> Path | None:
     """The path of *tool* from the pack, installing the pack when it is absent.
 
@@ -245,12 +262,10 @@ def first_use_tool(tool: str) -> Path | None:
     A refused install is remembered for the rest of the process: each later lookup raises
     the same refusal and fetches nothing. ``install_pack`` always tries again.
     """
-    found = installed_tool(tool)
+    found = known_tool(tool)
     if found is not None:
         return found
-    lock, cell = pack_lock()
-    key = (str(_store().root), lock.version, cell)
-    _refusals.raise_if_refused(key)
+    key = _pack_key()
     try:
         install_pack()
     except INSTALL_REFUSALS as exc:
