@@ -340,15 +340,17 @@ def test_gate_refuses_and_leaves_nothing(
     assert_no_build_or_copy(store.root)
 
 
-def test_checksum_error_names_engine_version_and_backend_and_the_next_step(
+def test_checksum_error_for_a_copied_wheel_names_the_file_and_says_to_copy_it_again(
     store: EngineStore, wheel: tuple[Path, str]
 ) -> None:
+    path = wheel[0]
     want = (
-        "The file for engine fx 1 (cpu) does not match its pin, so lilbee did not install it. "
-        "Run the install again. If this happens again, report it."
+        f"The file {path} for engine fx 1 (cpu) does not match its pin, so lilbee did not "
+        f"install it. Copy {path.name} again from the lilbee release that matches this "
+        "version and run the install again."
     )
     with pytest.raises(ChecksumError) as caught:
-        store.install_from_wheel(pin("0" * 64), wheel[0])
+        store.install_from_wheel(pin("0" * 64), path)
     assert str(caught.value) == want
 
 
