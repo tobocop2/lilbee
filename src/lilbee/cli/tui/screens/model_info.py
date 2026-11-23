@@ -131,9 +131,9 @@ class ModelInfoModal(Dialog[None]):
         modal = EnginePickerModal(
             msg.MODEL_INFO_PICKER_TITLE,
             ref,
+            ref,
             _current_engine(ref),
             options,
-            engine_service.saved_engine(ref),
         )
         self.app.push_screen(modal, self._on_engine_picked)
 
