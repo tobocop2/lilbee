@@ -266,24 +266,19 @@ class TestProviderTokenizers:
         assert provider_tokenizers.failures(provider_tokenizers.name_for(provider)) == 0
 
     def test_a_registered_backend_does_not_keep_its_provider_alive(self):
-        import gc
         import weakref
 
         provider = _WordCounter()
         provider_tokenizers.name_for(provider)
         ref = weakref.ref(provider)
         del provider
-        gc.collect()
         assert ref() is None
 
     def test_a_count_after_the_provider_is_gone_fails_and_is_recorded(self):
-        import gc
-
         keeper, provider = _WordCounter(), _WordCounter()
         name = provider_tokenizers.name_for(keeper)
         counter = provider_tokenizers._counter(provider, name)
         del provider
-        gc.collect()
         with pytest.raises(ReferenceError, match="no longer exists"):
             counter("text")
         assert provider_tokenizers.failures(name) == 1
@@ -304,8 +299,6 @@ class TestProviderTokenizers:
         assert older.calls > calls
 
     def test_a_gone_provider_name_is_unregistered_by_the_next_registration(self, services_with):
-        import gc
-
         import xberg
 
         provider = _WordCounter()
@@ -314,7 +307,6 @@ class TestProviderTokenizers:
         name = provider_tokenizers.name_for(provider)
         del provider
         services_with(_WordCounter())
-        gc.collect()
         assert name in xberg.list_tokenizer_backends()
         build_chunking_config()
         assert name not in xberg.list_tokenizer_backends()
@@ -444,12 +436,9 @@ def test_a_failed_registration_probe_leaves_a_running_extraction_its_chunks(serv
 
 
 def test_a_config_whose_provider_is_gone_fails_the_extraction(services_with):
-    import gc
-
     services_with(_WordCounter())
     config = ExtractionConfig(chunking=build_chunking_config())
     services_with(_WordCounter())
-    gc.collect()
     with pytest.raises(TokenCountError, match="failed to count tokens"):
         extract_document(_NOTE, "text/plain", config=config)
 
