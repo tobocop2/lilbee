@@ -580,7 +580,9 @@ def _model_folder(
     folder = root / f"models--mlx-community--{repo}" / "snapshots" / "0a1b2c"
     folder.mkdir(parents=True)
     if model_type is not None:
-        (folder / "config.json").write_text(json.dumps({"model_type": model_type}), encoding="utf-8")
+        (folder / "config.json").write_text(
+            json.dumps({"model_type": model_type}), encoding="utf-8"
+        )
     return folder
 
 
