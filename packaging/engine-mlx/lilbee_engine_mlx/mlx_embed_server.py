@@ -12,6 +12,9 @@ One process loads one model for one task:
 Both tasks also serve ``POST /tokenize`` and ``POST /detokenize`` in the shape of llama-server,
 so the client can cut an input to the window by exact token counts.
 
+After the load, the server prints one line to stderr that names the MLX device, for example
+``mlx device: Device(gpu, 0) (Apple M3 Pro)``.
+
 ``GET /health`` answers once the model is loaded; the port opens only then. SIGTERM stops the
 server. The server imports mlx, mlx-lm, numpy and the standard library, and never
 mlx-embeddings, whose licence is GPL-3.0.
@@ -42,6 +45,8 @@ FAMILIES = {TASK_EMBED: "Qwen3-Embedding", TASK_RERANK: "Qwen3-Reranker"}
 """The one model family that each task implements."""
 MODEL_TYPE = "qwen3"
 """The ``model_type`` in config.json of both families."""
+DEVICE_LINE = "mlx device:"
+"""The start of the startup line that names the device; the output check of the recorder reads it."""
 HEALTH = "/health"
 SERVED_NAME = "default_model"
 OVERFLOW = "the input holds {count} tokens, which exceeds the window of {limit} tokens"
@@ -97,6 +102,20 @@ class MlxBackend:
 
         self._mx = mx
         self._model, self._tokenizer = load(path)
+
+    def device_line(self) -> str:
+        """The startup line that names the device MLX runs on, in MLX's own words.
+
+        The device is the one ``mx.default_device()`` returns, for example ``Device(gpu, 0)``.
+        The name is the one that MLX reports for the Metal device, when it reports one.
+        """
+        mx = self._mx
+        info_of = getattr(mx, "device_info", None) or getattr(
+            getattr(mx, "metal", None), "device_info", None
+        )
+        info = info_of() if callable(info_of) else {}
+        name = info.get("device_name") or info.get("architecture")
+        return f"{DEVICE_LINE} {mx.default_device()}" + (f" ({name})" if name else "")
 
     def encode(self, text: str, special: bool) -> list[int]:
         return list(self._tokenizer.encode(text, add_special_tokens=special))
@@ -406,7 +425,9 @@ def check_model(path: str, task: str) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     check_model(args.model, args.task)
-    serve(args, MlxBackend(args.model))
+    backend = MlxBackend(args.model)
+    print(backend.device_line(), file=sys.stderr, flush=True)
+    serve(args, backend)
 
 
 if __name__ == "__main__":
