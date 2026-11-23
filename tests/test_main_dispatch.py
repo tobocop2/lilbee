@@ -378,6 +378,10 @@ class TestPrestartMpResourceTracker:
         from lilbee.cli.tui.app import LilbeeApp
 
         events: list[str] = []
+
+        async def _run_async(_self: LilbeeApp) -> None:
+            events.append("run")
+
         with (
             mock.patch.object(
                 tui, "_prestart_mp_resource_tracker", lambda: events.append("prestart")
@@ -385,7 +389,7 @@ class TestPrestartMpResourceTracker:
             mock.patch.object(
                 tui, "_redirect_native_stderr_to", lambda _p: events.append("redirect")
             ),
-            mock.patch.object(LilbeeApp, "run", lambda _self, **_kw: events.append("run")),
+            mock.patch.object(LilbeeApp, "run_async", _run_async),
             mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
             mock.patch.object(LilbeeApp, "task_bar", create=True),
             mock.patch.object(LilbeeApp, "return_code", None),

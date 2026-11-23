@@ -85,6 +85,26 @@ def test_run_without_join_returns_the_result() -> None:
     assert asyncio_loop.run_without_join(echo(7)) == 14
 
 
+def test_run_without_join_cancels_the_tasks_a_run_leaves_so_their_cleanup_runs() -> None:
+    """A run that ends early leaves the cleanup of its other tasks to the cancel, as asyncio.run."""
+    cleaned: list[str] = []
+
+    async def held() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.append("held")
+
+    async def interrupted() -> None:
+        asyncio.get_running_loop().create_task(held())
+        await asyncio.sleep(0)
+        raise SystemExit(143)
+
+    with pytest.raises(SystemExit):
+        asyncio_loop.run_without_join(interrupted())
+    assert cleaned == ["held"]
+
+
 class _PressBeforeTheSleep(selectors.DefaultSelector):
     """A selector that takes a Ctrl-C after the loop's last step and before its sleep."""
 
