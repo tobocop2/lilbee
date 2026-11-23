@@ -343,6 +343,49 @@ async def test_an_apply_that_ends_under_another_screen_closes_the_report_and_it(
             assert app.return_code is None
 
 
+@pytest.mark.parametrize(
+    "cover",
+    [_open_palette, _open_catalog, _open_catalog_then_palette],
+    ids=["palette", "dialog", "palette-over-dialog"],
+)
+async def test_an_apply_that_ends_before_a_screen_above_mounts_closes_it_and_the_report(
+    sources, cover: Callable[[LilbeeApp], None]
+) -> None:
+    """The apply ends after a screen is pushed above the report and before that screen mounts.
+
+    The screen above closes once it has mounted, then the report closes.
+    """
+    app = _ReportApp(_report())
+    async with app.run_test(size=_NARROW) as pilot:
+        screen = await _report_open(app, pilot)
+        base = app.screen_stack[0]
+        cover(app)
+        assert not app.screen.is_mounted
+        screen._applied()
+        assert await _until(pilot, lambda: app.screen_stack == [base]), app.screen_stack
+        await pilot.pause()
+        assert app.screen_stack == [base]
+        assert app.return_code is None
+
+
+async def test_a_dialog_closed_before_a_screen_above_mounts_closes_it_and_the_dialog(
+    sources,
+) -> None:
+    """A dialog closed while a screen pushed above it has not mounted closes after that mount."""
+    app = _ReportApp(_report())
+    async with app.run_test(size=_NARROW) as pilot:
+        screen = await _report_open(app, pilot)
+        await _press(pilot, screen.query_one("#analyze-apply", ConfirmPill))
+        dialog = await _dialog(app, pilot)
+        _open_palette(app)
+        assert not app.screen.is_mounted
+        dialog.dismiss()
+        assert await _until(pilot, lambda: app.screen is screen), app.screen_stack
+        await pilot.pause()
+        assert app.screen is screen
+        assert app.return_code is None
+
+
 async def test_apply_keeps_your_own_values(sources) -> None:
     config = cfg.data_root / "config.toml"
     config.write_text('fts_language = "French"\n', encoding="utf-8")

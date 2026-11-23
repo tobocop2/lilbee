@@ -384,8 +384,8 @@ class AnalyzeReportScreen(Screen[None]):
 
         A bare dismiss pops whichever screen is on top.
         """
-        pop_screens_above(self)
-        self.dismiss()
+        if pop_screens_above(self, self._applied):
+            self.dismiss()
 
     def action_go_back(self) -> None:
         self.dismiss()
