@@ -12,6 +12,7 @@ from unittest import mock
 
 import pytest
 from textual.binding import Binding
+from textual.command import CommandPalette
 from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import DataTable
@@ -35,7 +36,7 @@ from lilbee.cli.tui.widgets.autocomplete import get_completions
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
 from lilbee.cli.tui.widgets.model_bar import ModelBar
-from lilbee.cli.tui.widgets.slash_command_catalog import CATALOG_GROUPS
+from lilbee.cli.tui.widgets.slash_command_catalog import CATALOG_GROUPS, SlashCommandCatalog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import FtsLanguage
 from lilbee.core.profile_files import ProfileFolder, ProfileStore
@@ -273,6 +274,73 @@ async def test_apply_asks_then_saves_and_switches_to_the_derived_profile(sources
         assert await _until(pilot, lambda: not isinstance(app.screen, AnalyzeReportScreen))
     assert profiles.active(ProfileStore()).name == name
     assert cfg.fts_language == FtsLanguage.GERMAN
+
+
+def _open_palette(app: LilbeeApp) -> None:
+    app.action_command_palette()
+
+
+def _open_catalog(app: LilbeeApp) -> None:
+    app.push_screen(SlashCommandCatalog())
+
+
+def _open_catalog_then_palette(app: LilbeeApp) -> None:
+    _open_catalog(app)
+    _open_palette(app)
+
+
+def _close_report(app: LilbeeApp) -> None:
+    app.screen.dismiss()
+
+
+@pytest.mark.parametrize(
+    ("cover", "covered"),
+    [
+        (_open_palette, CommandPalette),
+        (_open_catalog, SlashCommandCatalog),
+        (_open_catalog_then_palette, CommandPalette),
+        (_close_report, None),
+    ],
+    ids=["palette", "dialog", "palette-over-dialog", "closed"],
+)
+async def test_an_apply_that_ends_under_another_screen_closes_the_report_and_it(
+    sources, cover: Callable[[LilbeeApp], None], covered: type | None
+) -> None:
+    """The apply worker ends after the user opened a screen above the report, or left it.
+
+    The report and every screen above it close; a report the user left closes nothing more.
+    """
+    started = threading.Event()
+    release = threading.Event()
+    apply_recommended = profiles.apply_recommended
+
+    def _held(*args: Any, **kwargs: Any) -> profiles.ApplyResult:
+        started.set()
+        release.wait(30)
+        return apply_recommended(*args, **kwargs)
+
+    app = _ReportApp(_report())
+    with mock.patch.object(profiles, "apply_recommended", _held):
+        async with app.run_test(size=_NARROW) as pilot:
+            try:
+                screen = await _report_open(app, pilot)
+                base = app.screen_stack[0]
+                await _press(pilot, screen.query_one("#analyze-apply", ConfirmPill))
+                dialog = await _dialog(app, pilot)
+                await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
+                assert await _until(pilot, started.is_set)
+                assert await _until(pilot, lambda: app.screen is screen)
+                cover(app)
+                if covered is None:
+                    assert await _until(pilot, lambda: app.screen is base)
+                else:
+                    assert await _until(pilot, lambda: isinstance(app.screen, covered))
+            finally:
+                release.set()
+            assert await _until(pilot, lambda: app.screen_stack == [base]), app.screen_stack
+            await pilot.pause()
+            assert app.screen_stack == [base]
+            assert app.return_code is None
 
 
 async def test_apply_keeps_your_own_values(sources) -> None:
