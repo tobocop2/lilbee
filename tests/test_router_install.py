@@ -280,6 +280,22 @@ class TestInstall:
             (asset.size, {"on_progress": progress, "on_retry": retry, "cancel": cancel})
         ]
 
+    def test_a_damaged_archive_in_the_packs_folder_says_to_copy_it_again(
+        self, release: list[str]
+    ) -> None:
+        asset = router_install.ROUTER_ASSETS["linux-x86_64"]
+        source = next((Path(cfg.data_root) / "release").iterdir())
+        pack = _packs_copy(asset.filename, source.read_bytes()[:-8])
+        with pytest.raises(ChecksumError) as caught:
+            install_router()
+        assert str(caught.value) == (
+            f"The file {pack} for the llama-swap router {ROUTER_VERSION} does not match its "
+            f"pin, so lilbee did not install it. Copy {pack.name} again from the lilbee "
+            "release that matches this version and run the install again. "
+            f"Or remove it from {pack.parent} to download it."
+        )
+        assert installed_router() is None
+
     def test_an_archive_with_the_wrong_digest_is_refused_and_installs_nothing(
         self, release: list[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -393,8 +409,8 @@ class TestInstall:
         pack = _packs_copy(asset.filename, source.read_bytes())
         real_check = router_install._check_digest
 
-        def check_then_rewrite(checked: RouterAsset, digest: str) -> None:
-            real_check(checked, digest)
+        def check_then_rewrite(checked: RouterAsset, digest: str, source: Path | None) -> None:
+            real_check(checked, digest, source)
             _tar(pack, {"llama-swap": b"#!/bin/sh\nexit 9\n", LICENCE_FILE: MIT_TEXT.encode()})
 
         monkeypatch.setattr(router_install, "_check_digest", check_then_rewrite)

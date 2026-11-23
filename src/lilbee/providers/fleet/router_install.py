@@ -27,6 +27,7 @@ from lilbee.providers.fleet.engine_store import (
     copy_with_digest,
     engines_root,
     file_digest,
+    require_pinned_digest,
 )
 from lilbee.providers.fleet.first_use import RefusedInstalls
 from lilbee.providers.fleet.host_caps import HostCaps
@@ -186,13 +187,8 @@ _UNPACKERS: Mapping[ArchiveKind, Callable[[Path, tuple[str, ...], Path], None]] 
 }
 
 
-def _check_digest(asset: RouterAsset, digest: str) -> None:
-    if digest != asset.sha256:
-        raise ChecksumError(
-            f"The file for the llama-swap router {ROUTER_VERSION} does not match its pin, "
-            "so lilbee did not install it. Run the install again. "
-            "If this happens again, report it."
-        )
+def _check_digest(asset: RouterAsset, digest: str, source: Path | None) -> None:
+    require_pinned_digest(f"the llama-swap router {ROUTER_VERSION}", digest, asset.sha256, source)
 
 
 def _unpack(asset: RouterAsset, archive: Path, stage: Path) -> None:
@@ -210,12 +206,15 @@ def _fetch(
     on_progress: ProgressCallback | None,
     on_retry: RetryCallback | None,
     cancel: CancelSignal | None,
-) -> tuple[Path, str]:
-    """A private archive of *asset* in *stage* and its sha256: the packs copy, else the download."""
+) -> tuple[Path, str, Path | None]:
+    """A private archive of *asset* in *stage*, its sha256 and the packs file it came from.
+
+    The packs copy is used when it exists, else the archive is downloaded and the file is None.
+    """
     pack = _root() / PACK_DIR / asset.filename
     if pack.is_file():
         private = stage / pack.name
-        return private, copy_with_digest(pack, private)
+        return private, copy_with_digest(pack, private), pack
     url = f"{_RELEASE_URL}{ROUTER_VERSION}/{asset.filename}"
     shortfall = disk_shortfall(stage, url_filename(url), asset.size)
     if shortfall is not None:
@@ -229,7 +228,7 @@ def _fetch(
             f"The llama-swap router {ROUTER_VERSION} is not installed and cannot be downloaded. "
             f"Copy {asset.filename} into {pack.parent} and run the install again."
         ) from exc
-    return downloaded, file_digest(downloaded)
+    return downloaded, file_digest(downloaded), None
 
 
 def install_router(
@@ -253,8 +252,8 @@ def install_router(
         stage = final.parent / f"{STAGE_PREFIX}{uuid.uuid4().hex}"
         stage.mkdir(parents=True)
         try:
-            archive, digest = _fetch(asset, stage, on_progress, on_retry, cancel)
-            _check_digest(asset, digest)
+            archive, digest, source = _fetch(asset, stage, on_progress, on_retry, cancel)
+            _check_digest(asset, digest, source)
             _unpack(asset, archive, stage)
             archive.unlink()
             shutil.rmtree(final, ignore_errors=True)
