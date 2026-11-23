@@ -261,7 +261,7 @@ def test_s14_a_role_the_server_does_not_answer_is_refused() -> None:
 
 def test_s9_a_store_never_takes_lemonade_vectors_by_default() -> None:
     assert not proof.is_proven("lemonade")
-    assert proof.not_run_on("lemonade") == ("AMD XDNA2 NPU",)
+    assert proof.experimental_devices("lemonade") == ("AMD XDNA2 NPU",)
 
 
 def test_the_adapter_ships_in_the_choice_table() -> None:

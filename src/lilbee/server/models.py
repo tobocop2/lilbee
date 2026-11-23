@@ -1150,6 +1150,7 @@ class EngineBuildsResponse(BaseModel):
     builds: list[EngineBuildResponse]
     damaged: list[EngineDamagedResponse]
     not_installed: list[str]
+    experimental: dict[str, list[str]]
     engines_folder: str
 
 

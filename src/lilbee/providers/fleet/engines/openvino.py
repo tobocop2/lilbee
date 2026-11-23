@@ -151,8 +151,8 @@ class OpenvinoAdapter:
     """llama-server on OpenVINO behind the engine contract; it serves chat only.
 
     Requantized weights change vectors, so embed and rerank stay with llama.cpp.
-    The NPU runs one slot and a small context. No recorded run exists, so
-    ``HARDWARE_PROOF`` lists it as not run and ``auto`` never picks the engine.
+    The NPU runs one slot and a small context. The NPU and Arc rows of the coverage
+    table have no record, so ``auto`` never picks the engine.
     """
 
     name = EngineName.OPENVINO

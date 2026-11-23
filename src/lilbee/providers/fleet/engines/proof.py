@@ -1,57 +1,51 @@
-"""Which devices an engine has run on, and the one sentence that says what is unproven.
-
-An engine with any ``NOT_RUN`` device is never chosen by ``auto``. A row flips to
-``RECORDED`` only with a log from a real run on that device. Every surface builds its
-text from ``not_run_clause``, so no two surfaces word the claim differently.
-"""
+"""The engine coverage table, read from package data, and the experimental label built from it."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
-from enum import StrEnum
+from functools import cache
+from importlib import resources
+from importlib.resources.abc import Traversable
+from typing import Any
 
-
-class HardwareProof(StrEnum):
-    """Whether lilbee has a recorded run of an engine on one kind of device."""
-
-    RECORDED = "recorded"
-    NOT_RUN = "not_run"
-
-
-# Device words are what a user reads: "Intel NPU", not a vendor id. A row flips to
-# RECORDED only with a log from a real run on that device. The OpenVINO CPU and
-# iGPU rows rest on the ThinkPad recordings of run-f3; no engine has an NPU log.
-HARDWARE_PROOF: Mapping[str, Mapping[str, HardwareProof]] = {
-    "openvino": {
-        "Intel CPU": HardwareProof.RECORDED,
-        "Intel integrated graphics": HardwareProof.RECORDED,
-        "Intel NPU": HardwareProof.NOT_RUN,
-    },
-    "ovms": {
-        "Intel CPU": HardwareProof.NOT_RUN,
-        "Intel integrated graphics": HardwareProof.NOT_RUN,
-        "Intel NPU": HardwareProof.NOT_RUN,
-    },
-    "lemonade": {
-        "AMD XDNA2 NPU": HardwareProof.NOT_RUN,
-    },
-}
+COVERAGE_FILE: Traversable = resources.files("lilbee.providers.fleet.engines").joinpath(
+    "coverage.json"
+)
+HAS_RECORD = frozenset({"compared", "recorded"})
+EXPERIMENTAL_NOTE = (
+    "Experimental: built and tested without the real device. If you run it, "
+    "report the result at https://github.com/tobocop2/lilbee/issues."
+)
 
 _DEVICE_JOINER = " and "
 
 
-def not_run_on(engine: str) -> tuple[str, ...]:
-    """The devices *engine* has not run on, in table order; empty when none."""
-    rows = HARDWARE_PROOF.get(engine, {})
-    return tuple(device for device, proof in rows.items() if proof is HardwareProof.NOT_RUN)
+@cache
+def coverage() -> tuple[Mapping[str, Any], ...]:
+    """Every row of the coverage table: one engine, cell and device with its status."""
+    rows: list[Mapping[str, Any]] = json.loads(COVERAGE_FILE.read_text(encoding="utf-8"))["rows"]
+    return tuple(rows)
+
+
+def experimental_devices(engine: str, cell: str | None = None) -> tuple[str, ...]:
+    """The device words of *engine* on *cell* (every cell for ``None``) that have no record.
+
+    A cell with no row for *engine* has no record either, so it names itself.
+    """
+    rows = [r for r in coverage() if r["engine"] == engine and cell in (None, r["cell"])]
+    if cell is not None and not rows:
+        return (cell,)
+    words = (r["device_label"] for r in rows if r["status"] not in HAS_RECORD)
+    return tuple(dict.fromkeys(words))
 
 
 def is_proven(engine: str) -> bool:
-    """False when *engine* has any ``NOT_RUN`` device."""
-    return not not_run_on(engine)
+    """False when *engine* has a device with no record on any cell."""
+    return not experimental_devices(engine)
 
 
-def not_run_clause(devices: Iterable[str]) -> str:
-    """``", not run on X"`` for the devices, or the empty string for none."""
+def experimental_clause(devices: Iterable[str]) -> str:
+    """``", experimental: not run on X"`` for the devices, or the empty string for none."""
     named = tuple(devices)
-    return f", not run on {_DEVICE_JOINER.join(named)}" if named else ""
+    return f", experimental: not run on {_DEVICE_JOINER.join(named)}" if named else ""

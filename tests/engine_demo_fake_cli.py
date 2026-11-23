@@ -84,6 +84,7 @@ def listing() -> dict[str, object]:
         "builds": builds,
         "damaged": [],
         "not_installed": [],
+        "experimental": {},
         "engines_folder": "/fake/engines",
     }
 

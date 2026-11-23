@@ -14,7 +14,6 @@ import pytest
 from lilbee.providers.fleet.engine_manifest import MANIFESTS, cell_key
 from lilbee.providers.fleet.engines.base import EngineAdapter, EngineName, UserInstalled
 from lilbee.providers.fleet.engines.choice import ADAPTERS, PinError, pin_lock
-from lilbee.providers.fleet.engines.proof import HARDWARE_PROOF
 from lilbee.providers.fleet.host_caps import Feature, HostArch, HostCaps, HostOS, Npu, NpuVendor
 from tests.conformance.compare_record import FAKE_DIR, Step, install_pin
 from tests.conformance.engine_coverage import (
@@ -31,6 +30,11 @@ from tests.conformance.engine_coverage import (
 ROOT = Path(__file__).resolve().parents[2]
 PRESET_DIR = Path(__file__).parent / "fixtures" / "presets"
 RECORD_DIR = PurePosixPath("tests/conformance/fixtures/compare")
+RECORDING_DIR = PurePosixPath("tests/conformance/fixtures/engines")
+# The devices a cell whose backend part names no single device runs on.
+MULTI_DEVICE_BACKENDS = {
+    "openvino": {Device.CPU, Device.INTEL_IGPU, Device.INTEL_ARC, Device.NPU},
+}
 
 Cell = tuple[str, str]
 Manifests = Mapping[str, Mapping[str, Mapping[str, Any]]]
@@ -97,8 +101,8 @@ def stale(shipped: set[Cell], rows: Iterable[CoverageRow]) -> list[Cell]:
     return sorted(row_cells(rows) - shipped)
 
 
-def path_fault(record: str) -> str:
-    """Why *record* is not a path under the compare folder; empty when it is."""
+def path_fault(record: str, folder: PurePosixPath = RECORD_DIR) -> str:
+    """Why *record* is not a path under *folder*; empty when it is."""
     path = PurePosixPath(record)
     if not record:
         return "no record"
@@ -108,7 +112,7 @@ def path_fault(record: str) -> str:
         return "record path leaves its folder"
     if FAKE_DIR in path.parts:
         return "record is a fake"
-    return "" if path.is_relative_to(RECORD_DIR) else f"record is outside {RECORD_DIR}"
+    return "" if path.is_relative_to(folder) else f"record is outside {folder}"
 
 
 def content_fault(record: str, root: Path) -> str:
@@ -123,9 +127,9 @@ def content_fault(record: str, root: Path) -> str:
     return ""
 
 
-def record_fault(record: str, root: Path = ROOT) -> str:
-    """Why *record* cannot back a COMPARED row; empty when it can."""
-    if fault := path_fault(record):
+def record_fault(record: str, root: Path = ROOT, folder: PurePosixPath = RECORD_DIR) -> str:
+    """Why *record* cannot back a row with a record in *folder*; empty when it can."""
+    if fault := path_fault(record, folder):
         return fault
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", "--", record],
@@ -143,6 +147,8 @@ def row_faults(row: CoverageRow, root: Path = ROOT) -> list[str]:
     faults: list[str] = []
     if not row.reason:
         faults.append("no reason")
+    if not row.device_label:
+        faults.append("no device label")
     if row.status is Coverage.DEFERRED and not row.host:
         faults.append("deferred with no host")
     if row.status is Coverage.EXCLUDED and not row.owner_decision:
@@ -152,11 +158,15 @@ def row_faults(row: CoverageRow, root: Path = ROOT) -> list[str]:
             faults.append("compared with no steps")
         if fault := record_fault(row.record, root):
             faults.append(fault)
+    if row.status is Coverage.RECORDED and (fault := record_fault(row.record, root, RECORDING_DIR)):
+        faults.append(fault)
     return faults
 
 
 def _row(**changes: Any) -> CoverageRow:
-    base = CoverageRow("e", "c", Device.CPU, Coverage.DEFERRED, Route.PRESET, "why", host="h")
+    base = CoverageRow(
+        "e", "c", Device.CPU, Coverage.DEFERRED, Route.PRESET, "why", host="h", device_label="CPU"
+    )
     return CoverageRow(**{**base.__dict__, **changes})
 
 
@@ -234,61 +244,55 @@ def test_npu_rows_are_excluded() -> None:
     assert {r.status for r in npu} == {Coverage.EXCLUDED}
 
 
-def proof_device(word: str) -> Device:
-    """The coverage device that a proof.py device word names."""
-    if word.endswith("NPU"):
-        return Device.NPU
-    if word.endswith("CPU"):
-        return Device.CPU
-    if "graphics" in word:
-        return Device.INTEL_GPU
-    raise AssertionError(f"proof.py names a device with no coverage device: {word}")
+def _backend(cell: str) -> str:
+    return cell.split("-", 2)[2]
 
 
 def cell_device(cell: str) -> Device:
     """The device a pack cell key runs on, from its backend part."""
-    backend = cell.split("-", 2)[2]
-    return next(d for d in Device if backend.startswith(d.value))
+    return next(d for d in Device if _backend(cell).startswith(d.value))
 
 
-def proof_cells(rows: Iterable[CoverageRow]) -> list[tuple[str, Device]]:
-    """The (engine, device) pairs of proof.py that no row names."""
-    named = {(r.engine, r.device) for r in rows}
+def cell_devices(cell: str) -> set[Device]:
+    """Every device a cell runs on: the multi-device set of its backend, else its one device."""
+    return MULTI_DEVICE_BACKENDS.get(_backend(cell)) or {cell_device(cell)}
+
+
+def missing_devices(rows: Iterable[CoverageRow]) -> list[tuple[str, str, Device]]:
+    """The devices of a multi-device cell that no row of its engine names."""
+    named = {(r.engine, r.cell, r.device) for r in rows}
+    cells = {
+        (r.engine, r.cell)
+        for r in rows
+        if r.cell != PRESET_CELL and _backend(r.cell) in MULTI_DEVICE_BACKENDS
+    }
     return sorted(
-        (engine, proof_device(word))
-        for engine, devices in HARDWARE_PROOF.items()
-        for word in devices
-        if (engine, proof_device(word)) not in named
+        (engine, cell, device)
+        for engine, cell in cells
+        for device in cell_devices(cell)
+        if (engine, cell, device) not in named
     )
 
 
 def unknown_devices(rows: Iterable[CoverageRow]) -> list[tuple[str, str, Device]]:
-    """The rows whose device neither proof.py nor the cell's own backend names."""
-    unknown = []
-    for r in rows:
-        if r.cell == PRESET_CELL:
-            continue
-        known = (
-            {proof_device(w) for w in HARDWARE_PROOF[r.engine]}
-            if r.engine in HARDWARE_PROOF
-            else {cell_device(r.cell)}
-        )
-        if r.device not in known:
-            unknown.append((r.engine, r.cell, r.device))
-    return unknown
+    """The rows whose device the cell's own backend does not name."""
+    return [
+        (r.engine, r.cell, r.device)
+        for r in rows
+        if r.cell != PRESET_CELL and r.device not in cell_devices(r.cell)
+    ]
 
 
-def test_every_proof_device_has_a_row() -> None:
-    assert HARDWARE_PROOF
-    assert proof_cells(COVERAGE_ROWS) == []
+def test_every_device_of_a_multi_device_cell_has_a_row() -> None:
+    assert missing_devices(COVERAGE_ROWS) == []
 
 
 def test_a_removed_device_row_is_named() -> None:
-    rows = [r for r in COVERAGE_ROWS if (r.engine, r.device) != ("openvino", Device.INTEL_GPU)]
-    assert proof_cells(rows) == [("openvino", Device.INTEL_GPU)]
+    rows = [r for r in COVERAGE_ROWS if (r.engine, r.device) != ("openvino", Device.INTEL_ARC)]
+    assert missing_devices(rows) == [("openvino", "linux-x86_64-openvino", Device.INTEL_ARC)]
 
 
-def test_no_row_names_a_device_that_proof_and_the_cell_do_not_know() -> None:
+def test_no_row_names_a_device_that_its_cell_does_not_know() -> None:
     assert unknown_devices(COVERAGE_ROWS) == []
 
 
@@ -302,11 +306,13 @@ def test_a_row_with_an_unknown_device_is_named() -> None:
 def test_cell_device_reads_the_backend_part() -> None:
     assert cell_device("linux-x86_64-cuda128-sm89") is Device.CUDA
     assert cell_device("macos-arm64-metal") is Device.METAL
+    assert cell_devices("linux-x86_64-openvino") == MULTI_DEVICE_BACKENDS["openvino"]
 
 
-def test_an_unknown_proof_device_word_is_refused() -> None:
-    with pytest.raises(AssertionError, match="Quantum"):
-        proof_device("Quantum unit")
+def test_the_intel_igpu_record_does_not_clear_arc() -> None:
+    openvino = {r.device: r.status for r in COVERAGE_ROWS if r.engine == "openvino"}
+    assert openvino[Device.INTEL_IGPU] is Coverage.RECORDED
+    assert openvino[Device.INTEL_ARC] is Coverage.DEFERRED
 
 
 def route_of(
@@ -431,6 +437,20 @@ def test_an_excluded_row_without_an_owner_decision_is_a_fault() -> None:
 
 def test_a_row_without_a_reason_is_a_fault() -> None:
     assert row_faults(_row(reason="")) == ["no reason"]
+
+
+def test_a_row_without_a_device_label_is_a_fault() -> None:
+    assert row_faults(_row(device_label="")) == ["no device label"]
+
+
+def test_a_recorded_row_needs_a_recording_under_the_engines_folder() -> None:
+    compare = "tests/conformance/fixtures/compare/llama.cpp-linux-x86_64-cpu/1.12032.1.json"
+    assert row_faults(_row(status=Coverage.RECORDED, record="")) == ["no record"]
+    assert row_faults(_row(status=Coverage.RECORDED, record=compare)) == [
+        f"record is outside {RECORDING_DIR}"
+    ]
+    good = _row(status=Coverage.RECORDED, record=f"{RECORDING_DIR}/openvino-gpu.json")
+    assert row_faults(good) == []
 
 
 @pytest.fixture

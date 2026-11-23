@@ -63,7 +63,7 @@ from lilbee.providers.fleet.engines.choice import (
 )
 from lilbee.providers.fleet.engines.host_gate import PASS, HostGate
 from lilbee.providers.fleet.engines.llama import LLAMA, pack_backend
-from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
+from lilbee.providers.fleet.engines.proof import experimental_clause, experimental_devices
 from lilbee.providers.fleet.router_install import ROUTER_REFUSALS, install_router
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole, unserved_role_message
 from lilbee.retrieval.canary_probe import embedder_trigger
@@ -144,12 +144,21 @@ class InstalledBuild:
     version: str
     backend: str
     note: str = ""
-    not_run_on: tuple[str, ...] = ()
+
+    @property
+    def not_run_on(self) -> tuple[str, ...]:
+        """The devices of this build's cell that have no record."""
+        return BuildView(self.engine, self.version, self.backend).not_run_on
+
+    @property
+    def plain_label(self) -> str:
+        """The build as ``name version (backend)``, the form that JSON output carries."""
+        return BuildView(self.engine, self.version, self.backend).plain_label
 
     @property
     def label(self) -> str:
         """The build as one line, with the devices it has not run on."""
-        return BuildView(self.engine, self.version, self.backend, self.not_run_on).label
+        return BuildView(self.engine, self.version, self.backend).label
 
 
 _STORE_REFUSALS = (
@@ -271,12 +280,21 @@ class BuildView:
     engine: str
     version: str
     backend: str
-    not_run_on: tuple[str, ...] = ()
+
+    @property
+    def not_run_on(self) -> tuple[str, ...]:
+        """The devices of the cell this host runs the build on that have no record."""
+        return experimental_devices(self.engine, cell_key(runnable.session_host(), self.backend))
+
+    @property
+    def plain_label(self) -> str:
+        """The build as ``name version (backend)``: JSON output carries this form only."""
+        return f"{self.engine} {self.version} ({self.backend})"
 
     @property
     def label(self) -> str:
-        """The build as one line: ``name version (backend)``, then the devices not run on."""
-        return f"{self.engine} {self.version} ({self.backend}){not_run_clause(self.not_run_on)}"
+        """The line a person reads: the plain label, then the experimental clause."""
+        return f"{self.plain_label}{experimental_clause(self.not_run_on)}"
 
 
 def engines_folder(config: Config = cfg) -> Path:
@@ -288,7 +306,7 @@ def builds(config: Config = cfg) -> list[BuildView]:
     """Every engine build installed beside the models that the host gate lets this host run."""
     store = EngineStore(engines_root(config.models_dir))
     return [
-        BuildView(b.engine, b.version, b.backend, not_run_on(b.engine))
+        BuildView(b.engine, b.version, b.backend)
         for b in store.installed()
         if choice.host_answer(b.engine, runnable.session_host).ok
     ]
@@ -308,7 +326,16 @@ class EngineListView:
     not_installed: list[str]
     folder: Path
 
-    def payload(self) -> dict[str, list[dict[str, Any]] | list[str] | str]:
+    def experimental(self) -> dict[str, list[str]]:
+        """Each listed engine with devices that have no record: a build's cell, else every cell."""
+        found: dict[str, dict[str, None]] = {}
+        for b in self.builds:
+            found.setdefault(b.engine, {}).update(dict.fromkeys(b.not_run_on))
+        for name in self.not_installed:
+            found.setdefault(name, {}).update(dict.fromkeys(experimental_devices(name)))
+        return {engine: list(devices) for engine, devices in found.items() if devices}
+
+    def payload(self) -> dict[str, Any]:
         """The list as plain data, the same on the CLI, REST and MCP."""
         return {
             "builds": [
@@ -322,6 +349,7 @@ class EngineListView:
             ],
             "damaged": [{"folder": str(e.folder), "error": str(e)} for e in self.damaged],
             "not_installed": self.not_installed,
+            "experimental": self.experimental(),
             "engines_folder": str(self.folder),
         }
 
@@ -399,7 +427,7 @@ def remove_build(
         store.remove(engine, version, backend, in_use=partial(launch_uses_engine, store.root))
     except STORE_REFUSALS as exc:
         raise EngineRefusedError(str(exc)) from exc
-    return BuildView(engine, version, backend).label
+    return BuildView(engine, version, backend).plain_label
 
 
 def roles(config: Config = cfg) -> list[RoleView]:
@@ -774,9 +802,7 @@ def _install_adapter(
     except _UNREADABLE_WHEEL as exc:
         raise EngineRefusedError(f"Engine {name} was not installed: {exc}") from exc
     _install_router(name, on_update, on_retry, cancel)
-    return InstalledBuild(
-        lock.engine, lock.version, lock.backend, gate.reason, not_run_on(lock.engine)
-    )
+    return InstalledBuild(lock.engine, lock.version, lock.backend, gate.reason)
 
 
 def _install_router(

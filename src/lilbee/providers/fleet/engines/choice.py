@@ -186,7 +186,7 @@ def _default(
 ) -> EngineName | None:
     """The first engine in the host's order that is installed, loads *fmt* and serves *role*.
 
-    An engine with a device it has not run on is never chosen here; ``is_proven`` says so.
+    An experimental engine is never chosen here; the bundled llama.cpp is exempt.
     """
     order: list[EngineName] = []
     if EngineName.MLX in installed and _is_apple_silicon(host()):
@@ -199,7 +199,7 @@ def _default(
             if e in installed
             and fmt in installed[e]
             and _serves(e, role)
-            and is_proven(e)
+            and (e is EngineName.LLAMA or is_proven(e))
             and host_answer(e, host).auto_selectable
         ),
         None,

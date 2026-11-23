@@ -310,8 +310,8 @@ def test_the_memory_estimate_charges_the_weights_of_the_ir_folder(tmp_path: Path
 
 
 def test_the_proof_table_lists_every_device_as_not_run() -> None:
-    devices = ("Intel CPU", "Intel integrated graphics", "Intel NPU")
-    assert proof.not_run_on("ovms") == devices
+    devices = ("Intel CPU", "Intel integrated graphics", "Intel Arc graphics", "Intel NPU")
+    assert proof.experimental_devices("ovms") == devices
     assert not proof.is_proven("ovms")
 
 
