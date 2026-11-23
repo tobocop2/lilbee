@@ -139,7 +139,11 @@ def role_refusal(role: WorkerRole, ref: str) -> str | None:
     the embed server serves. The family is read from the repo name.
     """
     served = SERVED_FAMILIES.get(role)
-    if served is None or model_format(ref) is not ModelFormat.MLX or not routes_to_native_model(ref):
+    if (
+        served is None
+        or model_format(ref) is not ModelFormat.MLX
+        or not routes_to_native_model(ref)
+    ):
         return None
     family, example = served
     repo = parse_model_ref(ref).hf_repo

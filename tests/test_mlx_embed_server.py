@@ -658,7 +658,10 @@ class _Mx:
     ("mx", "line"),
     [
         (_Mx({"device_name": "Apple M3 Pro"}), "mlx device: Device(gpu, 0) (Apple M3 Pro)"),
-        (_Mx({"device_name": "Apple M3 Pro"}, in_metal=True), "mlx device: Device(gpu, 0) (Apple M3 Pro)"),
+        (
+            _Mx({"device_name": "Apple M3 Pro"}, in_metal=True),
+            "mlx device: Device(gpu, 0) (Apple M3 Pro)",
+        ),
         (_Mx({"architecture": "applegpu_g15s"}), "mlx device: Device(gpu, 0) (applegpu_g15s)"),
         (_Mx({}), "mlx device: Device(gpu, 0)"),
         (_Mx(None), "mlx device: Device(gpu, 0)"),

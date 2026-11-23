@@ -247,9 +247,7 @@ class TestModelRoutes:
     def test_the_cli_refuses_an_unsupported_reranker(
         self, listed: list[str], tmp_path: Path
     ) -> None:
-        result = runner.invoke(
-            app, ["model", "use", "rerank", CHAT, "--data-dir", str(tmp_path)]
-        )
+        result = runner.invoke(app, ["model", "use", "rerank", CHAT, "--data-dir", str(tmp_path)])
         assert result.exit_code == 1
         assert RERANK_WORDS in _flat(result.output)
 
