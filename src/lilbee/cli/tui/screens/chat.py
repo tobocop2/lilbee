@@ -3136,7 +3136,9 @@ class ChatScreen(Screen[None]):
     @on(ChatInput.Changed, "#chat-input")
     def _on_chat_input_changed(self, event: ChatInput.Changed) -> None:
         """Refresh arg-hint and auto-show or hide the completion dropdown."""
-        if not reads_models(self._chat_input.value):
+        # The edit's own text: a later edit may already be in the widget, and an
+        # edit that left the model argument must end the session all the same.
+        if not reads_models(event.text):
             # Also on a programmatic edit: a submit clears the input that way, and
             # a /remove must not leave the removed model in the next listing.
             self._model_names = None
