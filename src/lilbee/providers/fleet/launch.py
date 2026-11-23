@@ -81,6 +81,11 @@ class InstanceLaunch:
     """
     swap_class: str = ""
     """The residency class this launch stays loaded with; empty means a class of its own."""
+    engine: str = ""
+    """The engine the plan chose for this launch; empty in a record from before the field.
+
+    Adoption reads the engine from here, so it never asks the engine book again.
+    """
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -106,6 +111,7 @@ class InstanceLaunch:
             "swap_extras": dict(self.swap_extras),
             "server_binary": self.server_binary,
             "swap_class": self.swap_class,
+            "engine": self.engine,
         }
 
     @classmethod
@@ -135,6 +141,7 @@ class InstanceLaunch:
             swap_extras=dict(payload.get("swap_extras") or {}),
             server_binary=str(payload.get("server_binary") or ""),
             swap_class=str(payload.get("swap_class") or ""),
+            engine=str(payload.get("engine") or ""),
         )
 
     @property

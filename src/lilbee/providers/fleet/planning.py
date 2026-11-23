@@ -2358,6 +2358,7 @@ def _launch_for(
         est_host_bytes=_chat_host_estimate(model_path, ctx, slots, engine) if fit_moves_chat else 0,
         settings=launch_settings(plan.role, rerank_mode, meta, model_path, engine=engine),
         server_binary=str(binary),
+        engine=str(engine.name),
     )
     return replace(launch, swap_extras=engine.swap_extras(launch))
 
