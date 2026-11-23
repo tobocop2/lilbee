@@ -25,7 +25,13 @@ checker="$work/checker.txt"
 uv export --locked --only-group license-check --no-hashes --no-annotate \
   --no-emit-project > "$checker"
 
-run_checker=(uv run --no-project --python 3.12 --with-requirements "$checker")
+# licensecheck keeps a sqlite cache of registry answers in the user cache
+# directory and offers no option to move it. Two runs on a cold shared cache
+# can leave one run with an empty report. Each run gets its own cache
+# directory through XDG_CACHE_HOME, and uv keeps its own cache directory.
+uv_cache="${UV_CACHE_DIR:-$(uv cache dir)}"
+run_checker=(env UV_CACHE_DIR="$uv_cache" XDG_CACHE_HOME="$work/cache"
+  uv run --no-project --python 3.12 --with-requirements "$checker")
 report="$work/report.json"
 
 # --zero makes licensecheck exit non-zero on an incompatible package. It reads
