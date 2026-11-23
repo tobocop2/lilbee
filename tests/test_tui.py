@@ -77,6 +77,7 @@ class TestRunTui:
         with (
             mock.patch("lilbee.cli.tui.app.LilbeeApp.__init__", return_value=None) as init,
             mock.patch("lilbee.cli.tui.app.LilbeeApp.task_bar", create=True),
+            mock.patch("lilbee.cli.tui.app.LilbeeApp.return_code", None),
         ):
             run_tui(initial_view="Catalog")
         init.assert_called_once_with(initial_view="Catalog")

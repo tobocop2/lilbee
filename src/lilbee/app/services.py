@@ -917,19 +917,19 @@ def _straggler_threads() -> list[threading.Thread]:
     ]
 
 
-def exit_when_stragglers_would_hang() -> None:
+def exit_when_stragglers_would_hang(status: int) -> None:
     """Exit rather than let interpreter shutdown join a wedged thread forever.
 
     threading joins every non-daemon thread after atexit, so one worker
     blocked in an unbounded network read hangs the process after all real
     work is done. Stragglers share a short budget; whatever remains cannot
-    finish, and the child guard reaps the engine when the process dies.
-    Called from the TUI's own exit path and inert elsewhere: a test process
+    finish, and the child guard reaps the engine when the process dies, with
+    *status*. Called from the TUI's own exit path and inert elsewhere: a test process
     or embedding host owns its threads, and an exit would take them with it.
     """
     if not _state.interactive:
         return
-    _exit_if_stragglers(0, time.monotonic() + _STRAGGLER_BUDGET_S)
+    _exit_if_stragglers(status, time.monotonic() + _STRAGGLER_BUDGET_S)
 
 
 def _exit_if_stragglers(status: int, deadline: float) -> None:

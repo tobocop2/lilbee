@@ -1162,7 +1162,7 @@ class TestStragglerExit:
         monkeypatch.setattr(services_mod.os, "_exit", exits.append)
         threads = self._fake_enumerate(monkeypatch, [_Wedged()])
 
-        services_mod.exit_when_stragglers_would_hang()
+        services_mod.exit_when_stragglers_would_hang(0)
         del threads[1:]
 
         assert exits == []
@@ -1180,18 +1180,29 @@ class TestStragglerExit:
         monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
         threads = self._fake_enumerate(monkeypatch, [_Wedged()])
 
-        services_mod.exit_when_stragglers_would_hang()
+        services_mod.exit_when_stragglers_would_hang(0)
         del threads[1:]
 
         assert exits == [0]
         assert "would not stop" in capsys.readouterr().err
+
+    def test_a_wedged_thread_exits_with_the_status_of_the_app(self, monkeypatch) -> None:
+        exits: list[int] = []
+        monkeypatch.setattr(services_mod.os, "_exit", exits.append)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
+        threads = self._fake_enumerate(monkeypatch, [_Wedged()])
+
+        services_mod.exit_when_stragglers_would_hang(1)
+        del threads[1:]
+
+        assert exits == [1]
 
     def test_a_clean_shutdown_exits_normally(self, monkeypatch, capsys) -> None:
         exits: list[int] = []
         monkeypatch.setattr(services_mod.os, "_exit", exits.append)
         self._fake_enumerate(monkeypatch, [])
 
-        services_mod.exit_when_stragglers_would_hang()
+        services_mod.exit_when_stragglers_would_hang(0)
 
         assert exits == []
         assert capsys.readouterr().err == ""
@@ -1206,7 +1217,7 @@ class TestStragglerExit:
 
         threads = self._fake_enumerate(monkeypatch, [_Interruptible()])
 
-        services_mod.exit_when_stragglers_would_hang()
+        services_mod.exit_when_stragglers_would_hang(0)
         del threads[1:]
 
         assert exits == [services_mod._FORCE_QUIT_EXIT_CODE]
