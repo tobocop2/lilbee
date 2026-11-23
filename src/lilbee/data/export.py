@@ -7,6 +7,8 @@ import errno
 import json
 import os
 import shutil
+import sys
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -202,6 +204,26 @@ def _write_jsonl(table: pa.Table, sink: IO[bytes], cancel: CancelSignal | None =
 
 _WRITERS = {DatasetFormat.PARQUET: _write_parquet, DatasetFormat.JSONL: _write_jsonl}
 
+# Windows refuses a rename onto a file that another handle has open: a second
+# export's rename onto the same name, or a virus scanner that reads the file the
+# first rename just put there. The refusal is a PermissionError and ends when
+# that handle closes, so the rename is tried again, as pip does. The bound is
+# fixed: 5 attempts with 0.2 s between them, 0.8 s of waiting at most.
+_RENAME_ATTEMPTS = 5
+_RENAME_RETRY_WAIT_S = 0.2
+
+
+def _replace_when_free(partial: Path, target: Path) -> None:
+    """Rename *partial* onto *target*, again on Windows while another handle holds it."""
+    for attempt in range(1, _RENAME_ATTEMPTS + 1):
+        try:
+            os.replace(partial, target)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == _RENAME_ATTEMPTS:
+                raise
+        time.sleep(_RENAME_RETRY_WAIT_S)
+
 
 def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
     """Encode the dataset *table* to bytes in the given format.
@@ -228,7 +250,8 @@ def write_dataset(
     Any exception removes the temporary file; a kill leaves it under its
     temporary name. Each call gets its own temporary name, so two exports to one
     path (the MCP server runs tools in threads) cannot share one; the last to
-    finish wins whole. An error on the temporary file names *path*, the file the
+    finish wins whole. On Windows, a rename that another handle on *path* blocks
+    is tried again for a fixed bound. An error on the temporary file names *path*, the file the
     caller asked for. A new file gets the umask mode; a replaced file keeps its own.
     A symlink at *path* stays a link: the export replaces its target, also a
     missing one, as opening *path* for writing would.
@@ -250,7 +273,7 @@ def write_dataset(
             _WRITERS[fmt](table, sink, cancel)
         if target.is_file():
             shutil.copymode(target, partial)
-        os.replace(partial, target)
+        _replace_when_free(partial, target)
     except BaseException as exc:
         partial.unlink(missing_ok=True)
         # open() and os.replace() store the path they were given, a Path here.
