@@ -127,7 +127,8 @@ _ORACLE_ITSELF = "the oracle itself: the absolute checks and the null block"
 _IK_STEPS = tuple(step for step in Step if step not in (Step.VISION, Step.RERANK))
 _IK_REASON = (
     "chat and embed against llama.cpp, with --no-context-shift so overflow passes; "
-    "json_object passed in this run and is intermittent elsewhere"
+    "json_object passed in this run; it fails in some runs on ik_llama.cpp "
+    "and that defect is still open"
 )
 _MISTRAL_STEPS = tuple(step for step in Step if step is not Step.RERANK)
 _TEI_STEPS = (Step.EMBED, Step.RERANK)
