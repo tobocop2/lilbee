@@ -31,7 +31,7 @@ from lilbee.providers.engine_params import EMBED_FALLBACK_CTX
 from lilbee.providers.fleet import client as fleet_client
 from lilbee.providers.fleet import engine_manifest
 from lilbee.providers.fleet.client import LlamaServerClient
-from lilbee.providers.fleet.engine_store import EngineNotInstalledError, EngineStore, PinLock
+from lilbee.providers.fleet.engine_store import EngineStore, PinLock
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines import tei as tei_module
 from lilbee.providers.fleet.engines.base import EngineName, LaunchRequest
@@ -296,11 +296,12 @@ def test_binary_with_no_published_pack_says_there_is_nothing_to_install(
     monkeypatch.setattr(engine_manifest, "MANIFESTS", {})
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     with pytest.raises(
-        EngineNotInstalledError,
+        ProviderError,
         match=r"Engine tei is not installed\. No pack of tei is published yet, so there is "
         r"nothing to install\.",
-    ):
+    ) as error:
         TEI.binary()
+    assert error.value.kind is ProviderErrorKind.NOT_FOUND
 
 
 def test_binary_comes_from_the_store_record_of_the_pin(
@@ -308,7 +309,7 @@ def test_binary_comes_from_the_store_record_of_the_pin(
 ) -> None:
     monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: _caps())
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
-    with pytest.raises(EngineNotInstalledError, match="Run lilbee engine install tei"):
+    with pytest.raises(ProviderError, match="Run lilbee engine install tei"):
         TEI.binary()
     wheel = tmp_path / "tei.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
