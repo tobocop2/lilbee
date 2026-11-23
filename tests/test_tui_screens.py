@@ -1420,6 +1420,49 @@ async def test_settings_list_editor_refused_pattern_blocks_save():
             assert cfg.crawl_exclude_patterns == ["keep"]
 
 
+async def test_settings_refresh_after_focus_leaves_keeps_the_unsaved_edit():
+    """A refresh that lands before the blur save keeps the typed text, so the save checks it."""
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    key = "crawl_exclude_patterns"
+    refused = r"\Z"
+    stub = StubCrawlberg(refuse=refusing_patterns(refused))
+    app = LazySettingsTestApp(key)
+    with stub.installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            cfg.crawl_exclude_patterns = ["keep"]
+            screen = app.screen
+            ta = screen.query_one(f"#ed-{key}", ListTextArea)
+            ta.focus()
+            assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
+            ta.load_text(f"/ok\n{refused}")
+            ta.blur()
+            # Focus has left; the blur save still waits in the queue when the refresh runs.
+            screen._on_setting_changed((key, cfg.crawl_exclude_patterns))
+            screen._refresh_changed_rows()
+            assert ta.text == f"/ok\n{refused}"
+            err = screen.query_one(f"#err-{key}", Static)
+            assert await pump_until(pilot, lambda: "line 2" in str(err.render())), (
+                "the refused-pattern error never rendered"
+            )
+            assert cfg.crawl_exclude_patterns == ["keep"]
+
+
+async def test_settings_refresh_shows_cfg_in_an_editor_without_an_edit():
+    """A refresh still puts cfg's value in an editor that holds no unsaved edit."""
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    key = "crawl_exclude_patterns"
+    app = LazySettingsTestApp(key)
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        ta = screen.query_one(f"#ed-{key}", ListTextArea)
+        cfg.crawl_exclude_patterns = ["/new"]
+        screen._on_setting_changed((key, cfg.crawl_exclude_patterns))
+        screen._refresh_changed_rows()
+        assert ta.text == "/new"
+
+
 async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
     """Python's re refuses this pattern; crawlberg compiles it, so the screen saves it."""
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
