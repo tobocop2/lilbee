@@ -666,15 +666,17 @@ class TestWriteCancellation:
         assert len(load_page_dataset(target, DatasetFormat.JSONL)) == 5
         assert sorted(p.name for p in target.parent.iterdir()) == ["pages.jsonl"]
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need a privilege on Windows")
     def test_an_export_over_a_symlink_loop_fails_with_eloop(self, tmp_path):
         # Opening the path failed with ELOOP; the export must too, not crash or
-        # replace a link in the loop.
+        # replace a link in the loop. Windows makes a link only with the right to.
         import errno
 
         path, other = tmp_path / "pages.jsonl", tmp_path / "other.jsonl"
-        path.symlink_to(other)
-        other.symlink_to(path)
+        try:
+            path.symlink_to(other)
+            other.symlink_to(path)
+        except OSError:
+            pytest.skip("this host grants no right to make a symlink")
         with pytest.raises(OSError) as caught:
             write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
         assert (caught.value.errno, caught.value.filename) == (errno.ELOOP, str(path))
