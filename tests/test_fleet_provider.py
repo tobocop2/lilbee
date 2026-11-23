@@ -966,6 +966,69 @@ def test_a_second_reload_warm_waits_for_the_first(monkeypatch) -> None:
     assert order == [frozenset({WorkerRole.CHAT}), frozenset({WorkerRole.EMBED})]
 
 
+def test_a_shutdown_warns_when_the_warm_outlives_its_wait(monkeypatch, caplog) -> None:
+    """A warm still running at the bound is named in a warning, as the work wait is."""
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", 0.1)
+    p = FleetProvider()
+    started = threading.Event()
+    release = threading.Event()
+
+    def preload(roles: frozenset[WorkerRole]) -> None:
+        started.set()
+        release.wait(timeout=30.0)
+
+    monkeypatch.setattr(p, "_preload_roles", preload)
+    monkeypatch.setattr(p, "_release_engines", lambda: None)
+    p._preload_restarted([WorkerRole.EMBED])
+    warm = p._reload_warm
+    assert warm is not None
+    assert started.wait(timeout=5.0)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=prov_mod.log.name):
+            p._shutdown_swap()
+    finally:
+        release.set()
+        warm.join(timeout=5.0)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == [
+        "Model warm-up still in progress after 0s; shutting down without waiting for it."
+    ]
+
+
+def test_a_shutdown_stops_the_engines_before_it_waits_for_the_warm(monkeypatch, caplog) -> None:
+    """A blocking warm read ends when its engine stops, so the engines stop before the join."""
+    bound_s = 5.0
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_WORK_WAIT_S", bound_s)
+    p = FleetProvider()
+    started = threading.Event()
+    engines_stopped = threading.Event()
+
+    def preload(roles: frozenset[WorkerRole]) -> None:
+        started.set()
+        engines_stopped.wait(timeout=30.0)  # the read fails once the engine is gone
+
+    monkeypatch.setattr(p, "_preload_roles", preload)
+    monkeypatch.setattr(p, "_release_engines", engines_stopped.set)
+    p._preload_restarted([WorkerRole.EMBED])
+    warm = p._reload_warm
+    assert warm is not None
+    assert started.wait(timeout=5.0)
+
+    begin = time.monotonic()
+    try:
+        with caplog.at_level(logging.WARNING, logger=prov_mod.log.name):
+            p._shutdown_swap()
+    finally:
+        engines_stopped.set()
+        warm.join(timeout=5.0)
+    elapsed = time.monotonic() - begin
+
+    assert elapsed < bound_s, f"shutdown took {elapsed:.2f} s waiting on the warm"
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
 def test_ensure_fleet_refused_after_shutdown(monkeypatch, tmp_path: Path) -> None:
     """bb-dpp source guard: once shut down (and likely discarded by reset_services),
     a lingering warm-up/reload thread's _ensure_fleet must not spawn a new llama-swap
@@ -4792,6 +4855,7 @@ def test_prewarm_rereads_when_a_shard_changed(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(Path, "open", _counting_open)
     p._prewarm_chat_weights()
     assert opens["n"] == 1  # changed shard is read again
+
 
 
 def test_warm_role_dispatches_per_role() -> None:
