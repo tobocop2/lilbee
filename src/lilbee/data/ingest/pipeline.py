@@ -39,7 +39,7 @@ from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
-from lilbee.data.extract.chunk import ChunkLimitError, check_embed_window
+from lilbee.data.extract.chunk import ChunkLimitError, check_embed_window, count_embed_tokens
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_archive,
@@ -1408,6 +1408,12 @@ def _require_embedding_model() -> None:
             else "None is configured: pull one and set embedding_model."
         )
         raise RuntimeError(f"Ingest needs an embedding model. {detail}")
+    # A count through the embedder starts its engine, as the first chunk would, so the
+    # window read next is the one the engine serves (TEI's /info), not the launch plan.
+    # When the count fails, the engine is not up: each file then fails on its own count
+    # and the next sync adds it, so the failure here does not stop the sync.
+    with contextlib.suppress(ProviderError):
+        count_embed_tokens("\n")
     check_embed_window()
 
 
