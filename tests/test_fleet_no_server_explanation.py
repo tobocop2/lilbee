@@ -116,6 +116,19 @@ class TestTheExplanationInstallsNothing:
         assert no_server.scans == ["llama-server"]
 
 
+class TestTheErrorOfAHostWithNoServer:
+    def test_the_error_is_not_found_and_carries_the_install_hint(self, no_server: _Calls) -> None:
+        with pytest.raises(ProviderError) as raised:
+            binary.installed_llama_server()
+
+        assert raised.value.kind is ProviderErrorKind.NOT_FOUND
+        message = str(raised.value)
+        assert "llama-server binary not found" in message
+        assert "brew reinstall lilbee" in message
+        assert "LILBEE_LLAMA_SERVER_PATH" in message
+        assert no_server.installs == []
+
+
 class TestTheExplanationReadsThePack:
     def test_a_host_with_only_the_pack_has_no_engine_problem(
         self, pack_only: _Calls, book: str
