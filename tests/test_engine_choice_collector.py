@@ -91,7 +91,7 @@ def test_two_roles_hold_two_engines() -> None:
 
 def test_a_role_with_no_engine_raises_and_the_others_still_answer() -> None:
     config = Config()
-    config.embedding_model = "org/embedder#mlx"
+    config.embedding_model = "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx"
     assignment = resolve_engines(config)
     with pytest.raises(NoEngineError, match="For embed: No installed engine loads the mlx format"):
         assignment.for_role(WorkerRole.EMBED)
