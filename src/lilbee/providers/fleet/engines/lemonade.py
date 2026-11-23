@@ -142,6 +142,7 @@ class LemonadeAdapter:
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     concatenates_pooling = False
+    writes_own_log = False
     bundled = False
     server_process = ServerProcess(name=_TOOL, folder=data_root)
     install_hint = _INSTALL_HINT

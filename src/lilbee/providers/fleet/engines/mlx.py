@@ -197,6 +197,7 @@ class MlxAdapter:
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     concatenates_pooling = False
+    writes_own_log = False
     bundled = False
     server_process = ServerProcess(
         name=_TOOL, interpreted=True, scripts=(_CHAT_MODULE, _EMBED_SCRIPT)

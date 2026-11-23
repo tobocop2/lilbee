@@ -201,6 +201,33 @@ class TestBuildSwapConfig:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert "env" not in cfg["models"][_mid(WorkerRole.CHAT)]
 
+    def test_a_member_with_its_own_log_keeps_its_output_out_of_the_group_log(
+        self, tmp_path
+    ) -> None:
+        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        log_path = tmp_path / "engine-chat-0.log"
+        ports = {launch.model_id: _BASE_PORT}
+        cfg = json.loads(
+            build_swap_config([launch], ports, engine_logs={launch.model_id: log_path})
+        )
+        assert cfg["logToStdout"] == "proxy"
+        assert f"LLAMA_LOG_FILE={log_path}" in cfg["models"][launch.model_id]["env"]
+
+    def test_a_member_without_its_own_log_has_its_output_in_the_group_log(self) -> None:
+        cfg = _config([_launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])])
+        assert cfg["logToStdout"] == "proxy,upstream"
+        assert "env" not in cfg["models"][_mid(WorkerRole.EMBED)]
+
+    def test_one_member_without_its_own_log_copies_the_output_of_the_group(
+        self, tmp_path
+    ) -> None:
+        chat = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+        embed = _launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])
+        ports = {chat.model_id: _BASE_PORT, embed.model_id: _BASE_PORT + 1}
+        engine_logs = {chat.model_id: tmp_path / "engine-chat-0.log"}
+        cfg = json.loads(build_swap_config([chat, embed], ports, engine_logs=engine_logs))
+        assert cfg["logToStdout"] == "proxy,upstream"
+
     def test_member_never_times_out(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 0

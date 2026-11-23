@@ -21,6 +21,7 @@ from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import readback
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.adapters import ROLE_SPECS, build_server_argv
+from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import (
@@ -426,7 +427,9 @@ class TestArgvAndSwapConfig:
         launch = InstanceLaunch(
             role=WorkerRole.CHAT, argv=argv, env_overrides={}, model="chat-model"
         )
-        rendered = build_swap_config([launch], {launch.model_id: 5900}, engine_log_dir=tmp_path)
+        log_path = readback.engine_log_of(LLAMA, launch, tmp_path)
+        engine_logs = {} if log_path is None else {launch.model_id: log_path}
+        rendered = build_swap_config([launch], {launch.model_id: 5900}, engine_logs=engine_logs)
         return json.loads(rendered)["models"][launch.model_id]
 
     def test_memory_mode_launch_gets_no_trace_log_env(self, tmp_path: Path) -> None:
