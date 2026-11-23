@@ -270,6 +270,26 @@ def test_the_profile_matches_the_recorded_server() -> None:
     assert profile.batch_overflow is None
 
 
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK])
+def test_every_served_role_runs_as_a_server(role: WorkerRole) -> None:
+    assert MLX.role_spec(role, None, None).server_capable is True
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+def test_a_refusal_without_a_token_count_is_not_a_context_overflow(role: WorkerRole) -> None:
+    overflow = MLX.request_profile(role).context_overflow
+    assert not overflow.search("the input exceeds the window of tokens")
+    assert not overflow.search("the request exceeds the window")
+
+
+@pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
+def test_the_embed_server_names_itself_when_its_vectors_cannot_be_decoded(
+    role: WorkerRole,
+) -> None:
+    hint = MLX.request_profile(role).unreadable_embedding_hint
+    assert hint == "the mlx embed server returned vectors that could not be decoded."
+
+
 def test_the_recorded_hang_is_not_read_as_a_context_overflow() -> None:
     fixture = Path(__file__).parents[2] / "conformance/fixtures/presets/mlxlm-chat.json"
     recorded = json.loads(fixture.read_text(encoding="utf-8"))["exchanges"]
