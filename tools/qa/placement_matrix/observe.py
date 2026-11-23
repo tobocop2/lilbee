@@ -208,8 +208,8 @@ def _serve_and_measure(
         parse_device_buffers,
     )
 
-    env = {**env, **engine_log_env(log_dir, model_id)}
     report_path = engine_log_path(log_dir, model_id)
+    env = {**env, **engine_log_env(report_path)}
     was_idle = _wait_for_idle_vram()
     with (log_dir / f"{model_id}.stdout.log").open("wb") as log:
         proc = subprocess.Popen(
