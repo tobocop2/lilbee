@@ -640,6 +640,50 @@ class TestWriteCancellation:
         assert sources in ({"a.pdf"}, {"b.pdf"})
         assert list(tmp_path.iterdir()) == [path]
 
+    def _refuse_renames(self, monkeypatch, platform: str, refusals: int) -> tuple[list, list]:
+        """Make the first *refusals* renames fail as Windows fails one onto a held file."""
+        real_replace = export_mod.os.replace
+        attempts: list[str] = []
+        waits: list[float] = []
+
+        def _replace(src, dst):
+            attempts.append(str(src))
+            if len(attempts) <= refusals:
+                raise PermissionError(13, "Access is denied", src, 5, dst)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(export_mod.sys, "platform", platform)
+        monkeypatch.setattr(export_mod.os, "replace", _replace)
+        monkeypatch.setattr(export_mod.time, "sleep", waits.append)
+        return attempts, waits
+
+    def test_a_rename_another_handle_blocks_on_windows_is_tried_again(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "win32", refusals=2)
+        path = tmp_path / "pages.jsonl"
+        write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert len(attempts) == 3
+        assert waits == [export_mod._RENAME_RETRY_WAIT_S] * 2
+        assert len(load_page_dataset(path, DatasetFormat.JSONL)) == 3
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_a_rename_blocked_past_the_bound_names_the_export(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "win32", refusals=99)
+        path = tmp_path / "pages.jsonl"
+        with pytest.raises(PermissionError, match="Could not put the finished export there"):
+            write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert len(attempts) == export_mod._RENAME_ATTEMPTS
+        assert len(waits) == export_mod._RENAME_ATTEMPTS - 1
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_refused_rename_off_windows_fails_at_once(self, tmp_path, monkeypatch):
+        attempts, waits = self._refuse_renames(monkeypatch, "linux", refusals=99)
+        path = tmp_path / "pages.jsonl"
+        with pytest.raises(PermissionError, match="Could not put the finished export there"):
+            write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        assert len(attempts) == 1
+        assert waits == []
+        assert list(tmp_path.iterdir()) == []
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
     def test_a_re_export_keeps_the_mode_of_the_file_it_replaces(self, tmp_path):
         path = tmp_path / "pages.jsonl"
