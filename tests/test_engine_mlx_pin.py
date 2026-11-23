@@ -26,7 +26,13 @@ LAUNCHER = PROJECT / "lilbee_engine_mlx" / "bin" / "mlx-lm-server"
 EMBED_LAUNCHER = PROJECT / "lilbee_engine_mlx" / "bin" / "mlx-embed-server"
 SERVER = PROJECT / "lilbee_engine_mlx" / "mlx_embed_server.py"
 
-needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="the script needs bash")
+runs_on_macos = pytest.mark.skipif(
+    sys.platform == "win32", reason="the mlx pack script and launchers run only on macOS"
+)
+needs_bash = pytest.mark.skipif(
+    shutil.which("bash") is None or sys.platform == "win32",
+    reason="the script needs bash and runs only on macOS",
+)
 
 
 def _pin(root: Path = ROOT) -> dict[str, str]:
@@ -559,7 +565,7 @@ def test_the_script_stops_when_zstd_is_not_installed(tmp_path: Path) -> None:
     assert "zstd is not on the PATH" in done.stderr
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="the launcher is a sh script")
+@runs_on_macos
 def test_the_launcher_runs_mlx_lm_server_on_the_bundled_interpreter(tmp_path: Path) -> None:
     package = tmp_path / "engines" / "lilbee_engine_mlx"
     (package / "bin").mkdir(parents=True)
@@ -611,7 +617,7 @@ def test_the_embed_launcher_is_executable_and_is_the_tool_of_the_embed_argv() ->
     assert SERVER.name in mlx.MLX.server_process.scripts
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="the launcher is a sh script")
+@runs_on_macos
 def test_the_embed_launcher_runs_the_server_script_on_the_bundled_interpreter(
     tmp_path: Path,
 ) -> None:
