@@ -11,7 +11,15 @@ from lilbee.app.engine_choice import BookReading, EngineBook
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import binary, first_use
-from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import LLAMA, EngineAdapter
+from lilbee.providers.fleet.engines.ik_llama import IK_LLAMA
+from lilbee.providers.fleet.engines.lemonade import LEMONADE
+from lilbee.providers.fleet.engines.mistral import MISTRAL
+from lilbee.providers.fleet.engines.mlx import MLX
+from lilbee.providers.fleet.engines.openvino import OPENVINO
+from lilbee.providers.fleet.engines.ovms import OVMS
+from lilbee.providers.fleet.engines.tei import TEI
+from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
 from tests._fleet_engines import engines_for_all_roles
@@ -148,3 +156,42 @@ class TestARememberedRefusal:
             binary.resolve_llama_server()
 
         assert disk_full.installs == []
+
+
+_UNBUNDLED_ENGINES = [TEI, MISTRAL, MLX, OPENVINO, IK_LLAMA, OVMS, LEMONADE]
+
+
+@pytest.fixture(params=_UNBUNDLED_ENGINES, ids=lambda engine: engine.name.value)
+def absent_engine(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> EngineAdapter:
+    """A plan that gives every role an engine this host has no install of."""
+    engine: EngineAdapter = request.param
+    host = collect(
+        system="Linux",
+        machine="x86_64",
+        cpu_info={"flags": ["avx", "avx2"], "brand_raw": "Test CPU"},
+        nvidia=None,
+    )
+    monkeypatch.setattr("lilbee.catalog.runnable.session_host", lambda: host)
+    monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    _book(monkeypatch, dict(engines_for_all_roles(engine)))
+    return engine
+
+
+class TestAPlannedEngineWithNoInstall:
+    def test_the_reason_says_the_engine_is_not_installed(
+        self, absent_engine: EngineAdapter
+    ) -> None:
+        reason = FleetProvider()._unusable_engine_reason()
+
+        assert reason is not None
+        assert "not installed" in reason
+
+    @pytest.mark.parametrize("role", list(WorkerRole))
+    def test_the_error_of_a_role_says_the_engine_is_not_installed(
+        self, absent_engine: EngineAdapter, role: WorkerRole
+    ) -> None:
+        with pytest.raises(ProviderError, match="not installed"):
+            FleetProvider()._raise_no_clients(role)

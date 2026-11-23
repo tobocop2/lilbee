@@ -11,12 +11,12 @@ from typing import Any
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
 from lilbee.providers.fleet.engine_store import (
-    EngineNotInstalledError,
     EngineStore,
     InstalledEngine,
     engines_root,
@@ -158,8 +158,9 @@ class TeiAdapter:
 
         record = self._record()
         if record is None or record.binary is None:
-            raise EngineNotInstalledError(
-                f"Engine {self.name} is not installed. {install_advice(self, session_host())}"
+            raise ProviderError(
+                f"Engine {self.name} is not installed. {install_advice(self, session_host())}",
+                kind=ProviderErrorKind.NOT_FOUND,
             )
         return record.binary
 
