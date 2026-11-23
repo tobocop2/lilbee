@@ -114,6 +114,7 @@ def run_tui(*, initial_view: str | None = None) -> None:
 
     *initial_view* deep-links to a named view (e.g. ``"Catalog"``) after
     the default chat screen is mounted. Used by ``lilbee model browse``.
+    A non-zero ``return_code`` of the app ends the process with that status.
     """
     # heavy: cli.sync transitively imports ingest -> store -> pyarrow (~1.8s
     # cold-start on bare runners); only needed at TUI shutdown. (bb-oae5)
@@ -131,9 +132,13 @@ def run_tui(*, initial_view: str | None = None) -> None:
     except KeyboardInterrupt:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
     finally:
+        # None means the app never reached its exit, as after a Ctrl-C signal.
+        status = app.return_code or 0
         # Tasks stop through their own cancel while the executors and services live.
         app.task_bar.stop_all()
         _restore_native_stderr(stderr_redirect)
         shutdown_executor()
         reset_services_on_exit()
-        exit_when_stragglers_would_hang()
+        exit_when_stragglers_would_hang(status)
+    if status:
+        raise SystemExit(status)

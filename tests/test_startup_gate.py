@@ -766,6 +766,69 @@ async def test_no_boot_starts_when_chat_cannot_be_installed(failed_install_app, 
     assert boots == []
 
 
+def _headless_run_tui(monkeypatch, auto_pilot=None) -> mock.Mock:
+    """Make run_tui's own app run headless through Textual's run; return the straggler exit."""
+    from lilbee.cli import tui
+    from lilbee.cli.tui.app import LilbeeApp
+
+    run = LilbeeApp.run
+    monkeypatch.setattr(
+        LilbeeApp,
+        "run",
+        lambda self: run(self, headless=True, size=(120, 40), auto_pilot=auto_pilot),
+    )
+    monkeypatch.setattr("lilbee.cli.sync.shutdown_executor", lambda: None)
+    monkeypatch.setattr(tui, "reset_services_on_exit", lambda: None)
+    straggler_exit = mock.Mock()
+    monkeypatch.setattr(tui, "exit_when_stragglers_would_hang", straggler_exit)
+    return straggler_exit
+
+
+@pytest.mark.parametrize("cold", [True, False])
+def test_the_shell_gets_code_1_when_chat_cannot_be_installed(failed_install_app, monkeypatch, cold):
+    """The command ends with the app's return code, and a wedged thread exits with it too."""
+    from lilbee.cli.tui import run_tui
+
+    failed_install_app(cold=cold, error=RuntimeError("boom"))
+    straggler_exit = _headless_run_tui(monkeypatch)
+    with pytest.raises(SystemExit) as exited:
+        run_tui()
+    assert exited.value.code == 1
+    straggler_exit.assert_called_once_with(1)
+
+
+def test_a_quit_from_the_gate_returns_code_0(monkeypatch, tmp_path):
+    """Ctrl-C quits through the app's own exit; the command returns with no error."""
+    from lilbee.cli.tui import run_tui
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+    monkeypatch.setattr(LilbeeApp, "adopt_services", lambda self: None)
+    codes: list[int | None] = []
+
+    async def _quit(pilot) -> None:
+        await pilot.press("ctrl+c")
+
+    leave = LilbeeApp.exit
+
+    def _exit(self, *args, **kwargs):
+        leave(self, *args, **kwargs)
+        codes.append(self.return_code)
+
+    monkeypatch.setattr(LilbeeApp, "exit", _exit)
+    straggler_exit = _headless_run_tui(monkeypatch, auto_pilot=_quit)
+    set_services(mock.MagicMock())
+    try:
+        run_tui()
+    finally:
+        set_services(None)
+    assert codes == [0]
+    straggler_exit.assert_called_once_with(0)
+
+
 async def test_a_view_opens_once_chat_is_installed(monkeypatch, tmp_path):
     """The refusal ends with the install, also while the gate still shows."""
     from lilbee.cli.tui.app import LilbeeApp

@@ -3744,6 +3744,7 @@ class TestRunTuiKeyboardInterrupt:
     def test_keyboard_interrupt_does_not_raise(self) -> None:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
             MockApp.return_value.run.side_effect = KeyboardInterrupt
+            MockApp.return_value.return_code = None
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor"),
                 mock.patch("lilbee.cli.tui.reset_services_on_exit"),
@@ -3757,6 +3758,7 @@ class TestRunTuiKeyboardInterrupt:
     def test_cleanup_called_on_interrupt(self) -> None:
         with mock.patch("lilbee.cli.tui.app.LilbeeApp") as MockApp:
             MockApp.return_value.run.side_effect = KeyboardInterrupt
+            MockApp.return_value.return_code = None
             with (
                 mock.patch("lilbee.cli.sync.shutdown_executor") as mock_shutdown,
                 mock.patch("lilbee.cli.tui.reset_services_on_exit") as mock_reset,
