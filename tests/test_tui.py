@@ -83,14 +83,11 @@ class _TerminatedApp:
     def __init__(self, **_kwargs):
         pass
 
-    def run(self, *, loop=None):
-        # As Textual's App.run: asyncio.run without a loop, else the loop's own run.
-        if loop is None:
-            asyncio.run(self._main())
-        else:
-            loop.run_until_complete(self._main())
+    def run(self):
+        # As Textual's App.run, which an older run_tui called.
+        asyncio.run(self.run_async())
 
-    async def _main(self):
+    async def run_async(self):
         if sys.argv[1] == "stuck-executor":
             # A worker of the loop's default executor, as asyncio.to_thread starts one.
             asyncio.get_running_loop().run_in_executor(None, time.sleep, 120.0)
@@ -108,15 +105,15 @@ with mock.patch("lilbee.cli.tui.app.LilbeeApp", _TerminatedApp):
 
 
 class TestRunTui:
-    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
-    def test_run_tui_launches_app(self, mock_run: mock.MagicMock) -> None:
+    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run_async")
+    def test_run_tui_launches_app(self, mock_run: mock.AsyncMock) -> None:
         from lilbee.cli.tui import run_tui
 
         run_tui()
         mock_run.assert_called_once()
 
-    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
-    def test_run_tui_forwards_initial_view(self, mock_run: mock.MagicMock) -> None:
+    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run_async")
+    def test_run_tui_forwards_initial_view(self, mock_run: mock.AsyncMock) -> None:
         from lilbee.cli.tui import run_tui
 
         with (
@@ -146,11 +143,11 @@ class TestRunTui:
                 threading.Event().wait(0.05)
             worker_done.set()
 
-        def _run(app: LilbeeApp, **_kw: object) -> None:
+        def _run(app: LilbeeApp) -> None:
             app.task_bar.start_task("Sync", TaskType.SYNC, _target)
 
         with (
-            mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
+            mock.patch.object(LilbeeApp, "run_async", autospec=True, side_effect=_run),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch(
                 "lilbee.cli.tui.reset_services_on_exit",
@@ -191,13 +188,13 @@ class TestRunTui:
         def _target(_reporter) -> None:
             asyncio_loop.run(_sync_on_a_page_that_never_returns())
 
-        def _run(app: LilbeeApp, **_kw: object) -> None:
+        def _run(app: LilbeeApp) -> None:
             app.task_bar.start_task("Sync", TaskType.SYNC, _target)
             # Quit only once the sync is parked on the page; the guard only stops a hang.
             assert waiting.wait(timeout=60)
 
         with (
-            mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
+            mock.patch.object(LilbeeApp, "run_async", autospec=True, side_effect=_run),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch(
                 "lilbee.cli.tui.reset_services_on_exit",
@@ -243,7 +240,7 @@ class TestRunTui:
         from lilbee.cli.tui.app import LilbeeApp
 
         with (
-            mock.patch.object(LilbeeApp, "run", side_effect=SystemExit(code)),
+            mock.patch.object(LilbeeApp, "run_async", side_effect=SystemExit(code)),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch("lilbee.cli.tui.reset_services_on_exit"),
             mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as straggler,
@@ -258,7 +255,7 @@ class TestRunTui:
         from lilbee.cli.tui.app import LilbeeApp
 
         with (
-            mock.patch.object(LilbeeApp, "run"),
+            mock.patch.object(LilbeeApp, "run_async"),
             mock.patch.object(LilbeeApp, "return_code", None),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch("lilbee.cli.tui.reset_services_on_exit"),

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
 import os
@@ -10,13 +9,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.app.services import (
-    exit_when_stragglers_would_hang,
-    new_exit_bounded_loop,
-    reset_services_on_exit,
-)
+from lilbee.app.services import exit_when_stragglers_would_hang, reset_services_on_exit
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.security import OWNER_ONLY_MODE
+from lilbee.runtime.asyncio_loop import run_without_join
 
 
 def _silence_stderr_log_handlers() -> None:
@@ -135,10 +131,9 @@ def run_tui(*, initial_view: str | None = None) -> None:
     app = LilbeeApp(initial_view=initial_view)
     status = 0
     try:
-        # The runner cancels the app's tasks at close but leaves a stuck worker to the
-        # straggler exit below; asyncio.run would join that worker (with no bound on 3.11).
-        with asyncio.Runner(loop_factory=new_exit_bounded_loop) as runner:
-            app.run(loop=runner.get_loop())
+        # Textual's run would use asyncio.run, which joins a stuck worker with no bound on
+        # 3.11; this leaves it to the straggler exit below.
+        run_without_join(app.run_async())
         # None means the app never reached its exit.
         status = app.return_code or 0
     except KeyboardInterrupt:

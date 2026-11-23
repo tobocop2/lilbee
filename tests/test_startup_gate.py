@@ -767,15 +767,15 @@ async def test_no_boot_starts_when_chat_cannot_be_installed(failed_install_app, 
 
 
 def _headless_run_tui(monkeypatch, auto_pilot=None) -> mock.Mock:
-    """Make run_tui's own app run headless through Textual's run; return the straggler exit."""
+    """Make run_tui's own app run headless through Textual; return the straggler exit."""
     from lilbee.cli import tui
     from lilbee.cli.tui.app import LilbeeApp
 
-    run = LilbeeApp.run
+    run_async = LilbeeApp.run_async
     monkeypatch.setattr(
         LilbeeApp,
-        "run",
-        lambda self: run(self, headless=True, size=(120, 40), auto_pilot=auto_pilot),
+        "run_async",
+        lambda self: run_async(self, headless=True, size=(120, 40), auto_pilot=auto_pilot),
     )
     monkeypatch.setattr("lilbee.cli.sync.shutdown_executor", lambda: None)
     monkeypatch.setattr(tui, "reset_services_on_exit", lambda: None)
