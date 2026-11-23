@@ -22,6 +22,7 @@ from lilbee.providers.fleet.engines.tei import TEI
 from lilbee.providers.fleet.host_caps import collect
 from lilbee.providers.fleet.provider import FleetProvider
 from lilbee.providers.roles import WorkerRole
+from lilbee.server.chat_completions_api.errors import classify_provider_error
 from tests._fleet_engines import engines_for_all_roles
 from tests.conformance.fake_adapter import FakeAdapter
 
@@ -107,6 +108,19 @@ class TestTheExplanationInstallsNothing:
             FleetProvider()._raise_no_clients(role)
 
         assert no_server.installs == []
+
+    @pytest.mark.parametrize("role", list(WorkerRole))
+    def test_the_error_of_a_role_with_no_server_is_not_found_for_the_http_caller(
+        self, no_server: _Calls, book: str, role: WorkerRole
+    ) -> None:
+        with pytest.raises(ProviderError) as error:
+            FleetProvider()._raise_no_clients(role)
+
+        assert error.value.kind is ProviderErrorKind.NOT_FOUND
+        classified = classify_provider_error(error.value)
+        assert classified is not None
+        assert classified.http_status == 404
+        assert "model server is running" in classified.message
 
     def test_the_path_is_scanned_once_for_the_server_the_reason_names(
         self, no_server: _Calls, book: str
