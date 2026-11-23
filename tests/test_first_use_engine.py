@@ -62,7 +62,6 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     host = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
     monkeypatch.setattr(engine_service, "refresh_session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
     monkeypatch.setattr(binary_mod.shutil, "which", lambda _name: None)
     monkeypatch.setattr(engine_manifest, "MANIFESTS", {})

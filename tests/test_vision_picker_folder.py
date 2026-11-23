@@ -10,6 +10,7 @@ from unittest import mock
 
 import pytest
 
+from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat, ModelTask
 from lilbee.cli.tui.widgets.model_bar import ModelOption, _collect_native_models
 from lilbee.core.config import cfg
@@ -145,13 +146,16 @@ class TestAnEngineMustServeTheFolderAsVision:
 
 
 def _no_host() -> HostCaps:
-    raise AssertionError("the host is not read when no installed engine serves the role")
+    raise AssertionError("the host is not read when no installed engine loads the format")
 
 
-def _vision_choice(installed: dict[EngineName, frozenset[ModelFormat]]) -> EngineChoice:
+def _vision_choice(
+    installed: dict[EngineName, frozenset[ModelFormat]],
+    host: Callable[[], HostCaps] = runnable.session_host,
+) -> EngineChoice:
     return choose_engine(
         fmt=ModelFormat.SAFETENSORS,
-        host=_no_host,
+        host=host,
         installed=installed,
         preferred="auto",
         override=None,
@@ -170,8 +174,28 @@ class TestTheMessageNamesTheEngineToInstall:
             "for vision."
         )
         assert f"{EngineName.MISTRAL.value} serves it." in choice.notice
-        assert install_advice(mistral.MISTRAL) in choice.notice
+        assert install_advice(mistral.MISTRAL, runnable.session_host()) in choice.notice
         assert "No installed engine loads" not in choice.notice
+
+    def test_the_notice_reads_the_cached_session_host_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The install advice needs the host for the OS floor; it takes the session host that
+        # the caller holds, so the live read (a child process) runs once, not per notice.
+        live = runnable.detect
+        reads: list[HostCaps] = []
+
+        def counted() -> HostCaps:
+            reads.append(live())
+            return reads[-1]
+
+        monkeypatch.setattr(runnable, "detect", counted)
+        installed = {EngineName.TEI: frozenset({ModelFormat.SAFETENSORS})}
+        first = _vision_choice(installed)
+        assert _vision_choice(installed) == first
+        assert first.notice is not None
+        assert "No installed engine serves" in first.notice
+        assert len(reads) == 1
 
     def test_a_server_the_host_refuses_is_not_called_missing(self) -> None:
         windows = collect(
@@ -207,7 +231,7 @@ class TestTheMessageNamesTheEngineToInstall:
         assert choice.notice.startswith("No installed engine loads the gguf format")
 
     def test_a_format_no_installed_engine_loads_keeps_the_load_message(self) -> None:
-        choice = _vision_choice({})
+        choice = _vision_choice({}, _no_host)
         assert choice.notice is not None
         assert "No installed engine loads the safetensors format of org/folder." in choice.notice
 

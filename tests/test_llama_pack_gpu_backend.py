@@ -109,7 +109,6 @@ def test_the_pack_pin_names_the_cell_of_the_gpu_pack(
 ) -> None:
     host = _host(system, machine, vendors=vendors, gfx=gfx, loader=True, numa=True)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     monkeypatch.setattr(
         engine_manifest,
         "MANIFESTS",
@@ -384,7 +383,6 @@ def test_the_shipped_table_pins_the_published_wheel_of_each_gpu_cell(
 ) -> None:
     host = _host(system, machine, vendors=(AMD,), gfx=gfx, loader=True, numa=True)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == sha256
     assert list(pin["platforms"]) == [cell]
