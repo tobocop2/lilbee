@@ -594,7 +594,7 @@ def _retry_on_other_replica(
 
 
 def _output_log_of(engine: EngineAdapter, launch: InstanceLaunch, swap_log: Path) -> Path:
-    """The file that holds *launch*'s engine output: its own log, else the group's llama-swap log."""
+    """The file with *launch*'s engine output: its own log, else the group's llama-swap log."""
     return engine_log_of(engine, launch, swap_log.parent) or swap_log
 
 

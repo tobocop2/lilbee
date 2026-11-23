@@ -341,12 +341,11 @@ class SwapManager:
         self._member_port_by_model = dict(member_ports)
         self._launches_payload = [launch.to_state() for launch in launches]
         self._launch_by_model = {launch.model_id: launch for launch in launches}
-        self._engine_logs = {
-            launch.model_id: path
-            for launch in launches
-            if (path := engine_log_of(engines[launch.role], launch, self._log_path.parent))
-            is not None
-        }
+        self._engine_logs = {}
+        for launch in launches:
+            log_path = engine_log_of(engines[launch.role], launch, self._log_path.parent)
+            if log_path is not None:
+                self._engine_logs[launch.model_id] = log_path
         self._estimate_checked.clear()
         self._ready_at = None
         with self._warnings_lock:
