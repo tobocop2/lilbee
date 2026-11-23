@@ -39,7 +39,7 @@ the first time a model needs it.
 
 ik_llama.cpp needs a CPU with AVX2 (x86_64) or NEON (ARM). The CUDA build needs Linux
 x86_64, a driver that offers CUDA 12.4 and a card of compute capability 7.5 or newer.
-Other hosts get the CPU build.
+Other Linux x86_64 hosts get the CPU build.
 
 mistral.rs serves chat, embed and vision, but not rerank. For embed, it does not load
 GGUF models. On Linux it runs on the CPU, because lilbee offers no CUDA build of
