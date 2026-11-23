@@ -9,6 +9,7 @@ import pytest
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TabbedContent
+from textual.worker import Worker
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.presets import add_preset, list_presets
@@ -442,6 +443,19 @@ async def _open_pane(pilot, app) -> PresetsPane:
     return screen.query_one(PresetsPane)
 
 
+async def _press_and_catch_the_remove(pilot, pane: PresetsPane, key: str) -> Worker[None]:
+    """Press *key* on the remove confirm, and return the thread worker that the answer starts.
+
+    The pauses of the pilot do not wait for a thread, so the caller waits on the worker.
+    """
+    started: list[Worker[None]] = []
+    remove = pane._remove
+    with mock.patch.object(pane, "_remove", side_effect=lambda name: started.append(remove(name))):
+        await pilot.press(key)
+        assert await wait_until(pilot, lambda: bool(started))
+    return started[0]
+
+
 class TestPane:
     @pytest.mark.parametrize("size", SIZES)
     async def test_the_pane_lists_presets_with_the_key_state_only(self, size):
@@ -778,8 +792,11 @@ class TestPane:
             assert len(_stored()) == 1
             _press(app, ".preset-remove")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
-            await pilot.press("y")
-            assert await wait_until(pilot, lambda: _stored() == [])
+            removal = await _press_and_catch_the_remove(pilot, pane, "y")
+            await removal.wait()
+            assert _stored() == []
+            for reload in [worker for worker in app.workers if worker.node is pane]:
+                await reload.wait()
             assert await wait_until(pilot, lambda: not pane.query(".preset-line"))
 
     async def test_a_failed_remove_notifies_the_service_text(self):
