@@ -126,14 +126,15 @@ class IkLlamaAdapter:
         from lilbee.catalog.runnable import session_host
         from lilbee.providers.fleet.engines.choice import install_advice
 
-        backend = self.pick_build(session_host()).backend
+        host = session_host()
+        backend = self.pick_build(host).backend
         store = EngineStore(engines_root(cfg.models_dir))
         for build in store.installed():
             of_pin = (build.engine, build.version, build.backend) == (self.name, VERSION, backend)
             if of_pin and build.binary is not None:
                 return build.binary
         raise ProviderError(
-            f"Engine {self.name} is not installed. {install_advice(self)}",
+            f"Engine {self.name} is not installed. {install_advice(self, host)}",
             kind=ProviderErrorKind.NOT_FOUND,
         )
 

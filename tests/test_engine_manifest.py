@@ -215,7 +215,6 @@ def test_each_host_resolves_its_own_tei_pack_from_the_shipped_table(
         nvidia=facts,
     )
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = tei.TeiAdapter().pin_record()
     backend = cell.split("-", 2)[2]
     assert pin["backend"] == backend
@@ -382,7 +381,6 @@ def test_each_host_resolves_its_own_llama_pack_from_the_shipped_table(
     cell, digest, release, build = SHIPPED_LLAMA[(system, machine)]
     host = _host(system, machine)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]
@@ -413,7 +411,6 @@ def test_a_host_with_an_nvidia_driver_resolves_the_cuda_llama_pack_from_the_ship
     facts = {"driver": "550.135", "cuda_driver": 12040, "gpus": [{"name": "c", "cc": [6, 1]}]}
     host = host_caps.collect(system=system, machine=machine, cpu_info={}, nvidia=facts)
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = LlamaCppAdapter().pack_pin()
     assert pin["backend"] == "cuda"
     assert pin["sha256"] == digest
@@ -440,7 +437,6 @@ def test_each_host_resolves_its_own_mistral_pack_from_the_shipped_table(
     system: str, machine: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cell, digest = SHIPPED_MISTRAL[(system, machine)]
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     pin = _pin(monkeypatch, EngineName.MISTRAL, system, machine)
     assert pin["sha256"] == digest
     assert list(pin["platforms"]) == [cell]

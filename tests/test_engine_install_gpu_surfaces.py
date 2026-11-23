@@ -57,7 +57,6 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg.mcp_engines_enabled = True
     cfg.preferred_engine = EngineSetting.AUTO
     cfg.engine_choices = None
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     monkeypatch.setattr(binary_mod, "_bundled_tool", lambda _tool: None)
     monkeypatch.setattr(binary_mod.shutil, "which", lambda _name: None)
     yield

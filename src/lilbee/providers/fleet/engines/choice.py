@@ -151,6 +151,32 @@ def install_answer(adapter: EngineAdapter, host: HostCaps) -> HostGate:
     return gate
 
 
+def install_offer(adapter: EngineAdapter, host: HostCaps) -> HostGate:
+    """Whether a list or an advice offers to install *adapter*: the host answer, then the OS floor.
+
+    The install itself checks the floor when it takes the cell, so it refuses in its own words.
+    """
+    gate = install_answer(adapter, host)
+    if not gate.ok or host.os is None or host.arch is None:
+        return gate
+    floor = floor_gate(adapter.pin_record(), host)
+    return gate if floor.ok else floor
+
+
+def floor_gate(pin: Mapping[str, Any], host: HostCaps) -> HostGate:
+    """The OS floor refusal of the install of *pin* on *host*, from the install's own check.
+
+    An unusable pin or a host with no cell is not a floor; the install names those itself.
+    """
+    try:
+        host_cell(pin_lock(pin), host)
+    except UnsupportedOsError as exc:
+        return HostGate(False, str(exc))
+    except (PinError, UnsupportedPlatformError):
+        return PASS
+    return PASS
+
+
 def _is_apple_silicon(caps: HostCaps) -> bool:
     return caps.os is HostOS.MACOS and caps.arch is HostArch.ARM64
 
@@ -277,7 +303,7 @@ def _by_default(
     elif role is not None and (missing := _servers_to_install(fmt, installed, role)):
         text = (
             f"No installed engine serves the {fmt} format{of_model} for {role.value}. "
-            f"{' or '.join(missing)} serves it. {install_advice(ADAPTERS[missing[0]])}"
+            f"{' or '.join(missing)} serves it. {install_advice(ADAPTERS[missing[0]], host())}"
         )
     else:
         text = f"No installed engine loads the {fmt} format{of_model}. {LIST_HINT}"
@@ -396,21 +422,23 @@ def pin_lock(pin: Mapping[str, Any]) -> PinLock:
         raise PinError(f"the pin record is not usable ({exc!r})") from exc
 
 
-def install_advice(adapter: EngineAdapter) -> str:
-    """The advice to get *adapter*: the install command, or the reason install refuses."""
+def install_advice(adapter: EngineAdapter, host: HostCaps) -> str:
+    """The advice to get *adapter* on *host*: the install command, or the reason install refuses."""
+    pin = adapter.pin_record()
     try:
-        pin_lock(adapter.pin_record())
+        pin_lock(pin)
     except NoPublishedPackError:
         return f"No pack of {adapter.name} is published yet, so there is nothing to install."
     except PinError as exc:
         return f"Engine {adapter.name} cannot be installed: {exc}."
-    return f"Run lilbee engine install {adapter.name}."
+    floor = floor_gate(pin, host)
+    return floor.reason if not floor.ok else f"Run lilbee engine install {adapter.name}."
 
 
 def install_offered(name: str, host: HostCaps) -> bool:
-    """True when a shipped engine *name* serves *host* and has a pack to install."""
+    """True when a shipped engine *name* serves *host*, meets its OS floor and has a pack."""
     adapter = shipped_adapter(name)
-    if adapter is None or not install_answer(adapter, host).ok:
+    if adapter is None or not install_offer(adapter, host).ok:
         return False
     try:
         pin_lock(adapter.pin_record())

@@ -180,9 +180,12 @@ class OpenvinoAdapter:
         from lilbee.catalog.runnable import session_host
         from lilbee.providers.fleet.engines.choice import install_advice, store_tool
 
-        tool = store_tool(self.pin_record(), _TOOL, session_host())
+        host = session_host()
+        tool = store_tool(self.pin_record(), _TOOL, host)
         if tool is None:
-            raise ProviderError(f"The OpenVINO engine is not installed. {install_advice(self)}")
+            raise ProviderError(
+                f"The OpenVINO engine is not installed. {install_advice(self, host)}"
+            )
         return tool
 
     def identity(self, binary: Path) -> str:
