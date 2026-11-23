@@ -615,6 +615,44 @@ async def test_apply_dialog_scrolls_to_fit_a_big_profile_at_80x24(sources) -> No
             assert _inside(pill.region, screen_region), pill.id
 
 
+def _shown(screen: Screen, widget: Widget) -> bool:
+    """True when the screen draws *widget* at both ends of its row, so no parent clips it."""
+    region = widget.region
+    ends = ((region.x, region.y), (region.right - 1, region.bottom - 1))
+    return all(screen.get_widget_at(x, y)[0] is widget for x, y in ends)
+
+
+@pytest.mark.parametrize("size", [(80, 24), (80, 40), (120, 30)])
+@pytest.mark.parametrize(
+    ("pill_id", "loaded", "rebuilds"),
+    [
+        ("apply-reindex", "big-profile", True),
+        ("apply-apply", "big-profile", False),
+        ("apply-cancel", "Default", False),
+    ],
+)
+async def test_the_apply_pills_of_a_big_profile_are_on_screen(
+    sources, size: tuple[int, int], pill_id: str, loaded: str, rebuilds: bool
+) -> None:
+    _write_global("big-profile", _BIG)
+    _set_yours("min_relevance_score = 0.1\n")
+    app = _SettingsApp()
+    with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
+        async with app.run_test(size=size) as pilot:
+            screen = await _loaded(app, pilot, "Default")
+            _pick(screen, "big-profile")
+            dialog = await _dialog(app, pilot, ApplyProfileDialog)
+            pills = list(dialog.query("#apply-actions ConfirmPill"))
+            assert [p.id for p in pills] == ["apply-reindex", "apply-apply", "apply-cancel"]
+            assert await _until(pilot, lambda: all(_shown(dialog, p) for p in pills)), [
+                (p.id, p.region, dialog.get_widget_at(p.region.x, p.region.y)[0]) for p in pills
+            ]
+            await _press(pilot, dialog.query_one(f"#{pill_id}", ConfirmPill))
+            assert await _until(pilot, lambda: isinstance(app.screen, SettingsScreen))
+            await _loaded(app, pilot, loaded)
+    assert rebuild.called is rebuilds
+
+
 async def test_a_change_that_needs_no_reindex_shows_no_summary(sources) -> None:
     _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
     app = _SettingsApp()
