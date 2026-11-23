@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import errno
 import hashlib
 import json
 import logging
@@ -517,9 +518,19 @@ def _binary_of(archive: zipfile.ZipFile, tool: str) -> str | None:
 
 
 def _binary_usable(binary: Path, directory: Path) -> bool:
+    """True for an executable file in *directory*.
+
+    stat goes first, so resolve meets no link loop: on Python 3.11 and 3.12 it raises
+    RuntimeError on one. A loop is damage, as a missing binary is, not a failed read.
+    """
+    try:
+        mode = binary.stat().st_mode
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return False
+        raise
     if not binary.resolve().is_relative_to(directory.resolve()):
         return False
-    mode = binary.stat().st_mode
     return stat.S_ISREG(mode) and (sys.platform == "win32" or bool(mode & stat.S_IXUSR))
 
 

@@ -1321,6 +1321,34 @@ def test_recorded_binary_outside_the_build_is_not_installed(
     assert store.installed() == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_binary_that_is_a_symlink_loop_is_a_damaged_build(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    sha = installed_store(store, tmp_path, ("1", "2"))
+    binary = store.root / "fx" / "1-cpu" / "lilbee_engine_fx" / "bin" / "server"
+    binary.unlink()
+    binary.symlink_to(binary.with_name("other"))
+    binary.with_name("other").symlink_to(binary)
+    assert [b.version for b in store.installed()] == ["2"]
+    assert store.complete_build(pin(sha)) is None
+    assert [p.name for *_, p in store.build_dirs()] == ["1-cpu", "2-cpu"]
+    gone = store.prune(keep={("fx", "2", "cpu")}, in_use=lambda *_: False)
+    assert [p.name for p in gone] == ["1-cpu"]
+    assert names(store.root / "fx") == ["2-cpu"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_binary_that_links_to_a_file_inside_the_build_is_usable(
+    store: EngineStore, tmp_path: Path
+) -> None:
+    installed_store(store, tmp_path)
+    binary = store.root / "fx" / "1-cpu" / "lilbee_engine_fx" / "bin" / "server"
+    binary.rename(binary.with_name("real"))
+    binary.symlink_to("real")
+    assert [b.version for b in store.installed()] == ["1"]
+
+
 def test_wheel_whose_tool_is_a_symlink_is_refused(store: EngineStore, tmp_path: Path) -> None:
     path = tmp_path / "link.whl"
     with zipfile.ZipFile(path, "w") as archive:

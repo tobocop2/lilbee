@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,12 @@ def _folder_for_binary(build: Path) -> None:
     (build / "bin" / "server").mkdir()
 
 
+def _loop_for_binary(build: Path) -> None:
+    (build / "bin" / "server").unlink()
+    (build / "bin" / "server").symlink_to("other")
+    (build / "bin" / "other").symlink_to("server")
+
+
 @pytest.fixture
 def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A store with two good engines and tei, the engine to damage."""
@@ -154,6 +161,13 @@ def _assert_every_surface_names(folder: Path) -> None:
         pytest.param(_folder_for_record, id="folder-for-record"),
         pytest.param(_file_in_place, id="file-in-place"),
         pytest.param(_folder_for_binary, id="folder-for-binary"),
+        pytest.param(
+            _loop_for_binary,
+            id="loop-for-binary",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="symlinks need privileges on Windows"
+            ),
+        ),
     ],
 )
 def test_the_list_names_a_damaged_build(root: Path, damage: Callable[[Path], object]) -> None:
