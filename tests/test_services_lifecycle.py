@@ -1066,6 +1066,8 @@ def test_a_first_terminate_waits_for_a_worker_that_finishes(tmp_path):
 
 _EXIT_WITH_A_WORKER_CHILD = """
 import multiprocessing
+import signal
+import sys
 import time
 from unittest.mock import MagicMock
 
@@ -1083,6 +1085,9 @@ if __name__ == "__main__":
         target=time.sleep, args=(120.0,), daemon=True
     )
     worker.start()
+    if sys.argv[1:] == ["stop-thread-takes-signals"]:
+        # Threads keep the mask they started with, so only the stop thread takes them.
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
     container = MagicMock()
     container.provider.shutdown.side_effect = lambda: time.sleep(120.0)
     set_services(container)
@@ -1094,14 +1099,25 @@ if __name__ == "__main__":
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows sends no Ctrl-C to a child process")
-def test_a_ctrl_c_in_the_exit_wait_leaves_no_worker_process_running(tmp_path):
-    """The force quit kills the workers; a daemonic child outlives a bare os._exit on every OS."""
+@pytest.mark.parametrize(
+    ("signals", "taker"),
+    [
+        ((signal.SIGINT,), "any-thread"),
+        ((signal.SIGTERM, signal.SIGINT), "stop-thread-takes-signals"),
+    ],
+    ids=["ctrl-c", "terminate-then-ctrl-c-on-the-stop-thread"],
+)
+def test_a_ctrl_c_in_the_exit_wait_leaves_no_worker_process_running(tmp_path, signals, taker):
+    """The force quit kills the workers; a daemonic child outlives a bare os._exit on every OS.
+
+    A signal that the stop thread takes must still reach the main thread's exit wait.
+    """
     import psutil
 
     script = tmp_path / "exit_with_a_worker.py"
     script.write_text(_EXIT_WITH_A_WORKER_CHILD, encoding="utf-8")
     child = subprocess.Popen(
-        [sys.executable, str(script)],
+        [sys.executable, str(script), taker],
         env=clean_env(tmp_path),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1113,7 +1129,8 @@ def test_a_ctrl_c_in_the_exit_wait_leaves_no_worker_process_running(tmp_path):
         for line in child.stderr:
             if line == services_mod._STOPPING_NOTE:
                 break
-        child.send_signal(signal.SIGINT)
+        for sig in signals:
+            child.send_signal(sig)
         status, stderr = _wait_or_kill(child, timeout=10.0)
         _, alive = psutil.wait_procs([worker], timeout=5.0)
     finally:
@@ -1213,6 +1230,24 @@ def test_a_slow_exit_names_the_wait_and_the_way_out(capsys, monkeypatch):
     finally:
         release.set()
         waiter.join(timeout=5)
+
+
+def test_the_exit_wait_never_blocks_longer_than_a_slice(monkeypatch):
+    """After the note the wait runs in slices until the stop ends; a signal lands between two."""
+    timeouts: list[float] = []
+    results = iter([False, False, True])
+
+    def _wait(timeout: float) -> bool:
+        timeouts.append(timeout)
+        return next(results)
+
+    monkeypatch.setattr(services_mod._lifecycle, "wait_stopped", _wait)
+    monkeypatch.setattr(services_mod, "_write_exit_note", lambda note: None)
+
+    services_mod._wait_for_stop()
+
+    slice_s = services_mod._SIGNAL_CHECK_S
+    assert timeouts == [services_mod._STOPPING_NOTE_GRACE_S, slice_s, slice_s]
 
 
 def test_a_fast_exit_stays_silent(capsys):

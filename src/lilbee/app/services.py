@@ -691,7 +691,7 @@ class _EngineLifecycle:
             self.stop_requested = True
             self._requests.put(signum)
 
-    def wait_stopped(self, timeout: float | None) -> bool:
+    def wait_stopped(self, timeout: float) -> bool:
         """Wait for the stop to finish; False when *timeout* ran out first."""
         return self._stopped.wait(timeout)
 
@@ -781,6 +781,13 @@ _STOPPING_NOTE = "lilbee: stopping the engine. Press Ctrl-C again to force quit.
 
 _STOPPING_NOTE_GRACE_S = 1.0
 """Seconds a teardown may run silently; a fast exit stays as quiet as ever."""
+
+_SIGNAL_CHECK_S = 0.1
+"""Seconds between the exit wait's checks for a signal that another thread took.
+
+That thread's C handler only sets a flag, and a lock wait on the main thread does
+not wake for it, so the Python handler runs when the main thread next runs code.
+"""
 
 _FORCE_QUIT_NOTE = "lilbee: force quit. The engine stops with it.\n"
 
@@ -881,7 +888,8 @@ def _wait_for_stop() -> None:
     with _interrupt_force_quits():
         if not _lifecycle.wait_stopped(_STOPPING_NOTE_GRACE_S):
             _write_exit_note(_STOPPING_NOTE)
-            _lifecycle.wait_stopped(None)
+            while not _lifecycle.wait_stopped(_SIGNAL_CHECK_S):
+                pass
 
 
 def wait_for_hard_exit_teardown() -> None:
