@@ -4433,7 +4433,7 @@ def test_a_chat_request_into_a_model_that_cannot_load_names_the_model_and_its_en
 def test_a_chat_request_names_the_group_log_for_a_launch_that_serves_its_memory(
     monkeypatch, tmp_path
 ) -> None:
-    """A launch that serves its numbers over HTTP writes no log of its own: the group log is named."""
+    """A launch that serves its numbers over HTTP writes no log: the group log is named."""
     from lilbee.providers.base import ProviderError
 
     p = _chat_that_cannot_load(monkeypatch, tmp_path, ["llama-server", "--memory"])
