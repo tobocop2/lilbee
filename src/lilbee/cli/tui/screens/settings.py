@@ -193,6 +193,8 @@ class SettingsScreen(Screen[None]):
         self._eagerly_populate = PROFILE_PANE_ID
         # What each editor showed when last built or refreshed; a save acts on a change from it.
         self._mount_display: dict[str, str] = {}
+        # Keys whose field lost focus and whose save on blur has not run yet.
+        self._saves_pending: set[str] = set()
         self._stale_source_keys: set[str] = set()
         # The index-changing values in force when the user came in; None while away.
         self._index_values: dict[str, Any] | None = None
@@ -344,25 +346,22 @@ class SettingsScreen(Screen[None]):
     def _sync_editor(self, row: Widget, key: str) -> None:
         """Show cfg's value in the editor in *row*, unless the user is typing in it.
 
-        An edit not saved yet keeps its text too: the save on blur runs after focus
-        leaves, and it must find what the user typed, not cfg's value.
+        A field whose save on blur has not run yet keeps its text too: that save
+        must find what the user typed, not cfg's value.
         """
         editor = row.query(f"#{EDITOR_ID_PREFIX}{key}")
-        if not editor:
-            return
-        widget = editor.first()
-        if widget.has_focus_within or self._holds_unsaved_edit(key, widget):
-            return
-        self._show_editor_value(key, widget, getattr(cfg, key))
+        if editor and not editor.first().has_focus_within and key not in self._saves_pending:
+            self._show_editor_value(key, editor.first(), getattr(cfg, key))
 
-    def _holds_unsaved_edit(self, key: str, widget: Widget) -> bool:
-        """Whether *widget* shows a value other than *key*'s last saved one."""
-        baseline = self._mount_display.get(key)
-        return (
-            baseline is not None
-            and isinstance(widget, EDITOR_KINDS)
-            and displayed_text(widget) != baseline
-        )
+    def watch_focused(self, old: Widget | None, _new: Widget | None) -> None:
+        """Mark the field focus just left as waiting for its save on blur.
+
+        Focus moves at once, but the save runs later from the field's Blurred message.
+        Every Input and ListTextArea named after a setting is a field that saves on blur.
+        """
+        name = old.name if isinstance(old, Input | ListTextArea) else None
+        if name is not None and name in SETTINGS_MAP:
+            self._saves_pending.add(name)
 
     @work(exclusive=True, group="profile-load", exit_on_error=False)
     async def reload_profile(self) -> None:
@@ -560,6 +559,7 @@ class SettingsScreen(Screen[None]):
         name = event.input.name
         if name is None:
             return
+        self._saves_pending.discard(name)
         defn = SETTINGS_MAP.get(name)
         if defn is None:
             return
@@ -576,6 +576,7 @@ class SettingsScreen(Screen[None]):
         name = ta.name
         if name is None:
             return
+        self._saves_pending.discard(name)
         defn = SETTINGS_MAP.get(name)
         if defn is None:
             return
@@ -656,6 +657,7 @@ class SettingsScreen(Screen[None]):
         key = ta.name
         if key is None:
             return
+        self._saves_pending.discard(key)
         defn = SETTINGS_MAP.get(key)
         if defn is None:
             return
