@@ -1013,9 +1013,7 @@ def _serving(
 
     monkeypatch.setattr(srv, "ThreadingHTTPServer", Server)
     monkeypatch.setattr(srv.signal, "signal", lambda *_: None)
-    thread = threading.Thread(
-        target=srv.serve, args=(srv.parse_args(argv), backend), daemon=True
-    )
+    thread = threading.Thread(target=srv.serve, args=(srv.parse_args(argv), backend), daemon=True)
     thread.start()
     deadline = time.monotonic() + 10
     while not made:

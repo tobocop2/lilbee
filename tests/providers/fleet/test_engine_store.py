@@ -578,8 +578,14 @@ _SDIST_CHECKSUM = "cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474a
         # no space between the URL and the checksum
         (f"{_SDIST_URL}{_SDIST_CHECKSUM}\n", False),
         # another character in place of a dot of the host
-        (f"{_SDIST_URL.replace('files.pythonhosted', 'files-pythonhosted')} {_SDIST_CHECKSUM}\n", False),
-        (f"{_SDIST_URL.replace('pythonhosted.org', 'pythonhosted-org')} {_SDIST_CHECKSUM}\n", False),
+        (
+            f"{_SDIST_URL.replace('files.pythonhosted', 'files-pythonhosted')} {_SDIST_CHECKSUM}\n",
+            False,
+        ),
+        (
+            f"{_SDIST_URL.replace('pythonhosted.org', 'pythonhosted-org')} {_SDIST_CHECKSUM}\n",
+            False,
+        ),
     ],
 )
 def test_the_mpl_source_pointer_names_a_pypi_source_archive_and_its_checksum(
