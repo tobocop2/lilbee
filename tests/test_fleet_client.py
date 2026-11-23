@@ -1252,6 +1252,56 @@ def test_tei_inputs_share_a_request_only_while_the_escaped_body_fits(over) -> No
     assert max(size for size, _ in bodies) <= _BODY_BOUND - 1
 
 
+def _embed_in_batches(texts: list[str]) -> list[tuple[int, list[str]]]:
+    """Embed *texts* through a TEI client; return the body size and inputs of each request."""
+    bodies: list[tuple[int, list[str]]] = []
+    assert len(_tei_embed_client(_wire_handler(bodies), cap=640).embed(texts)) == len(texts)
+    return bodies
+
+
+def test_a_body_over_two_million_bytes_is_split_in_two_requests() -> None:
+    """Two inputs of 998,000 bytes make a body of about 1,996,100: past 1,995,904, so split."""
+    first, second = _text_of_wire_bytes("a", 998_000), _text_of_wire_bytes("b", 998_000)
+    bodies = _embed_in_batches([first, second])
+    assert [inputs for _, inputs in bodies] == [[first], [second]]
+    assert all(size <= 1_995_904 for size, _ in bodies)
+
+
+def test_a_body_just_under_the_bound_goes_in_one_request() -> None:
+    """Two inputs of 997,000 bytes make a body of about 1,994,100: inside 1,995,904, so one."""
+    first, second = _text_of_wire_bytes("a", 997_000), _text_of_wire_bytes("b", 997_000)
+    bodies = _embed_in_batches([first, second])
+    assert [inputs for _, inputs in bodies] == [[first, second]]
+    assert 1_990_000 < bodies[0][0] <= 1_995_904
+
+
+def test_inputs_of_about_half_the_budget_make_a_batch_each() -> None:
+    """Each input of 1,000,000 bytes is past half the budget, so no two share a request."""
+    texts = [_text_of_wire_bytes(letter, 1_000_000) for letter in "abc"]
+    bodies = _embed_in_batches(texts)
+    assert [inputs for _, inputs in bodies] == [[texts[0]], [texts[1]], [texts[2]]]
+    assert all(1_000_000 < size <= 1_995_904 for size, _ in bodies)
+
+
+def test_the_byte_count_starts_again_after_each_batch() -> None:
+    """Four inputs of 900,000 bytes pair up; a count kept past a batch splits the last two."""
+    texts = [_text_of_wire_bytes(letter, 900_000) for letter in "abcd"]
+    bodies = _embed_in_batches(texts)
+    assert [inputs for _, inputs in bodies] == [texts[:2], texts[2:]]
+    assert all(1_800_000 < size <= 1_995_904 for size, _ in bodies)
+
+
+def test_a_full_batch_does_not_count_against_the_next_one() -> None:
+    """A batch of 1,990,000 bytes is full; the two inputs of 100,000 after it share a request."""
+    big, small_a, small_b = (
+        _text_of_wire_bytes("a", 1_990_000),
+        _text_of_wire_bytes("b", 100_000),
+        _text_of_wire_bytes("c", 100_000),
+    )
+    bodies = _embed_in_batches([big, small_a, small_b])
+    assert [inputs for _, inputs in bodies] == [[big], [small_a, small_b]]
+
+
 def _tei_full_chunks_handler(requests: Counter[str], embedded: list[str], failure=None):
     """A TEI router: each chunk of about 2048 characters is 500 tokens, within the cap of 640."""
 
