@@ -12,7 +12,7 @@ from typing import Any
 
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engines.base import (
@@ -132,7 +132,8 @@ class OvmsAdapter:
         tool = self.user_binary()
         if tool is None:
             raise ProviderError(
-                f"The OpenVINO Model Server engine is not installed. {_INSTALL_HINT}"
+                f"The OpenVINO Model Server engine is not installed. {_INSTALL_HINT}",
+                kind=ProviderErrorKind.NOT_FOUND,
             )
         return tool
 

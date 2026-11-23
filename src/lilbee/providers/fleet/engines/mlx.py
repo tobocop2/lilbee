@@ -15,7 +15,7 @@ from typing import Any
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.refs import model_format, parse_model_ref
 from lilbee.catalog.types import ModelFormat
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
@@ -233,7 +233,10 @@ class MlxAdapter:
         host = session_host()
         tool = store_tool(self.pin_record(), _TOOL, host)
         if tool is None:
-            raise ProviderError(f"The mlx engine is not installed. {install_advice(self, host)}")
+            raise ProviderError(
+                f"The mlx engine is not installed. {install_advice(self, host)}",
+                kind=ProviderErrorKind.NOT_FOUND,
+            )
         return tool
 
     def identity(self, binary: Path) -> str:
