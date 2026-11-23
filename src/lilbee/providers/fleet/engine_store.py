@@ -527,7 +527,7 @@ def _binary_usable(binary: Path, directory: Path) -> bool:
         mode = binary.stat().st_mode
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            return False
+            return False  # pragma: posix only - a Windows loop is WinError 1921
         raise
     if not binary.resolve().is_relative_to(directory.resolve()):
         return False

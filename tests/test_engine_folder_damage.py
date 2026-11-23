@@ -382,6 +382,29 @@ def test_a_command_warns_once_of_an_engine_folder_that_the_prune_skips(
     ]
 
 
+@pytest.mark.parametrize(
+    ("fail", "named"),
+    [
+        pytest.param(_fail_listing, ENGINE, id="engine-folder"),
+        pytest.param(_fail_record_read, BUILD, id="build-record"),
+    ],
+)
+def test_the_prune_warns_of_a_folder_that_cannot_be_read_on_any_platform(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fail: Callable[[pytest.MonkeyPatch, Path, int], None],
+    named: str,
+) -> None:
+    fail(monkeypatch, root / named, errno.EACCES)
+    with caplog.at_level("WARNING"):
+        prune_engines(cfg.models_dir)
+    assert caplog.messages == [
+        f"The engine prune cannot read {root / named}. Run 'lilbee engine list' for the fix."
+    ]
+    assert (root / BUILD).is_dir()
+
+
 @POSIX_DENIES_READS
 @pytest.mark.parametrize("denied", [ENGINE, *DENIED_IN_BUILD])
 def test_prune_clears_the_other_engines_beside_a_denied_folder(root: Path, denied: str) -> None:
