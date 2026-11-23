@@ -274,9 +274,8 @@ class TestSharedBlobStore:
         link = tmp_path / "snapshots" / "m.gguf"
         link.parent.mkdir()
         link.symlink_to(blob)
-        real_readlink = os.readlink
         monkeypatch.setattr(registry_mod, "_STRIP_EXTENDED_PREFIX", True)
-        monkeypatch.setattr(registry_mod.os, "readlink", lambda p: "\\\\?\\" + real_readlink(p))
+        monkeypatch.setattr(registry_mod.os, "readlink", lambda _p: "\\\\?\\" + str(blob))
         assert registry_mod.repo_blob_entry(link) == blob
 
     def test_the_prefix_is_dropped_only_on_windows(self) -> None:
