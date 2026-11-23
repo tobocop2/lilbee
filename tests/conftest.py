@@ -412,7 +412,7 @@ def _fresh_session_host(request, monkeypatch):
     its place when teardown runs.
     """
     from lilbee.catalog import runnable
-    from lilbee.providers.fleet import planning
+    from lilbee.providers.fleet import engine_manifest, planning
     from lilbee.providers.fleet.host_caps import collect
 
     planning._read_device_cache.clear()
@@ -421,6 +421,8 @@ def _fresh_session_host(request, monkeypatch):
     if "real_host_read" not in {m.name for m in request.node.iter_markers()}:
         fixed = collect(system="Linux", machine="x86_64", cpu_info={"flags": ["avx2"]}, nvidia=None)
         monkeypatch.setattr(runnable, "detect", lambda: fixed)
+        # The OS floor reads the OS version live; a fixed host meets every floor on any runner.
+        monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     yield
     session_host.cache_clear()
 

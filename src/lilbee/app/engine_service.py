@@ -422,7 +422,7 @@ def _install_gate(name: EngineName) -> HostGate:
     adapter = choice.ADAPTERS.get(name)
     if adapter is None or adapter.bundled:
         return PASS
-    return choice.install_answer(adapter, runnable.session_host())
+    return choice.install_offer(adapter, runnable.session_host())
 
 
 def offered_engines() -> choice.InstalledEngines:

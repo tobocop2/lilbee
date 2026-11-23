@@ -852,8 +852,9 @@ def test_every_surface_shows_the_service_refusal(
 
 
 def test_the_advice_names_the_command_only_for_an_engine_with_a_published_pack() -> None:
-    assert choice.install_advice(StandIn("a" * 64)) == f"Run lilbee engine install {ENGINE}."
-    assert choice.install_advice(StandIn(None)) == (
+    linux = _refusing_host(HostOS.LINUX, HostArch.X86_64)
+    assert choice.install_advice(StandIn("a" * 64), linux) == f"Run lilbee engine install {ENGINE}."
+    assert choice.install_advice(StandIn(None), linux) == (
         f"No pack of {ENGINE} is published yet, so there is nothing to install."
     )
 
@@ -894,7 +895,8 @@ def test_the_advice_names_an_unusable_pin_record() -> None:
         def pin_record(self) -> Mapping[str, Any]:
             return {**super().pin_record(), "backend": None}
 
-    assert choice.install_advice(NoBackend("a" * 64)).startswith(
+    linux = _refusing_host(HostOS.LINUX, HostArch.X86_64)
+    assert choice.install_advice(NoBackend("a" * 64), linux).startswith(
         f"Engine {ENGINE} cannot be installed: the pin record is not usable"
     )
 

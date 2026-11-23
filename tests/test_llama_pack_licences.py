@@ -150,7 +150,6 @@ def test_the_pin_of_each_cell_equals_the_terms_of_its_wheel(
     host: HostCaps, cell: str, terms: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     file = wheel_name(EngineName.LLAMA, VERSION, cell)
     monkeypatch.setattr(engine_manifest, "MANIFESTS", render_table([(file, "ab" * 32, 1)]))
     pin = LlamaCppAdapter().pack_pin()

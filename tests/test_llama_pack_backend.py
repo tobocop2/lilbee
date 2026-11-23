@@ -58,7 +58,6 @@ def _config(tmp_path: Path):
 
 def _host(monkeypatch: pytest.MonkeyPatch, host: HostCaps, cell: str) -> None:
     monkeypatch.setattr(runnable, "session_host", lambda: host)
-    monkeypatch.setattr(engine_manifest, "host_os_version", lambda _os: "99.0")
     file = wheel_name(EngineName.LLAMA, VERSION, cell)
     monkeypatch.setattr(engine_manifest, "MANIFESTS", render_table([(file, SHA, 1)]))
 

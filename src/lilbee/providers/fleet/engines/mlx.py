@@ -64,7 +64,12 @@ _HOST = "127.0.0.1"
 _METAL = "metal"
 _LICENCES = ["MIT", "Apache-2.0", "BSD-3-Clause"]
 MACOS_FLOOR = (14, 0)
-"""The oldest macOS the pack runs on; the ``min_os`` of the published row states the same."""
+"""The oldest macOS the pack runs on.
+
+mlx is the one engine with a literal floor: it has no row in the pack record, so no ``min_os``
+reaches the shared floor check. When an mlx wheel row is published, its ``min_os`` gives the
+floor, as for every other engine, and this literal goes.
+"""
 _SERVED_NAME = "default_model"
 """The model name that selects the model the server loaded at start.
 
@@ -225,9 +230,10 @@ class MlxAdapter:
         from lilbee.catalog.runnable import session_host
         from lilbee.providers.fleet.engines.choice import install_advice, store_tool
 
-        tool = store_tool(self.pin_record(), _TOOL, session_host())
+        host = session_host()
+        tool = store_tool(self.pin_record(), _TOOL, host)
         if tool is None:
-            raise ProviderError(f"The mlx engine is not installed. {install_advice(self)}")
+            raise ProviderError(f"The mlx engine is not installed. {install_advice(self, host)}")
         return tool
 
     def identity(self, binary: Path) -> str:
