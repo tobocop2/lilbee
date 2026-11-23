@@ -3068,7 +3068,7 @@ def _probe_engine_devices_and_identity(engine: EngineAdapter) -> tuple[str, Devi
 
 def capture_plan_probe(engines: Mapping[WorkerRole, EngineAdapter]) -> None:
     """Snapshot each engine's devices, and the memory once, for planning; only on a clean box."""
-    distinct = _distinct_engines(engines)
+    distinct = distinct_engines(engines)
     free_system = model_cache.free_system_memory()
     probes: dict[str, _PlanProbe] = {}
     for engine in distinct:
@@ -3122,7 +3122,7 @@ def refresh_plan_devices(engines: Mapping[WorkerRole, EngineAdapter]) -> None:
     in the build, not here. A reload asks to look again, so it probes even inside
     the failure wait that holds the read path off.
     """
-    for engine in _distinct_engines(engines):
+    for engine in distinct_engines(engines):
         _plan_probe_store.restate(
             functools.partial(_restated, engine=engine), engine.name, _engine_identity(engine)
         )
@@ -5002,7 +5002,7 @@ def _planned_engines(
     return planned or engines
 
 
-def _distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[EngineAdapter]:
+def distinct_engines(engines: Mapping[WorkerRole, EngineAdapter]) -> list[EngineAdapter]:
     """Each engine of a planned role once; raises when no role has an engine."""
     distinct = list({engine.name: engine for engine in _planned_engines(engines).values()}.values())
     if not distinct:
@@ -5036,7 +5036,7 @@ def snapshot_engine(engines: Mapping[WorkerRole, EngineAdapter]) -> EngineAdapte
     current = _plan_pass.get()
     if current is not None:
         return current.snapshot_engine
-    distinct = _distinct_engines(engines)
+    distinct = distinct_engines(engines)
     if len(distinct) == 1:
         return distinct[0]
     free_by_engine: list[tuple[int, EngineAdapter]] = []

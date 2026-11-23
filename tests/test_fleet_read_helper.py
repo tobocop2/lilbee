@@ -16,6 +16,7 @@ from lilbee.catalog import runnable
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import planning
+from lilbee.providers.fleet import provider as provider_module
 from lilbee.providers.fleet.engines import choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.host_caps import collect
@@ -120,9 +121,11 @@ class TestEveryPlacementReaderLeavesARoleOutInsteadOfFailing:
         assert "embed model" in notices[0]
 
     def test_the_host_engine_is_the_engine_of_the_role_that_has_one(
-        self, chat_without_engine: _BundledLlama
+        self, chat_without_engine: _BundledLlama, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         provider = FleetProvider()
+        server = chat_without_engine.binary()
+        monkeypatch.setattr(provider_module, "installed_llama_server", lambda: server)
 
         assert provider._host_engine() is chat_without_engine
         assert provider._unusable_engine_reason() is None

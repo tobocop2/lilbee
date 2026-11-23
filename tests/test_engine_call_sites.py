@@ -26,6 +26,7 @@ from lilbee.providers import engine_params
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet import planning, replicas
+from lilbee.providers.fleet import provider as provider_module
 from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
@@ -688,13 +689,31 @@ class TestLaunchBuild:
 
 
 class TestProvider:
-    def test_unusable_reason_names_the_engine_binary_problem(
+    def test_unusable_reason_of_a_bundled_engine_names_the_installed_server_problem(
         self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        def missing() -> Path:
+            raise ProviderError("pack server missing", kind=ProviderErrorKind.NOT_FOUND)
+
+        monkeypatch.setattr(
+            EngineBook,
+            "read",
+            lambda self: BookReading(engines_for_all_roles(_binaryless(spy)), {}),
+        )
+        monkeypatch.setattr(provider_module, "installed_llama_server", lambda: spy._binary)
+        assert FleetProvider()._unusable_engine_reason() is None
+        monkeypatch.setattr(provider_module, "installed_llama_server", missing)
+        assert FleetProvider()._unusable_engine_reason() == "pack server missing"
+
+    def test_unusable_reason_of_an_unbundled_engine_names_its_binary_problem(
+        self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(type(spy), "bundled", False)
         monkeypatch.setattr(
             EngineBook, "read", lambda self: BookReading(engines_for_all_roles(spy), {})
         )
         assert FleetProvider()._unusable_engine_reason() is None
+        monkeypatch.setattr(type(_binaryless(spy)), "bundled", False)
         monkeypatch.setattr(
             EngineBook,
             "read",
