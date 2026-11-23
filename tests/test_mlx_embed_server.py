@@ -584,7 +584,7 @@ def _model_folder(
     return folder
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+@pytest.mark.skipif(sys.platform == "win32", reason="the mlx server runs only on macOS")
 def test_one_sigterm_stops_the_server(tmp_path: Path) -> None:
     port = _free_port()
     proc = subprocess.Popen(
