@@ -57,6 +57,16 @@ def is_model_available(model: str, provider: LLMProvider) -> bool:
     return is_model_installed(model)
 
 
+def embed_char_budget(config: Config) -> int:
+    """Effective char limit for an embedder with no token cap, never below the chunk size.
+
+    ``max_embed_chars`` guards the embed model's context; clamping it up to
+    ``chunk_size * CHARS_PER_TOKEN`` stops a finished full-budget chunk from
+    silently losing its tail to a limit set below what the chunker emits.
+    """
+    return max(config.max_embed_chars, config.chunk_size * CHARS_PER_TOKEN)
+
+
 class Embedder:
     """Embedding wrapper: truncates, batches, validates vectors, and counts truncations."""
 
@@ -66,13 +76,8 @@ class Embedder:
 
     @property
     def embed_char_budget(self) -> int:
-        """Effective char limit for an embedder with no token cap, never below the chunk size.
-
-        ``max_embed_chars`` guards the embed model's context; clamping it up to
-        ``chunk_size * CHARS_PER_TOKEN`` stops a finished full-budget chunk from
-        silently losing its tail to a limit set below what the chunker emits.
-        """
-        return max(self._config.max_embed_chars, self._config.chunk_size * CHARS_PER_TOKEN)
+        """Effective char limit for an embedder with no token cap (:func:`embed_char_budget`)."""
+        return embed_char_budget(self._config)
 
     @property
     def batch_char_budget(self) -> int:

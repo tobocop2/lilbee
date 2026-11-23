@@ -537,7 +537,8 @@ class TestSync:
             profile=LLAMA.request_profile(WorkerRole.EMBED),
         )
         provider = MagicMock()
-        provider.embed_token_cap.return_value = 3
+        # The provider reports no window, so ingest does not refuse; the server still cuts at 3.
+        provider.embed_token_cap.return_value = None
         provider.embed.side_effect = client.embed
         embedder = Embedder(cfg, provider)
         monkeypatch.setattr(embedder, "embedding_available", lambda: True)
@@ -548,6 +549,29 @@ class TestSync:
 
         assert "long.txt" in result.added
         assert result.truncated >= 1
+
+    async def test_a_sync_refuses_a_window_below_one_chunk_before_it_chunks_a_file(
+        self, mock_extract_file, isolated_env, mock_svc, monkeypatch
+    ):
+        """A window of 400 cannot hold a chunk of 512: the sync stops and names the size."""
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import EmbedWindowError
+        from lilbee.data.ingest import sync
+
+        model = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", model)
+        mock_svc.provider.embed_token_cap.return_value = 400
+        (isolated_env / "doc.txt").write_text("A document. " * 40, encoding="utf-8")
+
+        with pytest.raises(EmbedWindowError) as raised:
+            await sync()
+
+        assert str(raised.value) == (
+            f"{model}: The embedding model accepts 400 tokens per input; "
+            "chunk_size 512 does not fit. Set chunk_size to 272 or lower."
+        )
+        mock_extract_file.assert_not_called()
 
     async def test_the_sync_summary_counts_each_cut_of_the_run_once(
         self, mock_extract_file, isolated_env, mock_svc
