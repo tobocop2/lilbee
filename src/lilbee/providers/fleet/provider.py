@@ -44,7 +44,7 @@ from lilbee.providers.base import (
     prompt_token_budget,
 )
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.binary import engine_pin
+from lilbee.providers.fleet.binary import engine_pin, installed_llama_server
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
@@ -1400,10 +1400,15 @@ class FleetProvider:
         Planning drops an engine-less host to serving nothing and says so only at
         debug, so by the time a surface has an empty pool the engine is the one cause
         it cannot see. Re-resolving here is also what keeps an engine installed
-        mid-session from being reported as still missing.
+        mid-session from being reported as still missing. It reads installed state
+        only: an error text never installs the llama.cpp pack.
         """
         try:
-            self._host_engine().binary()
+            for engine in planning.distinct_engines(self._engines()):
+                if engine.bundled:
+                    installed_llama_server()
+                else:
+                    engine.binary()
         except ProviderError as exc:
             return str(exc)
         return None
