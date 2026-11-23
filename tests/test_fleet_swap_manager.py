@@ -23,6 +23,7 @@ from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import EngineLifetime, SwapManager
 from lilbee.providers.roles import EngineBackend, WorkerRole
+from tests._engine_logs import enrol_launch
 from tests._fleet_engines import engines_for_all_roles
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
@@ -127,7 +128,7 @@ class TestStart:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, SwapGroup.EMBED)
         mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
-        config = json.loads(mgr._config_path.read_text())
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
         assert config["logToStdout"] == "proxy,upstream"
         assert "env" not in config["models"]["embed-0"]
 
@@ -138,7 +139,7 @@ class TestStart:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, SwapGroup.EMBED)
         mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(LLAMA))
-        config = json.loads(mgr._config_path.read_text())
+        config = json.loads(mgr._config_path.read_text(encoding="utf-8"))
         assert config["logToStdout"] == "proxy"
         log_file = tmp_path / "logs" / "engine-embed-0.log"
         assert f"LLAMA_LOG_FILE={log_file}" in config["models"]["embed-0"]["env"]
@@ -2267,11 +2268,7 @@ class TestEstimateReadback:
     @staticmethod
     def _enrol(manager, launch, engine=LLAMA) -> None:
         """Record *launch* the way ``start`` does, with the log file its engine writes."""
-        from lilbee.providers.fleet.readback import engine_log_of
-
-        manager._launch_by_model = {launch.model_id: launch}
-        log_path = engine_log_of(engine, launch, manager._log_path.parent)
-        manager._engine_logs = {} if log_path is None else {launch.model_id: log_path}
+        enrol_launch(manager, launch, engine)
 
     def test_a_ready_engine_is_checked_against_its_estimate(self, tmp_path, caplog) -> None:
         from lilbee.providers.fleet.readback import engine_log_path
