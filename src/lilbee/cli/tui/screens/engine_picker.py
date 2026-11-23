@@ -11,7 +11,7 @@ from textual.content import Content
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from lilbee.app.engine_service import EngineOption, InstallRoute
+from lilbee.app.engine_service import EngineOption, InstallRoute, saved_engine
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_mark import engine_mark, format_size
 from lilbee.cli.tui.widgets.dialog import Dialog
@@ -43,9 +43,14 @@ def state_text(option: EngineOption) -> str:
 
 
 class EnginePickerModal(Dialog[EngineOption | None]):
-    """One engine per row; Enter returns its option, Esc returns None."""
+    """One engine per row; Enter returns its option, Esc returns None.
+
+    The list opens on the engine saved for the model, or on auto when none is saved,
+    so Enter alone keeps the saved choice.
+    """
 
     CSS_PATH: ClassVar[str] = "engine_picker.tcss"
+    AUTO_FOCUS: ClassVar[str] = "#engine-picker-list"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss(None)", "Cancel", show=True),
@@ -55,15 +60,15 @@ class EnginePickerModal(Dialog[EngineOption | None]):
         self,
         title: str,
         subtitle: str,
+        model: str,
         current: str | None,
         options: list[EngineOption],
-        saved: str | None,
     ) -> None:
         super().__init__()
         self._title = title
         self._subtitle = subtitle
         self._current = current
-        self._saved = saved
+        self._saved = saved_engine(model) or AUTO
         self._options = {option.name: option for option in options}
 
     def _label(self, option: EngineOption) -> Content:
@@ -80,29 +85,25 @@ class EnginePickerModal(Dialog[EngineOption | None]):
         return Content.assemble(head, "  ", option_detail(option))
 
     def compose(self) -> ComposeResult:
+        option_list = OptionList(
+            *[
+                Option(
+                    self._label(option),
+                    id=name,
+                    disabled=not option.installed and not option.offers_download,
+                )
+                for name, option in self._options.items()
+            ],
+            id="engine-picker-list",
+        )
+        names = list(self._options)
+        option_list.highlighted = names.index(self._saved) if self._saved in names else 0
         with Vertical(id="engine-picker-root"):
             yield Static(self._title, id="engine-picker-title")
             yield Static(self._subtitle, id="engine-picker-model", markup=False)
             yield Static(msg.ENGINE_PICKER_NOTE, id="engine-picker-note")
-            yield OptionList(
-                *[
-                    Option(
-                        self._label(option),
-                        id=name,
-                        disabled=not option.installed and not option.offers_download,
-                    )
-                    for name, option in self._options.items()
-                ],
-                id="engine-picker-list",
-            )
+            yield option_list
             yield Static(msg.ENGINE_PICKER_HINT, id="engine-picker-hint")
-
-    def on_mount(self) -> None:
-        """Focus the list with the saved engine highlighted, so Enter keeps the saved choice."""
-        option_list = self.query_one(OptionList)
-        option_list.focus()
-        names = list(self._options)
-        option_list.highlighted = names.index(self._saved) if self._saved in names else 0
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()

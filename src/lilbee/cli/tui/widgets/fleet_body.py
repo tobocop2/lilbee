@@ -349,9 +349,9 @@ class FleetBody(Widget):
         modal = EnginePickerModal(
             msg.ENGINE_PICKER_TITLE.format(role=role),
             msg.ENGINE_PICKER_SUBTITLE.format(model=view.model, format=view.format),
+            view.model,
             view.engine,
             engine_service.engine_options(view.model),
-            engine_service.saved_engine(view.model),
         )
         self.app.push_screen(modal, lambda option: self._on_engine_picked(view, option))
 

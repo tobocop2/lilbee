@@ -307,9 +307,9 @@ class ModelPickerModal(Dialog[str | None]):
         modal = EnginePickerModal(
             msg.MODEL_INFO_PICKER_TITLE,
             self._options.labels[ref],
+            ref,
             self._options.engines[ref][0] or None,
             options,
-            engine_service.saved_engine(ref),
         )
 
         def answered(option: engine_service.EngineOption | None) -> None:
