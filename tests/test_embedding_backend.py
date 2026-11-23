@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import subprocess
 import sys
 import threading
@@ -223,11 +222,10 @@ class TestProviderEmbedders:
         register = MagicMock()
         monkeypatch.setattr(xberg, "register_embedding_backend", register)
         embedders = _ProviderEmbedders()
-        provider = MagicMock()
+        provider = _PlainProvider()
         embedders.name_for(provider)
         backend = register.call_args.args[0]
         del provider
-        gc.collect()
         with pytest.raises(ReferenceError, match="no longer exists"):
             backend.embed(["hello"])
 
@@ -238,9 +236,9 @@ class TestABackendLeavesWithItsProvider:
 
         from lilbee.data.extract.backends.embedding import provider_embedders
 
-        keeper = MagicMock()
+        keeper = _PlainProvider()
         start = _settled_names(keeper)
-        providers = [MagicMock() for _ in range(5)]
+        providers = [_PlainProvider() for _ in range(5)]
         for provider in providers:
             provider_embedders.name_for(provider)
         assert len(set(xberg.list_embedding_backends()) - start) == 5
@@ -250,7 +248,7 @@ class TestABackendLeavesWithItsProvider:
     def test_a_live_providers_backend_stays_registered(self):
         from lilbee.data.extract.backends.embedding import provider_embedders
 
-        keeper, provider = MagicMock(), MagicMock()
+        keeper, provider = _PlainProvider(), _PlainProvider()
         name = provider_embedders.name_for(provider)
         assert name in _settled_names(keeper)
         del provider
@@ -259,7 +257,7 @@ class TestABackendLeavesWithItsProvider:
     def test_unregistering_a_backend_that_is_gone_is_a_no_op(self):
         from lilbee.data.extract.backends.embedding import _unregister, provider_embedders
 
-        keeper, provider = MagicMock(), MagicMock()
+        keeper, provider = _PlainProvider(), _PlainProvider()
         start = _settled_names(keeper)
         name = provider_embedders.name_for(provider)
         del provider
@@ -280,13 +278,16 @@ class TestABackendLeavesWithItsProvider:
         assert result.stdout.strip() == "gone"
 
 
-def _settled_names(keeper: MagicMock) -> set[str]:
-    """xberg's embedding names once collected providers are released and a lookup has run."""
+class _PlainProvider:
+    """A provider that holds no reference cycle, so reference counting frees it at `del`."""
+
+
+def _settled_names(keeper: _PlainProvider) -> set[str]:
+    """xberg's embedding names once released providers are gone and a lookup has run."""
     import xberg
 
     from lilbee.data.extract.backends.embedding import provider_embedders
 
-    gc.collect()
     provider_embedders.name_for(keeper)
     return set(xberg.list_embedding_backends())
 
