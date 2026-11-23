@@ -545,7 +545,8 @@ class Loading:
         try:
             socket.create_connection(("127.0.0.1", port), timeout=2).close()
             print("PORT-OPEN-DURING-LOAD", flush=True)
-        except ConnectionRefusedError:
+        except (ConnectionRefusedError, TimeoutError):
+            # Windows retries a refused connect for about two seconds, so it times out here.
             print("PORT-CLOSED-DURING-LOAD", flush=True)
 s.MlxBackend = Loading
 s.main(sys.argv[2:])
@@ -567,6 +568,7 @@ def _server_args(port: int) -> list[str]:
     return ["--model", "m", "--port", str(port), "--task", "embed", "--max-length", "8"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
 def test_one_sigterm_stops_the_server(tmp_path: Path) -> None:
     port = _free_port()
     proc = subprocess.Popen(
