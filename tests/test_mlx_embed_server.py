@@ -1099,7 +1099,7 @@ _EMBED_WEIGHTS = _HEAD_WEIGHTS * 10 + 1
 
 
 class _Body:
-    """The inner model: every state is [token id, position, 1], so the padding and the index show."""
+    """The inner model: every state is [token id, position, 1], so padding and index show."""
 
     embed_tokens = _Embedding()
 
