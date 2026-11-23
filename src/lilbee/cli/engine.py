@@ -86,6 +86,8 @@ def list_builds() -> None:
             )
         else:
             console.print(f"{name} not installed{clause}")
+    for error in view.damaged:
+        console.print(str(error), soft_wrap=True)
     _print_engines_folder()
 
 

@@ -23,6 +23,7 @@ from lilbee.providers.fleet.engine_manifest import (
 )
 from lilbee.providers.fleet.engine_store import (
     EngineConflictError,
+    EngineFolderError,
     EngineStore,
     PinLock,
     PlatformAsset,
@@ -406,20 +407,24 @@ def install_advice(adapter: EngineAdapter) -> str:
     return f"Run lilbee engine install {adapter.name}."
 
 
+def install_offered(name: str, host: HostCaps) -> bool:
+    """True when a shipped engine *name* serves *host* and has a pack to install."""
+    adapter = shipped_adapter(name)
+    if adapter is None or not install_answer(adapter, host).ok:
+        return False
+    try:
+        pin_lock(adapter.pin_record())
+    except PinError:
+        return False
+    return True
+
+
 def install_any_advice(host: HostCaps) -> str:
     """The install command of every shipped engine that serves *host* and has a pack to install.
 
     Falls back to the list command when no engine qualifies.
     """
-    commands = []
-    for name, adapter in ADAPTERS.items():
-        if not install_answer(adapter, host).ok:
-            continue
-        try:
-            pin_lock(adapter.pin_record())
-        except PinError:
-            continue
-        commands.append(f"lilbee engine install {name}")
+    commands = [f"lilbee engine install {name}" for name in ADAPTERS if install_offered(name, host)]
     return f"Run {' or '.join(commands)}." if commands else LIST_HINT
 
 
@@ -497,7 +502,9 @@ def _is_installed(name: EngineName, adapter: EngineAdapter, store: EngineStore) 
     except NoPublishedPackError:
         return False
     except BUILD_UNREADABLE as exc:
-        log.warning("Engine %s counts as not installed: %s", name, exc)
+        # The engine list shows the fix of a damaged folder.
+        cause = f"cannot read {exc.folder}" if isinstance(exc, EngineFolderError) else exc
+        log.warning("Engine %s counts as not installed: %s", name, cause)
         return False
 
 

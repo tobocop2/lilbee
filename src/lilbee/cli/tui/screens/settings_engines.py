@@ -115,8 +115,10 @@ class EnginesPane(VerticalScroll):
     def reload(self) -> None:
         """Read the engine rows off the event loop, then show them."""
         try:
-            rows = engine_service.engine_rows()
+            listed = engine_service.engine_list()
+            rows = engine_service.engine_rows(listed=listed)
             offered = [str(name) for name in engine_service.offered_engines()]
+            damaged = [str(error) for error in listed.damaged]
         except OSError as exc:
             call_from_thread(
                 self.app,
@@ -125,9 +127,10 @@ class EnginesPane(VerticalScroll):
                 severity="error",
             )
             return
-        call_from_thread(self, self._show, rows, offered)
+        call_from_thread(self, self._show, rows, offered, damaged)
 
-    def _show(self, rows: list[EngineRow], offered: list[str]) -> None:
+    def _show(self, rows: list[EngineRow], offered: list[str], damaged: list[str]) -> None:
+        self.query_one("#engines-hint", Static).update("\n".join([*damaged, msg.ENGINES_HINT]))
         self._rows = {_row_key(row): row for row in rows}
         table = self.query_one(f"#{TABLE_ID}", DataTable)
         table.clear()
