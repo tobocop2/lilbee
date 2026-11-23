@@ -218,9 +218,7 @@ class TestBuildSwapConfig:
         assert cfg["logToStdout"] == "proxy,upstream"
         assert "env" not in cfg["models"][_mid(WorkerRole.EMBED)]
 
-    def test_one_member_without_its_own_log_copies_the_output_of_the_group(
-        self, tmp_path
-    ) -> None:
+    def test_one_member_without_its_own_log_copies_the_output_of_the_group(self, tmp_path) -> None:
         chat = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
         embed = _launch(WorkerRole.EMBED, ["/bin/text-embeddings-router"])
         ports = {chat.model_id: _BASE_PORT, embed.model_id: _BASE_PORT + 1}

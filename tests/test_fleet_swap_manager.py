@@ -126,9 +126,7 @@ class TestStart:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, SwapGroup.EMBED)
-        mgr.start(
-            [_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine())
-        )
+        mgr.start([_launch(WorkerRole.EMBED)], engines=engines_for_all_roles(_NoOwnLogEngine()))
         config = json.loads(mgr._config_path.read_text())
         assert config["logToStdout"] == "proxy,upstream"
         assert "env" not in config["models"]["embed-0"]
