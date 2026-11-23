@@ -4307,7 +4307,7 @@ def test_a_chat_load_failure_warm_text_carries_the_clients_plain_line(monkeypatc
     def _dies(*_args, **_kwargs):
         raise ProviderError(line, kind=ProviderErrorKind.CONNECTION)
 
-    monkeypatch.setattr(client, "chat", _dies)
+    monkeypatch.setattr(client, "chat_abortable", _dies)
     p = FleetProvider()
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
     p._warm_chat_role([client])
@@ -4650,6 +4650,7 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
 
 
 _HUNG_WARM_PROBE = """
+import asyncio
 import threading
 import httpx
 from lilbee.providers.fleet.client import LlamaServerClient
@@ -4660,15 +4661,19 @@ from lilbee.providers.roles import WorkerRole
 
 in_flight = threading.Event()
 
-def never_answers(request):
+async def never_answers(request):
     in_flight.set()
-    threading.Event().wait()
+    await asyncio.Event().wait()
 
-http = httpx.Client(base_url="http://engine", transport=httpx.MockTransport(never_answers))
 p = FleetProvider()
 p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
 profile = LLAMA.request_profile(WorkerRole.CHAT)
-client = LlamaServerClient("http://engine", "chat", http=http, profile=profile)
+client = LlamaServerClient(
+    "http://engine",
+    "chat",
+    async_transport=httpx.MockTransport(never_answers),
+    profile=profile,
+)
 p._clients = {WorkerRole.CHAT: [client]}
 p._prewarm_chat_weights = lambda: None
 threading.Thread(target=p._preload_roles, daemon=True).start()
