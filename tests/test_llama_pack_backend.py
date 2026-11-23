@@ -272,6 +272,7 @@ def test_the_mixed_host_with_an_old_nvidia_card_and_an_amd_gpu_warns_once(
 _ROOT = Path(__file__).resolve().parents[1]
 _PACK_LINUX_CUDA_BUILD = _ROOT / "tools/wheel-build/llama_cuda_manylinux.sh"
 _PACK_RECIPE = _ROOT / "tools/wheel-build/pack_llama.sh"
+_PACK_CHECK = _ROOT / "tools/wheel-build/check_llama_wheel.sh"
 _PACK_CUDA_VERSION = re.compile(r"cuda(?:-|_dash=)(\d+)[.-](\d+)")
 # At this tag, ggml-cuda's CMakeLists.txt defaults CUDA 12 without GGML_NATIVE to 50-virtual up.
 _UPSTREAM_TAG_OF_THE_COMPUTE_FLOOR = "b12032"
@@ -363,29 +364,20 @@ def test_no_llama_cell_builds_a_number_below_a_published_wheel_of_its_name() -> 
     assert cells_below_the_record("lilbee_engine_llama_cpp", _WHEEL_VERSION, _llama_builds()) == []
 
 
-def test_the_windows_cells_write_and_check_the_runtime_notice_under_one_name() -> None:
-    steps = _pack_workflow_yaml()["jobs"]["cell"]["steps"]
-    assert not _pack_workflow_yaml()["jobs"]["cell"].get("continue-on-error")
-    # tests/shell/pack_llama.bats tests that a failure of the recipe stops the pack.
-    (check,) = (s for s in steps if s.get("name") == "Start llama-server from the installed wheel")
-    _assert_step_stops_on_failure(check)
-    checked = [
-        step
-        for step in steps
-        if "pack.sh" in step.get("run", "") or _NOTICE_NAME in step.get("run", "")
-    ]
-    # The loop is not vacuous: the build step and the check step are the two that it reads.
-    assert [step["name"] for step in checked] == [
-        "Build the pack",
-        "Start llama-server from the installed wheel",
-    ]
-    for step in checked:
-        _assert_step_stops_on_failure(step)
+def test_the_windows_cells_write_the_runtime_notice_that_the_wheel_check_reads() -> None:
+    job = _pack_workflow_yaml()["jobs"]["cell"]
     recipe = _uncommented(_PACK_RECIPE.read_text(encoding="utf-8"))
     bundle = [line for line in recipe.splitlines() if "bundle_windows_runtime.sh" in line]
     assert len(bundle) == 1
     assert f'"${{WHEEL_TREE}}/{_NOTICE_NAME}" vs-licence.docx' in bundle[0]
-    assert f'dist-info/licenses/{_NOTICE_NAME}$" wheel-listing.txt' in _uncommented(check["run"])
+    # tests/shell/check_llama_wheel.bats runs the check of the notice on a Windows wheel.
+    check = _uncommented(_PACK_CHECK.read_text(encoding="utf-8"))
+    assert check.count(f'dist-info/licenses/{_NOTICE_NAME}$"') == 1
+    assert "vs-licence.docx" in check
+    assert not [step["name"] for step in job["steps"] if _NOTICE_NAME in step.get("run", "")]
+    windows_cells = [c for c in _pack_matrix() if c["cell"].startswith("windows-")]
+    assert windows_cells
+    assert all(c["runner"].startswith("windows-") for c in windows_cells)
 
 
 _NOTICE_NAME = "NOTICE-MICROSOFT-VC-RUNTIME"
@@ -398,53 +390,16 @@ def _assert_step_stops_on_failure(step: dict[str, Any]) -> None:
     assert not _NON_FATAL_SHELL.search(_uncommented(step["run"]))
 
 
-def _enclosing_conditions(script: str, line_text: str) -> list[str]:
-    """Return the `if` conditions that enclose the one script line holding `line_text`."""
-    stack: list[str] = []
-    hits: list[list[str]] = []
-    for raw in script.splitlines():
-        line = raw.strip()
-        if line.startswith("if ") and line.endswith("; then"):
-            stack.append(line[len("if ") : -len("; then")])
-        elif line.startswith(("else", "elif ")):
-            stack[-1] = f"not ({stack[-1]})"
-        elif line == "fi":
-            stack.pop()
-        elif line_text in line:
-            hits.append(list(stack))
-    assert len(hits) == 1, line_text
-    return hits[0]
-
-
-def test_the_windows_cells_run_the_notice_check_under_the_windows_condition() -> None:
-    steps = _pack_workflow_yaml()["jobs"]["cell"]["steps"]
-    [start] = [s for s in steps if s.get("name") == "Start llama-server from the installed wheel"]
-    windows_cells = [c for c in _pack_matrix() if c["cell"].startswith("windows-")]
-    assert windows_cells
-    assert all(c["runner"].startswith("windows-") for c in windows_cells)
-    assert "if" not in start
-    verify = "vs_distributable_terms.py --verify vs-licence.docx out/*.whl"
-    assert _enclosing_conditions(start["run"], verify) == ['[ "${RUNNER_OS}" = Windows ]']
-
-
-def test_the_notice_check_failure_fails_the_step_and_the_job() -> None:
+def test_a_failed_wheel_check_fails_the_pack_step_and_the_job() -> None:
     job = _pack_workflow_yaml()["jobs"]["cell"]
-    step_name = "Start llama-server from the installed wheel"
-    [start] = [s for s in job["steps"] if s.get("name") == step_name]
-    verify = r"python -I tools/wheel-build/vs_distributable_terms\.py --verify vs-licence\.docx"
-    verify += r"( --\S+)* out/\*\.whl"
-    lines = [line.strip() for line in start["run"].splitlines()]
-    at = [i for i, line in enumerate(lines) if "vs_distributable_terms.py --verify" in line]
-    assert len(at) == 1
-    before = lines[: at[0]]
-    assert "continue-on-error" not in start
-    assert "continue-on-error" not in job
-    assert "shell" not in start
-    assert any(re.match(r"set -[A-Za-z]*e", line) for line in before)
-    assert any(re.match(r"set .*pipefail", line) for line in before)
-    assert not [line for line in before if re.match(r"set\s+\+|trap\b", line)]
-    assert not before[-1].endswith(("\\", "||", "&&", "|"))
-    assert re.fullmatch(verify, lines[at[0]])
+    assert not job.get("continue-on-error")
+    # tests/shell/pack_llama.bats runs the pack with a failing check: no wheel reaches the output.
+    (build,) = (s for s in job["steps"] if "pack.sh" in s.get("run", ""))
+    assert build["name"] == "Build and check the pack"
+    assert build["run"] == 'bash scripts/pack.sh "${CELL}"'
+    assert "shell" not in build
+    _assert_step_stops_on_failure(build)
+    assert job["defaults"]["run"]["shell"] == "bash"
 
 
 def test_the_pack_workflow_names_no_transient_branch() -> None:

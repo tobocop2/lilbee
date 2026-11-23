@@ -39,8 +39,10 @@ the same behavior, so a developer can reproduce a CI build off-runner.
 - `pack_llama.sh` — builds the llama.cpp engine pack of one cell, in the same way. A Linux
   cell builds the server in the manylinux image (`llama_gpu_manylinux.sh`,
   `llama_cuda_manylinux.sh`). `repack_llama_archives.py` repacks the upstream archives of
-  the other cells, and `llama_cuda_notice.py` writes the NVIDIA notice. The build workflow
-  of the engine-packs repository checks the wheel.
+  the other cells, and `llama_cuda_notice.py` writes the NVIDIA notice.
+- `check_llama_wheel.sh` — installs a built llama.cpp pack, checks its files, licences and
+  libraries for the backend and the host, and starts the server. `pack_llama.sh` runs it
+  before the pack leaves the build.
 - `pack_common.sh` — the functions that the pack scripts share.
 - `build-tools.constraints` — the pinned Python build tools of the packs.
   `tei-tools-linux.constraints` and `tei-tools-macos.constraints` add the ones that only one
