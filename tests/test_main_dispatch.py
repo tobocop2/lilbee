@@ -388,6 +388,7 @@ class TestPrestartMpResourceTracker:
             mock.patch.object(LilbeeApp, "run", lambda _self: events.append("run")),
             mock.patch.object(LilbeeApp, "__init__", lambda _self, **_kw: None),
             mock.patch.object(LilbeeApp, "task_bar", create=True),
+            mock.patch.object(LilbeeApp, "return_code", None),
             mock.patch.object(tui, "_restore_native_stderr"),
             mock.patch("lilbee.cli.sync.shutdown_executor"),
             mock.patch.object(tui, "reset_services_on_exit"),
