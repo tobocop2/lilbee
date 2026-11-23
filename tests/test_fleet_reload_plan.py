@@ -724,6 +724,30 @@ def test_a_shutdown_during_a_timeout_drain_closes_the_stuck_clients(
     assert closed
 
 
+def test_a_shutdown_ends_the_warm_that_a_reload_started(
+    engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new chat engine holds the warm request, so only the shutdown can end the warm."""
+    provider, swaps = engine_fleet
+    monkeypatch.delattr(provider, "_preload_roles")
+    first_new = len(swaps)
+
+    def held_swap(_dir: Path, _group: object) -> _EngineSwap:
+        swap = _EngineSwap(answers_at_once=False)
+        swaps.append(swap)
+        return swap
+
+    monkeypatch.setattr(prov_mod, "SwapManager", held_swap)
+    cfg.chat_model = _OTHER_CHAT_REF
+    provider.reload_role(WorkerRole.CHAT)
+    assert poll_until(lambda: any(swap.engine.started.is_set() for swap in swaps[first_new:]))
+
+    provider.shutdown()
+
+    warms = [thread for thread in threading.enumerate() if thread.name == "fleet-reload-warm"]
+    assert not [thread for thread in warms if thread.is_alive()]
+
+
 def test_a_retry_that_fails_on_the_new_server_starts_no_second_server(
     mlx_engine_fleet: tuple[FleetProvider, list[_EngineSwap]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
