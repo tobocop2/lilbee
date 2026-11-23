@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -10,6 +11,7 @@ from textual.binding import Binding
 
 from conftest import (
     TEST_LOCAL_REF,
+    clean_env,
 )
 from conftest import (
     make_test_catalog_model as _make_model,
@@ -61,6 +63,49 @@ def _patch_chat_setup():
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=50, offset=0, models=[])
 
+_TERMINATED_TUI_CHILD = """
+import asyncio
+import os
+import signal
+import sys
+import threading
+import time
+from unittest import mock
+
+from lilbee.app.services import install_engine_lifecycle_hooks, mark_interactive_session
+from lilbee.cli.tui import run_tui
+
+
+class _TerminatedApp:
+    return_code = None
+    task_bar = mock.MagicMock()
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def run(self, *, loop=None):
+        # As Textual's App.run: asyncio.run without a loop, else the loop's own run.
+        if loop is None:
+            asyncio.run(self._main())
+        else:
+            loop.run_until_complete(self._main())
+
+    async def _main(self):
+        if sys.argv[1] == "stuck-executor":
+            # A worker of the loop's default executor, as asyncio.to_thread starts one.
+            asyncio.get_running_loop().run_in_executor(None, time.sleep, 120.0)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(60.0)  # the handler's SystemExit ends the run here
+
+
+if sys.argv[1] == "stuck-thread":
+    threading.Thread(target=time.sleep, args=(120.0,)).start()
+install_engine_lifecycle_hooks()
+mark_interactive_session()
+with mock.patch("lilbee.cli.tui.app.LilbeeApp", _TerminatedApp):
+    run_tui()
+"""
+
 
 class TestRunTui:
     @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
@@ -101,7 +146,7 @@ class TestRunTui:
                 threading.Event().wait(0.05)
             worker_done.set()
 
-        def _run(app: LilbeeApp) -> None:
+        def _run(app: LilbeeApp, **_kw: object) -> None:
             app.task_bar.start_task("Sync", TaskType.SYNC, _target)
 
         with (
@@ -146,7 +191,7 @@ class TestRunTui:
         def _target(_reporter) -> None:
             asyncio_loop.run(_sync_on_a_page_that_never_returns())
 
-        def _run(app: LilbeeApp) -> None:
+        def _run(app: LilbeeApp, **_kw: object) -> None:
             app.task_bar.start_task("Sync", TaskType.SYNC, _target)
             # Quit only once the sync is parked on the page; the guard only stops a hang.
             assert waiting.wait(timeout=60)
@@ -164,6 +209,63 @@ class TestRunTui:
         # The quit cancelled the page wait (it did not outlast the exit budget) and flushed first.
         assert wait_ended_by == ["cancel"]
         assert flushed_at_teardown == [True]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+    @pytest.mark.parametrize("worker", ["stuck-thread", "stuck-executor", "none"])
+    def test_a_terminate_ends_the_tui_with_the_signal_status(self, tmp_path, worker) -> None:
+        """A SIGTERM ends the TUI with 128 + 15, also through the forced exit for a stuck worker.
+
+        The wait is bounded by the test timeout; a stuck worker the exit joins holds it forever.
+        """
+        import signal
+        import subprocess
+
+        script = tmp_path / "terminated_tui.py"
+        script.write_text(_TERMINATED_TUI_CHILD, encoding="utf-8")
+        child = subprocess.Popen(
+            [sys.executable, str(script), worker],
+            env=clean_env(tmp_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        try:
+            _, stderr = child.communicate()
+        finally:
+            child.kill()  # a no-op once the child ended
+        assert child.returncode == 128 + signal.SIGTERM, stderr
+
+    @pytest.mark.parametrize(
+        ("code", "status"), [(None, 0), (3, 3), ("lilbee: bye", 1)], ids=["none", "int", "text"]
+    )
+    def test_an_exit_during_the_run_gives_its_status_to_the_forced_exit(self, code, status) -> None:
+        from lilbee.cli.tui import run_tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch.object(LilbeeApp, "run", side_effect=SystemExit(code)),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch("lilbee.cli.tui.reset_services_on_exit"),
+            mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as straggler,
+            pytest.raises(SystemExit) as raised,
+        ):
+            run_tui()
+        assert raised.value.code == code
+        straggler.assert_called_once_with(status)
+
+    def test_an_app_with_no_return_code_exits_with_zero(self) -> None:
+        from lilbee.cli.tui import run_tui
+        from lilbee.cli.tui.app import LilbeeApp
+
+        with (
+            mock.patch.object(LilbeeApp, "run"),
+            mock.patch.object(LilbeeApp, "return_code", None),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch("lilbee.cli.tui.reset_services_on_exit"),
+            mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang") as straggler,
+        ):
+            run_tui()
+        straggler.assert_called_once_with(0)
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")

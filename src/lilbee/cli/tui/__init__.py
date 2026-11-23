@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -9,7 +10,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.app.services import exit_when_stragglers_would_hang, reset_services_on_exit
+from lilbee.app.services import (
+    exit_when_stragglers_would_hang,
+    new_exit_bounded_loop,
+    reset_services_on_exit,
+)
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.security import OWNER_ONLY_MODE
 
@@ -114,7 +119,8 @@ def run_tui(*, initial_view: str | None = None) -> None:
 
     *initial_view* deep-links to a named view (e.g. ``"Catalog"``) after
     the default chat screen is mounted. Used by ``lilbee model browse``.
-    A non-zero ``return_code`` of the app ends the process with that status.
+    A non-zero ``return_code`` of the app ends the process with that status, and a
+    signal's SystemExit keeps its status through the forced exit for stuck threads.
     """
     # heavy: cli.sync transitively imports ingest -> store -> pyarrow (~1.8s
     # cold-start on bare runners); only needed at TUI shutdown. (bb-oae5)
@@ -127,13 +133,22 @@ def run_tui(*, initial_view: str | None = None) -> None:
     stderr_redirect = _redirect_native_stderr_to(log_path)
 
     app = LilbeeApp(initial_view=initial_view)
+    status = 0
     try:
-        app.run()
+        # The runner cancels the app's tasks at close but leaves a stuck worker to the
+        # straggler exit below; asyncio.run would join that worker (with no bound on 3.11).
+        with asyncio.Runner(loop_factory=new_exit_bounded_loop) as runner:
+            app.run(loop=runner.get_loop())
+        # None means the app never reached its exit.
+        status = app.return_code or 0
     except KeyboardInterrupt:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
+    except SystemExit as stop:
+        # A SIGTERM ends the run with 128 + signum; the codes map as Python maps them.
+        code = stop.code
+        status = 0 if code is None else code if isinstance(code, int) else 1
+        raise
     finally:
-        # None means the app never reached its exit, as after a Ctrl-C signal.
-        status = app.return_code or 0
         # Tasks stop through their own cancel while the executors and services live.
         app.task_bar.stop_all()
         _restore_native_stderr(stderr_redirect)

@@ -28,6 +28,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -950,6 +951,26 @@ def _exit_if_stragglers(status: int, deadline: float) -> None:
             thread.join(max(0.0, deadline - time.monotonic()))
         if _straggler_threads():
             _exit_now(status, _STRAGGLER_NOTE)
+
+
+class _UnjoinedExecutor(ThreadPoolExecutor):
+    """A thread pool whose shutdown never waits for its workers.
+
+    asyncio's runner joins the loop's default executor at close with no bound
+    on Python 3.11, so one stuck worker held the exit forever. Its threads stay
+    non-daemon, so the straggler exit joins them within its budget instead.
+    """
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        del wait
+        super().shutdown(wait=False, cancel_futures=cancel_futures)
+
+
+def new_exit_bounded_loop() -> asyncio.AbstractEventLoop:
+    """A new event loop whose close leaves a stuck executor worker to the straggler exit."""
+    loop = asyncio.new_event_loop()
+    loop.set_default_executor(_UnjoinedExecutor())
+    return loop
 
 
 def exit_if_opens_remain(status: int) -> None:
