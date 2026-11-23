@@ -30,6 +30,7 @@ from tests.conformance.fake_adapter import BundledFakeAdapter
 from tests.conformance.fake_engine import FakeEngine
 
 MLX_REF = "org/repo#mlx"
+MLX_EMBED_REF = "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx"
 GGUF_CHAT = "org/repo/chat.gguf"
 GGUF_EMBED = "org/repo/embed.gguf"
 _GIB = 1 << 30
@@ -140,7 +141,7 @@ def real(
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(cfg, "chat_model", MLX_REF if broken is WorkerRole.CHAT else GGUF_CHAT)
     monkeypatch.setattr(
-        cfg, "embedding_model", MLX_REF if broken is WorkerRole.EMBED else GGUF_EMBED
+        cfg, "embedding_model", MLX_EMBED_REF if broken is WorkerRole.EMBED else GGUF_EMBED
     )
     monkeypatch.setattr(fleet_provider, "SwapManager", _StubSwap)
     _StubSwap.started = []

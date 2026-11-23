@@ -33,6 +33,8 @@ from lilbee.providers.roles import WorkerRole
 from tests.conformance.fake_adapter import BundledFakeAdapter
 
 MLX_REF = "org/repo#mlx"
+MLX_EMBED_REF = "mlx-community/Qwen3-Embedding-0.6B-8bit#mlx"
+MLX_RERANK_REF = "mlx-community/Qwen3-Reranker-0.6B-4bit#mlx"
 GGUF_REF = "org/repo/file.gguf"
 _FIELD = {
     WorkerRole.CHAT: "chat_model",
@@ -74,7 +76,8 @@ def two_engines(monkeypatch: pytest.MonkeyPatch) -> None:
 def _config(mlx_role: WorkerRole | None) -> Config:
     config = Config()
     for role, field in _FIELD.items():
-        setattr(config, field, MLX_REF if role is mlx_role else GGUF_REF)
+        mlx_ref = MLX_EMBED_REF if role is WorkerRole.EMBED else MLX_REF
+        setattr(config, field, mlx_ref if role is mlx_role else GGUF_REF)
     return config
 
 
@@ -407,7 +410,7 @@ def test_the_first_use_of_the_chat_role_raises_the_user_text(chat_without_engine
 def embed_without_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     """The same container, with chat on a loadable format and embed on one no engine loads."""
     monkeypatch.setattr(cfg, "chat_model", GGUF_REF)
-    monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
+    monkeypatch.setattr(cfg, "embedding_model", MLX_EMBED_REF)
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
     return chat_without_engine
 
@@ -562,9 +565,9 @@ def no_role_has_an_engine(chat_without_engine: Any, monkeypatch: pytest.MonkeyPa
     """The same container, with every configured role on a format no installed engine loads."""
     from lilbee.core.config import cfg
 
-    monkeypatch.setattr(cfg, "embedding_model", MLX_REF)
+    monkeypatch.setattr(cfg, "embedding_model", MLX_EMBED_REF)
     monkeypatch.setattr(cfg, "vision_model", MLX_REF)
-    monkeypatch.setattr(cfg, "reranker_model", MLX_REF)
+    monkeypatch.setattr(cfg, "reranker_model", MLX_RERANK_REF)
     monkeypatch.setattr(cfg, "placement", _SAVED_SPEC)
     monkeypatch.setattr(services_mod._state, "singleton", chat_without_engine)
     return chat_without_engine
