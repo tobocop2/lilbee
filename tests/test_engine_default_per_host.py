@@ -1,5 +1,7 @@
 """The engine that auto picks on each hardware class of the host fixtures, every engine installed.
 
+The table covers each of the four roles. The opt-in test also runs with no role.
+
 The hosts come from tests/fixtures/host_caps: a probe file is a reading of a real machine, an accel
 file is written from the PCI id tables. Every shipped adapter counts as installed, so the rule has
 every engine to pick from and only its own order and the host gates decide.
@@ -9,7 +11,9 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,7 +26,8 @@ from lilbee.providers.fleet.engines.choice import (
     host_answer,
     serving_engines,
 )
-from lilbee.providers.fleet.engines.proof import is_proven
+from lilbee.providers.fleet.engines import proof
+from lilbee.providers.fleet.engines.proof import coverage
 from lilbee.providers.fleet.host_caps import HostCaps, collect
 from lilbee.providers.roles import WorkerRole
 
@@ -55,25 +60,23 @@ def _documented(name: str) -> HostCaps:
     )
 
 
+def _load(fixture: Path) -> HostCaps:
+    name = fixture.name.split(".")[0]
+    return _recorded(name) if fixture.name.endswith(".probe.json") else _documented(name)
+
+
+# One host for each fixture file, so a new fixture is a new host and needs a row in DEFAULTS.
 HOSTS: dict[str, HostCaps] = {
-    "mac-m1pro": _recorded("mac-m1pro"),
-    "home-xeon-1070ti": _recorded("home-xeon-1070ti"),
-    "gcp-epyc-nogpu": _recorded("gcp-epyc-nogpu"),
-    "mac-arm64": _documented("mac-arm64"),
-    "windows-amd64": _documented("windows-amd64"),
-    "no-accel-linux": _documented("no-accel-linux"),
-    "intel-core-ultra-linux": _documented("intel-core-ultra-linux"),
-    "amd-xdna2-linux": _documented("amd-xdna2-linux"),
-    "amd-generation-unread-linux": _documented("amd-generation-unread-linux"),
-    "qualcomm-datacentre-linux": _documented("qualcomm-datacentre-linux"),
+    p.name.split(".")[0]: _load(p) for p in sorted(FIXTURES.glob("*.json"))
 }
 
 EVERY_ENGINE = {name: adapter.formats for name, adapter in ADAPTERS.items()}
 
-# An engine the user must choose: it is not in the package and has a device with no record.
-OPT_IN = frozenset(
-    name for name, adapter in ADAPTERS.items() if not adapter.bundled and not is_proven(name)
-)
+# The product rule: auto picks llama.cpp, and mlx on Apple Silicon. Every other engine is opt-in.
+# The set is written here, not read from the coverage table or from the code under test.
+AUTO_PICKS = frozenset({EngineName.LLAMA, EngineName.MLX})
+OPT_IN = frozenset(EngineName) - AUTO_PICKS
+MLX_HOSTS = frozenset({"mac-m1pro"})
 
 ROLES: tuple[WorkerRole | None, ...] = (*WorkerRole, None)
 
@@ -102,6 +105,7 @@ def _defaults(host: HostCaps) -> dict[str, dict[str, str]]:
 def test_the_opt_in_engines_include_ik_llama() -> None:
     assert EngineName.IK_LLAMA in OPT_IN
     assert EngineName.LLAMA not in OPT_IN
+    assert EngineName.MLX not in OPT_IN
 
 
 def test_an_opt_in_engine_can_serve_on_some_hardware_class() -> None:
@@ -117,60 +121,64 @@ def test_an_opt_in_engine_can_serve_on_some_hardware_class() -> None:
 
 
 @pytest.mark.parametrize("host_name", sorted(HOSTS))
-def test_auto_never_picks_an_opt_in_engine_on_any_hardware_class(host_name: str) -> None:
+def test_auto_picks_only_llama_and_mlx_on_any_hardware_class(host_name: str) -> None:
     host = HOSTS[host_name]
     for role, fmt in itertools.product(ROLES, ModelFormat):
-        assert _auto(host, role, fmt) not in OPT_IN, (role, fmt)
+        pick = _auto(host, role, fmt)
+        assert pick is None or pick in AUTO_PICKS, (role, fmt, pick)
+        if pick is EngineName.MLX:
+            assert host_name in MLX_HOSTS, (role, fmt)
+
+
+def _without_a_record_for_mlx() -> tuple[Mapping[str, Any], ...]:
+    """The coverage table with the one Apple GPU row of mlx turned into a device with no run."""
+    return tuple(
+        {**row, "status": "deferred"} if row["engine"] == EngineName.MLX else row
+        for row in coverage()
+    )
+
+
+def test_auto_leaves_out_an_engine_that_has_no_record_on_a_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mlx is the one engine besides llama.cpp in the order; with no record it is left out."""
+    host = HOSTS["mac-m1pro"]
+    assert _auto(host, WorkerRole.CHAT, ModelFormat.MLX) is EngineName.MLX
+    monkeypatch.setattr(proof, "coverage", _without_a_record_for_mlx)
+    assert _auto(host, WorkerRole.CHAT, ModelFormat.MLX) is None
+    assert _auto(host, WorkerRole.CHAT, ModelFormat.GGUF) is EngineName.LLAMA
 
 
 LLAMA_FOR_EVERY_ROLE = {role.value: {"gguf": "llama.cpp"} for role in WorkerRole}
 
 
-def test_the_default_on_the_mac_puts_mlx_models_on_mlx() -> None:
-    assert _defaults(HOSTS["mac-m1pro"]) == {
+# The default for each role, by format, on each fixture file. Mac M1 Pro reads macOS, so mlx models
+# go to mlx; mac-arm64 has no macOS version read, so it skips mlx. Every other class gets llama.cpp.
+DEFAULTS: dict[str, dict[str, dict[str, str]]] = {
+    "mac-m1pro": {
         "embed": {"gguf": "llama.cpp", "mlx": "mlx"},
         "rerank": {"gguf": "llama.cpp", "mlx": "mlx"},
         "chat": {"gguf": "llama.cpp", "mlx": "mlx"},
         "vision": {"gguf": "llama.cpp"},
-    }
+    },
+    "home-xeon-1070ti": LLAMA_FOR_EVERY_ROLE,
+    "gcp-epyc-nogpu": LLAMA_FOR_EVERY_ROLE,
+    "mac-arm64": LLAMA_FOR_EVERY_ROLE,
+    "windows-amd64": LLAMA_FOR_EVERY_ROLE,
+    "no-accel-linux": LLAMA_FOR_EVERY_ROLE,
+    "intel-core-ultra-linux": LLAMA_FOR_EVERY_ROLE,
+    "amd-xdna2-linux": LLAMA_FOR_EVERY_ROLE,
+    "amd-generation-unread-linux": LLAMA_FOR_EVERY_ROLE,
+    "qualcomm-datacentre-linux": LLAMA_FOR_EVERY_ROLE,
+}
 
 
-def test_the_default_on_the_desktop_with_a_gtx_1070_ti_is_llama() -> None:
-    assert _defaults(HOSTS["home-xeon-1070ti"]) == LLAMA_FOR_EVERY_ROLE
+@pytest.mark.parametrize("fixture", sorted(p.name.split(".")[0] for p in FIXTURES.glob("*.json")))
+def test_the_default_on_each_hardware_class(fixture: str) -> None:
+    """A fixture with no row in DEFAULTS fails here; it does not pass by being left out."""
+    assert fixture in DEFAULTS, f"no expected default for the fixture {fixture}"
+    assert _defaults(HOSTS[fixture]) == DEFAULTS[fixture]
 
 
-def test_the_default_on_a_cloud_cpu_with_no_gpu_is_llama() -> None:
-    assert _defaults(HOSTS["gcp-epyc-nogpu"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_a_mac_with_an_unread_macos_version_skips_mlx() -> None:
-    assert _defaults(HOSTS["mac-arm64"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_windows_is_llama() -> None:
-    assert _defaults(HOSTS["windows-amd64"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_linux_with_no_accelerator_is_llama() -> None:
-    assert _defaults(HOSTS["no-accel-linux"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_an_intel_npu_host_is_llama() -> None:
-    assert _defaults(HOSTS["intel-core-ultra-linux"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_an_amd_xdna2_npu_host_is_llama() -> None:
-    assert _defaults(HOSTS["amd-xdna2-linux"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_an_amd_npu_of_an_unread_generation_is_llama() -> None:
-    assert _defaults(HOSTS["amd-generation-unread-linux"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_the_default_on_a_qualcomm_datacentre_card_is_llama() -> None:
-    assert _defaults(HOSTS["qualcomm-datacentre-linux"]) == LLAMA_FOR_EVERY_ROLE
-
-
-def test_every_hardware_class_has_a_default_test() -> None:
-    names = {p.name.split(".")[0] for p in FIXTURES.glob("*.json")}
-    assert names == set(HOSTS)
+def test_every_row_of_the_defaults_table_is_a_fixture() -> None:
+    assert set(DEFAULTS) == set(HOSTS)
