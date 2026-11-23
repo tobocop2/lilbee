@@ -279,12 +279,13 @@ def test_the_force_quit_kills_the_ingest_workers_then_ends_the_process(monkeypat
     worker = MagicMock()
     worker.kill.side_effect = lambda: steps.append("kill")
     monkeypatch.setattr(services_mod.multiprocessing, "active_children", lambda: [worker, worker])
-    monkeypatch.setattr(services_mod, "_exit_now", lambda *args: steps.append(args))
+    monkeypatch.setattr(services_mod, "_write_exit_note", steps.append)
+    monkeypatch.setattr(services_mod.os, "_exit", steps.append)
 
     services_mod.force_quit()
 
-    exit_call = (services_mod._FORCE_QUIT_EXIT_CODE, services_mod._FORCE_QUIT_NOTE)
-    assert steps == ["kill", "kill", exit_call]
+    exit_code = services_mod._FORCE_QUIT_EXIT_CODE
+    assert steps == ["kill", "kill", services_mod._FORCE_QUIT_NOTE, exit_code]
 
 
 def test_the_ctrl_c_force_quit_from_a_handler_kills_the_workers_first(monkeypatch):
@@ -1063,6 +1064,117 @@ def test_a_first_terminate_waits_for_a_worker_that_finishes(tmp_path):
     assert services_mod._FORCE_QUIT_NOTE not in stderr
 
 
+_EXIT_WITH_A_WORKER_CHILD = """
+import multiprocessing
+import time
+from unittest.mock import MagicMock
+
+from lilbee.app.services import (
+    exit_when_stragglers_would_hang,
+    install_engine_lifecycle_hooks,
+    reset_services_on_exit,
+    set_services,
+)
+
+if __name__ == "__main__":
+    install_engine_lifecycle_hooks()
+    # Started as the catalog download starts its child: spawn, daemonic.
+    worker = multiprocessing.get_context("spawn").Process(
+        target=time.sleep, args=(120.0,), daemon=True
+    )
+    worker.start()
+    container = MagicMock()
+    container.provider.shutdown.side_effect = lambda: time.sleep(120.0)
+    set_services(container)
+    print(worker.pid, flush=True)
+    # The TUI's exit, in its order: the engine stop hangs, so the exit waits.
+    reset_services_on_exit()
+    exit_when_stragglers_would_hang(0)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows sends no Ctrl-C to a child process")
+def test_a_ctrl_c_in_the_exit_wait_leaves_no_worker_process_running(tmp_path):
+    """The force quit kills the workers; a daemonic child outlives a bare os._exit on every OS."""
+    import psutil
+
+    script = tmp_path / "exit_with_a_worker.py"
+    script.write_text(_EXIT_WITH_A_WORKER_CHILD, encoding="utf-8")
+    child = subprocess.Popen(
+        [sys.executable, str(script)],
+        env=clean_env(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+    )
+    assert child.stdout is not None and child.stderr is not None
+    worker = psutil.Process(int(child.stdout.readline()))
+    try:
+        for line in child.stderr:
+            if line == services_mod._STOPPING_NOTE:
+                break
+        child.send_signal(signal.SIGINT)
+        status, stderr = _wait_or_kill(child, timeout=10.0)
+        _, alive = psutil.wait_procs([worker], timeout=5.0)
+    finally:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            worker.kill()
+
+    assert status == services_mod._FORCE_QUIT_EXIT_CODE, stderr
+    assert alive == []
+
+
+def _record_worker_kills(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record each worker kill and each exit, in order."""
+    events: list[object] = []
+    worker = MagicMock()
+    worker.kill.side_effect = lambda: events.append("kill")
+    monkeypatch.setattr(services_mod.multiprocessing, "active_children", lambda: [worker])
+    monkeypatch.setattr(services_mod.os, "_exit", events.append)
+    return events
+
+
+def test_a_ctrl_c_in_the_exit_wait_kills_the_workers_before_the_exit(monkeypatch):
+    events = _record_worker_kills(monkeypatch)
+
+    def _interrupted(timeout: float | None) -> bool:
+        raise KeyboardInterrupt
+
+    _without_a_stop_thread(monkeypatch)
+    services_mod._lifecycle.stop_requested = True
+    monkeypatch.setattr(services_mod._lifecycle, "wait_stopped", _interrupted)
+
+    services_mod.wait_for_hard_exit_teardown()
+
+    assert events == ["kill", services_mod._FORCE_QUIT_EXIT_CODE]
+
+
+def test_the_exit_while_an_open_runs_kills_the_workers_before_the_exit(monkeypatch):
+    events = _record_worker_kills(monkeypatch)
+    monkeypatch.setattr(services_mod, "wait_for_opens", lambda timeout: False)
+
+    services_mod.exit_if_opens_remain(143)
+
+    assert events == ["kill", 143]
+
+
+def test_a_cut_engine_stop_kills_the_workers_before_the_exit(monkeypatch):
+    provider = _install_stub_services()
+    release = threading.Event()
+    provider.shutdown.side_effect = lambda: release.wait(timeout=5)
+    events = _record_worker_kills(monkeypatch)
+    monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.2)
+    monkeypatch.setattr(services_mod, "_all_threads", lambda: [threading.main_thread()])
+    install_engine_lifecycle_hooks()
+
+    try:
+        services_mod.exit_after_signal(143)
+    finally:
+        release.set()
+
+    assert events == ["kill", 143]
+
+
 def test_a_forked_child_drops_the_parent_stop_thread():
     """A fork copies no thread; the child must start its own stop thread."""
     lifecycle = services_mod._EngineLifecycle()
@@ -1196,6 +1308,26 @@ class TestStragglerExit:
         del threads[1:]
 
         assert exits == [1]
+
+    @pytest.mark.parametrize("join_raises", [False, True], ids=["wedged", "ctrl-c"])
+    def test_a_forced_straggler_exit_kills_the_workers_first(
+        self, monkeypatch, join_raises
+    ) -> None:
+        events = _record_worker_kills(monkeypatch)
+        monkeypatch.setattr(services_mod, "_STRAGGLER_BUDGET_S", 0.0)
+
+        class _Straggler(_Wedged):
+            def join(self, timeout: float | None = None) -> None:
+                if join_raises:
+                    raise KeyboardInterrupt
+
+        threads = self._fake_enumerate(monkeypatch, [_Straggler()])
+
+        services_mod.exit_when_stragglers_would_hang(1)
+        del threads[1:]
+
+        status = services_mod._FORCE_QUIT_EXIT_CODE if join_raises else 1
+        assert events == ["kill", status]
 
     def test_a_clean_shutdown_exits_normally(self, monkeypatch, capsys) -> None:
         exits: list[int] = []

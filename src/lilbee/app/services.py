@@ -818,7 +818,11 @@ def _flush_logs() -> None:
 
 
 def _exit_now(status: int, note: str) -> None:
-    """Write *note*, flush the logs, then end the process with *status*, skipping atexit."""
+    """Kill the worker processes, write *note*, flush the logs, then end with *status*.
+
+    It skips atexit, so it also skips multiprocessing's end of the daemonic workers.
+    """
+    _kill_worker_processes()
     _write_exit_note(note)
     _flush_logs()
     os._exit(status)
@@ -850,7 +854,6 @@ def force_quit_from_handler() -> None:
 
 def force_quit() -> None:
     """End the process with the Ctrl-C status; a normal exit joins a stuck worker thread."""
-    _kill_worker_processes()
     _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
 
 
@@ -860,7 +863,7 @@ def _interrupt_force_quits() -> Iterator[None]:
     try:
         yield
     except KeyboardInterrupt:
-        _exit_now(_FORCE_QUIT_EXIT_CODE, _FORCE_QUIT_NOTE)
+        force_quit()
 
 
 def _all_threads() -> list[threading.Thread]:
