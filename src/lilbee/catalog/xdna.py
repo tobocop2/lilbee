@@ -15,7 +15,9 @@ _TICKET_DIR = "xdna"
 _TICKET_SUFFIX = ".json"
 _TICKET_KEY = "checkpoint"
 _TICKET_TASK_KEY = "task"
+_TICKET_FOOTPRINT_KEY = "footprint_bytes"
 _TICKET_TAG_SEPARATOR = "@"
+_BYTES_PER_GIB = 1024**3
 
 
 def ticket_path(models_dir: Path, tag: str) -> Path:
@@ -29,12 +31,31 @@ def ticket_paths(models_dir: Path) -> list[Path]:
     return sorted((models_dir / _TICKET_DIR).glob(f"*{_TICKET_SUFFIX}"))
 
 
-def write_ticket(models_dir: Path, tag: str, task: ModelTask) -> Path:
-    """Record *tag* as installed for *task*. The ticket holds no weights."""
+def write_ticket(models_dir: Path, tag: str, task: ModelTask, footprint_gb: float = 0.0) -> Path:
+    """Record *tag* as installed for *task*. The ticket holds no weights.
+
+    *footprint_gb* is the memory the publisher states for the model. The ticket records it
+    in bytes, and records none when the publisher states none.
+    """
     path = ticket_path(models_dir, tag)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({_TICKET_KEY: tag, _TICKET_TASK_KEY: str(task)}), encoding="utf-8")
+    fields: dict[str, object] = {_TICKET_KEY: tag, _TICKET_TASK_KEY: str(task)}
+    if footprint_gb > 0:
+        fields[_TICKET_FOOTPRINT_KEY] = round(footprint_gb * _BYTES_PER_GIB)
+    path.write_text(json.dumps(fields), encoding="utf-8")
     return path
+
+
+def read_footprint(ticket: Path) -> int | None:
+    """The memory in bytes that a ticket records for its model; ``None`` when it records none.
+
+    A ticket from a release that recorded no footprint, and an unreadable ticket, give ``None``.
+    """
+    footprint = _read_field(ticket, _TICKET_FOOTPRINT_KEY)
+    # isinstance: the value is untyped JSON from a file
+    if isinstance(footprint, int) and not isinstance(footprint, bool) and footprint > 0:
+        return footprint
+    return None
 
 
 def _read_field(ticket: Path, key: str) -> object:
