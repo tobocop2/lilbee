@@ -674,8 +674,9 @@ recorded run of OpenVINO Model Server on any device.
 
 mlx (mlx-lm) needs Apple Silicon and macOS 14 or newer. It serves chat, embed and rerank.
 Chat runs on mlx-lm's server. Embed and rerank run on lilbee's own server in the same pack,
-for Qwen3-Embedding and Qwen3-Reranker models. lilbee loads `#mlx` models with it and does
-not offer it on an older macOS. No pack of mlx is published yet.
+for Qwen3-Embedding and Qwen3-Reranker models only. lilbee refuses any other `#mlx` model for
+the embedding or the reranker role, and names the supported family. lilbee loads `#mlx` models
+with it and does not offer it on an older macOS. No pack of mlx is published yet.
 
 **Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 

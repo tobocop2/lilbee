@@ -564,8 +564,16 @@ def _wait_for_health(port: int) -> None:
             time.sleep(0.1)
 
 
-def _server_args(port: int) -> list[str]:
-    return ["--model", "m", "--port", str(port), "--task", "embed", "--max-length", "8"]
+def _server_args(port: int, model: str = "m") -> list[str]:
+    return ["--model", model, "--port", str(port), "--task", "embed", "--max-length", "8"]
+
+
+def _model_folder(root: Path, model_type: str | None = "qwen3") -> Path:
+    """A model folder whose config.json names *model_type*; none when it is None."""
+    root.mkdir(exist_ok=True)
+    if model_type is not None:
+        (root / "config.json").write_text(json.dumps({"model_type": model_type}), encoding="utf-8")
+    return root
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
@@ -586,10 +594,11 @@ def test_one_sigterm_stops_the_server(tmp_path: Path) -> None:
             proc.wait()
 
 
-def test_the_port_opens_only_after_the_model_loads() -> None:
+def test_the_port_opens_only_after_the_model_loads(tmp_path: Path) -> None:
     port = _free_port()
+    folder = _model_folder(tmp_path / "model")
     proc = subprocess.Popen(
-        [sys.executable, "-c", _LOAD_RUNNER, str(SERVER), *_server_args(port)],
+        [sys.executable, "-c", _LOAD_RUNNER, str(SERVER), *_server_args(port, str(folder))],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         encoding="utf-8",
@@ -610,3 +619,54 @@ def test_the_port_opens_only_after_the_model_loads() -> None:
 
 def test_the_server_binds_to_the_loopback_address_unless_told_otherwise() -> None:
     assert srv.parse_args(_server_args(5800)).host == "127.0.0.1"
+
+
+@pytest.mark.parametrize("task", [srv.TASK_EMBED, srv.TASK_RERANK])
+def test_a_qwen3_model_folder_passes_the_start_check(tmp_path: Path, task: str) -> None:
+    srv.check_model(str(_model_folder(tmp_path / "m")), task)
+
+
+@pytest.mark.parametrize(
+    ("task", "family"),
+    [(srv.TASK_EMBED, "Qwen3-Embedding"), (srv.TASK_RERANK, "Qwen3-Reranker")],
+)
+@pytest.mark.parametrize("model_type", ["bert", "llama", "", None])
+def test_a_model_folder_of_another_family_stops_the_server_and_names_the_family(
+    tmp_path: Path, task: str, family: str, model_type: str | None
+) -> None:
+    folder = _model_folder(tmp_path / "m", model_type)
+    with pytest.raises(SystemExit, match=family):
+        srv.check_model(str(folder), task)
+
+
+@pytest.mark.parametrize("text", [None, "not json", "[1, 2]"])
+def test_a_config_the_server_cannot_read_stops_it_with_the_family(
+    tmp_path: Path, text: str | None
+) -> None:
+    folder = tmp_path / "m"
+    folder.mkdir()
+    if text is not None:
+        (folder / "config.json").write_text(text, encoding="utf-8")
+    with pytest.raises(SystemExit, match="Qwen3-Embedding"):
+        srv.check_model(str(folder), srv.TASK_EMBED)
+
+
+def test_the_server_checks_the_model_before_it_loads_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def never(path: str) -> None:
+        raise AssertionError("the model was loaded")
+
+    monkeypatch.setattr(srv, "MlxBackend", never)
+    folder = _model_folder(tmp_path / "m", "bert")
+    with pytest.raises(SystemExit, match="Qwen3-Embedding"):
+        srv.main(_server_args(5800, str(folder)))
+
+
+def test_the_families_of_the_server_are_those_of_the_adapter() -> None:
+    from lilbee.providers.fleet.engines.mlx import SERVED_FAMILIES
+
+    assert srv.FAMILIES == {
+        srv.TASK_EMBED: SERVED_FAMILIES[WorkerRole.EMBED][0],
+        srv.TASK_RERANK: SERVED_FAMILIES[WorkerRole.RERANK][0],
+    }
