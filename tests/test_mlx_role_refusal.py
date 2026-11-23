@@ -52,6 +52,8 @@ class TestRoleRefusal:
             (WorkerRole.EMBED, RERANK_OK, EMBED_WORDS),
             (WorkerRole.RERANK, CHAT, RERANK_WORDS),
             (WorkerRole.RERANK, EMBED_OK, RERANK_WORDS),
+            (WorkerRole.EMBED, "Qwen3-Embedding-fans/bge-m3-mlx#mlx", EMBED_WORDS),
+            (WorkerRole.RERANK, "Qwen3-Reranker-fans/bge-m3-mlx#mlx", RERANK_WORDS),
         ],
     )
     def test_an_unsupported_model_is_refused_and_the_family_is_named(

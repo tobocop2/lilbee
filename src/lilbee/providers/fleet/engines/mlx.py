@@ -147,7 +147,7 @@ def role_refusal(role: WorkerRole, ref: str) -> str | None:
         return None
     family, example = served
     repo = parse_model_ref(ref).hf_repo
-    if family.lower() in repo.lower():
+    if family.lower() in repo.rsplit("/", 1)[-1].lower():
         return None
     return (
         f"The mlx engine runs the {role.value} role only for {family} models, and {repo} is "
