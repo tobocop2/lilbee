@@ -608,6 +608,8 @@ class LlamaServerClient:
             base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
         )
         self._timeout = timeout
+        # Set by close: an abortable chat ends once its client closes.
+        self._closing = threading.Event()
         self._async_transport = async_transport
         self._owns_http = http is None
         # Chat-role clients re-inline server-extracted reasoning as <think> text;
@@ -908,7 +910,7 @@ class LlamaServerClient:
         closes the connection whether or not response headers have arrived, and
         llama-server stops generating for a closed stream. A passed *deadline_s*
         (total seconds, ``None`` for no limit) raises :class:`ChatDeadlineError`;
-        a set *cancel* raises ``TaskCancelledError``.
+        a set *cancel*, or a close of this client, raises ``TaskCancelledError``.
         """
         payload = {
             "model": self._model,
@@ -932,7 +934,7 @@ class LlamaServerClient:
             try:
                 async with asyncio.timeout(deadline_s):
                     while not chat.done():
-                        if cancel is not None and cancel.is_set():
+                        if self._closing.is_set() or (cancel is not None and cancel.is_set()):
                             raise TaskCancelledError
                         await asyncio.wait({chat}, timeout=_CANCEL_POLL_S)
             except TimeoutError:
@@ -1909,7 +1911,8 @@ class LlamaServerClient:
                 resp.close()
 
     def close(self) -> None:
-        """Close the underlying client if this instance created it."""
+        """End any abortable chat, and close the underlying client if this instance created it."""
+        self._closing.set()
         if self._owns_http:
             self._http.close()
 
