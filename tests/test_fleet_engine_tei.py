@@ -776,6 +776,13 @@ def _words(count: int) -> str:
     return " ".join(["w"] * count)
 
 
+def _past_limit(client: LlamaServerClient, texts: list[str]) -> int:
+    """How many of *texts* the check after the embed tallies past the router's limit."""
+    limit, path = client._input_limit(), client._profile.input_count_path
+    assert limit is not None and path is not None
+    return sum(client._counts_past_limit(texts, limit, path))
+
+
 def test_embed_inputs_past_the_router_limit_give_one_warning_for_the_call(caplog) -> None:
     router = _Embedder()
     client = _tei_client(router, WorkerRole.EMBED)
@@ -1487,8 +1494,8 @@ def test_embeds_of_different_texts_each_count_their_own(monkeypatch, hung_side_r
     long, short = [_words(30)], [_words(3)]
     cuts = _run_together(
         [
-            lambda: client._count_inputs_past_limit(long, _ROUTER_LIMIT, "/tokenize"),
-            lambda: client._count_inputs_past_limit(short, _ROUTER_LIMIT, "/tokenize"),
+            lambda: _past_limit(client, long),
+            lambda: _past_limit(client, short),
         ]
     )
     assert cuts == [1, 0]
@@ -1643,123 +1650,6 @@ def test_threads_with_other_texts_than_a_waited_probe_each_get_their_own_count(
 
 
 _WIDE_CAP = 10
-# Eight tokens, the router's limit, in forty characters: an estimate of fourteen, past the cap.
-_WIDE_WITHIN_LIMIT = "word " * 8
-
-
-def _cut_by_the_estimate(caplog) -> int:
-    return sum("Truncating oversize embed input" in r.getMessage() for r in caplog.records)
-
-
-def test_a_hung_count_route_never_holds_an_embed_of_wide_inputs_back(
-    hung_side_route, caplog
-) -> None:
-    serve, paths = hung_side_route
-    client = serve("/tokenize", token_cap=_WIDE_CAP)
-    with caplog.at_level("WARNING"):
-        first, second = _timed_embed(client), _timed_embed(client)
-    assert first < _CHECK_BOUND_S, f"first embed took {first:.2f} s with /tokenize hung"
-    assert second < _CHECK_BOUND_S, f"second embed took {second:.2f} s with /tokenize hung"
-    assert sum(path.endswith("/tokenize") for path in paths) == 1
-    assert sum(path.endswith("/embeddings") for path in paths) == 2
-    assert _cut_by_the_estimate(caplog) == 2
-
-
-@pytest.mark.parametrize("hung", ["/info", "/tokenize"])
-def test_four_first_embeds_of_wide_inputs_make_one_request_to_a_hung_route(
-    hung, hung_side_route
-) -> None:
-    serve, paths = hung_side_route
-    client = serve(hung, token_cap=_WIDE_CAP)
-    seconds = _run_together([lambda: _timed_embed(client)] * 4)
-    assert max(seconds) < _CHECK_BOUND_S, f"slowest embed took {max(seconds):.2f} s"
-    assert sum(path.endswith(hung) for path in paths) == 1
-    assert sum(path.endswith("/embeddings") for path in paths) == 4
-
-
-def test_four_first_embeds_of_different_wide_inputs_make_one_request_to_a_hung_count_route(
-    hung_side_route, caplog
-) -> None:
-    serve, paths = hung_side_route
-    client = serve("/tokenize", token_cap=_WIDE_CAP)
-    calls = [lambda i=i: client.embed([_words(30 + i)]) for i in range(4)]
-    started = time.monotonic()
-    with caplog.at_level("DEBUG"):
-        _run_together(calls)
-    total = time.monotonic() - started
-    assert sum(path.endswith("/tokenize") for path in paths) == 1
-    assert sum(path.endswith("/embeddings") for path in paths) == 4
-    assert total < _CHECK_BOUND_S, f"four embeds took {total:.2f} s in all with /tokenize hung"
-    assert _cut_by_the_estimate(caplog) == 4
-    assert sum("check skipped" in r.getMessage() for r in caplog.records) == 1
-
-
-def test_a_thread_that_asks_as_a_failed_wide_count_ends_sends_no_second_request(
-    monkeypatch, hung_side_route
-) -> None:
-    """The wide count pauses the check before its slot clears, as the check's own counts do."""
-    serve, paths = hung_side_route
-    client = serve("/tokenize", token_cap=_WIDE_CAP)
-    pause = client._pause_truncation_check
-    late: list[threading.Thread] = []
-    embedded: list[int] = []
-
-    def pause_after_a_late_ask(exc: Exception, route: str | None) -> None:
-        thread = threading.Thread(target=lambda: embedded.append(len(client.embed([_words(31)]))))
-        late.append(thread)
-        thread.start()
-        thread.join(0.5)
-        pause(exc, route)
-
-    monkeypatch.setattr(client, "_pause_truncation_check", pause_after_a_late_ask)
-    assert len(client.embed([_words(30)])) == 1
-    late[0].join()
-    assert embedded == [1]
-    assert sum(path.endswith("/tokenize") for path in paths) == 1
-
-
-def test_embeds_that_wait_on_one_wide_count_use_its_answer(
-    monkeypatch, hung_side_route, caplog
-) -> None:
-    serve, paths = hung_side_route
-    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
-    noted: list[int] = []
-    monkeypatch.setattr(fleet_client, "note_truncated", lambda cut, *_rest: noted.append(cut))
-    client = serve("/tokenize", hang_s=0.4, token_cap=_WIDE_CAP)
-    with caplog.at_level("DEBUG"):
-        _run_together([lambda: client.embed([_WIDE_WITHIN_LIMIT])] * 4)
-    assert sum(path.endswith("/tokenize") for path in paths) == 1
-    assert _cut_by_the_estimate(caplog) == 0
-    assert not [r for r in caplog.records if "check skipped" in r.getMessage()]
-    assert noted == [0, 0, 0, 0]
-
-
-def test_embeds_of_different_wide_inputs_each_use_their_own_count(
-    monkeypatch, hung_side_route, caplog
-) -> None:
-    serve, paths = hung_side_route
-    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
-    client = serve("/tokenize", hang_s=0.4, token_cap=_WIDE_CAP)
-    with caplog.at_level("WARNING"):
-        _run_together([lambda t=t: client.embed([t]) for t in (_WIDE_WITHIN_LIMIT, _words(30))])
-    # One wide count for each text, and one for the text that the estimate cut.
-    assert sum(path.endswith("/tokenize") for path in paths) == 3
-    assert _cut_by_the_estimate(caplog) == 1
-
-
-def test_a_wide_count_that_answers_ends_the_probe_for_the_counts_after_it(
-    monkeypatch, hung_side_route
-) -> None:
-    serve, paths = hung_side_route
-    monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
-    client = serve("/tokenize", hang_s=0.4, token_cap=_WIDE_CAP)
-    client.embed([_WIDE_WITHIN_LIMIT])
-    paths.clear()
-    started = time.monotonic()
-    _run_together([lambda i=i: client.embed([_words(9 + i)]) for i in range(2)])
-    total = time.monotonic() - started
-    assert sum(path.endswith("/tokenize") for path in paths) == 2
-    assert total < 0.7, f"two embeds took {total:.2f} s in all; each count waits 0.4 s"
 
 
 class _FailingCounts(_Embedder):
@@ -1821,21 +1711,6 @@ def _wide_within_limit(word: str) -> str:
 _FOUR_WIDE_TEXTS = [_wide_within_limit(word) for word in ("east", "west", "nord", "sued")]
 
 
-@pytest.mark.parametrize("status", [400, 413, 422, 429])
-def test_a_refused_first_count_cuts_the_inputs_of_its_own_call_only(status) -> None:
-    router = _FailingCounts(status, lambda order, _inputs: order == 1)
-    client = router.client()
-    _run_together([lambda text=text: client.embed([text]) for text in _FOUR_WIDE_TEXTS])
-    [refused] = router.counted[0]
-    assert sorted(text for text in router.embedded if text in _FOUR_WIDE_TEXTS) == sorted(
-        text for text in _FOUR_WIDE_TEXTS if text != refused
-    )
-    assert len(router.counted) == 4
-    router.counted.clear()
-    client.embed([_wide_within_limit("late")])
-    assert router.counted == []  # the refused call paused the check
-
-
 @pytest.mark.parametrize(
     "failure",
     [401, 403, 404, 409, 424, 500, 503, httpx.ReadTimeout("hung"), httpx.ConnectError("down")],
@@ -1846,15 +1721,14 @@ def test_a_first_count_that_fails_for_the_route_takes_one_request_for_every_call
     client = router.client()
     _run_together([lambda text=text: client.embed([text]) for text in _FOUR_WIDE_TEXTS])
     assert len(router.counted) == 1
-    assert len(router.embedded) == 4
-    assert not set(router.embedded) & set(_FOUR_WIDE_TEXTS)
+    assert sorted(router.embedded) == sorted(_FOUR_WIDE_TEXTS)  # each input reaches it whole
 
 
 def test_calls_of_one_text_share_one_count_after_the_first_is_refused() -> None:
     router = _FailingCounts(429, lambda order, _inputs: order == 1)
     client = router.client()
     _run_together([lambda: client.embed([_FOUR_WIDE_TEXTS[0]])] * 4)
-    assert router.embedded.count(_FOUR_WIDE_TEXTS[0]) == 3
+    assert router.embedded == [_FOUR_WIDE_TEXTS[0]] * 4  # each input reaches the server whole
     assert len(router.counted) == 2
     assert client._count_route_answered  # the second count ends the probe for later ones
 
@@ -1866,12 +1740,7 @@ def test_threads_that_wait_for_a_probe_of_other_texts_each_get_their_own_counts(
     monkeypatch.setattr(fleet_client, "_TRUNCATION_CHECK_TIMEOUT_S", 5.0)
     client = serve("/tokenize", hang_s=0.4)
     texts = [_words(30), _words(3), _words(31), _words(4)]
-    cuts = _run_together(
-        [
-            lambda text=text: client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
-            for text in texts
-        ]
-    )
+    cuts = _run_together([lambda text=text: _past_limit(client, [text]) for text in texts])
     assert cuts == [1, 0, 1, 0]
     assert sum(path.endswith("/tokenize") for path in paths) == 4
 
@@ -1885,9 +1754,7 @@ def test_a_count_that_fails_after_the_route_has_answered_pauses_the_check(failur
     client.embed([failed])
     client.embed([paused])
     assert router.counted == [[good], [failed]]
-    assert good in router.embedded
-    assert failed not in router.embedded
-    assert len(router.embedded) == 3
+    assert router.embedded == [good, failed, paused]  # each input reaches the server whole
 
 
 def test_a_thread_whose_own_count_fails_after_the_probe_pauses_the_check() -> None:
@@ -1901,8 +1768,7 @@ def test_a_thread_whose_own_count_fails_after_the_probe_pauses_the_check() -> No
     probe.join()
     client.embed([paused])
     assert router.counted == [[good], [failed]]
-    assert good in router.embedded
-    assert len(router.embedded) == 3
+    assert sorted(router.embedded) == sorted([good, failed, paused])  # each one whole
 
 
 def test_a_failed_count_after_the_embed_still_reports_the_inputs_of_the_call(caplog) -> None:
@@ -1984,14 +1850,9 @@ def test_a_refused_count_does_not_end_the_probe_for_the_counts_after_it() -> Non
     refusal = _FailingCounts(429, lambda order, _inputs: order == 1)
     client = refusal.client()
     with pytest.raises(ProviderError):
-        client._count_inputs_past_limit([_FOUR_WIDE_TEXTS[2]], _ROUTER_LIMIT, "/tokenize")
+        _past_limit(client, [_FOUR_WIDE_TEXTS[2]])
     refusal.peak = 0
-    _run_together(
-        [
-            lambda text=text: client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
-            for text in _FOUR_WIDE_TEXTS[:2]
-        ]
-    )
+    _run_together([lambda text=text: _past_limit(client, [text]) for text in _FOUR_WIDE_TEXTS[:2]])
     assert refusal.peak == 1  # one probe, then the other count: a refusal is no answer
 
 
@@ -1999,14 +1860,9 @@ def test_a_count_of_the_wrong_length_does_not_end_the_probe_for_the_counts_after
     router = _FailingCounts(httpx.Response(200, json=[]), lambda order, _inputs: order == 1)
     client = router.client()
     with pytest.raises(ValueError, match="0 token lists for 1 inputs"):
-        client._count_inputs_past_limit([_FOUR_WIDE_TEXTS[2]], _ROUTER_LIMIT, "/tokenize")
+        _past_limit(client, [_FOUR_WIDE_TEXTS[2]])
     router.peak = 0
-    _run_together(
-        [
-            lambda text=text: client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
-            for text in _FOUR_WIDE_TEXTS[:2]
-        ]
-    )
+    _run_together([lambda text=text: _past_limit(client, [text]) for text in _FOUR_WIDE_TEXTS[:2]])
     assert router.peak == 1  # one probe, then the other count: a wrong length is no answer
 
 
@@ -2016,7 +1872,7 @@ def test_threads_that_wait_on_a_refused_probe_count_their_own_texts_at_once() ->
 
     def count(text: str) -> int | ProviderError:
         try:
-            return client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+            return _past_limit(client, [text])
         except ProviderError as exc:
             return exc
 
@@ -2026,19 +1882,19 @@ def test_threads_that_wait_on_a_refused_probe_count_their_own_texts_at_once() ->
     assert router.peak == 2  # the two waiters send together, after the refusal
 
 
-def test_an_input_that_comes_twice_past_the_limit_is_counted_twice() -> None:
+def test_an_input_that_comes_twice_past_the_limit_is_counted_once_and_tallied_twice() -> None:
     router = _Embedder()
     client = _tei_client(router, WorkerRole.EMBED)
     text = _words(30)
-    assert client._count_inputs_past_limit([text, text], _ROUTER_LIMIT, "/tokenize") == 2
-    assert router.tokenized == [[text, text]]
+    assert _past_limit(client, [text, text]) == 2
+    assert router.tokenized == [[text]]
 
 
 def test_a_count_answer_with_more_lists_than_inputs_is_a_failed_check() -> None:
     router = _BrokenSideRoute("/tokenize", httpx.Response(200, json=[[{"id": 1}] * 9, [{"id": 2}]]))
     client = _tei_client(router, WorkerRole.EMBED)
     with pytest.raises(ValueError, match="2 token lists for 1 inputs"):
-        client._count_inputs_past_limit([_words(30)], _ROUTER_LIMIT, "/tokenize")
+        _past_limit(client, [_words(30)])
     assert not client._count_route_answered
     assert time.monotonic() < client._check_resume_at  # the failed answer paused the check
 
@@ -2051,7 +1907,7 @@ def test_threads_that_wait_on_a_probe_with_a_wrong_length_answer_get_the_failure
 
     def count(text: str) -> str:
         try:
-            client._count_inputs_past_limit([text], _ROUTER_LIMIT, "/tokenize")
+            _past_limit(client, [text])
         except ValueError as exc:
             return str(exc)
         return "counted"
