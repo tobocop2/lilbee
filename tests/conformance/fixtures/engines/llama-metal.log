@@ -1,0 +1,19 @@
+engine: llama-metal
+version: 1.12032.1
+host: macOS-27.2.1-arm64-arm-64bit
+backend: metal
+reported-backend: metal
+devices: MTL0
+devices-from: engine-log
+models: chat=Qwen3-0.6B-Q8_0,embed=Qwen3-Embedding-0.6B-Q8_0,rerank=bge-reranker-v2-m3-Q8_0
+front: llama-swap v272
+gpu: Apple M3 Pro, 36 GB unified, Metal 4
+STEP llama-metal template ok=True finish=stop
+STEP llama-metal tool ok=True tool_calls=['get_weather']
+STEP llama-metal overflow ok=True kind=context_overflow
+STEP llama-metal json_object ok=True finish=stop
+STEP llama-metal json_schema ok=True finish=stop
+STEP llama-metal reasoning ok=True finish=stop
+STEP llama-metal embed ok=True dims=[1024]
+STEP llama-metal rerank ok=True best=1
+STEP llama-metal named ok=True log=['served by engine=llama-metal version=preset build=none role=chat model=llama-metal/Qwen3-0.6B-Q8_0'] status={<WorkerRole.CHAT: 'chat'>: 'llama-metal', <WorkerRole.EMBED: 'embed'>: 'llama-metal', <WorkerRole.RERANK: 'rerank'>: 'llama-metal'}
