@@ -69,12 +69,20 @@ STUB
 }
 
 @test "each run gives licensecheck its own cache and keeps the uv cache" {
+  unset UV_CACHE_DIR
   XDG_CACHE_HOME="${BATS_TEST_TMPDIR}/shared" run bash "${SCRIPT}"
   [ "$status" -eq 0 ]
   [ "$(wc -l < "${BATS_TEST_TMPDIR}/xdg")" -eq 1 ]
   [[ "$(cat "${BATS_TEST_TMPDIR}/xdg")" != "${BATS_TEST_TMPDIR}/shared" ]]
   [[ "$(cat "${BATS_TEST_TMPDIR}/xdg")" != unset ]]
   [[ "$(sort -u "${BATS_TEST_TMPDIR}/uvdir")" == "${BATS_TEST_TMPDIR}/uvcache" ]]
+}
+
+@test "a uv cache directory set by the caller stays the uv cache" {
+  UV_CACHE_DIR="${BATS_TEST_TMPDIR}/ci-uv" XDG_CACHE_HOME="${BATS_TEST_TMPDIR}/shared" run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [[ "$(sort -u "${BATS_TEST_TMPDIR}/uvdir")" == "${BATS_TEST_TMPDIR}/ci-uv" ]]
+  [[ "$(cat "${BATS_TEST_TMPDIR}/xdg")" != "${BATS_TEST_TMPDIR}/shared" ]]
 }
 
 @test "make check runs the licence check and make lint does not" {
