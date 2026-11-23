@@ -2,7 +2,7 @@
 
 An engine build is one installed copy of an engine: its name, its version and its
 backend. lilbee keeps engine builds in the engines folder, beside the models folder.
-See [the engine list](README.md) for the engines.
+See [the engine table](README.md) for the engines.
 
 ## Every surface
 
@@ -13,7 +13,7 @@ See [the engine list](README.md) for the engines.
 | Remove a build | `lilbee engine remove ENGINE VERSION BACKEND` | `/engine remove ENGINE VERSION BACKEND` | `DELETE /api/engines/{engine}/{version}/{backend}` | `engine_remove` |
 
 The body of `POST /api/engines/install` holds `engine`. The REST route and the MCP
-tool take only an engine name. They do not take a wheel.
+tool take only an engine name. They do not take a pack file.
 
 On the HTTP server, the install and the removal need the setting
 `allow_http_engines`. The MCP engine tools need the setting `mcp_engines_enabled`.
@@ -112,8 +112,8 @@ folder. Name the file `<engine>-<version>-<backend>.whl`. Then run:
 lilbee engine install <engine>
 ```
 
-To install from a wheel in another place, add `--wheel`. This works only with a
-wheel whose digest matches the pin of the engine:
+To install from a pack file in another place, add `--wheel`. This works only with a
+pack file whose digest matches the pin of the engine:
 
 ```bash
 lilbee engine install <engine> --wheel /path/to/pack.whl
@@ -173,7 +173,8 @@ Removing the engine build that the embedder runs on asks first, because the next
 start runs the canary check on the index. `engine remove` takes `--yes`, the same
 as `engine use`; see [A change to the embed engine](choose.md#a-change-to-the-embed-engine).
 The REST route reads `confirm_embed_change` from the query. The MCP tool takes
-`confirm_embed_change`.
+`confirm_embed_change`. The `/engine remove` chat command and the Engines tab in
+Settings ask the same question.
 
 ## Damaged engine folders
 
@@ -187,7 +188,7 @@ folder as it is. `engine remove` clears a damaged build that it can read, also o
 with a folder in the place of its record. A command that skips a folder in the
 cleanup of old builds shows a warning with the folder.
 
-## Manage engines in Settings
+## Install and remove engines in Settings
 
 The Engines tab in Settings sits after the Models tab. It holds the preferred
 engine, the `choose_engine_on_pick` setting and a table with one row per engine: the

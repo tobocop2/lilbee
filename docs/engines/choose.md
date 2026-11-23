@@ -33,10 +33,13 @@ The body of `PUT /api/engines/roles/{role}` holds `model`, `engine` and
 `confirm_embed_change`. A role name that is not valid answers 400.
 
 On the HTTP server, the writes need the setting `allow_http_engines`. It is off by
-default. With it off, a write answers 409. The two GET routes need no setting.
+default. With it off, a write answers 409. `GET /api/engines` and `GET /api/engines/roles` need no setting.
 
 The MCP engine tools need the setting `mcp_engines_enabled`. It is off by default.
-Turn it on, then restart the MCP server. When the MCP server runs on the HTTP server,
+An MCP server registers the engine tools when it starts, only if the setting is on. If
+the server started with the setting off, turn the setting on, then restart the server.
+If the setting goes off while the server runs, the tools refuse, and they work again at
+once when the setting is on. When the MCP server runs on the HTTP server,
 the write tools also need `allow_http_engines`.
 
 ## A change to the embed engine
@@ -97,7 +100,7 @@ Enter off. It is on by default.
 
 The Engines tab in Settings sits after the Models tab. It holds the preferred
 engine and the `choose_engine_on_pick` setting. Its table is in [Install, list and
-remove engine builds](install.md#manage-engines-in-settings).
+remove engine builds](install.md#install-and-remove-engines-in-settings).
 
 ## A running server
 

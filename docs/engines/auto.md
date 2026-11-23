@@ -2,7 +2,7 @@
 
 `auto` is the default engine setting. With `auto`, lilbee chooses the engine for each
 role (chat, embed, rerank, vision) from the format of the model and the hardware of
-the computer. See [the engine list](README.md) for the engines.
+the computer. See [the engine table](README.md) for the engines.
 
 ## The order of the choice
 
@@ -29,8 +29,9 @@ lilbee takes the first engine of that order that obeys all these rules:
 - The engine is installed.
 - The engine loads the format of the model.
 - The engine serves the role.
-- lilbee has a recorded run of the engine on each device of this computer. llama.cpp
-  needs no record.
+- lilbee has a recorded run of the engine on every device that the engine supports,
+  not only on the devices of this computer. If one device has no record, lilbee does
+  not choose the engine on any computer. llama.cpp needs no record.
 - This computer passes the check of the engine, with no part that lilbee cannot read.
   For example, if lilbee cannot read the macOS version, it does not choose `mlx`.
 
@@ -48,11 +49,22 @@ lilbee takes the first engine of that order that obeys all these rules:
 | `xdna` | none |
 
 If a format has no default engine, the role has no engine until you choose one. lilbee
-shows a notice. If an installed engine loads the format, the notice starts with
-`No engine is chosen by default for the safetensors format` and names the engines to
-choose with `lilbee engine use`. If no installed engine loads the format, the notice
-says `No installed engine loads the safetensors format`, then
-`Run lilbee engine list to see the installed engines.`
+shows one of three notices. `lilbee engine roles` starts each notice with
+`For <role>: `, for example `For chat: `.
+
+- If an installed engine loads the format, serves the role and can run on this computer,
+  the notice is, for example,
+  `No engine is chosen by default for the safetensors format of org/repo. Choose tei with lilbee engine use for this model, or with lilbee engine prefer for every model without its own choice.`
+  With no role, the notice offers only `lilbee engine prefer`.
+- If an installed engine loads the format but no installed engine serves the role, the
+  notice is, for example,
+  `No installed engine serves the safetensors format of org/repo for rerank. tei serves it. Run lilbee engine install tei.`
+  If the engine cannot be installed, the notice gives the reason in place of the install
+  command.
+- If no installed engine loads the format, the notice is, for example,
+  `No installed engine loads the safetensors format of org/repo. Run lilbee engine list to see the installed engines.`
+
+The text `of org/repo` shows only when lilbee knows the name of the model.
 
 ## The llama.cpp build for each kind of hardware
 
