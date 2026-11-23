@@ -31,6 +31,7 @@ def test_l4_with_no_row_every_shipped_engine_launches_with_the_base_argv(
 ) -> None:
     monkeypatch.setattr(proof, "HARDWARE_PROOF", {})
     recorded = json.loads(BASE.read_text(encoding="utf-8"))
+
     # The base holds the POSIX form of each path; the adapters write the host's form.
     def host_form(arg: str) -> str:
         return str(Path(arg)) if arg.startswith("/") else arg
