@@ -1061,6 +1061,22 @@ async def test_c_stops_acting_while_an_input_has_focus():
         assert app.check_action("open_chat", ()) is False
 
 
+@pytest.mark.parametrize("action", ["nav_prev", "nav_next"])
+async def test_the_view_cycle_keys_are_refused_over_a_dialog_once_chat_has_loaded(action):
+    """[ and ] are priority bindings, so over a dialog they would switch views and close it."""
+    from textual.screen import ModalScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        assert app.check_action(action, ()) is True
+        app.push_screen(ModalScreen())
+        await pilot.pause()
+        assert app.screen.is_modal
+        assert app.check_action(action, ()) is False
+
+
 async def test_c_does_nothing_on_chat_where_there_is_nowhere_to_jump():
     """Chat is where `c` has no destination, so the key must not act.
 
