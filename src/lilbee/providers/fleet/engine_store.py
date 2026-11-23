@@ -352,13 +352,34 @@ def file_digest(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def _require_pinned(lock: PinLock, digest: str) -> None:
-    if digest != lock.sha256.lower():
+def require_pinned_digest(subject: str, digest: str, pinned: str, source: Path | None) -> None:
+    """Refuse a file whose *digest* is not *pinned*; *source* is the file the user copied, or None.
+
+    A file the user copied is read again on every run, so the text tells the user to copy it
+    again. A download is made again on every run, so the text tells the user to run the
+    install again. Every install path states where its file came from through *source*.
+    """
+    if digest == pinned.lower():
+        return
+    if source is None:
         raise ChecksumError(
-            f"The file for engine {lock.engine} {lock.version} ({lock.backend}) does not "
-            f"match its pin, so lilbee did not install it. Run the install again. "
-            f"If this happens again, report it."
+            f"The file for {subject} does not match its pin, so lilbee did not install it. "
+            "Run the install again. If this happens again, report it."
         )
+    text = (
+        f"The file {source} for {subject} does not match its pin, so lilbee did not install "
+        f"it. Copy {source.name} again from the lilbee release that matches this version "
+        "and run the install again."
+    )
+    if source.parent.name == PACK_DIR:
+        text += f" Or remove it from {source.parent} to download it."
+    raise ChecksumError(text)
+
+
+def _require_pinned(lock: PinLock, digest: str, source: Path | None) -> None:
+    require_pinned_digest(
+        f"engine {lock.engine} {lock.version} ({lock.backend})", digest, lock.sha256, source
+    )
 
 
 def _check_wheel(lock: PinLock, wheel: Path) -> None:
@@ -718,15 +739,7 @@ class EngineStore:
             return found
         pack = self.pack_path(lock)
         if pack.is_file():
-            try:
-                return self.install_from_wheel(lock, pack)
-            except ChecksumError as exc:
-                raise ChecksumError(
-                    f"The pack {pack} for engine {lock.engine} {lock.version} "
-                    f"({lock.backend}) does not match its pin, so lilbee did not install it. "
-                    f"Copy {pack.name} into {pack.parent} again from its source "
-                    "and run the install again."
-                ) from exc
+            return self.install_from_wheel(lock, pack)
         with self._scratch() as scratch:
             try:
                 wheel = fetch(lock, scratch)
@@ -736,7 +749,7 @@ class EngineStore:
                     f"and cannot be downloaded. Copy {pack.name} into {pack.parent} "
                     f"and run the install again."
                 ) from exc
-            return self._install_private(lock, wheel, file_digest(wheel))
+            return self._install_private(lock, wheel, file_digest(wheel), None)
 
     @contextmanager
     def _scratch(self) -> Iterator[Path]:
@@ -760,7 +773,7 @@ class EngineStore:
         with self._scratch() as scratch:
             scratch.mkdir()
             copy = scratch / wheel.name
-            return self._install_private(lock, copy, copy_with_digest(wheel, copy))
+            return self._install_private(lock, copy, copy_with_digest(wheel, copy), wheel)
 
     def _refuse_held_replace(self, lock: PinLock) -> None:
         """Refuse to replace a damaged build while a launch uses it, as remove does."""
@@ -772,9 +785,14 @@ class EngineStore:
                 f"engine with 'lilbee engine stop' and install it again."
             )
 
-    def _install_private(self, lock: PinLock, wheel: Path, digest: str) -> Path:
-        """Install the private file *wheel* once *digest* and the wheel checks match the pin."""
-        _require_pinned(lock, digest)
+    def _install_private(
+        self, lock: PinLock, wheel: Path, digest: str, source: Path | None
+    ) -> Path:
+        """Install the private file *wheel* once *digest* and the wheel checks match the pin.
+
+        *source* is the file the user copied, or None for a download.
+        """
+        _require_pinned(lock, digest, source)
         _check_wheel(lock, wheel)
         final = self.build_dir(lock)
         with file_lock(self.root / LOCK_DIR / lock.engine, _LOCK_TIMEOUT_S):
@@ -1101,5 +1119,6 @@ __all__ = [
     "launch_uses_engine",
     "licence_permitted",
     "prune_engines",
+    "require_pinned_digest",
     "sweep_engines",
 ]
