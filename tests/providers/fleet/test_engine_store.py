@@ -536,6 +536,9 @@ _OTHER_CHECKSUM = "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43
         (f"https://static.crates.io/crates/option-ext/other-0.2.0.crate {_CHECKSUM}\n", False),
         (f"https://static.crates.io/crates/option-ext/option-ext-0.2.0.zip {_CHECKSUM}\n", False),
         (f"{_CRATE_URL.replace('https', 'http')} {_CHECKSUM}\n", False),
+        # text after the checksum
+        (f"{_CRATE_URL} {_CHECKSUM} extra\n", False),
+        (f"{_CRATE_URL} {_CHECKSUM}a\n", False),
         ("", False),
         ("\n\n", False),
     ],
@@ -569,12 +572,28 @@ _SDIST_CHECKSUM = "cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474a
         ),
         (f"see {_SDIST_URL} {_SDIST_CHECKSUM}\n", False),
         (f"{_SDIST_URL} {_SDIST_CHECKSUM}\nMozilla Public License text\n", False),
+        # text after the checksum
+        (f"{_SDIST_URL} {_SDIST_CHECKSUM} extra\n", False),
+        (f"{_SDIST_URL} {_SDIST_CHECKSUM}a\n", False),
+        # no space between the URL and the checksum
+        (f"{_SDIST_URL}{_SDIST_CHECKSUM}\n", False),
+        # another character in place of a dot of the host
+        (f"{_SDIST_URL.replace('files.pythonhosted', 'files-pythonhosted')} {_SDIST_CHECKSUM}\n", False),
+        (f"{_SDIST_URL.replace('pythonhosted.org', 'pythonhosted-org')} {_SDIST_CHECKSUM}\n", False),
     ],
 )
 def test_the_mpl_source_pointer_names_a_pypi_source_archive_and_its_checksum(
     text: str, ok: bool
 ) -> None:
     assert bool(engine_store._verified_notices([("SOURCE-MPL-2.0", text)])) is ok
+
+
+def test_a_pypi_package_name_with_a_dot_or_a_dash_is_a_listed_source() -> None:
+    digest = "ab" * 32
+    url = "https://files.pythonhosted.org/packages/source/z/zope.i-n/zope.i-n-1.2.tar.gz"
+    listed = {("zope.i-n", "1.2"): digest}
+    with mock.patch.object(engine_store, "MPL_PYPI_CHECKSUMS", listed):
+        assert bool(engine_store._verified_notices([("SOURCE-MPL-2.0", f"{url} {digest}\n")]))
 
 
 @pytest.mark.parametrize(
