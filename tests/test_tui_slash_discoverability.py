@@ -1406,8 +1406,9 @@ class TestModelCompletionsOffTheLoopAsync:
                 assert await pump_until(pilot, lambda: overlay.options == ["mistral:7b"])
             assert listed.call_count == 2
 
+    @pytest.mark.parametrize("clear_handled_first", [True, False])
     async def test_a_listing_from_before_a_submit_does_not_offer_a_removed_model(
-        self, _mock_resolve, _mock_services
+        self, _mock_resolve, _mock_services, clear_handled_first
     ) -> None:
         import threading
 
@@ -1443,8 +1444,11 @@ class TestModelCompletionsOffTheLoopAsync:
                     inp.value = "/remove "
                     assert await pump_until(pilot, lambda: old_started.is_set())
                     # A submit clears the input as a programmatic edit; the listing still runs.
+                    # Without the wait, the next model argument is typed before the screen
+                    # handles the clear, as a fast typist or a busy event loop does.
                     screen._set_input("")
-                    assert await pump_until(pilot, lambda: inp.value == "")
+                    if clear_handled_first:
+                        assert await pump_until(pilot, lambda: screen._suppress_refresh == 0)
                     inp.value = "/model "
                     # The new model argument runs its own listing, not the old one.
                     assert await pump_until(pilot, lambda: overlay.options == ["mistral:7b"])
