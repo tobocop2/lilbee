@@ -21,7 +21,6 @@ from typing import Any
 from unittest import mock
 
 import pytest
-import yaml
 
 from lilbee.core.security import FileLockUnavailableError, file_lock
 from lilbee.providers.fleet import engine_store
@@ -1068,13 +1067,14 @@ def test_the_windows_pack_workflow_writes_the_notice_the_check_reads() -> None:
     workflow = pack_workflow().read_text(encoding="utf-8")
     name = engine_store.NOTICE_RULES["LicenseRef-Microsoft-VC-Runtime"].file
     tools = Path(__file__).parents[3] / "tools" / "wheel-build"
-    # pack_llama.sh writes the notice and the llama.cpp job checks it.
+    # pack_llama.sh writes the notice and check_llama_wheel.sh checks it.
     # For mistral.rs one script does each.
-    llama = yaml.safe_load(workflow)["jobs"]["cell"]["steps"]
-    (check,) = (s for s in llama if s.get("name") == "Start llama-server from the installed wheel")
     texts = {
         "pack_llama.sh": ((tools / "pack_llama.sh").read_text(encoding="utf-8"), 1),
-        "llama.cpp job": (check["run"], 1),
+        "check_llama_wheel.sh": (
+            (tools / "check_llama_wheel.sh").read_text(encoding="utf-8"),
+            1,
+        ),
         "pack_mistralrs.sh": ((tools / "pack_mistralrs.sh").read_text(encoding="utf-8"), 1),
         "check_mistralrs_wheel.sh": (
             (tools / "check_mistralrs_wheel.sh").read_text(encoding="utf-8"),
