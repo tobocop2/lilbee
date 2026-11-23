@@ -111,13 +111,17 @@ def run_without_join(coro: Awaitable[T]) -> T:
 
     ``asyncio.run`` joins the threads of ``asyncio.to_thread`` as it closes, so a
     Ctrl-C would wait there for a stuck one. A signal wakes the loop, so its handler
-    runs at once.
+    runs at once. Tasks the run leaves are cancelled and awaited, as ``asyncio.run``
+    does, so their own cleanup runs (the TUI's driver gives the terminal back).
     """
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
         with _signals_wake(loop):
-            return loop.run_until_complete(coro)
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.run_until_complete(_drain(loop))
     finally:
         loop.close()
         # A closed loop left current poisons a later get_event_loop on this thread.
