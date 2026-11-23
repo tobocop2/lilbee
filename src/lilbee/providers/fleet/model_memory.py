@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.catalog.header_probe import gguf_bytes_on_disk, gguf_is_incomplete
-from lilbee.catalog.types import ModelFormat
+from lilbee.catalog.types import ModelFormat, ModelTask
+from lilbee.catalog.xdna import read_footprint, read_task
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.vram import (
     GgufVramEstimate,
@@ -474,7 +475,20 @@ def _estimate_openvino(request: MemoryRequest) -> MemoryEstimate:
 
 
 def _estimate_xdna(request: MemoryRequest) -> MemoryEstimate:
-    return _sized_estimate(UNKNOWN_SIZE_RESERVE_BYTES)
+    """The charge of the NPU model that a ticket names, from the footprint the ticket records.
+
+    An embedding model is charged as an encoder: the footprint and the runtime allowance. A
+    chat model takes the unknown-size reserve, because nothing states what its cache costs
+    per token. A ticket with no footprint or no task takes the reserve too.
+    """
+    footprint = read_footprint(request.model_path)
+    try:
+        task = read_task(request.model_path)
+    except ValueError:
+        return _unknown_estimate(None)
+    if task is ModelTask.EMBEDDING:
+        return encoder_estimate(footprint)
+    return safetensors_chat_estimate(footprint, None, request.ctx, request.slots)
 
 
 def _parse(request: MemoryRequest, *, gpu_layers: int, with_projector: bool) -> GgufVramEstimate:

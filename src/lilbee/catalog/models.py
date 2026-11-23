@@ -149,6 +149,8 @@ class CatalogModel:
     format: ModelFormat = ModelFormat.GGUF
     # Every format the repo ships that this host can run; ``format`` is the one a pull takes.
     formats: frozenset[ModelFormat] = frozenset({ModelFormat.GGUF})
+    # The memory in GiB that the publisher states for the loaded model. 0 when it states none.
+    footprint_gb: float = 0.0
 
     @property
     def ref(self) -> str:

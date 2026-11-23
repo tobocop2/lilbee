@@ -31,6 +31,7 @@ from lilbee.providers.fleet.engines.lemonade_models import parse_models
 from lilbee.providers.fleet.host_caps import HostArch, HostCaps, HostOS, NpuVendor
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
+from lilbee.providers.fleet.model_memory import estimate_memory
 from lilbee.providers.roles import RerankMode, RoleTarget, WorkerRole
 
 if TYPE_CHECKING:
@@ -46,8 +47,6 @@ _HOST = "127.0.0.1"
 _LICENCES = ["Apache-2.0"]
 _XDNA2 = "XDNA2"
 _NPU_SYSTEMS = frozenset({HostOS.LINUX, HostOS.WINDOWS})
-_RESERVE_BYTES = 2 * 1024**3
-"""The figure charged for one role; not measured on an NPU."""
 _ENDPOINTS = {
     WorkerRole.CHAT: "/v1/chat/completions",
     WorkerRole.EMBED: "/v1/embeddings",
@@ -232,12 +231,7 @@ class LemonadeAdapter:
         return DeviceProbe(devices=[], output="", spoke_protocol=False, has_listing=False)
 
     def estimate_memory(self, request: MemoryRequest) -> MemoryEstimate:
-        return MemoryEstimate(
-            kind=self.memory_kind,
-            device_bytes=_RESERVE_BYTES,
-            host_bytes=0,
-            shared_bytes=_RESERVE_BYTES,
-        )
+        return estimate_memory(ModelFormat.XDNA, request)
 
     def check_readback(self, binary: Path) -> bool:
         return False

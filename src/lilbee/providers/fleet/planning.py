@@ -4538,10 +4538,23 @@ def _unplaceable_reasons(
         else set()
     )
     room = _room_beside_placed(placement, charges, capacity)
+    unsized = (
+        {model.role for model in inputs if not model.size_known}
+        if unified_budget is not None
+        else set()
+    )
     for role in placement.unplaceable_roles:
         engine = engines[role].name
         model = f"{model_refs[role]} ({engine})" if mixed else model_refs[role]
-        if unified_budget is not None:
+        if unified_budget is not None and role in unsized:
+            subject = f"the {role.value} model"
+            if role is WorkerRole.CHAT:
+                subject += " with its context"
+            reasons[role] = (
+                f"{role.value} model {model} does not fit available memory and will not be "
+                f"served. {unknown_size_text(subject, charges[role])} Free up memory."
+            )
+        elif unified_budget is not None:
             reasons[role] = (
                 f"{role.value} model {model} does not fit available memory and will not be "
                 "served; free up memory or use a smaller model."
