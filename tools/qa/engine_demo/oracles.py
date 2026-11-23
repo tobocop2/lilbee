@@ -49,7 +49,9 @@ _SERVED_BY = re.compile(r"served by engine=(\S+) version=(\S+) build=\S+ role=(\
 ROLE_KEYS = frozenset({"role", "model", "format", "engine", "notice"})
 BUILD_KEYS = frozenset({"engine", "version", "backend", "not_run_on"})
 ROLES_TOP_KEYS = frozenset({"command", "roles"})
-LIST_TOP_KEYS = frozenset({"command", "builds", "damaged", "not_installed", "engines_folder"})
+LIST_TOP_KEYS = frozenset(
+    {"command", "builds", "damaged", "not_installed", "experimental", "engines_folder"}
+)
 # Keys every cited source carries: clean_result writes the chunk's source and stamps its label.
 CITED_SOURCE_KEYS = frozenset({"source", "label"})
 ASK_KEYS = frozenset(

@@ -39,7 +39,6 @@ The Machine column names the machine that the recording names. The Version colum
 | openvino-two-gpu | none | AMD Ryzen 5 8645HS | pass: `--list-devices` shows one CPU and two GPU devices |  | `openvino-two-gpu.list-devices.log` |
 | lemonade-ryzen-ai | chat, embed | Ryzen AI machine with an XDNA2 NPU | not recorded, no machine |  |  |
 | ik-llama-cuda | chat, embed | NVIDIA GPU | not recorded |  |  |
-| mlx-chat-metal | chat | Apple silicon Mac | not recorded |  |  |
 | mlx-embed-rerank-metal | embed, rerank | Apple M3 Pro | pass, 3 of 3 steps | 0.32.2 | `mlx-embed-rerank-metal.json` |
 | mlx-metal | chat, embed, rerank | Apple M3 Pro | pass, 9 of 9 steps | 0.32.2 | `mlx-metal.json` |
 | llama-metal | chat, embed, rerank | Apple M3 Pro | pass, 9 of 9 steps | 1.12032.1 | `llama-metal.json` |
@@ -47,4 +46,4 @@ The Machine column names the machine that the recording names. The Version colum
 | ovms-intel-npu | embed, rerank | Intel NPU machine | not recorded, no machine |  |  |
 | geniex-snapdragon-npu | chat | Snapdragon X machine | not recorded, no machine |  |  |
 
-**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+**Experimental.** An engine is experimental on a device while its row in the coverage table (`src/lilbee/providers/fleet/engines/coverage.json`) has no record. A record is a comparison record (`compared`) or a hardware recording (`recorded`). `lilbee engine list` ends the line of such an engine with ", experimental: not run on" and the device names, for example ", experimental: not run on Intel Arc graphics and Intel NPU", and then prints this note: "Experimental: built and tested without the real device. If you run it, report the result at https://github.com/tobocop2/lilbee/issues." A cell with no row in the table has no record either, and the line names it by its raw key, for example ", experimental: not run on linux-arm64-cpu". The JSON list and `/api/engines` carry the same devices in the `experimental` field, by engine. `auto` never chooses an experimental engine, except the bundled llama.cpp. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. If you run lilbee on such a device, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).

@@ -29,7 +29,7 @@ BASE = Path(__file__).parent / "fixtures" / "engine_launch_argv_base.json"
 def test_l4_with_no_row_every_shipped_engine_launches_with_the_base_argv(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(proof, "HARDWARE_PROOF", {})
+    monkeypatch.setattr(proof, "coverage", lambda: ())
     recorded = json.loads(BASE.read_text(encoding="utf-8"))
 
     # The base holds the POSIX form of each path; the adapters write the host's form.

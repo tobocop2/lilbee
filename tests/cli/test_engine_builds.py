@@ -11,15 +11,30 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from lilbee.catalog import runnable
 from lilbee.cli import app
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.engine_manifest import cell_key
 from lilbee.providers.fleet.engine_store import EngineStore, PinLock, engines_root
+from lilbee.providers.fleet.engines import proof
 
 runner = CliRunner()
 
 
+def record_fx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the fx build a record on the cells this host runs it on, so no label marks it."""
+    host = runnable.session_host()
+    rows = tuple(
+        {"engine": "fx", "cell": cell_key(host, b), "device_label": "CPU", "status": "compared"}
+        for b in ("cpu", "cpu-avx2")
+    )
+    shipped = proof.coverage()
+    monkeypatch.setattr(proof, "coverage", lambda: shipped + rows)
+
+
 @pytest.fixture
 def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    record_fx(monkeypatch)
     monkeypatch.setattr(cfg, "models_dir", tmp_path / "models")
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
     # The fx build installed here is named by no shipped pin; the startup prune would remove it.

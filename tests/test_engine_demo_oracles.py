@@ -70,6 +70,7 @@ def _listing(builds: list[dict[str, object]]) -> dict[str, object]:
         "builds": builds,
         "damaged": [],
         "not_installed": [],
+        "experimental": {},
         "engines_folder": "/fake/engines",
     }
 
@@ -564,7 +565,9 @@ def test_failed_install_fails() -> None:
 
 def test_pinned_keys_equal_the_service_views() -> None:
     assert {f.name for f in dataclasses.fields(RoleView)} == ROLE_KEYS
-    assert {f.name for f in dataclasses.fields(BuildView)} == BUILD_KEYS
+    # not_run_on is derived from the coverage table, so the view reads it as a property.
+    assert isinstance(BuildView.not_run_on, property)
+    assert {f.name for f in dataclasses.fields(BuildView)} | {"not_run_on"} == BUILD_KEYS
 
 
 def _cli_json(args: list[str]) -> dict[str, object]:
@@ -590,7 +593,7 @@ def test_pinned_keys_equal_what_the_cli_writes_for_engine_roles() -> None:
 
 
 def test_pinned_keys_equal_what_the_cli_writes_for_engine_list() -> None:
-    builds = [BuildView(_ENGINE, _PIN, "cpu", ())]
+    builds = [BuildView(_ENGINE, _PIN, "cpu")]
     view = engine_service.EngineListView(builds, [], [], Path("/fake/engines"))
     with mock.patch.object(engine_service, "engine_list", return_value=view):
         payload = _cli_json(["engine", "list"])

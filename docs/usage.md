@@ -497,9 +497,10 @@ the three values that `engine list` shows. The `/engine list` and
 `/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,
 and the REST routes `GET /api/engines` and
 `DELETE /api/engines/{engine}/{version}/{backend}` do the same. With `--json`, the
-CLI, the MCP tool and the REST route return the same four fields: `builds`,
+CLI, the MCP tool and the REST route return the same five fields: `builds`,
 `damaged` (each engine folder that lilbee cannot use, as its `folder` and an
-`error`), `not_installed` (the engines with no installed build) and
+`error`), `not_installed` (the engines with no installed build), `experimental`
+(each engine with devices that have no record, and those devices) and
 `engines_folder` (the path that the `Engines folder:` line shows). The
 `/engine list` chat command ends with the same `Engines folder:` line. On the HTTP
 server the removal needs `allow_http_engines`.
@@ -517,10 +518,12 @@ folder in the cleanup of old builds shows a warning with the folder.
 If the build of an engine differs from the pin, `engine list` prints one line:
 the engine is not installed, and the line names the build that differs.
 
-If lilbee has no recorded run of an engine on a device, the line ends with
-`, not run on <device>`. The install output prints the same words. Each build in
-the JSON list has a `not_run_on` field with the same devices. `auto` never
-chooses an engine that has a device in this list.
+If lilbee has no record of an engine on a device, the engine is experimental
+there and the line ends with `, experimental: not run on <device>`. The list then
+prints a note that says what experimental means and where to report a result.
+The install output prints the same words. Each build in the JSON list has a
+`not_run_on` field with the devices of its own cell. `auto` never chooses an
+experimental engine, except the bundled llama.cpp.
 
 #### The saved choice
 
@@ -689,7 +692,7 @@ for Qwen3-Embedding and Qwen3-Reranker models only. lilbee refuses any other `#m
 the embedding or the reranker role, and names the supported family. lilbee loads `#mlx` models
 with it and does not offer it on an older macOS. No pack of mlx is published yet.
 
-**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", not run on" and the device name, for example ", not run on Intel NPU". `auto` never chooses such an engine. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
+**Experimental.** NPU engines and NPU servers are experimental. lilbee has no recorded run on NPU hardware. For an engine with a device that has no record, such as an NPU engine (Lemonade, OpenVINO or OpenVINO Model Server), `lilbee engine list` ends the line with ", experimental: not run on" and the device names, for example ", experimental: not run on Intel Arc graphics and Intel NPU". `auto` never chooses such an engine, except the bundled llama.cpp. GenieX and FastFlowLM are servers and do not appear in `lilbee engine list`. The tests use fixtures and fake servers. If you run lilbee on an NPU, report the result in the [GitHub issues](https://github.com/tobocop2/lilbee/issues).
 
 To install from a local pack, copy it into the `packs` folder of the engines folder.
 Name the file `<engine>-<version>-<backend>.whl`. Then run:
