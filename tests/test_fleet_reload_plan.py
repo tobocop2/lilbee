@@ -732,6 +732,8 @@ def test_a_shutdown_ends_the_warm_that_a_reload_started(
     provider, swaps = engine_fleet
     monkeypatch.delattr(provider, "_preload_roles")
     first_new = len(swaps)
+    # Only the warms this test starts count; another test's thread is not this one's leak.
+    before = set(threading.enumerate())
 
     def held_swap(_dir: Path, _group: object) -> _EngineSwap:
         swap = _EngineSwap(answers_at_once=False)
@@ -745,7 +747,11 @@ def test_a_shutdown_ends_the_warm_that_a_reload_started(
 
     provider.shutdown()
 
-    warms = [thread for thread in threading.enumerate() if thread.name == "fleet-reload-warm"]
+    warms = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "fleet-reload-warm" and thread not in before
+    ]
     assert not [thread for thread in warms if thread.is_alive()]
 
 
