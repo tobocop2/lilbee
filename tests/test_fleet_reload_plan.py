@@ -25,6 +25,7 @@ from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines import llama as llama_mod
 from lilbee.providers.fleet.engines.mlx import MLX
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _launches_by_group
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime import engine_lock as engine_lock_mod
@@ -363,10 +364,10 @@ def _serve_mlx_chat(
 ) -> Iterator[tuple[FleetProvider, list[_EngineSwap]]]:
     """Serve the real plan from fake engines, each chat server read as an MLX server."""
 
-    def adapter_of(_provider: FleetProvider, role: WorkerRole) -> object:
-        return MLX if role is WorkerRole.CHAT else LLAMA
+    def adapter_of(_provider: FleetProvider, launch: InstanceLaunch) -> object:
+        return MLX if launch.role is WorkerRole.CHAT else LLAMA
 
-    monkeypatch.setattr(FleetProvider, "_adopt_engine", adapter_of)
+    monkeypatch.setattr(FleetProvider, "_engine_of", adapter_of)
     yield from _serve_fake_engines(monkeypatch, tmp_path)
 
 

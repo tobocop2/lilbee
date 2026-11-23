@@ -62,6 +62,7 @@ from lilbee.providers.fleet.contract import (
     vision_slots_cover,
 )
 from lilbee.providers.fleet.engines.base import EngineAdapter
+from lilbee.providers.fleet.engines.choice import shipped_adapter
 from lilbee.providers.fleet.gpu_env import (
     CUDA_VISIBLE_VAR,
     HIP_VISIBLE_VAR,
@@ -414,13 +415,35 @@ def _bindable_group(
     return (state, launches, pairs) if pairs else None
 
 
+def _adopted_engines(
+    launches: Iterable[InstanceLaunch],
+    book: Callable[[], Mapping[WorkerRole, EngineAdapter]],
+) -> dict[WorkerRole, EngineAdapter]:
+    """The engine of each launch's role, from its record.
+
+    *book* is read once, and only when a record names no engine.
+    """
+    launches = list(launches)
+    engines = {
+        launch.role: engine
+        for launch in launches
+        if (engine := shipped_adapter(launch.engine)) is not None
+    }
+    unrecorded = {launch.role for launch in launches} - engines.keys()
+    if unrecorded:
+        engines.update({role: e for role, e in book().items() if role in unrecorded})
+    return engines
+
+
 def _log_adopted_launches(
     candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]],
-    engines: Mapping[WorkerRole, EngineAdapter],
+    book: Callable[[], Mapping[WorkerRole, EngineAdapter]],
 ) -> None:
     """Name the engine every bound instance now runs on, and the pid that owns it."""
     for _group, state, launches in candidates:
-        planning.log_role_launches(launches, engines=engines, owner_pid=state.pid)
+        planning.log_role_launches(
+            launches, engines=_adopted_engines(launches, book), owner_pid=state.pid
+        )
 
 
 class _PrimedStream(Iterator["ChatStreamItem"]):
@@ -1385,6 +1408,15 @@ class FleetProvider:
 
         return EngineBook(cfg).adapters()
 
+    def _engine_of(self, launch: InstanceLaunch) -> EngineAdapter:
+        """The engine *launch* was planned with; the book answers only for a record with none.
+
+        Adopting a group runs under ``_lock``. This takes no lock and reads no PATH when
+        the record names its engine.
+        """
+        recorded = shipped_adapter(launch.engine)
+        return recorded if recorded is not None else self._adopt_engine(launch.role)
+
     def _adopt_engine(self, role: WorkerRole) -> EngineAdapter:
         """The adapter of *role* now; raises with the engine text when its engine went."""
         from lilbee.app.engine_choice import EngineBook
@@ -1822,7 +1854,7 @@ class FleetProvider:
                 self._adopt_group(group, swap, launches)
                 self._group_dirs[group] = engine_dir
         log.info("Bound to the running engine at %s", engine_dir)
-        _log_adopted_launches(candidates, self._engines())
+        _log_adopted_launches(candidates, self._engines)
         return True
 
     def _reload_dir(self) -> Path:
@@ -1950,7 +1982,7 @@ class FleetProvider:
             # client snapshot, and never closing leaks an httpx pool per replica.
             old_clients = list(self._clients.get(role, []))
             self._role_group[role] = group
-            profile = self._adopt_engine(role).request_profile(role)
+            profile = self._engine_of(role_launches[0]).request_profile(role)
             # token_cap truncates oversize embed/rerank inputs to the per-slot context
             # (the in-process backstop); the longer timeout covers a cold upstream load.
             self._clients[role] = [

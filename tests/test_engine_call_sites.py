@@ -31,7 +31,8 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice
 from lilbee.providers.fleet.engines import LLAMA
 from lilbee.providers.fleet.engines.base import EngineName, RequestProfile
-from lilbee.providers.fleet.engines.choice import NoEngineError
+from lilbee.providers.fleet.engines.choice import ADAPTERS, NoEngineError
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.memory_types import MemoryEstimate, MemoryKind, MemoryRequest
 from lilbee.providers.fleet.model_memory import UNKNOWN_SIZE_RESERVE_BYTES, fixed_weights_estimate
 from lilbee.providers.fleet.placement import InstancePlan
@@ -1058,6 +1059,205 @@ class TestClientWording:
         error = self._raise(client, 500, "boom")
         assert str(error).startswith("spy-server returned HTTP 500")
         assert "llama-server" not in str(error)
+
+
+class _PlannedSpy(SpyEngine):
+    """A spy that answers to the name of a shipped engine, so a launch record can name it."""
+
+    name = EngineName.MISTRAL.value
+
+
+class TestAdoptionUsesTheEngineOfTheLaunch:
+    """A launch records the engine it was planned with; adoption reads that record."""
+
+    @pytest.fixture
+    def book_reads(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Every lookup of the installed engines; the book it answers holds llama.cpp only."""
+        import lilbee.app.engine_choice as engine_choice
+
+        reads: list[str] = []
+        real = engine_choice.installed_engines
+
+        def counted() -> Any:
+            reads.append("installed_engines")
+            return real()
+
+        monkeypatch.setattr(engine_choice, "installed_engines", counted)
+
+        def read(self: EngineBook) -> BookReading:
+            reads.append("read")
+            return BookReading(_llama_book(), {})
+
+        monkeypatch.setattr(EngineBook, "read", read)
+        return reads
+
+    @pytest.fixture
+    def planned(self, spy: SpyEngine, monkeypatch: pytest.MonkeyPatch) -> _PlannedSpy:
+        engine = _PlannedSpy(spy.binary())
+        monkeypatch.setitem(ADAPTERS, EngineName.MISTRAL, engine)  # type: ignore[arg-type]
+        return engine
+
+    def _adopt(
+        self, role: WorkerRole, launch: Any, tmp_path: Path, provider: FleetProvider | None = None
+    ) -> FleetProvider:
+        provider = provider or FleetProvider()
+        swap = SimpleNamespace(endpoint=lambda: "http://127.0.0.1:1", log_path=tmp_path / "log")
+        with provider._lock:
+            provider._adopt_group(role.value, swap, [launch])  # type: ignore[arg-type]
+        return provider
+
+    def test_a_launch_records_the_engine_it_was_planned_with(
+        self, planned: _PlannedSpy, model_file: Path
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+
+        assert launch.engine == "mistral.rs"
+
+    def test_the_record_keeps_the_engine_on_the_state_file(
+        self, planned: _PlannedSpy, model_file: Path
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+
+        assert InstanceLaunch.from_state(launch.to_state()).engine == "mistral.rs"
+
+    @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
+    def test_adoption_does_not_look_the_engine_up(
+        self,
+        planned: _PlannedSpy,
+        model_file: Path,
+        tmp_path: Path,
+        book_reads: list[str],
+        role: WorkerRole,
+    ) -> None:
+        launch = planning.build_single_role_launch(role, model_file, engine=planned)
+
+        provider = self._adopt(role, launch, tmp_path)
+
+        assert book_reads == []
+        assert provider._clients[role][0]._profile.label == "fake-engine"
+
+    @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.EMBED])
+    def test_adoption_keeps_the_engine_of_the_launch_when_the_installs_changed(
+        self,
+        planned: _PlannedSpy,
+        model_file: Path,
+        tmp_path: Path,
+        book_reads: list[str],
+        role: WorkerRole,
+    ) -> None:
+        launch = planning.build_single_role_launch(role, model_file, engine=planned)
+
+        provider = self._adopt(role, launch, tmp_path)
+
+        # The book now answers llama.cpp for every role; the launch was planned on mistral.rs.
+        assert provider._clients[role][0]._profile.label != LLAMA.request_profile(role).label
+
+    def test_adoption_keeps_the_engine_of_the_launch_when_the_book_has_no_engine(
+        self,
+        planned: _PlannedSpy,
+        model_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+        monkeypatch.setattr(EngineBook, "read", lambda self: BookReading({}, {}))
+
+        provider = self._adopt(WorkerRole.EMBED, launch, tmp_path)
+
+        assert provider._clients[WorkerRole.EMBED][0]._profile.label == "fake-engine"
+
+    def test_a_record_with_no_engine_is_looked_up_once(
+        self, planned: _PlannedSpy, model_file: Path, tmp_path: Path, book_reads: list[str]
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+        older = InstanceLaunch.from_state(
+            {key: value for key, value in launch.to_state().items() if key != "engine"}
+        )
+        assert older.engine == ""
+
+        provider = self._adopt(WorkerRole.EMBED, older, tmp_path)
+
+        assert book_reads == ["read"]
+        profile = provider._clients[WorkerRole.EMBED][0]._profile
+        assert profile.label == LLAMA.request_profile(WorkerRole.EMBED).label
+
+    def test_a_record_of_an_unknown_engine_is_looked_up_once(
+        self, planned: _PlannedSpy, model_file: Path, tmp_path: Path, book_reads: list[str]
+    ) -> None:
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+        launch = dataclasses.replace(launch, engine="an-engine-of-a-later-build")
+
+        self._adopt(WorkerRole.EMBED, launch, tmp_path)
+
+        assert book_reads == ["read"]
+
+    def test_binding_to_a_running_engine_names_the_recorded_engine_without_a_lookup(
+        self, planned: _PlannedSpy, model_file: Path
+    ) -> None:
+        from lilbee.providers.fleet.provider import _adopted_engines as adopted_engines
+
+        recorded = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+        older = InstanceLaunch.from_state(
+            {key: value for key, value in recorded.to_state().items() if key != "engine"}
+        )
+
+        asked: list[str] = []
+
+        def book() -> dict[WorkerRole, Any]:
+            asked.append("book")
+            return _llama_book()
+
+        assert adopted_engines([recorded], book) == {WorkerRole.EMBED: planned}
+        assert asked == []
+        assert adopted_engines([older], book) == {WorkerRole.EMBED: LLAMA}
+        assert asked == ["book"]
+
+    def test_binding_logs_the_recorded_engine_without_a_lookup(
+        self,
+        planned: _PlannedSpy,
+        model_file: Path,
+        tmp_path: Path,
+        book_reads: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import lilbee.providers.fleet.provider as provider_module
+
+        launch = planning.build_single_role_launch(WorkerRole.EMBED, model_file, engine=planned)
+        pair = (launch.role, launch.model)
+        monkeypatch.setattr(
+            provider_module, "_bindable_group", lambda state, pin, demand: (state, [launch], {pair})
+        )
+
+        class _BoundSwap:
+            def __init__(self, engine_dir: Path, group: str) -> None:
+                self.log_path = tmp_path / "log"
+
+            def bind(self, state: object) -> bool:
+                return True
+
+            def endpoint(self) -> str:
+                return "http://127.0.0.1:1"
+
+        monkeypatch.setattr(provider_module, "SwapManager", _BoundSwap)
+        logged: list[tuple[object, int | None]] = []
+        monkeypatch.setattr(
+            planning,
+            "log_engine_launch",
+            lambda launch, *, engine, owner_pid=None: logged.append((engine, owner_pid)),
+        )
+        demand = provider_module._EngineDemand({pair}, 0, {}, {})
+
+        states: Any = {"embed": SimpleNamespace(pid=4321)}
+
+        bound = FleetProvider()._bind_all_in_dir(tmp_path, states, "pin", demand)
+
+        assert bound
+        assert book_reads == []
+        assert logged == [(planned, 4321)]
+
+
+def _llama_book() -> dict[WorkerRole, Any]:
+    return engines_for_all_roles(LLAMA)  # type: ignore[return-value]
 
 
 def test_the_spy_differs_from_llama_on_every_member(spy: SpyEngine) -> None:

@@ -105,13 +105,14 @@ class EngineChoice:
         return self.name
 
 
-def _adapter(name: str) -> EngineAdapter | None:
+def shipped_adapter(name: str) -> EngineAdapter | None:
+    """The shipped adapter called *name*, or ``None`` when this build ships none."""
     return next((a for n, a in ADAPTERS.items() if n == name), None)
 
 
 def refuses_format_for_role(name: str, role: WorkerRole, fmt: str) -> bool:
     """True when a shipped adapter serves *role* but cannot load *fmt* for it."""
-    adapter = _adapter(name)
+    adapter = shipped_adapter(name)
     return isinstance(adapter, RoleFormatChecked) and fmt in adapter.refused_role_formats.get(
         role, ()
     )
@@ -119,7 +120,7 @@ def refuses_format_for_role(name: str, role: WorkerRole, fmt: str) -> bool:
 
 def _serves(name: str, role: WorkerRole | None) -> bool:
     """False only for a shipped adapter that does not serve *role*."""
-    adapter = _adapter(name)
+    adapter = shipped_adapter(name)
     return role is None or adapter is None or role in adapter.served_roles
 
 
@@ -130,7 +131,7 @@ def _accepts(name: str, role: WorkerRole | None, fmt: str) -> bool:
 
 def host_answer(name: str, host: HostSource) -> HostGate:
     """What the host says about *name*; a bundled engine reads nothing."""
-    adapter = _adapter(name)
+    adapter = shipped_adapter(name)
     return PASS if adapter is None or adapter.bundled else adapter.host_gate(host())
 
 
