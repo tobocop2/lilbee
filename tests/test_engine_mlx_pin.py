@@ -587,7 +587,7 @@ def test_the_launcher_runs_mlx_lm_server_on_the_bundled_interpreter(tmp_path: Pa
 
 
 def _mlx_paragraph() -> str:
-    text = (ROOT / "docs" / "usage.md").read_text(encoding="utf-8")
+    text = (ROOT / "docs" / "engines" / "README.md").read_text(encoding="utf-8")
     (paragraph,) = (p for p in text.split("\n\n") if p.startswith("mlx (mlx-lm)"))
     return " ".join(paragraph.split())
 
