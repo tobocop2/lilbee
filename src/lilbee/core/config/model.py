@@ -1965,7 +1965,13 @@ def canonical_model_ref(ref: str) -> str:
 
 
 def mlx_role_refusal(field: str, ref: str) -> str | None:
-    """Why the mlx engine cannot serve *ref* for the role that *field* sets, or None."""
+    """Why the mlx engine cannot serve *ref* for the role that *field* sets, or None.
+
+    A blank ref names no format, so it returns before the catalog loads: the config
+    builds at import with blank refs, and the catalog pulls in httpx.
+    """
+    if not ref:
+        return None
     from lilbee.catalog.refs import model_format
     from lilbee.catalog.types import ModelFormat
 

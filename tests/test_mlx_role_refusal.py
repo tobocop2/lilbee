@@ -25,7 +25,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli import app
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.core.config import Config, RefusedVariableError, cfg
-from lilbee.core.config.model import _build_cfg
+from lilbee.core.config.model import _build_cfg, mlx_role_refusal
 from lilbee.mcp_server import settings_set
 from lilbee.modelhub.role_validator import validate_model_task_assignment
 from lilbee.providers.fleet.engines.mlx import role_refusal
@@ -88,6 +88,10 @@ class TestRoleRefusal:
         self, ref: str
     ) -> None:
         assert role_refusal(WorkerRole.EMBED, ref) is None
+
+    def test_a_blank_ref_is_not_refused_for_any_field(self) -> None:
+        assert mlx_role_refusal("embedding_model", "") is None
+        assert mlx_role_refusal("reranker_model", "") is None
 
 
 class TestConfigLoad:
