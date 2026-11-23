@@ -684,6 +684,15 @@ class TestWriteCancellation:
         assert waits == []
         assert list(tmp_path.iterdir()) == []
 
+    def test_a_re_export_replaces_the_file_at_the_name(self, tmp_path):
+        # Runs on every platform: the mode test below skips Windows, and this is
+        # the run that reaches the copy of the old file's mode there.
+        path = tmp_path / "pages.jsonl"
+        write_dataset(self._big_table(3), path, DatasetFormat.JSONL, None)
+        write_dataset(self._big_table(5), path, DatasetFormat.JSONL, None)
+        assert len(load_page_dataset(path, DatasetFormat.JSONL)) == 5
+        assert list(tmp_path.iterdir()) == [path]
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
     def test_a_re_export_keeps_the_mode_of_the_file_it_replaces(self, tmp_path):
         path = tmp_path / "pages.jsonl"
