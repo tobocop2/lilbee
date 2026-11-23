@@ -206,6 +206,23 @@ def test_no_pack_and_no_network_gives_the_missing_pack_text(good: Path, root: Pa
     assert _builds() == []
 
 
+def test_a_damaged_pack_in_the_packs_folder_is_refused_with_the_text_to_copy_it_again(
+    good: Path, root: Path
+) -> None:
+    damaged = good.read_bytes()[:-8]
+    (root / "packs").mkdir(parents=True)
+    pack = root / "packs" / f"{ENGINE}-{VERSION}-cpu.whl"
+    pack.write_bytes(damaged)
+    with pytest.raises(engine_service.EngineRefusedError) as exc:
+        engine_service.install(ENGINE.value)
+    assert str(exc.value) == (
+        f"The pack {pack} for engine {ENGINE} {VERSION} (cpu) does not match its pin, "
+        f"so lilbee did not install it. Copy {pack.name} into {pack.parent} again "
+        "from its source and run the install again."
+    )
+    assert _builds() == []
+
+
 def test_a_download_from_the_release_url_installs_the_build(
     good: Path, release: ReleaseServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
