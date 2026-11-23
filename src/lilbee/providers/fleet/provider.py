@@ -2138,8 +2138,12 @@ class FleetProvider:
         reason = self._engine_refusal or self._refused_roles.get(role)
         if reason is not None:
             raise ProviderError(reason, provider=_PROVIDER_NAME, kind=ProviderErrorKind.BAD_REQUEST)
+        # NOT_FOUND, like the planning step for a missing engine: the chat and /api
+        # routes answer it as a 404 with this text, not a generic 500.
         raise ProviderError(
-            _no_server_message(role, self._unusable_engine_reason()), provider=_PROVIDER_NAME
+            _no_server_message(role, self._unusable_engine_reason()),
+            provider=_PROVIDER_NAME,
+            kind=ProviderErrorKind.NOT_FOUND,
         )
 
     def _await_vision_clients(
