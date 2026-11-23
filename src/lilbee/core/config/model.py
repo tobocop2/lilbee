@@ -1527,7 +1527,11 @@ class Config(BaseSettings):
     @classmethod
     def _normalize_model_tag(cls, v: str, info: ValidationInfo) -> str:
         """Validate and canonicalize a model ref; blank means the role is unconfigured."""
-        return canonical_model_ref(v)
+        ref = canonical_model_ref(v)
+        refusal = mlx_role_refusal(info.field_name or "", ref)
+        if refusal is not None:
+            raise ValueError(refusal)
+        return ref
 
     @field_validator("ollama_base_url", "lm_studio_base_url", mode="after")
     @classmethod
@@ -1958,6 +1962,20 @@ def canonical_model_ref(ref: str) -> str:
     from lilbee.providers import model_ref
 
     return model_ref.canonical_model_ref(ref)
+
+
+def mlx_role_refusal(field: str, ref: str) -> str | None:
+    """Why the mlx engine cannot serve *ref* for the role that *field* sets, or None."""
+    from lilbee.catalog.refs import model_format
+    from lilbee.catalog.types import ModelFormat
+
+    if model_format(ref) is not ModelFormat.MLX:
+        return None
+    from lilbee.providers.fleet.engines import mlx
+    from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
+
+    role = MODEL_FIELD_TO_ROLE.get(field)
+    return None if role is None else mlx.role_refusal(role, ref)
 
 
 def checked_write(key: str, value: Any) -> Any:

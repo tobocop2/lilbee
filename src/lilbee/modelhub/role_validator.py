@@ -10,6 +10,7 @@ from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import canonical_ref, is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
+from lilbee.core.config.model import mlx_role_refusal
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import is_native_gguf_ref
@@ -119,8 +120,12 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     installed, which is what the catalog UI offers. Anything else is checked
     against the installed manifest, the only other thing that can vouch for a
     model's role. Raises ``TaskMismatchError`` on role mismatch and
-    ``ValueError`` when the model is neither a pick nor installed.
+    ``ValueError`` when the model is neither a pick nor installed, or when the mlx
+    engine cannot run it for that role.
     """
+    refusal = mlx_role_refusal(field_name, ref)
+    if refusal is not None:
+        raise ValueError(refusal)
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     ref = canonical_ref(ref)
