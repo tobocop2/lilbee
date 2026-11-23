@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from lilbee.app.engine_choice import engine_for_ref
 from lilbee.catalog import runnable
 from lilbee.catalog.types import ModelFormat
 from lilbee.cli import app as cli_app
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg
@@ -30,7 +32,7 @@ from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.choice import NoEngineError
 from lilbee.providers.fleet.engines.host_gate import HostGate
 from lilbee.providers.fleet.host_caps import HostCaps, collect
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.routing_provider import RoutingProvider
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
@@ -41,6 +43,7 @@ from tests.test_engine_service import (
     MLX_ENGINE,
     MLX_REF,
     NOT_INSTALLED,
+    OPENVINO_ENGINE,
     UNREADABLE_NOTICE,
 )
 
@@ -823,3 +826,105 @@ def test_turning_the_mcp_setting_back_on_lifts_the_refusal_with_no_restart(
     assert refused() is not None
     monkeypatch.setattr(cfg, setting, True)
     assert refused() is None
+
+
+PARITY_SURFACES = ("service", *SURFACES)
+# What a roles view holds: each role's (role, model, format, engine), then its notices.
+RolesView = tuple[tuple[tuple[str, str, str, str | None], ...], str]
+
+
+def _use_on(surface: str, engine: str) -> str:
+    """Choose *engine* for the chat model through *surface*; the engine name it reports."""
+    if surface == "service":
+        return engine_service.use_for_role(WorkerRole.CHAT, GGUF_REF, engine)
+    if surface == "cli":
+        code, body = _run_cli("use", "chat", GGUF_REF, engine)
+        assert code == 0
+        return str(body["engine"])
+    if surface == "rest":
+        body = {"model": GGUF_REF, "engine": engine}
+        code, answer = _rest("PUT", "/api/engines/roles/chat", body)
+        assert code == 200
+        return str(answer["engine"])
+    if surface == "mcp":
+        return str(mcp_server.engine_use_tool(WorkerRole.CHAT, GGUF_REF, engine)["engine"])
+    out = run_engine_command(f"use chat {GGUF_REF} {engine}")
+    assert out.ok
+    done = msg.ENGINE_USE_DONE.format(role="chat", model=GGUF_REF, engine="\0")
+    head, _, tail = done.partition("\0")
+    assert out.text.startswith(head)
+    assert out.text.endswith(tail)
+    return out.text[len(head) : len(out.text) - len(tail)]
+
+
+def _rows_view(rows: list[dict[str, Any]]) -> RolesView:
+    cells = tuple((r["role"], r["model"], r["format"], r["engine"]) for r in rows)
+    return cells, "\n".join(dict.fromkeys(r["notice"] for r in rows if r["notice"]))
+
+
+def _slash_view(text: str) -> RolesView:
+    """The roles view in the slash command's lines: one line per role, then the notices."""
+    lines = text.split("\n")
+    cells = []
+    for line in lines[: len(ROLE_REGISTRY)]:
+        head, _, engine = line.rpartition(" on ")
+        role, _, rest = head.partition(": ")
+        model, _, fmt = rest.rpartition(" (")
+        named = None if engine == "no engine" else engine
+        cells.append((role, model, fmt.removesuffix(")"), named))
+    return tuple(cells), "\n".join(lines[len(ROLE_REGISTRY) :])
+
+
+def _roles_on(surface: str) -> RolesView:
+    """The roles view that *surface* shows."""
+    if surface == "service":
+        return _rows_view([asdict(view) for view in engine_service.roles()])
+    if surface == "cli":
+        code, body = _run_cli("roles")
+        assert code == 0
+        return _rows_view(body["roles"])
+    if surface == "rest":
+        code, body = _rest("GET", "/api/engines/roles")
+        assert code == 200
+        return _rows_view(body["roles"])
+    if surface == "mcp":
+        return _rows_view(mcp_server.engine_roles_tool()["roles"])
+    out = run_engine_command("roles")
+    assert out.ok
+    return _slash_view(out.text)
+
+
+def _refusal_on(surface: str, role: str, model: str, engine: str) -> str:
+    if surface == "service":
+        return _service_refusal(role, model, engine)
+    return _refusal(surface, role, model, engine)
+
+
+def _chat_engine(view: RolesView) -> str | None:
+    return next(engine for role, _, _, engine in view[0] if role == "chat")
+
+
+def test_one_choice_gives_the_same_results_and_refusals_on_all_five_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Set an engine for a model, read it back, set it back to auto: the same on every surface."""
+    monkeypatch.setitem(choice.ADAPTERS, EngineName.OPENVINO, OPENVINO_ENGINE)
+    runs: dict[str, list[Any]] = {}
+    for surface in PARITY_SURFACES:
+        steps: list[Any] = []
+        for engine in ("openvino", "auto"):
+            steps += [_use_on(surface, engine), _roles_on(surface), _stored("engine_choices")]
+        steps += [_refusal_on(surface, *case.values) for case in REFUSALS]
+        steps.append(_stored("engine_choices"))
+        runs[surface] = steps
+    service = runs["service"]
+    assert service[0] == "openvino"
+    assert _chat_engine(service[1]) == "openvino"
+    assert json.loads(str(service[2])) == {GGUF_REF: "openvino"}
+    assert service[3] == "auto"
+    assert _chat_engine(service[4]) == "llama.cpp"
+    assert service[5] is None
+    assert all(isinstance(text, str) and text for text in service[6:-1])
+    assert service[-1] is None
+    for surface in SURFACES:
+        assert runs[surface] == service, surface
