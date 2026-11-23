@@ -10,10 +10,12 @@ from __future__ import annotations
 import itertools
 import threading
 import weakref
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from lilbee.core.config import cfg
 from lilbee.data.types import EmbeddingBackendName
+
+from .released import ReleasedNames
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,14 +59,19 @@ class LilbeeEmbeddingBackend:
 class _ProviderEmbedders:
     """One registered embedding backend per provider.
 
-    A name is registered once and never unregistered, so a config built for one
-    provider keeps its embedder while another provider registers its own. Each
-    backend holds its provider weakly; a provider that is gone fails its embeds.
+    A name stays registered while its provider lives, so a config built for one
+    provider keeps its embedder while another provider registers its own. The name
+    of a provider that is gone is unregistered by the next name lookup. Each backend
+    holds its provider weakly; an embed already in flight when its provider is gone
+    fails.
     """
+
+    _serial: ClassVar[itertools.count[int]] = itertools.count(1)
+    """Numbers names across every table, as xberg's registry is one per process."""
 
     def __init__(self) -> None:
         self._names: weakref.WeakKeyDictionary[LLMProvider, str] = weakref.WeakKeyDictionary()
-        self._serial = itertools.count(1)
+        self._released = ReleasedNames()
         self._lock = threading.Lock()
 
     def name_for(self, provider: LLMProvider) -> str:
@@ -72,8 +79,10 @@ class _ProviderEmbedders:
 
         The lock guards the name table only, so a slow registration never blocks the
         name of a provider that is already registered. Two first uses at once both
-        register; the first name stored wins and the other backend stays unused.
+        register; the first name stored wins, the other is released.
         """
+        for released in self._released.take():
+            _unregister(released)
         with self._lock:
             name = self._names.get(provider)
             if name is not None:
@@ -87,7 +96,12 @@ class _ProviderEmbedders:
             )
         )
         with self._lock:
-            return self._names.setdefault(provider, name)
+            stored = self._names.setdefault(provider, name)
+        if stored != name:
+            self._released.release(name)
+        else:
+            self._released.release_when_collected(provider, name)
+        return stored
 
     @staticmethod
     def _embedder(provider: LLMProvider) -> Callable[[list[str]], list[Vector]]:
@@ -108,6 +122,13 @@ def _register(backend: LilbeeEmbeddingBackend) -> None:
     import xberg
 
     xberg.register_embedding_backend(backend)
+
+
+def _unregister(name: str) -> None:
+    """Remove the backend *name* from xberg's embedding registry; a no-op when absent."""
+    import xberg
+
+    xberg.unregister_embedding_backend(name)
 
 
 provider_embedders = _ProviderEmbedders()
