@@ -2456,12 +2456,21 @@ class FleetProvider:
                 _SHUTDOWN_WORK_WAIT_S,
             )
         self._drop_swap_refs(close_all=True)
-        # The close above ends a running chat warm; the latch stops any later one.
+        # The close above ends a running chat warm; the latch stops any later one. An
+        # embed or rerank warm blocks in a read that a close does not wake, so the
+        # engines stop first: the read then fails at once. The warm needs no engine
+        # past the latch, because it starts nothing and reports no failure.
+        self._release_engines()
         with self._lock:
             warm = self._reload_warm
         if warm is not None:
             warm.join(_SHUTDOWN_WORK_WAIT_S)
-        self._release_engines()
+            if warm.is_alive():
+                log.warning(
+                    "Model warm-up still in progress after %.0fs; shutting down without "
+                    "waiting for it.",
+                    _SHUTDOWN_WORK_WAIT_S,
+                )
 
     def _release_engines(self) -> None:
         """Drop membership in every used engine dir; stop each engine we leave last.
