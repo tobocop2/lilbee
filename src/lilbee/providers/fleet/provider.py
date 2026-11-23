@@ -712,12 +712,12 @@ def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
 
     Vision is skipped (its load is heavy and it warms on the first OCR); chat,
     embed, and rerank each issue a minimal call to trigger the upstream start.
+    The chat warm ends when its client closes, so a shutdown never waits out a load.
     """
     if role is WorkerRole.CHAT:
-        client.chat(
+        client.chat_abortable(
             [{"role": "user", "content": _WARM_PROMPT}],
             options={"max_tokens": _WARM_MAX_TOKENS},
-            stream=False,
         )
     elif role is WorkerRole.EMBED:
         client.embed([_WARM_PROMPT])
@@ -1343,6 +1343,9 @@ class FleetProvider:
         # The running fleet work, set exactly while work is in flight: one daemon
         # loop runs every build and reload pass. Guarded by ``_lock``.
         self._fleet_work: DaemonCall[None] | None = None
+        # The latest reload's warm thread; each waits for the one before it, and
+        # shutdown joins it. Guarded by ``_lock``.
+        self._reload_warm: threading.Thread | None = None
         # A write bumps the first count. A step that succeeds sets the second to the
         # first count as it read it before it read cfg, so a differing pair is a
         # write no step has applied, including one that landed mid-plan.
@@ -2416,6 +2419,11 @@ class FleetProvider:
                 _SHUTDOWN_WORK_WAIT_S,
             )
         self._drop_swap_refs(close_all=True)
+        # The close above ends a running chat warm; the latch stops any later one.
+        with self._lock:
+            warm = self._reload_warm
+        if warm is not None:
+            warm.join(_SHUTDOWN_WORK_WAIT_S)
         self._release_engines()
 
     def _release_engines(self) -> None:
@@ -3746,12 +3754,25 @@ class FleetProvider:
         """
         if not restarted:
             return
-        threading.Thread(
-            target=self._preload_roles,
-            kwargs={"roles": frozenset(restarted)},
-            name="fleet-reload-warm",
-            daemon=True,
-        ).start()
+        with self._lock:
+            if self._shut_down:
+                return
+            thread = threading.Thread(
+                target=self._preload_after,
+                args=(self._reload_warm, frozenset(restarted)),
+                name="fleet-reload-warm",
+                daemon=True,
+            )
+            self._reload_warm = thread
+        thread.start()
+
+    def _preload_after(
+        self, previous: threading.Thread | None, roles: frozenset[WorkerRole]
+    ) -> None:
+        """Warm *roles* once the previous reload's warm ends, so two warms never overlap."""
+        if previous is not None:
+            previous.join()
+        self._preload_roles(roles=roles)
 
     def add_spawn_listener(
         self,

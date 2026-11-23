@@ -4408,7 +4408,7 @@ def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
     spawned: list[WorkerRole] = []
     p.add_spawn_listener(on_spawning=spawning.append, on_spawned=spawned.append)
     p._preload_roles()
-    chat.chat.assert_called_once()  # chat warmed with a minimal completion
+    chat.chat_abortable.assert_called_once()  # chatwarmed with a minimal completion
     embed.embed.assert_called_once()  # embed warmed
     assert set(spawning) == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert set(spawned) == {WorkerRole.CHAT, WorkerRole.EMBED}
@@ -4452,7 +4452,7 @@ def test_preload_roles_warms_roles_concurrently(monkeypatch) -> None:
         release_chat.wait(timeout=5.0)
         return MagicMock()
 
-    chat.chat.side_effect = _blocked_chat
+    chat.chat_abortable.side_effect =_blocked_chat
     embed.embed.side_effect = lambda *a, **k: (embed_warmed.set(), [[0.1]])[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
@@ -4546,7 +4546,7 @@ def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     # the loser OOMs its first attempt.
     order: list[str] = []
     chat, embed = _fake_client(), _fake_client()
-    chat.chat.side_effect = lambda *a, **k: (order.append("chat"), MagicMock())[1]
+    chat.chat_abortable.side_effect =lambda *a, **k: (order.append("chat"), MagicMock())[1]
     embed.embed.side_effect = lambda *a, **k: (order.append("embed"), [[0.1]])[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
@@ -4571,7 +4571,7 @@ def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypat
         return [[0.1]]
 
     embed.embed.side_effect = _embed
-    chat.chat.side_effect = lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
+    chat.chat_abortable.side_effect =lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
         SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
@@ -4605,7 +4605,7 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     p.add_spawn_listener(on_spawned=spawned.append)
     with pytest.raises(RuntimeError, match="warm broke"):
         p._preload_roles()
-    chat.chat.assert_called_once()  # chat still warmed behind the failed embed
+    chat.chat_abortable.assert_called_once()  # chatstill warmed behind the failed embed
     assert spawned == [WorkerRole.CHAT]  # a role whose warm failed is not reported loaded
 
 
@@ -4654,7 +4654,7 @@ def test_preload_runs_chains_in_parallel_and_waits_for_them(monkeypatch) -> None
         finished.append(role)
         return value
 
-    chat.chat.side_effect = lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
+    chat.chat_abortable.side_effect =lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
     embed.embed.side_effect = lambda *a, **k: _meet(WorkerRole.EMBED, [[0.1]])
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
@@ -4755,7 +4755,7 @@ def test_warm_role_dispatches_per_role() -> None:
     prov_mod._warm_role(WorkerRole.EMBED, embed)
     prov_mod._warm_role(WorkerRole.RERANK, rerank)
     prov_mod._warm_role(WorkerRole.VISION, vision)  # vision warms lazily -> no call
-    chat.chat.assert_called_once()
+    chat.chat_abortable.assert_called_once()
     embed.embed.assert_called_once_with([prov_mod._WARM_PROMPT])
     rerank.rerank.assert_called_once()
     vision.chat.assert_not_called()
@@ -5803,7 +5803,7 @@ class TestWarmProgressTracking:
         from lilbee.providers.warm_progress import WarmPhase
 
         client = _fake_client()
-        client.chat.side_effect = RuntimeError("engine never came up")
+        client.chat_abortable.side_effect = RuntimeError("engine never came up")
         p = _provider_with_clients({WorkerRole.CHAT: [client]})
         monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
         monkeypatch.setattr(cfg, "chat_model", "repo/m.gguf")
@@ -6135,7 +6135,7 @@ class TestWarmFailureIsSurfaced:
     def test_warm_failure_logs_the_underlying_error_at_warning(self, caplog) -> None:
         p = FleetProvider()
         client = _fake_client()
-        client.chat.side_effect = RuntimeError("unknown model architecture: qwen35moe")
+        client.chat_abortable.side_effect = RuntimeError("unknown model architecture: qwen35moe")
 
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
             warmed = p._warm_role_clients(WorkerRole.CHAT, [client])
@@ -6146,10 +6146,12 @@ class TestWarmFailureIsSurfaced:
 
     def test_warm_cut_off_by_shutdown_logs_nothing(self, caplog) -> None:
         """Shutdown closes the client under the warm request; the model did not fail."""
+        from lilbee.runtime.cancellation import TaskCancelledError
+
         p = FleetProvider()
         p._shut_down = True
         client = _fake_client()
-        client.chat.side_effect = OSError(9, "Bad file descriptor")
+        client.chat_abortable.side_effect = TaskCancelledError
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
             assert p._warm_role_clients(WorkerRole.CHAT, [client]) is False
         assert caplog.text == ""
