@@ -17,7 +17,11 @@ from lilbee.cli import theme
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.engines.base import EngineName
-from lilbee.providers.fleet.engines.proof import not_run_clause, not_run_on
+from lilbee.providers.fleet.engines.proof import (
+    EXPERIMENTAL_NOTE,
+    experimental_clause,
+    experimental_devices,
+)
 from lilbee.providers.fleet.swap_manager import stop_engine
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.console import PlainConsole
@@ -75,19 +79,22 @@ def list_builds() -> None:
     stale = {build.engine: build for build in reversed(builds) if build.engine in absent}
     for build in builds:
         if build.engine not in absent:
-            console.print(build.label)
+            console.print(build.label, soft_wrap=True)
     for name in absent:
-        clause = not_run_clause(not_run_on(name))
+        clause = experimental_clause(experimental_devices(name))
         if name in stale:
             old = stale[name]
             console.print(
                 f"{name} not installed: the installed build {old.version} ({old.backend}) "
-                f"differs from the pin{clause}"
+                f"differs from the pin{clause}",
+                soft_wrap=True,
             )
         else:
-            console.print(f"{name} not installed{clause}")
+            console.print(f"{name} not installed{clause}", soft_wrap=True)
     for error in view.damaged:
         console.print(str(error), soft_wrap=True)
+    if view.experimental():
+        console.print(EXPERIMENTAL_NOTE, soft_wrap=True)
     _print_engines_folder()
 
 
@@ -127,19 +134,18 @@ def install(
             )
     except engine_service.EngineRefusedError as exc:
         raise _refuse("engine install", exc) from exc
-    label = built.label
     if cfg.json_mode:
         json_out(
             {
                 "command": "engine install",
-                "installed": label,
+                "installed": built.plain_label,
                 "note": built.note,
                 "not_run_on": list(built.not_run_on),
                 "engines_folder": str(engine_service.engines_folder()),
             }
         )
         return
-    console.print(f"Installed engine {label}.")
+    console.print(f"Installed engine {built.label}.", soft_wrap=True)
     _print_engines_folder()
     if built.note:
         console.print(built.note)

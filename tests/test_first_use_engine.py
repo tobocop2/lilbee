@@ -29,7 +29,7 @@ from lilbee.providers.fleet.binary import (
     resolve_llama_server,
 )
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
-from lilbee.providers.fleet.engines import LLAMA
+from lilbee.providers.fleet.engines import LLAMA, proof
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.llama import _WHEEL_VERSION
 from lilbee.providers.fleet.host_caps import collect
@@ -769,7 +769,8 @@ def _list_json() -> dict[str, Any]:
 
 def test_the_list_names_llama_cpp_missing_when_no_server_can_launch() -> None:
     result = CliRunner().invoke(cli_app, ["engine", "list"])
-    assert "llama.cpp not installed" in result.output.splitlines()
+    clause = proof.experimental_clause(proof.experimental_devices("llama.cpp"))
+    assert f"llama.cpp not installed{clause}" in result.output.splitlines()
     body = _list_json()
     assert body["not_installed"].count("llama.cpp") == 1
     assert body["builds"] == []
@@ -785,7 +786,7 @@ def test_a_stored_pack_lists_llama_cpp_as_installed_once(
     assert [b["engine"] for b in body["builds"]] == ["llama.cpp"]
     assert "llama.cpp" not in body["not_installed"]
     text = CliRunner().invoke(cli_app, ["engine", "list"]).output.splitlines()
-    assert "llama.cpp not installed" not in text
+    assert not any(line.startswith("llama.cpp not installed") for line in text)
     assert sum(line.startswith("llama.cpp ") for line in text) == 1
 
 

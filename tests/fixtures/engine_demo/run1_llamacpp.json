@@ -20,7 +20,7 @@
         "list"
       ],
       "exit_code": 0,
-      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"], \"engines_folder\": \"<home>/fix-385d/home/.local/share/lilbee/engines\"}\n",
+      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"], \"experimental\": {\"ik_llama.cpp\": [\"NVIDIA GPU\"], \"mistral.rs\": [\"Apple GPU\"], \"tei\": [\"NVIDIA GPU (sm75)\", \"NVIDIA GPU (sm80)\", \"NVIDIA GPU (sm89)\", \"NVIDIA GPU (sm90)\", \"NVIDIA GPU (sm100)\", \"NVIDIA GPU (sm120)\", \"Apple GPU\"], \"openvino\": [\"Intel Arc graphics\", \"Intel NPU\"]}, \"engines_folder\": \"<home>/fix-385d/home/.local/share/lilbee/engines\"}\n",
       "json_output": true,
       "log_lines": []
     },
@@ -931,7 +931,7 @@
         "list"
       ],
       "exit_code": 0,
-      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"], \"engines_folder\": \"<home>/fix-385d/home/.local/share/lilbee/engines\"}\n",
+      "stdout": "{\"command\": \"engine list\", \"builds\": [{\"engine\": \"llama.cpp\", \"version\": \"1.12032.1\", \"backend\": \"cpu\", \"not_run_on\": []}], \"not_installed\": [\"ik_llama.cpp\", \"mistral.rs\", \"tei\", \"openvino\"], \"experimental\": {\"ik_llama.cpp\": [\"NVIDIA GPU\"], \"mistral.rs\": [\"Apple GPU\"], \"tei\": [\"NVIDIA GPU (sm75)\", \"NVIDIA GPU (sm80)\", \"NVIDIA GPU (sm89)\", \"NVIDIA GPU (sm90)\", \"NVIDIA GPU (sm100)\", \"NVIDIA GPU (sm120)\", \"Apple GPU\"], \"openvino\": [\"Intel Arc graphics\", \"Intel NPU\"]}, \"engines_folder\": \"<home>/fix-385d/home/.local/share/lilbee/engines\"}\n",
       "json_output": true,
       "log_lines": []
     }

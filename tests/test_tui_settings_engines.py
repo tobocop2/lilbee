@@ -45,6 +45,8 @@ from tests._toasts import posted_toasts
 from tests.conformance.fake_adapter import BundledFakeAdapter, FakeAdapter
 
 _DOWNLOAD_BYTES = 180_000_000
+# The build the dialogs name; its label carries the experimental clause of this host's cell.
+_IK_CUDA = engine_service.BuildView("ik_llama.cpp", "1.2.3", "cuda")
 
 _LLAMA = EngineRow("llama.cpp", EngineState.BUNDLED, backend="metal", roles=("embed",))
 _BUILD_BYTES = 412_000_000
@@ -384,7 +386,7 @@ async def test_removing_an_engine_in_use_names_the_roles_and_removes_on_yes(
         service.rows = [_LLAMA, _TEI, _OPENVINO]
         await _select_row(pilot, table, "ik_llama.cpp")
         text = await _dialog_message(app, pilot, ConfirmDialog)
-        assert text == "ik_llama.cpp 1.2.3 (cuda) is used by chat, rerank. Remove it anyway?"
+        assert text == f"{_IK_CUDA.label} is used by chat, rerank. Remove it anyway?"
         remove.assert_not_called()
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)
@@ -468,7 +470,7 @@ async def test_a_build_that_differs_from_the_pin_shows_its_size_and_removes_on_y
         service.rows = [_IK_MISSING]
         await _select_row(pilot, table, "ik_llama.cpp|1.2.3")
         text = await _dialog_message(app, pilot, ConfirmDialog)
-        assert text == "Remove ik_llama.cpp 1.2.3 (cuda) from this computer?"
+        assert text == f"Remove {_IK_CUDA.label} from this computer?"
         await pilot.press("y")
         assert await wait_until(pilot, lambda: remove.called)
         remove.assert_called_once_with("ik_llama.cpp", "1.2.3", "cuda", confirmed=False)
@@ -497,7 +499,7 @@ async def test_a_build_that_links_out_of_the_store_offers_no_remove_and_says_why
         await _select_row(pilot, table, "ik_llama.cpp")
         folder = engine_service.engines_folder()
         why = (
-            "The folder of ik_llama.cpp 1.2.3 (cuda) is a link to a place outside the engines "
+            f"The folder of {_IK_CUDA.label} is a link to a place outside the engines "
             f"folder {folder}. lilbee does not remove it. Delete the link yourself."
         )
         assert await wait_until(pilot, lambda: why in _toasts())

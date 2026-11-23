@@ -261,8 +261,8 @@ def test_s9_openvino_serves_chat_only() -> None:
             OPENVINO.role_spec(role, None, None)
 
 
-def test_proof_the_npu_is_not_run_so_auto_never_picks_openvino() -> None:
-    assert proof.not_run_on("openvino") == ("Intel NPU",)
+def test_proof_the_npu_and_arc_are_not_run_so_auto_never_picks_openvino() -> None:
+    assert proof.experimental_devices("openvino") == ("Intel Arc graphics", "Intel NPU")
     assert not proof.is_proven("openvino")
 
 

@@ -19,11 +19,12 @@ from lilbee.cli import app as cli_app
 from lilbee.cli.tui.engine_commands import USAGE, run_engine_command
 from lilbee.core.config import Config, cfg
 from lilbee.providers.fleet.engine_store import EngineStore, engines_root
+from lilbee.providers.fleet.engines import proof
 from lilbee.server.app import create_app
 from lilbee.server.auth import session_manager
 from lilbee.server.routes import engines as routes
 from tests._litestar_test_client import create_test_client
-from tests.cli.test_engine_builds import install
+from tests.cli.test_engine_builds import install, record_fx
 
 ALL_ROUTES = [
     routes.engine_builds_route,
@@ -40,6 +41,11 @@ def _folder() -> str:
     return str(cfg.models_dir.parent / "engines")
 
 
+def _marked(absent: list[str]) -> dict[str, list[str]]:
+    """The experimental field for *absent* engines: every device of theirs with no record."""
+    return {n: list(proof.experimental_devices(n)) for n in absent if proof.experimental_devices(n)}
+
+
 def _folder_line() -> str:
     return engine_service.FOLDER_LINE.format(folder=_folder())
 
@@ -47,6 +53,7 @@ def _folder_line() -> str:
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     snapshot = cfg.model_copy()
+    record_fx(monkeypatch)
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
     monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
     monkeypatch.setenv("LILBEE_MCP_ENGINES_ENABLED", "true")
@@ -107,7 +114,13 @@ def test_every_surface_lists_the_same_builds() -> None:
     code, listed = _cli("list")
     assert (code, listed["command"], listed["builds"]) == (0, "engine list", [BUILD])
     absent = engine_service.not_installed()
-    full = {"builds": [BUILD], "damaged": [], "not_installed": absent, "engines_folder": _folder()}
+    full = {
+        "builds": [BUILD],
+        "damaged": [],
+        "not_installed": absent,
+        "experimental": _marked(absent),
+        "engines_folder": _folder(),
+    }
     assert _rest("GET", "/api/engines") == (200, full)
     assert mcp_server.engine_list_tool() == full
     assert listed["engines_folder"] == _folder()
@@ -134,7 +147,13 @@ def test_cli_rest_and_mcp_return_the_same_list_fields() -> None:
     rest_body = _rest("GET", "/api/engines")[1]
     mcp_body = mcp_server.engine_list_tool()
     assert cli_body == rest_body == mcp_body
-    assert set(cli_body) == {"builds", "damaged", "not_installed", "engines_folder"}
+    assert set(cli_body) == {
+        "builds",
+        "damaged",
+        "not_installed",
+        "experimental",
+        "engines_folder",
+    }
     assert cli_body["not_installed"] == absent
 
 
@@ -142,7 +161,13 @@ def test_every_surface_lists_nothing_the_same_way() -> None:
     assert engine_service.builds() == []
     assert _cli("list")[1]["builds"] == []
     absent = engine_service.not_installed()
-    empty = {"builds": [], "damaged": [], "not_installed": absent, "engines_folder": _folder()}
+    empty = {
+        "builds": [],
+        "damaged": [],
+        "not_installed": absent,
+        "experimental": _marked(absent),
+        "engines_folder": _folder(),
+    }
     assert _rest("GET", "/api/engines") == (200, empty)
     assert mcp_server.engine_list_tool() == empty
     assert run_engine_command("list").text == f"No engine builds are installed.\n{_folder_line()}"
@@ -280,6 +305,7 @@ def test_rest_list_stays_open_while_the_flag_is_off() -> None:
             "builds": [BUILD],
             "damaged": [],
             "not_installed": engine_service.not_installed(),
+            "experimental": _marked(engine_service.not_installed()),
             "engines_folder": _folder(),
         },
     )
@@ -296,6 +322,7 @@ def test_mcp_remove_on_the_http_mount_is_refused_while_the_flag_is_off() -> None
         "builds": [BUILD],
         "damaged": [],
         "not_installed": engine_service.not_installed(),
+        "experimental": _marked(engine_service.not_installed()),
         "engines_folder": _folder(),
     }
     assert len(_installed()) == 1
