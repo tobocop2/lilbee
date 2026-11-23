@@ -11,7 +11,7 @@ from typing import Any
 
 from lilbee.catalog.hf_client import HfToken
 from lilbee.catalog.types import ModelFormat
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.adapters import ROLE_SPECS, RoleServerSpec
 from lilbee.providers.fleet.devices import DeviceProbe, visible_nvidia_cards
 from lilbee.providers.fleet.engine_manifest import pack_digest, pack_platforms
@@ -291,7 +291,8 @@ class MistralAdapter:
         tool = store_tool(self.pin_record(), _TOOL, host)
         if tool is None:
             raise ProviderError(
-                f"The mistral.rs engine is not installed. {install_advice(self, host)}"
+                f"The mistral.rs engine is not installed. {install_advice(self, host)}",
+                kind=ProviderErrorKind.NOT_FOUND,
             )
         return tool
 
