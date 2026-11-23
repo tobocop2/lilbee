@@ -401,7 +401,7 @@ def serve(args: argparse.Namespace, backend: Backend) -> None:
 
 
 def check_model(path: str, task: str) -> None:
-    """Stop with a plain message unless the folder *path* holds a Qwen3 model for *task*.
+    """Stop with a plain message unless the folder *path* holds the Qwen3 model of *task*.
 
     The pooling and the prompt of this server are those of Qwen3-Embedding and
     Qwen3-Reranker. Any other model loads and gives wrong vectors or scores, or fails to load.
@@ -420,6 +420,24 @@ def check_model(path: str, task: str) -> None:
             f"mlx-embed-server: the model in {path} has model type {model_type!r}. "
             f"The {task} task runs {family} models only, which have model type {MODEL_TYPE!r}."
         )
+    name = _model_name(Path(path))
+    if family.lower() not in name.lower():
+        raise SystemExit(
+            f"mlx-embed-server: the model {name!r} in {path} is not a {family} model. "
+            f"The {task} task runs {family} models only."
+        )
+
+
+def _model_name(folder: Path) -> str:
+    """The repo name of the model in *folder*, the one thing that tells the two families apart.
+
+    The config.json of Qwen3-Embedding, Qwen3-Reranker and a Qwen3 chat model all name the
+    architecture Qwen3ForCausalLM, so no config field names the role. A folder in the Hugging
+    Face cache is ``models--<org>--<repo>/snapshots/<hash>``, and the repo is read from there.
+    """
+    if folder.parent.name == "snapshots":
+        return folder.parent.parent.name.split("--", 2)[-1]
+    return folder.name
 
 
 def main(argv: Sequence[str] | None = None) -> None:
