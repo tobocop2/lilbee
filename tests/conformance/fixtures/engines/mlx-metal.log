@@ -1,0 +1,19 @@
+engine: mlx-metal
+version: 0.32.2
+host: macOS-27.2.1-arm64-arm-64bit
+backend: metal
+reported-backend: metal
+devices: Metal0
+devices-from: engine-log
+models: chat=mlx-community/Qwen3-0.6B-4bit,embed=mlx-community/Qwen3-Embedding-0.6B-8bit,rerank=mlx-community/Qwen3-Reranker-0.6B-4bit
+front: llama-swap v272
+gpu: Apple M3 Pro, 36 GB unified, Metal 4
+STEP mlx-metal template ok=True finish=stop
+STEP mlx-metal tool ok=True tool_calls=['get_weather']
+STEP mlx-metal overflow ok=True kind=context_overflow
+STEP mlx-metal json_object ok=True format dropped, scan found an object=False finish=stop
+STEP mlx-metal json_schema ok=True refused kind=bad_request
+STEP mlx-metal reasoning ok=True finish=stop
+STEP mlx-metal embed ok=True dims=[1024]
+STEP mlx-metal rerank ok=True best=1
+STEP mlx-metal named ok=True log=['served by engine=mlx-metal version=preset build=none role=chat model=mlx-metal/mlx-community/Qwen3-0.6B-4bit'] status={<WorkerRole.CHAT: 'chat'>: 'mlx-metal', <WorkerRole.EMBED: 'embed'>: 'mlx-metal', <WorkerRole.RERANK: 'rerank'>: 'mlx-metal'}
