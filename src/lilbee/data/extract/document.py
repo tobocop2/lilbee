@@ -32,6 +32,8 @@ from lilbee.data.types import (
     OcrReport,
 )
 from lilbee.providers.base import aux_options
+from lilbee.providers.engine_params import INPUT_HEADROOM_TOKENS
+from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -48,6 +50,7 @@ from .chunk import (
     ChunkLimitError,
     build_chunking_config,
     chunk_text,
+    count_embed_tokens,
     enforce_chunk_limit,
     fit_table_budget,
     fit_token_budget,
@@ -119,16 +122,56 @@ def _title_scope(title: str) -> Generator[None, None, None]:
         _embed_title.reset(token)
 
 
-def _embed_inputs(texts: list[str], title: str | None = None) -> list[str]:
-    """Embedding inputs, title-prefixed when ``cfg.embed_titles`` is on.
+def _embed_inputs(
+    texts: list[str], title: str | None = None, sentences: list[str] | None = None
+) -> list[str]:
+    """Embedding inputs: each chunk after its title (``cfg.embed_titles``) and its sentence.
 
-    Only the vector sees the title; the stored chunk text is unchanged.
-    ``None`` falls back to the scoped per-file title (the OCR chains).
+    Only the vector sees the title and the situating sentence; the stored chunk text is
+    unchanged. ``None`` falls back to the scoped per-file title (the OCR chains).
+    The title and the sentence are cut to the input headroom, so the chunk is never cut.
     """
     effective = title if title is not None else _embed_title.get()
-    if not effective or not active_config().embed_titles:
-        return texts
-    return [f"{effective}\n{text}" for text in texts]
+    if not active_config().embed_titles:
+        effective = ""
+    budget: int | None = None
+    # A title without a sentence is the same head for every chunk: count it once.
+    bounded: dict[str, str] = {}
+    inputs: list[str] = []
+    for text, sentence in zip(texts, sentences or [""] * len(texts), strict=True):
+        head = "\n".join(part for part in (effective, sentence) if part)
+        if not head:
+            inputs.append(text)
+            continue
+        if budget is None:
+            budget = _head_budget()
+        if head not in bounded:
+            bounded[head] = _bounded_head(head, budget)
+        inputs.append(f"{bounded[head]}\n{text}")
+    return inputs
+
+
+def _head_budget() -> int:
+    """Tokens the title and sentence may take: the headroom less the document prefix and newline."""
+    prefix = resolve_embedding_profile(active_config().embedding_model).doc_prefix
+    return INPUT_HEADROOM_TOKENS - count_embed_tokens(prefix) - count_embed_tokens("\n")
+
+
+def _bounded_head(head: str, budget: int) -> str:
+    """The longest start of *head* that the embedder counts at most *budget* tokens.
+
+    The count is the chunker's own (the embedder's tokenizer, else its character estimate).
+    """
+    if count_embed_tokens(head) <= budget:
+        return head
+    low, high = 0, len(head) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if count_embed_tokens(head[:middle]) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return head[:low]
 
 
 # Contextual enrichment: characters of document head shown to the model, and
@@ -144,15 +187,15 @@ _ENRICH_PROMPT = (
 
 
 def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str]:
-    """Embedding inputs with one LLM-written situating sentence per chunk.
+    """One LLM-written situating sentence per chunk, empty when there is none.
 
     Anthropic-style contextual retrieval, opt-in (``cfg.contextual_enrichment``):
     one generation per chunk, so ingest slows accordingly. Only the vector sees
-    the sentence; stored chunk text and citations stay verbatim. Any failure
-    keeps that chunk's bare text.
+    the sentence (see :func:`_embed_inputs`); stored chunk text and citations stay
+    verbatim. Any failure leaves that chunk's sentence empty.
     """
     if not active_config().contextual_enrichment or not texts:
-        return texts
+        return [""] * len(texts)
     from lilbee.retrieval.reasoning import strip_reasoning
 
     provider = get_services().provider
@@ -172,7 +215,7 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
         except Exception:
             failed += 1
             sentence = ""
-        enriched.append(f"{sentence}\n{text}" if sentence else text)
+        enriched.append(sentence)
     if failed:
         log.warning(
             "Contextual enrichment failed for %d of %d chunks in %s; those embed bare",
@@ -473,10 +516,10 @@ async def chunk_and_embed_pages(
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
-    embed_texts = await to_ingest_thread(_enrich_texts, texts, page_texts[0][1], source_name)
+    sentences = await to_ingest_thread(_enrich_texts, texts, page_texts[0][1], source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(embed_texts),
+        await to_ingest_thread(_embed_inputs, texts, None, sentences),
         source=source_name,
         on_progress=on_progress,
     )
@@ -864,12 +907,12 @@ async def _records_from_document(
     # list is split back apart below by position.
     texts = [text for _, text in pieces]
     table_texts = [text for _, text in table_pieces]
-    embed_texts = await to_ingest_thread(
+    sentences = await to_ingest_thread(
         _enrich_texts, texts + table_texts, texts[0] if texts else "", source_name
     )
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(embed_texts, meta.title),
+        await to_ingest_thread(_embed_inputs, texts + table_texts, meta.title, sentences),
         source=source_name,
         on_progress=on_progress,
     )
@@ -962,10 +1005,10 @@ async def ingest_markdown(
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
-    embed_texts = await to_ingest_thread(_enrich_texts, texts, raw_text, source_name)
+    sentences = await to_ingest_thread(_enrich_texts, texts, raw_text, source_name)
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch,
-        _embed_inputs(embed_texts, meta.title),
+        await to_ingest_thread(_embed_inputs, texts, meta.title, sentences),
         source=source_name,
         on_progress=on_progress,
     )
