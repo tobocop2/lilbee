@@ -1463,6 +1463,50 @@ async def test_settings_refresh_shows_cfg_in_an_editor_without_an_edit():
         assert ta.text == "/new"
 
 
+async def test_settings_refresh_after_a_refused_save_shows_the_stored_value():
+    """Once a refused save has run, an outside change shows the stored value in the field."""
+    from textual.widgets import Input
+
+    app = LazySettingsTestApp("top_k")
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        field = screen.query_one("#ed-top_k", Input)
+        field.focus()
+        assert await wait_until(pilot, lambda: app.focused is field), "the field never got focus"
+        field.value = "abc"
+        stored = cfg.top_k
+        field.blur()
+        assert "top_k" in screen._saves_pending
+        assert await wait_until(pilot, lambda: "top_k" not in screen._saves_pending)
+        assert cfg.top_k == stored
+        cfg.top_k = 17
+        app.publish_settings(["top_k"])
+        assert await pump_until(pilot, lambda: field.value == "17"), field.value
+
+
+async def test_settings_profile_refresh_replaces_a_refused_pattern():
+    """The refresh a profile apply sends shows the profile's value over a refused pattern."""
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    key = "crawl_exclude_patterns"
+    refused = r"\Z"
+    app = LazySettingsTestApp(key)
+    with StubCrawlberg(refuse=refusing_patterns(refused)).installed():
+        async with app.run_test(size=(120, 40)) as pilot:
+            cfg.crawl_exclude_patterns = ["keep"]
+            screen = app.screen
+            ta = screen.query_one(f"#ed-{key}", ListTextArea)
+            ta.focus()
+            assert await wait_until(pilot, lambda: app.focused is ta), "the editor never got focus"
+            ta.load_text(refused)
+            ta.blur()
+            err = screen.query_one(f"#err-{key}", Static)
+            assert await pump_until(pilot, lambda: "line 1" in str(err.render()))
+            cfg.crawl_exclude_patterns = ["/profile"]
+            app.publish_settings([key])
+            assert await pump_until(pilot, lambda: ta.text == "/profile"), ta.text
+
+
 async def test_settings_list_editor_saves_a_pattern_only_crawlberg_compiles():
     """Python's re refuses this pattern; crawlberg compiles it, so the screen saves it."""
     from lilbee.cli.tui.widgets.list_text_area import ListTextArea
