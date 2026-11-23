@@ -54,6 +54,7 @@ class FakeAdapter:
     memory_kind = MemoryKind.FIXED_RESERVE
     takes_device_names = False
     concatenates_pooling = False
+    writes_own_log = False
     bundled = False
     server_process = ServerProcess(name="fake-engine-server")
     backend: str | None = "cpu"

@@ -162,6 +162,7 @@ class OpenvinoAdapter:
     memory_kind = MemoryKind.SIZED
     takes_device_names = False
     concatenates_pooling = False
+    writes_own_log = False
     bundled = False
     server_process = ServerProcess(name=_TOOL)
 

@@ -39,6 +39,7 @@ from lilbee.providers.fleet.readback import (
     MEMORY_FLAG,
     check_launch,
     check_memory_report,
+    engine_log_of,
     report_missing_log,
 )
 from lilbee.providers.fleet.swap_config import (
@@ -67,8 +68,8 @@ _CONFIG_FILE_GLOB = "llama-swap-*.json"
 # one lilbee's data root, so the log sits beside the engine it belongs to instead
 # of beside server.log. Capturing it at all, rather than inheriting the parent's
 # fd, is because a TUI or CLI parent owns the terminal and an inherited fd would bleed
-# llama-swap's request log onto the screen and corrupt the render. Per-model
-# upstream logs are unaffected (those go to llama-swap's /logs API).
+# llama-swap's request log onto the screen and corrupt the render. The output of an
+# engine that writes no log file of its own is copied in too (swap_config).
 _LOGS_SUBDIR = "logs"
 _LOG_FILENAME_TEMPLATE = "llama-swap-{group}.log"
 # Each writer's state file records its swap's pid/pgid so a later start can
@@ -261,6 +262,9 @@ class SwapManager:
         # so the check runs once per start rather than on every readiness poll.
         self._estimate_checked: set[str] = set()
         self._launch_by_model: dict[str, InstanceLaunch] = {}
+        # The file each member's engine writes its own log to; a member with none has
+        # its output in this group's llama-swap log.
+        self._engine_logs: dict[str, Path] = {}
         # Placement divergences by model id, surfaced on health. Guarded because
         # role_ready probes off the provider lock while health reads anytime.
         self._placement_warnings: dict[str, HealthWarning] = {}
@@ -337,6 +341,12 @@ class SwapManager:
         self._member_port_by_model = dict(member_ports)
         self._launches_payload = [launch.to_state() for launch in launches]
         self._launch_by_model = {launch.model_id: launch for launch in launches}
+        self._engine_logs = {
+            launch.model_id: path
+            for launch in launches
+            if (path := engine_log_of(engines[launch.role], launch, self._log_path.parent))
+            is not None
+        }
         self._estimate_checked.clear()
         self._ready_at = None
         with self._warnings_lock:
@@ -350,7 +360,7 @@ class SwapManager:
                 member_ports,
                 swap=self._group.swaps,
                 ttl_seconds=ttl_seconds,
-                engine_log_dir=self._log_path.parent,
+                engine_logs=self._engine_logs,
             ),
         )
         self._port = ports[0]
@@ -486,6 +496,9 @@ class SwapManager:
             # checks would misfire on it by construction.
             if MEMORY_FLAG in launch.argv:
                 self._check_memory_estimate(model_id, launch)
+                continue
+            # An engine that writes no log of its own has no file to read back.
+            if model_id not in self._engine_logs:
                 continue
             # The engine is ready, so a missing log is not "too early" any more.
             if report_missing_log(self._log_path.parent, model_id, launch.role):

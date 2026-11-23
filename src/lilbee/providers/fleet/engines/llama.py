@@ -222,6 +222,7 @@ class LlamaCppAdapter:
     memory_kind = MemoryKind.SIZED
     takes_device_names = True
     concatenates_pooling = False
+    writes_own_log = True
     bundled = True
     server_process = ServerProcess(name="llama-server")
 
