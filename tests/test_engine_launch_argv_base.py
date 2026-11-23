@@ -32,11 +32,11 @@ def test_l4_with_no_row_every_shipped_engine_launches_with_the_base_argv(
     monkeypatch.setattr(proof, "HARDWARE_PROOF", {})
     recorded = json.loads(BASE.read_text(encoding="utf-8"))
     # The base holds the POSIX form of each path; the adapters write the host's form.
-    # The mlx embed and rerank argv start with the launcher next to the binary.
-    embed_tool = BINARY.with_name("mlx-embed-server")
-    host_form = {str(path): str(Path(path)) for path in (BINARY, embed_tool, MODEL, MODEL.parent)}
+    def host_form(arg: str) -> str:
+        return str(Path(arg)) if arg.startswith("/") else arg
+
     base = {
-        name: {role: [host_form.get(arg, arg) for arg in argv] for role, argv in roles.items()}
+        name: {role: [host_form(arg) for arg in argv] for role, argv in roles.items()}
         for name, roles in recorded.items()
     }
     now = launch_argvs(monkeypatch, tmp_path / "models")
