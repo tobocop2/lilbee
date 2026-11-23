@@ -14,6 +14,7 @@ import ssl
 import sys
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -93,6 +94,11 @@ _EMBED_N_SEQ_MAX = 64
 # pair through; the rerank path re-truncates exactly on the server's overflow
 # error instead of paying a /tokenize round trip per pair up front.
 _EMBED_EST_CHARS_PER_TOKEN = 3
+# TEI 1.9.4 refuses a request body past its --payload-limit (default 2,000,000 bytes) with 413.
+# For an engine that cuts inputs by its own tokens, the client packs each embed request so that
+# its encoded body stays within the limit less the margin, and cuts a single longer input.
+_EMBED_PAYLOAD_LIMIT = 2_000_000
+_EMBED_BODY_MARGIN = 4096
 # llama-swap's error body when the spawned llama-server exited before serving.
 _UPSTREAM_DIED_MARKER = "exited prematurely"
 # llama-server's exit line when the port lilbee picked was taken by the time
@@ -196,6 +202,24 @@ _TRUNCATION_CHECK_TIMEOUT_S = 5.0
 def _estimate_tokens(text: str) -> int:
     """Conservative (over-counting) token estimate from character length."""
     return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
+
+
+def _wire_bytes(value: Any) -> int:
+    """The bytes *value* takes in a request body: httpx encodes ``json=`` with these options."""
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return len(encoded.encode())
+
+
+def _cut_to_wire_bytes(text: str, budget: int) -> str:
+    """The longest head of *text*, on a character boundary, that takes at most *budget* bytes."""
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _wire_bytes(text[:mid]) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]
 
 
 _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
@@ -1263,41 +1287,14 @@ class LlamaServerClient:
             # Match the in-process embedder; the server rejects an empty input.
             return []
         vectors: list[Vector] = []
-        counts = self._count_wide_inputs(texts)
-        sub_batches = self._truncate_and_subbatch(texts, estimate=True, counts=counts)
+        sub_batches = self._truncate_and_subbatch(texts, estimate=True)
         for sub_batch in sub_batches:
             data = self._embed_subbatch(sub_batch)
             vectors.extend(_embedding_vector(item, self._profile) for item in data)
-        self._note_cut_inputs(sub_batches, len(texts), counts)
+        self._note_cut_inputs([text for batch in sub_batches for text in batch])
         return vectors
 
-    def _count_wide_inputs(self, texts: list[str]) -> dict[str, int]:
-        """Exact token counts of the inputs whose estimate is past the cap, in few requests.
-
-        Only an engine with a count route and no tokenize route asks. A failed request
-        pauses the check and leaves the inputs to the estimate, as an engine with no route.
-        """
-        path = self._profile.input_count_path
-        cap = self._token_cap
-        if cap is None or path is None or self._profile.tokenize_path is not None:
-            return {}
-        wide = [text for text in dict.fromkeys(texts) if _estimate_tokens(text) > cap]
-        if not wide or time.monotonic() < self._check_resume_at:
-            return {}
-        step = self._batch_limit or _EMBED_N_SEQ_MAX
-        counts: dict[str, int] = {}
-        try:
-            for start in range(0, len(wide), step):
-                part = wide[start : start + step]
-                counts.update(zip(part, self._route_token_counts(path, part), strict=True))
-        except _TRUNCATION_CHECK_FAILURES:
-            # The thread that sent the failed request paused the check already.
-            return {}
-        return counts
-
-    def _note_cut_inputs(
-        self, sub_batches: list[list[str]], total: int, counts: Mapping[str, int]
-    ) -> None:
+    def _note_cut_inputs(self, sent: list[str]) -> None:
         """Record an embed's input count and the server's cuts; a failure never raises."""
         cut, limit = 0, None
         if time.monotonic() >= self._check_resume_at:
@@ -1305,26 +1302,29 @@ class LlamaServerClient:
                 limit = self._input_limit()
                 path = self._profile.input_count_path
                 if limit is not None and path is not None:
-                    for past in self._counts_past_limit(sub_batches, limit, path, counts):
+                    for past in self._counts_past_limit(sent, limit, path):
                         cut += past
             except _TRUNCATION_CHECK_FAILURES:
                 # The thread that sent the failed request paused the check before it let go
                 # of the request, so every thread that reaches here finds the pause set.
                 pass
-        note_truncated(cut, total, limit)
+        note_truncated(cut, len(sent), limit)
 
-    def _counts_past_limit(
-        self, sub_batches: list[list[str]], limit: int, path: str, counts: Mapping[str, int]
-    ) -> Iterator[int]:
-        """Yield how many inputs are past *limit*, in parts, so a failure keeps earlier parts.
+    def _counts_past_limit(self, sent: list[str], limit: int, path: str) -> Iterator[int]:
+        """Yield how many of *sent* are past *limit*, in parts, so a failure keeps earlier parts.
 
-        An input in *counts* has its exact count already and is not asked for again.
+        Each distinct input is counted once, in parts of the batch limit, and tallied each time
+        it was sent.
         """
-        for batch in sub_batches:
-            yield sum(counts[text] > limit for text in batch if text in counts)
-            unknown = [text for text in batch if text not in counts]
-            if unknown:
-                yield self._count_inputs_past_limit(unknown, limit, path)
+        times = Counter(sent)
+        distinct = list(times)
+        step = self._batch_limit or _EMBED_N_SEQ_MAX
+        for start in range(0, len(distinct), step):
+            part = distinct[start : start + step]
+            tokens = self._route_token_counts(path, part)
+            yield sum(
+                times[text] for text, count in zip(part, tokens, strict=True) if count > limit
+            )
 
     def _pause_truncation_check(self, exc: Exception, route: str | None) -> None:
         """Pause the check after *exc* from *route*, and warn once of an unexpected answer.
@@ -1438,15 +1438,6 @@ class LlamaServerClient:
         if not isinstance(counts, list) or not all(isinstance(tokens, list) for tokens in counts):
             raise ValueError(f"the body is not a list of token lists: {resp.text.strip()[:200]}")
         return counts
-
-    def _count_inputs_past_limit(self, texts: list[str], limit: int, path: str) -> int:
-        """How many of *texts* the tokenizer route *path* counts past *limit*.
-
-        Every text is counted: the route counts the special tokens, and a byte-level
-        tokenizer makes more than one token from a character, so no character count
-        bounds the tokens.
-        """
-        return sum(tokens > limit for tokens in self._route_token_counts(path, texts))
 
     def _route_token_counts(self, path: str, texts: list[str]) -> list[int]:
         """The token count of each of *texts* on the route *path*.
@@ -1666,20 +1657,26 @@ class LlamaServerClient:
 
         return _llm_rerank_score(_first_token_top_logprobs(retry_on_gateway_error(_call)))
 
+    def _embed_request(self, inputs: list[str]) -> dict[str, Any]:
+        """The body of one ``/v1/embeddings`` request for *inputs*."""
+        return {
+            "model": self._model,
+            "input": inputs,
+            **self._profile.embed_fields,
+            "encoding_format": _EMBED_ENCODING_FORMAT,
+        }
+
+    def _input_bytes_budget(self) -> int:
+        """The body bytes the inputs of one embed request may take, a comma each included."""
+        envelope = _wire_bytes(self._embed_request([]))
+        return _EMBED_PAYLOAD_LIMIT - _EMBED_BODY_MARGIN - envelope
+
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
         """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
 
         def _call() -> list[dict[str, Any]]:
             with self._track():
-                resp = self._http.post(
-                    _EMBED_PATH,
-                    json={
-                        "model": self._model,
-                        "input": inputs,
-                        **self._profile.embed_fields,
-                        "encoding_format": _EMBED_ENCODING_FORMAT,
-                    },
-                )
+                resp = self._http.post(_EMBED_PATH, json=self._embed_request(inputs))
                 self._raise_for_status(resp)
                 data = resp.json()["data"]
             if len(data) != len(inputs):
@@ -1691,9 +1688,7 @@ class LlamaServerClient:
 
         return retry_on_gateway_error(_call)
 
-    def _truncate_and_subbatch(
-        self, texts: list[str], *, estimate: bool, counts: Mapping[str, int] | None = None
-    ) -> list[list[str]]:
+    def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
 
         An input longer than ``token_cap`` (the server's per-slot context /
@@ -1702,8 +1697,10 @@ class LlamaServerClient:
         request stays within both the request token budget (the profile's
         ``request_tokens``, never below ``token_cap``) and the sequence limit (the
         profile's ``batch_limit``, else ``_EMBED_N_SEQ_MAX``), bounding per-request
-        size and the gateway-retry window. No cap (chat/vision) sends a single
-        batch untouched, unless the profile sets a ``batch_limit``.
+        size and the gateway-retry window. An engine that cuts inputs itself also
+        gets requests whose encoded body stays within its payload limit. No cap
+        (chat/vision) sends a single batch untouched, unless the profile sets a
+        ``batch_limit``.
 
         When ``estimate`` is set the per-input token count comes from
         :func:`_estimate_tokens`, and ``/tokenize`` is consulted only for the
@@ -1719,40 +1716,49 @@ class LlamaServerClient:
         cap = self._token_cap
         budget = max(cap, self._profile.request_tokens or 0)
         limit = limit or _EMBED_N_SEQ_MAX
+        whole = self._profile.input_limit_path is not None
+        byte_budget = self._input_bytes_budget()
         batches: list[list[str]] = []
         current: list[str] = []
-        current_tokens = 0
+        current_tokens = current_bytes = 0
         for text in texts:
-            item, item_tokens = self._fit_input(text, cap, estimate=estimate, counts=counts)
-            if current and (current_tokens + item_tokens > budget or len(current) >= limit):
+            item, item_tokens = self._fit_input(text, cap, estimate=estimate)
+            item_bytes = _wire_bytes(item) + 1 if whole else 0
+            if current and (
+                current_tokens + item_tokens > budget
+                or len(current) >= limit
+                or current_bytes + item_bytes > byte_budget
+            ):
                 batches.append(current)
                 current = []
-                current_tokens = 0
+                current_tokens = current_bytes = 0
             current.append(item)
             current_tokens += item_tokens
+            current_bytes += item_bytes
         if current:
             batches.append(current)
         return batches
 
-    def _fit_input(
-        self, text: str, cap: int, *, estimate: bool, counts: Mapping[str, int] | None = None
-    ) -> tuple[str, int]:
+    def _fit_input(self, text: str, cap: int, *, estimate: bool) -> tuple[str, int]:
         """Return ``(input, token_count)`` for one sequence, truncating if over cap.
 
         Estimation short-circuits the common case: an estimate within the cap is
         trusted (no ``/tokenize``); only an over-cap estimate is confirmed against
-        the server tokenizer, or the exact count in *counts* for an engine with only a
-        count route, and truncated if it really exceeds the cap.
+        the server tokenizer and truncated if it really exceeds the cap. An engine
+        that reports its input limit cuts a longer input by its own tokens, so the
+        input goes whole, within the payload bound; another engine gets the estimate cut.
         """
         if estimate or self._profile.tokenize_path is None:
             est = _estimate_tokens(text)
             if est <= cap:
                 return text, est
             if self._profile.tokenize_path is None:
-                exact = None if counts is None else counts.get(text)
-                if exact is not None and exact <= cap:
-                    return text, exact
-                note_cut_to_limit(f"~{est}" if exact is None else str(exact), cap)
+                if self._profile.input_limit_path is not None:
+                    room = self._input_bytes_budget() - 1
+                    if _wire_bytes(text) > room:
+                        text = _cut_to_wire_bytes(text, room)
+                    return text, cap
+                note_cut_to_limit(f"~{est}", cap)
                 return text[: cap * _EMBED_EST_CHARS_PER_TOKEN], cap
         tokens = self._tokenize(text)
         if len(tokens) > cap:

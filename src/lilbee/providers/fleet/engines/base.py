@@ -151,7 +151,8 @@ class RequestProfile:
     """The route that counts the tokens of a list of inputs, or None for an engine that has none."""
     input_limit_path: str | None = None
     """The route that reports ``max_input_length``, or None. An engine with both routes cuts an
-    over-limit embed input without a sign, so the client counts and warns."""
+    over-limit embed input by its own tokens without a sign, so the client sends such an input
+    whole, then counts the cuts and warns."""
     rerank_shape: RerankShape = RerankShape.TEXTS
     """The shape of the rerank route; it matters only when ``rerank_path`` is set."""
     rerank_model: str | None = None
