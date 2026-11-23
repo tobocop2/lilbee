@@ -73,7 +73,7 @@ from lilbee.providers.fleet.gpu_env import (
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
-from lilbee.providers.fleet.readback import engine_log_path, writes_engine_log
+from lilbee.providers.fleet.readback import engine_log_of
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     EngineLifetime,
@@ -593,9 +593,9 @@ def _retry_on_other_replica(
         retry.release()
 
 
-def _engine_log_of(launch: InstanceLaunch, log_dir: Path) -> Path | None:
-    """The file *launch*'s engine writes its own output to, or None when it writes none."""
-    return engine_log_path(log_dir, launch.model_id) if writes_engine_log(launch.argv) else None
+def _output_log_of(engine: EngineAdapter, launch: InstanceLaunch, swap_log: Path) -> Path:
+    """The file that holds *launch*'s engine output: its own log, else the group's llama-swap log."""
+    return engine_log_of(engine, launch, swap_log.parent) or swap_log
 
 
 def _raise_no_healthy_replica(cause: Exception) -> NoReturn:
@@ -1982,7 +1982,8 @@ class FleetProvider:
             # client snapshot, and never closing leaks an httpx pool per replica.
             old_clients = list(self._clients.get(role, []))
             self._role_group[role] = group
-            profile = self._engine_of(role_launches[0]).request_profile(role)
+            engine = self._engine_of(role_launches[0])
+            profile = engine.request_profile(role)
             # token_cap truncates oversize embed/rerank inputs to the per-slot context
             # (the in-process backstop); the longer timeout covers a cold upstream load.
             self._clients[role] = [
@@ -1994,7 +1995,7 @@ class FleetProvider:
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
-                    engine_log=_engine_log_of(launch, swap.log_path.parent),
+                    engine_log=_output_log_of(engine, launch, swap.log_path),
                     model_ref=launch.model,
                     profile=profile,
                 )

@@ -213,6 +213,11 @@ class EngineAdapter(Protocol, Hashable):
     """Whether ``launch_argv`` puts ``LaunchRequest.device_names`` on the command line."""
     server_process: ServerProcess
     """How the orphan sweep recognises this engine's server after its llama-swap is gone."""
+    writes_own_log: bool
+    """Whether the engine writes its output to the file the ``LLAMA_LOG_FILE`` variables name.
+
+    An engine that is False gets its output copied into the llama-swap log of its group.
+    """
 
     concatenates_pooling: bool
     """Whether a model that enables several pooling modes gets one vector block per mode.
