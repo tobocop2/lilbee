@@ -4511,7 +4511,7 @@ def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:
     spawned: list[WorkerRole] = []
     p.add_spawn_listener(on_spawning=spawning.append, on_spawned=spawned.append)
     p._preload_roles()
-    chat.chat_abortable.assert_called_once()  # chatwarmed with a minimal completion
+    chat.chat_abortable.assert_called_once()  # chat warmed with a minimal completion
     embed.embed.assert_called_once()  # embed warmed
     assert set(spawning) == {WorkerRole.CHAT, WorkerRole.EMBED}
     assert set(spawned) == {WorkerRole.CHAT, WorkerRole.EMBED}
@@ -4708,7 +4708,7 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     p.add_spawn_listener(on_spawned=spawned.append)
     with pytest.raises(RuntimeError, match="warm broke"):
         p._preload_roles()
-    chat.chat_abortable.assert_called_once()  # chatstill warmed behind the failed embed
+    chat.chat_abortable.assert_called_once()  # chat still warmed behind the failed embed
     assert spawned == [WorkerRole.CHAT]  # a role whose warm failed is not reported loaded
 
 
