@@ -92,18 +92,18 @@ def _signals_wake(loop: asyncio.AbstractEventLoop) -> Iterator[None]:
     """
     if sys.platform == "win32" or threading.current_thread() is not threading.main_thread():
         yield
-        return
-    reader, writer = socket.socketpair()
-    with reader, writer:
-        reader.setblocking(False)
-        writer.setblocking(False)
-        loop.add_reader(reader, reader.recv, _WAKEUP_READ_BYTES)
-        previous = signal.set_wakeup_fd(writer.fileno())
-        try:
-            yield
-        finally:
-            signal.set_wakeup_fd(previous)
-            loop.remove_reader(reader)
+    else:  # pragma: posix only - the proactor loop of Windows has no add_reader
+        reader, writer = socket.socketpair()
+        with reader, writer:
+            reader.setblocking(False)
+            writer.setblocking(False)
+            loop.add_reader(reader, reader.recv, _WAKEUP_READ_BYTES)
+            previous = signal.set_wakeup_fd(writer.fileno())
+            try:
+                yield
+            finally:
+                signal.set_wakeup_fd(previous)
+                loop.remove_reader(reader)
 
 
 def run_without_join(coro: Awaitable[T]) -> T:
