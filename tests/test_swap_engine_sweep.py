@@ -115,6 +115,7 @@ def test_a_process_of_no_declared_name_on_a_member_port_is_spared(
         (["python3.12", "serve.py", "--port", "5800"], False),
         (["python3.12", "serve.py", "{name}", "--port", "5800"], False),
         (["python3.12", "-m", "http.server", "--port", "5800"], False),
+        (["python3.12", "mlx_lm.server.bak", "--port", "5800"], False),
         (["python3.12", "/venv/bin/{name}", "--port", "5801"], False),
         (["python3.12"], False),
     ],
@@ -150,6 +151,13 @@ def test_the_processes_that_the_mlx_launchers_leave_are_found_by_their_scripts(
     proc = FakeProcess(_INTERPRETER, cmdline)
     _table(monkeypatch, [proc])
     assert sm._find_orphan_servers((_PORT,)) == [proc]
+
+
+def test_a_server_that_names_no_scripts_is_found_by_its_own_name_only() -> None:
+    server = ServerProcess("tool", interpreted=True)
+    assert server.scripts == ()
+    assert sm._runs_server(_INTERPRETER, [_INTERPRETER, "python"], server) is False
+    assert sm._runs_server(_INTERPRETER, [_INTERPRETER, "/bin/tool"], server) is True
 
 
 def test_a_script_named_by_no_engine_is_spared_on_a_member_port(
