@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.providers.fleet.engines import proof
-from tests._engine_launch_argv import BINARY, MODEL, launch_argvs
+from tests._engine_launch_argv import launch_argvs
 
 # The argv of each adapter at 6c19ed322, recorded before any proof table existed.
 # Updated by hand after commit 05be33fae, which put the engine subcommand after
