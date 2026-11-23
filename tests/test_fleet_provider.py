@@ -4492,7 +4492,7 @@ def test_preload_roles_warms_roles_concurrently(monkeypatch) -> None:
         release_chat.wait(timeout=5.0)
         return MagicMock()
 
-    chat.chat_abortable.side_effect =_blocked_chat
+    chat.chat_abortable.side_effect = _blocked_chat
     embed.embed.side_effect = lambda *a, **k: (embed_warmed.set(), [[0.1]])[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
@@ -4586,7 +4586,7 @@ def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     # the loser OOMs its first attempt.
     order: list[str] = []
     chat, embed = _fake_client(), _fake_client()
-    chat.chat_abortable.side_effect =lambda *a, **k: (order.append("chat"), MagicMock())[1]
+    chat.chat_abortable.side_effect = lambda *a, **k: (order.append("chat"), MagicMock())[1]
     embed.embed.side_effect = lambda *a, **k: (order.append("embed"), [[0.1]])[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
@@ -4611,7 +4611,7 @@ def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypat
         return [[0.1]]
 
     embed.embed.side_effect = _embed
-    chat.chat_abortable.side_effect =lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
+    chat.chat_abortable.side_effect = lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     p._launches = {
         SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
@@ -4694,7 +4694,7 @@ def test_preload_runs_chains_in_parallel_and_waits_for_them(monkeypatch) -> None
         finished.append(role)
         return value
 
-    chat.chat_abortable.side_effect =lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
+    chat.chat_abortable.side_effect = lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
     embed.embed.side_effect = lambda *a, **k: _meet(WorkerRole.EMBED, [[0.1]])
     p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
     monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
