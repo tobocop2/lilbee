@@ -28,6 +28,8 @@ setup() {
   tool cmake 'echo "cmake $*" >> "${PACK_LOG}"' 'while [ "$1" != -B ]; do shift; done' 'mkdir -p "$2/_deps/boringssl-src"' \
     'echo "BoringSSL licence" > "$2/_deps/boringssl-src/LICENSE"' 'exit "${CMAKE_STATUS:-0}"'
   tool otool 'printf "%s:\n@rpath/libggml.0.dylib\n" "$2"'
+  # The wheel check uses these on a Linux wheel; the check of this test is a stand-in.
+  for name in unzip ldd objdump; do tool "${name}" 'exit 0'; done
   tool delocate-wheel 'echo "delocate-wheel $* | epoch=${SOURCE_DATE_EPOCH-unset}" >> "${PACK_LOG}"' 'wheel="${!#}"' 'mkdir -p repaired' \
     'repaired="repaired/${DELOCATED_NAME:-${wheel##*/}}"' 'cp "${wheel}" "${repaired}"' \
     '"${REAL_PYTHON}" -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1], \"a\").writestr(sys.argv[2], \"x\")" "${repaired}" "${GRAFT:-repaired.txt}"' \
@@ -40,6 +42,10 @@ setup() {
   printf '%s\n' 'import os, sys' 'print("https://example.test/cccl", "v" + sys.argv[3])' 'sys.exit(int(os.environ.get("CCCL_STATUS", "0")))' > "${ROOT}/tools/wheel-build/cccl_source.py"
   printf '%s\n' 'echo "runtime $*" >> "${PACK_LOG}"' 'echo runtime > "$1/vcomp140.dll"' 'echo runtime > "$1/msvcp140.dll"' 'echo notice > "$2"' 'echo docx > "$3"' \
     'exit "${RUNTIME_STATUS:-0}"' > "${ROOT}/tools/wheel-build/bundle_windows_runtime.sh"
+  # The wheel check is a stand-in that records what it saw: tests/shell/check_llama_wheel.bats tests the check.
+  CHECK_LOG="${BATS_TEST_TMPDIR}/check.log"
+  printf '%s\n' "printf '%s\n' \"\$@\" > '${CHECK_LOG}'" "[ -e \"\${OUT}\" ] && echo 'the output folder existed' >> '${CHECK_LOG}'" \
+    '[ -z "${CHECK_FAIL-}" ]' > "${ROOT}/tools/wheel-build/check_llama_wheel.sh"
   PATH="${BIN}:${PATH}"
 
   export REAL_PYTHON PACK_LOG="${BATS_TEST_TMPDIR}/pack.log" DOCKER_LOG="${BATS_TEST_TMPDIR}/docker.log" PYTHON_CALLS="${BATS_TEST_TMPDIR}/calls.log"
@@ -134,6 +140,21 @@ each_stops() {  # variable=value...
   (cd "${OUT}" && sha256sum -c "${WHEEL}.sha256")
 }
 
+@test "the wheel check reads the one wheel of the checkout before the output folder exists" {
+  run bash "${SCRIPT}"
+  [ "$status" -eq 0 ]
+  [ "$(cat "${CHECK_LOG}")" = "out/${WHEEL}" ]
+  [ -e "${OUT}/${WHEEL}" ]
+}
+
+@test "a wheel that fails its check does not reach the output folder" {
+  CHECK_FAIL=1 run bash "${SCRIPT}"
+  [ "$status" -ne 0 ]
+  [ -e "${CHECK_LOG}" ]
+  [ ! -e "${OUT}" ]
+  [ -e "${TREE}/dist/${WHEEL}" ]
+}
+
 @test "every variable of the contract is required" {
   local name
   for name in UPSTREAM_REPO UPSTREAM_TAG WHEEL_VERSION BUILD_NUMBER GO_LICENSES_VERSION BACKEND PLATFORM LICENSE_TERMS MACOSX_DEPLOYMENT_TARGET MANYLINUX_IMAGE OUT; do
@@ -149,10 +170,10 @@ each_stops() {  # variable=value...
 
 @test "a computer without a tool of the cell is refused before the build" {
   local bare name missing build
-  for missing in go git gh docker cmake; do
+  for missing in go git gh docker cmake unzip ldd objdump; do
     bare="${BATS_TEST_TMPDIR}/bare-${missing}"
     mkdir -p "${bare}"
-    for name in bash dirname uname go git gh docker cmake; do
+    for name in bash dirname uname go git gh docker cmake unzip ldd objdump; do
       [ "${name}" = "${missing}" ] || ln -s "$(command -v "${name}")" "${bare}/${name}"
     done
     build=source
@@ -175,7 +196,7 @@ each_stops() {  # variable=value...
 
 @test "a checkout that an earlier build used is refused" {
   local name
-  for name in upstream deps-build cuda-libs.sha256 license-expression.txt vs-licence.docx repaired out pack-venv \
+  for name in upstream deps-build cuda-libs.sha256 license-expression.txt vs-licence.docx repaired out pack-venv check-venv \
     packaging/engine-wheel/lilbee_engine_llama_cpp/bin packaging/engine-wheel/dist; do
     mkdir "${ROOT}/${name}"
     run bash "${SCRIPT}"
