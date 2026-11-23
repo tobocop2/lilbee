@@ -168,7 +168,7 @@ def _engine_id(launch: InstanceLaunch, engine: EngineAdapter) -> str:
 
 
 def warn_when_embed_window_below_chunk(launch: InstanceLaunch) -> None:
-    """Log when the embed engine's input cap is below ``chunk_size``.
+    """Log when the embed engine's input cap cannot hold one chunk (ingest refuses then).
 
     Runs at engine adoption so the serving process's own log names the window
     it serves; the health route carries the same warning for clients.

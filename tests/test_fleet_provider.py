@@ -5210,8 +5210,7 @@ class TestEmbedTokenCap:
 
     @pytest.mark.parametrize("semantic", [False, True])
     def test_health_names_an_embed_window_below_the_chunk_size(self, monkeypatch, semantic) -> None:
-        """Every chunker cuts its chunks to a cap below chunk_size, so the chunk_size the
-        user set is not the one served, and health says so."""
+        """A window that cannot hold one chunk makes ingest refuse, and health says so."""
         from lilbee.core.health_warnings import WarningCode
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
@@ -5220,9 +5219,12 @@ class TestEmbedTokenCap:
         codes = [w.code for w in FleetProvider().health_warnings()]
         assert codes == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
 
-    @pytest.mark.parametrize("cap", [512, 640, None])
-    def test_health_is_clean_when_the_cap_holds_the_chunk_size(self, monkeypatch, cap) -> None:
+    @pytest.mark.parametrize("cap", [513, 640, None])
+    def test_health_is_clean_when_the_cap_holds_the_chunk_and_newline(
+        self, monkeypatch, cap
+    ) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")  # no document prefix
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r, *, engine: cap)
         assert FleetProvider().health_warnings() == []
 

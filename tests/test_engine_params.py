@@ -350,12 +350,28 @@ class TestEmbedWindowWarning:
         assert warning is not None
         assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
         assert warning.message == (
-            "The embedding model accepts 504 tokens per input, below chunk_size 512, "
-            "so each chunk holds at most 504 tokens."
+            "The embedding model accepts 504 tokens per input; chunk_size 512 does not fit."
         )
-        assert warning.remedy == "Set chunk_size to 504 or lower."
+        assert warning.remedy == "Set chunk_size to 376 or lower."
 
-    @pytest.mark.parametrize("cap", [512, 640])
-    def test_a_cap_that_holds_the_chunk_size_gives_no_warning(self, monkeypatch, cap) -> None:
+    def test_the_prefix_and_newline_count_against_the_window(self, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "nomic-ai/nomic-embed-text-v1.5-GGUF")
+        # "search_document: " is 17 characters; with the newline the reserve is 18.
+        assert ep.embed_input_reserve() == 18
+        assert ep.embed_window_warning(529) is not None
+        assert ep.embed_window_warning(530) is None
+
+    def test_the_remedy_never_names_a_size_below_one(self, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        warning = ep.embed_window_warning(100)
+        assert warning is not None
+        assert warning.remedy == "Set chunk_size to 1 or lower."
+
+    @pytest.mark.parametrize("cap", [513, 640])
+    def test_a_cap_that_holds_the_chunk_and_newline_gives_no_warning(
+        self, monkeypatch, cap
+    ) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/e.gguf")  # no document prefix
         assert ep.embed_window_warning(cap) is None

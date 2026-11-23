@@ -39,7 +39,7 @@ from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.core.vectors import Vector
 from lilbee.core.web_names import is_web_source
-from lilbee.data.extract.chunk import ChunkLimitError
+from lilbee.data.extract.chunk import ChunkLimitError, check_embed_window
 from lilbee.data.extract.document import (
     extract_batching,
     ingest_archive,
@@ -1394,7 +1394,7 @@ def _scan_corpus(
 
 
 def _require_embedding_model() -> None:
-    """Refuse ingest without an embedding model.
+    """Refuse ingest without an embedding model, or with a window smaller than one chunk.
 
     Ingest has no degraded mode: without one, every chunk fails to embed after
     the run has already paid the parse and OCR cost. Search and chat fall back
@@ -1408,6 +1408,7 @@ def _require_embedding_model() -> None:
             else "None is configured: pull one and set embedding_model."
         )
         raise RuntimeError(f"Ingest needs an embedding model. {detail}")
+    check_embed_window()
 
 
 async def _run_post_ingest_passes(

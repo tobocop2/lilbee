@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 # Over-counting fallback for when the exact count is unavailable: splits a touch
 # early rather than emitting an over-length chunk. Mirrors providers.fleet.client.
-_FALLBACK_CHARS_PER_TOKEN = 3
+FALLBACK_CHARS_PER_TOKEN = 3
 
 # The ChunkSizing type that routes chunk sizing to a registered tokenizer backend.
 TOKENIZER_SIZING_TYPE = "tokenizer"
@@ -39,7 +39,7 @@ _XBERG_PROBE_TEXT = "a"
 
 def _estimate_tokens(text: str) -> int:
     """Conservative token estimate from character length (ceiling division)."""
-    return max(1, -(-len(text) // _FALLBACK_CHARS_PER_TOKEN))
+    return max(1, -(-len(text) // FALLBACK_CHARS_PER_TOKEN))
 
 
 class LilbeeTokenizerBackend:
