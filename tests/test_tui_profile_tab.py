@@ -14,6 +14,7 @@ import pytest
 from textual import events
 from textual.app import ComposeResult
 from textual.css.query import NoMatches
+from textual.errors import NoWidget
 from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.screen import Screen
@@ -616,10 +617,17 @@ async def test_apply_dialog_scrolls_to_fit_a_big_profile_at_80x24(sources) -> No
 
 
 def _shown(screen: Screen, widget: Widget) -> bool:
-    """True when the screen draws *widget* at both ends of its row, so no parent clips it."""
+    """True when the screen draws *widget* at both ends of its row, so no parent clips it.
+
+    A dialog takes focus on mount, before its first layout: until then the screen draws
+    nothing, and a point where the screen draws nothing does not show *widget*.
+    """
     region = widget.region
     ends = ((region.x, region.y), (region.right - 1, region.bottom - 1))
-    return all(screen.get_widget_at(x, y)[0] is widget for x, y in ends)
+    try:
+        return all(screen.get_widget_at(x, y)[0] is widget for x, y in ends)
+    except NoWidget:
+        return False
 
 
 @pytest.mark.parametrize("size", [(80, 24), (80, 40), (120, 30)])
