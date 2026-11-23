@@ -1137,10 +1137,18 @@ class EngineBuildResponse(BaseModel):
     not_run_on: list[str] = []
 
 
+class EngineDamagedResponse(BaseModel):
+    """One engine folder that cannot be used, with the error that names the fix."""
+
+    folder: str
+    error: str
+
+
 class EngineBuildsResponse(BaseModel):
     """Response for the installed engine builds."""
 
     builds: list[EngineBuildResponse]
+    damaged: list[EngineDamagedResponse]
     not_installed: list[str]
     engines_folder: str
 

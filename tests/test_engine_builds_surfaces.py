@@ -107,7 +107,7 @@ def test_every_surface_lists_the_same_builds() -> None:
     code, listed = _cli("list")
     assert (code, listed["command"], listed["builds"]) == (0, "engine list", [BUILD])
     absent = engine_service.not_installed()
-    full = {"builds": [BUILD], "not_installed": absent, "engines_folder": _folder()}
+    full = {"builds": [BUILD], "damaged": [], "not_installed": absent, "engines_folder": _folder()}
     assert _rest("GET", "/api/engines") == (200, full)
     assert mcp_server.engine_list_tool() == full
     assert listed["engines_folder"] == _folder()
@@ -134,7 +134,7 @@ def test_cli_rest_and_mcp_return_the_same_list_fields() -> None:
     rest_body = _rest("GET", "/api/engines")[1]
     mcp_body = mcp_server.engine_list_tool()
     assert cli_body == rest_body == mcp_body
-    assert set(cli_body) == {"builds", "not_installed", "engines_folder"}
+    assert set(cli_body) == {"builds", "damaged", "not_installed", "engines_folder"}
     assert cli_body["not_installed"] == absent
 
 
@@ -142,7 +142,7 @@ def test_every_surface_lists_nothing_the_same_way() -> None:
     assert engine_service.builds() == []
     assert _cli("list")[1]["builds"] == []
     absent = engine_service.not_installed()
-    empty = {"builds": [], "not_installed": absent, "engines_folder": _folder()}
+    empty = {"builds": [], "damaged": [], "not_installed": absent, "engines_folder": _folder()}
     assert _rest("GET", "/api/engines") == (200, empty)
     assert mcp_server.engine_list_tool() == empty
     assert run_engine_command("list").text == f"No engine builds are installed.\n{_folder_line()}"
@@ -278,6 +278,7 @@ def test_rest_list_stays_open_while_the_flag_is_off() -> None:
         200,
         {
             "builds": [BUILD],
+            "damaged": [],
             "not_installed": engine_service.not_installed(),
             "engines_folder": _folder(),
         },
@@ -293,6 +294,7 @@ def test_mcp_remove_on_the_http_mount_is_refused_while_the_flag_is_off() -> None
     }
     assert mcp_server.engine_list_tool() == {
         "builds": [BUILD],
+        "damaged": [],
         "not_installed": engine_service.not_installed(),
         "engines_folder": _folder(),
     }

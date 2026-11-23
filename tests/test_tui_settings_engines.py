@@ -17,6 +17,7 @@ from lilbee.app import engine_service
 from lilbee.app.engine_service import EngineOption, EngineRow, EngineState
 from lilbee.catalog import runnable
 from lilbee.catalog.models import DownloadProgress
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.engine_install_flow import confirm_text
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.settings_engines import (
@@ -30,7 +31,7 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import EngineSetting
 from lilbee.providers.fleet import engine_manifest
-from lilbee.providers.fleet.engine_store import EngineStore
+from lilbee.providers.fleet.engine_store import EngineFolderError, EngineStore
 from lilbee.providers.fleet.engines import LLAMA, choice
 from lilbee.providers.fleet.engines.base import EngineName
 from lilbee.providers.fleet.engines.host_gate import PASS
@@ -181,6 +182,21 @@ async def test_the_table_is_named_engines_and_shows_one_row_per_engine(service: 
             ["■ tei", "0.9", "cpu", "-", "installed", "", "Remove"],
             ["■ openvino", "-", "cpu", "180 MB", "not installed", "", "Install"],
         ]
+
+
+async def test_a_damaged_folder_is_named_under_the_table(service: _Rows, tmp_path: Path) -> None:
+    cfg.models_dir = tmp_path / "models"
+    folder = tmp_path / "engines" / "tei" / "1-cpu"
+    folder.mkdir(parents=True)
+    app = _SettingsApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await _open_engines(app, pilot)
+        hint = app.screen.query_one("#engines-hint", Static)
+        named = str(EngineFolderError(folder, "tei"))
+        assert str(hint.render()).splitlines() == [named, msg.ENGINES_HINT]
+        folder.rmdir()
+        app.screen.query_one(EnginesPane).reload()
+        assert await wait_until(pilot, lambda: str(hint.render()) == msg.ENGINES_HINT)
 
 
 async def test_the_engine_cell_colors_the_mark_and_leaves_the_name_plain(service: _Rows) -> None:

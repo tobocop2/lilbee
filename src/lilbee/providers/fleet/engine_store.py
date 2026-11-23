@@ -155,6 +155,9 @@ _BUNDLED = "bundled"
 _NO_WAIT_S = 0.0
 _ENGINES_DIRNAME = "engines"
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+# A version, a hyphen and a backend with no dot: a file with a suffix is no build.
+_BUILD_PATTERN = re.compile(r".+-[^.]+")
+_PRUNE_SKIPPED = "The engine prune cannot read %s. Run 'lilbee engine list' for the fix."
 _LICENCE_JOINER = re.compile(r"\s+(?:OR|AND)\s+")
 PACK_DIR = "packs"
 
@@ -201,6 +204,36 @@ class BundledEngineError(Exception):
 
 class EngineNotInstalledError(Exception):
     """The store holds no build with this engine, version and backend."""
+
+
+class EngineFolderError(OSError):
+    """A folder of one engine in the store holds no build that lilbee can read."""
+
+    def __init__(self, folder: Path, engine: str, fault: OSError | None = None) -> None:
+        super().__init__(str(folder))
+        self.folder = folder
+        self.engine = engine
+        self.fault = fault
+
+    def __str__(self) -> str:
+        # circular: choice imports engine_store
+        from lilbee.catalog.runnable import session_host
+        from lilbee.providers.fleet.engines.choice import install_offered
+
+        # A file in the place of a folder is damage with the usual fix, as a denied read is.
+        usual = (PermissionError, NotADirectoryError)
+        if self.fault is not None and not isinstance(self.fault, usual):
+            return (
+                f"A read of the engine folder {self.folder} failed: {self.fault.strerror}. "
+                f"lilbee leaves the folder as it is. Run the command again."
+            )
+        offered = install_offered(self.engine, session_host())
+        install = f" and run 'lilbee engine install {self.engine}'" if offered else ""
+        return (
+            f"The engine folder {self.folder} holds no build that lilbee can read. If its "
+            f"permissions deny a read, correct them. lilbee cannot remove it until then. "
+            f"If they do not, remove it{install}."
+        )
 
 
 class StorePathError(Exception):
@@ -484,9 +517,10 @@ def _binary_of(archive: zipfile.ZipFile, tool: str) -> str | None:
 
 
 def _binary_usable(binary: Path, directory: Path) -> bool:
-    if not binary.resolve().is_relative_to(directory.resolve()) or not binary.is_file():
+    if not binary.resolve().is_relative_to(directory.resolve()):
         return False
-    return sys.platform == "win32" or bool(binary.stat().st_mode & stat.S_IXUSR)
+    mode = binary.stat().st_mode
+    return stat.S_ISREG(mode) and (sys.platform == "win32" or bool(mode & stat.S_IXUSR))
 
 
 def _unpack(wheel: Path, stage: Path) -> None:
@@ -514,10 +548,39 @@ def _raise_walk_error(exc: OSError) -> None:
     raise exc
 
 
-def _read_record(directory: Path) -> InstalledEngine | None:
-    """The record of *directory* when it is a complete build, else None."""
+def _names_engine(name: str) -> bool:
+    """True for an engine; the root also holds the router, the files of a server and strays."""
+    # circular: the engines import engine_store
+    from lilbee.providers.fleet.engines.base import EngineName
+
+    return name in set(EngineName)
+
+
+def _build_entries(engine: Path) -> list[Path]:
+    """The folders of one engine folder, and the files named as a build; none when it is absent."""
     try:
-        data = json.loads((directory / RECORD_NAME).read_text(encoding="utf-8"))
+        # The "." entry needs the right to enter the folder as well as the right to list it.
+        names = sorted(os.listdir(os.path.join(engine, os.curdir)))
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise EngineFolderError(engine, engine.name, exc) from exc
+    builds = [engine / name for name in names if not name.startswith(".")]
+    return [b for b in builds if b.is_dir() or _BUILD_PATTERN.fullmatch(b.name)]
+
+
+def _read_record(directory: Path) -> InstalledEngine | None:
+    """The record of *directory* when it is a complete build, else None.
+
+    Raises ``EngineFolderError`` when a read of the build fails: that build is not absent.
+    A folder in the place of the record is damage, not a failed read.
+    """
+    record = directory / RECORD_NAME
+    try:
+        # Windows reports the read of a folder as a denied read, so stat tells the kind.
+        if stat.S_ISDIR(record.stat().st_mode):
+            return None
+        data = json.loads(record.read_text(encoding="utf-8"))
         found = InstalledEngine(
             engine=data["engine"],
             version=data["version"],
@@ -528,14 +591,16 @@ def _read_record(directory: Path) -> InstalledEngine | None:
             path=directory,
             binary=directory / data["binary"] if data["binary"] is not None else None,
         )
-    except (OSError, ValueError, KeyError, TypeError):
+        if found.binary is not None and not _binary_usable(found.binary, directory):
+            return None
+    except (FileNotFoundError, NotADirectoryError, ValueError, KeyError, TypeError):
         return None
+    except OSError as exc:
+        raise EngineFolderError(directory, directory.parent.name, exc) from exc
     if (
         directory.name != f"{found.version}-{found.backend}"
         or directory.parent.name != found.engine
     ):
-        return None
-    if found.binary is not None and not _binary_usable(found.binary, directory):
         return None
     return found
 
@@ -577,23 +642,53 @@ class EngineStore:
 
     def installed(self) -> list[InstalledEngine]:
         """Every complete build; a directory without a valid record is not listed."""
+        return [found for _, found in self._walk() if isinstance(found, InstalledEngine)]
+
+    def damaged(self) -> list[EngineFolderError]:
+        """An error for each engine or build folder that holds no complete build."""
+        errors = [
+            found or EngineFolderError(folder, folder.parent.name)
+            for folder, found in self._walk()
+            if not isinstance(found, InstalledEngine)
+        ]
+        return [error for error in errors if _names_engine(error.engine)]
+
+    def _walk(self) -> Iterator[tuple[Path, InstalledEngine | EngineFolderError | None]]:
+        """Each build folder with its record, else None, and each folder whose read failed."""
+        for engine in self._engine_entries():
+            try:
+                builds = _build_entries(engine)
+            except EngineFolderError as exc:
+                yield engine, exc
+                continue
+            for build in builds:
+                found: InstalledEngine | EngineFolderError | None
+                try:
+                    found = _read_record(build)
+                except EngineFolderError as exc:
+                    found = exc
+                yield build, found
+
+    def _engine_entries(self) -> list[Path]:
+        """The entries of the root that can be an engine folder."""
         if not self.root.is_dir():
             return []
-        builds = (
-            _read_record(build)
-            for engine in sorted(self.root.iterdir())
-            if engine.is_dir() and not engine.name.startswith(".")
-            for build in sorted(engine.iterdir())
-            if build.is_dir() and not build.name.startswith(".")
-        )
-        return [found for found in builds if found is not None]
+        return [
+            entry
+            for entry in sorted(self.root.iterdir())
+            if entry.name != PACK_DIR and not entry.name.startswith(".")
+        ]
 
     def pack_path(self, lock: PinLock) -> Path:
         """Where a hand-copied wheel of *lock* is looked up."""
         return self.root / PACK_DIR / f"{lock.engine}-{lock.version}-{lock.backend}.whl"
 
     def complete_build(self, lock: PinLock) -> Path | None:
-        """The directory of the complete build of *lock*, None when absent or damaged."""
+        """The directory of the complete build of *lock*, None when absent or damaged.
+
+        Raises ``EngineFolderError`` when a read of the engine folder or the build fails.
+        """
+        _build_entries(self.root / lock.engine)
         existing = _read_record(self.build_dir(lock))
         if existing is None:
             return None
@@ -715,11 +810,13 @@ class EngineStore:
                 raise StorePathError(f"{part!r} cannot name an engine build.")
         build = self.root / engine / f"{version}-{backend}"
         with file_lock(self.root / LOCK_DIR / engine, wait_s):
+            _build_entries(build.parent)
             if not build.is_dir():
                 raise EngineNotInstalledError(
                     f"Engine {engine} {version} ({backend}) is not installed."
                 )
             self._inside_root(build)
+            _read_record(build)
             if in_use(engine, version, backend):
                 raise EngineInUseError(
                     f"Engine {engine} {version} ({backend}) is in use. Stop the engine "
@@ -768,31 +865,30 @@ class EngineStore:
             gone.append(path)
         return gone
 
-    def build_dirs(self) -> list[tuple[str, str, str, Path]]:
+    def build_dirs(
+        self, report: Callable[[str, Path], None] = log.debug
+    ) -> list[tuple[str, str, str, Path]]:
         """Every build folder, damaged ones too: (engine, version, backend, path).
 
         A complete build is listed once, as its record says. A name holds no mark between
         version and backend, so a damaged build is listed once for each hyphen of its name.
+        A folder that cannot be read is skipped, and *report* hears of the one of an engine.
         """
-        if not self.root.is_dir():
-            return []
-        found = []
-        for engine in sorted(self.root.iterdir()):
-            if engine.name.startswith(".") or engine.name == PACK_DIR or not engine.is_dir():
-                continue
-            for build in sorted(engine.iterdir()):
-                if build.name.startswith(".") or not build.is_dir():
-                    continue
-                record = _read_record(build)
-                if record is not None:
-                    found.append((engine.name, record.version, record.backend, build))
-                    continue
-                found.extend(
-                    (engine.name, build.name[:cut], build.name[cut + 1 :], build)
+        dirs = []
+        for build, found in self._walk():
+            engine = build.parent.name
+            if isinstance(found, EngineFolderError):
+                if _names_engine(found.engine):
+                    report(_PRUNE_SKIPPED, found.folder)
+            elif found is not None:
+                dirs.append((engine, found.version, found.backend, build))
+            elif build.is_dir():
+                dirs.extend(
+                    (engine, build.name[:cut], build.name[cut + 1 :], build)
                     for cut in range(1, len(build.name) - 1)
                     if build.name[cut] == "-"
                 )
-        return found
+        return dirs
 
     def sweep(self) -> list[Path]:
         """Remove stage, trash and download folders that no live install holds; never raises.
@@ -905,7 +1001,7 @@ def prune_engines(models_dir: Path) -> list[Path]:
         return []
     store = EngineStore(engines_root(models_dir))
     try:
-        builds = store.build_dirs()
+        builds = store.build_dirs(log.warning)
     except OSError as exc:
         log.warning("Skipped the engine prune of %s: %s", store.root, exc)
         return []
@@ -967,6 +1063,7 @@ __all__ = [
     "ChecksumError",
     "EngineConflictError",
     "EngineDiskError",
+    "EngineFolderError",
     "EngineInUseError",
     "EngineNotInstalledError",
     "EngineStore",

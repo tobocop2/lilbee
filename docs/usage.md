@@ -497,11 +497,22 @@ the three values that `engine list` shows. The `/engine list` and
 `/engine remove` chat commands, the MCP tools `engine_list` and `engine_remove`,
 and the REST routes `GET /api/engines` and
 `DELETE /api/engines/{engine}/{version}/{backend}` do the same. With `--json`, the
-CLI, the MCP tool and the REST route return the same three fields: `builds`,
-`not_installed` (the engines with no installed build) and `engines_folder` (the
-path that the `Engines folder:` line shows). The `/engine list` chat command ends
-with the same `Engines folder:` line. On the HTTP
+CLI, the MCP tool and the REST route return the same four fields: `builds`,
+`damaged` (each engine folder that lilbee cannot use, as its `folder` and an
+`error`), `not_installed` (the engines with no installed build) and
+`engines_folder` (the path that the `Engines folder:` line shows). The
+`/engine list` chat command ends with the same `Engines folder:` line. On the HTTP
 server the removal needs `allow_http_engines`.
+
+A damaged engine folder does not hide the other engines. `engine list`, the
+`/engine list` chat command and the Engines tab in Settings show one line for each
+damaged folder. The line names the folder and the fix: correct the permissions of
+the folder, or remove it and run `lilbee engine install <engine>`. The line leaves
+out the install if this computer cannot install the engine. If a read fails for a
+cause other than the permissions, the line names that cause, and lilbee leaves the
+folder as it is. `engine remove` clears a damaged build that it can read, also one
+with a folder in the place of its record. A command that skips a
+folder in the cleanup of old builds shows a warning with the folder.
 
 If the build of an engine differs from the pin, `engine list` prints one line:
 the engine is not installed, and the line names the build that differs.
